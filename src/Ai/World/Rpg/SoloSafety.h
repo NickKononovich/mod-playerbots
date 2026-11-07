@@ -96,6 +96,36 @@ namespace SoloSafety
     // the bot's damage per second: measured over its solo fights, else modelled
     float BotDps(Player* bot);
 
+    // [guild80] the open solo fight projected: the attackers on the bot (their damage per second: this fight's
+    // measurement, else the model; their SmartAI spell share), the time its damage needs for them, the damage still to
+    // come against its health and its measured heals. lost: damage >= health + heals
+    struct Projection
+    {
+        struct Foe
+        {
+            Unit* unit = nullptr;
+            float hp = 0.0f;
+            float dps = 0.0f;
+            float spellDps = 0.0f;
+        };
+        bool open = false;
+        bool lost = false;
+        bool fleeing = false;
+        std::vector<Foe> foes;
+        float incoming = 0.0f;
+        float seconds = 0.0f;
+        float damage = 0.0f;
+        float health = 0.0f;
+        float heals = 0.0f;
+        float botDps = 0.0f;
+        float leashSec = 0.0f;
+    };
+    Projection Project(Player* bot);
+    // [guild80] the survival kit chose to run until the mobs leash (the fight closes as DISENGAGED, rest after)
+    void BeginFlee(Player* bot, std::string const& why);
+    // [guild80] it rests to full once the fight is over (a reset by Vanish / Feign Death / Shadowmeld)
+    void RequestRestAfter(Player* bot, std::string const& why);
+
     // [guild14] the open solo fight is projected lost (the attackers' damage still to come against its health, heals
     // over the time its damage needs to kill them) and running until they leash leaves it alive: it disengages (logged,
     // rests to full after) - only from mobs that cannot follow (rooted, stunned); true from then on until the fight

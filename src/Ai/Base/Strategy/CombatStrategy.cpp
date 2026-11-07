@@ -59,6 +59,16 @@ void CombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [guild80] a solo bot whose fight the SoloSafety projection turns lost uses its survival kit (SurvivalKit): a
+    // reset, its heals / defensives / controls, a run the leash leaves it alive from - above every attack and heal
+    triggers.push_back(
+        new TriggerNode(
+            "solo survival",
+            {
+                NextAction("solo survival", ACTION_EMERGENCY + 3)
+            }
+        )
+    );
     // The pet-attack trigger is commented out because it was forcing the bot's pet to attack, overriding stay and follow commands.
     // Pets will automatically attack the bot's enemy if they are in "defensive" or "aggressive"
     // stance, or if the master issues an attack command.

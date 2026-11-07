@@ -15,6 +15,7 @@
 #include "GenericTriggers.h"
 #include "GuildTriggers.h"
 #include "HealthTriggers.h"
+#include "SurvivalKit.h"  // [guild80]
 #include "LfgTriggers.h"
 #include "LootTriggers.h"
 #include "NamedObjectContext.h"
@@ -62,6 +63,7 @@ public:
 
         creators["critical health"] = &TriggerContext::CriticalHealth;
         creators["solo fight lost"] = &TriggerContext::SoloFightLost;  // [guild14]
+        creators["solo survival"] = &TriggerContext::SoloSurvival;     // [guild80]
         creators["low health"] = &TriggerContext::LowHealth;
         creators["medium health"] = &TriggerContext::MediumHealth;
         creators["almost full health"] = &TriggerContext::AlmostFullHealth;
@@ -465,6 +467,7 @@ private:
     static Trigger* AlmostFullHealth(PlayerbotAI* botAI) { return new AlmostFullHealthTrigger(botAI); }
     static Trigger* CriticalHealth(PlayerbotAI* botAI) { return new CriticalHealthTrigger(botAI); }
     static Trigger* SoloFightLost(PlayerbotAI* botAI) { return new SoloFightLostTrigger(botAI); }
+    static Trigger* SoloSurvival(PlayerbotAI* botAI) { return new SoloSurvivalTrigger(botAI); }  // [guild80]
     static Trigger* TargetCriticalHealth(PlayerbotAI* botAI) { return new TargetCriticalHealthTrigger(botAI); }
     static Trigger* LowMana(PlayerbotAI* botAI) { return new LowManaTrigger(botAI); }
     static Trigger* MediumMana(PlayerbotAI* botAI) { return new MediumManaTrigger(botAI); }

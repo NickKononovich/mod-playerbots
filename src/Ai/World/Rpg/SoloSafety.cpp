@@ -977,30 +977,24 @@ namespace SoloSafety
         state.restWhy = "after a death";
     }
 
-    bool ShouldDisengage(Player* bot)
+    // [guild80] the open solo fight projected (the attackers' damage still to come against its health and heals),
+    // computed as the b304 disengage judged it; SurvivalKit picks the escape from it
+    Projection Project(Player* bot)
     {
+        Projection out;
         if (!bot || !bot->IsAlive() || !bot->IsInCombat() || !Applies(bot))
-            return false;
+            return out;
         uint32 const now = getMSTime();
         std::lock_guard<std::mutex> guard(lock);
         auto const found = states.find(bot->GetGUID().GetCounter());
         if (found == states.end() || !found->second.open)
-            return false;
+            return out;
         SoloBotState& state = found->second;
-        if (state.fleeing)
-            return true;
+        out.open = true;
+        out.fleeing = state.fleeing;
 
         // the attackers still on it (a mob on its pet hits the pet), their damage: measured this fight (each from its
         // first hit, a swing added), the model before their first hit - the higher
-        struct Foe
-        {
-            Unit* unit;
-            float hp;
-            float dps;
-        };
-        std::vector<Foe> foes;
-        float incoming = 0.0f;
-        float leashSec = 0.0f;
         int32 gap = std::numeric_limits<int32>::min();
         for (Unit* attacker : bot->getAttackers())
         {
@@ -1014,14 +1008,21 @@ namespace SoloSafety
                     uint32(track->second.swingSec * IN_MILLISECONDS))
                 dps = float(track->second.damage) /
                       (float(getMSTimeDiff(track->second.firstMs, now)) / IN_MILLISECONDS + track->second.swingSec);
-            foes.push_back({attacker, float(attacker->GetHealth()), dps});
-            incoming += dps;
-            gap = std::max(gap, int32(attacker->GetLevel()) - int32(bot->GetLevel()));
+            Projection::Foe foe;
+            foe.unit = attacker;
+            foe.hp = float(attacker->GetHealth());
+            foe.dps = dps;
             if (Creature* creature = attacker->ToCreature())
-                leashSec = std::max(leashSec, float(creature->GetLeashTimer()));
+            {
+                foe.spellDps = SpellDpsOf(creature);
+                out.leashSec = std::max(out.leashSec, float(creature->GetLeashTimer()));
+            }
+            out.foes.push_back(foe);
+            out.incoming += dps;
+            gap = std::max(gap, int32(attacker->GetLevel()) - int32(bot->GetLevel()));
         }
-        if (foes.empty() || incoming <= 0.0f)
-            return false;
+        if (out.foes.empty() || out.incoming <= 0.0f)
+            return out;
 
         // its damage: the higher of its measurement at this level gap and this fight's once it has swung (b304 run 1:
         // this fight's first seconds alone - a caster's first bolt still in flight - sent 9 bots running in 10 min)
@@ -1029,49 +1030,54 @@ namespace SoloSafety
         float botDps = BotDpsAt(bot, state, gap);
         if (state.dealt && elapsed >= SwingSec(bot))
             botDps = std::max(botDps, float(state.dealt) / (elapsed + SwingSec(bot)));
-        botDps = std::max(botDps, 1.0f);
+        out.botDps = std::max(botDps, 1.0f);
         // the rest of the fight as the judge counts it: its current target first, then the most damage per health
         Unit* const victim = bot->GetVictim();
-        std::sort(foes.begin(), foes.end(),
-                  [victim](Foe const& a, Foe const& b)
+        std::sort(out.foes.begin(), out.foes.end(),
+                  [victim](Projection::Foe const& a, Projection::Foe const& b)
                   {
                       if ((a.unit == victim) != (b.unit == victim))
                           return a.unit == victim;
                       return a.dps / std::max(a.hp, 1.0f) > b.dps / std::max(b.hp, 1.0f);
                   });
-        float seconds = 0.0f;
-        float damage = 0.0f;
-        for (Foe const& foe : foes)
+        for (Projection::Foe const& foe : out.foes)
         {
-            seconds += foe.hp / botDps;
-            damage += foe.dps * seconds;
+            out.seconds += foe.hp / out.botDps;
+            out.damage += foe.dps * out.seconds;
         }
-        float heals = state.fightSecSum > 0.0 ? float(state.healedSum / state.fightSecSum) * seconds : 0.0f;
+        out.heals = state.fightSecSum > 0.0 ? float(state.healedSum / state.fightSecSum) * out.seconds : 0.0f;
         if (uint32 const maxMana = bot->GetMaxPower(POWER_MANA))
-            heals *= std::min(1.0f, float(bot->GetPower(POWER_MANA)) / float(maxMana));
-        float const health = float(bot->GetHealth());
-        if (damage < health + heals)
-            return false;
-        // running costs the hits until the mobs leash (the core's leash timer: Creature::GetLeashTimer, seconds without
-        // being damaged): it runs only when that leaves it alive, else it fights on
-        float const runCost = incoming * leashSec;
-        if (runCost >= health)
-            return false;
-        // ... and only from mobs that cannot follow (rooted or stunned): b305 - 18 of 21 deaths were bots running from
-        // mobs chasing them 100-400 yd without a leash, hit in the back all the way; b306 (slower mobs too) - 31 of 38
-        for (Foe const& foe : foes)
-            if (!foe.unit->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED))
-                return false;
-        state.fleeing = true;
-        LOG_INFO("playerbots",
-                 "[solo] {} L{} DISENGAGE: {} attackers deal {:.1f} dps, they need {:.0f} s at its {:.1f} dps: {:.0f} "
-                 "dmg to come at hp {:.0f} (+{:.0f} heals); running costs {:.0f} ({:.0f} s to leash)",
-                 bot->GetName(), bot->GetLevel(), foes.size(), incoming, seconds, botDps, damage, health, heals,
-                 runCost, leashSec);
-        state.rest = true;
-        state.restWhy = "after a disengage";
-        return true;
+            out.heals *= std::min(1.0f, float(bot->GetPower(POWER_MANA)) / float(maxMana));
+        out.health = float(bot->GetHealth());
+        out.lost = out.damage >= out.health + out.heals;
+        return out;
     }
+
+    void BeginFlee(Player* bot, std::string const& why)
+    {
+        if (!bot)
+            return;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        if (found == states.end() || !found->second.open)
+            return;
+        found->second.fleeing = true;
+        found->second.rest = true;
+        found->second.restWhy = why;
+    }
+
+    void RequestRestAfter(Player* bot, std::string const& why)
+    {
+        if (!bot)
+            return;
+        std::lock_guard<std::mutex> guard(lock);
+        SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        state.rest = true;
+        state.restWhy = why;
+    }
+
+    // [guild14] the b304 disengage (out of CombatStrategy since b309); [guild80] SurvivalKit decides the flee now
+    bool ShouldDisengage(Player* bot) { return Disengaging(bot); }
 
     bool Disengaging(Player* bot)
     {
