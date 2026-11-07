@@ -1186,7 +1186,8 @@ void GuildCoordinator::UpdateOrders()
             {
                 st->second.held.push_back({item->GetGUID().GetCounter(), e.itemId, item->GetCount(), e.forLow,
                                            e.purpose});
-                Decision(Who(row.low) + ": " + ItemName(e.itemId) + " — " + e.purpose + ", в банк");
+                Decision(Who(row.low) + ": " + ItemName(e.itemId) + " — " + e.purpose +
+                         (GuildBankRun::BankState(p, true).empty() ? ", в банк" : ", держит до банка гильдии"));
             }
             else if (!item && p->IsNonMeleeSpellCast(false))
                 keep.push_back(e);
@@ -1265,7 +1266,8 @@ void GuildCoordinator::UpdateOrders()
         for (HeldItem const& h : st.held)
             if (h.purpose != "pending")
                 bankHeld.push_back(h);
-        if (!bankHeld.empty())
+        // [guild16] no bank order while the guild or its bank tab does not exist: the bot just holds the items
+        if (!bankHeld.empty() && GuildBankRun::BankState(p, true).empty())
         {
             GuildOrder o;
             o.type = GuildOrderType::BANK_DEPOSIT;
@@ -1274,12 +1276,9 @@ void GuildCoordinator::UpdateOrders()
             o.forLow = bankHeld.front().forLow;
             o.details = std::to_string(o.count) + " предм.: " + ItemName(o.itemId) + " (" + bankHeld.front().purpose + ")";
             o.reason = "решение глоб. лидера по добыче";
-            std::string const state = GuildBankRun::BankState(p, true);
             WorldPosition pos;
             float dist = 0;
-            if (!state.empty())
-                o.status = state + " — держит, квестует";
-            else if (!st.vaultFail.empty())
+            if (!st.vaultFail.empty())
                 o.status = st.vaultFail;
             else if (!GuildBankRun::NearestVault(p, pos, dist))
                 o.status = "нет хранилища на этом континенте";
@@ -1291,7 +1290,7 @@ void GuildCoordinator::UpdateOrders()
             orders.push_back(o);
         }
         auto const wd = withdraw_.find(row.low);
-        if (wd != withdraw_.end() && !wd->second.empty())
+        if (wd != withdraw_.end() && !wd->second.empty() && GuildBankRun::BankState(p, false).empty())
         {
             GuildOrder o;
             o.type = GuildOrderType::BANK_WITHDRAW;
@@ -1299,12 +1298,9 @@ void GuildCoordinator::UpdateOrders()
             o.count = uint32(wd->second.size());
             o.details = ItemName(o.itemId) + " (" + wd->second.front().second + ")";
             o.reason = "в банке лежит улучшение для него";
-            std::string const state = GuildBankRun::BankState(p, false);
             WorldPosition pos;
             float dist = 0;
-            if (!state.empty())
-                o.status = state;
-            else if (!GuildBankRun::NearestVault(p, pos, dist))
+            if (!GuildBankRun::NearestVault(p, pos, dist))
                 o.status = "нет хранилища на этом континенте";
             else
             {
@@ -2256,7 +2252,8 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
         {
             if (held != st.held.end())
                 held->purpose = "wanted";
-            Decision(what + " → банк: в wanted list" + (w.optional ? " (необязательный)" : "") + " (" +
+            Decision(what + (GuildBankRun::BankState(looter, true).empty() ? " → банк" : " → держит до банка гильдии") +
+                     ": в wanted list" + (w.optional ? " (необязательный)" : "") + " (" +
                      std::to_string(w.have) + "/" + std::to_string(w.need) + ": " + OrdersText(w.forWhom, 90) + ")");
             return;
         }
