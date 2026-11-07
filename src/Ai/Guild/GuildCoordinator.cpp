@@ -15,6 +15,7 @@
 
 #include "AiObjectContext.h"
 #include "Bag.h"
+#include "BudgetValues.h"  // [guild50] free money for gear
 #include "Chat.h"
 #include "Config.h"
 #include "Creature.h"
@@ -26,11 +27,14 @@
 #include "Group.h"
 #include "Guild.h"
 #include "GuildBankRun.h"
+#include "GuildGear.h"  // [guild50]
 #include "Item.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
 #include "NewRpgBaseAction.h"  // [guild14] TripRefused
 #include "NewRpgInfo.h"
+#include "NewRpgProfession.h"  // [guild50] BUY at a vendor
+#include "QuestDef.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
@@ -64,7 +68,7 @@ namespace
     char const* OrderName(GuildOrderType type)
     {
         static char const* const names[] = {"QUEST", "PROFESSION", "BANK_DEPOSIT", "BANK_WITHDRAW", "CRAFT_FOR",
-                                             "GATHER", "BUY", "DUNGEON", "DISENCHANT"};
+                                             "GATHER", "BUY", "DUNGEON", "DISENCHANT", "QUEST_REWARD"};
         return uint8(type) < std::size(names) ? names[uint8(type)] : "?";
     }
 
@@ -160,6 +164,85 @@ namespace
     }
 }
 
+// [guild50] gear planner helpers
+namespace
+{
+    bool FriendlyNpc(Player* bot, uint32 entry)
+    {
+        FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        FactionTemplateEntry const* faction = tmpl ? sFactionTemplateStore.LookupEntry(tmpl->faction) : nullptr;
+        return own && faction && !faction->IsHostileTo(*own) && !own->IsHostileTo(*faction);
+    }
+
+    // equal gain: the way that costs the least (already the guild's, on the way, made by a member, paid)
+    uint32 KindRank(uint8 kind)
+    {
+        switch (kind)
+        {
+            case GuildGear::SRC_BANK: return 0;
+            case GuildGear::SRC_QUEST: return 1;
+            case GuildGear::SRC_CRAFT: return 2;
+            case GuildGear::SRC_VENDOR: return 3;
+            default: return 4;
+        }
+    }
+
+    bool HasReagents(Player* crafter, GuildGear::CraftRecipe const& recipe)
+    {
+        for (auto const& [item, n] : recipe.reagents)
+            if (crafter->GetItemCount(item, false) < n)
+                return false;
+        return true;
+    }
+
+    std::string GainText(float gain)
+    {
+        if (gain < 0.005f)
+            return "вес равный, больше брони / ур. предмета";
+        return "+" + std::to_string(int32(gain * 100.0f + 0.5f)) + "%";
+    }
+
+    std::string MoneyText(uint32 copper)
+    {
+        std::string text;
+        if (copper >= GOLD)
+            text += std::to_string(copper / GOLD) + "з ";
+        if (copper >= SILVER)
+            text += std::to_string((copper % GOLD) / SILVER) + "с ";
+        return text + std::to_string(copper % SILVER) + "м";
+    }
+
+    // the smallest bag size in the member's bag slots (0 = a slot is empty)
+    uint32 SmallestBag(Player* p)
+    {
+        uint32 smallest = UINT32_MAX;
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+        {
+            Bag* bag = p->GetBagByPos(b);
+            smallest = std::min<uint32>(smallest, bag ? bag->GetBagSize() : 0);
+        }
+        return smallest == UINT32_MAX ? 0 : smallest;
+    }
+
+    // the generic bags in the backpack and in the bags (not worn as a bag)
+    void SpareBags(Player* p, std::vector<Item*>& out)
+    {
+        auto const add = [&](Item* item)
+        {
+            ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+            if (proto && proto->Class == ITEM_CLASS_CONTAINER && proto->SubClass == ITEM_SUBCLASS_CONTAINER)
+                out.push_back(item);
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            add(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            if (Bag* bag = p->GetBagByPos(b))
+                for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                    add(bag->GetItemByPos(uint8(j)));
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // startup
 // ---------------------------------------------------------------------------------------------------------------------
@@ -168,7 +251,10 @@ void GuildCoordinator::Load()
     LoadPlan();
     LoadRecipes();
     LoadGatherSources();
+    GuildGear::Load(std::vector<uint32>(std::begin(CRAFT_LINES), std::end(CRAFT_LINES)));  // [guild50]
     GuildBankRun::LoadVaults();
+    LoadDungeons();  // [guild60] the fives' dungeons and the completion table
+    LoadRuns();
     loaded_ = true;
 }
 
@@ -443,6 +529,8 @@ std::string GuildCoordinator::WaitReason(Player* bot, PlayerbotAI* botAI, BotSta
 {
     if (!state.waitReason.empty())
         return state.waitReason;
+    if (std::string const five = FiveWait(state); !five.empty())  // [guild60]
+        return five;
     if (!botAI || IsRealPlayer(bot))
         return "human player";
     if (SelfBotControl::IsSuspended(bot))
@@ -507,8 +595,10 @@ void GuildCoordinator::Update(uint32 diff)
     {
         updateTimer_ = 0;
         UpdateLeaders();
+        UpdateGear();  // [guild50]
         UpdateOrders();
         UpdateHealth();
+        UpdateFives();  // [guild60]
     }
 }
 
@@ -684,6 +774,33 @@ void GuildCoordinator::UpdateWanted()
         }
     }
 
+    // [guild50] the reagents of the craft queue (upgrade crafts, bags); a bar stands for its ores as above
+    {
+        std::map<uint32, std::pair<uint32, std::string>> gear;
+        {
+            std::lock_guard<std::mutex> guard(lock_);
+            gear = gearWanted_;
+        }
+        for (auto const& [item, need] : gear)
+        {
+            auto const smelt = smeltFrom_.find(item);
+            std::vector<std::pair<uint32, uint32>> parts;
+            if (smelt != smeltFrom_.end() && !vendorItems_.count(item))
+                for (auto const& [ore, perBar] : smelt->second)
+                    parts.emplace_back(ore, uint32(std::ceil(need.first * perBar - 0.001)));
+            else
+                parts.emplace_back(item, need.first);
+            for (auto const& [id, n] : parts)
+            {
+                WantedItem& w = wanted[id];
+                w.itemId = id;
+                w.need += n;
+                if (w.forWhom.size() < 60)
+                    w.forWhom += (w.forWhom.empty() ? "" : ", ") + need.second;
+            }
+        }
+    }
+
     std::map<uint32, uint32> bank;
     GuildBankRun::CountBank(guild, bank);
     std::vector<WantedItem> list;
@@ -716,12 +833,87 @@ void GuildCoordinator::UpdateOrders()
     std::lock_guard<std::mutex> guard(lock_);
     std::unordered_map<uint32, uint32> gathering;  // item -> gatherers already sent
     uint32 const now = Now();
+    // [guild50] expected items that appeared become held for their member; one that did not come (cast broken, no
+    // reward) is dropped once the bot no longer casts
+    for (PlanRow const& row : plan_)
+    {
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+        auto const st = bots_.find(row.low);
+        if (!p || !p->IsInWorld() || st == bots_.end() || st->second.expect.empty())
+            continue;
+        std::vector<Expect> keep;
+        for (Expect const& e : st->second.expect)
+        {
+            Item* item = nullptr;
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END && !item; ++slot)
+                if (Item* i = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                    if (i->GetEntry() == e.itemId)
+                        item = i;
+            for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END && !item; ++b)
+                if (Bag* bag = p->GetBagByPos(b))
+                    for (uint32 j = 0; j < bag->GetBagSize() && !item; ++j)
+                        if (Item* i = bag->GetItemByPos(uint8(j)))
+                            if (i->GetEntry() == e.itemId)
+                                item = i;
+            bool heldAlready = false;
+            for (HeldItem const& h : st->second.held)
+                heldAlready |= item && h.itemGuidLow == item->GetGUID().GetCounter();
+            if (item && !heldAlready)
+            {
+                st->second.held.push_back({item->GetGUID().GetCounter(), e.itemId, item->GetCount(), e.forLow,
+                                           e.purpose});
+                Decision(Who(row.low) + ": " + ItemName(e.itemId) + " — " + e.purpose + ", в банк");
+            }
+            else if (!item && p->IsNonMeleeSpellCast(false))
+                keep.push_back(e);
+        }
+        st->second.expect = std::move(keep);
+    }
+    UpdateCrafts(now);  // [guild50]
+    std::map<std::pair<uint32, uint32>, bool> withdrawn;  // (member, item) already on its withdraw list
+    for (auto const& [low, list] : withdraw_)
+        for (auto const& [item, why] : list)
+            withdrawn[{low, item}] = true;
     for (PlanRow const& row : plan_)
     {
         Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
         BotState& st = bots_[row.low];
         if (!p || !p->IsInWorld())
             continue;
+        // [guild50] an upgrade lying in the guild bank: the member takes it out itself
+        if (!HumanControls(p))
+            for (GearPick const& g : st.gearNow)
+                if (g.kind == GuildGear::SRC_BANK && !p->GetItemCount(g.itemId, true) &&
+                    !withdrawn.count({row.low, g.itemId}))
+                {
+                    withdraw_[row.low].emplace_back(g.itemId, std::string("улучшение ") +
+                                                                  GuildGear::GroupName(g.group) + " " +
+                                                                  GainText(g.gain));
+                    withdrawn[{row.low, g.itemId}] = true;
+                }
+        // [guild50] old bags: once all four bag slots hold bags, a spare bag no bigger than the smallest worn one is
+        // sold at the next vendor
+        if (!HumanControls(p))
+        {
+            uint32 const smallest = SmallestBag(p);
+            std::vector<Item*> spare;
+            if (smallest)
+                SpareBags(p, spare);
+            for (Item* bag : spare)
+            {
+                uint32 const guidLow = bag->GetGUID().GetCounter();
+                bool const held = std::any_of(st.held.begin(), st.held.end(),
+                                              [&](HeldItem const& h) { return h.itemGuidLow == guidLow; });
+                Bag* asBag = bag->ToBag();
+                if (held || bag->GetTemplate()->ContainerSlots > smallest || (asBag && !asBag->IsEmpty()) ||
+                    std::find(st.sell.begin(), st.sell.end(), guidLow) != st.sell.end())
+                    continue;
+                st.sell.push_back(guidLow);
+                Decision(Who(row.low) + ": старая сумка " + ItemName(bag->GetEntry()) + " → продать (" +
+                         std::to_string(bag->GetTemplate()->ContainerSlots) + " яч., самая малая надетая " +
+                         std::to_string(smallest) + ")");
+            }
+        }
 
         // items that left the bags (used, sold, traded, deposited) are not held any more
         auto const gone = [p](uint32 guidLow)
@@ -733,6 +925,7 @@ void GuildCoordinator::UpdateOrders()
         st.disenchant.erase(std::remove_if(st.disenchant.begin(), st.disenchant.end(), gone), st.disenchant.end());
 
         std::vector<GuildOrder> orders;
+        FiveOrder(st, row.low, p, orders);  // [guild60] a five's dungeon comes first
         if (!st.disenchant.empty())
         {
             GuildOrder o;
@@ -826,6 +1019,94 @@ void GuildCoordinator::UpdateOrders()
                 orders.push_back(o);
             }
         }
+        if (!HumanControls(p))
+        {
+            // [guild50] CRAFT_FOR: this crafter's jobs, the first it holds the reagents for
+            CraftJob const* job = nullptr;
+            uint32 jobs = 0;
+            for (CraftJob const& j : crafts_)
+                if (j.crafterLow == row.low)
+                {
+                    ++jobs;
+                    if (!job || (j.ready && !job->ready))
+                        job = &j;
+                }
+            if (job)
+            {
+                GuildOrder o;
+                o.type = GuildOrderType::CRAFT_FOR;
+                o.itemId = job->itemId;
+                o.spellId = job->spellId;
+                o.forLow = job->forLow;
+                o.count = jobs;
+                o.details = ItemName(job->itemId) + " для " + (job->forLow == row.low ? "себя" : Who(job->forLow)) +
+                            (jobs > 1 ? " (всего заказов " + std::to_string(jobs) + ")" : "");
+                o.reason = job->why;
+                o.executable = job->ready;
+                o.status = job->ready ? "материалы есть: создаёт" : "ждёт материалы (wanted list)";
+                orders.push_back(o);
+            }
+            // BUY: the biggest upgrade it can pay for at a vendor
+            for (GearPick const& g : st.gearNow)
+            {
+                if (g.kind != GuildGear::SRC_VENDOR || p->GetItemCount(g.itemId, true) || p->GetMoney() < g.aux)
+                    continue;
+                GuildOrder o;
+                o.type = GuildOrderType::BUY;
+                o.itemId = g.itemId;
+                o.count = 1;
+                o.npcEntry = g.srcId;
+                o.pos = g.pos;
+                o.cost = g.aux;
+                o.details = ItemName(g.itemId) + " — " + g.text;
+                o.reason = std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g.gain) +
+                           ", на свои деньги";
+                o.status = "к торговцу";
+                o.executable = true;
+                orders.push_back(o);
+                break;
+            }
+            // QUEST_REWARD: the choices the turn-ins will take
+            if (!st.rewards.empty())
+            {
+                GuildOrder o;
+                o.type = GuildOrderType::QUEST_REWARD;
+                auto const& [questId, pick] = *st.rewards.begin();
+                o.itemId = pick.itemId;
+                o.forLow = pick.forLow;
+                o.count = uint32(st.rewards.size());
+                o.details = "q" + std::to_string(questId) + ": " + ItemName(pick.itemId) +
+                            (st.rewards.size() > 1 ? " (+" + std::to_string(st.rewards.size() - 1) + " кв.)" : "");
+                o.reason = pick.why;
+                o.status = StatusName(p, GET_PLAYERBOT_AI(p));
+                orders.push_back(o);
+            }
+            // DUNGEON (plan, stage 4 forms the fives): the dungeon with most of its best planned upgrades
+            std::map<uint32, std::pair<uint32, std::string>> byDungeon;
+            for (GearPick const& g : st.gearPlan)
+                if (g.kind == GuildGear::SRC_DROP)
+                {
+                    auto& d = byDungeon[g.mapId];
+                    ++d.first;
+                    if (d.second.size() < 50)
+                        d.second += (d.second.empty() ? "" : ", ") + ItemName(g.itemId);
+                }
+            uint32 bestMap = 0;
+            for (auto const& [mapId, d] : byDungeon)
+                if (!bestMap || d.first > byDungeon[bestMap].first)
+                    bestMap = mapId;
+            if (bestMap && !st.fiveId)  // in a five: the five's own DUNGEON order ([guild60])
+            {
+                GuildOrder o;
+                o.type = GuildOrderType::DUNGEON;
+                o.count = byDungeon[bestMap].first;
+                o.details = GuildGear::DungeonName(bestMap) + ": " + std::to_string(o.count) + " улучш. (" +
+                            byDungeon[bestMap].second + ")";
+                o.reason = "лучшие доступные вещи слотов — добыча этого данжа";
+                o.status = "план: пятёрку соберёт глоб. лидер";
+                orders.push_back(o);
+            }
+        }
         for (GuildOrder const& ext : st.external)
             orders.push_back(ext);
         GuildOrder quest;
@@ -869,34 +1150,523 @@ void GuildCoordinator::SetOrder(uint32 low, GuildOrder order, std::string const&
     Decision(Who(low) + " → " + OrderName(order.type) + ": " + decision);
 }
 
-uint32 GuildCoordinator::FormFive(uint32 leaderLow, std::vector<uint32> const& members, std::string const& dungeon)
+// [guild60] FormFive / DisbandFive and the fives' dungeon runs: GuildFives.cpp
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [guild50] gear through the global leader: every member's best reachable upgrade per slot (upgrade index x
+// StatsWeightCalculator), the quest reward to take, crafts for members and bags, purchases, bank withdrawals
+// ---------------------------------------------------------------------------------------------------------------------
+bool GuildCoordinator::HumanControls(Player* p)
 {
-    std::lock_guard<std::mutex> guard(lock_);
-    GuildFive five;
-    five.id = nextFiveId_++;
-    five.leaderLow = leaderLow;
-    five.members = members;
-    five.dungeon = dungeon;
-    five.since = Now();
-    for (uint32 low : members)
-        bots_[low].fiveId = five.id;
-    bots_[leaderLow].fiveId = five.id;
-    fives_[five.id] = five;
-    Decision("пятёрка " + std::to_string(five.id) + " → " + dungeon + ", лидер " + Who(leaderLow));
-    return five.id;
+    // user 2026-11-07: a character counts as the human's only while he controls it (no AI, or a SelfBot just taken
+    // over by input); handed to its bot (SelfBot on) it is a normal member, geared like the others
+    return !GET_PLAYERBOT_AI(p) || SelfBotControl::IsSuspended(p);
 }
 
-void GuildCoordinator::DisbandFive(uint32 fiveId)
+void GuildCoordinator::UpdateGear()
 {
-    std::lock_guard<std::mutex> guard(lock_);
-    auto const itr = fives_.find(fiveId);
-    if (itr == fives_.end())
+    if (plan_.empty())
         return;
-    for (uint32 low : itr->second.members)
-        bots_[low].fiveId = 0;
-    bots_[itr->second.leaderLow].fiveId = 0;
-    Decision("пятёрка " + std::to_string(fiveId) + " вернула полномочия глоб. лидеру");
-    fives_.erase(itr);
+    std::vector<Player*> bots;
+    Guild* guild = nullptr;
+    for (PlanRow const& row : plan_)
+    {
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+        if (!p || !p->IsInWorld())
+            continue;
+        if (!guild)
+            guild = GuildBankRun::BotGuild(p);
+        if (!HumanControls(p))
+            bots.push_back(p);
+    }
+    // one member per call, in plan order: the score work of 50 members spread over minutes, not one tick
+    Player* member = nullptr;
+    for (size_t n = 0; n < plan_.size() && !member; ++n)
+    {
+        gearCursor_ = (gearCursor_ + 1) % plan_.size();
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(plan_[gearCursor_].low));
+        if (p && p->IsInWorld() && !HumanControls(p))
+            member = p;
+    }
+    if (!member)
+        return;
+
+    std::map<uint32, uint32> bank;
+    GuildBankRun::CountBank(guild, bank);
+    std::vector<WantedItem> wanted;
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        wanted = wanted_;
+    }
+    std::vector<GearPick> now, plan;
+    std::map<uint32, RewardPick> rewards;
+    PlanGear(member, now, plan, rewards, bots, bank, wanted);
+
+    std::ostringstream log;
+    for (GearPick const& g : now)
+        log << " [" << GuildGear::GroupName(g.group) << "] " << ItemName(g.itemId) << " " << GainText(g.gain) << " — "
+            << g.text << ";";
+    LOG_INFO("playerbots", "[guild50] gear plan {} L{}: now {}, plan {}, rewards {};{}", member->GetName(),
+             member->GetLevel(), now.size(), plan.size(), rewards.size(), log.str());
+
+    std::lock_guard<std::mutex> guard(lock_);
+    BotState& st = bots_[member->GetGUID().GetCounter()];
+    st.gearNow = std::move(now);
+    st.gearPlan = std::move(plan);
+    st.rewards = std::move(rewards);
+    st.gearAt = Now();
+}
+
+void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vector<GearPick>& plan,
+                                std::map<uint32, RewardPick>& rewards, std::vector<Player*> const& bots,
+                                std::map<uint32, uint32> const& bank, std::vector<WantedItem> const& wanted)
+{
+    StatsWeightCalculator calc(m);
+    calc.SetItemSetBonus(false);  // as ItemUsageValue
+    calc.SetOverflowPenalty(false);
+    uint32 const level = m->GetLevel();
+    // now: every item it may wear at its level; ahead (plan only): up to the level of the quests it holds
+    uint32 ahead = level;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(m->GetQuestSlotQuestId(slot)))
+            ahead = std::max<uint32>(ahead, uint32(m->GetQuestLevel(quest)));
+    uint32 const classMask = m->getClassMask();
+
+    // its own money: what the module's budget leaves for gear (repair, ammo, spells, travel kept back) minus the next
+    // profession ranks it still has to pay
+    uint32 money = m->GetMoney();
+    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(m))
+        money = ai->GetAiObjectContext()
+                    ->GetValue<uint32>("free money for", std::to_string(uint32(NeedMoneyFor::gear)))
+                    ->Get();
+    uint32 const ranks = NewRpgProfession::NextRankCost(m);
+    money = money > ranks ? money - ranks : 0;
+
+    std::map<uint8, GearPick> bestNow, bestPlan;
+    bool aheadItem = false;  // the item needs a level the member has not reached: a plan, not an order
+    auto const consider = [&](GearPick const& pick, bool isNow)
+    {
+        if (isNow && aheadItem)
+            return;
+        auto& best = isNow ? bestNow : bestPlan;
+        auto const itr = best.find(pick.group);
+        if (itr == best.end() || pick.gain > itr->second.gain + 1e-6f ||
+            (std::fabs(pick.gain - itr->second.gain) <= 1e-6f && KindRank(pick.kind) < KindRank(itr->second.kind)))
+            best[pick.group] = pick;
+    };
+
+    auto const addSources = [&](ItemTemplate const* proto, GuildGear::Eval const& ev)
+    {
+        GearPick base;
+        base.group = GuildGear::EquipGroup(proto->InventoryType);
+        base.itemId = proto->ItemId;
+        base.gain = ev.gain;
+        auto const inBank = bank.find(proto->ItemId);
+        if (inBank != bank.end() && inBank->second)
+        {
+            GearPick p = base;
+            p.kind = GuildGear::SRC_BANK;
+            p.text = "в банке гильдии";
+            consider(p, true);
+            consider(p, false);
+        }
+        std::vector<GuildGear::Source> const* list = GuildGear::SourcesOf(proto->ItemId);
+        if (!list)
+            return;
+        bool vendorDone = false;
+        for (GuildGear::Source const& src : *list)
+        {
+            GearPick p = base;
+            p.kind = src.kind;
+            p.srcId = src.id;
+            p.aux = src.aux;
+            p.mapId = src.mapId;
+            p.chance = src.chance;
+            switch (src.kind)
+            {
+                case GuildGear::SRC_QUEST:
+                {
+                    Quest const* quest = sObjectMgr->GetQuestTemplate(src.id);
+                    if (!quest || m->GetQuestRewardStatus(src.id))
+                        break;
+                    std::string const title = "q" + std::to_string(src.id) + " «" + quest->GetTitle() + "»";
+                    if (m->FindQuestSlot(src.id) < MAX_QUEST_LOG_SIZE)
+                    {
+                        if (src.aux >= 100)
+                            break;  // a fixed reward comes with the turn-in anyway
+                        p.text = "награда " + title + " (в журнале)";
+                        consider(p, true);
+                        consider(p, false);
+                    }
+                    else if (m->CanTakeQuest(quest, false))
+                    {
+                        p.text = "квест " + title + " L" + std::to_string(src.level);
+                        consider(p, false);
+                    }
+                    break;
+                }
+                case GuildGear::SRC_DROP:
+                {
+                    if (src.level > level)
+                        break;  // the dungeon's entry level (dungeon_access_template) is still ahead
+                    CreatureTemplate const* boss = sObjectMgr->GetCreatureTemplate(src.id);
+                    char chance[16];
+                    snprintf(chance, sizeof(chance), "%.0f%%", src.chance);
+                    p.text = "данж " + GuildGear::DungeonName(src.mapId) + ": " + (boss ? boss->Name : "?") + ", " +
+                             chance;
+                    consider(p, false);
+                    break;
+                }
+                case GuildGear::SRC_CRAFT:
+                {
+                    GuildGear::CraftRecipe const* recipe = GuildGear::Recipe(src.id);
+                    if (!recipe)
+                        break;
+                    bool const bop = proto->Bonding == BIND_WHEN_PICKED_UP;
+                    Player* crafter = nullptr;
+                    bool ready = false;
+                    for (Player* c : bots)
+                    {
+                        if ((bop && c != m) || !c->HasSpell(recipe->spellId))
+                            continue;
+                        bool const has = HasReagents(c, *recipe);
+                        if (!crafter || (has && !ready))
+                        {
+                            crafter = c;
+                            ready = has;
+                        }
+                    }
+                    if (!crafter)
+                        break;
+                    p.crafterLow = crafter->GetGUID().GetCounter();
+                    p.text = "крафт " + Who(p.crafterLow) + " (" + SkillShort(recipe->skillLine) + ")" +
+                             (ready ? "" : ", материалы в wanted list");
+                    if (ready)
+                        consider(p, true);
+                    consider(p, false);
+                    break;
+                }
+                case GuildGear::SRC_VENDOR:
+                {
+                    if (vendorDone)
+                        break;
+                    vendorDone = true;
+                    std::vector<GuildGear::VendorSpawn> const* spawns = GuildGear::VendorsOf(proto->ItemId);
+                    GuildGear::VendorSpawn const* nearest = nullptr;
+                    float nearDist = 0.0f;
+                    static std::vector<GuildGear::VendorSpawn> const none;
+                    for (GuildGear::VendorSpawn const& s : spawns ? *spawns : none)
+                    {
+                        if (s.mapId != m->GetMapId() || !FriendlyNpc(m, s.entry) ||
+                            NewRpgProfession::BuyFailed(m, s.entry, proto->ItemId))
+                            continue;
+                        float const d = m->GetExactDist(s.x, s.y, s.z);
+                        if (!nearest || d < nearDist)
+                        {
+                            nearest = &s;
+                            nearDist = d;
+                        }
+                    }
+                    if (!nearest)
+                        break;
+                    CreatureTemplate const* vendor = sObjectMgr->GetCreatureTemplate(nearest->entry);
+                    p.srcId = nearest->entry;
+                    p.mapId = nearest->mapId;
+                    p.pos = WorldPosition(nearest->mapId, nearest->x, nearest->y, nearest->z);
+                    p.aux = uint32(proto->BuyPrice);
+                    p.text = "торговец " + std::string(vendor ? vendor->Name : "?") + " " +
+                             std::to_string(uint32(nearDist)) + " ярд, " + MoneyText(uint32(proto->BuyPrice)) +
+                             (money >= uint32(proto->BuyPrice) ? "" : " (копит: свободно " + MoneyText(money) + ")");
+                    if (money >= uint32(proto->BuyPrice))
+                        consider(p, true);
+                    consider(p, false);
+                    break;
+                }
+                default:
+                    break;
+            }
+        }
+    };
+
+    for (uint8 group = 0; group < GuildGear::GROUP_COUNT; ++group)
+    {
+        std::vector<uint32> const& items = GuildGear::ItemsOfGroup(group);
+        for (uint32 item : items)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+            if (proto->RequiredLevel > ahead)
+                break;  // sorted by RequiredLevel
+            if (!(uint32(proto->AllowableClass) & classMask))
+                continue;
+            aheadItem = proto->RequiredLevel > level;
+            GuildGear::Eval ev;
+            if (GuildGear::Evaluate(m, calc, proto, ev, aheadItem))
+                addSources(proto, ev);
+        }
+        aheadItem = false;
+    }
+    // equipment in the guild bank the index does not know (world drops deposited by members)
+    for (auto const& [entry, count] : bank)
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
+        if (!count || !proto || GuildGear::SourcesOf(entry) || GuildGear::EquipGroup(proto->InventoryType) == 0xFF ||
+            (proto->Class != ITEM_CLASS_ARMOR && proto->Class != ITEM_CLASS_WEAPON))
+            continue;
+        GuildGear::Eval ev;
+        if (GuildGear::Evaluate(m, calc, proto, ev))
+            addSources(proto, ev);
+    }
+    // one main hand: the better of the one-hander and the two-hander
+    uint8 const oneHand = GuildGear::EquipGroup(INVTYPE_WEAPON), twoHand = GuildGear::EquipGroup(INVTYPE_2HWEAPON);
+    for (auto* best : {&bestNow, &bestPlan})
+    {
+        auto const a = best->find(oneHand), b = best->find(twoHand);
+        if (a != best->end() && b != best->end())
+            best->erase(a->second.gain >= b->second.gain ? b : a);
+    }
+    auto const byGain = [](GearPick const& a, GearPick const& b) { return a.gain > b.gain; };
+    for (auto const& [group, pick] : bestNow)
+        now.push_back(pick);
+    for (auto const& [group, pick] : bestPlan)
+        plan.push_back(pick);
+    std::sort(now.begin(), now.end(), byGain);
+    std::sort(plan.begin(), plan.end(), byGain);
+
+    // the choice rewards of the quests in its log: itself first, else a BoE for the member it upgrades most, else a
+    // wanted-list item, else the one that sells for the most
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const questId = m->GetQuestSlotQuestId(slot);
+        Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+        if (!quest || quest->GetRewChoiceItemsCount() <= 1)
+            continue;
+        RewardPick pick;
+        float best = -1.0f;
+        for (uint8 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(quest->RewardChoiceItemId[i]);
+            GuildGear::Eval ev;
+            if (proto && GuildGear::Evaluate(m, calc, proto, ev) && ev.gain > best)
+            {
+                best = ev.gain;
+                pick.index = i;
+                pick.itemId = proto->ItemId;
+                pick.why = std::string("себе: ") + GuildGear::GroupName(GuildGear::EquipGroup(proto->InventoryType)) +
+                           " " + GainText(ev.gain);
+            }
+        }
+        if (best < 0.0f)
+        {
+            for (uint8 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
+            {
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(quest->RewardChoiceItemId[i]);
+                if (!proto || proto->Bonding == BIND_WHEN_PICKED_UP || proto->Bonding == BIND_QUEST_ITEM ||
+                    GuildGear::EquipGroup(proto->InventoryType) == 0xFF)
+                    continue;
+                for (Player* other : bots)
+                {
+                    if (other == m)
+                        continue;
+                    StatsWeightCalculator otherCalc(other);
+                    otherCalc.SetItemSetBonus(false);
+                    otherCalc.SetOverflowPenalty(false);
+                    GuildGear::Eval ev;
+                    if (GuildGear::Evaluate(other, otherCalc, proto, ev) && ev.gain > best)
+                    {
+                        best = ev.gain;
+                        pick.index = i;
+                        pick.itemId = proto->ItemId;
+                        pick.forLow = other->GetGUID().GetCounter();
+                        pick.why = "BoE для " + Who(pick.forLow) + ": " +
+                                   GuildGear::GroupName(GuildGear::EquipGroup(proto->InventoryType)) + " " +
+                                   GainText(ev.gain) + ", через банк";
+                    }
+                }
+            }
+        }
+        if (best < 0.0f)
+            for (uint8 i = 0; i < quest->GetRewChoiceItemsCount() && best < 0.0f; ++i)
+                for (WantedItem const& w : wanted)
+                    if (w.itemId == quest->RewardChoiceItemId[i] && w.Short())
+                    {
+                        best = 0.0f;
+                        pick.index = i;
+                        pick.itemId = w.itemId;
+                        pick.why = "в wanted list (" + w.forWhom + ")";
+                        break;
+                    }
+        if (best < 0.0f)
+        {
+            uint32 price = 0;
+            for (uint8 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(quest->RewardChoiceItemId[i]))
+                    if (best < 0.0f || proto->SellPrice > price)
+                    {
+                        best = 0.0f;
+                        price = proto->SellPrice;
+                        pick.index = i;
+                        pick.itemId = proto->ItemId;
+                        pick.why = "никому не улучшение: дороже продать (" + MoneyText(price) + ")";
+                    }
+        }
+        if (best >= 0.0f)
+            rewards[questId] = pick;
+    }
+}
+
+// lock_ held. The craft queue from the members' plans (upgrade crafts) and the bag plan; each job's reagents go on
+// the wanted list.
+void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
+{
+    crafts_.clear();
+    gearWanted_.clear();
+    std::vector<Player*> bots;
+    for (PlanRow const& row : plan_)
+        if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low)))
+            if (p->IsInWorld() && !HumanControls(p))
+                bots.push_back(p);
+
+    // items already on the way to a member: held for it in someone's bags, or about to be made / rewarded for it
+    std::map<std::pair<uint32, uint32>, uint32> pending;  // (member, item) -> count
+    for (auto const& [low, st] : bots_)
+    {
+        for (HeldItem const& h : st.held)
+            if (h.forLow)
+                ++pending[{h.forLow, h.itemId}];
+        for (Expect const& e : st.expect)
+            ++pending[{e.forLow, e.itemId}];
+    }
+
+    auto const addJob = [&](uint32 crafterLow, uint32 spellId, uint32 forLow, bool bag, std::string why)
+    {
+        GuildGear::CraftRecipe const* recipe = GuildGear::Recipe(spellId);
+        if (!recipe)
+            return;
+        CraftJob job;
+        job.crafterLow = crafterLow;
+        job.spellId = spellId;
+        job.itemId = recipe->itemId;
+        job.forLow = forLow;
+        job.bag = bag;
+        job.why = std::move(why);
+        crafts_.push_back(job);
+    };
+
+    // upgrade crafts: a member's best way to a slot (now or planned) that is a craft
+    for (Player* m : bots)
+    {
+        uint32 const low = m->GetGUID().GetCounter();
+        auto const st = bots_.find(low);
+        if (st == bots_.end())
+            continue;
+        std::unordered_set<uint32> done;
+        for (auto const* list : {&st->second.gearNow, &st->second.gearPlan})
+            for (GearPick const& g : *list)
+            {
+                if (g.kind != GuildGear::SRC_CRAFT || !g.crafterLow || !done.insert(g.itemId).second ||
+                    m->GetItemCount(g.itemId, true) || pending.count({low, g.itemId}))
+                    continue;
+                addJob(g.crafterLow, g.srcId, low, false,
+                       std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g.gain));
+            }
+    }
+
+    // bags: the biggest bag a guild crafter knows now (lower tiers are skipped), for every bag slot smaller than it
+    bagState_.clear();
+    uint32 bagSpell = 0, bagSlots = 0;
+    Player* tailor = nullptr;
+    for (uint32 spell : GuildGear::BagRecipes())
+    {
+        GuildGear::CraftRecipe const* recipe = GuildGear::Recipe(spell);
+        ItemTemplate const* proto = recipe ? sObjectMgr->GetItemTemplate(recipe->itemId) : nullptr;
+        if (!proto || (bagSlots && proto->ContainerSlots < bagSlots))
+            break;  // sorted by size: a smaller one only when no crafter knows any bigger
+        for (Player* c : bots)
+            if (c->HasSpell(spell) && (!tailor || (!HasReagents(tailor, *GuildGear::Recipe(bagSpell)) &&
+                                                   HasReagents(c, *recipe))))
+            {
+                tailor = c;
+                bagSpell = spell;
+                bagSlots = proto->ContainerSlots;
+            }
+    }
+    if (bagSpell)
+    {
+        uint32 const bagItem = GuildGear::Recipe(bagSpell)->itemId;
+        uint32 total = 0;
+        for (Player* m : bots)
+        {
+            uint32 const low = m->GetGUID().GetCounter();
+            uint32 need = 0;
+            for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            {
+                Bag* bag = m->GetBagByPos(b);
+                need += (!bag || bag->GetBagSize() < bagSlots) ? 1 : 0;
+            }
+            std::vector<Item*> spare;
+            SpareBags(m, spare);
+            for (Item* item : spare)
+                if (item->GetTemplate()->ContainerSlots >= bagSlots && need)
+                    --need;
+            uint32 const coming = pending.count({low, bagItem}) ? pending[{low, bagItem}] : 0;
+            need = need > coming ? need - coming : 0;
+            for (uint32 i = 0; i < need; ++i)
+                addJob(tailor->GetGUID().GetCounter(), bagSpell, low, true,
+                       "сумка " + std::to_string(bagSlots) + " яч. вместо " + std::to_string(SmallestBag(m)));
+            total += need;
+        }
+        bagState_ = "сумки: лучшая " + ItemName(bagItem) + " (" + std::to_string(bagSlots) + " яч.) у " +
+                    Who(tailor->GetGUID().GetCounter()) + ", нужно " + std::to_string(total);
+    }
+
+    // ready: the crafter holds the reagents, taken job by job from its bags; every job's reagents are wanted
+    std::map<uint32, std::map<uint32, uint32>> stock;  // crafter -> reagent -> count left
+    for (CraftJob& job : crafts_)
+    {
+        GuildGear::CraftRecipe const* recipe = GuildGear::Recipe(job.spellId);
+        Player* crafter = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(job.crafterLow));
+        if (!recipe || !crafter)
+            continue;
+        auto& left = stock[job.crafterLow];
+        job.ready = true;
+        for (auto const& [item, n] : recipe->reagents)
+        {
+            if (!left.count(item))
+                left[item] = crafter->GetItemCount(item, false);
+            job.ready &= left[item] >= n;
+        }
+        if (job.ready)
+            for (auto const& [item, n] : recipe->reagents)
+                left[item] -= n;
+        for (auto const& [item, n] : recipe->reagents)
+        {
+            auto& w = gearWanted_[item];
+            w.first += n;
+            std::string const whom = "#" + std::to_string(Row(job.forLow) ? Row(job.forLow)->num : 0) +
+                                     (job.bag ? " сумка" : " крафт");
+            if (w.second.size() < 60 && w.second.find(whom) == std::string::npos)
+                w.second += (w.second.empty() ? "" : ", ") + whom;
+        }
+    }
+}
+
+int32 GuildCoordinator::RewardChoice(Player* bot, Quest const* quest)
+{
+    if (!bot || !quest || !IsPlanned(bot->GetGUID().GetCounter()) || quest->GetRewChoiceItemsCount() <= 1)
+        return -1;
+    std::lock_guard<std::mutex> guard(lock_);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end())
+        return -1;
+    auto const pick = itr->second.rewards.find(quest->GetQuestId());
+    if (pick == itr->second.rewards.end() || pick->second.index >= quest->GetRewChoiceItemsCount() ||
+        quest->RewardChoiceItemId[pick->second.index] != pick->second.itemId)
+        return -1;
+    if (pick->second.forLow && pick->second.forLow != bot->GetGUID().GetCounter())
+        itr->second.expect.push_back({pick->second.itemId, pick->second.forLow, "награда для " + Who(pick->second.forLow)});
+    LOG_INFO("playerbots", "[guild50] {} takes reward {} of q{}: {}", bot->GetName(), ItemName(pick->second.itemId),
+             quest->GetQuestId(), pick->second.why);
+    return int32(pick->second.index);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -906,6 +1676,7 @@ void GuildCoordinator::OnLoot(Player* player, Item* item, uint32 count)
 {
     if (!player || !item || !IsPlanned(player->GetGUID().GetCounter()))
         return;
+    FiveLoot(player, item, count);  // [guild60] a five's drop: its report, the fate of spare BoP
     ItemTemplate const* proto = item->GetTemplate();
     if (!proto || proto->Quality == ITEM_QUALITY_POOR || proto->Class == ITEM_CLASS_QUEST ||
         proto->Bonding == BIND_QUEST_ITEM || item->IsSoulBound())
@@ -1149,10 +1920,55 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                               std::to_string(uint32(dist)) + " yd";
                 return step;
             }
+            case GuildOrderType::DUNGEON:  // [guild60] to the five's entrance
+                if (FiveStep(bot, st, step))
+                    return step;
+                continue;
             case GuildOrderType::GATHER:
                 step.kind = GuildRunStep::GATHER;
                 step.reason = "GATHER " + order.details;
                 return step;
+            case GuildOrderType::CRAFT_FOR:  // [guild50]
+            {
+                GuildGear::CraftRecipe const* recipe = GuildGear::Recipe(order.spellId);
+                if (!recipe || bot->IsNonMeleeSpellCast(false) || bot->isMoving() || bot->IsInCombat() ||
+                    !bot->HasSpell(recipe->spellId) || !HasReagents(bot, *recipe))
+                    continue;
+                order.executable = false;  // once per order list: the next one comes with the next update
+                if (!botAI->CastSpell(recipe->spellId, bot))
+                {
+                    order.status = "не создаётся здесь (кузня / наковальня / инструмент?) — квестует";
+                    continue;
+                }
+                uint32 const low = bot->GetGUID().GetCounter();
+                if (order.forLow && order.forLow != low)
+                    st.expect.push_back({recipe->itemId, order.forLow, "крафт для " + Who(order.forLow)});
+                order.status = "создаёт";
+                step.kind = GuildRunStep::BUSY;
+                step.reason = "craft " + ItemName(recipe->itemId) + " for " + Who(order.forLow);
+                LOG_INFO("playerbots", "[guild50] {} crafts {} for {}: {}", bot->GetName(), ItemName(recipe->itemId),
+                         Who(order.forLow), order.reason);
+                return step;
+            }
+            case GuildOrderType::BUY:  // [guild50]
+            {
+                if (bot->GetItemCount(order.itemId, true) || bot->GetMoney() < order.cost || bot->IsInCombat() ||
+                    order.pos.GetMapId() != bot->GetMapId() ||
+                    NewRpgProfession::BuyFailed(bot, order.npcEntry, order.itemId))
+                    continue;
+                order.executable = false;
+                if (NewRpgBaseAction::TripRefused(bot, order.pos.GetPositionX(), order.pos.GetPositionY(),
+                                                  order.pos.GetPositionZ(), "vendor for " + ItemName(order.itemId)))
+                {
+                    order.status = "путь к торговцу опасен — ждёт уровня";
+                    continue;
+                }
+                NewRpgProfession::StartBuy(botAI, bot, order.itemId, order.npcEntry, order.pos, order.cost);
+                order.status = "идёт к торговцу";
+                step.kind = GuildRunStep::BUSY;
+                step.reason = "buy " + ItemName(order.itemId);
+                return step;
+            }
             default:
                 continue;
         }
@@ -1170,6 +1986,8 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
     if (itr == bots_.end() || !itr->second.run)
         return 0;
     BotState& st = itr->second;
+    if (st.runType == GuildOrderType::DUNGEON)  // [guild60] at the five's entrance
+        return FiveCampReached(bot, st);
     if (!GuildBankRun::AtVault(bot, st.runPos))
     {
         if (!st.runApproached)
@@ -1236,6 +2054,16 @@ bool GuildCoordinator::IsHeld(Player* bot, Item* item)
     for (HeldItem const& h : itr->second.held)
         if (h.itemGuidLow == item->GetGUID().GetCounter())
             return true;
+    // [guild50] an item just made / rewarded for another member: held from its first sight (no auto-equip, no sale)
+    auto& expect = itr->second.expect;
+    for (auto e = expect.begin(); e != expect.end(); ++e)
+        if (e->itemId == item->GetEntry())
+        {
+            itr->second.held.push_back({item->GetGUID().GetCounter(), e->itemId, item->GetCount(), e->forLow,
+                                        e->purpose});
+            expect.erase(e);
+            return true;
+        }
     return false;
 }
 
@@ -1670,7 +2498,35 @@ void GuildCoordinator::SendOrders(Player* player)
         SendLine(player, "O;" + std::to_string(row.num) + ";" + OrdersText(p ? p->GetName() : row.name, 12) + ";" +
                              OrdersText(Chain(row.low), 60) + ";" + OrderName(order.type) + ";" + OrdersText(details, 70) + ";" +
                              std::to_string(sinceMin) + ";" + OrdersText(status, 60));
+        // [guild50] every order with its reason, then the best planned upgrades:
+        // OX;num;ORDER;details;reason;status (ORDER = PLAN: details = slot item gain, reason = where from)
+        if (st != bots_.end() && p && p->IsInWorld())
+        {
+            size_t shownX = 0;
+            for (GuildOrder const& o : st->second.orders)
+            {
+                if (o.type == GuildOrderType::QUEST || ++shownX > 5)
+                    continue;
+                SendLine(player, "OX;" + std::to_string(row.num) + ";" + OrderName(o.type) + ";" +
+                                     OrdersText(o.details, 70) + ";" + OrdersText(o.reason, 80) + ";" +
+                                     OrdersText(o.status, 50));
+            }
+            size_t shownP = 0;
+            for (GearPick const& g : st->second.gearPlan)
+            {
+                if (++shownP > 4)
+                    break;
+                SendLine(player, "OX;" + std::to_string(row.num) + ";PLAN;" +
+                                     OrdersText(std::string(GuildGear::GroupName(g.group)) + ": " + ItemName(g.itemId) +
+                                                    " " + GainText(g.gain),
+                                                90) +
+                                     ";" + OrdersText(g.text, 100) + ";");
+            }
+        }
     }
+    if (!bagState_.empty())
+        SendLine(player, "OB;" + OrdersText(bagState_, 200));
+    SendFives(player);  // [guild60] the fives and the completion table
     SendLine(player, "OE;n=" + std::to_string(plan_.size()));
 }
 

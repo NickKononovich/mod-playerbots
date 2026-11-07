@@ -41,6 +41,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "GuildCoordinator.h"  // [guild60] playerbots guild ...
 #include "Spell.h"     // [guild13] diag cast
 #include "SpellMgr.h"  // [guild13]
 
@@ -88,7 +89,17 @@ public:
             {"hide", HandleRouteHideCommand, SEC_ADMINISTRATOR, Console::Yes},
         };
 
+        // [guild60] the guild coordinator's fives
+        static ChatCommandTable playerbotsGuildCommandTable = {
+            {"formfive", HandleGuildFormFiveCommand, SEC_ADMINISTRATOR, Console::Yes},
+            {"disband", HandleGuildDisbandCommand, SEC_ADMINISTRATOR, Console::Yes},
+            {"fives", HandleGuildFivesCommand, SEC_ADMINISTRATOR, Console::Yes},
+            {"dungeons", HandleGuildDungeonsCommand, SEC_ADMINISTRATOR, Console::Yes},
+            {"autofives", HandleGuildAutoFivesCommand, SEC_ADMINISTRATOR, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
+            {"guild", playerbotsGuildCommandTable},
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"exec", HandleExecCommand, SEC_GAMEMASTER, Console::Yes},
             {"inspect", HandleInspectCommand, SEC_GAMEMASTER, Console::Yes},
@@ -402,6 +413,71 @@ public:
             return false;
         }
         return TestHarness::TestHarnessMgr::Instance().HandleStop(handler, tokens[0]);
+    }
+
+    // [guild60] playerbots guild formfive <dungeon key|name> [me] [character ...]: a forced five (the rest picked from
+    // the free members; the level band and the need are not checked)
+    static bool HandleGuildFormFiveCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const tokens = SplitArgs(args);
+        if (tokens.empty())
+        {
+            handler->PSendSysMessage("Usage: playerbots guild formfive <dungeon> [me] [character ...]");
+            return false;
+        }
+        bool withIssuer = false;
+        std::vector<std::string> names;
+        for (size_t i = 1; i < tokens.size(); ++i)
+        {
+            if (tokens[i] == "me")
+                withIssuer = true;
+            else
+                names.push_back(tokens[i]);
+        }
+        Player* issuer = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
+        if (withIssuer && !issuer)
+        {
+            handler->PSendSysMessage("'me' needs a character (not the console)");
+            return false;
+        }
+        handler->PSendSysMessage("{}", sGuildCoordinator.FormFiveCommand(issuer, tokens[0], names, withIssuer));
+        return true;
+    }
+
+    static bool HandleGuildDisbandCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const tokens = SplitArgs(args);
+        if (tokens.empty())
+        {
+            handler->PSendSysMessage("Usage: playerbots guild disband <five id>");
+            return false;
+        }
+        sGuildCoordinator.DisbandFive(uint32(std::strtoul(tokens[0].c_str(), nullptr, 10)), "command");
+        handler->PSendSysMessage("{}", sGuildCoordinator.FivesText());
+        return true;
+    }
+
+    static bool HandleGuildFivesCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        handler->PSendSysMessage("{}", sGuildCoordinator.FivesText());
+        return true;
+    }
+
+    static bool HandleGuildDungeonsCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const tokens = SplitArgs(args);
+        uint32 const level = tokens.empty() ? 0 : uint32(std::strtoul(tokens[0].c_str(), nullptr, 10));
+        handler->PSendSysMessage("{}", sGuildCoordinator.DungeonsText(uint8(std::min<uint32>(level, 255))));
+        return true;
+    }
+
+    static bool HandleGuildAutoFivesCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const tokens = SplitArgs(args);
+        if (!tokens.empty())
+            sGuildCoordinator.SetAutoFives(tokens[0] == "on" || tokens[0] == "1");
+        handler->PSendSysMessage("guild auto fives: {}", sGuildCoordinator.AutoFives() ? "on" : "off");
+        return true;
     }
 
     static bool HandleTestListCommand(ChatHandler* handler, char const* /*args*/)

@@ -15,6 +15,7 @@
 #include "TestHarnessPrepare.h"
 
 #include <deque>
+#include <functional>
 #include <map>
 #include <optional>  // [lead76]
 #include <memory>
@@ -79,7 +80,9 @@ namespace TestHarness
         Done,
         Failed,
         Stalled,
-        Stopped
+        Stopped,
+        // [guild60] a guild five walks in through the portal itself (no teleport, no preparation)
+        Entering
     };
 
     char const* PhaseName(Phase phase);
@@ -215,6 +218,10 @@ namespace TestHarness
         std::string result;
         std::string reason;
         bool fromQueue = false;
+        // [guild60] a guild five's dungeon run (GuildCoordinator): its own characters as they are (no pool, no
+        // preparation, no teleport, no test setup or handouts), logged in before and after; false: a test run
+        bool guild = false;
+        uint32 guildFiveId = 0;
 
         // instance
         uint32 instanceId = 0;
@@ -385,6 +392,33 @@ namespace TestHarness
 
         bool IsTestCharacter(ObjectGuid guid) const;
 
+        // [guild60] a guild coordinator's five in its dungeon; the run's end goes back to the coordinator (world
+        // thread) as this report
+        struct GuildRunResult
+        {
+            std::string runId;
+            std::string contentKey;
+            std::string result;  // done / partial / failed / stalled / stopped / timeout / void
+            std::string reason;
+            std::vector<std::string> bossesKilled;
+            uint32 bossesTotal = 0;
+            uint32 wipes = 0;
+            uint32 durationSec = 0;
+            std::vector<std::pair<std::string, uint32>> deaths;  // member name, its deaths in the run
+        };
+        using GuildRunEndHook = std::function<void(uint32 fiveId, GuildRunResult const& result)>;
+        void SetGuildRunEndHook(GuildRunEndHook hook) { _guildRunEnd = std::move(hook); }
+        // The five (logged in, standing at the dungeon's entrance) runs `contentKey` under the dungeon leader: the
+        // harness groups it, the members walk in through the portal themselves (their own "instance portal"), then
+        // the run goes on as a test run without any test setup. members: (guid, "tank" / "healer" / "dps"); `leader`
+        // decides. Returns the run id, or "" with `error`.
+        std::string StartGuildRun(std::string const& contentKey,
+                                  std::vector<std::pair<ObjectGuid, std::string>> const& members, ObjectGuid leader,
+                                  uint32 fiveId, std::string& error);
+        // the five's run ends "stopped" (its five was disbanded); its phase name ("" when none runs)
+        void StopGuildRun(uint32 fiveId, std::string const& reason);
+        std::string GuildRunPhase(uint32 fiveId) const;
+
         // World thread, read only ("playerbots watch"): every party, terminal phases included.
         std::vector<std::unique_ptr<Party>> const& Parties() const { return _parties; }
 
@@ -440,6 +474,10 @@ namespace TestHarness
         bool TickPrepare(Party& party);
         bool TickGrouping(Party& party);
         bool TickTeleport(Party& party);
+        // [guild60] the guild five's own walk in: a portal goal per member; the run starts once all are inside
+        void TickGuildEnter(Party& party);
+        // the content's entrances (areatrigger_teleport arrival points, a wing's own portals); false: none
+        bool LoadEntrances(Party& party);
         void TickRun(Party& party);
         // [lead107 stage 5] TickRun's group decisions, each its own step: the phantom-combat end (anyInCombat false
         // while a phantom combat counts out), the stale-victim drop, the wait for the dead / outside members, the
@@ -703,6 +741,8 @@ namespace TestHarness
         bool _poolLoaded = false;
         std::set<ObjectGuid> _inUse;
         SetupJob _setup;
+        std::deque<Composition> _guildComps;  // [guild60] one per guild run (Party::comp points into it)
+        GuildRunEndHook _guildRunEnd;
         uint32 _setupTimer = 0;
         uint32 _queueTimer = 0;
     };

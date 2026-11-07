@@ -9,6 +9,7 @@
 
 #include "ANAddTactics.h"
 #include "AccountMgr.h"
+#include "AiFactory.h"  // [guild60] a guild member's talent tab
 #include "AttackerCountValues.h"
 #include "AiObjectContext.h"
 #include "Bag.h"
@@ -212,6 +213,8 @@ namespace TestHarness
                 return "stalled";
             case Phase::Stopped:
                 return "stopped";
+            case Phase::Entering:
+                return "entering";
         }
         return "?";
     }
@@ -943,7 +946,9 @@ namespace TestHarness
             case Phase::Grouping:
                 if (TickGrouping(party))
                 {
-                    if (party.content)
+                    if (party.guild)
+                        SetPhase(party, Phase::Entering);  // [guild60] the five walks in itself
+                    else if (party.content)
                         SetPhase(party, Phase::Teleporting);
                     else
                     {
@@ -955,6 +960,9 @@ namespace TestHarness
                 break;
             case Phase::Teleporting:
                 TickTeleport(party);
+                break;
+            case Phase::Entering:
+                TickGuildEnter(party);
                 break;
             case Phase::Idle:
                 break;
@@ -1059,6 +1067,9 @@ namespace TestHarness
                 continue;
 
             botAI->ChangeStrategy(NonCombatCleanup(), BOT_STATE_NON_COMBAT);
+            // [guild60] a guild five loots its kills (the drops are its gear; the five-leader decides the rolls)
+            if (party.guild)
+                botAI->ChangeStrategy("+loot", BOT_STATE_NON_COMBAT);
             if (member.guid == party.leader)
             {
                 botAI->ChangeStrategy("+aggressive,+test runner", BOT_STATE_NON_COMBAT);
@@ -1195,43 +1206,266 @@ namespace TestHarness
         }
     }
 
+    bool TestHarnessMgr::LoadEntrances(Party& party)
+    {
+        ContentDef const* content = party.content;
+        if (!party.entrances.empty() || !content)
+            return !party.entrances.empty();
+
+        if (!content->entrances.empty())
+        {
+            // A wing: its own portals, in the order of the content table.
+            for (uint32 triggerId : content->entrances)
+                if (AreaTriggerTeleport const* teleport = sObjectMgr->GetAreaTriggerTeleport(triggerId))
+                    if (teleport->target_mapId == content->mapId)
+                        party.entrances.emplace_back(teleport->target_X, teleport->target_Y, teleport->target_Z,
+                                                     teleport->target_Orientation);
+        }
+        else if (QueryResult result = WorldDatabase.Query(
+                     "SELECT target_position_x, target_position_y, target_position_z, target_orientation, Name "
+                     "FROM areatrigger_teleport WHERE target_map = {} ORDER BY ID",
+                     content->mapId))
+        {
+            do
+            {
+                Field* fields = result->Fetch();
+                std::string const name = fields[4].Get<std::string>();
+                if (name.find("Exit") != std::string::npos || name.find("exit") != std::string::npos)
+                    continue;
+                party.entrances.emplace_back(fields[0].Get<float>(), fields[1].Get<float>(), fields[2].Get<float>(),
+                                             fields[3].Get<float>());
+            } while (result->NextRow());
+        }
+        return !party.entrances.empty();
+    }
+
+    void TestHarnessMgr::TickGuildEnter(Party& party)
+    {
+        ContentDef const* content = party.content;
+        if (!LoadEntrances(party))
+        {
+            Finish(party, "failed", "no entrance in areatrigger_teleport");
+            return;
+        }
+
+        // Once: every member's own walk in through the portal (its "instance portal" with this goal), as a leader
+        // says "we go in through that portal". A wing goes in through its own entrance (exact goal).
+        if (!party.teleportTries)
+        {
+            ++party.teleportTries;
+            Position const& entrance = party.entrances.front();
+            for (Member& member : party.members)
+            {
+                SelfTravel::MoveReport stale;
+                while (SelfTravel::TakeReport(member.guid, stale))
+                {
+                }
+                Player* bot = ObjectAccessor::FindConnectedPlayer(member.guid);
+                if (!bot || !GET_PLAYERBOT_AI(bot))
+                    continue;  // a human walks in himself; the group waits for him
+                SelfTravel::SetPortalGoal(member.guid, {content->mapId, entrance.GetPositionX(),
+                                                        entrance.GetPositionY(), entrance.GetPositionZ(),
+                                                        !content->entrances.empty()});
+                member.hasPortalGoal = true;
+            }
+            LogEvent(party, "guild_enter", JsonObject().Num("five", party.guildFiveId).Str("content", content->key)
+                                               .Num("members", int64(party.members.size())));
+        }
+
+        bool all = true;
+        uint32 instanceId = 0;
+        bool mixed = false;
+        for (Member& member : party.members)
+        {
+            Player* bot = ObjectAccessor::FindConnectedPlayer(member.guid);
+            if (!bot)
+            {
+                Finish(party, "failed", member.name + " offline before entering");
+                return;
+            }
+            // what the member's own walk in could not do (a fact: the core refused it, or no walk there exists)
+            SelfTravel::MoveReport report;
+            while (SelfTravel::TakeReport(member.guid, report))
+                if (report.action == "move to instance portal" && bot->IsAlive())
+                {
+                    LogCannotMove(party, bot, report.action, report.reason, report.toX, report.toY, report.toZ);
+                    Finish(party, "failed", member.name + " cannot walk in: " + report.reason);
+                    return;
+                }
+            if (bot->IsBeingTeleported() || !bot->IsInWorld() || bot->GetMapId() != content->mapId)
+            {
+                all = false;
+                continue;
+            }
+            if (!bot->m_InstanceValid && bot->GetGroup() && bot->GetGroup()->GetGUID() == party.groupGuid)
+                bot->m_InstanceValid = true;  // as TickTeleport: in the group that owns this instance
+            uint32 const id = bot->GetMap()->GetInstanceId();
+            if (instanceId && id != instanceId)
+                mixed = true;
+            instanceId = id;
+        }
+        if (mixed)
+        {
+            Finish(party, "failed", "members in different instances of " + std::string(content->name));
+            return;
+        }
+        if (!all)
+            return;
+
+        Player* leader = ObjectAccessor::FindPlayer(party.leader);
+        if (!leader)
+            return;
+        for (Member& member : party.members)
+        {
+            SelfTravel::ClearPortalGoal(member.guid);  // inside: from here the leader leads (re-entries its own)
+            member.hasPortalGoal = false;
+            SelfTravel::MoveReport stale;
+            while (SelfTravel::TakeReport(member.guid, stale))
+            {
+            }
+        }
+        EnterInstance(party, leader);
+    }
+
+    std::string TestHarnessMgr::StartGuildRun(std::string const& contentKey,
+                                              std::vector<std::pair<ObjectGuid, std::string>> const& members,
+                                              ObjectGuid leader, uint32 fiveId, std::string& error)
+    {
+        ContentDef const* content = FindContent(contentKey);
+        if (!content || content->raid || content->size != members.size())
+        {
+            error = "no " + std::to_string(members.size()) + "-player content '" + contentKey + "'";
+            return "";
+        }
+        for (auto const& party : _parties)
+            if (!IsTerminal(party->phase) && party->guild && party->guildFiveId == fiveId)
+            {
+                error = "five " + std::to_string(fiveId) + " already runs " + party->id;
+                return "";
+            }
+
+        // The dungeon leader reads each member's spec (its role, its class kit): the bot's own talent tree.
+        auto specFor = [](Player* bot, std::string const& role) -> SpecDef const*
+        {
+            Role const want = role == "tank" ? Role::Tank : role == "healer" ? Role::Healer : Role::Melee;
+            auto fits = [&](SpecDef const& spec)
+            {
+                if (want == Role::Tank || want == Role::Healer)
+                    return spec.role == want;
+                return spec.role != Role::Tank && spec.role != Role::Healer;
+            };
+            uint8 const tab = AiFactory::GetPlayerSpecTab(bot);
+            SpecDef const* first = nullptr;
+            SpecDef const* any = nullptr;
+            uint32 index = 0;
+            for (SpecDef const& spec : Specs())
+            {
+                if (spec.cls != bot->getClass())
+                    continue;
+                if (!any)
+                    any = &spec;
+                // the class's specs follow its talent tabs (the druid's feral tab is cat and bear)
+                uint32 const specTab = spec.cls == CLASS_DRUID ? (index >= 2 ? index - 1 : index) : index;
+                ++index;
+                if (!fits(spec))
+                    continue;
+                if (specTab == tab)
+                    return &spec;
+                if (!first)
+                    first = &spec;
+            }
+            return first ? first : any;
+        };
+
+        auto party = std::make_unique<Party>();
+        _guildComps.push_back(Composition{"G5", uint8(members.size()), false, "guild five", {}});
+        Composition& comp = _guildComps.back();
+        party->comp = &comp;
+        party->content = content;
+        party->guild = true;
+        party->guildFiveId = fiveId;
+        party->createdMs = getMSTime();
+        party->phaseSinceMs = party->createdMs;
+        party->nextTickMs = party->createdMs;
+        party->leader = leader;
+        uint8 level = 1;
+        for (auto const& [guid, role] : members)
+        {
+            Player* bot = ObjectAccessor::FindConnectedPlayer(guid);
+            if (!bot || !bot->IsInWorld())
+            {
+                error = "member " + guid.ToString() + " not in the world";
+                return "";
+            }
+            SpecDef const* spec = specFor(bot, role);
+            if (!spec)
+            {
+                error = bot->GetName() + ": no spec of its class";
+                return "";
+            }
+            Member member;
+            member.guid = guid;
+            member.name = bot->GetName();
+            member.cls = bot->getClass();
+            member.spec = spec;
+            member.slot = CompSlot{spec->key, 1, uint8(guid == leader ? SLOT_MAIN_TANK : 0)};
+            comp.slots.push_back(member.slot);
+            // what the character really is (no preparation): its level and its worn item level
+            member.prep.ok = true;
+            member.prep.level = bot->GetLevel();
+            uint32 items = 0;
+            float sum = 0.0f;
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+                if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                {
+                    sum += float(item->GetTemplate()->ItemLevel);
+                    ++items;
+                }
+            member.prep.avgIlvl = items ? sum / float(items) : 0.0f;
+            member.prepared = true;
+            level = std::max<uint8>(level, bot->GetLevel());
+            party->members.push_back(member);
+        }
+        party->level = level;
+        party->targetIlvl = 0;
+        party->seq = _nextSeq++;
+        party->id = Acore::StringFormat("{}-{}-guild{}-{}", Stamp(), content->key, fiveId, party->seq);
+        // the bots are logged in already: straight to the grouping (real group, the five-leader leads)
+        for (Member const& member : party->members)
+            if (Player* bot = ObjectAccessor::FindConnectedPlayer(member.guid))
+                if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+                    botAI->ChangeStrategy(NonCombatCleanup(), BOT_STATE_NON_COMBAT);
+        SetPhase(*party, Phase::Grouping);
+        LOG_INFO("playerbots", "[guild60] five {} starts {} as run {} (leader {})", fiveId, content->key, party->id,
+                 leader.ToString());
+        _parties.push_back(std::move(party));
+        return _parties.back()->id;
+    }
+
+    void TestHarnessMgr::StopGuildRun(uint32 fiveId, std::string const& reason)
+    {
+        for (auto const& party : _parties)
+            if (!IsTerminal(party->phase) && party->guild && party->guildFiveId == fiveId)
+                Finish(*party, "stopped", reason);
+    }
+
+    std::string TestHarnessMgr::GuildRunPhase(uint32 fiveId) const
+    {
+        for (auto const& party : _parties)
+            if (!IsTerminal(party->phase) && party->guild && party->guildFiveId == fiveId)
+                return PhaseName(party->phase);
+        return "";
+    }
+
     bool TestHarnessMgr::TickTeleport(Party& party)
     {
         ContentDef const* content = party.content;
         uint32 const now = getMSTime();
 
-        if (party.entrances.empty())
+        if (!LoadEntrances(party))
         {
-            if (!content->entrances.empty())
-            {
-                // A wing: its own portals, in the order of the content table.
-                for (uint32 triggerId : content->entrances)
-                    if (AreaTriggerTeleport const* teleport = sObjectMgr->GetAreaTriggerTeleport(triggerId))
-                        if (teleport->target_mapId == content->mapId)
-                            party.entrances.emplace_back(teleport->target_X, teleport->target_Y, teleport->target_Z,
-                                                         teleport->target_Orientation);
-            }
-            else if (QueryResult result = WorldDatabase.Query(
-                         "SELECT target_position_x, target_position_y, target_position_z, target_orientation, Name "
-                         "FROM areatrigger_teleport WHERE target_map = {} ORDER BY ID",
-                         content->mapId))
-            {
-                do
-                {
-                    Field* fields = result->Fetch();
-                    std::string const name = fields[4].Get<std::string>();
-                    if (name.find("Exit") != std::string::npos || name.find("exit") != std::string::npos)
-                        continue;
-                    party.entrances.emplace_back(fields[0].Get<float>(), fields[1].Get<float>(),
-                                                 fields[2].Get<float>(), fields[3].Get<float>());
-                } while (result->NextRow());
-            }
-
-            if (party.entrances.empty())
-            {
-                Finish(party, "failed", "no entrance in areatrigger_teleport");
-                return false;
-            }
+            Finish(party, "failed", "no entrance in areatrigger_teleport");
+            return false;
         }
 
         if (!party.teleportTries)
@@ -4098,7 +4332,7 @@ namespace TestHarness
 
             // Clean-run streak for the runall order: done, no boss missing, no death, no wipe; "stopped" counts
             // neither way.
-            if (result != "stopped" && result != "void")
+            if (result != "stopped" && result != "void" && !party.guild)
                 RecordStreak(party.content->key, result == "done" && missing.Empty() && party.wipes == 0 && deaths == 0,
                              result, WallClock());
         }
@@ -4106,6 +4340,29 @@ namespace TestHarness
             LogEvent(party, "run_end", JsonObject().Str("result", result).Str("reason", reason).Num("durationSec", 0));
 
         LOG_INFO("playerbots", "Test harness: {} finished: {} ({})", party.id, result, reason);
+
+        // [guild60] the five's report for the global leader (before the release drops the run's counters)
+        GuildRunResult guildResult;
+        if (party.guild)
+        {
+            guildResult.runId = party.id;
+            guildResult.contentKey = party.content ? party.content->key : "";
+            guildResult.result = result;
+            guildResult.reason = reason;
+            guildResult.wipes = party.wipes;
+            guildResult.durationSec = party.runStartMs ? getMSTimeDiff(party.runStartMs, getMSTime()) / IN_MILLISECONDS : 0;
+            if (party.runStartMs)
+            {
+                guildResult.bossesTotal = RequiredBossCount(party);
+                for (BossTrack const& boss : party.bosses)
+                    if (boss.killed)
+                        guildResult.bossesKilled.push_back(boss.name);
+                for (Member const& member : party.members)
+                    if (uint32 const deaths = StatsRegistry::Instance().Snapshot(member.guid).deaths)
+                        guildResult.deaths.emplace_back(member.name, deaths);
+            }
+        }
+
         ReleaseParty(party);
 
         if (result == "done" || result == "partial" || result == "timeout")
@@ -4116,6 +4373,9 @@ namespace TestHarness
             party.phase = Phase::Stopped;
         else
             party.phase = Phase::Failed;
+
+        if (party.guild && _guildRunEnd)
+            _guildRunEnd(party.guildFiveId, guildResult);
     }
 
     void TestHarnessMgr::ReleaseParty(Party& party)
@@ -4143,8 +4403,17 @@ namespace TestHarness
         for (Member const& member : party.members)
         {
             if (Player* bot = ObjectAccessor::FindConnectedPlayer(member.guid))
-                if (GET_PLAYERBOT_AI(bot) && !IsSelfBot(bot))
+            {
+                // [guild60] a guild five stays in the world: each member is its own leader again (its own
+                // strategies, New RPG); out of the group inside the instance, the core ports it out (homebind)
+                if (party.guild)
+                {
+                    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+                        botAI->ResetStrategies(false);
+                }
+                else if (GET_PLAYERBOT_AI(bot) && !IsSelfBot(bot))
                     sRandomPlayerbotMgr.LogoutPlayerBot(member.guid);
+            }
             _inUse.erase(member.guid);
         }
     }

@@ -3079,6 +3079,9 @@ namespace TestHarness
     {
         if (!leader || !party.content)
             return;
+        // [guild60] a guild five gets no handouts: its event items and quests are its own (looted, taken)
+        if (party.guild)
+            return;
 
         // [hleft-bm-quest] the event's quest in every member's log (taken or rewarded already: left as it is)
         if (atStart)
@@ -3651,6 +3654,9 @@ namespace TestHarness
                     // [lead67] PerfMon b112: "new rpg do quest" ran in the led dungeon bots - off for the run
                     if (PlayerbotAI* runAI = GET_PLAYERBOT_AI(bot))
                         runAI->ChangeStrategy("-new rpg,-rpg,-quest,-grind,-travel", BOT_STATE_NON_COMBAT);
+                    // [guild60] a guild five comes in as it is: no test setup (no full health / mana, no cooldowns)
+                    if (party.guild)
+                        continue;
                     bot->SetFullHealth();
                     if (bot->GetMaxPower(POWER_MANA))
                         bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));

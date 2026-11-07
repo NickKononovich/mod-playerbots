@@ -14,6 +14,7 @@
 #include "DBCStores.h"
 #include "Event.h"
 #include "Group.h"
+#include "GuildCoordinator.h"  // [guild60] the five-leader's roll decisions
 #include "ItemUsageValue.h"
 #include "LootAction.h"
 #include "LootMgr.h"
@@ -210,6 +211,15 @@ bool LootRollAction::Execute(Event /*event*/)
             vote = GREED;  // another bot gains more from it, or got less loot lately
 
         vote = ApplyRollConfig(vote, proto, bot);
+
+        // [guild60] in a guild five the five-leader gives BoP by need (and spare BoP to the five's enchanter)
+        uint8 fiveVote = PASS;
+        if (sGuildCoordinator.FiveRollVote(bot, guid.GetRawValue(), itemId, randomProperty, fiveVote))
+        {
+            vote = RollVote(fiveVote);
+            if (vote == NEED && !(roll->rollVoteMask & ROLL_FLAG_TYPE_NEED))
+                vote = GREED;
+        }
 
         switch (group->GetLootMethod())
         {
