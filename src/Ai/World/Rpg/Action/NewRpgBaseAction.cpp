@@ -1099,9 +1099,19 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         return true;
     };
     G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    // every leg the bot sees of it (the walk is planned again from there)
     auto const firstLegCarried = [&](Movement::PointsArray const& points)
     {
-        return points.size() >= 2 && carried(here, points[0]) && carried(points[0], points[1]);
+        if (points.size() < 2 || !carried(here, points[0]))
+            return false;
+        float walked = 0.0f;
+        for (size_t i = 1; i < points.size() && walked < sPlayerbotAIConfig.SightDistance; ++i)
+        {
+            if (!carried(points[i - 1], points[i]))
+                return false;
+            walked += (points[i] - points[i - 1]).length();
+        }
+        return true;
     };
     auto const logged = [&](std::string const& how)
     {
@@ -1127,7 +1137,7 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         G3D::Vector3 const coreEnd = core.GetActualEndPosition();
         PathType const coreType = core.GetPathType();
         if ((coreType & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) &&
-            !(coreType & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH)) && points.size() >= 2 &&
+            !(coreType & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH | PATHFIND_SHORTCUT)) && points.size() >= 2 &&
             dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f < disToDest && firstLegCarried(points) &&
             SafeLeg(points) && WalkBotPoints(bot, points))
         {
@@ -1178,15 +1188,17 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         bool carried;
     };
     std::vector<Way> ways;
+    bool onPolygon = false;
     {
-        // on a polygon already (the core's own box): nothing to step onto
+        // on a polygon already (the core's own box): a navmesh island - only a way whose landing walks on to the
+        // destination counts (b310 Lyleria L6 in Darnassus at z 1343: an island of one polygon, the city floor 22 yd
+        // off and 15 yd down)
         float const point[3] = {here.y, here.z, here.x};
         float const extents[3] = {3.0f, 50.0f, 3.0f};
         float nearest[3] = {0.0f, 0.0f, 0.0f};
         dtPolyRef ref = 0;
-        if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref &&
-            (G3D::Vector3(nearest[2], nearest[0], nearest[1]) - here).length() < bot->GetCombatReach())
-            return false;
+        onPolygon = dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref &&
+                    (G3D::Vector3(nearest[2], nearest[0], nearest[1]) - here).length() < bot->GetCombatReach();
     }
     {
         // one search per spot: a spot with no way off is not searched again until the bot has moved
@@ -1235,8 +1247,42 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
             float const angle = 2.0f * float(M_PI) * float(i) / float(arcs);
             probe(here.x + std::cos(angle) * reach, here.y + std::sin(angle) * reach, 3.0f);
         }
-        if (std::any_of(ways.begin(), ways.end(), [](Way const& way) { return way.carried; }))
+        if (!onPolygon && std::any_of(ways.begin(), ways.end(), [](Way const& way) { return way.carried; }))
             break;
+    }
+    // the landing's own walk to the destination: a complete one (an island's own polygons have none); tried in the
+    // order the ways are taken below, a few at most (each is a path search)
+    auto const leadsOn = [&](Way const& way)
+    {
+        BotPath const on = FindBotPath(bot, way.to.x, way.to.y, way.to.z, dest.GetPositionX(), dest.GetPositionY(),
+                                       dest.GetPositionZ());
+        return on.type == PATHFIND_NORMAL;
+    };
+    if (onPolygon)
+    {
+        std::vector<Way> kept;
+        std::vector<Way const*> order;
+        for (Way const& way : ways)
+            if (way.carried || (way.drop > 0.0f && way.damage < float(bot->GetHealth())))
+                order.push_back(&way);
+        std::sort(order.begin(), order.end(),
+                  [](Way const* a, Way const* b)
+                  {
+                      if (a->carried != b->carried)
+                          return a->carried;
+                      return a->carried ? a->gap < b->gap : a->damage < b->damage;
+                  });
+        constexpr size_t PATH_TRIES = 8;  // search cost bound, not a behaviour rule
+        for (size_t i = 0; i < order.size() && i < PATH_TRIES && kept.empty(); ++i)
+            if (leadsOn(*order[i]))
+                kept.push_back(*order[i]);
+        if (kept.empty())
+        {
+            logged(Acore::StringFormat("on a navmesh island: {} polygons in sight, no step or survivable fall leads on",
+                                       ways.size()));
+            return false;
+        }
+        ways = kept;
     }
     if (ways.empty())
     {

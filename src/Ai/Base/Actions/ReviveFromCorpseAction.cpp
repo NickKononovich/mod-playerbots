@@ -7,6 +7,9 @@
 #include "ReviveFromCorpseAction.h"
 #include "BotPath.h"  // [lead109]
 #include "Corpse.h"
+#include "CellImpl.h"
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "Creature.h"
 #include "Event.h"
 #include "FleeManager.h"
@@ -516,11 +519,17 @@ bool SpiritHealerAction::Execute(Event /*event*/)
 
     if (bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y) < sPlayerbotAIConfig.SightDistance)
     {
-        GuidVector npcs = AI_VALUE(GuidVector, "nearest npcs");
-        for (GuidVector::iterator i = npcs.begin(); i != npcs.end(); i++)
+        // [guild15] every unit in sight, no line-of-sight filter ("nearest npcs" keeps only those in line of sight:
+        // b310 the six Shadowglen ghosts 17 yd from the Spirit Healer saw "no spirit healer in sight" - the walk to it
+        // is a navmesh path, line of sight is not needed for it)
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(bot, sPlayerbotAIConfig.SightDistance);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitObjects(bot, searcher, sPlayerbotAIConfig.SightDistance);
+        units.sort([this](Unit* a, Unit* b) { return bot->GetDistance(a) < bot->GetDistance(b); });
+        for (Unit* unit : units)
         {
-            Unit* unit = botAI->GetUnit(*i);
-            if (!unit || !unit->HasNpcFlag(UNIT_NPC_FLAG_SPIRITHEALER))
+            if (!unit || unit->IsPlayer() || !unit->HasNpcFlag(UNIT_NPC_FLAG_SPIRITHEALER))
                 continue;
 
             if (bot->GetDistance(unit) > INTERACTION_DISTANCE)
