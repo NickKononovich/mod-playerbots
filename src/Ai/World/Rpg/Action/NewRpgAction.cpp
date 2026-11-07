@@ -511,21 +511,6 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 if ((!quest || bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE) &&
                     NewRpgProfession::StartTask(botAI, bot))
                     return true;
-                // [guild14] a giver / ender whose walk passes mobs of orange / red con is postponed like any trip (b307
-                // Guinudrond L9: a q5545 pick-up 4049 yd off, Loch Modan -> Elwynn, walked through Searing Gorge's L45
-                // mobs, three deaths)
-                if (quest && giverPos != WorldPosition() && giverPos.GetMapId() == bot->GetMapId() &&
-                    TripRefused(bot, giverPos.GetPositionX(), giverPos.GetPositionY(), giverPos.GetPositionZ(),
-                                "quest giver / ender"))
-                {
-                    if (botAI->lowPriorityQuest.insert(questId).second)
-                    {
-                        LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: the walk to its giver / ender is "
-                                 "refused", bot->GetName(), bot->GetLevel(), questId);
-                        return true;  // the next pick
-                    }
-                    quest = nullptr;  // every pick postponed: the fallbacks below (gather, its safe hub)
-                }
                 if (quest)
                 {
                     QuestStatus const questStatus = bot->GetQuestStatus(questId);
@@ -561,25 +546,22 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     WorldPosition target = grindPos != WorldPosition() ? grindPos : giverPos;
                     // [guild14] every quest postponed or dangerous round it (b303 Thokhen L3 between Root Threshers
                     // L8: IDLE / DANGER / RECOVER / POSTPONE in a loop): a grind spot whose walk is refused is
-                    // replaced by its hub (the nearest ender of a quest in its log or an inn on a safe way), the mobs
-                    // of its level there; a level-up gives the postponed quests another try
+                    // replaced by its hub (the nearest ender of a quest in its log or an inn on a safe way) when that
+                    // hub is a walk away and safe, else the grind spot stays (b308: a "stay" and a hub under its feet
+                    // left 100+ bots-minutes idle); a level-up gives the postponed quests another try
                     if (target.GetMapId() == bot->GetMapId() &&
                         TripRefused(bot, target.GetPositionX(), target.GetPositionY(), target.GetPositionZ(),
                                     "grind spot"))
                     {
                         WorldPosition const hub = NearestHub(bot);
-                        if (hub == WorldPosition() ||
-                            TripRefused(bot, hub.GetPositionX(), hub.GetPositionY(), hub.GetPositionZ(), "hub"))
+                        if (hub != WorldPosition() && bot->GetExactDist(hub) >= 10.0f &&
+                            !TripRefused(bot, hub.GetPositionX(), hub.GetPositionY(), hub.GetPositionZ(), "hub"))
                         {
-                            LOG_INFO("playerbots", "[rpg] {} L{} STAY reason: no safe grind spot or hub", bot->GetName(),
-                                     bot->GetLevel());
-                            info.ChangeToWanderRandom();
+                            LOG_INFO("playerbots", "[rpg] {} L{} GRIND reason: quests postponed or dangerous round it, "
+                                     "its hub {} yd", bot->GetName(), bot->GetLevel(), uint32(bot->GetExactDist(hub)));
+                            info.ChangeToGoGrind(hub);
                             return true;
                         }
-                        LOG_INFO("playerbots", "[rpg] {} L{} GRIND reason: quests postponed or dangerous round it, its "
-                                 "hub {} yd", bot->GetName(), bot->GetLevel(), uint32(bot->GetExactDist(hub)));
-                        info.ChangeToGoGrind(hub);
-                        return true;
                     }
                     LOG_INFO("playerbots",
                              "[rpg] {} L{} GRIND reason: q{} {} needs L{}, giver {} yd, grind spot {} yd from it",

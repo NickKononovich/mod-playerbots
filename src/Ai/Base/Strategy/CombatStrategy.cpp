@@ -59,16 +59,6 @@ void CombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    // [guild14] a solo bot's fight turned lost: it runs until the mobs leash, above every attack, heal and potion
-    // (it has no fight left to heal through)
-    triggers.push_back(
-        new TriggerNode(
-            "solo fight lost",
-            {
-                NextAction("solo disengage", ACTION_EMERGENCY + 2)
-            }
-        )
-    );
     // The pet-attack trigger is commented out because it was forcing the bot's pet to attack, overriding stay and follow commands.
     // Pets will automatically attack the bot's enemy if they are in "defensive" or "aggressive"
     // stance, or if the master issues an attack command.
