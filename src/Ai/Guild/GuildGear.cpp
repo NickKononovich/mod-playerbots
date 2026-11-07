@@ -15,8 +15,10 @@
 #include <unordered_set>
 
 #include "DBCStores.h"
-#include "DatabaseEnv.h"
+#include "GameObject.h"
 #include "Log.h"
+#include "LootMgr.h"
+#include "MapMgr.h"
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAIConfig.h"
@@ -24,6 +26,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StatsWeightCalculator.h"
+#include "Timer.h"
 
 namespace
 {
@@ -32,10 +35,13 @@ namespace
         G_HEAD = 0, G_NECK, G_SHOULDERS, G_BACK, G_CHEST, G_WRISTS, G_HANDS, G_WAIST, G_LEGS, G_FEET, G_FINGER,
         G_TRINKET, G_MAINHAND, G_TWOHAND, G_OFFHAND, G_RANGED, G_COUNT
     };
+    static_assert(G_COUNT == GuildGear::GROUP_COUNT, "GROUP_COUNT");
 
     char const* const GROUP_NAMES[G_COUNT] = {"голова", "шея", "плечи", "спина", "грудь", "запястья", "кисти",
                                               "пояс", "ноги", "ступни", "кольцо", "аксессуар", "правая рука",
                                               "двуручное", "левая рука", "дальний бой"};
+
+    constexpr uint32 MAX_REFERENCE_DEPTH = 4;  // LootTemplate::Process nests references deeper than any table does
 
     struct Index
     {
@@ -44,13 +50,16 @@ namespace
         std::unordered_map<uint32, std::vector<GuildGear::VendorSpawn>> vendors;
         std::unordered_map<uint32, GuildGear::CraftRecipe> recipes;
         std::vector<uint32> bagRecipes;
-        std::unordered_map<uint32, std::string> dungeonNames;
-        uint32 counts[5]{};
+        std::unordered_map<uint32, GuildGear::RefInfo> refs;
+        std::unordered_map<uint32, std::string> mapNames;
+        uint32 counts[10]{};
+        uint32 buildMs{0};
         bool loaded{false};
     };
 
     Index index;  // built once on the world thread at startup, read-only afterwards
     std::vector<uint32> const EMPTY;
+    std::unordered_set<uint32> tokens;  // items an extended cost asks for (tier tokens, emblems, badges, marks)
 
     bool Equippable(ItemTemplate const* proto)
     {
@@ -64,62 +73,267 @@ namespace
                proto->ContainerSlots > 0;
     }
 
+    // the items the index keeps: gear, bags, and the tokens that buy gear
+    bool Indexed(uint32 itemId)
+    {
+        if (tokens.count(itemId))
+            return true;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        return Equippable(proto) || GenericBag(proto);
+    }
+
     void AddSource(uint32 itemId, GuildGear::Source const& src)
     {
         auto& list = index.sources[itemId];
-        for (GuildGear::Source const& s : list)
-            if (s.kind == src.kind && s.id == src.id)
+        for (GuildGear::Source& s : list)
+            if (s.kind == src.kind && s.id == src.id && s.difficulty == src.difficulty)
+            {
+                s.chance = std::max(s.chance, src.chance);
                 return;
+            }
         list.push_back(src);
         ++index.counts[src.kind];
     }
 
-    // Loot rows: (item, reference, chance, group). Grouped rows of chance 0 share what the group's explicit chances
-    // leave (LootGroup::Roll: equal chance among them).
-    struct LootRow
+    void NoteMap(uint32 mapId)
     {
-        uint32 item;
-        int32 reference;
-        float chance;
-        uint8 group;
-        uint8 maxCount;
-    };
-
-    void Normalise(std::vector<LootRow>& rows)
-    {
-        std::map<uint8, std::pair<float, uint32>> groups;  // group -> (explicit sum, zero-chance count)
-        for (LootRow const& r : rows)
-            if (r.group)
-            {
-                auto& g = groups[r.group];
-                if (r.chance > 0.0f)
-                    g.first += r.chance;
-                else
-                    ++g.second;
-            }
-        for (LootRow& r : rows)
-            if (r.group && r.chance <= 0.0f)
-            {
-                auto const& g = groups[r.group];
-                r.chance = g.second ? std::max(0.0f, 100.0f - g.first) / g.second : 0.0f;
-            }
+        if (index.mapNames.count(mapId))
+            return;
+        if (MapEntry const* map = sMapStore.LookupEntry(mapId))
+            index.mapNames[mapId] = map->name[0];
     }
 
-    void Expand(std::unordered_map<uint32, std::vector<LootRow>> const& refs, std::vector<LootRow> const& rows,
-                float scale, uint32 depth, std::map<uint32, float>& out)
+    // per creature entry (difficulty entries resolved to their base): where it stands, its levels, boss or not
+    struct CreatureInfo
     {
-        for (LootRow const& r : rows)
-        {
-            float const chance = r.chance * scale / 100.0f;
-            if (r.reference)
+        uint16 mapId{0};
+        uint16 minLevel{0};
+        uint16 maxLevel{0};
+        uint8 difficulty{0};
+        bool instance{false};
+        bool boss{false};
+    };
+
+    // the items of a reference, nested references expanded (chances multiplied), memoised
+    std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> refItems;
+
+    std::vector<std::pair<uint32, float>> const& RefItems(uint32 refId, uint32 depth)
+    {
+        auto const itr = refItems.find(refId);
+        if (itr != refItems.end())
+            return itr->second;
+        std::vector<std::pair<uint32, float>> items;
+        if (LootTemplate const* tmpl = LootTemplates_Reference.GetLootFor(refId))
+            tmpl->VisitEntries(
+                [&](LootStoreItem const& e, float chance)
+                {
+                    if (e.reference)
+                    {
+                        if (depth >= MAX_REFERENCE_DEPTH)
+                            return;
+                        float const scale = chance / 100.0f * std::max<uint8>(1, e.maxcount);
+                        for (auto const& [item, c] : RefItems(uint32(std::abs(e.reference)), depth + 1))
+                            items.emplace_back(item, std::min(100.0f, c * scale));
+                    }
+                    else if (Indexed(e.itemid))
+                        items.emplace_back(e.itemid, chance);
+                });
+        return refItems[refId] = std::move(items);
+    }
+
+    void NoteRefUser(uint32 refId, uint32 minLevel, uint32 maxLevel, uint32 mapId)
+    {
+        GuildGear::RefInfo& info = index.refs[refId];
+        info.minLevel = info.users ? std::min<uint16>(info.minLevel, uint16(minLevel)) : uint16(minLevel);
+        info.maxLevel = std::max<uint16>(info.maxLevel, uint16(maxLevel));
+        if (!info.users)
+            info.mapId = uint16(mapId);
+        ++info.users;
+    }
+
+    // One loot template of an owner. Direct items -> `direct` source; a reference -> one REFDROP ref per item (shared
+    // world drops), or, for an instance boss, expanded into the boss's own DROP source.
+    void ScanTemplate(LootTemplate const* tmpl, GuildGear::Source const& direct, bool expandRefs)
+    {
+        if (!tmpl)
+            return;
+        tmpl->VisitEntries(
+            [&](LootStoreItem const& e, float chance)
             {
-                auto const itr = refs.find(uint32(std::abs(r.reference)));
-                if (itr != refs.end() && depth < 4)
-                    Expand(refs, itr->second, chance * std::max<uint8>(1, r.maxCount), depth + 1, out);
+                if (!e.reference)
+                {
+                    if (Indexed(e.itemid))
+                    {
+                        GuildGear::Source s = direct;
+                        s.chance = chance;
+                        AddSource(e.itemid, s);
+                    }
+                    return;
+                }
+                uint32 const refId = uint32(std::abs(e.reference));
+                float const scale = chance / 100.0f * std::max<uint8>(1, e.maxcount);
+                if (expandRefs)
+                {
+                    for (auto const& [item, c] : RefItems(refId, 1))
+                    {
+                        GuildGear::Source s = direct;
+                        s.chance = std::min(100.0f, c * scale);
+                        AddSource(item, s);
+                    }
+                    return;
+                }
+                NoteRefUser(refId, direct.level, direct.levelMax, direct.mapId);
+                for (auto const& [item, c] : RefItems(refId, 1))
+                {
+                    GuildGear::Source s;
+                    s.kind = GuildGear::SRC_REFDROP;
+                    s.id = refId;
+                    s.chance = std::min(100.0f, c * scale);
+                    AddSource(item, s);
+                }
+            });
+    }
+
+    uint16 EntryLevel(uint32 mapId, uint8 difficulty, uint16 fallback)
+    {
+        DungeonProgressionRequirements const* req = sObjectMgr->GetAccessRequirement(mapId, Difficulty(difficulty));
+        if (!req && difficulty)
+            req = sObjectMgr->GetAccessRequirement(mapId, Difficulty(0));
+        return req && req->levelMin ? uint16(req->levelMin) : fallback;
+    }
+
+    void LoadCreatures()
+    {
+        // the first spawn of each creature entry: its map
+        std::unordered_map<uint32, uint16> spawnMap;
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+            for (uint32 id : {data.id, data.id2, data.id3})
+                if (id)
+                    spawnMap.emplace(id, data.mapid);
+
+        std::unordered_map<uint32, CreatureInfo> info;
+        CreatureTemplateContainer const* templates = sObjectMgr->GetCreatureTemplates();
+        auto const describe = [&](CreatureTemplate const& tmpl, uint32 base, uint8 difficulty)
+        {
+            CreatureInfo ci;
+            auto const map = spawnMap.find(base);
+            if (map == spawnMap.end())
+                return false;  // never spawned (nor its base): not reachable in the world
+            ci.mapId = map->second;
+            MapEntry const* entry = sMapStore.LookupEntry(ci.mapId);
+            ci.instance = entry && entry->IsDungeon();
+            ci.minLevel = tmpl.minlevel;
+            ci.maxLevel = tmpl.maxlevel;
+            ci.difficulty = difficulty;
+            ci.boss = ci.instance && ((tmpl.flags_extra & CREATURE_FLAG_EXTRA_DUNGEON_BOSS) ||
+                                      tmpl.rank == CREATURE_ELITE_WORLDBOSS || tmpl.rank == CREATURE_ELITE_RARE ||
+                                      tmpl.rank == CREATURE_ELITE_RAREELITE);
+            info[tmpl.Entry] = ci;
+            return true;
+        };
+        for (auto const& [entry, tmpl] : *templates)
+        {
+            if (!describe(tmpl, entry, 0))
                 continue;
+            for (uint8 d = 0; d < MAX_DIFFICULTY - 1; ++d)
+                if (uint32 const hard = tmpl.DifficultyEntry[d])
+                    if (CreatureTemplate const* h = sObjectMgr->GetCreatureTemplate(hard))
+                    {
+                        describe(*h, entry, uint8(d + 1));
+                        // a difficulty entry carries the base's boss flag only on the base template
+                        info[hard].boss = info[entry].boss;
+                    }
+        }
+
+        for (auto const& [entry, ci] : info)
+        {
+            CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+            if (!tmpl)
+                continue;
+            GuildGear::Source s;
+            s.id = entry;
+            s.mapId = ci.mapId;
+            s.difficulty = ci.difficulty;
+            s.level = ci.minLevel;
+            s.levelMax = ci.maxLevel;
+            if (ci.instance)
+            {
+                NoteMap(ci.mapId);
+                s.kind = ci.boss ? GuildGear::SRC_DROP : GuildGear::SRC_WORLD;
+                if (ci.boss)
+                    s.level = EntryLevel(ci.mapId, ci.difficulty, ci.minLevel);
             }
-            float& c = out[r.item];
-            c = std::min(100.0f, c + chance * 100.0f);
+            else
+                s.kind = GuildGear::SRC_WORLD;
+            if (tmpl->lootid)
+                ScanTemplate(LootTemplates_Creature.GetLootFor(tmpl->lootid), s, ci.boss);
+            GuildGear::Source other = s;
+            other.kind = GuildGear::SRC_OTHER;
+            if (tmpl->pickpocketLootId)
+            {
+                other.aux = GuildGear::OTHER_PICKPOCKET;
+                ScanTemplate(LootTemplates_Pickpocketing.GetLootFor(tmpl->pickpocketLootId), other, false);
+            }
+            if (tmpl->SkinLootId)
+            {
+                other.aux = GuildGear::OTHER_SKINNING;
+                ScanTemplate(LootTemplates_Skinning.GetLootFor(tmpl->SkinLootId), other, false);
+            }
+        }
+    }
+
+    void LoadObjects()
+    {
+        std::unordered_map<uint32, uint16> spawnMap;
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
+            spawnMap.emplace(data.id, data.mapid);
+        for (auto const& [entry, tmpl] : *sObjectMgr->GetGameObjectTemplates())
+        {
+            uint32 const lootId = tmpl.GetLootId();
+            auto const map = spawnMap.find(entry);
+            if (!lootId || map == spawnMap.end())
+                continue;
+            GuildGear::Source s;
+            s.kind = GuildGear::SRC_OBJECT;
+            s.id = entry;
+            s.mapId = map->second;
+            if (MapEntry const* m = sMapStore.LookupEntry(s.mapId))
+                if (m->IsDungeon())
+                {
+                    NoteMap(s.mapId);
+                    s.level = EntryLevel(s.mapId, 0, 0);
+                }
+            ScanTemplate(LootTemplates_Gameobject.GetLootFor(lootId), s, false);
+        }
+    }
+
+    void LoadOtherStores()
+    {
+        // items opened for their loot (lockboxes, bags of loot): keyed by the item entry
+        for (auto const& [itemId, tmpl] : LootTemplates_Item.GetTemplates())
+        {
+            GuildGear::Source s;
+            s.kind = GuildGear::SRC_CONTAINER;
+            s.id = itemId;
+            if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId))
+                s.level = uint16(proto->RequiredLevel);
+            ScanTemplate(tmpl, s, false);
+        }
+        for (auto const& [zoneId, tmpl] : LootTemplates_Fishing.GetTemplates())
+        {
+            GuildGear::Source s;
+            s.kind = GuildGear::SRC_OTHER;
+            s.id = zoneId;
+            s.aux = GuildGear::OTHER_FISHING;
+            ScanTemplate(tmpl, s, false);
+        }
+        for (auto const& [mailId, tmpl] : LootTemplates_Mail.GetTemplates())
+        {
+            GuildGear::Source s;
+            s.kind = GuildGear::SRC_OTHER;
+            s.id = mailId;
+            s.aux = GuildGear::OTHER_MAIL;
+            ScanTemplate(tmpl, s, false);
         }
     }
 
@@ -129,91 +343,17 @@ namespace
         {
             if (!quest)
                 continue;
-            uint32 const level = quest->GetQuestLevel() > 0 ? uint32(quest->GetQuestLevel()) : quest->GetMinLevel();
+            uint16 const level = uint16(quest->GetQuestLevel() > 0 ? quest->GetQuestLevel() : quest->GetMinLevel());
             for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT; ++i)
                 if (uint32 const item = quest->RewardChoiceItemId[i])
-                    if (Equippable(sObjectMgr->GetItemTemplate(item)))
-                        AddSource(item, {GuildGear::SRC_QUEST, questId, level, 0, 100.0f, i});
+                    if (Indexed(item))
+                        AddSource(item, {GuildGear::SRC_QUEST, 0, 0, questId, level, uint16(quest->GetMinLevel()),
+                                         100.0f, i});
             for (uint8 i = 0; i < QUEST_REWARDS_COUNT; ++i)
                 if (uint32 const item = quest->RewardItemId[i])
-                    if (Equippable(sObjectMgr->GetItemTemplate(item)))
-                        AddSource(item, {GuildGear::SRC_QUEST, questId, level, 0, 100.0f, 100u + i});
-        }
-    }
-
-    void LoadDrops()
-    {
-        // the bosses of the 5-man dungeons: the core's dungeon-boss flag (instance_encounters) or a boss / rare
-        // elite rank, spawned in a non-raid instance map
-        std::unordered_map<uint32, std::pair<uint32, uint32>> bossLoot;  // lootid -> (boss entry, map)
-        for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
-        {
-            MapEntry const* map = sMapStore.LookupEntry(data.mapid);
-            if (!map || !map->IsNonRaidDungeon())
-                continue;
-            CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(data.id);
-            if (!tmpl || !tmpl->lootid)
-                continue;
-            bool const boss = (tmpl->flags_extra & CREATURE_FLAG_EXTRA_DUNGEON_BOSS) ||
-                              tmpl->rank == CREATURE_ELITE_WORLDBOSS || tmpl->rank == CREATURE_ELITE_RARE ||
-                              tmpl->rank == CREATURE_ELITE_RAREELITE;
-            if (!boss)
-                continue;
-            bossLoot.emplace(tmpl->lootid, std::make_pair(tmpl->Entry, data.mapid));
-            if (!index.dungeonNames.count(data.mapid))
-                index.dungeonNames[data.mapid] = map->name[0];
-        }
-        if (bossLoot.empty())
-            return;
-
-        std::unordered_map<uint32, std::vector<LootRow>> refs;
-        if (QueryResult result = WorldDatabase.Query(
-                "SELECT Entry, Item, Reference, Chance, GroupId, MaxCount FROM reference_loot_template"))
-        {
-            do
-            {
-                Field* f = result->Fetch();
-                refs[f[0].Get<uint32>()].push_back({f[1].Get<uint32>(), f[2].Get<int32>(), f[3].Get<float>(),
-                                                    f[4].Get<uint8>(), f[5].Get<uint8>()});
-            } while (result->NextRow());
-        }
-        for (auto& [id, rows] : refs)
-            Normalise(rows);
-
-        std::unordered_map<uint32, std::vector<LootRow>> loot;
-        std::ostringstream ids;
-        bool first = true;
-        for (auto const& [lootId, boss] : bossLoot)
-        {
-            ids << (first ? "" : ",") << lootId;
-            first = false;
-        }
-        if (QueryResult result = WorldDatabase.Query(
-                "SELECT Entry, Item, Reference, Chance, GroupId, MaxCount FROM creature_loot_template WHERE Entry IN (" +
-                ids.str() + ")"))
-        {
-            do
-            {
-                Field* f = result->Fetch();
-                loot[f[0].Get<uint32>()].push_back({f[1].Get<uint32>(), f[2].Get<int32>(), f[3].Get<float>(),
-                                                    f[4].Get<uint8>(), f[5].Get<uint8>()});
-            } while (result->NextRow());
-        }
-        for (auto& [lootId, rows] : loot)
-        {
-            Normalise(rows);
-            std::map<uint32, float> items;
-            Expand(refs, rows, 100.0f, 0, items);
-            auto const& [bossEntry, mapId] = bossLoot[lootId];
-            uint32 level = 0;
-            if (DungeonProgressionRequirements const* req = sObjectMgr->GetAccessRequirement(mapId, DUNGEON_DIFFICULTY_NORMAL))
-                level = req->levelMin;
-            if (!level)
-                if (CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(bossEntry))
-                    level = tmpl->minlevel;
-            for (auto const& [item, chance] : items)
-                if (chance > 0.0f && Equippable(sObjectMgr->GetItemTemplate(item)))
-                    AddSource(item, {GuildGear::SRC_DROP, bossEntry, level, mapId, chance, 0});
+                    if (Indexed(item))
+                        AddSource(item, {GuildGear::SRC_QUEST, 0, 0, questId, level, uint16(quest->GetMinLevel()),
+                                         100.0f, 100u + i});
         }
     }
 
@@ -249,9 +389,8 @@ namespace
                 index.recipes[recipe.spellId] = recipe;
                 if (bag)
                     index.bagRecipes.push_back(recipe.spellId);
-                else
-                    AddSource(item, {GuildGear::SRC_CRAFT, recipe.spellId, recipe.reqSkill, 0, 100.0f,
-                                     recipe.skillLine});
+                AddSource(item, {GuildGear::SRC_CRAFT, 0, 0, recipe.spellId, uint16(recipe.reqSkill), 0, 100.0f,
+                                 recipe.skillLine});
                 break;
             }
         }
@@ -277,16 +416,36 @@ namespace
             bool const firstSpawn = seen.insert(data.id).second;
             for (VendorItem const* item : items->m_items)
             {
-                if (!item || item->ExtendedCost)
+                if (!item || !Indexed(item->item))
                     continue;
-                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item->item);
-                if (!Equippable(proto))
-                    continue;
-                index.vendors[item->item].push_back({data.id, data.mapid, data.posX, data.posY, data.posZ});
+                index.vendors[item->item].push_back(
+                    {data.id, data.mapid, data.posX, data.posY, data.posZ, item->ExtendedCost});
                 if (firstSpawn)
-                    AddSource(item->item, {GuildGear::SRC_VENDOR, data.id, 0, data.mapid, 100.0f, uint32(proto->BuyPrice)});
+                    AddSource(item->item, {GuildGear::SRC_VENDOR, 0, data.mapid, data.id, 0, 0, 100.0f,
+                                           item->ExtendedCost});
             }
         }
+    }
+
+    size_t MemoryBytes()
+    {
+        // vectors by capacity, hash nodes as key + value + two pointers
+        size_t bytes = 0;
+        for (auto const& [item, list] : index.sources)
+            bytes += sizeof(item) + sizeof(list) + 2 * sizeof(void*) + list.capacity() * sizeof(GuildGear::Source);
+        for (auto const& list : index.groups)
+            bytes += list.capacity() * sizeof(uint32);
+        for (auto const& [item, list] : index.vendors)
+            bytes += sizeof(item) + sizeof(list) + 2 * sizeof(void*) +
+                     list.capacity() * sizeof(GuildGear::VendorSpawn);
+        for (auto const& [spell, recipe] : index.recipes)
+            bytes += sizeof(spell) + sizeof(recipe) + 2 * sizeof(void*) +
+                     recipe.reagents.capacity() * sizeof(std::pair<uint32, uint32>);
+        bytes += index.refs.size() * (sizeof(uint32) + sizeof(GuildGear::RefInfo) + 2 * sizeof(void*));
+        for (auto const& [mapId, name] : index.mapNames)
+            bytes += sizeof(mapId) + sizeof(name) + name.capacity() + 2 * sizeof(void*);
+        bytes += tokens.size() * (sizeof(uint32) + 2 * sizeof(void*));
+        return bytes;
     }
 }
 
@@ -327,25 +486,41 @@ namespace GuildGear
 
     void Load(std::vector<uint32> const& craftLines)
     {
+        uint32 const start = getMSTime();
         index = Index();
+        refItems.clear();
+        tokens.clear();
+        for (uint32 i = 0; i < sItemExtendedCostStore.GetNumRows(); ++i)
+            if (ItemExtendedCostEntry const* cost = sItemExtendedCostStore.LookupEntry(i))
+                for (uint32 r = 0; r < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++r)
+                    if (cost->reqitem[r])
+                        tokens.insert(cost->reqitem[r]);
         LoadQuests();
-        LoadDrops();
+        LoadCreatures();
+        LoadObjects();
+        LoadOtherStores();
         LoadCrafts(craftLines);
         LoadVendors();
-        for (auto const& [item, list] : index.sources)
+        refItems.clear();  // only needed while building
+        for (auto& [item, list] : index.sources)
         {
+            list.shrink_to_fit();
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
-            uint8 const group = proto ? EquipGroup(proto->InventoryType) : 0xFF;
+            uint8 const group = Equippable(proto) ? EquipGroup(proto->InventoryType) : 0xFF;
             if (group < G_COUNT)
                 index.groups[group].push_back(item);
         }
         for (auto& list : index.groups)
+        {
             std::sort(list.begin(), list.end(), [](uint32 a, uint32 b)
                       {
                           uint32 const la = sObjectMgr->GetItemTemplate(a)->RequiredLevel;
                           uint32 const lb = sObjectMgr->GetItemTemplate(b)->RequiredLevel;
                           return la != lb ? la < lb : a < b;
                       });
+            list.shrink_to_fit();
+        }
+        index.buildMs = getMSTimeDiff(start, getMSTime());
         index.loaded = true;
         LOG_INFO("playerbots", "[guild50] upgrade index: {}", Stats());
     }
@@ -356,10 +531,18 @@ namespace GuildGear
         size_t grouped = 0;
         for (auto const& list : index.groups)
             grouped += list.size();
-        out << index.sources.size() << " items (" << grouped << " in slot groups); sources: quest " << index.counts[0]
-            << ", dungeon drop " << index.counts[1] << " (" << index.dungeonNames.size() << " dungeons), craft "
-            << index.counts[2] << ", vendor " << index.counts[3] << "; bag recipes " << index.bagRecipes.size()
-            << "; vendor spawns for " << index.vendors.size() << " items";
+        size_t refs = 0;
+        for (auto const& [item, list] : index.sources)
+            refs += list.size();
+        out << index.sources.size() << " items (" << grouped << " gear in slot groups, " << tokens.size()
+            << " cost tokens), " << refs << " source refs: quest " << index.counts[SRC_QUEST] << ", boss drop "
+            << index.counts[SRC_DROP] << ", world mob " << index.counts[SRC_WORLD] << ", shared reference "
+            << index.counts[SRC_REFDROP] << " (" << index.refs.size() << " references), object "
+            << index.counts[SRC_OBJECT] << ", container " << index.counts[SRC_CONTAINER] << ", pickpocket/skin/"
+            << "fish/mail " << index.counts[SRC_OTHER] << ", craft " << index.counts[SRC_CRAFT] << ", vendor "
+            << index.counts[SRC_VENDOR] << "; " << index.mapNames.size() << " instance maps; bag recipes "
+            << index.bagRecipes.size() << "; memory ~" << (MemoryBytes() + 1023) / 1024 << " KiB; built in "
+            << index.buildMs << " ms";
         return out.str();
     }
 
@@ -385,10 +568,67 @@ namespace GuildGear
 
     std::vector<uint32> const& BagRecipes() { return index.bagRecipes; }
 
-    std::string DungeonName(uint32 mapId)
+    RefInfo const* Reference(uint32 refId)
     {
-        auto const itr = index.dungeonNames.find(mapId);
-        return itr == index.dungeonNames.end() ? "map " + std::to_string(mapId) : itr->second;
+        auto const itr = index.refs.find(refId);
+        return itr == index.refs.end() ? nullptr : &itr->second;
+    }
+
+    std::string MapName(uint32 mapId)
+    {
+        auto const itr = index.mapNames.find(mapId);
+        if (itr != index.mapNames.end())
+            return itr->second;
+        MapEntry const* map = sMapStore.LookupEntry(mapId);
+        return map ? map->name[0] : "map " + std::to_string(mapId);
+    }
+
+    std::string ExtendedCostText(uint32 extendedCost)
+    {
+        ItemExtendedCostEntry const* cost = sItemExtendedCostStore.LookupEntry(extendedCost);
+        if (!cost)
+            return "";
+        std::string text;
+        auto const add = [&](std::string part) { text += (text.empty() ? "" : ", ") + part; };
+        for (uint32 r = 0; r < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++r)
+            if (cost->reqitem[r])
+            {
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(cost->reqitem[r]);
+                add(std::to_string(cost->reqitemcount[r]) + "× " + (proto ? proto->Name1 : "?"));
+            }
+        if (cost->reqhonorpoints)
+            add(std::to_string(cost->reqhonorpoints) + " чести");
+        if (cost->reqarenapoints)
+            add(std::to_string(cost->reqarenapoints) + " очков арены");
+        if (cost->reqpersonalarenarating)
+            add("рейтинг " + std::to_string(cost->reqpersonalarenarating));
+        return text;
+    }
+
+    std::string ExtendedCostMissing(Player* member, uint32 extendedCost)
+    {
+        ItemExtendedCostEntry const* cost = sItemExtendedCostStore.LookupEntry(extendedCost);
+        if (!cost)
+            return "";
+        std::string text;
+        auto const add = [&](std::string part) { text += (text.empty() ? "" : ", ") + part; };
+        for (uint32 r = 0; r < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++r)
+            if (cost->reqitem[r])
+            {
+                uint32 const have = member->GetItemCount(cost->reqitem[r], true);
+                if (have < cost->reqitemcount[r])
+                {
+                    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(cost->reqitem[r]);
+                    add(std::to_string(cost->reqitemcount[r] - have) + "× " + (proto ? proto->Name1 : "?"));
+                }
+            }
+        if (member->GetHonorPoints() < cost->reqhonorpoints)
+            add(std::to_string(cost->reqhonorpoints - member->GetHonorPoints()) + " чести");
+        if (member->GetArenaPoints() < cost->reqarenapoints)
+            add(std::to_string(cost->reqarenapoints - member->GetArenaPoints()) + " очков арены");
+        if (cost->reqpersonalarenarating)
+            add("рейтинг " + std::to_string(cost->reqpersonalarenarating));  // no PvP for guild bots
+        return text;
     }
 
     std::vector<uint8> SlotsFor(Player* member, ItemTemplate const* proto)
@@ -425,17 +665,34 @@ namespace GuildGear
         }
     }
 
-    bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out, bool ahead)
+    bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out, bool plan)
     {
         if (!proto)
             return false;
+        out = Eval();
         InventoryResult const use = member->CanUseItem(proto);
-        if (use != EQUIP_ERR_OK && !(ahead && use == EQUIP_ERR_CANT_EQUIP_LEVEL_I))
-            return false;
+        if (use != EQUIP_ERR_OK)
+        {
+            if (!plan)
+                return false;
+            if (use == EQUIP_ERR_CANT_EQUIP_LEVEL_I)
+                out.locked = "с L" + std::to_string(proto->RequiredLevel);
+            else if (use == EQUIP_ERR_CANT_EQUIP_REPUTATION)
+            {
+                FactionEntry const* faction = sFactionStore.LookupEntry(proto->RequiredReputationFaction);
+                static char const* const ranks[] = {"ненависть", "враждебность", "неприязнь", "равнодушие",
+                                                    "дружелюбие", "уважение", "почтение", "превознесение"};
+                out.locked = std::string("репутация ") + (faction ? faction->name[0] : "?") + ": " +
+                             (proto->RequiredReputationRank < 8 ? ranks[proto->RequiredReputationRank] : "?");
+            }
+            else
+                return false;
+        }
         if (proto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(proto, member->getClass()))
             return false;
         if (proto->Class == ITEM_CLASS_ARMOR &&
-            !sRandomItemMgr.CanEquipArmor(proto, member->getClass(), member->GetLevel()))
+            !sRandomItemMgr.CanEquipArmor(proto, member->getClass(), std::max<uint32>(member->GetLevel(),
+                                                                                        proto->RequiredLevel)))
             return false;
         // already owned (worn or in the bags): the member's own equip logic handles it
         if (member->GetItemCount(proto->ItemId, true))
@@ -467,7 +724,6 @@ namespace GuildGear
             }
         }
         float const score = calc.CalculateItem(proto->ItemId, 0);
-        out = Eval();
         out.score = score;
         out.current = std::max(0.0f, current);
         out.slot = weakestSlot;

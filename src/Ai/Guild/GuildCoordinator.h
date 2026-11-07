@@ -66,6 +66,7 @@ struct GuildOrder
     uint32 npcEntry{0};
     WorldPosition pos{};
     uint32 cost{0};
+    uint32 extendedCost{0};  // [guild50] BUY with tokens / emblems / honor
     uint32 spellId{0};
 };
 
@@ -259,6 +260,7 @@ private:
         float chance{0.0f};
         uint32 crafterLow{0};
         WorldPosition pos{};  // vendor spawn
+        uint32 extendedCost{0};  // vendor: ItemExtendedCost (tokens, emblems, honor), 0 = gold
         std::string text;     // where from, for the tab
     };
 

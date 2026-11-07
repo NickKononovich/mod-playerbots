@@ -1049,7 +1049,8 @@ void GuildCoordinator::UpdateOrders()
             // BUY: the biggest upgrade it can pay for at a vendor
             for (GearPick const& g : st.gearNow)
             {
-                if (g.kind != GuildGear::SRC_VENDOR || p->GetItemCount(g.itemId, true) || p->GetMoney() < g.aux)
+                if (g.kind != GuildGear::SRC_VENDOR || p->GetItemCount(g.itemId, true) || p->GetMoney() < g.aux ||
+                    (g.extendedCost && !GuildGear::ExtendedCostMissing(p, g.extendedCost).empty()))
                     continue;
                 GuildOrder o;
                 o.type = GuildOrderType::BUY;
@@ -1058,6 +1059,7 @@ void GuildCoordinator::UpdateOrders()
                 o.npcEntry = g.srcId;
                 o.pos = g.pos;
                 o.cost = g.aux;
+                o.extendedCost = g.extendedCost;
                 o.details = ItemName(g.itemId) + " — " + g.text;
                 o.reason = std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g.gain) +
                            ", на свои деньги";
@@ -1100,7 +1102,7 @@ void GuildCoordinator::UpdateOrders()
                 GuildOrder o;
                 o.type = GuildOrderType::DUNGEON;
                 o.count = byDungeon[bestMap].first;
-                o.details = GuildGear::DungeonName(bestMap) + ": " + std::to_string(o.count) + " улучш. (" +
+                o.details = GuildGear::MapName(bestMap) + ": " + std::to_string(o.count) + " улучш. (" +
                             byDungeon[bestMap].second + ")";
                 o.reason = "лучшие доступные вещи слотов — добыча этого данжа";
                 o.status = "план: пятёрку соберёт глоб. лидер";
@@ -1243,16 +1245,56 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
     money = money > ranks ? money - ranks : 0;
 
     std::map<uint8, GearPick> bestNow, bestPlan;
-    bool aheadItem = false;  // the item needs a level the member has not reached: a plan, not an order
+    bool aheadItem = false;  // the member still lacks the level / reputation to wear it: a plan, not an order
+    std::string lockText;
     auto const consider = [&](GearPick const& pick, bool isNow)
     {
         if (isNow && aheadItem)
             return;
+        GearPick use = pick;
+        if (aheadItem)
+            use.text += " — " + lockText;
         auto& best = isNow ? bestNow : bestPlan;
-        auto const itr = best.find(pick.group);
-        if (itr == best.end() || pick.gain > itr->second.gain + 1e-6f ||
-            (std::fabs(pick.gain - itr->second.gain) <= 1e-6f && KindRank(pick.kind) < KindRank(itr->second.kind)))
-            best[pick.group] = pick;
+        auto const itr = best.find(use.group);
+        if (itr == best.end() || use.gain > itr->second.gain + 1e-6f ||
+            (std::fabs(use.gain - itr->second.gain) <= 1e-6f && KindRank(use.kind) < KindRank(itr->second.kind)))
+            best[use.group] = use;
+    };
+    auto const chanceText = [](float chance)
+    {
+        char buf[16];
+        snprintf(buf, sizeof(buf), chance < 1.0f ? "%.1f%%" : "%.0f%%", chance);
+        return std::string(buf);
+    };
+    auto const levelText = [](uint32 lo, uint32 hi)
+    { return "L" + std::to_string(lo) + (hi > lo ? "-" + std::to_string(hi) : std::string()); };
+    auto const creatureName = [](uint32 entry)
+    {
+        CreatureTemplate const* c = sObjectMgr->GetCreatureTemplate(entry);
+        return c ? c->Name : std::string("?");
+    };
+    // where a token / emblem an extended cost asks for comes from (its first boss / mob / quest source)
+    auto const tokenFrom = [&](uint32 extendedCost)
+    {
+        ItemExtendedCostEntry const* cost = sItemExtendedCostStore.LookupEntry(extendedCost);
+        if (!cost)
+            return std::string();
+        for (uint32 r = 0; r < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++r)
+        {
+            std::vector<GuildGear::Source> const* list = cost->reqitem[r] ? GuildGear::SourcesOf(cost->reqitem[r])
+                                                                          : nullptr;
+            if (!list)
+                continue;
+            for (GuildGear::Source const& s : *list)
+            {
+                if (s.kind == GuildGear::SRC_DROP || s.kind == GuildGear::SRC_WORLD)
+                    return ItemName(cost->reqitem[r]) + ": " + creatureName(s.id) + " (" +
+                           GuildGear::MapName(s.mapId) + ")";
+                if (s.kind == GuildGear::SRC_QUEST)
+                    return ItemName(cost->reqitem[r]) + ": квест q" + std::to_string(s.id);
+            }
+        }
+        return std::string();
     };
 
     auto const addSources = [&](ItemTemplate const* proto, GuildGear::Eval const& ev)
@@ -1289,6 +1331,9 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                     Quest const* quest = sObjectMgr->GetQuestTemplate(src.id);
                     if (!quest || m->GetQuestRewardStatus(src.id))
                         break;
+                    // the quest's own race / class limits: never this member's
+                    if (!m->SatisfyQuestRace(quest, false) || !m->SatisfyQuestClass(quest, false))
+                        break;
                     std::string const title = "q" + std::to_string(src.id) + " «" + quest->GetTitle() + "»";
                     if (m->FindQuestSlot(src.id) < MAX_QUEST_LOG_SIZE)
                     {
@@ -1303,17 +1348,68 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         p.text = "квест " + title + " L" + std::to_string(src.level);
                         consider(p, false);
                     }
+                    else
+                    {
+                        // a chain step (prerequisites, exclusive group) or a level still ahead
+                        p.text = "квест " + title + " L" + std::to_string(src.level) + " — " +
+                                 (m->SatisfyQuestLevel(quest, false) ? std::string("после цепочки")
+                                                                     : "с L" + std::to_string(src.levelMax));
+                        consider(p, false);
+                    }
                     break;
                 }
                 case GuildGear::SRC_DROP:
                 {
-                    if (src.level > level)
-                        break;  // the dungeon's entry level (dungeon_access_template) is still ahead
-                    CreatureTemplate const* boss = sObjectMgr->GetCreatureTemplate(src.id);
-                    char chance[16];
-                    snprintf(chance, sizeof(chance), "%.0f%%", src.chance);
-                    p.text = "данж " + GuildGear::DungeonName(src.mapId) + ": " + (boss ? boss->Name : "?") + ", " +
-                             chance;
+                    if (src.level > ahead)
+                        break;  // the instance's entry level (dungeon_access_template) is still far ahead
+                    MapEntry const* map = sMapStore.LookupEntry(src.mapId);
+                    p.text = std::string(map && map->IsRaid() ? "рейд " : "данж ") + GuildGear::MapName(src.mapId) +
+                             (src.difficulty ? " (сложн. " + std::to_string(src.difficulty) + ")" : std::string()) +
+                             ": " + creatureName(src.id) + ", " + chanceText(src.chance) +
+                             (src.level > level ? ", вход с L" + std::to_string(src.level) : std::string());
+                    consider(p, false);
+                    break;
+                }
+                case GuildGear::SRC_WORLD:
+                    p.text = "моб " + creatureName(src.id) + " " + levelText(src.level, src.levelMax) + " (" +
+                             GuildGear::MapName(src.mapId) + "), " + chanceText(src.chance);
+                    consider(p, false);
+                    break;
+                case GuildGear::SRC_REFDROP:
+                {
+                    GuildGear::RefInfo const* ref = GuildGear::Reference(src.id);
+                    if (!ref || ref->minLevel > ahead)
+                        break;
+                    p.text = "мировой дроп " + levelText(ref->minLevel, ref->maxLevel) + " (" +
+                             std::to_string(ref->users) + " источн., " + GuildGear::MapName(ref->mapId) + "), " +
+                             chanceText(src.chance);
+                    consider(p, false);
+                    break;
+                }
+                case GuildGear::SRC_OBJECT:
+                {
+                    GameObjectTemplate const* go = sObjectMgr->GetGameObjectTemplate(src.id);
+                    p.text = std::string("объект ") + (go ? go->name : std::string("?")) + " (" +
+                             GuildGear::MapName(src.mapId) + "), " + chanceText(src.chance);
+                    consider(p, false);
+                    break;
+                }
+                case GuildGear::SRC_CONTAINER:
+                    p.text = "из " + ItemName(src.id) + ", " + chanceText(src.chance);
+                    consider(p, false);
+                    break;
+                case GuildGear::SRC_OTHER:
+                {
+                    std::string what;
+                    if (src.aux == GuildGear::OTHER_PICKPOCKET)
+                        what = "кража у " + creatureName(src.id);
+                    else if (src.aux == GuildGear::OTHER_SKINNING)
+                        what = "шкура с " + creatureName(src.id);
+                    else if (src.aux == GuildGear::OTHER_FISHING)
+                        what = "рыбалка, зона " + std::to_string(src.id);
+                    else
+                        what = "почта " + std::to_string(src.id);
+                    p.text = what + ", " + chanceText(src.chance);
                     consider(p, false);
                     break;
                 }
@@ -1337,7 +1433,12 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         }
                     }
                     if (!crafter)
+                    {
+                        p.text = std::string("крафт (") + SkillShort(recipe->skillLine) + " " +
+                                 std::to_string(recipe->reqSkill) + "): рецепта нет ни у кого в гильдии";
+                        consider(p, false);
                         break;
+                    }
                     p.crafterLow = crafter->GetGUID().GetCounter();
                     p.text = "крафт " + Who(p.crafterLow) + " (" + SkillShort(recipe->skillLine) + ")" +
                              (ready ? "" : ", материалы в wanted list");
@@ -1351,15 +1452,22 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                     if (vendorDone)
                         break;
                     vendorDone = true;
+                    // the nearest friendly spawn on its map
                     std::vector<GuildGear::VendorSpawn> const* spawns = GuildGear::VendorsOf(proto->ItemId);
                     GuildGear::VendorSpawn const* nearest = nullptr;
+                    GuildGear::VendorSpawn const* elsewhere = nullptr;
                     float nearDist = 0.0f;
                     static std::vector<GuildGear::VendorSpawn> const none;
                     for (GuildGear::VendorSpawn const& s : spawns ? *spawns : none)
                     {
-                        if (s.mapId != m->GetMapId() || !FriendlyNpc(m, s.entry) ||
-                            NewRpgProfession::BuyFailed(m, s.entry, proto->ItemId))
+                        if (!FriendlyNpc(m, s.entry) || NewRpgProfession::BuyFailed(m, s.entry, proto->ItemId))
                             continue;
+                        if (s.mapId != m->GetMapId())
+                        {
+                            if (!elsewhere)
+                                elsewhere = &s;
+                            continue;
+                        }
                         float const d = m->GetExactDist(s.x, s.y, s.z);
                         if (!nearest || d < nearDist)
                         {
@@ -1368,16 +1476,41 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         }
                     }
                     if (!nearest)
+                    {
+                        if (!elsewhere)
+                            break;
+                        // a vendor on another continent: a plan only
+                        p.srcId = elsewhere->entry;
+                        p.mapId = elsewhere->mapId;
+                        p.text = "торговец " + creatureName(elsewhere->entry) + " (" +
+                                 GuildGear::MapName(elsewhere->mapId) + ")" +
+                                 (elsewhere->extendedCost ? ", за " + GuildGear::ExtendedCostText(elsewhere->extendedCost)
+                                                          : std::string());
+                        consider(p, false);
                         break;
-                    CreatureTemplate const* vendor = sObjectMgr->GetCreatureTemplate(nearest->entry);
+                    }
                     p.srcId = nearest->entry;
                     p.mapId = nearest->mapId;
                     p.pos = WorldPosition(nearest->mapId, nearest->x, nearest->y, nearest->z);
                     p.aux = uint32(proto->BuyPrice);
-                    p.text = "торговец " + std::string(vendor ? vendor->Name : "?") + " " +
-                             std::to_string(uint32(nearDist)) + " ярд, " + MoneyText(uint32(proto->BuyPrice)) +
-                             (money >= uint32(proto->BuyPrice) ? "" : " (копит: свободно " + MoneyText(money) + ")");
-                    if (money >= uint32(proto->BuyPrice))
+                    p.extendedCost = nearest->extendedCost;
+                    std::string const missing =
+                        nearest->extendedCost ? GuildGear::ExtendedCostMissing(m, nearest->extendedCost) : "";
+                    bool const canPay = money >= uint32(proto->BuyPrice) && missing.empty();
+                    std::string price;
+                    if (nearest->extendedCost)
+                        price = GuildGear::ExtendedCostText(nearest->extendedCost);
+                    if (proto->BuyPrice || !nearest->extendedCost)
+                        price += (price.empty() ? "" : " + ") + MoneyText(uint32(proto->BuyPrice));
+                    p.text = "торговец " + creatureName(nearest->entry) + " " + std::to_string(uint32(nearDist)) +
+                             " ярд, " + price +
+                             (money >= uint32(proto->BuyPrice) ? std::string()
+                                                               : " (копит: свободно " + MoneyText(money) + ")") +
+                             (missing.empty() ? std::string() : " (не хватает: " + missing + ")");
+                    if (!missing.empty())
+                        if (std::string const from = tokenFrom(nearest->extendedCost); !from.empty())
+                            p.text += "; " + from;
+                    if (canPay)
                         consider(p, true);
                     consider(p, false);
                     break;
@@ -1396,12 +1529,14 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
             if (proto->RequiredLevel > ahead)
                 break;  // sorted by RequiredLevel
-            if (!(uint32(proto->AllowableClass) & classMask))
+            if (!(uint32(proto->AllowableClass) & classMask) || !(uint32(proto->AllowableRace) & m->getRaceMask()))
                 continue;
-            aheadItem = proto->RequiredLevel > level;
             GuildGear::Eval ev;
-            if (GuildGear::Evaluate(m, calc, proto, ev, aheadItem))
-                addSources(proto, ev);
+            if (!GuildGear::Evaluate(m, calc, proto, ev, true))
+                continue;
+            aheadItem = !ev.locked.empty();
+            lockText = ev.locked;
+            addSources(proto, ev);
         }
         aheadItem = false;
     }
@@ -1954,6 +2089,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
             {
                 if (bot->GetItemCount(order.itemId, true) || bot->GetMoney() < order.cost || bot->IsInCombat() ||
                     order.pos.GetMapId() != bot->GetMapId() ||
+                    (order.extendedCost && !GuildGear::ExtendedCostMissing(bot, order.extendedCost).empty()) ||
                     NewRpgProfession::BuyFailed(bot, order.npcEntry, order.itemId))
                     continue;
                 order.executable = false;

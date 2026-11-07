@@ -580,7 +580,8 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
             for (uint32 slot = 0; slot < items->GetItemCount(); ++slot)
             {
                 VendorItem const* item = items->GetItem(slot);
-                if (!item || item->item != data->itemId || item->ExtendedCost)
+                // [guild50] a guild BUY (no skill) may pay an extended cost (tokens, emblems); a tool is bought with gold
+                if (!item || item->item != data->itemId || (item->ExtendedCost && data->skill))
                     continue;
                 uint32 const before = bot->GetItemCount(data->itemId, false);
                 bot->BuyItemFromVendorSlot(npc->GetGUID(), slot, data->itemId, 1, NULL_BAG, NULL_SLOT);
