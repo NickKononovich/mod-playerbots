@@ -39,6 +39,8 @@ namespace NewRpgProfession
     // [guild50] the money the next rank of each planned primary profession costs at a trainer that can teach it now
     // (Trainer::CanTeachSpell): kept back from gear purchases
     uint32 NextRankCost(Player* bot);
+    // [guild70] the tools of the bot's learned planned professions it still lacks: their vendor price, their names
+    uint32 MissingTools(Player* bot, std::string& names);
 }
 
 class NewRpgDoProfessionAction : public NewRpgBaseAction
@@ -46,6 +48,9 @@ class NewRpgDoProfessionAction : public NewRpgBaseAction
 public:
     NewRpgDoProfessionAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg do profession") {}
     bool Execute(Event event) override;
+
+private:
+    bool ExecuteCraft(NewRpgInfo::DoProfession& data);  // [guild70] NewRpgCraft.cpp
 };
 
 #endif

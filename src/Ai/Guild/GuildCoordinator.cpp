@@ -32,6 +32,7 @@
 #include "ItemUsageValue.h"
 #include "Log.h"
 #include "NewRpgBaseAction.h"  // [guild14] TripRefused
+#include "NewRpgCraft.h"  // [guild70] crafted products, the crafting wait
 #include "NewRpgInfo.h"
 #include "NewRpgProfession.h"  // [guild50] BUY at a vendor
 #include "QuestDef.h"
@@ -100,11 +101,34 @@ namespace
         }
     }
 
+    // [guild70] the crafters of a skill line, plural (the wanted list's breakdown)
+    char const* SkillPlural(uint32 line)
+    {
+        switch (line)
+        {
+            case 164: return "кузнецы";
+            case 165: return "кожевники";
+            case 171: return "алхимики";
+            case 197: return "портные";
+            case 202: return "инженеры";
+            case 333: return "зачарователи";
+            case 755: return "ювелиры";
+            case 773: return "начертатели";
+            case 185: return "повара";
+            case 129: return "лекари";
+            default: return "?";
+        }
+    }
+
     std::string OrdersText(std::string text, size_t max)
     {
         std::replace(text.begin(), text.end(), ';', ',');
         std::replace(text.begin(), text.end(), '\t', ' ');
-        return text.size() > max ? text.substr(0, max) : text;
+        if (text.size() <= max)
+            return text;
+        while (max && (uint8(text[max]) & 0xC0) == 0x80)  // [guild70] never cut a UTF-8 letter in two
+            --max;
+        return text.substr(0, max);
     }
 
     void SendLine(Player* player, std::string const& line)
@@ -144,6 +168,29 @@ namespace
         if (skillValue >= grayLevel)
             return gray;
         return gray + int32(int64(grayLevel - skillValue) * (orange - gray) / (grayLevel - yellowLevel));
+    }
+
+    // [guild70] a recipe's skill-up chance at `value` and its expected cost per skill point (gathered units, vendor
+    // reagents free) when it is orange or yellow there; false when green / gray
+    template <class R>
+    bool SkillUpCost(R const& r, uint32 value, std::unordered_set<uint32> const& vendor, double& cost, double& units,
+                     int32& chance)
+    {
+        if (value >= (r.yellow + r.gray) / 2)
+            return false;
+        chance = CraftChance(value, r.gray, r.yellow);
+        if (chance <= 0)
+            return false;
+        double gathered = 0, all = 0;
+        for (auto const& [item, n] : r.reagents)
+        {
+            all += n;
+            gathered += vendor.count(item) ? 0 : n;
+        }
+        double const expected = 1000.0 / chance;
+        cost = expected * gathered;
+        units = expected * all;
+        return true;
     }
 
     std::string ConText(Player* bot, Creature* killer)
@@ -201,6 +248,26 @@ namespace
         if (gain < 0.005f)
             return "вес равный, больше брони / ур. предмета";
         return "+" + std::to_string(int32(gain * 100.0f + 0.5f)) + "%";
+    }
+
+    // [guild70] money as g / s / c
+    std::string Gsc(uint64 copper)
+    {
+        std::string text;
+        if (copper >= GOLD)
+            text += std::to_string(copper / GOLD) + "g ";
+        if (copper >= SILVER)
+            text += std::to_string((copper % GOLD) / SILVER) + "s ";
+        return text + std::to_string(copper % SILVER) + "c";
+    }
+
+    // the core's price of a guild bank tab (Guild::_GetGuildBankTabPrice: the GuildBankTabCost config values)
+    uint32 GuildTabPrice(uint8 tab)
+    {
+        static ServerConfigs const costs[] = {CONFIG_GUILD_BANK_TAB_COST_0, CONFIG_GUILD_BANK_TAB_COST_1,
+                                                CONFIG_GUILD_BANK_TAB_COST_2, CONFIG_GUILD_BANK_TAB_COST_3,
+                                                CONFIG_GUILD_BANK_TAB_COST_4, CONFIG_GUILD_BANK_TAB_COST_5};
+        return tab < std::size(costs) ? sWorld->getIntConfig(costs[tab]) : 0;
     }
 
     std::string MoneyText(uint32 copper)
@@ -263,7 +330,8 @@ void GuildCoordinator::LoadPlan()
     plan_.clear();
     planIndex_.clear();
     if (QueryResult result =
-            PlayerbotsDatabase.Query("SELECT guid, num, name, grp, role, prof1, prof2 FROM guild_project_plan ORDER BY num"))
+            PlayerbotsDatabase.Query("SELECT guid, num, name, grp, role, prof1, prof2, secondary FROM guild_project_plan "
+                                     "ORDER BY num"))
     {
         do
         {
@@ -278,6 +346,11 @@ void GuildCoordinator::LoadPlan()
             for (uint32 i : {5u, 6u})
                 if (uint32 const prof = f[i].Get<uint16>())
                     row.profs.push_back(prof);
+            std::stringstream sec(f[7].Get<std::string>());  // [guild70] "185,129"
+            std::string part;
+            while (std::getline(sec, part, ','))
+                if (uint32 const skill = uint32(std::strtoul(part.c_str(), nullptr, 10)))
+                    row.secondary.push_back(skill);
             if (planIndex_.emplace(row.low, plan_.size()).second)
                 plan_.push_back(row);
         } while (result->NextRow());
@@ -303,6 +376,14 @@ void GuildCoordinator::LoadRecipes()
     recipesBySkill_.clear();
     smeltFrom_.clear();
     vendorItems_.clear();
+    craftedFrom_.clear();
+    skinned_.clear();
+    if (QueryResult result = WorldDatabase.Query("SELECT DISTINCT Item FROM skinning_loot_template WHERE Reference = 0"))
+    {
+        do
+            skinned_.insert(result->Fetch()[0].Get<uint32>());
+        while (result->NextRow());
+    }
 
     // trainer recipes: spell -> (skill rank, level); a trainer spell that teaches another spell stands for that one
     std::unordered_map<uint32, std::pair<uint32, uint32>> trainerReq;
@@ -361,6 +442,14 @@ void GuildCoordinator::LoadRecipes()
                 recipe.reagents.emplace_back(uint32(info->Reagent[r]), info->ReagentCount[r]);
         if (recipe.reagents.empty())
             continue;
+        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)  // [guild70]
+            if ((info->Effects[e].Effect == SPELL_EFFECT_CREATE_ITEM ||
+                 info->Effects[e].Effect == SPELL_EFFECT_CREATE_ITEM_2) &&
+                info->Effects[e].ItemType && !recipe.product)
+            {
+                recipe.product = info->Effects[e].ItemType;
+                recipe.made = float(std::max(1, info->Effects[e].CalcValue()));
+            }
 
         if (ability->SkillLine == SKILL_MINING)
         {
@@ -378,9 +467,29 @@ void GuildCoordinator::LoadRecipes()
         }
         if (!recipe.gray)
             continue;
+        // [guild70] a trainer / auto-learned recipe makes the intermediate (bolt, potion used as reagent…)
+        if (recipe.product && (recipe.trainer || recipe.autoLearned) && !craftedFrom_.count(recipe.product))
+        {
+            auto& from = craftedFrom_[recipe.product];
+            for (auto const& [item, n] : recipe.reagents)
+                from.emplace_back(item, float(n) / recipe.made);
+        }
         recipesBySkill_[ability->SkillLine].push_back(recipe);
         ++count;
     }
+    // [guild70] two-way conversions (essences: lesser <-> greater) are no intermediates
+    std::vector<uint32> cyclic;
+    for (auto const& [product, from] : craftedFrom_)
+        for (auto const& [item, n] : from)
+        {
+            auto const back = craftedFrom_.find(item);
+            if (back != craftedFrom_.end() &&
+                std::any_of(back->second.begin(), back->second.end(), [&](auto const& x) { return x.first == product; }))
+                cyclic.push_back(product);
+        }
+    for (uint32 product : cyclic)
+        craftedFrom_.erase(product);
+    BuildSkillPlans();
     LOG_INFO("playerbots", "[guild30] wanted list: {} craft recipes, {} smelts, {} vendor items", count,
              smeltFrom_.size(), vendorItems_.size());
 }
@@ -529,6 +638,10 @@ std::string GuildCoordinator::WaitReason(Player* bot, PlayerbotAI* botAI, BotSta
 {
     if (!state.waitReason.empty())
         return state.waitReason;
+    if (botAI)  // [guild70] crafting at a forge / in town: standing is the work
+        if (auto const* prof = std::get_if<NewRpgInfo::DoProfession>(&botAI->rpgInfo.data))
+            if (prof->kind == NewRpgCraft::TASK_CRAFT && !prof->npcEntry)
+                return "крафт " + NewRpgCraft::RecipeName(prof->spellId);
     if (std::string const five = FiveWait(state); !five.empty())  // [guild60]
         return five;
     if (!botAI || IsRealPlayer(bot))
@@ -655,98 +768,205 @@ void GuildCoordinator::UpdateLeaders()
             bots_[row.low].raidLeaderLow = raidLeader_[row.grp == 'B' ? 1 : 0];
 }
 
-// how much of each reagent the crafter needs from its skill to its rank cap ("the next tier"), orange/yellow only
-uint32 GuildCoordinator::SkillUpNeeds(Player* crafter, uint32 skillLine, std::map<uint32, uint32>& needs) const
+// [guild70] per skill line and value: the trainer / auto-learned recipe whose skill-up costs the fewest gathered
+// units (the plan every crafter follows; recipes learned elsewhere are compared per crafter)
+void GuildCoordinator::BuildSkillPlans()
 {
-    uint32 const skill = crafter->GetPureSkillValue(skillLine);
-    uint32 const cap = crafter->GetPureMaxSkillValue(skillLine);
-    auto const list = recipesBySkill_.find(skillLine);
-    if (!skill || skill >= cap || list == recipesBySkill_.end())
-        return 0;
-
-    std::map<size_t, double> crafts;
-    for (uint32 value = skill; value < cap; ++value)
+    skillPlan_.clear();
+    extraRecipes_.clear();
+    size_t steps = 0;
+    for (auto const& [line, list] : recipesBySkill_)
     {
-        int32 best = -1;
+        uint32 top = 0;
+        for (size_t i = 0; i < list.size(); ++i)
+        {
+            top = std::max(top, (list[i].yellow + list[i].gray) / 2);
+            if (!list[i].trainer && !list[i].autoLearned)
+                extraRecipes_[line].push_back(i);
+        }
+        std::vector<int32>& plan = skillPlan_[line];
+        plan.assign(top + 1, -1);
+        for (uint32 value = 1; value <= top; ++value)
+        {
+            double bestCost = 0, bestUnits = 0;
+            for (size_t i = 0; i < list.size(); ++i)
+            {
+                Recipe const& r = list[i];
+                double cost = 0, units = 0;
+                int32 chance = 0;
+                if ((!r.trainer && !r.autoLearned) || r.reqSkill > value ||
+                    !SkillUpCost(r, value, vendorItems_, cost, units, chance))
+                    continue;
+                if (plan[value] < 0 || cost < bestCost || (cost == bestCost && units < bestUnits))
+                {
+                    plan[value] = int32(i);
+                    bestCost = cost;
+                    bestUnits = units;
+                }
+            }
+            steps += plan[value] >= 0;
+        }
+    }
+    LOG_INFO("playerbots", "[guild70] skill-up plans: {} skill lines, {} skill values with a skill-up recipe",
+             skillPlan_.size(), steps);
+}
+
+void GuildCoordinator::SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 skill,
+                                     std::map<size_t, double>& crafts) const
+{
+    auto const list = recipesBySkill_.find(skillLine);
+    auto const plan = skillPlan_.find(skillLine);
+    if (list == recipesBySkill_.end() || plan == skillPlan_.end())
+        return;
+    std::vector<size_t> known;  // recipes from drops / vendors this crafter has learned
+    if (crafter)
+        if (auto const extra = extraRecipes_.find(skillLine); extra != extraRecipes_.end())
+            for (size_t i : extra->second)
+                if (crafter->HasSpell(list->second[i].spellId))
+                    known.push_back(i);
+    for (uint32 value = std::max<uint32>(1, skill); value < plan->second.size(); ++value)
+    {
+        int32 best = plan->second[value];
         double bestCost = 0, bestUnits = 0;
         int32 bestChance = 0;
-        for (size_t i = 0; i < list->second.size(); ++i)
+        if (best >= 0)
+            SkillUpCost(list->second[size_t(best)], value, vendorItems_, bestCost, bestUnits, bestChance);
+        for (size_t i : known)
         {
-            Recipe const& r = list->second[i];
-            bool const usable = crafter->HasSpell(r.spellId) ||
-                                ((r.trainer || r.autoLearned) && r.reqSkill <= value && r.reqLevel <= crafter->GetLevel());
-            if (!usable || value >= (r.yellow + r.gray) / 2)  // green or gray: not a skill-up recipe
+            double cost = 0, units = 0;
+            int32 chance = 0;
+            if (!SkillUpCost(list->second[i], value, vendorItems_, cost, units, chance))
                 continue;
-            int32 const chance = CraftChance(value, r.gray, r.yellow);
-            if (chance <= 0)
-                continue;
-            double gathered = 0, units = 0;
-            for (auto const& [item, n] : r.reagents)
-            {
-                units += n;
-                gathered += vendorItems_.count(item) ? 0 : n;
-            }
-            double const expected = 1000.0 / chance;
-            double const cost = expected * gathered, allUnits = expected * units;
-            if (best < 0 || cost < bestCost || (cost == bestCost && allUnits < bestUnits))
+            if (best < 0 || cost < bestCost || (cost == bestCost && units < bestUnits))
             {
                 best = int32(i);
                 bestCost = cost;
-                bestUnits = allUnits;
+                bestUnits = units;
                 bestChance = chance;
             }
         }
-        if (best < 0)
-            break;  // no recipe at this skill: the next one is a trainer / recipe step, not mats
-        crafts[size_t(best)] += 1000.0 / bestChance;
+        if (best >= 0 && bestChance > 0)
+            crafts[size_t(best)] += 1000.0 / bestChance;  // a gap: that point comes from a green recipe
     }
-    for (auto const& [index, expected] : crafts)
-    {
-        uint32 const n = uint32(std::ceil(expected - 0.001));
-        for (auto const& [item, count] : list->second[index].reagents)
-        {
-            auto const smelt = smeltFrom_.find(item);
-            if (smelt != smeltFrom_.end() && !vendorItems_.count(item))
-                for (auto const& [ore, perBar] : smelt->second)
-                    needs[ore] += uint32(std::ceil(n * count * perBar - 0.001));
-            else
-                needs[item] += n * count;
-        }
-    }
-    return cap;
 }
 
+void GuildCoordinator::ExpandReagent(uint32 item, double count, std::map<uint32, double>& out,
+                                     std::map<uint32, std::map<uint32, float>>* via, float perUnit, uint32 depth,
+                                     uint32 top) const
+{
+    if (depth < 3 && !vendorItems_.count(item) && !gatherSource_.count(item) && !skinned_.count(item))
+    {
+        std::vector<std::pair<uint32, float>> const* parts = nullptr;
+        if (auto const smelt = smeltFrom_.find(item); smelt != smeltFrom_.end())
+            parts = &smelt->second;
+        else if (auto const made = craftedFrom_.find(item); made != craftedFrom_.end())
+            parts = &made->second;
+        if (parts)
+        {
+            for (auto const& [raw, per] : *parts)
+                ExpandReagent(raw, count * per, out, via, perUnit * per, depth + 1, depth ? top : item);
+            return;
+        }
+    }
+    out[item] += count;
+    if (via && depth)
+        (*via)[item][top] = perUnit;
+}
+
+// [guild70] The wanted list. REQUIRED items drive the orders (GATHER, the shortfall sort): the raw reagents of every
+// planned crafter's skill-up recipes over the whole range where they still give skill (learned or not yet, offline
+// at its last seen skill), the reagents of upgrade crafts and bags, the members' quest items. Intermediates (bars,
+// bolts, potions used as reagents) stand for their raw materials and count as them when held; they are OPTIONAL
+// themselves: banked when someone holds them, never ordered.
 void GuildCoordinator::UpdateWanted()
 {
-    std::map<uint32, WantedItem> wanted;
+    enum : uint8
+    {
+        WHY_SKILL,
+        WHY_QUEST,
+        WHY_UPGRADE,
+        WHY_BAG
+    };
+    struct Part
+    {
+        uint8 kind{0};  // WHY_*
+        std::set<uint32> who;
+        double amount{0};
+        std::map<uint32, double> products;  // skill-ups: the recipe's product -> amount of this item for it
+    };
+    std::map<uint32, double> need;                      // raw item -> amount
+    std::map<uint32, std::map<std::string, Part>> why;  // raw item -> reason -> part
+    std::map<uint32, std::map<uint32, float>> via;      // raw item -> intermediate -> raw per intermediate
     std::vector<Player*> members;
     Guild* guild = nullptr;
+    std::unordered_set<uint32> const craftLines(std::begin(CRAFT_LINES), std::end(CRAFT_LINES));
+    auto const addPart = [&](uint32 item, double amount, std::string const& label, uint8 kind, uint32 whoLow,
+                             uint32 product)
+    {
+        need[item] += amount;
+        Part& part = why[item][label];
+        part.kind = kind;
+        if (whoLow)
+            part.who.insert(whoLow);
+        part.amount += amount;
+        if (product)
+            part.products[product] += amount;
+    };
+
     for (PlanRow const& row : plan_)
     {
         Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
-        if (!p || !p->IsInWorld())
-            continue;
-        members.push_back(p);
-        if (!guild)
-            guild = GuildBankRun::BotGuild(p);
-
-        for (uint32 line : CRAFT_LINES)
+        bool const online = p && p->IsInWorld();
+        if (online)
         {
-            if (!p->HasSkill(line))
+            members.push_back(p);
+            if (!guild)
+                guild = GuildBankRun::BotGuild(p);
+        }
+
+        std::vector<uint32> lines;
+        auto const addLine = [&](uint32 line)
+        {
+            if (craftLines.count(line) && std::find(lines.begin(), lines.end(), line) == lines.end())
+                lines.push_back(line);
+        };
+        for (uint32 line : row.profs)
+            addLine(line);
+        for (uint32 line : row.secondary)
+            addLine(line);
+        if (online)
+            for (uint32 line : CRAFT_LINES)
+                if (p->HasSkill(line))
+                    addLine(line);
+        for (uint32 line : lines)
+        {
+            auto const list = recipesBySkill_.find(line);
+            if (list == recipesBySkill_.end())
                 continue;
-            std::map<uint32, uint32> needs;
-            uint32 const cap = SkillUpNeeds(p, line, needs);
-            for (auto const& [item, n] : needs)
+            uint64 const key = (uint64(row.low) << 16) | line;
+            uint32 skill = 0;
+            if (online)
             {
-                WantedItem& w = wanted[item];
-                w.itemId = item;
-                w.need += n;
-                if (w.forWhom.size() < 60)
-                    w.forWhom += (w.forWhom.empty() ? "" : ", ") + std::string("#") + std::to_string(row.num) + " " +
-                                 SkillShort(line) + " " + std::to_string(p->GetPureSkillValue(line)) + "→" +
-                                 std::to_string(cap);
+                skill = p->HasSkill(line) ? p->GetPureSkillValue(line) : 0;
+                lastSkill_[key] = skill;
+            }
+            else if (auto const seen = lastSkill_.find(key); seen != lastSkill_.end())
+                skill = seen->second;
+            std::map<size_t, double> crafts;
+            SkillUpCrafts(online ? p : nullptr, line, skill, crafts);
+            for (auto const& [index, expected] : crafts)
+            {
+                Recipe const& r = list->second[index];
+                double const n = std::ceil(expected - 0.001);
+                std::map<uint32, double> raw;
+                for (auto const& [item, count] : r.reagents)
+                    ExpandReagent(item, n * count, raw, &via);
+                for (auto const& [item, amount] : raw)
+                    addPart(item, amount, SkillPlural(line), WHY_SKILL, row.low, r.product);
             }
         }
+        if (!online)
+            continue;
         // items of the members' active quests that can change hands (no quest-bound items)
         for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
         {
@@ -764,51 +984,108 @@ void GuildCoordinator::UpdateWanted()
                 uint32 const have = p->GetItemCount(item, false);
                 if (have >= quest->RequiredItemCount[i])
                     continue;
-                WantedItem& w = wanted[item];
-                w.itemId = item;
-                w.need += quest->RequiredItemCount[i];
-                if (w.forWhom.size() < 60)
-                    w.forWhom += (w.forWhom.empty() ? "" : ", ") + std::string("#") + std::to_string(row.num) +
-                                 " q" + std::to_string(questId);
+                addPart(item, quest->RequiredItemCount[i], "квест q" + std::to_string(questId), WHY_QUEST, row.low,
+                        0);
             }
         }
     }
 
-    // [guild50] the reagents of the craft queue (upgrade crafts, bags); a bar stands for its ores as above
+    // [guild50] the reagents of the craft queue (upgrade crafts, bags), intermediates as their raw materials
     {
-        std::map<uint32, std::pair<uint32, std::string>> gear;
+        std::map<uint32, std::map<std::string, GearNeed>> gear;
         {
             std::lock_guard<std::mutex> guard(lock_);
             gear = gearWanted_;
         }
-        for (auto const& [item, need] : gear)
-        {
-            auto const smelt = smeltFrom_.find(item);
-            std::vector<std::pair<uint32, uint32>> parts;
-            if (smelt != smeltFrom_.end() && !vendorItems_.count(item))
-                for (auto const& [ore, perBar] : smelt->second)
-                    parts.emplace_back(ore, uint32(std::ceil(need.first * perBar - 0.001)));
-            else
-                parts.emplace_back(item, need.first);
-            for (auto const& [id, n] : parts)
+        for (auto const& [item, reasons] : gear)
+            for (auto const& [label, g] : reasons)
             {
-                WantedItem& w = wanted[id];
-                w.itemId = id;
-                w.need += n;
-                if (w.forWhom.size() < 60)
-                    w.forWhom += (w.forWhom.empty() ? "" : ", ") + need.second;
+                std::map<uint32, double> raw;
+                ExpandReagent(item, g.count, raw, &via);
+                bool const bag = label.rfind("сумка", 0) == 0;
+                for (auto const& [id, amount] : raw)
+                    for (uint32 forLow : g.forLows)
+                        addPart(id, amount / std::max<size_t>(1, g.forLows.size()), label,
+                                bag ? WHY_BAG : WHY_UPGRADE, forLow, 0);
             }
-        }
     }
 
     std::map<uint32, uint32> bank;
     GuildBankRun::CountBank(guild, bank);
-    std::vector<WantedItem> list;
-    for (auto& [item, w] : wanted)
+    auto const held = [&](uint32 item)
     {
-        for (Player* p : members)
-            w.have += p->GetItemCount(item, false);
-        w.have += bank[item];
+        uint32 n = bank[item];
+        for (Player* m : members)
+            n += m->GetItemCount(item, false);
+        return n;
+    };
+    auto const num = [&](uint32 low)
+    {
+        PlanRow const* r = Row(low);
+        return "#" + std::to_string(r ? r->num : 0);
+    };
+    auto const whyText = [&](std::map<std::string, Part> const& parts)
+    {
+        std::vector<std::pair<std::string, Part const*>> sorted;
+        for (auto const& [label, part] : parts)
+            sorted.emplace_back(label, &part);
+        std::sort(sorted.begin(), sorted.end(),
+                  [](auto const& a, auto const& b) { return a.second->amount > b.second->amount; });
+        std::string text;
+        for (auto const& [label, part] : sorted)
+        {
+            uint32 const amount = uint32(std::ceil(part->amount - 0.001));
+            std::string piece;
+            if (part->kind == WHY_SKILL)
+            {
+                std::vector<std::pair<double, uint32>> products;
+                for (auto const& [product, a] : part->products)
+                    products.emplace_back(a, product);
+                std::sort(products.rbegin(), products.rend());
+                piece = "реагент: ";
+                for (size_t i = 0; i < products.size() && i < 2; ++i)
+                    piece += (i ? ", " : "") + ItemName(products[i].second);
+                if (products.size() > 2)
+                    piece += " и др.";
+                size_t const crafters = std::max<size_t>(1, part->who.size());
+                piece += " (" + label + " " +
+                         (crafters > 1 ? std::to_string(crafters) + "×≈" + std::to_string(amount / crafters)
+                                       : num(*part->who.begin()) + " ×" + std::to_string(amount)) +
+                         ")";
+            }
+            else if (part->kind == WHY_QUEST)
+                piece = label + " для " + (part->who.empty() ? "?" : num(*part->who.begin())) + " ×" +
+                        std::to_string(amount);
+            else if (part->kind == WHY_BAG)
+                piece = label + " для " + std::to_string(part->who.size()) + " ботов ×" + std::to_string(amount);
+            else
+            {
+                piece = label + " для";
+                for (uint32 low : part->who)
+                    piece += " " + num(low);
+                piece += " ×" + std::to_string(amount);
+            }
+            if (text.size() + piece.size() > 200)
+            {
+                text += " + …";
+                break;
+            }
+            text += (text.empty() ? "" : " + ") + piece;
+        }
+        return text;
+    };
+
+    std::vector<WantedItem> list;
+    for (auto const& [item, amount] : need)
+    {
+        WantedItem w;
+        w.itemId = item;
+        w.need = uint32(std::ceil(amount - 0.001));
+        w.have = held(item);
+        // intermediates in the bags and the bank count as the raw material they were made of
+        if (auto const v = via.find(item); v != via.end())
+            for (auto const& [inter, per] : v->second)
+                w.have += uint32(float(held(inter)) * per);
         w.vendor = vendorItems_.count(item) != 0;
         auto const src = gatherSource_.find(item);
         if (src != gatherSource_.end())
@@ -816,16 +1093,63 @@ void GuildCoordinator::UpdateWanted()
             w.gatherSkill = src->second.first;
             w.gatherReq = src->second.second;
         }
+        w.forWhom = whyText(why[item]);
+        list.push_back(w);
+    }
+    // OPTIONAL: the intermediates themselves, kept in the bank when held (they stand for raw materials above)
+    std::map<uint32, std::string> optional;
+    for (auto const& [raw, inters] : via)
+        for (auto const& [inter, per] : inters)
+            if (!need.count(inter))
+            {
+                std::string& text = optional[inter];
+                char ratio[16];
+                std::snprintf(ratio, sizeof(ratio), "%.2f", per);
+                if (text.size() < 120)
+                    text += (text.empty() ? "промежуточный, засчитан как " : ", ") + ItemName(raw) + " ×" + ratio;
+            }
+    for (auto const& [inter, text] : optional)
+    {
+        WantedItem w;
+        w.itemId = inter;
+        w.optional = true;
+        w.have = held(inter);
+        w.forWhom = text + " (не заказывается)";
         list.push_back(w);
     }
     std::sort(list.begin(), list.end(), [](WantedItem const& a, WantedItem const& b)
-              { return a.Short() != b.Short() ? a.Short() > b.Short() : a.itemId < b.itemId; });
+              {
+                  if (a.optional != b.optional)
+                      return !a.optional;
+                  return a.Short() != b.Short() ? a.Short() > b.Short() : a.itemId < b.itemId;
+              });
 
     std::lock_guard<std::mutex> guard(lock_);
     wanted_ = std::move(list);
     guildState_ = guild ? "гильдия «" + guild->GetName() + "», вкладок банка " +
                               std::to_string(guild->GetPurchasedTabsSize())
                         : "гильдии нет: банк спит";
+}
+
+bool GuildCoordinator::IsWanted(uint32 itemId) const
+{
+    std::lock_guard<std::mutex> guard(lock_);
+    for (WantedItem const& w : wanted_)
+        if (w.itemId == itemId)
+            return w.Short() > 0 || w.optional;
+    return false;
+}
+
+void GuildCoordinator::RequestWithdraw(Player* bot, uint32 itemId, std::string const& why)
+{
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+        return;
+    std::lock_guard<std::mutex> guard(lock_);
+    auto& list = withdraw_[bot->GetGUID().GetCounter()];
+    for (auto const& [item, text] : list)
+        if (item == itemId)
+            return;
+    list.emplace_back(itemId, why);
 }
 
 void GuildCoordinator::UpdateOrders()
@@ -995,7 +1319,7 @@ void GuildCoordinator::UpdateOrders()
             WantedItem const* pick = nullptr;
             for (WantedItem const& w : wanted_)
             {
-                if (!w.Short() || !w.gatherSkill || !p->HasSkill(w.gatherSkill) ||
+                if (w.optional || !w.Short() || !w.gatherSkill || !p->HasSkill(w.gatherSkill) ||
                     p->GetPureSkillValue(w.gatherSkill) < w.gatherReq)
                     continue;
                 if (!pick || w.Short() > pick->Short() ||
@@ -1775,12 +2099,10 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
                 left[item] -= n;
         for (auto const& [item, n] : recipe->reagents)
         {
-            auto& w = gearWanted_[item];
-            w.first += n;
-            std::string const whom = "#" + std::to_string(Row(job.forLow) ? Row(job.forLow)->num : 0) +
-                                     (job.bag ? " сумка" : " крафт");
-            if (w.second.size() < 60 && w.second.find(whom) == std::string::npos)
-                w.second += (w.second.empty() ? "" : ", ") + whom;
+            // [guild70] the reason per product: "улучшение: <item>" / "сумка <item>", for whom
+            GearNeed& g = gearWanted_[item][(job.bag ? "сумка " : "улучшение: ") + ItemName(job.itemId)];
+            g.count += n;
+            g.forLows.insert(job.forLow);
         }
     }
 }
@@ -1930,12 +2252,12 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
 
     // 2. wanted-list material: to the guild bank (held until it exists)
     for (WantedItem const& w : wanted_)
-        if (w.itemId == report.itemId && w.need)
+        if (w.itemId == report.itemId && (w.need || w.optional))
         {
             if (held != st.held.end())
                 held->purpose = "wanted";
-            Decision(what + " → банк: в wanted list (" + std::to_string(w.have) + "/" + std::to_string(w.need) +
-                     " для " + w.forWhom + ")");
+            Decision(what + " → банк: в wanted list" + (w.optional ? " (необязательный)" : "") + " (" +
+                     std::to_string(w.have) + "/" + std::to_string(w.need) + ": " + OrdersText(w.forWhom, 90) + ")");
             return;
         }
 
@@ -2596,7 +2918,7 @@ void GuildCoordinator::SendOrders(Player* player)
     size_t shown = 0;
     for (WantedItem const& w : wanted_)
     {
-        if (!w.Short() || ++shown > 10)
+        if (w.optional || !w.Short() || ++shown > 10)
             continue;
         std::string const source = w.gatherSkill ? std::string(SkillShort(w.gatherSkill)) + " " +
                                                        std::to_string(w.gatherReq)
@@ -2604,8 +2926,14 @@ void GuildCoordinator::SendOrders(Player* player)
                                               : "добыча";
         SendLine(player, "OW;" + OrdersText(ItemName(w.itemId), 30) + ";" + std::to_string(w.Short()) + ";" +
                              std::to_string(w.have) + "/" + std::to_string(w.need) + ";" + source + ";" +
-                             OrdersText(w.forWhom, 70));
+                             OrdersText(w.forWhom, 130) + ";R");
     }
+    // [guild70] the optional ones (intermediates held somewhere): greyed at the bottom, never ordered
+    size_t optionalShown = 0;
+    for (WantedItem const& w : wanted_)
+        if (w.optional && w.have && ++optionalShown <= 4)
+            SendLine(player, "OW;" + OrdersText(ItemName(w.itemId), 30) + ";0;" + std::to_string(w.have) +
+                                 "/0;банк;" + OrdersText(w.forWhom, 130) + ";O");
     SendLine(player, "OH;" + OrdersText(healthRow_, 220));
     for (auto const& [at, text] : alerts_)
         SendLine(player, "OA;" + std::to_string(now - at) + ";" + OrdersText(text, 200));
@@ -2676,11 +3004,16 @@ void GuildCoordinator::SendResources(Player* player)
         return;
 
     std::unordered_map<uint32, uint32> wantedNeed;
+    std::unordered_map<uint32, std::pair<std::string, bool>> wantedWhy;  // [guild70] item -> (why, optional)
     {
         std::lock_guard<std::mutex> guard(lock_);
         for (WantedItem const& w : wanted_)
+        {
             if (w.need)
                 wantedNeed[w.itemId] = w.need;
+            if (w.need || w.optional)
+                wantedWhy[w.itemId] = {w.forWhom, w.optional};
+        }
     }
     auto const useful = [&](ItemTemplate const* proto)
     {
@@ -2741,8 +3074,30 @@ void GuildCoordinator::SendResources(Player* player)
             s.total += count;
             s.holders.emplace_back(0, count);
         }
+    for (auto const& [entry, need] : wantedNeed)  // [guild70] needed, nobody holds any yet
+        stock[entry];
 
     SendLine(player, "RS;n=" + std::to_string(stock.size()) + ";bank=" + (guild ? "1" : "0"));
+    // [guild70] money: RG;total;guild bank (-1 = no guild);bags   RB;num;name;copper per bot
+    {
+        uint64 bags = 0;
+        std::vector<std::pair<PlanRow const*, uint32>> purses;
+        for (PlanRow const& row : plan_)
+            if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low)))
+                if (p->IsInWorld())
+                {
+                    bags += p->GetMoney();
+                    purses.emplace_back(&row, p->GetMoney());
+                }
+        int64 const bankMoney = guild ? int64(guild->GetTotalBankMoney()) : -1;
+        SendLine(player, "RG;" + std::to_string(bags + uint64(std::max<int64>(0, bankMoney))) + ";" +
+                             std::to_string(bankMoney) + ";" + std::to_string(bags));
+        std::sort(purses.begin(), purses.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+        for (auto const& [row, copper] : purses)
+            SendLine(player, "RB;" + std::to_string(row->num) + ";" +
+                                 OrdersText(Who(row->low).substr(Who(row->low).find(' ') + 1), 24) + ";" +
+                                 std::to_string(copper));
+    }
     for (auto& [entry, s] : stock)
     {
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(entry);
@@ -2760,14 +3115,244 @@ void GuildCoordinator::SendResources(Player* player)
             holders += (holders.empty() ? "" : ", ") + part;
         }
         auto const need = wantedNeed.find(entry);
-        // R;itemId;quality;name;total;need (0 = not on the wanted list);holders
+        auto const why = wantedWhy.find(entry);
+        // R;itemId;quality;name;total;need (0 = not on the wanted list);holders;[guild70] tier R/O/-;why
         SendLine(player, "R;" + std::to_string(entry) + ";" + std::to_string(proto ? proto->Quality : 1) + ";" +
                              OrdersText(proto ? proto->Name1 : std::to_string(entry), 40) + ";" +
                              std::to_string(s.total) + ";" +
                              std::to_string(need != wantedNeed.end() ? need->second : 0) + ";" +
-                             OrdersText(holders, 100));
+                             OrdersText(holders, 60) + ";" +
+                             (why == wantedWhy.end() ? "-" : why->second.second ? "O" : "R") + ";" +
+                             (why == wantedWhy.end() ? std::string() : OrdersText(why->second.first, 110)));
     }
     SendLine(player, "RE;n=" + std::to_string(stock.size()));
+}
+
+// [guild70] the «План» tab: what the global leader intends. Crafts (skill-ups, upgrade crafts, bags; waiting,
+// ready, in progress, done), transfers (bot -> bank -> bot) and the sources of every missing piece.
+// PS;n=   P;kind;state;who;what;for;how   PW;why   PE;n=
+void GuildCoordinator::OnCrafted(Player* bot, uint32 spellId, uint32 before, uint32 after)
+{
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+        return;
+    std::lock_guard<std::mutex> guard(lock_);
+    craftsDone_.push_back({Now(), bot->GetGUID().GetCounter(), spellId, before, after});
+    while (craftsDone_.size() > 40)
+        craftsDone_.pop_front();
+}
+
+void GuildCoordinator::SendPlan(Player* player)
+{
+    if (!player || !player->GetSession() || player->GetSession()->IsHeadless())
+        return;
+    struct PlanLine
+    {
+        std::string kind, state, who, what, forWhom, how, why;
+    };
+    std::vector<PlanLine> rows;
+    auto const kindName = [](uint8 kind)
+    {
+        switch (kind)
+        {
+            case GuildGear::SRC_QUEST: return "квест";
+            case GuildGear::SRC_DROP: return "босс подземелья";
+            case GuildGear::SRC_CRAFT: return "крафт";
+            case GuildGear::SRC_VENDOR: return "торговец";
+            case GuildGear::SRC_BANK: return "банк";
+            case GuildGear::SRC_WORLD: return "мобы в мире";
+            case GuildGear::SRC_REFDROP: return "мировой дроп";
+            case GuildGear::SRC_OBJECT: return "сундук / объект";
+            case GuildGear::SRC_CONTAINER: return "из предмета";
+            default: return "другое";
+        }
+    };
+    uint32 const now = Now();
+
+    // skill-ups: what each crafter makes next (the plan's recipe at its skill), or makes now
+    for (PlanRow const& row : plan_)
+    {
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+        if (!p || !p->IsInWorld())
+            continue;
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(p);
+        auto const* task = ai ? std::get_if<NewRpgInfo::DoProfession>(&ai->rpgInfo.data) : nullptr;
+        for (uint32 line : CRAFT_LINES)
+        {
+            if (!p->HasSkill(line))
+                continue;
+            uint32 const value = p->GetPureSkillValue(line), cap = p->GetPureMaxSkillValue(line);
+            std::string const skill = std::string(SkillShort(line)) + " " + std::to_string(value) + "/" +
+                                      std::to_string(cap);
+            if (task && task->kind == NewRpgCraft::TASK_CRAFT && task->skill == line)
+            {
+                rows.push_back({"крафт", "в работе", Who(row.low), NewRpgCraft::RecipeName(task->spellId), "себе",
+                                task->npcEntry ? "покупает реагент" : "крафт", "прокачка " + skill});
+                continue;
+            }
+            auto const list = recipesBySkill_.find(line);
+            auto const plan = skillPlan_.find(line);
+            if (list == recipesBySkill_.end() || plan == skillPlan_.end())
+                continue;
+            if (value >= cap)
+            {
+                rows.push_back({"крафт", "ждёт ранг", Who(row.low), "—", "себе", "тренер",
+                                "навык на пределе ранга: " + skill});
+                continue;
+            }
+            int32 const index = value < plan->second.size() ? plan->second[value] : -1;
+            if (index < 0)
+                continue;
+            Recipe const& r = list->second[size_t(index)];
+            bool const known = p->HasSpell(r.spellId);
+            bool mats = true;
+            std::string missing;
+            for (auto const& [item, n] : r.reagents)
+                if (p->GetItemCount(item, false) < n)
+                {
+                    mats = false;
+                    missing += (missing.empty() ? "" : ", ") + ItemName(item) + " ×" + std::to_string(n);
+                }
+            rows.push_back({"крафт",
+                            !known ? "учить рецепт" : mats ? "материалы есть" : "ждёт материалы", Who(row.low),
+                            ItemName(r.product), "себе / банк", "крафт",
+                            "прокачка " + skill + " до " + std::to_string((r.yellow + r.gray) / 2) +
+                                (missing.empty() ? "" : "; нет: " + missing)});
+        }
+    }
+
+    // money goals: the guild bank tab (the core's price), the members' trainer ranks, tools, errands under way
+    {
+        Guild* guild = nullptr;
+        for (PlanRow const& row : plan_)
+            if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low)))
+                if (p->IsInWorld() && (guild = GuildBankRun::BotGuild(p)))
+                    break;
+        uint8 const tabs = guild ? guild->GetPurchasedTabsSize() : 0;
+        if (tabs < GUILD_BANK_MAX_TABS)
+        {
+            uint32 const price = GuildTabPrice(tabs);
+            uint64 const have = guild ? guild->GetTotalBankMoney() : 0;
+            rows.push_back({"деньги",
+                            guild ? "собрано " + Gsc(have) + " из " + Gsc(price) : std::string("нет гильдии"),
+                            "банк гильдии", "вкладка банка " + std::to_string(tabs + 1) + ": " + Gsc(price),
+                            "гильдия", "золото банка гильдии",
+                            "цена ядра (GuildBankTabCost" + std::to_string(tabs) + ")" +
+                                (guild ? "" : "; гильдию основывают боты по уставу, до тех пор 0")});
+        }
+        for (PlanRow const& row : plan_)
+        {
+            Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+            if (!p || !p->IsInWorld())
+                continue;
+            uint32 const money = p->GetMoney();
+            auto const state = [&](uint32 cost)
+            { return money >= cost ? "хватает (есть " + Gsc(money) + ")" : "копит: есть " + Gsc(money); };
+            if (uint32 const ranks = NewRpgProfession::NextRankCost(p))
+                rows.push_back({"деньги", state(ranks), Who(row.low), "ранги профессий: " + Gsc(ranks), "себе",
+                                "тренер, свои деньги", "следующий ранг, который тренер учит сейчас"});
+            std::string tools;
+            if (uint32 const cost = NewRpgProfession::MissingTools(p, tools))
+                rows.push_back({"деньги", state(cost), Who(row.low), "инструменты: " + Gsc(cost), "себе",
+                                "торговец, свои деньги", tools});
+            if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p))
+                if (auto const* task = std::get_if<NewRpgInfo::DoProfession>(&ai->rpgInfo.data))
+                    if (task->cost)
+                    {
+                        char const* const what = task->kind == 1                       ? "ранг у тренера"
+                                                 : task->kind == NewRpgCraft::TASK_RECIPES ? "рецепты у тренера"
+                                                 : task->kind == NewRpgCraft::TASK_CRAFT   ? "реагенты у торговца"
+                                                                                           : "покупка у торговца";
+                        rows.push_back({"деньги", "в пути: " + state(task->cost), Who(row.low),
+                                        std::string(what) + ": " + Gsc(task->cost), "себе", "свои деньги",
+                                        task->kind == NewRpgCraft::TASK_CRAFT ? NewRpgCraft::RecipeName(task->spellId)
+                                                                              : std::string("поручение профессии")});
+                    }
+        }
+    }
+
+    std::lock_guard<std::mutex> guard(lock_);
+    for (auto const& [low, st] : bots_)  // [guild70] the leader's BUY orders: who pays what
+        for (GuildOrder const& o : st.orders)
+            if (o.type == GuildOrderType::BUY)
+                rows.push_back({"деньги", o.status, Who(low), ItemName(o.itemId) + ": " + Gsc(o.cost), "себе",
+                                "торговец, свои деньги", o.reason});
+    for (CraftJob const& job : crafts_)
+    {
+        std::string state = job.ready ? "материалы есть" : "ждёт материалы";
+        auto const st = bots_.find(job.crafterLow);
+        if (st != bots_.end())
+            for (GuildOrder const& o : st->second.orders)
+                if (o.type == GuildOrderType::CRAFT_FOR && o.spellId == job.spellId && o.status == "создаёт")
+                    state = "в работе";
+        rows.push_back({"крафт", state, Who(job.crafterLow), ItemName(job.itemId),
+                        job.forLow == job.crafterLow ? "себе" : Who(job.forLow), job.bag ? "крафт (сумка)" : "крафт",
+                        job.why});
+    }
+    for (CraftDone const& d : craftsDone_)
+        rows.push_back({"крафт", "сделано " + std::to_string((now - d.at) / 60) + " мин назад", Who(d.low),
+                        NewRpgCraft::RecipeName(d.spellId), "себе / банк", "крафт",
+                        "навык " + std::to_string(d.before) + "→" + std::to_string(d.after)});
+
+    // transfers: through the guild bank (the coordinator's only way for now)
+    for (auto const& [low, list] : withdraw_)
+        for (auto const& [item, why] : list)
+            rows.push_back({"передача", "ждёт похода в банк", "банк", ItemName(item), Who(low), "банк", why});
+    for (auto const& [low, st] : bots_)
+        for (HeldItem const& h : st.held)
+        {
+            if (h.purpose == "pending")
+                continue;
+            std::string const what = ItemName(h.itemId) + (h.count > 1 ? " ×" + std::to_string(h.count) : "");
+            rows.push_back({"передача", st.vaultFail.empty() ? "держит до банка" : st.vaultFail, Who(low), what,
+                            h.forLow ? "банк → " + Who(h.forLow) : std::string("банк"), "банк", h.purpose});
+        }
+
+    // sources of what is missing: the wanted list's shortfalls and the members' gear plan
+    for (WantedItem const& w : wanted_)
+    {
+        if (w.optional || !w.Short())
+            continue;
+        std::string gatherers;
+        for (auto const& [low, st] : bots_)
+            for (GuildOrder const& o : st.orders)
+                if (o.type == GuildOrderType::GATHER && o.itemId == w.itemId)
+                    gatherers += (gatherers.empty() ? "" : ", ") + Who(low);
+        std::string how = !gatherers.empty() ? "сбор: " + gatherers
+                          : w.vendor          ? "торговец (за свои деньги)"
+                          : w.gatherSkill     ? std::string("сбор ") + SkillShort(w.gatherSkill) + " " +
+                                                std::to_string(w.gatherReq) + ": нет сборщика с навыком"
+                                              : "добыча с мобов";
+        rows.push_back({"источник", "не хватает " + std::to_string(w.Short()),
+                        gatherers.empty() ? "—" : gatherers, ItemName(w.itemId), "wanted list", how, w.forWhom});
+    }
+    for (auto const& [low, st] : bots_)
+    {
+        std::unordered_set<uint32> seen;
+        for (auto const* list : {&st.gearNow, &st.gearPlan})
+            for (GearPick const& g : *list)
+            {
+                if (g.kind == GuildGear::SRC_BANK || !seen.insert(g.itemId).second)
+                    continue;
+                rows.push_back({"источник", list == &st.gearNow ? "доступно сейчас" : "в плане",
+                                g.crafterLow ? Who(g.crafterLow) : std::string("—"), ItemName(g.itemId), Who(low),
+                                kindName(g.kind),
+                                std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g.gain) +
+                                    (g.text.empty() ? "" : ": " + g.text)});
+            }
+    }
+
+    size_t const sent = std::min<size_t>(rows.size(), 400);
+    SendLine(player, "PS;n=" + std::to_string(sent));
+    for (size_t i = 0; i < sent; ++i)
+    {
+        PlanLine const& r = rows[i];
+        // bytes (UTF-8): the row, then its reason on a line of its own (the client drops lines over 255 bytes)
+        SendLine(player, "P;" + OrdersText(r.kind, 16) + ";" + OrdersText(r.state, 40) + ";" + OrdersText(r.who, 40) +
+                             ";" + OrdersText(r.what, 50) + ";" + OrdersText(r.forWhom, 40) + ";" +
+                             OrdersText(r.how, 50));
+        SendLine(player, "PW;" + OrdersText(r.why, 230));
+    }
+    SendLine(player, "PE;n=" + std::to_string(sent));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -2778,13 +3363,20 @@ class GuildCoordinatorPlayerScript : public PlayerScript
 public:
     GuildCoordinatorPlayerScript()
         : PlayerScript("GuildCoordinatorPlayerScript", {PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_PLAYER_JUST_DIED,
-                                                         PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE})
+                                                         PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE,
+                                                         PLAYERHOOK_ON_CREATE_ITEM})
     {
     }
 
     void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid /*lootguid*/) override
     {
         sGuildCoordinator.OnLoot(player, item, count);
+    }
+
+    // [guild70] a skill-up craft's product goes the loot way (NewRpgCraft decides which ones)
+    void OnPlayerCreateItem(Player* player, Item* item, uint32 count) override
+    {
+        NewRpgCraft::OnCreateItem(player, item, count);
     }
 
     void OnPlayerJustDied(Player* player) override { sGuildCoordinator.OnJustDied(player); }

@@ -223,7 +223,12 @@ std::string NewRpgInfo::ToString()
         else if constexpr (std::is_same_v<T, DoProfession>)
         {
             out << "DO_PROFESSION";
-            out << "\n" << (arg.kind == 1 ? "train spell " : "buy item ") << (arg.kind == 1 ? arg.spellId : arg.itemId)
+            char const* const what = arg.kind == 1   ? "train spell "
+                                     : arg.kind == 3 ? "learn recipes "
+                                     : arg.kind == 4 ? "craft "
+                                                     : "buy item ";
+            out << "\n"
+                << what << (arg.kind == 1 || arg.kind == 4 ? arg.spellId : arg.itemId)
                 << " skill " << arg.skill << " at npc " << arg.npcEntry << " cost " << arg.cost;
         }
         else

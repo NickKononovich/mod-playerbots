@@ -19,6 +19,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
+#include "NewRpgCraft.h"  // [guild70]
 #include "NewRpgInfo.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -349,6 +350,116 @@ namespace
     }
 }
 
+namespace
+{
+    uint32 RecipeFailId(uint32 skill) { return 0x80000000u | skill; }
+
+    // [guild70] a skill with no known recipe that still gives skill: the nearest friendly trainer on the map that
+    // teaches one now, within the budget (secondary skills: in this zone only)
+    bool RecipeCandidate(Player* bot, uint32 skill, bool sameZone, uint32 budget, Candidate& best,
+                         std::unordered_set<NpcSpawn const*> const& skip)
+    {
+        if (!bot->HasSkill(skill) || bot->GetPureSkillValue(skill) >= bot->GetPureMaxSkillValue(skill) ||
+            NewRpgCraft::HasSkillUpRecipe(bot, skill))
+            return false;
+        Index const& index = GetIndex();
+        auto spawns = index.trainers.find(skill);
+        if (spawns == index.trainers.end())
+            return false;
+        std::unordered_map<uint32, std::pair<bool, uint32>> teaches;  // trainer entry -> (teaches, cost)
+        bool found = false;
+        for (NpcSpawn const& spawn : spawns->second)
+        {
+            if (spawn.mapId != bot->GetMapId() || skip.count(&spawn) || (sameZone && spawn.zoneId != bot->GetZoneId()))
+                continue;
+            float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
+            if (d >= best.dist || !Friendly(bot, spawn.entry) ||
+                FailedBefore(bot, spawn.entry, RecipeFailId(skill)))
+                continue;
+            auto itr = teaches.find(spawn.entry);
+            if (itr == teaches.end())
+            {
+                uint32 cost = 0;
+                bool const ok = NewRpgCraft::TeachesSkillUpRecipe(bot, spawn.entry, skill, cost);
+                itr = teaches.emplace(spawn.entry, std::make_pair(ok, cost)).first;
+            }
+            if (!itr->second.first || itr->second.second > budget)
+                continue;
+            best.dist = d;
+            best.task = NewRpgInfo::DoProfession{};
+            best.spawn = &spawn;
+            best.task.kind = NewRpgCraft::TASK_RECIPES;
+            best.task.npcEntry = spawn.entry;
+            best.task.pos = WorldPosition(spawn.mapId, spawn.x, spawn.y, spawn.z);
+            best.task.skill = skill;
+            best.task.cost = itr->second.second;
+            found = true;
+        }
+        return found;
+    }
+
+    // what the recipe look saw last time it found nothing (skills, money, level): not looked at again until it changes
+    std::mutex recipeLookLock;
+    std::unordered_map<uint32, uint64> recipeLook;
+
+    uint64 RecipeLookKey(Player* bot)
+    {
+        uint64 key = (uint64(bot->GetMoney()) << 24) ^ (uint64(bot->GetLevel()) << 16) ^ bot->GetZoneId();
+        for (uint32 skill : {SKILL_BLACKSMITHING, SKILL_LEATHERWORKING, SKILL_ALCHEMY, SKILL_TAILORING,
+                             SKILL_ENGINEERING, SKILL_ENCHANTING, SKILL_JEWELCRAFTING, SKILL_INSCRIPTION,
+                             SKILL_COOKING, SKILL_FIRST_AID, SKILL_MINING})
+            if (bot->HasSkill(skill))
+                key = key * 1000003 + bot->GetPureSkillValue(skill);
+        return key;
+    }
+
+    // [guild70] the recipe trip, when no rank or tool errand is due
+    bool StartRecipeTrip(PlayerbotAI* botAI, Player* bot, ProfessionPlan const& plan)
+    {
+        uint32 const low = bot->GetGUID().GetCounter();
+        uint64 const key = RecipeLookKey(bot);
+        {
+            std::lock_guard<std::mutex> guard(recipeLookLock);
+            auto const itr = recipeLook.find(low);
+            if (itr != recipeLook.end() && itr->second == key)
+                return false;
+        }
+        uint32 const budget = NewRpgCraft::Budget(botAI, bot);
+        std::unordered_set<NpcSpawn const*> refused;
+        while (true)
+        {
+            Candidate best;
+            for (uint32 skill : plan.primary)
+                RecipeCandidate(bot, skill, false, budget, best, refused);
+            for (uint32 skill : plan.secondary)
+                RecipeCandidate(bot, skill, true, budget, best, refused);
+            if (bot->HasSkill(SKILL_MINING) &&
+                std::find(plan.primary.begin(), plan.primary.end(), uint32(SKILL_MINING)) == plan.primary.end())
+                RecipeCandidate(bot, SKILL_MINING, true, budget, best, refused);
+            if (!best.spawn)
+            {
+                std::lock_guard<std::mutex> guard(recipeLookLock);
+                recipeLook[low] = key;
+                return false;
+            }
+            CreatureTemplate const* npc = sObjectMgr->GetCreatureTemplate(best.task.npcEntry);
+            if (NewRpgBaseAction::TripRefused(bot, best.spawn->x, best.spawn->y, best.spawn->z,
+                                              std::string("recipe trainer ") + (npc ? npc->Name : "?")))
+            {
+                refused.insert(best.spawn);
+                continue;
+            }
+            LOG_INFO("playerbots",
+                     "[rpg] {} L{} PROFESSION reason: no known {} recipe still gives skill at {}: learn recipes at {} "
+                     "({:.0f} yd), cheapest {}c, budget {}c",
+                     bot->GetName(), bot->GetLevel(), SkillName(best.task.skill),
+                     bot->GetPureSkillValue(best.task.skill), npc ? npc->Name : "?", best.dist, best.task.cost, budget);
+            botAI->rpgInfo.ChangeToDoProfession(best.task);
+            return true;
+        }
+    }
+}
+
 namespace NewRpgProfession
 {
     void LoadPlan()
@@ -373,6 +484,7 @@ namespace NewRpgProfession
         } while (result->NextRow());
         LOG_INFO("playerbots", "[guild20] profession plan: {} characters", plans.size());
         GetIndex();  // built here on the world thread, read-only on the map threads
+        NewRpgCraft::Load();  // [guild70]
     }
 
     bool StartTask(PlayerbotAI* botAI, Player* bot)
@@ -410,8 +522,9 @@ namespace NewRpgProfession
                     ToolCandidate(bot, skill, true, best, unused, refused);
                 }
             }
+            // [guild70] no rank / tool errand: a recipe visit, else skill-up crafting in town
             if (!best.task.kind || !best.spawn)
-                return false;
+                return StartRecipeTrip(botAI, bot, plan->second) || NewRpgCraft::StartCraft(botAI, bot);
             CreatureTemplate const* npc = sObjectMgr->GetCreatureTemplate(best.task.npcEntry);
             if (!NewRpgBaseAction::TripRefused(bot, best.spawn->x, best.spawn->y, best.spawn->z,
                                                std::string("profession npc ") + (npc ? npc->Name : "?")))
@@ -476,6 +589,25 @@ namespace NewRpgProfession
         return total;
     }
 
+    uint32 MissingTools(Player* bot, std::string& names)
+    {
+        auto plan = plans.find(bot->GetGUID().GetCounter());
+        if (plan == plans.end())
+            return 0;
+        uint32 total = 0;
+        for (auto const* list : {&plan->second.primary, &plan->second.secondary})
+            for (uint32 skill : *list)
+            {
+                uint32 const itemId = ToolFor(skill);
+                ItemTemplate const* proto = itemId ? sObjectMgr->GetItemTemplate(itemId) : nullptr;
+                if (!proto || !bot->HasSkill(skill) || HasTool(bot, itemId))
+                    continue;
+                total += proto->BuyPrice;
+                names += (names.empty() ? "" : ", ") + std::string(proto->Name1);
+            }
+        return total;
+    }
+
     std::string PlannedSkills(Player* bot)
     {
         auto plan = plans.find(bot->GetGUID().GetCounter());
@@ -510,7 +642,11 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         info.ChangeToIdle();
         return true;
     }
-    uint32 const id = data->kind == TASK_TRAIN ? data->spellId : data->itemId;
+    if (data->kind == NewRpgCraft::TASK_CRAFT)  // [guild70]
+        return ExecuteCraft(*data);
+    uint32 const id = data->kind == TASK_TRAIN              ? data->spellId
+                      : data->kind == NewRpgCraft::TASK_RECIPES ? RecipeFailId(data->skill)
+                                                                : data->itemId;
 
     if (data->npc.IsEmpty())
     {
@@ -557,7 +693,15 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
 
     bot->SetFacingToObject(npc);
     uint32 const moneyBefore = bot->GetMoney();
-    if (data->kind == TASK_TRAIN)
+    if (data->kind == NewRpgCraft::TASK_RECIPES)  // [guild70] recipes only
+    {
+        uint32 const learned = NewRpgCraft::LearnRecipes(bot, npc, data->skill, NewRpgCraft::Budget(botAI, bot));
+        LOG_INFO("playerbots", "[guild70] {} L{} learned {} {} recipes at {}", bot->GetName(), bot->GetLevel(), learned,
+                 SkillName(data->skill), npc->GetName());
+        if (!learned)
+            MarkFailed(bot, data->npcEntry, id);
+    }
+    else if (data->kind == TASK_TRAIN)
     {
         uint16 const maxBefore = bot->HasSkill(data->skill) ? bot->GetPureMaxSkillValue(data->skill) : 0;
         uint16 const valueBefore = bot->HasSkill(data->skill) ? bot->GetPureSkillValue(data->skill) : 0;
@@ -572,6 +716,9 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
                  moneyBefore - bot->GetMoney(), bot->GetMoney());
         if (!learned)
             MarkFailed(bot, data->npcEntry, id);
+        // [guild70] with the rank: the recipes it can learn now
+        if (bot->HasSkill(data->skill))
+            NewRpgCraft::LearnRecipes(bot, npc, data->skill, NewRpgCraft::Budget(botAI, bot));
     }
     else
     {

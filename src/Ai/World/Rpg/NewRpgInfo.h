@@ -91,14 +91,18 @@ struct NewRpgInfo
     // RPG_DO_PROFESSION [guild20]: a walk to a profession trainer (learn a rank) or a vendor (buy a tool)
     struct DoProfession
     {
-        uint8 kind{0};  // 1 train, 2 buy
+        uint8 kind{0};  // 1 train, 2 buy, 3 learn recipes, 4 skill-up crafting [guild70]
         uint32 npcEntry{0};
         WorldPosition pos{};
-        uint32 spellId{0};  // trainer spell (kind 1)
-        uint32 itemId{0};   // tool (kind 2)
+        uint32 spellId{0};  // trainer spell (kind 1), the recipe (kind 4)
+        uint32 itemId{0};   // tool (kind 2), the vendor reagent to buy first (kind 4)
         uint32 skill{0};
         uint32 cost{0};
         ObjectGuid npc{};
+        uint32 count{0};        // [guild70] kind 4: vendor lots to buy
+        uint32 castSpell{0};    // [guild70] kind 4: the craft cast in progress
+        uint32 skillBefore{0};  // [guild70] its skill value before the cast
+        uint32 crafted{0};      // [guild70] crafts done in this visit
     };
     struct Idle
     {

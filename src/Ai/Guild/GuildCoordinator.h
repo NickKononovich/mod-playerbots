@@ -164,6 +164,7 @@ public:
     void Update(uint32 diff);
     void SendOrders(Player* player);  // addon "BOTCTL\torders"
     void SendResources(Player* player);  // addon "BOTCTL\tresources": the virtual guild bank
+    void SendPlan(Player* player);       // [guild70] addon "BOTCTL\tplan": crafts, transfers, sources
     bool IsPlanned(uint32 low) const { return planIndex_.count(low) != 0; }
 
     // [guild60] fives: the global leader forms them (UpdateFives) or the command does; world thread.
@@ -186,6 +187,11 @@ public:
     bool FiveRollVote(Player* bot, uint64 lootGuid, uint32 itemId, int32 randomProperty, uint8& vote);
 
     // map thread
+    // [guild70] the item is on the wanted list with a shortfall (a skill-up craft whose product someone needs)
+    bool IsWanted(uint32 itemId) const;
+    // [guild70] a crafter's skill-up reagent lies in the guild bank: it takes it out on the next BANK_WITHDRAW run
+    void RequestWithdraw(Player* bot, uint32 itemId, std::string const& why);
+    void OnCrafted(Player* bot, uint32 spellId, uint32 before, uint32 after);  // [guild70] the «План» tab's done
     GuildRunStep NextStep(Player* bot, PlayerbotAI* botAI);
     uint8 OnCampReached(Player* bot);  // 0 = not a guild run, 1 = done (-> IDLE), 2 = still at it
     bool IsHeld(Player* bot, Item* item);
@@ -208,6 +214,7 @@ public:
         char grp{'P'};
         std::string role;
         std::vector<uint32> profs;  // planned profession skill lines
+        std::vector<uint32> secondary;  // [guild70] planned secondary skills (Cooking, First Aid)
     };
 
     struct WantedItem
@@ -218,7 +225,8 @@ public:
         uint32 gatherSkill{0};     // SKILL_MINING / SKILL_HERBALISM when nodes give it
         uint32 gatherReq{0};
         bool vendor{false};
-        std::string forWhom;       // "#9 BS 47->75"
+        bool optional{false};      // [guild70] OPTIONAL: banked when held, never ordered; else REQUIRED
+        std::string forWhom;       // [guild70] why: "реагент: Rough Copper Bomb ×N (инженеры 6×≈200) + квест q12 #3"
         uint32 Short() const { return need > have ? need - have : 0; }
     };
 
@@ -236,6 +244,8 @@ private:
         bool trainer{false};
         bool autoLearned{false};
         std::vector<std::pair<uint32, uint32>> reagents;
+        uint32 product{0};  // [guild70] the created item
+        float made{1.0f};
     };
 
     struct HeldItem
@@ -411,7 +421,15 @@ private:
     std::string Who(uint32 low) const;
     std::string RaidLeaderText(char grp) const;
     PlanRow const* Row(uint32 low) const;
-    uint32 SkillUpNeeds(Player* crafter, uint32 skillLine, std::map<uint32, uint32>& needs) const;
+    // [guild70] the expected crafts per recipe index a crafter makes from `skill` over the whole range where recipes
+    // still give skill-ups (orange / yellow); crafter may be null (offline: trainer recipes only)
+    void SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 skill, std::map<size_t, double>& crafts) const;
+    // [guild70] an intermediate (bar, bolt, potion used as reagent…) as its raw materials; `via` gets
+    // raw -> intermediate -> raw per intermediate
+    void ExpandReagent(uint32 item, double count, std::map<uint32, double>& out,
+                       std::map<uint32, std::map<uint32, float>>* via, float perUnit = 1.0f, uint32 depth = 0,
+                       uint32 top = 0) const;
+    void BuildSkillPlans();
     static uint64 XpTotal(Player* bot);
     static uint32 QuestProgress(Player* bot);
     std::string WaitReason(Player* bot, PlayerbotAI* botAI, BotState const& state) const;
@@ -427,6 +445,13 @@ private:
     std::unordered_map<uint32, std::pair<uint32, uint32>> gatherSource_;  // item -> (skill, min node skill)
     std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> smeltFrom_;  // bar -> ore x count per bar
     std::unordered_set<uint32> vendorItems_;
+    // [guild70] crafted intermediates: product -> (reagent, count per product), read-only after Load
+    std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> craftedFrom_;
+    std::unordered_set<uint32> skinned_;  // skinning loot (leather is gathered, not only crafted)
+    // [guild70] per skill line and skill value: the best trainer / auto-learned skill-up recipe (index, -1 none)
+    std::unordered_map<uint32, std::vector<int32>> skillPlan_;
+    std::unordered_map<uint32, std::vector<size_t>> extraRecipes_;  // per line: recipes learned elsewhere (drops)
+    std::unordered_map<uint64, uint32> lastSkill_;  // (low << 16 | line) -> skill when last seen (offline members)
 
     mutable std::mutex lock_;
     std::unordered_map<uint32, BotState> bots_;
@@ -462,8 +487,23 @@ private:
         std::string why;
     };
     std::vector<CraftJob> crafts_;
-    std::map<uint32, std::pair<uint32, std::string>> gearWanted_;  // reagent -> (count, for whom)
+    // [guild70] reagent -> why ("улучшение: <item>", "сумка <item>") -> (count, members it is for)
+    struct GearNeed
+    {
+        uint32 count{0};
+        std::set<uint32> forLows;
+    };
+    std::map<uint32, std::map<std::string, GearNeed>> gearWanted_;
     std::string bagState_;
+    struct CraftDone  // [guild70]
+    {
+        uint32 at{0};
+        uint32 low{0};
+        uint32 spellId{0};
+        uint32 before{0};
+        uint32 after{0};
+    };
+    std::deque<CraftDone> craftsDone_;
     size_t gearCursor_{0};
 
     // health samples (world thread)

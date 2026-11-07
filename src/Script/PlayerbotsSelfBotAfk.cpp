@@ -598,7 +598,9 @@ namespace
         {
             SkillLineEntry const* line = sSkillLineStore.LookupEntry(prof->skill);
             CreatureTemplate const* npc = sObjectMgr->GetCreatureTemplate(prof->npcEntry);
-            text += std::string(prof->kind == 1 ? "learn " : "buy tool ") + (line ? line->name[0] : "?") + " @ " +
+            text += std::string(prof->kind == 1 ? "learn " : prof->kind == 3 ? "recipes " : prof->kind == 4 ? "craft "
+                                                                                                     : "buy tool ") +
+                    (line ? line->name[0] : "?") + " @ " +
                     (npc ? npc->Name : "?") + " " + std::to_string(uint32(bot->GetExactDist(prof->pos))) + " yd";
         }
         return text;
@@ -680,7 +682,7 @@ namespace SelfBotControl
             }
 
             // G;num;name;class;level;grp;role;online(1 bot/p person/0);state;zoneId;zone;STATUS|detail;actMin;
-            //   stillMin;deaths1h;deathsAll;lastKiller;gold;bagsUsed;bagsTotal;skills ([guild20] skill:value/max,...)
+            //   stillMin;deaths1h;deathsAll;lastKiller;money (copper);bagsUsed;bagsTotal;skills ([guild20] skill:value/max,...)
             std::ostringstream out;
             out << "G;" << row.num << ";" << BoardField(cache ? cache->Name : row.name, 12) << ";"
                 << uint32(bot ? bot->getClass() : (cache ? cache->Class : 0)) << ";"
@@ -727,7 +729,7 @@ namespace SelfBotControl
             out << (botAI ? "1" : "p") << ";" << state << ";" << bot->GetZoneId() << ";"
                 << BoardField(zone ? zone->area_name[0] : "?", 24) << ";" << BoardField(GuildActivity(bot, botAI), 64) << ";"
                 << actMin << ";" << (now - still.since) / MINUTE << ";" << d1h << ";" << dAll << ";"
-                << BoardField(killer, 24) << ";" << bot->GetMoney() / GOLD << ";" << used << ";" << total << ";"
+                << BoardField(killer, 24) << ";" << bot->GetMoney() /* [guild70] copper */ << ";" << used << ";" << total << ";"
                 << BoardField(NewRpgProfession::PlannedSkills(bot), 60);
             SendAddonLine(player, out.str());
         }
@@ -805,6 +807,8 @@ public:
             sGuildCoordinator.SendOrders(player);  // [guild30]
         else if (command == "resources")
             sGuildCoordinator.SendResources(player);  // [guild30] the virtual guild bank
+        else if (command == "plan")
+            sGuildCoordinator.SendPlan(player);  // [guild70] the «План» tab
         else if (command.compare(0, 7, "quests ") == 0)
             SelfBotControl::SendGuildQuests(player, command.substr(7));  // [live1]
         else if (command == "self on" || command == "self off" || command == "self")
