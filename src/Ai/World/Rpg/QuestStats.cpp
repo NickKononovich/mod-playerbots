@@ -17,7 +17,10 @@
 #include "ScriptMgr.h"
 #include "Timer.h"
 
+#include <chrono>
 #include <cmath>
+#include <string>
+#include <vector>
 #include <mutex>
 #include <unordered_map>
 
@@ -25,6 +28,12 @@ namespace
 {
     constexpr uint32 QSTAT_LOG_MS = 5 * MINUTE * IN_MILLISECONDS;  // a log cadence, no decision reads it
     constexpr float MAX_TICK_STEP = 150.0f;                         // a longer step is a teleport or a flight
+
+    struct Snapshot
+    {
+        uint8 status = 0;
+        uint16 counts[QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT] = {};
+    };
 
     struct Counters
     {
@@ -35,7 +44,9 @@ namespace
         float x = 0.0f, y = 0.0f;
         bool hasPos = false;
         uint32 lastLog = 0;
-        uint32 progressQuest = 0, progressDone = 0;
+        uint64 lastQuestXp = 0;
+        bool hasLog = false;
+        std::unordered_map<uint32, Snapshot> log;  // the quest log at the last rpg tick
     };
 
     std::mutex lock;
@@ -100,7 +111,10 @@ namespace
             if (xpSource == XPSOURCE_KILL)
                 c.xpKill += amount;
             else if (xpSource == XPSOURCE_QUEST || xpSource == XPSOURCE_QUEST_DF)
+            {
                 c.xpQuest += amount;
+                c.lastQuestXp = amount;
+            }
             else
                 c.xpOther += amount;
         }
@@ -110,19 +124,32 @@ namespace
             if (!Tracked(player) || !killed)
                 return;
             bool const served = ServedQuest(player, killed);
-            std::lock_guard<std::mutex> guard(lock);
-            Counters& c = counters[player->GetGUID().GetCounter()];
-            ++c.kills;
-            if (served)
-                ++c.useful;
+            {
+                std::lock_guard<std::mutex> guard(lock);
+                Counters& c = counters[player->GetGUID().GetCounter()];
+                ++c.kills;
+                if (served)
+                    ++c.useful;
+            }
+            QuestStats::LogEvent(player, "kill", 0,
+                                 "entry=" + std::to_string(killed->GetEntry()) + " L" +
+                                     std::to_string(killed->GetLevel()) + " useful=" + (served ? "1" : "0"));
         }
 
-        void OnPlayerCompleteQuest(Player* player, Quest const* /*quest*/) override
+        void OnPlayerCompleteQuest(Player* player, Quest const* quest) override
         {
-            if (!Tracked(player))
+            if (!Tracked(player) || !quest)
                 return;
-            std::lock_guard<std::mutex> guard(lock);
-            ++counters[player->GetGUID().GetCounter()].turnIns;
+            uint64 xp = 0;
+            {
+                std::lock_guard<std::mutex> guard(lock);
+                Counters& c = counters[player->GetGUID().GetCounter()];
+                ++c.turnIns;
+                xp = c.lastQuestXp;  // GiveXP runs before this hook in Player::RewardQuest
+                c.lastQuestXp = 0;
+                c.log.erase(quest->GetQuestId());
+            }
+            QuestStats::LogEvent(player, "turnin", quest->GetQuestId(), "xp=" + std::to_string(xp));
         }
 
         void OnPlayerLevelChanged(Player* player, uint8 /*oldlevel*/) override
@@ -145,59 +172,95 @@ namespace
     };
 }
 
-void QuestStats::OnRpgTick(Player* bot, uint32 activeQuest)
+uint64 QuestStats::NowMs()
 {
-    // the active quest's progress (its objective counts) - one line when it changes
-    uint32 done = 0, required = 0;
-    if (activeQuest)
+    return uint64(std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count());
+}
+
+void QuestStats::LogEvent(Player* bot, char const* event, uint32 questId, std::string const& extra)
+{
+    LOG_INFO("playerbots", "[quest] {} {} L{} q{} t={} at=({:.0f},{:.0f}){}{}", event, bot->GetName(),
+             bot->GetLevel(), questId, NowMs(), bot->GetPositionX(), bot->GetPositionY(), extra.empty() ? "" : " ",
+             extra);
+}
+
+void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/)
+{
+    // the quest log against the one of the last tick: accepted, progressed (per objective), completed, abandoned
+    std::unordered_map<uint32, Snapshot> now;
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
-        Quest const* quest = sObjectMgr->GetQuestTemplate(activeQuest);
-        auto const itr = bot->getQuestStatusMap().find(activeQuest);
-        if (quest && itr != bot->getQuestStatusMap().end())
+        uint32 const questId = bot->GetQuestSlotQuestId(slot);
+        if (!questId)
+            continue;
+        auto const itr = bot->getQuestStatusMap().find(questId);
+        if (itr == bot->getQuestStatusMap().end())
+            continue;
+        Snapshot& snap = now[questId];
+        snap.status = uint8(itr->second.Status);
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            snap.counts[i] = itr->second.CreatureOrGOCount[i];
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            snap.counts[QUEST_OBJECTIVES_COUNT + i] = uint16(itr->second.ItemCount[i]);
+    }
+
+    std::vector<std::pair<char const*, std::pair<uint32, std::string>>> events;
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        Counters& c = counters[bot->GetGUID().GetCounter()];
+        if (c.hasPos && c.mapId == bot->GetMapId())
         {
-            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
-                if (quest->RequiredNpcOrGo[i] && quest->RequiredNpcOrGoCount[i])
+            float const step = std::hypot(bot->GetPositionX() - c.x, bot->GetPositionY() - c.y);
+            if (step < MAX_TICK_STEP)
+                c.walked += step;
+        }
+        c.hasPos = true;
+        c.mapId = bot->GetMapId();
+        c.x = bot->GetPositionX();
+        c.y = bot->GetPositionY();
+
+        if (c.hasLog)
+        {
+            for (auto const& [questId, snap] : now)
+            {
+                auto const before = c.log.find(questId);
+                if (before == c.log.end())
                 {
-                    required += quest->RequiredNpcOrGoCount[i];
-                    done += std::min<uint32>(itr->second.CreatureOrGOCount[i], quest->RequiredNpcOrGoCount[i]);
+                    events.push_back({"accept", {questId, ""}});
+                    continue;
                 }
-            for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
-                if (quest->RequiredItemId[i] && quest->RequiredItemCount[i])
-                {
-                    required += quest->RequiredItemCount[i];
-                    done += std::min<uint32>(itr->second.ItemCount[i], quest->RequiredItemCount[i]);
-                }
+                Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                for (uint8 i = 0; quest && i < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                    if (snap.counts[i] > before->second.counts[i])
+                    {
+                        uint32 const required = i < QUEST_OBJECTIVES_COUNT
+                                                    ? quest->RequiredNpcOrGoCount[i]
+                                                    : quest->RequiredItemCount[i - QUEST_OBJECTIVES_COUNT];
+                        events.push_back({"progress", {questId, "obj=" + std::to_string(i) + " " +
+                                                                    std::to_string(snap.counts[i]) + "/" +
+                                                                    std::to_string(required)}});
+                    }
+                if (snap.status == QUEST_STATUS_COMPLETE && before->second.status != QUEST_STATUS_COMPLETE)
+                    events.push_back({"complete", {questId, ""}});
+            }
+            for (auto const& [questId, snap] : c.log)
+                if (!now.count(questId) && !bot->GetQuestRewardStatus(questId))
+                    events.push_back({"abandon", {questId, ""}});
+        }
+        c.log = std::move(now);
+        c.hasLog = true;
+
+        uint32 const ms = getMSTime();
+        if (!c.lastLog || getMSTimeDiff(c.lastLog, ms) >= QSTAT_LOG_MS)
+        {
+            c.lastLog = ms;
+            LogCounters(bot, c, "tick");
         }
     }
-
-    std::lock_guard<std::mutex> guard(lock);
-    Counters& c = counters[bot->GetGUID().GetCounter()];
-    if (c.hasPos && c.mapId == bot->GetMapId())
-    {
-        float const step = std::hypot(bot->GetPositionX() - c.x, bot->GetPositionY() - c.y);
-        if (step < MAX_TICK_STEP)
-            c.walked += step;
-    }
-    c.hasPos = true;
-    c.mapId = bot->GetMapId();
-    c.x = bot->GetPositionX();
-    c.y = bot->GetPositionY();
-
-    if (activeQuest && required && (activeQuest != c.progressQuest || done != c.progressDone))
-    {
-        if (activeQuest == c.progressQuest && done > c.progressDone)
-            LOG_INFO("playerbots", "[qprog] {} L{} q{} {}/{}", bot->GetName(), bot->GetLevel(), activeQuest, done,
-                     required);
-        c.progressQuest = activeQuest;
-        c.progressDone = done;
-    }
-
-    uint32 const now = getMSTime();
-    if (!c.lastLog || getMSTimeDiff(c.lastLog, now) >= QSTAT_LOG_MS)
-    {
-        c.lastLog = now;
-        LogCounters(bot, c, "tick");
-    }
+    for (auto const& [event, data] : events)
+        LogEvent(bot, event, data.first, data.second);
 }
 
 void AddQuestStatsScripts() { new QuestStatsPlayerScript(); }

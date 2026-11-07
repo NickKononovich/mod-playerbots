@@ -9,6 +9,8 @@
 
 #include "Define.h"
 
+#include <string>
+
 class Player;
 
 // [guild90] questing quality counters per bot, for C:/WoW/tools/guild_stats.py: XP by source, kills that served a
@@ -18,6 +20,10 @@ namespace QuestStats
 {
     // the New RPG status tick (out of combat): yards walked since the last tick, the active quest's progress line
     void OnRpgTick(Player* bot, uint32 activeQuest);
+    // one timestamped event line: [quest] <event> <bot> L<level> q<id> t=<unix ms> at=(x,y) <extra>
+    // events: accept, progress, complete, turnin, abandon, postpone, target-switch, sweep, wait-respawn, kill
+    void LogEvent(Player* bot, char const* event, uint32 questId, std::string const& extra);
+    uint64 NowMs();
 }
 
 void AddQuestStatsScripts();

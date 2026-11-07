@@ -87,6 +87,14 @@ public:
     static std::string QuestChoiceNote(Player* bot);
     // [guild90] the share (0..1) of the quest's objective counts still to do
     static float RemainingShare(Player* bot, Quest const* quest);
+    // [guild90] the camp a bot works for a quest (questId 0: none); other bots skip it as taken
+    static void ClaimSpot(Player* bot, uint32 questId, WorldPosition const& pos);
+    // [guild90] the counts of this thread's last objective resolve (spawns, spent, taken, offered), for the log
+    static std::string LastResolveStats();
+    // [guild90] seconds until the first spent camp of the quest respawns (spawntimesecs); 0: none pending
+    static uint32 EarliestRespawn(Player* bot, uint32 questId);
+    // [guild90] the cheapest other quest in the log (travel at QUEST_TRAVEL_SPEED + the work left); -1: none
+    float OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest);
     // [guild12] a timed quest: the walk to its nearest ender at the bot's run speed fits its time
     static bool TimedQuestFits(Player* bot, Quest const* quest);
     // [guild13] the spawn (with its floor's height) of the quest's ender nearest the bot on its map

@@ -31,6 +31,7 @@
 #include "QuestLevelRules.h"
 #include "NewRpgStrategy.h"
 #include "SoloSafety.h"  // [guild13]
+#include "QuestStats.h"  // [guild90]
 #include "World.h"  // [guild13]
 #include "RouteSearch.h"  // [guild13] PointOnPath
 #include "SpellMgr.h"     // [guild13]
@@ -2412,6 +2413,61 @@ namespace
         return index;
     }
 
+    // [guild90] why the bot last left or skipped a quest, and the quest it works on until it is done or postponed
+    std::mutex questNoteLock;
+    std::unordered_map<uint32, std::unordered_map<uint32, std::string>> postponeReasons;  // bot -> quest -> why
+    std::unordered_map<uint32, uint32> committedQuest;                                    // bot -> quest
+    std::unordered_map<uint32, std::string> choiceNotes;  // bot -> the last ChooseBestQuest's why
+    std::unordered_map<uint32, std::set<uint32>> deferredHandIns;  // bot -> hand-ins logged as grouped
+    constexpr float GROUP_ENDER_RADIUS = 50.0f;     // enders this close are one hand-in visit (one camp of NPCs)
+    constexpr float HAND_IN_PASS_DISTANCE = 60.0f;  // a done quest's ender this near is handed in now
+    // [guild90] the spot each bot works for a quest (quest -> bot -> map, x, y): other bots' spots count as taken
+    struct Claim
+    {
+        uint32 mapId;
+        float x, y;
+    };
+    std::unordered_map<uint32, std::unordered_map<uint32, Claim>> claims;
+    std::unordered_map<uint32, uint32> claimOf;  // bot -> the quest of its claim
+    // [guild90] the last resolve of a bot's objective spots (map thread local: one bot resolves at a time per thread)
+    struct ResolveStats
+    {
+        size_t spawns = 0, spent = 0, taken = 0, offered = 0;
+    };
+    thread_local ResolveStats resolveStats;
+
+    bool TakenByOther(Player* bot, uint32 questId, float x, float y)
+    {
+        std::lock_guard<std::mutex> guard(questNoteLock);
+        auto const found = claims.find(questId);
+        if (found == claims.end())
+            return false;
+        for (auto const& [other, claim] : found->second)
+            if (other != bot->GetGUID().GetCounter() && claim.mapId == bot->GetMapId() &&
+                (claim.x - x) * (claim.x - x) + (claim.y - y) * (claim.y - y) <= SPENT_RADIUS * SPENT_RADIUS)
+                return true;
+        return false;
+    }
+
+    // inside the quest_poi polygon of the objective, or within SPENT_RADIUS of its border
+    bool InPolygon(std::vector<QuestPOIPoint> const& poly, float x, float y)
+    {
+        bool inside = false;
+        for (size_t i = 0, j = poly.size() - 1; i < poly.size(); j = i++)
+        {
+            float const xi = poly[i].x, yi = poly[i].y, xj = poly[j].x, yj = poly[j].y;
+            if (((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi))
+                inside = !inside;
+            float const dx = xj - xi, dy = yj - yi;
+            float const len = dx * dx + dy * dy;
+            float t = len > 0.0f ? ((x - xi) * dx + (y - yi) * dy) / len : 0.0f;
+            t = std::clamp(t, 0.0f, 1.0f);
+            if (std::hypot(xi + dx * t - x, yi + dy * t - y) <= SPENT_RADIUS)
+                return true;
+        }
+        return inside;
+    }
+
     // [guild90] every spawn of the sources of one objective: the objective creature / object itself (kill, use) or
     // the creatures and objects that drop its item (loot tables, gameobject_questitem). Pointers into the index.
     void ObjectiveSources(Quest const* quest, uint32 objective, std::vector<QuestSpot const*>& out)
@@ -2486,9 +2542,18 @@ namespace
         bool blocked = false;
         for (auto const& [distance, spot] : onMap)
         {
+            ++resolveStats.spawns;
             if (NewRpgBaseAction::IsSpentSpot(bot, questId, spot->x, spot->y))
             {
                 ++spent;
+                ++resolveStats.spent;
+                continue;
+            }
+            // [guild90] another bot works that camp for the quest: taken, like a player sees it
+            if (TakenByOther(bot, questId, spot->x, spot->y))
+            {
+                ++spent;
+                ++resolveStats.taken;
                 continue;
             }
             // a spawn next to a spot already taken adds nothing (one camp)
@@ -2505,6 +2570,7 @@ namespace
                 continue;
             }
             poiInfo.push_back({{spot->x, spot->y}, objectiveIdx});
+            ++resolveStats.offered;
             if (poiInfo.size() - first >= MAX_SPOT_CANDIDATES)
                 break;
         }
@@ -2523,11 +2589,6 @@ namespace
         return NearestSafeSpot(bot, questId, pointers, objectiveIdx, poiInfo, blocker);
     }
 
-    // [guild90] why the bot last left or skipped a quest, and the quest it works on until it is done or postponed
-    std::mutex questNoteLock;
-    std::unordered_map<uint32, std::unordered_map<uint32, std::string>> postponeReasons;  // bot -> quest -> why
-    std::unordered_map<uint32, uint32> committedQuest;                                    // bot -> quest
-    std::unordered_map<uint32, std::string> choiceNotes;  // bot -> the last ChooseBestQuest's why
 
     // [guild12] one log line per bot, quest and level for a postponed quest
     void LogPostponed(Player* bot, Quest const* quest, std::string const& reason)
@@ -3183,10 +3244,25 @@ bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector
     CreatureTemplate const* blocker = nullptr;
     std::set<int32> resolved;
     size_t spentObjectives = 0;
+    resolveStats = ResolveStats();
     for (uint32 objective : incompleteObjectiveIdx)
     {
         std::vector<QuestSpot const*> spots;
         ObjectiveSources(quest, objective, spots);
+        // [guild90] the objective's area: its spawns inside the quest_poi polygon when the quest has one (spawns of
+        // the same mob far off are other quests' camps); none inside: all spawns
+        for (QuestPOI const& qPoi : *poiVector)
+        {
+            if (qPoi.MapId != bot->GetMapId() || qPoi.ObjectiveIndex != int32(objective) || qPoi.points.size() < 3)
+                continue;
+            std::vector<QuestSpot const*> inside;
+            for (QuestSpot const* spot : spots)
+                if (spot->mapId != bot->GetMapId() || InPolygon(qPoi.points, spot->x, spot->y))
+                    inside.push_back(spot);
+            if (!inside.empty())
+                spots.swap(inside);
+            break;
+        }
         int const found = NearestSafeSpot(bot, questId, spots, int32(objective), poiInfo, blocker);
         if (found)
             resolved.insert(int32(objective));
@@ -3213,34 +3289,13 @@ bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector
             continue;
         if (qPoi.points.size() == 0)
             continue;
-        float dx = 0, dy = 0;
-        std::vector<float> weights = GenerateRandomWeights(qPoi.points.size());
-        for (size_t i = 0; i < qPoi.points.size(); i++)
-        {
-            QuestPOIPoint const& point = qPoi.points[i];
-            dx += point.x * weights[i];
-            dy += point.y * weights[i];
-        }
-
-        if (bot->GetDistance2d(dx, dy) >= 1500.0f)
-            continue;
-
-        float dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
-
-        if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
-            continue;
-
-        if (bot->GetZoneId() != bot->GetMap()->GetZoneId(bot->GetPhaseMask(), dx, dy, dz))
-            continue;
-
-        // [guild12] no POI among or behind orange / red mobs
-        if (CreatureTemplate const* danger = DangerOnWay(bot, bot->GetPositionX(), bot->GetPositionY(), dx, dy))
-        {
-            blocker = danger;
-            continue;
-        }
-
-        poiInfo.push_back({{dx, dy}, qPoi.ObjectiveIndex});
+        // [guild90] no spawn of the objective's sources: the polygon's own points are the spots (swept one by one
+        // like camps), no random blend of them
+        std::vector<QuestSpot> corners;
+        for (QuestPOIPoint const& point : qPoi.points)
+            corners.push_back({qPoi.MapId, float(point.x), float(point.y), 0.0f});
+        if (NearestSafeSpot(bot, questId, corners, qPoi.ObjectiveIndex, poiInfo, blocker) == 3)
+            ++spentObjectives;
     }
 
     // [guild10] the explore trigger (the spawns of kill / use objectives are resolved above)
@@ -3551,8 +3606,78 @@ uint32 NewRpgBaseAction::GetQuestProgress(uint32 questId)
 
 void NewRpgBaseAction::NotePostpone(Player* bot, uint32 questId, std::string const& reason)
 {
+    {
+        std::lock_guard<std::mutex> guard(questNoteLock);
+        postponeReasons[bot->GetGUID().GetCounter()][questId] = reason;
+    }
+    QuestStats::LogEvent(bot, "postpone", questId, "reason=" + reason);
+}
+
+void NewRpgBaseAction::ClaimSpot(Player* bot, uint32 questId, WorldPosition const& pos)
+{
     std::lock_guard<std::mutex> guard(questNoteLock);
-    postponeReasons[bot->GetGUID().GetCounter()][questId] = reason;
+    uint32 const counter = bot->GetGUID().GetCounter();
+    auto const old = claimOf.find(counter);
+    if (old != claimOf.end() && old->second != questId)
+        claims[old->second].erase(counter);
+    if (!questId)
+    {
+        claimOf.erase(counter);
+        return;
+    }
+    claimOf[counter] = questId;
+    claims[questId][counter] = {pos.GetMapId(), pos.GetPositionX(), pos.GetPositionY()};
+}
+
+std::string NewRpgBaseAction::LastResolveStats()
+{
+    return "spawns=" + std::to_string(resolveStats.spawns) + " spent=" + std::to_string(resolveStats.spent) +
+           " taken=" + std::to_string(resolveStats.taken) + " offered=" + std::to_string(resolveStats.offered);
+}
+
+uint32 NewRpgBaseAction::EarliestRespawn(Player* bot, uint32 questId)
+{
+    std::lock_guard<std::mutex> guard(spentLock);
+    auto const quests = spentSpots.find(bot->GetGUID().GetCounter());
+    if (quests == spentSpots.end())
+        return 0;
+    auto const marks = quests->second.find(questId);
+    if (marks == quests->second.end())
+        return 0;
+    time_t const now = time(nullptr);
+    time_t best = 0;
+    for (SpentMark const& mark : marks->second)
+        if (mark.until > now && (!best || mark.until < best))
+            best = mark.until;
+    return best ? uint32(best - now) : 0;
+}
+
+float NewRpgBaseAction::OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest)
+{
+    otherQuest = 0;
+    float best = -1.0f;
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const questId = bot->GetQuestSlotQuestId(slot);
+        if (!questId || questId == exceptQuest || botAI->lowPriorityQuest.count(questId))
+            continue;
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        std::vector<POIInfo> poiInfo;
+        if (!quest || !GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
+            continue;
+        float distance = std::numeric_limits<float>::max();
+        for (POIInfo const& poi : poiInfo)
+            distance = std::min(distance, bot->GetDistance2d(poi.pos.x, poi.pos.y));
+        float seconds = distance / QUEST_TRAVEL_SPEED;
+        if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+            seconds += QUEST_OBJECTIVE_TIME * RemainingShare(bot, quest);
+        if (best < 0.0f || seconds < best)
+        {
+            best = seconds;
+            otherQuest = questId;
+        }
+    }
+    return best;
 }
 
 std::string NewRpgBaseAction::QuestChoiceNote(Player* bot)
@@ -3586,6 +3711,14 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
             committed = found->second;
     }
     float committedDistance = -1.0f;
+    float committedSeconds = -1.0f;
+    struct QuestCandidate
+    {
+        uint32 questId;
+        float rate, distance, seconds;
+        bool complete;
+    };
+    std::vector<QuestCandidate> candidates;
     float nearestHandIn = std::numeric_limits<float>::max();
     uint32 nearestHandInQuest = 0;
     std::string committedWhy;
@@ -3651,30 +3784,86 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
         // [guild90] the work left, not a whole objective's time for every quest: the quest nearest completion first
         if (!complete)
             time += QUEST_OBJECTIVE_TIME * RemainingShare(bot, quest) + QUEST_UNKNOWN_DISTANCE / QUEST_TRAVEL_SPEED;
-        if (complete && distance < nearestHandIn)
-        {
-            nearestHandIn = distance;
-            nearestHandInQuest = questId;
-        }
         if (questId == committed && !complete)
+        {
             committedDistance = distance;
+            committedSeconds = time;
+        }
 
         float const rate = QUEST_IN_LOG_BONUS * GetQuestWeight(quest, rested) * quest->XPValue(level) /
                            std::max(time, 1.0f);
-        if (complete)
+        candidates.push_back({questId, rate, distance, time, complete});
+    }
+
+    // [guild90] hand-ins are grouped like a player's: a done quest whose ender also ends (within GROUP_ENDER_RADIUS)
+    // a quest still being worked on waits for it - unless the bot passes the ender now (the giver search hands it
+    // in on the way then anyway)
+    std::vector<std::pair<uint32, WorldPosition>> openEnders;
+    for (QuestCandidate const& c : candidates)
+    {
+        WorldPosition ender;
+        if (!c.complete && NearestEnderSpot(bot, c.questId, ender))
+            openEnders.push_back({c.questId, ender});
+    }
+    for (QuestCandidate const& c : candidates)
+    {
+        if (c.complete)
         {
-            if (rate > bestCompleteRate)
+            WorldPosition ender;
+            bool deferred = false;
+            uint32 waitsFor = 0;
+            if (c.distance > HAND_IN_PASS_DISTANCE && NearestEnderSpot(bot, c.questId, ender))
+                for (auto const& [open, openEnder] : openEnders)
+                    if (openEnder.GetMapId() == ender.GetMapId() &&
+                        openEnder.GetExactDist2d(ender.GetPositionX(), ender.GetPositionY()) <= GROUP_ENDER_RADIUS)
+                    {
+                        deferred = true;
+                        waitsFor = open;
+                        break;
+                    }
+            if (deferred)
             {
-                bestCompleteRate = rate;
-                bestCompleteQuest = questId;
+                std::lock_guard<std::mutex> guard(questNoteLock);
+                auto& logged = deferredHandIns[counter];
+                if (logged.insert(c.questId).second)
+                    QuestStats::LogEvent(bot, "handin-grouped", c.questId,
+                                         "waits for q" + std::to_string(waitsFor) + " (same ender)");
+                continue;
+            }
+            if (c.distance < nearestHandIn)
+            {
+                nearestHandIn = c.distance;
+                nearestHandInQuest = c.questId;
+            }
+            if (c.rate > bestCompleteRate)
+            {
+                bestCompleteRate = c.rate;
+                bestCompleteQuest = c.questId;
             }
         }
-        else if (rate > bestRate)
+        else if (c.rate > bestRate)
         {
-            bestRate = rate;
-            bestQuest = questId;
+            bestRate = c.rate;
+            bestQuest = c.questId;
         }
     }
+    auto const secondsOf = [&](uint32 questId) -> float
+    {
+        for (QuestCandidate const& c : candidates)
+            if (c.questId == questId)
+                return c.seconds;
+        return -1.0f;
+    };
+    // [guild90] every switch away from the active quest: one line with the computed costs
+    auto const logSwitch = [&](uint32 chosen, std::string const& why)
+    {
+        if (!committed || chosen == committed)
+            return;
+        QuestStats::LogEvent(bot, "target-switch", chosen,
+                             "from=q" + std::to_string(committed) + " finish_s=" +
+                                 (committedSeconds >= 0.0f ? std::to_string(uint32(committedSeconds)) : "none") +
+                                 " other_s=" + std::to_string(int32(secondsOf(chosen))) + " reason=" + why);
+    };
 
     auto const note = [&](uint32 chosen, std::string const& why)
     {
@@ -3684,6 +3873,15 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
             committedQuest[counter] = chosen;
         else if (!chosen || (committed && committedDistance < 0.0f))
             committedQuest.erase(counter);
+        if (committed && chosen != committed)
+        {
+            auto const old = claimOf.find(counter);
+            if (old != claimOf.end() && old->second == committed)
+            {
+                claims[committed].erase(counter);
+                claimOf.erase(old);
+            }
+        }
     };
     auto const leaving = [&]() -> std::string
     {
@@ -3705,6 +3903,8 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     if (bestCompleteQuest)
     {
         uint32 const handIn = committedDistance >= 0.0f ? nearestHandInQuest : bestCompleteQuest;
+        if (committedDistance < 0.0f)
+            logSwitch(handIn, "hand-in first" + leaving());
         note(committedDistance >= 0.0f ? committed : 0,
              committedDistance >= 0.0f
                  ? "hand-in on the way (" + std::to_string(uint32(nearestHandIn)) + " yd), then back to q" +
@@ -3722,6 +3922,7 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     if (bestQuest)
     {
         note(bestQuest, "best xp per second of the log" + leaving());
+        logSwitch(bestQuest, "best xp per second of the log" + leaving());
         return bestQuest;
     }
     note(0, "nothing left in the log" + leaving());

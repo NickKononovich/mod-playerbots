@@ -7,6 +7,25 @@
 #include "NewRpgAction.h"
 #include "BotPath.h"  // [guild12]
 #include "QuestStats.h"  // [guild90]
+#include <mutex>
+#include <unordered_map>
+
+namespace
+{
+    // [guild90] one wait-respawn line per bot, quest and 30 s step of the wait
+    std::mutex waitLogLock;
+    std::unordered_map<uint32, std::pair<uint32, uint32>> waitLogged;
+
+    bool FirstWaitLog(Player* bot, uint32 questId, uint32 step)
+    {
+        std::lock_guard<std::mutex> guard(waitLogLock);
+        auto& last = waitLogged[bot->GetGUID().GetCounter()];
+        if (last.first == questId && last.second == step)
+            return false;
+        last = {questId, step};
+        return true;
+    }
+}
 #include "SoloSafety.h"  // [guild13]
 #include "AreaDefines.h"
 #include "Group.h"
@@ -989,6 +1008,32 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         std::vector<POIInfo> poiInfo;
         if (!GetQuestPOIPosAndObjectiveIdx(questId, poiInfo))
         {
+            // [guild90] every camp of the area spent (or taken by other bots): wait here for the first respawn
+            // (spawntimesecs) while the cheapest other quest costs more than the wait, else go to that one
+            if (uint32 const wait = EarliestRespawn(bot, questId))
+            {
+                uint32 other = 0;
+                float const otherSeconds = OtherQuestSeconds(questId, other);
+                if (!other || float(wait) <= otherSeconds)
+                {
+                    if (FirstWaitLog(bot, questId, wait / 30 + 1))
+                    {
+                        QuestStats::LogEvent(bot, "wait-respawn", questId,
+                                             std::to_string(wait) + "s other=" +
+                                                 (other ? "q" + std::to_string(other) + " " +
+                                                              std::to_string(uint32(otherSeconds)) + "s"
+                                                        : std::string("none")) +
+                                                 " " + LastResolveStats());
+                    }
+                    // the respawn is the world's clock: re-checked in short steps, the grind and loot strategies
+                    // take what appears (and wanderers) meanwhile
+                    return ForceToWait(std::min<uint32>(wait, 10) * IN_MILLISECONDS);
+                }
+                QuestStats::LogEvent(bot, "target-switch", other,
+                                     "from=q" + std::to_string(questId) + " wait_s=" + std::to_string(wait) +
+                                         " other_s=" + std::to_string(uint32(otherSeconds)) +
+                                         " reason=all camps spent, the other quest is cheaper than the respawn");
+            }
             // can't find a poi pos to go, stop doing quest for now
             botAI->rpgInfo.ChangeToIdle();
             return true;
@@ -1039,6 +1084,12 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         data.lastReachPOI = 0;
         data.pos = pos;
         data.objectiveIdx = objectiveIdx;
+        // [guild90] the sweep: next unspent camp nearest the bot, claimed (other bots skip it)
+        ClaimSpot(bot, questId, pos);
+        QuestStats::LogEvent(bot, "sweep", questId,
+                             "obj=" + std::to_string(objectiveIdx) + " to=(" + std::to_string(int32(dx)) + "," +
+                                 std::to_string(int32(dy)) + ") " + std::to_string(uint32(bot->GetDistance2d(dx, dy))) +
+                                 "yd " + LastResolveStats());
     }
 
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
