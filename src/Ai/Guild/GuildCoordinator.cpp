@@ -958,6 +958,7 @@ void GuildCoordinator::Update(uint32 diff)
         }
         UpdateHealth();
         UpdateFives();  // [guild60]
+        NewRpgCoop::UpdateHelp();  // [help] the guild's help requests: helpers assigned, human parties ended
     }
     RunTransfers(diff);  // [guild81] trades next to each other, mails at mailboxes (once a second)
 }

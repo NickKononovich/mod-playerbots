@@ -28,6 +28,7 @@
 #include "GuildScript.h"
 #include "Item.h"
 #include "NewRpgBaseAction.h"
+#include "NewRpgCoop.h"  // [help]
 #include "SoloSafety.h"  // [guild13]
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
@@ -477,6 +478,11 @@ public:
             return true;
         }
 
+        // [help] a human's help request whispered to a guild bot goes to the global leader, not the bot's commands
+        if (receiver && sGuildCoordinator.IsPlanned(receiver->GetGUID().GetCounter()) &&
+            NewRpgCoop::HelpChat(player, msg, receiver))
+            return true;
+
         botAI->HandleCommand(type, msg, player);
 
         // hotfix; otherwise the server will crash when whispering logout
@@ -523,6 +529,10 @@ public:
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 lang, std::string& msg, Guild* /*guild*/) override
     {
         if (type != CHAT_MSG_GUILD || lang == LANG_ADDON)
+            return true;
+
+        // [help] «помогите <quest>» in guild chat: the global leader answers it
+        if (NewRpgCoop::HelpChat(player, msg, nullptr))
             return true;
 
         PlayerbotMgr* playerbotMgr = PlayerbotsMgr::instance().GetPlayerbotMgr(player);

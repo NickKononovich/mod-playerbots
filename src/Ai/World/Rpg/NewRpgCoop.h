@@ -110,6 +110,26 @@ struct CoordinatorHooks
     std::function<void(uint32 low, uint32 questId, std::string const& why)> endTask;
 };
 void SetCoordinatorHooks(CoordinatorHooks const& coordinatorHooks);
+
+// [help] user design 2026-11-08 (q315 «The Perfect Stout» done by hand: a group quest). A guild member asks the global
+// leader for help on a quest objective: a bot when its judge refuses the objective's camp (OnSpotRefused, next to its
+// co-op seek), a human by chat («помогите <quest name / link / id>», «help q315», a quest link) in guild chat or a
+// whisper to any guild bot. The global leader (UpdateHelp, world thread) assigns helpers that need not hold the quest:
+// the nearest free members (no URGENT task; help outranks the CONVENIENT ones) for whom the camp's mobs are not
+// orange / red, by role need (a healer first when the camp's damage exceeds the hit-taker's health, then the member
+// that makes the party win soonest), each at its walk ETA (Leader::WalkYd), up to the smallest party the judge says
+// wins the camp (the camp's damage on its hit-taker - the tank, else the requester - over the party's kill time,
+// against its health, pet and the healers' heals, SurvivalKit::HealPoints). A bot requester leads (its group made at
+// the assignment, it waits for the helpers); a human requester gets the core's normal invite from the first helper
+// that reaches him and accepts it himself. The helpers fight with the requester until its objective (a human: every
+// kill / loot objective of the quest) closes, then leave the group and go back to their plan.
+// Log: [help] request|assign|refuse|join|invite|done|leave <who> k=v ... t=<unix ms> reason=<text>
+// (C:/WoW/tools/quest_metrics.py --section help)
+
+// world thread (the chat hooks): a human's message to the guild; true when it was a help request (answered in chat)
+bool HelpChat(Player* sender, std::string const& msg, Player* receiver);
+// world thread, the global leader's look (GuildCoordinator::Update): open requests get helpers, human parties end
+void UpdateHelp();
 }  // namespace NewRpgCoop
 
 // drops the member's own New RPG status actions and its own grind pulls while it goes with its party's leader

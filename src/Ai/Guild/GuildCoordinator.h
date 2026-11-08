@@ -228,6 +228,19 @@ public:
     void SendResources(Player* player);  // addon "BOTCTL\tresources": the virtual guild bank
     void SendPlan(Player* player);       // [guild70] addon "BOTCTL\tplan": crafts, transfers, sources
     bool IsPlanned(uint32 low) const { return planIndex_.count(low) != 0; }
+    // [help] every member of the plan (read-only after Load: any thread)
+    std::vector<uint32> PlannedLows() const
+    {
+        std::vector<uint32> lows;
+        lows.reserve(plan_.size());
+        for (PlanRow const& row : plan_)
+            lows.push_back(row.low);
+        return lows;
+    }
+    // [human] user rule 2026-11-08: the leader never acts with the items or inventory of a human's character - one
+    // the human controls (HumanControls) or one with a real client session (a SelfBot the human plays with); it only
+    // suggests in chat and lets the human act (Suggest)
+    static bool HumanCharacter(Player* p);
 
     // [guild60] fives: the global leader forms them (UpdateFives) or the command does; world thread.
     // FormFive: members incl. the leader, `dungeon` = the content key ("wc-n"); 0 with `error` when it cannot.
@@ -679,10 +692,6 @@ private:
                   std::map<uint32, uint32> const& bank, std::vector<WantedItem> const& wanted);
     void UpdateCrafts(uint32 now);  // [guild50] craft queue (upgrade crafts + bags), its wanted mats; lock_ held
     static bool HumanControls(Player* p);
-    // [human] user rule 2026-11-08: the leader never acts with the items or inventory of a human's character - one
-    // the human controls (HumanControls) or one with a real client session (a SelfBot the human plays with); it only
-    // suggests in chat and lets the human act (Suggest)
-    static bool HumanCharacter(Player* p);
     // [human] lock_ held: a suggestion to the human member (a system line from the global leader), sent once per key
     // while its text stays the same
     void Suggest(uint32 low, std::string const& key, std::string const& text);
