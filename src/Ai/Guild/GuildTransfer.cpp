@@ -1269,8 +1269,17 @@ void GuildCoordinator::UpdateTransfers()
 
     if (donation != donationState_)
     {
+        // [econ1] b350: 189 "donation plan" lines - the members' free copper changed every update; a new line
+        // only when the verdict changes (the text without its amounts), the plan row keeps the numbers
+        auto const verdict = [](std::string text)
+        {
+            text.erase(std::remove_if(text.begin(), text.end(), [](char ch) { return ch >= '0' && ch <= '9'; }),
+                       text.end());
+            return text;
+        };
+        bool const changed = verdict(donation) != verdict(donationState_);
         donationState_ = donation;
-        if (!donation.empty())
+        if (!donation.empty() && changed)
         {
             logs.push_back("donation plan: " + donation);
             Decision(donation);
