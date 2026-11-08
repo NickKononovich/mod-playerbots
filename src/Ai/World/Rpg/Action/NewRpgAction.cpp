@@ -558,10 +558,16 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         NewRpgCoop::Order const coop = NewRpgCoop::Tick(botAI, bot);
         if (coop.kind == NewRpgCoop::Order::Kind::Follow)
         {
+            NewRpgStatus const before = info.GetStatus();
             if (coop.farWalk ? MoveFarTo(coop.pos) : Follow(coop.leader))
                 return true;
-            if (coop.farWalk)
-                NewRpgCoop::NoWalk(bot);
+            // MoveFarTo's false is also "its last move still runs" / "it cannot step now": only the facts that
+            // there is no walk from here end the party - the route search found none from this spot
+            // (moveFarFailed), or the walk closed a loop / was refused and gave its state up
+            if (coop.farWalk && info.moveFarFailed)
+                NewRpgCoop::NoWalk(bot, "its route search finds no walk from where it stands");
+            else if (coop.farWalk && info.GetStatus() != before)
+                NewRpgCoop::NoWalk(bot, "its walk gave up (MOVE_FAR_LOOP or a refused spot)");
             return false;
         }
         if (coop.kind == NewRpgCoop::Order::Kind::Stay)

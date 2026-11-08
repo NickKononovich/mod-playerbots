@@ -19,7 +19,11 @@
 // - Only a bot on the quest default of the global leader (New RPG DO_QUEST, no profession call) is offered; a later
 //   order of the global leader that moves the bot off that quest (a five's call: its status changes) ends its co-op.
 // - No timers: the offer is looked at when the board of its objective changes (a counter, a bot coming or going).
-// Log: [coop] offer|accept|refuse|join|wait|shared-kill|exit|gain|seek <bot> k=v ... t=<unix ms> [reason=<text>]
+// - No history: the times alone and together come from the formula only (the objective's source creature at the
+//   core's base health over DpsEstimate's damage, the walk between its spawns, the loot chance, the respawns of
+//   spawns shared with the board), the partner's walk from its route to the leader (checked before the offer).
+// Log: [coop] offer|accept|refuse|join|wait|shared-kill|exit|gain|seek|no-seek <bot> k=v ... t=<unix ms>
+// [reason=<text>]; gain / solo in XP per hour, solo=never when one side cannot close it alone (no ratio)
 // (C:/WoW/tools/quest_metrics.py "groups").
 
 #include <functional>
@@ -54,8 +58,10 @@ struct Order
 // map thread, the New RPG status tick: the bot's board entry (O(1)), the offer when the board of its objective
 // changed, the party's exits; for a member the leader's word
 Order Tick(PlayerbotAI* botAI, Player* bot);
-// the member found no walk to its leader: it leaves the party
-void NoWalk(Player* bot);
+// the member's far walk to its leader proved there is no walk from where it stands (its route search found none,
+// or its walk closed a loop): it leaves the party. A walk that only waits (its last move still runs, a cast) is no
+// such proof; the reach itself is checked by the offer (the partner's route to the leader)
+void NoWalk(Player* bot, std::string const& why);
 // MoveFarTo refused the walk to the bot's quest objective (a camp it does not pull): the objective is put on the
 // board as one it looks for a party for
 void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& dest);

@@ -27,6 +27,7 @@
 #include "GroupMgr.h"
 #include "GuildCoordinator.h"
 #include "LeaderFightChecks.h"
+#include "LeaderOrders.h"
 #include "Log.h"
 #include "LootMgr.h"
 #include "Map.h"
@@ -85,6 +86,25 @@ struct Seek
     Camp camp;
 };
 
+// the formula's pace of one objective for one bot (no measured history): the source creature it would farm (the
+// objective's creature or kill credit, for an item the creature that drops it with its loot chance), its health at
+// the core's base stats, the walk between the spawns it works and from the bot to the first of them
+struct Pace
+{
+    bool known = false;
+    std::string why;  // not known: the data fact that is missing
+    uint32 entry = 0;
+    uint8 level = 0;
+    float hp = 0.0f;
+    float chance = 1.0f;     // objective units per kill
+    float stepYd = 0.0f;     // walk per kill: the mean gap to the nearest other spawn among those it works
+    float reachYd = 0.0f;    // from the bot to the nearest of them
+    float spawns = 0.0f;     // its spawns on the map
+    float respawnSec = 0.0f; // their mean respawn
+    WorldPosition at{};      // where the bot works the objective (its New RPG spot)
+    uint32 left = 0;         // the counter it was computed for
+};
+
 struct Posting
 {
     ObjectGuid guid{};
@@ -94,22 +114,23 @@ struct Posting
     uint8 level = 0;
     Objective cur;
     uint64 bucket = 0;
-    uint32 since = 0;       // ms: it took this objective (its measured solo pace counts from here)
-    uint32 lastUnitAt = 0;  // ms of its last counter step alone
-    uint32 units = 0;       // counter steps alone since `since`
+    Pace pace;  // the formula's pace of `cur` (recomputed when its counter, its spot or its level changes)
+    uint8 paceLevel = 0;
     std::vector<Seek> seeks;
     std::unordered_map<uint64, uint32> seen;  // bucket -> the board version it last looked at
-    uint32 lastKillEntry = 0;
-    uint32 itemSource = 0;  // the creature whose kill last raised its item counter
     // in a party
     uint32 party = 0;
     Objective partyObj;
     uint32 joinedAt = 0;  // ms of the accept
     uint32 haveAtJoin = 0;
     uint64 xp = 0;  // kill XP in the party
-    float walkYd = 0.0f;
+    float walkYd = 0.0f;   // the offer's walk to the leader (its route's length)
+    float walkSec = 0.0f;  // the offer's eta of that walk at its run speed
+    WorldPosition walkTo{};  // the leader's spot its far walk heads for
     bool arrived = false;
-    float soloXph = 0.0f;  // the offer's solo forecast
+    bool soloNever = false;   // the offer's forecast: alone it cannot close it (a camp it does not solo)
+    float soloXph = 0.0f;     // the offer's solo forecast
+    float groupXph = 0.0f;    // the offer's forecast together
     uint32 sharedKills = 0;
 };
 
@@ -284,22 +305,81 @@ bool Serves(Player* member, Objective const& o, Creature* killed)
     return tmpl->lootid && LootTemplates_Creature.HaveQuestLootForPlayer(tmpl->lootid, member);
 }
 
-// the chance of `itemId` in one kill of `entry` (creature_loot_template), 1 when not found
-float DropChance(uint32 entry, uint32 itemId)
+// the static world data the pace formula reads, indexed once (the world thread's startup, else the first look):
+// the quest items -> the creatures that drop them (creature_loot_template, the item's chance), the kill objectives
+// -> the creatures whose kill credits them, those creatures -> their spawns (`creature`, multispawn alternates)
+struct DropSource
 {
-    CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
-    LootTemplate const* loot = tmpl && tmpl->lootid ? LootTemplates_Creature.GetLootFor(tmpl->lootid) : nullptr;
-    if (!loot)
-        return 1.0f;
-    float chance = 0.0f;
-    loot->VisitEntries(
-        [&](LootStoreItem const& entryItem, float itemChance)
+    uint32 entry;
+    float chance;  // 0..1
+};
+struct SpawnPoint
+{
+    uint16 map;
+    float x, y;
+    uint32 respawnSec;
+};
+std::once_flag indexOnce;
+std::unordered_map<uint32, std::vector<DropSource>> itemSources;
+std::unordered_map<uint32, std::vector<uint32>> creditSources;
+std::unordered_map<uint32, std::vector<SpawnPoint>> spawnsOf;
+
+void BuildIndex()
+{
+    std::unordered_set<uint32> items, credits, sources;
+    for (auto const& [questId, quest] : sObjectMgr->GetQuestTemplates())
+    {
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            if (quest->RequiredNpcOrGo[i] > 0)
+                credits.insert(uint32(quest->RequiredNpcOrGo[i]));
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            if (quest->RequiredItemId[i])
+                items.insert(quest->RequiredItemId[i]);
+    }
+    for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
+    {
+        for (uint32 credit : {tmpl.Entry, tmpl.KillCredit[0], tmpl.KillCredit[1]})
         {
-            if (entryItem.itemid == itemId)
-                chance = std::max(chance, itemChance);
-        });
-    return chance > 0.0f ? std::min(chance / 100.0f, 1.0f) : 1.0f;
+            if (!credit || !credits.count(credit))
+                continue;
+            std::vector<uint32>& list = creditSources[credit];
+            if (std::find(list.begin(), list.end(), entry) == list.end())
+                list.push_back(entry);
+            sources.insert(entry);
+        }
+        LootTemplate const* loot = tmpl.lootid ? LootTemplates_Creature.GetLootFor(tmpl.lootid) : nullptr;
+        if (!loot)
+            continue;
+        std::unordered_map<uint32, float> best;
+        loot->VisitEntries(
+            [&](LootStoreItem const& item, float chance)
+            {
+                if (!item.reference && items.count(item.itemid))
+                    best[item.itemid] = std::max(best[item.itemid], std::abs(chance) / 100.0f);
+            });
+        for (auto const& [item, chance] : best)
+            if (chance > 0.0f)
+            {
+                itemSources[item].push_back({entry, std::min(chance, 1.0f)});
+                sources.insert(entry);
+            }
+    }
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+    {
+        uint32 const ids[] = {data.id, data.id2, data.id3};
+        for (size_t i = 0; i < 3; ++i)
+        {
+            uint32 const entry = ids[i];
+            if (!entry || !sources.count(entry) || (i > 0 && entry == ids[0]) || (i == 2 && entry == ids[1]))
+                continue;
+            spawnsOf[entry].push_back({data.mapid, data.posX, data.posY, data.spawntimesecs});
+        }
+    }
+    LOG_INFO("playerbots", "[coop] index: {} quest items from {} creatures, {} kill objectives, {} sources spawned",
+             itemSources.size(), sources.size(), creditSources.size(), spawnsOf.size());
 }
+
+void EnsureIndex() { std::call_once(indexOnce, BuildIndex); }
 
 // the creature's health at its middle level (the core's base stats)
 float TemplateHealth(uint32 entry, uint8& level)
@@ -401,6 +481,7 @@ struct Plan
     std::string why;
     float tSoloL = 0.0f, tGroupL = 0.0f, tSoloP = 0.0f, tGroupP = 0.0f;
     float walkYd = 0.0f;
+    float walkSec = 0.0f;  // P's walk to L at its run speed
     float xphSoloL = 0.0f, xphGroupL = 0.0f, xphSoloP = 0.0f, xphGroupP = 0.0f;
     std::unordered_map<uint32, float> healRate;
     Camp camp;
@@ -415,28 +496,100 @@ struct Side
     Camp const* camp = nullptr;  // a seeker: the camp it cannot solo
 };
 
-// seconds per objective unit alone: measured (its counter steps since it took the objective), at least the fight
-// model (the objective creature's health over its damage, over the drop chance); `fight`: the model's part
-float UnitSeconds(Side const& s, float dps, float& fight, uint8& mobLevel)
+// the seconds `units` objective units take at the pace (the formula, no history): per kill the source's health at
+// `dps` plus the walk to the next spawn; 1 / chance kills per unit; the spawns shared with `workers` bots on the
+// same objective, every kill beyond one per spawn waits for its respawn (the core's respawn time)
+float PaceSeconds(Pace const& pace, uint32 units, float dps, float speed, float workers)
 {
-    fight = 0.0f;
-    mobLevel = 0;
-    uint32 const entry = s.obj.item ? s.post->itemSource : s.obj.key;
-    if (entry)
+    if (!pace.known || !units)
+        return 0.0f;
+    float const kills = float(units) / std::max(pace.chance, 0.0001f);
+    float const perKill = pace.hp / std::max(dps, 1.0f) + pace.stepYd / std::max(speed, 1.0f);
+    float const spawns = std::max(pace.spawns / std::max(workers, 1.0f), 1.0f);
+    if (kills <= spawns)
+        return kills * perKill;
+    return spawns * perKill + (kills - spawns) * std::max(perKill, pace.respawnSec / spawns);
+}
+
+// the formula's pace of the bot's objective `o` worked at `at`: of the creatures that serve it (kill credit, or the
+// drop with its chance) the one spawned on its map that closes it fastest at its solo damage
+Pace ComputePace(Player* bot, Objective const& o, WorldPosition const& at)
+{
+    EnsureIndex();
+    Pace best;
+    best.at = at;
+    best.left = o.Left();
+    std::vector<DropSource> candidates;
+    if (o.item)
     {
-        float const hp = TemplateHealth(entry, mobLevel);
-        float const chance = s.obj.item ? DropChance(entry, s.obj.key) : 1.0f;
-        if (hp > 0.0f && chance > 0.0f)
-            fight = hp / std::max(dps, 1.0f) / chance;
+        auto const itr = itemSources.find(o.key);
+        if (itr != itemSources.end())
+            candidates = itr->second;
     }
-    float measured = 0.0f;
-    if (s.post->cur.Same(s.obj) && s.post->units && s.post->lastUnitAt != s.post->since)
-        measured = float(getMSTimeDiff(s.post->since, s.post->lastUnitAt)) / IN_MILLISECONDS / float(s.post->units);
-    if (measured <= 0.0f)
-        return fight;
-    if (fight <= 0.0f)
-        fight = measured;  // no model: all of it counts as fighting
-    return std::max(measured, fight);
+    else if (auto const itr = creditSources.find(o.key); itr != creditSources.end())
+        for (uint32 entry : itr->second)
+            candidates.push_back({entry, 1.0f});
+    if (candidates.empty())
+    {
+        best.why = o.item ? "no creature drops item " + std::to_string(o.key)
+                          : "no creature gives the kill credit " + std::to_string(o.key);
+        return best;
+    }
+    float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
+    float const speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    float bestSec = NO_TIME;
+    best.why = "no spawn of its sources on this map";
+    for (DropSource const& source : candidates)
+    {
+        auto const spawns = spawnsOf.find(source.entry);
+        if (spawns == spawnsOf.end())
+            continue;
+        std::vector<std::pair<float, SpawnPoint const*>> around;
+        for (SpawnPoint const& s : spawns->second)
+            if (s.map == bot->GetMapId())
+                around.push_back({at.GetExactDist2d(s.x, s.y), &s});
+        if (around.empty())
+            continue;
+        Pace pace;
+        pace.known = true;
+        pace.entry = source.entry;
+        pace.chance = source.chance;
+        pace.hp = TemplateHealth(source.entry, pace.level);
+        if (pace.hp <= 0.0f)
+            continue;
+        pace.at = at;
+        pace.left = best.left;
+        pace.spawns = float(around.size());
+        // the spawns it works: as many as the kills it needs, the nearest to its spot
+        size_t const kills = size_t(std::ceil(float(std::max<uint32>(best.left, 1)) / pace.chance));
+        size_t const worked = std::min(around.size(), std::max<size_t>(kills, 1));
+        std::partial_sort(around.begin(), around.begin() + worked, around.end(),
+                          [](auto const& a, auto const& b) { return a.first < b.first; });
+        float reach = NO_TIME;
+        float respawn = 0.0f;
+        float steps = 0.0f;
+        for (size_t i = 0; i < worked; ++i)
+        {
+            SpawnPoint const& s = *around[i].second;
+            reach = std::min(reach, bot->GetExactDist2d(s.x, s.y));
+            respawn += float(s.respawnSec);
+            float gap = NO_TIME;
+            for (size_t j = 0; j < worked; ++j)
+                if (j != i)
+                    gap = std::min(gap, std::hypot(s.x - around[j].second->x, s.y - around[j].second->y));
+            steps += gap < NO_TIME ? gap : 0.0f;
+        }
+        pace.reachYd = reach;
+        pace.respawnSec = respawn / float(worked);
+        pace.stepYd = steps / float(worked);
+        float const seconds = pace.reachYd / speed + PaceSeconds(pace, best.left, dps, speed, 1.0f);
+        if (seconds < bestSec)
+        {
+            bestSec = seconds;
+            best = pace;
+        }
+    }
+    return best;
 }
 
 float KillXp(Player* p, uint8 mobLevel)
@@ -447,17 +600,24 @@ float KillXp(Player* p, uint8 mobLevel)
         Acore::XP::BaseGain(p->GetLevel(), mobLevel, GetContentLevelsForMapAndZone(p->GetMapId(), p->GetZoneId())));
 }
 
-// L leads (it stays on its work), P walks to it. `partyDps`/`partyLevels`/`partySize`: the party L leads already
-Plan Forecast(Side const& l, Side const& pr, float partyDps, uint32 partyLevels, uint32 partySize)
+// L leads (it stays on its work), P walks to it. `partyDps`/`partyLevels`/`partySize`: the party L leads already;
+// `workers`: the bots on this board (they share its spawns); `walkYd` >= 0: the length of P's route to L (else the
+// straight line)
+Plan Forecast(Side const& l, Side const& pr, float partyDps, uint32 partyLevels, uint32 partySize, float workers,
+              float walkYd = -1.0f)
 {
     Plan plan;
     Player* const lp = l.p;
     Player* const pp = pr.p;
-    float const dpsL = DpsEstimate::EstimateDps(lp, nullptr, DpsEstimate::BuffContext::Group);
     float const dpsP = DpsEstimate::EstimateDps(pp, nullptr, DpsEstimate::BuffContext::Group);
+    float const soloDpsL = DpsEstimate::EstimateDps(lp, nullptr, DpsEstimate::BuffContext::Solo);
+    float const soloDpsP = DpsEstimate::EstimateDps(pp, nullptr, DpsEstimate::BuffContext::Solo);
     float const sumDps = partyDps + dpsP;
-    plan.walkYd = lp->GetExactDist2d(pp);
-    float const walkSec = plan.walkYd / std::max(pp->GetSpeed(MOVE_RUN), 1.0f);
+    float const speedL = std::max(lp->GetSpeed(MOVE_RUN), 1.0f);
+    float const speedP = std::max(pp->GetSpeed(MOVE_RUN), 1.0f);
+    plan.walkYd = walkYd >= 0.0f ? walkYd : lp->GetExactDist2d(pp);
+    plan.walkSec = plan.walkYd / speedP;
+    float const walkSec = plan.walkSec;
     uint32 const rL = l.obj.Left();
     uint32 const rP = pr.obj.Left();
     uint32 const shared = std::min(rL, rP);
@@ -467,32 +627,30 @@ Plan Forecast(Side const& l, Side const& pr, float partyDps, uint32 partyLevels,
         return plan;
     }
 
-    float fightL = 0.0f, fightP = 0.0f;
-    uint8 levelL = 0, levelP = 0;
-    float const unitL = l.camp ? NO_TIME : UnitSeconds(l, dpsL, fightL, levelL);
-    float const unitP = pr.camp ? NO_TIME : UnitSeconds(pr, dpsP, fightP, levelP);
-
-    // the shared pace: where the leader works (its spots, its search between kills), the fight at the party's
-    // damage; a camp the leader could not solo: the camp's fight at the party's damage per objective unit
-    Camp const* camp = l.camp ? l.camp : pr.camp;
-    float groupUnit = 0.0f;
-    if (l.camp)
-        groupUnit = l.camp->fightSec * l.camp->dps / std::max(sumDps, 1.0f) / float(std::max<uint32>(l.camp->units, 1));
-    else
-    {
-        if (unitL <= 0.0f)
+    // each side's pace by the formula (its objective's source creature at the core's base health over its damage,
+    // the walk between the spawns it works, the drop chance, the respawn of spawns shared with the board): no
+    // measured history
+    Pace const* paceL = l.camp ? nullptr : &l.post->pace;
+    Pace const* paceP = pr.camp ? nullptr : &pr.post->pace;
+    for (auto const& [who, pace] : {std::make_pair(lp, paceL), std::make_pair(pp, paceP)})
+        if (pace && !pace->known)
         {
-            plan.why = "calc: " + lp->GetName() + " has no pace on it yet (no measured step, no model)";
+            plan.why = "calc: " + who->GetName() + " has no pace on it: " +
+                       (pace->why.empty() ? std::string("its objective is not on the board yet") : pace->why);
             return plan;
         }
-        groupUnit = fightL * dpsL / std::max(sumDps, 1.0f) + std::max(0.0f, unitL - fightL);
-    }
-    if (!pr.camp && unitP <= 0.0f)
-    {
-        plan.why = "calc: " + pp->GetName() + " has no pace on it yet (no measured step, no model)";
-        return plan;
-    }
-    uint8 const mobLevel = camp ? camp->topLevel : std::max(levelL, levelP);
+
+    // the shared pace: a camp the leader could not solo: the camp's fight at the party's damage per objective unit;
+    // else the leader's spawns at the party's damage (one kill credits both, each rolls its own quest drop)
+    Camp const* camp = l.camp ? l.camp : pr.camp;
+    float groupShared = 0.0f;
+    if (l.camp)
+        groupShared = float(shared) * l.camp->fightSec * l.camp->dps / std::max(sumDps, 1.0f) /
+                      float(std::max<uint32>(l.camp->units, 1));
+    else
+        groupShared = PaceSeconds(*paceL, shared, sumDps, speedL, std::max(workers - 1.0f, 1.0f));
+    uint8 const mobLevel =
+        camp ? camp->topLevel : std::max<uint8>(paceL ? paceL->level : 0, paceP ? paceP->level : 0);
 
     // a camp the seeker could not solo: the party must win it (the pack's damage on the leader over the time the
     // party's damage needs, against the leader's health and the party's heals), and the core's con rule holds for
@@ -536,12 +694,17 @@ Plan Forecast(Side const& l, Side const& pr, float partyDps, uint32 partyLevels,
         plan.campFor = l.camp ? lp->GetGUID() : pp->GetGUID();
     }
 
-    // the time to close each counter: alone, and together while both need kills (the one that needs fewer leaves
-    // when its counter closes), the walk to meet on both (the leader's New RPG waits for a member far away)
-    plan.tSoloL = l.camp ? NO_TIME : float(rL) * unitL;
-    plan.tSoloP = pr.camp ? NO_TIME : float(rP) * unitP;
-    plan.tGroupL = walkSec + float(shared) * groupUnit + (l.camp ? 0.0f : float(rL - shared) * unitL);
-    plan.tGroupP = walkSec + float(shared) * groupUnit + (pr.camp ? 0.0f : float(rP - shared) * unitP);
+    // the time to close each counter: alone (its walk to its first spawn, then its own pace), and together (P's
+    // walk to L, the leader's GROUP_WAIT holds L for it; the shared units at the party's pace; the one that needs
+    // more closes the rest alone, the one that needs fewer leaves when its counter closes)
+    float const reachL = paceL ? paceL->reachYd / speedL : 0.0f;
+    float const reachP = paceP ? paceP->reachYd / speedP : 0.0f;
+    plan.tSoloL = l.camp ? NO_TIME : reachL + PaceSeconds(*paceL, rL, soloDpsL, speedL, workers);
+    plan.tSoloP = pr.camp ? NO_TIME : reachP + PaceSeconds(*paceP, rP, soloDpsP, speedP, workers);
+    plan.tGroupL = walkSec + reachL + groupShared +
+                   (l.camp ? 0.0f : PaceSeconds(*paceL, rL - shared, soloDpsL, speedL, workers));
+    plan.tGroupP = walkSec + reachL + groupShared +
+                   (pr.camp ? 0.0f : PaceSeconds(*paceP, rP - shared, soloDpsP, speedP, workers));
     uint32 const doneL = l.camp ? shared : rL;
     uint32 const doneP = pr.camp ? shared : rP;
 
@@ -659,9 +822,6 @@ void LeaveLocked(Posting& me, std::string const& reason, uint32 now, Out& out)
     auto const itr = parties.find(me.party);
     me.party = 0;
     MarkParty(me.guid.GetCounter(), false);
-    me.since = now;
-    me.lastUnitAt = now;
-    me.units = 0;
     if (itr == parties.end())
         return;
     Party& party = itr->second;
@@ -676,8 +836,11 @@ void LeaveLocked(Posting& me, std::string const& reason, uint32 now, Out& out)
         float const got = seconds > 0.0f ? (float(p.xp) + questXp) / seconds * HOUR : 0.0f;
         out.logs.push_back(Acore::StringFormat("[coop] exit {} group={} after={:.0f} units={} kills={}{} reason={}",
                                                p.name, party.id, seconds, units, p.sharedKills, Stamp(), why));
-        out.logs.push_back(Acore::StringFormat("[coop] gain {} group={} got={:.0f} solo={:.0f}{}", p.name, party.id,
-                                               got, p.soloXph, Stamp()));
+        // got: its XP per hour in the party (kill XP + the quest's share of the units closed); forecast: the offer's
+        // XP per hour together, solo: alone (never: it cannot close it alone - no ratio)
+        out.logs.push_back(Acore::StringFormat(
+            "[coop] gain {} group={} got={:.0f} forecast={:.0f} solo={}{}", p.name, party.id, got, p.groupXph,
+            p.soloNever ? std::string("never") : std::to_string(uint32(p.soloXph)), Stamp()));
         out.after.push_back([name = p.name, low = p.guid.GetCounter(), q = p.partyObj.questId, why]()
                             { EndTask(name, low, q, why); });
         p.sharedKills = 0;
@@ -698,9 +861,6 @@ void LeaveLocked(Posting& me, std::string const& reason, uint32 now, Out& out)
                 finish(other->second, "partner left (" + me.name + ": " + reason + ")");
             other->second.party = 0;
             MarkParty(guid.GetCounter(), false);
-            other->second.since = now;
-            other->second.lastUnitAt = now;
-            other->second.units = 0;
         }
         if (party.formed)
             out.ops.push_back(std::make_unique<CoopLeaveOperation>(party.group, me.guid, ObjectGuid::Empty));
@@ -776,8 +936,11 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
             }
     }
 
+    // the bots on this board share its spawns (their respawns bound the pace of each)
+    float const workers = float(bucket->second.lows.size());
     Plan best;
     Player* bestPartner = nullptr;
+    Side bestSide;
     Objective bestObj;
     for (uint32 low : bucket->second.lows)
     {
@@ -814,7 +977,7 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
             NoteRefusal(out, bot, p, "busy: " + busy);
             continue;
         }
-        Plan plan = Forecast(mine, other, partyDps, partyLevels, partySize);
+        Plan plan = Forecast(mine, other, partyDps, partyLevels, partySize, workers);
         if (!plan.ok)
         {
             NoteRefusal(out, bot, p, plan.why);
@@ -826,11 +989,41 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
         {
             best = std::move(plan);
             bestPartner = p;
+            bestSide = other;
             bestObj = other.obj;
         }
     }
     if (!bestPartner)
         return;
+
+    // the partner's walk to the leader as its own walk would go (the leader route search, its solo pricing of the
+    // packs on the way): the reach is checked before the offer, and the forecast takes the route's length
+    {
+        Leader::RouteResult const route = Leader::Route(bestPartner, bot->GetPosition());
+        std::string why;
+        if (!route.found)
+            why = "calc: no walk from " + bestPartner->GetName() + " to " + bot->GetName() + " (" + route.Describe() +
+                  ")";
+        else if (route.throughRefused)
+            why = "calc: " + bestPartner->GetName() + "'s way to " + bot->GetName() +
+                  " passes a pack it does not fight and no walk goes round it";
+        else
+        {
+            float const length =
+                route.complete || route.points.empty()
+                    ? route.length
+                    : route.length + bot->GetExactDist(route.points.back().x, route.points.back().y,
+                                                       route.points.back().z);
+            best = Forecast(mine, bestSide, partyDps, partyLevels, partySize, workers, length);
+            if (!best.ok)
+                why = best.why + " (route " + std::to_string(uint32(length)) + " yd)";
+        }
+        if (!why.empty())
+        {
+            NoteRefusal(out, bot, bestPartner, why);
+            return;
+        }
+    }
 
     uint32 const id = led ? led->id : nextParty++;
     Party& party = led ? *led : parties[id];
@@ -851,25 +1044,37 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
     other.party = id;
     other.partyObj = bestObj;
     other.walkYd = best.walkYd;
+    other.walkSec = best.walkSec;
+    other.walkTo = WorldPosition();
+    other.soloNever = best.tSoloP >= NO_TIME;
     other.soloXph = best.xphSoloP;
+    other.groupXph = best.xphGroupP;
     if (!led)
     {
         me.walkYd = 0.0f;
+        me.walkSec = 0.0f;
+        me.soloNever = best.tSoloL >= NO_TIME;
         me.soloXph = best.xphSoloL;
+        me.groupXph = best.xphGroupL;
     }
     lastRefusal.erase(PairKey(bot->GetGUID().GetCounter(), bestPartner->GetGUID().GetCounter()));
+    // gain / solo: the pair's XP per hour together / alone (solo=never: one of them cannot close it alone, a camp it
+    // does not solo - no ratio); t_*: seconds to close each counter, walk: the route's yards, eta: its seconds
+    bool const never = best.tSoloL >= NO_TIME || best.tSoloP >= NO_TIME;
+    auto const secs = [](float t) { return t >= NO_TIME ? std::string("never") : std::to_string(uint32(t)); };
     out.logs.push_back(Acore::StringFormat(
-        "[coop] offer {} to={} group={} quests={} gain={:.0f} solo={:.0f} t_solo={:.0f} t_group={:.0f} "
-        "p_solo={:.0f} p_group={:.0f} walk={:.0f} prog={}/{} partner={}/{}{} reason={}{}",
+        "[coop] offer {} to={} group={} quests={} gain={:.0f} solo={} t_solo={} t_group={:.0f} p_solo={} "
+        "p_group={:.0f} walk={:.0f} eta={:.0f} prog={}/{} partner={}/{}{} reason={}{}",
         bot->GetName(), bestPartner->GetName(), id, QuestList(mine.obj, bestObj), best.xphGroupL + best.xphGroupP,
-        best.xphSoloL + best.xphSoloP, std::min(best.tSoloL, 99999.0f), best.tGroupL, std::min(best.tSoloP, 99999.0f),
-        best.tGroupP, best.walkYd, mine.obj.have, mine.obj.need, bestObj.have, bestObj.need, Stamp(),
-        best.camp.known ? "a camp one cannot solo; " : "same objective; ", best.why));
+        never ? std::string("never") : std::to_string(uint32(best.xphSoloL + best.xphSoloP)), secs(best.tSoloL),
+        best.tGroupL, secs(best.tSoloP), best.tGroupP, best.walkYd, best.walkSec, mine.obj.have, mine.obj.need,
+        bestObj.have, bestObj.need, Stamp(), best.camp.known ? "a camp one cannot solo; " : "same objective; ",
+        best.why));
     out.ops.push_back(std::make_unique<CoopFormOperation>(id, bot->GetGUID(), bestPartner->GetGUID()));
 }
 
-// the bot's own entry on the board (lock held): its objective and counter; its measured solo pace
-void UpdatePostingLocked(PlayerbotAI* botAI, Player* bot, Posting& me, uint32 now)
+// the bot's own entry on the board (lock held): its objective and counter; its solo pace by the formula
+void UpdatePostingLocked(PlayerbotAI* botAI, Player* bot, Posting& me)
 {
     uint32 const low = bot->GetGUID().GetCounter();
     if (me.guid.IsEmpty())
@@ -912,6 +1117,8 @@ void UpdatePostingLocked(PlayerbotAI* botAI, Player* bot, Posting& me, uint32 no
         return;
     }
     uint64 const key = BucketKey(me.map, me.zone, obj);
+    auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+    WorldPosition const at = quest ? quest->pos : WorldPosition(bot);
     if (key != me.bucket || !obj.Same(me.cur))
     {
         if (me.bucket &&
@@ -920,25 +1127,18 @@ void UpdatePostingLocked(PlayerbotAI* botAI, Player* bot, Posting& me, uint32 no
         AddTo(key, low);
         me.bucket = key;
         me.cur = obj;
-        me.since = now;
-        me.lastUnitAt = now;
-        me.units = 0;
+        me.pace = ComputePace(bot, obj, at);
         return;
     }
-    if (obj.have != me.cur.have || obj.need != me.cur.need)
+    // the formula's pace follows its counter, its spot and its level (its damage); nothing measured
+    bool const counter = obj.have != me.cur.have || obj.need != me.cur.need;
+    if (counter || me.pace.at != at || me.pace.left != obj.Left() || me.paceLevel != bot->GetLevel())
     {
-        if (obj.have > me.cur.have)
-        {
-            if (!me.party)
-            {
-                me.units += obj.have - me.cur.have;
-                me.lastUnitAt = now;
-            }
-            if (obj.item && me.lastKillEntry)
-                me.itemSource = me.lastKillEntry;
-        }
         me.cur = obj;
-        Bump(key);
+        me.pace = ComputePace(bot, obj, at);
+        me.paceLevel = bot->GetLevel();
+        if (counter)
+            Bump(key);
     }
 }
 
@@ -969,7 +1169,8 @@ NewRpgCoop::Order PartyTickLocked(PlayerbotAI* botAI, Player* bot, Posting& me, 
     else if (bot->GetMap()->Instanceable())
         exit = "in an instance";
     else if (!quest || quest->questId != me.partyObj.questId)
-        exit = std::string(leader ? "its own plan moved on: " : "the global leader moved it: ") +
+        exit = std::string(leader ? "its own plan moved on: "
+                                  : "its state left the quest (the global leader, a refused walk): ") +
                StatusName(botAI->rpgInfo.GetStatus()) + (quest ? " q" + std::to_string(quest->questId) : "");
     Player* lead = leader ? bot : SameMapPlayer(bot, party.leader);
     if (exit.empty() && !lead)
@@ -982,27 +1183,34 @@ NewRpgCoop::Order PartyTickLocked(PlayerbotAI* botAI, Player* bot, Posting& me, 
     if (leader)
         return order;
 
-    // the member keeps within its loot reach of the leader: the corpses it loots and the leader's pulls (the
-    // core's kill credit at its group reward distance) are in reach
+    // arrived: within the core's group reward distance of the leader (its kill credit and XP share reach), the
+    // criterion the leader's GROUP_WAIT holds for; the line carries the offer's eta of that walk
     float const distance = bot->GetExactDist(lead);
-    if (!me.arrived && distance <= sPlayerbotAIConfig.LootDistance)
+    if (!me.arrived && bot->IsAtGroupRewardDistance(lead))
     {
         me.arrived = true;
-        out.logs.push_back(
-            Acore::StringFormat("[coop] wait {} group={} s={:.0f} walked={:.0f}{} reason=walk to the "
-                                "leader {}",
-                                me.name, party.id, float(getMSTimeDiff(me.joinedAt, now)) / IN_MILLISECONDS, me.walkYd,
-                                Stamp(), lead->GetName()));
+        out.logs.push_back(Acore::StringFormat(
+            "[coop] wait {} group={} s={:.0f} eta={:.0f} walked={:.0f}{} reason=walk to the leader {}", me.name,
+            party.id, float(getMSTimeDiff(me.joinedAt, now)) / IN_MILLISECONDS, me.walkSec, me.walkYd, Stamp(),
+            lead->GetName()));
     }
+    // the member keeps within its loot reach of the leader: the corpses it loots and the leader's pulls are in reach
     if (distance <= sPlayerbotAIConfig.LootDistance)
     {
+        me.walkTo = WorldPosition();
         order.kind = NewRpgCoop::Order::Kind::Stay;
         return order;
     }
     order.kind = NewRpgCoop::Order::Kind::Follow;
     order.leader = lead;
-    order.pos = WorldPosition(lead);
     order.farWalk = distance > sPlayerbotAIConfig.SightDistance;
+    // the far walk heads for one spot of the leader and keeps it while the leader stays within its group reward
+    // distance of it (a spot that still gives the credit): a fresh spot every tick would start a new route search
+    // and a new walk every tick
+    if (me.walkTo == WorldPosition() || me.walkTo.GetMapId() != lead->GetMapId() ||
+        lead->GetExactDist(me.walkTo) > sWorld->getFloatConfig(CONFIG_GROUP_XP_DISTANCE))
+        me.walkTo = WorldPosition(lead);
+    order.pos = order.farWalk ? me.walkTo : WorldPosition(lead);
     return order;
 }
 
@@ -1209,7 +1417,6 @@ public:
             auto const me = postings.find(player->GetGUID().GetCounter());
             if (me == postings.end())
                 return;
-            me->second.lastKillEntry = killed->GetEntry();
             auto const party = parties.find(me->second.party);
             if (!me->second.party || party == parties.end() || !party->second.formed)
                 return;
@@ -1283,12 +1490,13 @@ Order Tick(PlayerbotAI* botAI, Player* bot)
     Order order;
     if (!bot || !botAI || !bot->IsInWorld() || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()))
         return order;
+    EnsureIndex();  // built at startup; never under the board's lock
     uint32 const now = getMSTime();
     Out out;
     {
         std::lock_guard<std::mutex> guard(lock);
         Posting& me = postings[bot->GetGUID().GetCounter()];
-        UpdatePostingLocked(botAI, bot, me, now);
+        UpdatePostingLocked(botAI, bot, me);
         if (me.party)
             order = PartyTickLocked(botAI, bot, me, now, out);
         // the board of an objective it has changed since its last look: a counter, a bot that came or went
@@ -1321,7 +1529,7 @@ Order Tick(PlayerbotAI* botAI, Player* bot)
     return order;
 }
 
-void NoWalk(Player* bot)
+void NoWalk(Player* bot, std::string const& why)
 {
     if (!bot)
         return;
@@ -1330,23 +1538,36 @@ void NoWalk(Player* bot)
         std::lock_guard<std::mutex> guard(lock);
         auto const me = postings.find(bot->GetGUID().GetCounter());
         if (me != postings.end() && me->second.party)
-            LeaveLocked(me->second, "no walk to its leader", getMSTime(), out);
+            LeaveLocked(me->second, "no walk to its leader: " + why, getMSTime(), out);
     }
     out.Flush();
 }
 
 void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& dest)
 {
-    if (!bot || !botAI || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) || bot->GetGroup() ||
-        dest.GetMapId() != bot->GetMapId())
+    if (!bot || !botAI || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()))
         return;
+    // every postponed spot ends in a seek or in one line that says why not (quest_metrics "groups")
+    auto const noSeek = [&](std::string const& why)
+    {
+        LOG_INFO("playerbots", "[coop] no-seek {} quests=q{}{} reason={}", bot->GetName(), questId, Stamp(), why);
+    };
+    if (bot->GetGroup())
+        return noSeek("in a group");
+    if (dest.GetMapId() != bot->GetMapId())
+        return noSeek("its spot is on another map");
     Objective obj;
-    if (!ReadObjective(bot, questId, objectiveIdx, obj) || !obj.Left())
-        return;
-    // the camp: the idle mob whose reach covers the spot nearest to it (as DestinationRefused looks), judged once
+    if (!ReadObjective(bot, questId, objectiveIdx, obj))
+        return noSeek("no kill / loot objective open (a hand-in spot, a game object, the quest done)");
+    if (!obj.Left())
+        return noSeek("its counter is closed");
+    // the camp: the idle mob whose reach covers the spot nearest to it (as DestinationRefused looks); when none does
+    // (the refusal was a danger zone it remembers or a pack on the way there), the idle mob nearest to the spot that
+    // its solo judge refuses - the pack that stands between the bot and its objective
     GuidVector const targets = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get();
     Creature* nearest = nullptr;
     float nearestGap = std::numeric_limits<float>::max();
+    std::vector<std::pair<float, Creature*>> idle;
     for (ObjectGuid const& guid : targets)
     {
         Creature* mob = botAI->GetCreature(guid);
@@ -1361,17 +1582,35 @@ void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 object
             reach += mob->GetWanderDistance();
         }
         float const gap = centre.GetExactDist2d(dest.GetPositionX(), dest.GetPositionY());
+        idle.push_back({gap, mob});
         if (reach > 0.0f && gap <= reach && gap < nearestGap)
         {
             nearestGap = gap;
             nearest = mob;
         }
     }
+    SoloSafety::Verdict v;
+    if (nearest)
+        v = SoloSafety::Judge(bot, nearest);
+    else
+    {
+        std::sort(idle.begin(), idle.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+        for (auto const& [gap, mob] : idle)
+        {
+            SoloSafety::Verdict const judged = SoloSafety::Judge(bot, mob);
+            if (judged.kind == SoloSafety::Verdict::Kind::Refuse)
+            {
+                nearest = mob;
+                v = judged;
+                break;
+            }
+        }
+    }
     if (!nearest)
-        return;
-    SoloSafety::Verdict const v = SoloSafety::Judge(bot, nearest);
+        return noSeek(Acore::StringFormat("no idle mob in sight that its solo judge refuses ({} idle mobs looked at)",
+                                          idle.size()));
     if (v.fightSec <= 0.0f)
-        return;
+        return noSeek("its judge gives no fight time for " + nearest->GetName());
     Seek seek;
     seek.obj = obj;
     seek.camp.known = true;
@@ -1611,4 +1850,20 @@ float NewRpgCoopMultiplier::GetValue(Action* action)
     return ownPlan.count(action->getName()) ? 0.0f : 1.0f;
 }
 
-void AddNewRpgCoopScripts() { new NewRpgCoopPlayerScript(); }
+namespace
+{
+// the pace formula's world data index is built once at startup, after the loot and spawn tables are loaded
+class NewRpgCoopWorldScript : public WorldScript
+{
+public:
+    NewRpgCoopWorldScript() : WorldScript("NewRpgCoopWorldScript", {WORLDHOOK_ON_STARTUP}) {}
+
+    void OnStartup() override { EnsureIndex(); }
+};
+}  // namespace
+
+void AddNewRpgCoopScripts()
+{
+    new NewRpgCoopPlayerScript();
+    new NewRpgCoopWorldScript();
+}

@@ -377,9 +377,9 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
                 LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: its spot lies among mobs it does not pull",
                          bot->GetName(), bot->GetLevel(), quest->questId);
                 NotePostpone(bot, quest->questId, "its spot lies among mobs it does not pull");
-                // [coop] a camp it cannot solo: it looks for a party for it (NewRpgCoop.h)
-                if (quest->pos == dest)
-                    NewRpgCoop::OnSpotRefused(botAI, bot, quest->questId, quest->objectiveIdx, dest);
+                // [coop] a camp it cannot solo: it looks for a party for it (NewRpgCoop.h); any spot of the quest
+                // (its objective spot or a sweep spot of it; a hand-in spot ends in a [coop] no-seek line)
+                NewRpgCoop::OnSpotRefused(botAI, bot, quest->questId, quest->objectiveIdx, dest);
             }
         }
         // [guild15] a gather node there: the refusal is a fact, the next node is taken at once in the same gather run
@@ -1608,6 +1608,15 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
             return false;
         last = key;
     }
+    // [deaths] the reach of every idle mob the bot must never fight (SoloSafety::RouteCosts: orange / red, elite,
+    // a danger zone, a pack it loses): no landing in it (b337 Salleas L1 and Ryarii L1 jumped 12 yd down off the
+    // Dolanaar ledge onto a polygon between two Webwood Lurkers L5-L6 and died there)
+    std::vector<G3D::Vector4> refusedReach;
+    {
+        std::vector<Leader::Travel::RoutePenalty> priced;
+        SoloSafety::RouteCosts(bot, here, G3D::Vector3(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()),
+                               refusedReach, priced);
+    }
     auto const probe = [&](float x, float y, float reach)
     {
         float const point[3] = {y, here.z, x};
@@ -1627,6 +1636,9 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                                             to.z + bot->GetCollisionHeight(), bot->GetPhaseMask(),
                                             LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
             return;
+        for (G3D::Vector4 const& disc : refusedReach)
+            if ((disc.x - to.x) * (disc.x - to.x) + (disc.y - to.y) * (disc.y - to.y) <= disc.w * disc.w)
+                return;
         float const drop = here.z - to.z;
         ways.push_back({to, gap, drop, drop > 0.0f ? FallDamageShare(bot, drop) * float(bot->GetMaxHealth()) : 0.0f,
                         carried(here, to)});
