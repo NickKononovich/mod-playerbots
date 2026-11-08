@@ -9,6 +9,7 @@
 #include "Bag.h"
 #include "DatabaseEnv.h"
 #include "DBCStores.h"
+#include "GuildHonest.h"
 #include "Item.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
@@ -903,6 +904,8 @@ namespace TestHarness
             result.error = "not online as a bot";
             return result;
         }
+        // [honest] the harness hands out level, gear, gold, supplies: a guild-plan bot here is a leftover to see
+        GuildHonest::Handout(bot, "test harness prepare (level, gear, gold, supplies)");
 
         if (bot->getClass() != spec.cls)
         {

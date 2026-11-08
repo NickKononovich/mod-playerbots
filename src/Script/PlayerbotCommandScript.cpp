@@ -42,6 +42,7 @@
 #include <string>
 #include <vector>
 #include "GuildCoordinator.h"  // [guild60] playerbots guild ...
+#include "GuildHonest.h"      // [honest]
 #include "Spell.h"     // [guild13] diag cast
 #include "SpellMgr.h"  // [guild13]
 
@@ -296,6 +297,9 @@ public:
 
         if (Item* item = player->StoreNewItem(dest, itemId, true))
             player->SendNewItem(item, count, true, false);
+        // [honest] a console grant to a guild-plan bot is a handout: shown as a leftover
+        GuildHonest::Handout(player,
+                             ("item " + std::to_string(itemId) + " x" + std::to_string(count) + " (console)").c_str());
 
         handler->PSendSysMessage("{} received item {} x{}", player->GetName(), itemId, count);
         return true;

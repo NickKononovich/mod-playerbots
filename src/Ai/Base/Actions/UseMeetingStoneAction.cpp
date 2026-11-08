@@ -9,6 +9,7 @@
 #include "Event.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
+#include "GuildHonest.h"
 #include "NearestGameObjects.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotTextMgr.h"
@@ -62,6 +63,15 @@ bool SummonAction::Execute(Event /*event*/)
     Player* master = GetMaster();
     if (!master)
         return false;
+
+    // [honest] a summon is a free teleport (also via innkeepers / any meeting stone, with free repair and revive): a
+    // guild-plan bot walks. The real meeting stone ritual (UseMeetingStoneAction) stays.
+    if (GuildHonest::Skip(bot, "summon"))
+    {
+        botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "honest_summon_refused", "I walk to you, no free summon.", {}));
+        return false;
+    }
 
     if (bot->GetPet())
         botAI->PetFollow();
@@ -186,7 +196,9 @@ bool SummonAction::Teleport(Player* summoner, Player* player, bool preserveAuras
 
             if (summoner->IsWithinLOS(x, y, z))
             {
-                if (sPlayerbotAIConfig.BotRepairWhenSummon)  // .conf option to repair bot gear when summoned 0 = off, 1 = on
+                // .conf option to repair bot gear when summoned 0 = off, 1 = on
+                // [honest] never free for a guild-plan bot
+                if (sPlayerbotAIConfig.BotRepairWhenSummon && !GuildHonest::IsHonestBot(bot))
                     bot->DurabilityRepairAll(false, 1.0f, false);
 
                 if (summoner->IsInCombat() && !sPlayerbotAIConfig.AllowSummonInCombat)
@@ -221,6 +233,8 @@ bool SummonAction::Teleport(Player* summoner, Player* player, bool preserveAuras
                     sPlayerbotAIConfig.ReviveBotWhenSummoned == 2 ||
                     (sPlayerbotAIConfig.ReviveBotWhenSummoned == 1 && !summoner->IsInCombat() && summoner->IsAlive());
 
+                if (bot->isDead() && revive && GuildHonest::IsHonestBot(bot))
+                    revive = false;  // [honest] it resurrects at its corpse or the spirit healer
                 if (bot->isDead() && revive)
                 {
                     bot->ResurrectPlayer(1.0f, false);

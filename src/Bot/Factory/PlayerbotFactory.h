@@ -78,6 +78,10 @@ public:
     // [guild15] the guild bots' class spells: every spell its own class trainers teach at its level (rank chains
     // included), no profession, weapon-master or pet trainers; the learned spells' names go to `learned`
     uint32 InitClassTrainerSpells(std::vector<std::string>* learned = nullptr);
+    // [honest] the weapon skills a weapon master teaches the bot's class and race at its level (user 2026-11-08:
+    // part of the auto-learn), learned through the core's learnSpell at their starting value (1): they rise with
+    // use, never maxed. Returns the skills learned; their names go to `learned`.
+    uint32 InitWeaponMasterSkills(std::vector<std::string>* learned = nullptr);
     static bool IsTrainerSpellAllowedForBot(Player* bot, Trainer::Trainer const* trainer,
                                              Trainer::Spell const* trainerSpell);
     void InitClassSpells();

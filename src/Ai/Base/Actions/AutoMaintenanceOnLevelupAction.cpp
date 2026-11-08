@@ -6,11 +6,14 @@
 
 #include "AutoMaintenanceOnLevelupAction.h"
 #include "BroadcastHelper.h"
+#include "GuildHonest.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
 #include "RandomPlayerbotMgr.h"
 #include "SharedDefines.h"
 #include "SpellMgr.h"
+
+#include <cstring>
 
 bool AutoMaintenanceOnLevelupAction::Execute(Event /*event*/)
 {
@@ -24,6 +27,8 @@ bool AutoMaintenanceOnLevelupAction::Execute(Event /*event*/)
 
 void AutoMaintenanceOnLevelupAction::AutoTeleportForLevel()
 {
+    if (GuildHonest::Skip(bot, "level-up teleport"))  // [honest]
+        return;
     if (!sPlayerbotAIConfig.AutoTeleportForLevel || !sRandomPlayerbotMgr.IsRandomBot(bot))
         return;
 
@@ -45,7 +50,8 @@ void AutoMaintenanceOnLevelupAction::AutoPickTalents()
         return;
 
     PlayerbotFactory factory(bot, bot->GetLevel());
-    factory.InitTalentsTree(true, true, isRandomBot);
+    // [honest] earned points only: a guild-plan bot's spent talents are not reset for free (a respec costs gold)
+    factory.InitTalentsTree(true, true, isRandomBot && !GuildHonest::IsHonestBot(bot));
     factory.InitPetTalents();
 }
 
@@ -70,11 +76,15 @@ void AutoMaintenanceOnLevelupAction::AutoLearnSpell()
 void AutoMaintenanceOnLevelupAction::LearnSpells(std::ostringstream* out)
 {
     BroadcastHelper::BroadcastLevelup(botAI, bot);
-    if (sPlayerbotAIConfig.AutoLearnTrainerSpells && sRandomPlayerbotMgr.IsRandomBot(bot))
+    // [honest] a guild-plan random bot (groups B / C) takes the guild path below: the random-bot path gives free
+    // riding, weapon skills, professions, tools and a hunter pet (InitSkills / InitAvailableSpells / InitPet)
+    if (sPlayerbotAIConfig.AutoLearnTrainerSpells && sRandomPlayerbotMgr.IsRandomBot(bot) &&
+        !GuildHonest::IsHonestBot(bot))
         LearnTrainerSpells(out);
     // [guild15] the guild project bots (not random, no client master): their class trainers' spells, no professions
     // (learned at a trainer), no weapon skills, no free pet (it tames its own)
-    else if (sPlayerbotAIConfig.AutoLearnTrainerSpells && !botAI->HasGameClientMaster())
+    else if (sPlayerbotAIConfig.AutoLearnTrainerSpells &&
+             (!botAI->HasGameClientMaster() || GuildHonest::IsHonestBot(bot)))
         LearnGuildClassSpells(bot, "level up");
 
     // [guild13] the guild project bots (not random, no client master) skip the spell-unlock class quests: their
@@ -109,6 +119,16 @@ uint32 AutoMaintenanceOnLevelupAction::LearnGuildClassSpells(Player* bot, char c
         LOG_INFO("playerbots", "[guild15] {} L{} learned {} class trainer spells ({}): {}", bot->GetName(),
                  bot->GetLevel(), count, why, names);
     }
+    // [honest] user 2026-11-08: the class's weapon skills are part of the auto-learn, at their start value (1)
+    std::vector<std::string> skills;
+    uint32 const skillCount = factory.InitWeaponMasterSkills(&skills);
+    std::string skillNames;
+    for (std::string const& name : skills)
+        skillNames += (skillNames.empty() ? "" : ", ") + name;
+    // every login (the proof per bot), at level up when something was learned
+    if (skillCount || count || std::strcmp(why, "login") == 0)
+        LOG_INFO("playerbots", "[honest] {} L{} learned {} class spells, {} skills ({}){}{}", bot->GetName(),
+                 bot->GetLevel(), count, skillCount, why, skillCount ? ": " : "", skillNames);
     return count;
 }
 
@@ -188,6 +208,8 @@ std::string const AutoMaintenanceOnLevelupAction::FormatSpell(SpellInfo const* s
 
 void AutoMaintenanceOnLevelupAction::AutoUpgradeEquip()
 {
+    if (GuildHonest::Skip(bot, "level-up supplies and gear (AutoUpgradeEquip)"))  // [honest]
+        return;
     if (!sRandomPlayerbotMgr.IsRandomBot(bot))
         return;
 

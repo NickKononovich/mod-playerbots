@@ -13,6 +13,7 @@
 #include "ArenaTeamMgr.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
+#include "GuildHonest.h"
 #include "GuildMgr.h"
 #include "InventoryAction.h"
 #include "Item.h"
@@ -879,6 +880,13 @@ void PlayerbotFactory::Prepare()
 
 void PlayerbotFactory::Randomize(bool incremental)
 {
+    // [honest] a guild-plan bot is never re-rolled: no level change, gear, bags, gold, professions, glyphs...
+    if (GuildHonest::IsHonestBot(bot))
+    {
+        LOG_INFO("playerbots", "[honest] {} refused a factory {} randomize", bot->GetName(),
+                 incremental ? "incremental" : "full");
+        return;
+    }
     // if (sPlayerbotAIConfig.DisableRandomLevels)
     //     return;
 
@@ -1143,6 +1151,12 @@ void PlayerbotFactory::Randomize(bool incremental)
 
 void PlayerbotFactory::Refresh()
 {
+    // [honest] no free supplies, repair, resurrect or gold for a guild-plan bot
+    if (GuildHonest::IsHonestBot(bot))
+    {
+        LOG_INFO("playerbots", "[honest] {} refused a factory refresh", bot->GetName());
+        return;
+    }
     // Prepare();
     // if (!sPlayerbotAIConfig.EquipAndSpecPersistence ||
     //     bot->GetLevel() < sPlayerbotAIConfig.EquipAndSpecPersistenceLevel)
@@ -1183,6 +1197,8 @@ void PlayerbotFactory::Refresh()
 
 void PlayerbotFactory::InitConsumables()
 {
+    if (GuildHonest::Skip(bot, "consumables"))  // [honest]
+        return;
     uint8 specTab = AiFactory::GetPlayerSpecTab(bot);
     std::vector<std::pair<uint32, uint32>> items;
 
@@ -1542,6 +1558,8 @@ void PlayerbotFactory::InitPetTalents()
 
 void PlayerbotFactory::InitPet()
 {
+    if (GuildHonest::Skip(bot, "pet (InitPet)"))  // [honest]
+        return;
     Pet* pet = bot->GetPet();
 
     if (!pet && bot->GetPetStable() && bot->GetPetStable()->CurrentPet)
@@ -2597,6 +2615,8 @@ bool PlayerbotFactory::PickIlvlTargetedCandidate(uint8 slot, std::vector<std::pa
 
 void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
 {
+    if (GuildHonest::Skip(bot, "gear (InitEquipment)"))  // [honest]
+        return;
     if (level < 5)
     {
         // original items
@@ -3184,6 +3204,8 @@ inline Item* StoreNewItemInInventorySlot(Player* player, uint32 newItemId, uint3
 
 void PlayerbotFactory::InitBags(bool destroyOld)
 {
+    if (GuildHonest::Skip(bot, "bags"))  // [honest]
+        return;
     for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
     {
         uint32 newItemId = 51809;
@@ -3212,6 +3234,8 @@ void PlayerbotFactory::InitBags(bool destroyOld)
 
 void PlayerbotFactory::EnchantItem(Item* item)
 {
+    if (GuildHonest::Skip(bot, "enchant (EnchantItem)"))  // [honest]
+        return;
     if (bot->GetLevel() < sPlayerbotAIConfig.MinEnchantingBotLevel)
         return;
 
@@ -3318,6 +3342,8 @@ bool PlayerbotFactory::CanEquipUnseenItem(uint8 slot, uint16& dest, uint32 item)
 
 void PlayerbotFactory::InitTradeSkills()
 {
+    if (GuildHonest::Skip(bot, "professions (InitTradeSkills)"))  // [honest]
+        return;
     // [guild1] no factory professions for random bots that play like players: they learn them at a trainer
     if (!sPlayerbotAIConfig.RandomBotRandomize && sRandomPlayerbotMgr.IsRandomBot(bot))
         return;
@@ -3478,6 +3504,8 @@ void PlayerbotFactory::InitTradeSkills()
 
 void PlayerbotFactory::InitTradeSpecializations()
 {
+    if (GuildHonest::Skip(bot, "profession specializations"))  // [honest]
+        return;
     InitAlchemySpecialization();
     InitEngineeringSpecialization();
     InitLeatherworkingSpecialization();
@@ -3667,6 +3695,12 @@ void PlayerbotFactory::InitSkills()
     //uint32 maxValue = level * 5; //not used, line marked for removal.
     bot->UpdateSkillsForLevel();
 
+    // [honest] the rest is free riding (all four ranks), every weapon skill maxed, armor / dual wield skills,
+    // professions and their tools: a guild-plan bot buys riding and weapon skills at trainers, levels weapon skills
+    // by use, and learns armor / dual wield as class trainer spells (InitClassTrainerSpells)
+    if (GuildHonest::Skip(bot, "riding, weapon, armor and profession skills (InitSkills)"))
+        return;
+
     bot->SetSkill(SKILL_RIDING, 0, 0, 0);
     if (bot->GetLevel() >= sPlayerbotAIConfig.UseGroundMountAtMinLevel)
         bot->learnSpell(33388);
@@ -3834,6 +3868,14 @@ void PlayerbotFactory::SetRandomSkill(uint16 id)
 
 void PlayerbotFactory::InitAvailableSpells()
 {
+    // [honest] every class-type trainer incl. weapon masters (free weapon skills) and profession trainers: a
+    // guild-plan bot gets only its own class trainers' spells (the approved AutoLearnTrainerSpells exception)
+    if (GuildHonest::Skip(bot, "weapon master / profession trainer spells (InitAvailableSpells)"))
+    {
+        InitClassTrainerSpells(nullptr);
+        return;
+    }
+
     if (trainerIdCache[bot->getClass()].empty())
     {
         CreatureTemplateContainer const* creatureTemplateContainer = sObjectMgr->GetCreatureTemplates();
@@ -3945,6 +3987,72 @@ uint32 PlayerbotFactory::InitClassTrainerSpells(std::vector<std::string>* learne
         if (!now)
             break;
     }
+    return total;
+}
+
+uint32 PlayerbotFactory::InitWeaponMasterSkills(std::vector<std::string>* learned)
+{
+    // weapon masters: class-type trainers with no class requirement; built once (thread-safe static init)
+    static std::vector<Trainer::Trainer*> const weaponMasters = []()
+    {
+        std::vector<Trainer::Trainer*> list;
+        for (auto const& [entry, creatureTemplate] : *sObjectMgr->GetCreatureTemplates())
+        {
+            Trainer::Trainer* trainer = sObjectMgr->GetTrainer(entry);
+            if (trainer && trainer->GetTrainerType() == Trainer::Type::Class && !trainer->GetTrainerRequirement() &&
+                std::find(list.begin(), list.end(), trainer) == list.end())
+                list.push_back(trainer);
+        }
+        return list;
+    }();
+
+    auto weaponSkillOf = [](uint32 spellId) -> SkillLineEntry const*
+    {
+        if (SpellLearnSkillNode const* learnSkill = sSpellMgr->GetSpellLearnSkill(spellId))
+            if (SkillLineEntry const* skill = sSkillLineStore.LookupEntry(learnSkill->skill))
+                if (skill->categoryId == SKILL_CATEGORY_WEAPON)
+                    return skill;
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+            if (SkillLineEntry const* skill = sSkillLineStore.LookupEntry(itr->second->SkillLine))
+                if (skill->categoryId == SKILL_CATEGORY_WEAPON)
+                    return skill;
+        return nullptr;
+    };
+
+    uint32 total = 0;
+    for (Trainer::Trainer* trainer : weaponMasters)
+        for (auto const& spell : trainer->GetSpells())
+        {
+            Trainer::Spell const* trainerSpell = trainer->GetSpell(spell.SpellId);
+            // CanTeachSpell: not known yet, fits the class and race (SkillRaceClassInfo), level reached
+            if (!trainerSpell || !trainer->CanTeachSpell(bot, trainerSpell))
+                continue;
+            uint32 taught = trainerSpell->SpellId;
+            if (trainerSpell->IsCastable())
+                if (SpellInfo const* teach = sSpellMgr->GetSpellInfo(trainerSpell->SpellId))
+                    for (uint8 eff = 0; eff < MAX_SPELL_EFFECTS; ++eff)
+                        if (teach->Effects[eff].Effect == SPELL_EFFECT_LEARN_SPELL && teach->Effects[eff].TriggerSpell)
+                        {
+                            taught = teach->Effects[eff].TriggerSpell;
+                            break;
+                        }
+            SkillLineEntry const* skill = weaponSkillOf(taught);
+            if (!skill || bot->HasSpell(taught))
+                continue;
+            if (trainerSpell->IsCastable())
+                bot->CastSpell(bot, trainerSpell->SpellId, true);
+            else
+                bot->learnSpell(trainerSpell->SpellId, false);
+            if (!bot->HasSpell(taught))
+                continue;
+            // the skill line at the core's start value (SkillRaceClassInfo allowance), as a fresh character has it
+            if (!bot->HasSkill(skill->id))
+                bot->LearnDefaultSkill(skill->id, 0);
+            ++total;
+            if (learned)
+                learned->push_back(std::string(skill->name[0]) + " " + std::to_string(bot->GetSkillValue(skill->id)));
+        }
     return total;
 }
 
@@ -4088,6 +4196,8 @@ void PlayerbotFactory::InitClassSpells()
 
 void PlayerbotFactory::InitSpecialSpells()
 {
+    if (GuildHonest::Skip(bot, "special spells (RandomBotSpellIds)"))  // [honest]
+        return;
     for (std::vector<uint32>::iterator i = sPlayerbotAIConfig.RandomBotSpellIds.begin();
          i != sPlayerbotAIConfig.RandomBotSpellIds.end(); ++i)
     {
@@ -4299,6 +4409,8 @@ void PlayerbotFactory::AddPrevQuests(uint32 questId, std::list<uint32>& questIds
 
 void PlayerbotFactory::InitQuests(std::list<uint32>& questMap, bool withRewardItem)
 {
+    if (GuildHonest::Skip(bot, "quest completion (InitQuests)"))  // [honest]
+        return;
     for (std::list<uint32>::iterator i = questMap.begin(); i != questMap.end(); ++i)
     {
         uint32 questId = *i;
@@ -4337,6 +4449,8 @@ void PlayerbotFactory::InitQuests(std::list<uint32>& questMap, bool withRewardIt
 
 void PlayerbotFactory::InitInstanceQuests()
 {
+    if (GuildHonest::Skip(bot, "instance quests"))  // [honest]
+        return;
     // Yunfan: use configuration instead of hard code
     uint32 currentXP = bot->GetUInt32Value(PLAYER_XP);
     // LOG_INFO("playerbots", "Initializing quests...");
@@ -4400,6 +4514,8 @@ static void DestroyObsoleteAmmo(Player* bot, ItemTemplate const* ammo)
 
 void PlayerbotFactory::InitAmmo()
 {
+    if (GuildHonest::Skip(bot, "ammo"))  // [honest]
+        return;
     uint8 const botClass = bot->getClass();
     if (botClass != CLASS_HUNTER && botClass != CLASS_ROGUE && botClass != CLASS_WARRIOR)
         return;
@@ -4461,6 +4577,8 @@ uint32 PlayerbotFactory::CalcMixedGearScore(uint32 gs, uint32 quality)
 
 void PlayerbotFactory::DestroyEquippedGear(Player* bot)
 {
+    if (GuildHonest::Skip(bot, "gear wipe before autogear"))  // [honest] its own gear stays
+        return;
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
     {
         if (slot == EQUIPMENT_SLOT_TABARD || slot == EQUIPMENT_SLOT_BODY)
@@ -4474,6 +4592,8 @@ void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bo
                                 bool applyFinishers, bool ilvlTargetedMode,
                                 std::unordered_set<uint32> const* excludedItems)
 {
+    if (GuildHonest::Skip(bot, "gear (AutoGear)"))  // [honest]
+        return;
     uint32 gs = ilvl == 0 ? 0 : CalcMixedGearScore(ilvl, itemQuality);
     PlayerbotFactory factory(bot, bot->GetLevel(), itemQuality, gs);
     factory.SetIlvlTargeted(ilvlTargetedMode);
@@ -4491,6 +4611,8 @@ void PlayerbotFactory::AutoGear(Player* bot, uint32 itemQuality, uint32 ilvl, bo
 
 void PlayerbotFactory::InitMounts()
 {
+    if (GuildHonest::Skip(bot, "mounts"))  // [honest]
+        return;
     uint32 firstmount = sPlayerbotAIConfig.UseGroundMountAtMinLevel;
     uint32 secondmount = sPlayerbotAIConfig.UseFastGroundMountAtMinLevel;
     uint32 thirdmount = sPlayerbotAIConfig.UseFlyMountAtMinLevel;
@@ -4636,6 +4758,8 @@ void PlayerbotFactory::UnbindInstance()
 
 void PlayerbotFactory::InitPotions()
 {
+    if (GuildHonest::Skip(bot, "potions"))  // [honest]
+        return;
     uint32 effects[] = {SPELL_EFFECT_HEAL, SPELL_EFFECT_ENERGIZE};
     for (uint8 i = 0; i < 2; ++i)
     {
@@ -4716,6 +4840,8 @@ std::vector<uint32> PlayerbotFactory::GetCurrentGemsCount()
 
 void PlayerbotFactory::InitFood()
 {
+    if (GuildHonest::Skip(bot, "food"))  // [honest]
+        return;
     // Free food is for random bots only (none run here, MaxRandomBots = 0). Our own bots buy or cook it; test
     // characters get consumables from the test harness's own command. The signature stays for its callers.
     if (!sRandomPlayerbotMgr.IsRandomBot(bot))
@@ -4782,6 +4908,8 @@ void PlayerbotFactory::InitFood()
 
 void PlayerbotFactory::InitReagents()
 {
+    if (GuildHonest::Skip(bot, "reagents"))  // [honest]
+        return;
     std::vector<std::pair<uint32, uint32>> items;
     switch (bot->getClass())
     {
@@ -5130,6 +5258,10 @@ uint8 PlayerbotFactory::GetGlyphSpecIndex(Player* bot)
 
 void PlayerbotFactory::InitGlyphs(bool increment)
 {
+    // [honest] premade glyphs without the items: a guild-plan bot uses glyph items only (LearnGlyphAction), the
+    // global leader decides who gets which (GLYPH task)
+    if (GuildHonest::Skip(bot, "premade glyphs (InitGlyphs)"))
+        return;
     bot->InitGlyphsForLevel();
 
     // Honest progression: a non-random bot learns glyphs only from glyph items (LearnGlyphAction); this path would
@@ -5337,6 +5469,8 @@ void PlayerbotFactory::CancelAuras() { bot->RemoveAllAuras(); }
 
 void PlayerbotFactory::InitInventory()
 {
+    if (GuildHonest::Skip(bot, "inventory items"))  // [honest]
+        return;
     InitInventoryTrade();
     InitInventoryEquip();
     InitInventorySkill();
@@ -5344,6 +5478,8 @@ void PlayerbotFactory::InitInventory()
 
 void PlayerbotFactory::InitInventorySkill()
 {
+    if (GuildHonest::Skip(bot, "profession tools"))  // [honest]
+        return;
     if (bot->HasSkill(SKILL_MINING) && !bot->HasItemCount(2901, 1, true))
         StoreItem(2901, 1);  // Mining Pick
 
@@ -5374,6 +5510,8 @@ Item* PlayerbotFactory::StoreItem(uint32 itemId, uint32 count)
 
 void PlayerbotFactory::InitInventoryTrade()
 {
+    if (GuildHonest::Skip(bot, "trade goods"))  // [honest]
+        return;
     uint32 itemId = sRandomItemMgr.GetRandomTrade(level);
     if (!itemId)
     {
@@ -5407,6 +5545,8 @@ void PlayerbotFactory::InitInventoryTrade()
 
 void PlayerbotFactory::InitInventoryEquip()
 {
+    if (GuildHonest::Skip(bot, "spare gear"))  // [honest]
+        return;
     std::vector<uint32> ids;
 
     uint32 desiredQuality = itemQuality;
@@ -5457,6 +5597,8 @@ void PlayerbotFactory::InitInventoryEquip()
 
 void PlayerbotFactory::InitGuild()
 {
+    if (GuildHonest::Skip(bot, "random guild join"))  // [honest]
+        return;
     if (bot->GetGuildId())
     {
         if (!bot->HasItemCount(5976, 1) && bot->GetLevel() > 9)
@@ -5584,6 +5726,8 @@ void PlayerbotFactory::InitImmersive()
 
 void PlayerbotFactory::ApplyEnchantTemplate()
 {
+    if (GuildHonest::Skip(bot, "enchant template"))  // [honest]
+        return;
     uint8 tab = AiFactory::GetPlayerSpecTab(bot);
 
     switch (bot->getClass())
@@ -5640,6 +5784,8 @@ void PlayerbotFactory::ApplyEnchantTemplate()
 
 void PlayerbotFactory::ApplyEnchantTemplate(uint8 spec)
 {
+    if (GuildHonest::Skip(bot, "enchant template"))  // [honest]
+        return;
     for (EnchantContainer::const_iterator itr = GetEnchantContainerBegin(); itr != GetEnchantContainerEnd(); ++itr)
         if ((*itr).ClassId == bot->getClass() && (*itr).SpecId == spec)
         {
@@ -5680,6 +5826,8 @@ void PlayerbotFactory::ApplyEnchantTemplate(uint8 spec)
 
 void PlayerbotFactory::ApplyEnchantAndGemsNew(bool /*destroyOld*/)
 {
+    if (GuildHonest::Skip(bot, "enchants and gems (ApplyEnchantAndGemsNew)"))  // [honest]
+        return;
     // Gems socketed in this pass (meta / red / yellow / blue) and the meta gem whose colour condition they serve.
     uint32 gemCount[4] = {0, 0, 0, 0};
     uint32 metaCondition = 0;
@@ -6082,6 +6230,8 @@ void PlayerbotFactory::IterateItemsInBank(IterateItemsVisitor* visitor)
 
 void PlayerbotFactory::InitKeyring()
 {
+    if (GuildHonest::Skip(bot, "keys (InitKeyring)"))  // [honest]
+        return;
     if (!bot)
         return;
 
@@ -6132,6 +6282,8 @@ void PlayerbotFactory::InitKeyring()
 }
 void PlayerbotFactory::InitReputation()
 {
+    if (GuildHonest::Skip(bot, "reputation"))  // [honest]
+        return;
     if (!bot)
         return;
 
@@ -6177,6 +6329,8 @@ void PlayerbotFactory::InitReputation()
 
 void PlayerbotFactory::InitAttunementQuests()
 {
+    if (GuildHonest::Skip(bot, "attunement quests"))  // [honest]
+        return;
     uint32 level = bot->GetLevel();
     if (level < 55)
         return; // Only apply for level 55+ bots

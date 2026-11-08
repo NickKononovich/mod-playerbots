@@ -9,6 +9,7 @@
 #include "BisListMgr.h"
 #include "BudgetValues.h"
 #include "Event.h"
+#include "GuildHonest.h"
 #include "PlayerbotFactory.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -184,6 +185,15 @@ void TrainerAction::TellFooter(uint32 totalCost)
 
 bool MaintenanceAction::Execute(Event /*event*/)
 {
+    // [honest] free gear / supplies / repair: never for a guild-plan bot
+    if (GuildHonest::Skip(bot, "maintenance command"))
+    {
+        botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "honest_handout_refused", "I earn my own gear and supplies (%command refused).",
+            {{"%command", "maintenance"}}));
+        return false;
+    }
+
     if (!sPlayerbotAIConfig.MaintenanceCommand)
     {
         botAI->TellError("maintenance command is not allowed, please check the configuration.");
@@ -308,6 +318,15 @@ bool BisGearAction::RunAutogearFallback(uint16 effectiveIlvl)
 
 bool BisGearAction::Execute(Event event)
 {
+    // [honest] free gear / supplies / repair: never for a guild-plan bot
+    if (GuildHonest::Skip(bot, "bis gear command"))
+    {
+        botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "honest_handout_refused", "I earn my own gear and supplies (%command refused).",
+            {{"%command", "bis"}}));
+        return false;
+    }
+
     if (!sPlayerbotAIConfig.AutoGearBisCommand)
     {
         botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
@@ -565,6 +584,15 @@ static uint32 GetWornItemLevelAverage(Player* player)
 
 bool AutoGearAction::Execute(Event event)
 {
+    // [honest] free gear / supplies / repair: never for a guild-plan bot
+    if (GuildHonest::Skip(bot, "autogear command"))
+    {
+        botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "honest_handout_refused", "I earn my own gear and supplies (%command refused).",
+            {{"%command", "autogear"}}));
+        return false;
+    }
+
     if (!sPlayerbotAIConfig.AutoGearCommand)
     {
         botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(

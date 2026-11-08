@@ -18,6 +18,7 @@
 #include "DatabaseEnv.h"
 #include "Define.h"
 #include "FleeManager.h"
+#include "GuildHonest.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "JsonUtils.h"
@@ -1778,6 +1779,7 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
 
 void RandomPlayerbotMgr::Revive(Player* player)
 {
+    // [honest] Refresh and RandomTeleport below skip a guild-plan bot: it runs back as a ghost
     uint32 bot = player->GetGUID().GetCounter();
 
     // LOG_INFO("playerbots", "Bot {} revived", player->GetName().c_str());
@@ -1790,6 +1792,8 @@ void RandomPlayerbotMgr::Revive(Player* player)
 
 void RandomPlayerbotMgr::RandomTeleport(Player* bot, std::vector<WorldLocation>& locs, bool hearth)
 {
+    if (GuildHonest::Skip(bot, "random-bot teleport"))  // [honest]
+        return;
     // [guild1] every random bot teleport (for level, grind, rpg, after randomize) goes through here
     if (!sPlayerbotAIConfig.RandomBotTeleport)
         return;
@@ -2199,6 +2203,8 @@ void RandomPlayerbotMgr::RandomTeleport(Player* bot)
 
 void RandomPlayerbotMgr::Randomize(Player* bot)
 {
+    if (GuildHonest::Skip(bot, "randomize"))  // [honest]
+        return;
     // [guild1] no factory gear / professions / gold / bags / level change: the bot keeps its class starting kit
     if (!sPlayerbotAIConfig.RandomBotRandomize)
         return;
@@ -2225,6 +2231,8 @@ void RandomPlayerbotMgr::Randomize(Player* bot)
 
 void RandomPlayerbotMgr::IncreaseLevel(Player* bot)
 {
+    if (GuildHonest::Skip(bot, "level increase"))  // [honest]
+        return;
     uint32 maxLevel = sPlayerbotAIConfig.RandomBotMaxLevel;
     if (maxLevel > sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
         maxLevel = sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL);
@@ -2248,6 +2256,8 @@ void RandomPlayerbotMgr::IncreaseLevel(Player* bot)
 
 void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
 {
+    if (GuildHonest::Skip(bot, "first randomize"))  // [honest]
+        return;
     if (!sPlayerbotAIConfig.RandomBotRandomize)
         return;
 
@@ -2335,6 +2345,8 @@ void RandomPlayerbotMgr::RandomizeFirst(Player* bot)
 
 void RandomPlayerbotMgr::RandomizeMin(Player* bot)
 {
+    if (GuildHonest::Skip(bot, "min randomize"))  // [honest]
+        return;
     if (!sPlayerbotAIConfig.RandomBotRandomize)
         return;
 
@@ -2404,6 +2416,8 @@ uint32 RandomPlayerbotMgr::GetZoneLevel(uint16 mapId, float teleX, float teleY, 
 
 void RandomPlayerbotMgr::Refresh(Player* bot)
 {
+    if (GuildHonest::Skip(bot, "refresh (resurrect, repair, heal, gold)"))  // [honest]
+        return;
     // [guild1] no free resurrect, repair, heal, mana, money or factory refresh
     if (!sPlayerbotAIConfig.RandomBotRefresh)
         return;

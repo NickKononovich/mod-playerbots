@@ -10,6 +10,7 @@
 #include "DBCStores.h"
 #include "Event.h"
 #include "Group.h"
+#include "GuildHonest.h"
 #include "ObjectMgr.h"
 #include "PlayerbotFactory.h"
 #include "Playerbots.h"
@@ -71,7 +72,11 @@ bool HasCustomGlyphs(Player* player)
 }
 
 // Random bots still get their glyphs from the factory; the self-bot is the user's own character.
-bool UsesHonestGlyphs(Player* player) { return !sRandomPlayerbotMgr.IsRandomBot(player) && !IsSelfBot(player); }
+// [honest] The guild-plan bots (groups B / C are random bots in code) use glyph items only.
+bool UsesHonestGlyphs(Player* player)
+{
+    return (!sRandomPlayerbotMgr.IsRandomBot(player) || GuildHonest::IsHonestBot(player)) && !IsSelfBot(player);
+}
 }  // namespace
 
 namespace GlyphUtil
@@ -241,7 +246,9 @@ bool LearnGlyphAction::Execute(Event /*event*/)
 
 bool GiveGlyphAction::isUseful()
 {
-    if (bot->IsInCombat() || !bot->IsAlive() || !bot->GetGroup() || !UsesHonestGlyphs(bot))
+    // [honest] a guild-plan bot does not hand glyphs out on its own: the global leader moves glyph items (GLYPH task)
+    if (bot->IsInCombat() || !bot->IsAlive() || !bot->GetGroup() || !UsesHonestGlyphs(bot) ||
+        GuildHonest::IsHonestBot(bot))
         return false;
 
     uint32 const now = getMSTime();

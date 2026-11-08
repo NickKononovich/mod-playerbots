@@ -6,6 +6,7 @@
 
 #include "TameAction.h"
 #include "DBCStructure.h"
+#include "GuildHonest.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
 #include "Player.h"
@@ -108,6 +109,14 @@ bool TameAction::Execute(Event event)
     if (mode == "abandon")
     {
         return AbandonPet();
+    }
+
+    // [honest] "tame name | id | family" conjures a pet of any beast: a guild-plan hunter tames one in the field
+    if (mode != "rename" && GuildHonest::Skip(bot, "pet (tame command)"))
+    {
+        botAI->TellError(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "honest_tame_refused", "I tame my pet myself in the field.", {}));
+        return false;
     }
 
     // Try to process the command based on mode and value

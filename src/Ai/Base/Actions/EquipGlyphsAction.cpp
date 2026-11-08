@@ -7,6 +7,7 @@
 #include "EquipGlyphsAction.h"
 #include "AiObjectContext.h"
 #include "DBCStores.h"
+#include "GuildHonest.h"
 #include "Log.h"
 #include "ObjectMgr.h"
 #include "PlayerbotTextMgr.h"
@@ -99,7 +100,8 @@ bool EquipGlyphsAction::CollectGlyphs(std::vector<uint32> const& itemIds,
 bool EquipGlyphsAction::Execute(Event event)
 {
     // Applies glyphs without the items; non-random bots learn them from glyph items instead (LearnGlyphAction).
-    if (!sRandomPlayerbotMgr.IsRandomBot(bot))
+    // [honest] so do the guild-plan bots (groups B / C are random bots in code)
+    if (!sRandomPlayerbotMgr.IsRandomBot(bot) || GuildHonest::IsHonestBot(bot))
     {
         botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
             "glyph_equip_items_only", "I learn glyphs only from glyph items in my bags.", {}));

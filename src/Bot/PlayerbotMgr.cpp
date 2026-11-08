@@ -17,6 +17,7 @@
 #include "Define.h"
 #include "Group.h"
 #include "GuildGear.h"
+#include "GuildHonest.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -634,9 +635,10 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     PlayerbotRepository::instance().Load(botAI);
 
     // [guild15] the guild bots' class spells for the levels they gained before the level-up path learned them
-    // (AutoLearnTrainerSpells; the random bots learn theirs at level up)
-    if (sPlayerbotAIConfig.AutoLearnTrainerSpells && !sRandomPlayerbotMgr.IsRandomBot(bot) &&
-        !botAI->HasGameClientMaster())
+    // (AutoLearnTrainerSpells; the random bots learn theirs at level up). [honest] All 75 guild-plan bots, the random
+    // ones of groups B / C included: class trainer spells and the class's weapon skills (start value) on every login.
+    if (sPlayerbotAIConfig.AutoLearnTrainerSpells &&
+        ((!sRandomPlayerbotMgr.IsRandomBot(bot) && !botAI->HasGameClientMaster()) || GuildHonest::IsHonestBot(bot)))
         AutoMaintenanceOnLevelupAction::LearnGuildClassSpells(bot, "login");
     // [guild15] its gear history starts from what it wears now
     if (!botAI->HasGameClientMaster())

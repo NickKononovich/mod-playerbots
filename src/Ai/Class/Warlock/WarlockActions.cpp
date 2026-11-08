@@ -7,6 +7,7 @@
 #include "WarlockActions.h"
 #include "EstimatedLifetimeValue.h"  // [rot350]
 #include "Event.h"
+#include "GuildHonest.h"
 #include "Item.h"
 #include "KillOrder.h"  // [b44_hos]
 #include "Log.h"  // [lead1310]
@@ -302,6 +303,9 @@ bool CreateSoulShardAction::isUseful()
 {
     Player* bot = botAI->GetBot();
     if (!bot)
+        return false;
+    // [honest] a soul shard out of nothing: a guild-plan warlock gets its shards from Drain Soul
+    if (GuildHonest::IsHonestBot(bot))
         return false;
 
     uint32 currentShards = bot->GetItemCount(ITEM_SOUL_SHARD, false);  // false = only bags

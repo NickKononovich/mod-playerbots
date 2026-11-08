@@ -9,9 +9,11 @@
 #include "AiObjectContext.h"
 #include "ChatHelper.h"
 #include "Event.h"
+#include "GuildHonest.h"
 #include "Log.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotFactory.h"
+#include "PlayerbotTextMgr.h"
 #include "RandomPlayerbotMgr.h"
 
 bool ChangeTalentsAction::Execute(Event event)
@@ -43,6 +45,14 @@ bool ChangeTalentsAction::Execute(Event event)
             }
             else if (param.find("switch 2") != std::string::npos)
             {
+                // [honest] a guild-plan bot buys Dual Talent Specialization at its class trainer (1000 g, the leader's
+                // DUALSPEC task, GuildHonest::BuyDualSpecAtTrainer); no free learn here
+                if (bot->GetSpecsCount() == 1 && GuildHonest::Skip(bot, "dual spec (talents switch 2)"))
+                {
+                    botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+                        "honest_dual_spec_buy", "I have one spec: dual spec is bought at my class trainer.", {}));
+                    return false;
+                }
                 if (bot->GetSpecsCount() == 1 && bot->GetLevel() >= sWorld->getIntConfig(CONFIG_MIN_DUALSPEC_LEVEL))
                 {
                     bot->CastSpell(bot, 63680, true, nullptr, nullptr, bot->GetGUID());
@@ -143,6 +153,9 @@ std::string ChangeTalentsAction::SpecPick(std::string param)
         }
         if (sPlayerbotAIConfig.PremadeSpecName[cls][specNo] == param)
         {
+            // [honest] a reset of spent points is a respec, which costs gold at a trainer: shown as a leftover
+            if (bot->GetFreeTalentPoints() < bot->CalculateTalentsPoints())
+                GuildHonest::Handout(bot, "free talent respec (talents spec)");
             PlayerbotFactory::InitTalentsBySpecNo(bot, specNo, true);
 
             PlayerbotFactory factory(bot, bot->GetLevel());
@@ -168,6 +181,9 @@ std::string ChangeTalentsAction::SpecApply(std::string param)
         out << "Invalid link " << param;
         return out.str();
     }
+    // [honest] a reset of spent points is a respec, which costs gold at a trainer: shown as a leftover
+    if (bot->GetFreeTalentPoints() < bot->CalculateTalentsPoints())
+        GuildHonest::Handout(bot, "free talent respec (talents apply)");
     PlayerbotFactory::InitTalentsByParsedSpecLink(bot, parsedSpecLink, true);
     out << "Applying " << param;
     return out.str();
@@ -379,7 +395,8 @@ bool AutoSetTalentsAction::Execute(Event /*event*/)
         return false;
 
     PlayerbotFactory factory(bot, bot->GetLevel());
-    factory.InitTalentsTree(true, true, true);
+    // [honest] earned points only for a guild-plan bot: no free reset of its spent talents
+    factory.InitTalentsTree(true, true, !GuildHonest::IsHonestBot(bot));
     factory.InitPetTalents();
     botAI->TellMaster(out);
 
