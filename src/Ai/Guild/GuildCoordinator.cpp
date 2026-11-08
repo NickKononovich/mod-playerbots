@@ -70,7 +70,8 @@ namespace
     {
         static char const* const names[] = {"QUEST", "PROFESSION", "BANK_DEPOSIT", "BANK_WITHDRAW", "CRAFT_FOR",
                                              "GATHER", "BUY", "DUNGEON", "DISENCHANT", "QUEST_REWARD",
-                                             "FOUND_GUILD", "SIGN_CHARTER", "JOIN", "BANK_TAB"};  // [guild80]
+                                             "FOUND_GUILD", "SIGN_CHARTER", "JOIN", "BANK_TAB",  // [guild80]
+                                             "TRADE_TO", "MAIL_TO", "DONATE_GOLD"};  // [guild81]
         return uint8(type) < std::size(names) ? names[uint8(type)] : "?";
     }
 
@@ -324,6 +325,7 @@ void GuildCoordinator::Load()
     LoadDungeons();  // [guild60] the fives' dungeons and the completion table
     LoadRuns();
     LoadGuildMasters();  // [guild80] where the bots found their guild
+    LoadMailboxes();     // [guild81] bot <-> bot transfers by mail
     loaded_ = true;
 }
 
@@ -648,6 +650,8 @@ std::string GuildCoordinator::WaitReason(Player* bot, PlayerbotAI* botAI, BotSta
         return five;
     if (std::string const found = FoundWait(bot->GetGUID().GetCounter(), state); !found.empty())  // [guild80]
         return found;
+    if (std::string const transfer = TransferWait(bot->GetGUID().GetCounter(), state); !transfer.empty())  // [guild81]
+        return transfer;
     if (!botAI || IsRealPlayer(bot))
         return "human player";
     if (SelfBotControl::IsSuspended(bot))
@@ -723,12 +727,17 @@ void GuildCoordinator::Update(uint32 diff)
         }
         UpdateFounding();  // [guild80] the bots' own guild: plan + charter / signatures / invites / bank tab
         {
+            PMON_SCOPE(transferScope, PERF_MON_VALUE, "guild transfers plan");
+            UpdateTransfers();  // [guild81] trade / mail / bank between members, gold for the bank tab
+        }
+        {
             PMON_SCOPE(ordersScope, PERF_MON_VALUE, "guild orders");
             UpdateOrders();
         }
         UpdateHealth();
         UpdateFives();  // [guild60]
     }
+    RunTransfers(diff);  // [guild81] trades next to each other, mails at mailboxes (once a second)
 }
 
 void GuildCoordinator::UpdateLeaders()
@@ -1268,6 +1277,7 @@ void GuildCoordinator::UpdateOrders()
         std::vector<GuildOrder> orders;
         FiveOrder(st, row.low, p, orders);  // [guild60] a five's dungeon comes first
         FoundingOrders(st, row.low, p, orders);  // [guild80] found / sign / join the guild, buy the bank tab
+        TransferOrders(row.low, p, orders);       // [guild81] trade / mail to a member, gold for the bank tab
         if (!st.disenchant.empty())
         {
             GuildOrder o;
@@ -1281,7 +1291,7 @@ void GuildCoordinator::UpdateOrders()
         }
         std::vector<HeldItem> bankHeld;
         for (HeldItem const& h : st.held)
-            if (h.purpose != "pending")
+            if (h.purpose != "pending" && !TransferHolds(h.itemGuidLow))  // [guild81] trade / mail moves it
                 bankHeld.push_back(h);
         // [guild16] no bank order while the guild or its bank tab does not exist: the bot just holds the items
         if (!bankHeld.empty() && GuildBankRun::BankState(p, true).empty())
@@ -2401,6 +2411,12 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                 if (FoundStep(bot, st, order, step))
                     return step;
                 continue;
+            case GuildOrderType::TRADE_TO:  // [guild81] to the other member / to a mailbox
+            case GuildOrderType::MAIL_TO:
+            case GuildOrderType::DONATE_GOLD:
+                if (TransferStep(bot, st, order, step))
+                    return step;
+                continue;
             case GuildOrderType::GATHER:
                 step.kind = GuildRunStep::GATHER;
                 step.reason = "GATHER " + order.details;
@@ -2469,6 +2485,9 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
     if (st.runType == GuildOrderType::FOUND_GUILD || st.runType == GuildOrderType::SIGN_CHARTER ||
         st.runType == GuildOrderType::BANK_TAB)  // [guild80] at the Guild Master / the vault
         return FoundCampReached(bot, st);
+    if (st.runType == GuildOrderType::TRADE_TO || st.runType == GuildOrderType::MAIL_TO ||
+        st.runType == GuildOrderType::DONATE_GOLD)  // [guild81] next to the member / at the mailbox
+        return TransferCampReached(bot, st);
     if (!GuildBankRun::AtVault(bot, st.runPos))
     {
         if (!st.runApproached)
@@ -2491,7 +2510,7 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
         std::vector<uint32> guids;
         std::vector<HeldItem> moving;
         for (HeldItem const& h : st.held)
-            if (h.purpose != "pending")
+            if (h.purpose != "pending" && !TransferHolds(h.itemGuidLow))  // [guild81]
             {
                 guids.push_back(h.itemGuidLow);
                 moving.push_back(h);
@@ -2980,7 +2999,7 @@ void GuildCoordinator::SendOrders(Player* player)
         {
             uint32 hold = 0;
             for (HeldItem const& h : st->second.held)
-                hold += h.purpose != "pending" ? 1 : 0;
+                hold += h.purpose != "pending" && !TransferHolds(h.itemGuidLow) ? 1 : 0;  // [guild81]
             if (hold)
                 details += "; держит для банка: " + std::to_string(hold);
         }
@@ -3319,14 +3338,20 @@ void GuildCoordinator::SendPlan(Player* player)
                         NewRpgCraft::RecipeName(d.spellId), "себе / банк", "крафт",
                         "навык " + std::to_string(d.before) + "→" + std::to_string(d.after)});
 
-    // transfers: through the guild bank (the coordinator's only way for now)
+    // transfers: [guild81] trade / mail / bank between members, then what waits for the guild bank
+    {
+        std::vector<std::vector<std::string>> transfers;
+        TransferPlanRows(transfers);
+        for (auto const& t : transfers)
+            rows.push_back({t[0], t[1], t[2], t[3], t[4], t[5], t[6]});
+    }
     for (auto const& [low, list] : withdraw_)
         for (auto const& [item, why] : list)
             rows.push_back({"передача", "ждёт похода в банк", "банк", ItemName(item), Who(low), "банк", why});
     for (auto const& [low, st] : bots_)
         for (HeldItem const& h : st.held)
         {
-            if (h.purpose == "pending")
+            if (h.purpose == "pending" || TransferHolds(h.itemGuidLow))  // [guild81] listed above
                 continue;
             std::string const what = ItemName(h.itemId) + (h.count > 1 ? " ×" + std::to_string(h.count) : "");
             rows.push_back({"передача", st.vaultFail.empty() ? "держит до банка" : st.vaultFail, Who(low), what,

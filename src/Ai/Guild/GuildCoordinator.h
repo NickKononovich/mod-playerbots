@@ -53,7 +53,11 @@ enum class GuildOrderType : uint8
     FOUND_GUILD,   // the founder: buys the charter at a Guild Master, waits there for the signatures, turns it in
     SIGN_CHARTER,  // a signer: walks to the founder at the Guild Master and signs
     JOIN,          // the guild exists: an online member with the invite right invites it (no walk), it accepts
-    BANK_TAB       // the guild master buys the first bank tab with its own gold at a guild vault
+    BANK_TAB,      // the guild master buys the first bank tab with its own gold at a guild vault
+    // [guild81] honest bot <-> bot transfers (GuildTransfer.cpp)
+    TRADE_TO,      // trade an item / gold with a member next to it (core TRADE_DISTANCE)
+    MAIL_TO,       // mail an item / gold at a mailbox (core postage, core delivery time); the receiver takes it
+    DONATE_GOLD    // free surplus gold to the guild master for the first bank tab (by trade or mail)
 };
 
 struct GuildOrder
@@ -73,6 +77,7 @@ struct GuildOrder
     uint32 cost{0};
     uint32 extendedCost{0};  // [guild50] BUY with tokens / emblems / honor
     uint32 spellId{0};
+    uint32 transferId{0};  // [guild81] TRADE_TO / MAIL_TO / DONATE_GOLD: the transfer (0: take the delivered mail)
 };
 
 // What New RPG does for the order (map thread).
@@ -431,6 +436,70 @@ private:
     float FoundingCost(Player* p, GuildMasterSpot const& spot) const;  // FLT_MAX: other map / hostile
     static uint32 FoundingFreeMoney(Player* p);
     void FiveLoot(Player* player, Item* item, uint32 count);
+
+    // [guild81] honest transfers between members (GuildTransfer.cpp): trade next to each other, mail at a mailbox
+    // (core postage / delivery time), or the guild bank (the existing BANK_DEPOSIT / BANK_WITHDRAW flow), picked by
+    // the walk seconds each channel costs both members; gold donations for the first bank tab. World thread:
+    // LoadMailboxes (startup), UpdateTransfers (the plan, takes lock_), RunTransfers (the core's trade / mail
+    // handlers). lock_ held: TransferOrders, TransferStep / TransferCampReached / TransferWait (map thread),
+    // TransferHolds, TransferPlanRows.
+    struct Transfer
+    {
+        enum Channel : uint8
+        {
+            TRADE,
+            MAIL,
+            BANK
+        };
+        uint32 id{0};
+        std::string key;   // what it moves: "i<item guid>" held item, "r<to>:<item>" reagent, "c<to>:<kind>"
+                           // consumable, "g<from>" donation
+        bool gold{false};  // DONATE_GOLD (money), else an item stack
+        Channel channel{TRADE};
+        uint32 fromLow{0};
+        uint32 toLow{0};
+        uint32 itemGuidLow{0};
+        uint32 itemId{0};
+        uint32 count{0};      // what is handed over (a consumable share is split off the stack first)
+        uint32 money{0};      // copper (gold)
+        std::string purpose;  // upgrade / reagent / product / consumable / donation (Russian, for the tabs)
+        std::string why;
+        std::string costs;     // the channel costs it was chosen by
+        uint32 walkerLow{0};   // trade: who walks to the other (0: nobody, traded when they meet)
+        WorldPosition meet{};  // trade: a fixed meeting point (the other's own walk target), else the other's position
+        WorldPosition mailbox{};  // mail: the sender's mailbox
+        bool tradeRefused{false};  // no safe walk for that channel (map thread)
+        bool mailRefused{false};
+        bool stalled{false};    // no channel possible now: kept (its refusals too), traded if they meet
+        bool mailed{false};     // sent: in the receiver's mailbox until it takes it
+        uint32 deliverAt{0};    // the core's delivery time of the mail (game seconds)
+        std::string failed;     // the last refusal of the core handler (logged once)
+        uint32 since{0};
+    };
+    struct Mailbox
+    {
+        WorldPosition pos{};
+        uint32 areaTeam{0};
+    };
+    void LoadMailboxes();
+    void UpdateTransfers();
+    void RunTransfers(uint32 diff);
+    void TransferOrders(uint32 low, Player* p, std::vector<GuildOrder>& orders) const;
+    bool TransferStep(Player* bot, BotState& st, GuildOrder& order, GuildRunStep& step);
+    uint8 TransferCampReached(Player* bot, BotState& st);
+    std::string TransferWait(uint32 low, BotState const& st) const;
+    bool TransferHolds(uint32 itemGuidLow) const;
+    void TransferPlanRows(std::vector<std::vector<std::string>>& rows) const;
+    std::vector<Mailbox> mailboxes_;        // read-only after Load
+    std::map<uint32, Transfer> transfers_;  // id -> transfer (lock_)
+    // receiver -> its delivered mails from members (count, the cheapest mailbox), what is still in transit (lock_)
+    std::map<uint32, std::pair<uint32, WorldPosition>> mailPickup_;
+    std::map<uint32, std::vector<std::string>> mailTransit_;
+    std::string donationState_;  // the pooling for the first bank tab (lock_)
+    // member -> (food count last seen, (game time, food that left its bags)) over the last hour: the SUPPLY need
+    std::map<uint32, std::pair<uint32, std::deque<std::pair<uint32, uint32>>>> foodUse_;
+    uint32 nextTransferId_{1};
+    uint32 transferTimer_{0};
 
     void UpdateLeaders();
     void UpdateWanted();
