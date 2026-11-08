@@ -29,6 +29,7 @@ struct BotPath
     G3D::Vector3 actualEnd;          // where the walk ends
     G3D::Vector3 end;                // where it was asked to end
     bool leaderRoute = false;
+    bool throughRefused = false;     // [deaths] the leader's route passes a reach it refused: no walk goes round
     bool valid = false;              // PathGenerator::CalculatePath's answer: both ends are valid map coordinates
     Unit* owner = nullptr;                       // the walker, for this call only
     std::shared_ptr<PathGenerator> generator;  // a creature's path (PathGenerator's own)

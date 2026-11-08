@@ -31,6 +31,7 @@ namespace
         out.owner = owner;
         out.end = end;
         out.leaderRoute = true;
+        out.throughRefused = route.found && route.throughRefused;  // [deaths]
         out.type = !route.found ? PATHFIND_NOPATH : route.complete ? PATHFIND_NORMAL : PATHFIND_INCOMPLETE;
         out.points.assign(route.points.begin(), route.points.end());
         out.length = route.length;

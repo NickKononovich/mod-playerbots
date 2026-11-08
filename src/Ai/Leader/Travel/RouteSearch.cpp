@@ -15,6 +15,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "PerfMonitor.h"  // [guild15]
+#include "Player.h"  // [deaths] the pull spot walk
 #include "MapDefines.h"
 #include "StringFormat.h"
 #include "Timer.h"
@@ -463,10 +464,23 @@ namespace Leader
         return source + (found ? (complete ? ", complete" : ", partial") : ", none");
     }
 
-    RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to)
+    RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& toAsked)
     {
         PMON_SCOPE(routeScope, PERF_MON_VALUE, "leader route search");  // [guild15]
         constexpr float ROUTE_SAMPLE_YD = 4.0f;  // PathGenerator's smooth step: the checks keep their spacing
+        // [deaths] user 2026-11-08: a solo bot's walk from where it stands to the target it engages from a pull spot
+        // (SoloSafety::Verdict::pullSpot) ends at that spot, round the reaches of the idle mobs the pull must not wake
+        G3D::Vector3 to = toAsked;
+        std::vector<G3D::Vector4> pullAvoid;
+        if (Player* bot = walker ? walker->ToPlayer() : nullptr)
+            if (bot->GetExactDist(from.x, from.y, from.z) <= bot->GetCombatReach())
+            {
+                G3D::Vector3 spot;
+                if (SoloSafety::PullWalk(bot, toAsked, spot, pullAvoid))
+                    to = spot;
+                else
+                    pullAvoid.clear();
+            }
         RouteResult result;
         result.source = "long route";
         Map* map = walker ? walker->GetMap() : nullptr;
@@ -488,6 +502,7 @@ namespace Leader
         std::vector<G3D::Vector4> refuse;
         std::vector<Travel::RoutePenalty> penalties;
         SoloSafety::RouteCosts(walker, from, to, refuse, penalties);
+        refuse.insert(refuse.end(), pullAvoid.begin(), pullAvoid.end());  // [deaths] the pull spot's walk
         // [guild15] a refused reach the walker stands in already lies behind the walk: it walks out of it
         refuse.erase(std::remove_if(refuse.begin(), refuse.end(),
                                     [&from](G3D::Vector4 const& c)

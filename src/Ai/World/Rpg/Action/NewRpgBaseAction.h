@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_NEWRPGBASEACTION_H
 #define PLAYERBOTS_NEWRPGBASEACTION_H
 
+#include "G3D/Vector4.h"  // [deaths] danger discs
 #include "LastMovementValue.h"
 #include "MovementActions.h"
 #include "NewRpgInfo.h"
@@ -20,6 +21,7 @@
 
 class Creature;
 class GameObject;
+struct BotPath;
 struct CreatureTemplate;
 class MotionTransport;
 class WorldPacket;
@@ -80,6 +82,9 @@ public:
     static void ForgetRefusals(Player* bot);
     // [guild13] the spot lies in one of the bot's remembered danger zones (a death or a refused pack): its creature
     static CreatureTemplate const* InDangerZone(Player* bot, float x, float y);
+    // [deaths] the bot's danger zones on its map within `range` of (x, y): the killer's and the death spot as discs
+    // (x, y, z = the bot's height, radius) - refused by its route search whether or not it sees their mobs
+    static void DangerDiscs(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& out);
     // [guild13] a class quest whose purpose is a spell (its reward or its chain's: AutoLearnQuestSpells grants it):
     // never taken, abandoned when in the log. Letters to the class trainer and the like stay.
     static bool IsSpellUnlockClassQuest(Quest const* quest);
@@ -130,6 +135,13 @@ public:
     }
     // [guild14] no way out from where the bot stands: the core path, the reverse route, the nearest polygon in sight
     bool WalkOffIsland(WorldPosition const& dest, float disToDest);
+    // [deaths] user 2026-11-08: the maze search of a solo bot's far walk whose route (`path`) passes a pack it does
+    // not fight, ends in a dead end (`deadEnd`) or is longer than the search completes: its stages over the travel
+    // nodes, another way round, a refused patrol's window, else the walk given up (RefusedWalk). true: handled
+    bool WalkAround(WorldPosition const& dest, BotPath const& path, float disToDest, bool deadEnd);
+    // [deaths] the walk to `dest` is refused (`why`): its quest is postponed (the co-op seek asks for a party), its
+    // gather node skipped, its state ended; true: the tick is used
+    bool RefusedWalk(WorldPosition const& dest, std::string const& why);
     // [guild13] a hunter with Tame Beast and no pet tames the nearest tameable beast of its level
     bool TameFirstPet();
     // [guild13] the walk's end lies in a danger zone or among idle mobs whose pull the judge refuses (logged, the pack

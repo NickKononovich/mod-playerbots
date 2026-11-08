@@ -65,11 +65,21 @@ namespace SoloSafety
         Position at;           // the pack's centre and reach (a refused pack is remembered there)
         float radius = 0.0f;
         uint8 topLevel = 0;
+        // [deaths] user 2026-11-08: two mobs whose aggro reaches overlap are no pack unless the core links them
+        // (formation, assistance, the script's call): the pull is made from a spot outside the other's reach, walked
+        // to round it (`pullAvoid`: x, y, z, radius of those reaches)
+        bool pullSpot = false;
+        G3D::Vector3 pull;
+        std::vector<G3D::Vector4> pullAvoid;
     };
     // the bot's pull of `target` now
     Verdict Judge(Player* bot, Unit* target);
-    // the bot engages `target` on the verdict (the fight record's prediction)
+    // the bot engages `target` on the verdict (the fight record's prediction; its pull spot)
     void NoteEngage(Player* bot, Unit* target, Verdict const& verdict);
+    // [deaths] the walk of a solo bot that approaches the target it engages from a pull spot (Verdict::pullSpot): its
+    // walk to `to` near that target ends at `spot`, round the reaches in `avoid` (Leader::Route); false: no pull spot
+    // applies (the target fights it already, another target, another walk)
+    bool PullWalk(Player* bot, G3D::Vector3 const& to, G3D::Vector3& spot, std::vector<G3D::Vector4>& avoid);
 
     // the bot wants to rest to full (a pull that needs it, a revive); `mana`: the drink side
     bool WantsRest(Player* bot, bool mana, std::string* why = nullptr);
@@ -103,6 +113,18 @@ namespace SoloSafety
                     std::vector<Leader::Travel::RoutePenalty>& penalties);
     // [deaths] what that route search gave (complete; through a refused reach): kept for the death line
     void NoteRoute(Unit* walker, bool complete, bool throughRefused);
+    // [deaths] user 2026-11-08: the walk `points` (from the bot on) passes the reach of mobs its last route search
+    // refused: when every one of them is a patrol, the seconds until a walk started then meets none of them anywhere
+    // on it (their waypoint forecast, PullPlanning::PatrolForecast) - a computed ETA, no timer; false: a refused mob
+    // that does not patrol covers the walk, or no start within the forecast clears it. `who`: the patrols
+    bool PatrolWait(Player* bot, std::vector<G3D::Vector3> const& points, float& waitSec, std::string& who);
+
+    // [deaths] user 2026-11-08 (b337 Dekorhan L7: a run priced 106 at hp 106 killed it): what `mob` casts on a bot
+    // running from it over `seconds`, from its SmartAI - its in-combat casts (SMART_EVENT_UPDATE_IC) and its casts at
+    // range (SMART_EVENT_RANGE with a minimum range: Shoot, Throw, cast only while the bot is away) - a repeating
+    // cast once per repeat (at least its cast time and the global cooldown) from the run's start, one that does not
+    // repeat (SMART_EVENT_FLAG_NOT_REPEATABLE) once
+    float ChaseSpellDamage(Creature* mob, float seconds);
 
     // [dps1] the bot's damage per second: DpsEstimate's formula over its state now (its buff context: solo / party /
     // raid), against `target` or a mob of its level; no fight history

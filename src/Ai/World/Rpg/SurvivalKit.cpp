@@ -18,6 +18,7 @@
 #include "MovementGenerator.h"
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
+#include "RouteSearch.h"  // [deaths] the maze search of a run
 #include "Pet.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -125,6 +126,12 @@ namespace
         // [guild15] the run goes back along the way it came: the next spot back to walk to
         bool fleeTrail = false;
         uint8 trailStep = 0;
+        // [deaths] the run goes along a maze search's walk round the other mobs: its corners, the next one to walk to
+        std::vector<G3D::Vector3> fleeRoute;
+        uint32 routeStep = 0;
+        // [deaths] where a maze search found no walk out this fight (searched again once the bot stands elsewhere)
+        bool mazeFailed = false;
+        G3D::Vector3 mazeFailedAt;
         // [deaths] the fight was logged lost with nothing to use (once a fight: b337 deaths "without rescue" left no
         // line at all - Feeli, Eraelor, Rumanatol, Ginde - and the triage could not tell why)
         bool loggedNone = false;
@@ -566,6 +573,7 @@ namespace
         bool trail = false;            // [guild15] back along the way it came
         std::string trailNote;         // [guild15] how far back, the spot cut and why
         std::string why;
+        std::vector<G3D::Vector3> route;  // [deaths] a maze search's walk round the other mobs (its corners)
     };
 
     // [guild15] the spots of the way it came, newest first, still farther than its reach (the run walks them back)
@@ -595,11 +603,17 @@ namespace
         float radius = 0.0f;
         std::vector<G3D::Vector3> track;  // a patrol: one spot every sampleSec from now
         float sampleSec = 0.0f;
+        bool assists = false;  // [deaths] it assists a chaser: its radius is the chaser's call for assistance
     };
 
     std::vector<Blocker> Blockers(Player* bot, float range)
     {
         std::vector<Blocker> out;
+        float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        std::vector<Unit*> chasers;
+        for (Unit* attacker : bot->getAttackers())
+            if (attacker && attacker->IsAlive())
+                chasers.push_back(attacker);
         std::list<Unit*> units;
         Acore::AnyUnitInObjectRangeCheck check(bot, range);
         Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
@@ -615,6 +629,18 @@ namespace
             blocker.mob = mob;
             blocker.at = G3D::Vector3(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ());
             blocker.radius = mob->GetAggroRange(bot) + bot->GetCombatReach();
+            // [deaths] the chasers follow the bot along its way: an idle mob that assists one of them (the core's
+            // CallAssistance from the chaser, CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS, Creature::CanAssistTo; called
+            // again every CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD of the fight) joins where the way passes within
+            // that radius of it (b337 Dekorhan L7: a Bristlelimb Furbolg joined a run priced on two Windcallers)
+            if (assist > 0.0f)
+                for (Unit* chaser : chasers)
+                    if (mob->CanAssistTo(chaser, bot))
+                    {
+                        blocker.assists = true;
+                        blocker.radius = std::max(blocker.radius, assist);
+                        break;
+                    }
             if (PullPlanning::PatrolForecast(mob, blocker.track, blocker.sampleSec) && blocker.sampleSec > 0.0f &&
                 !blocker.track.empty())
                 blocker.kind = "patrol";
@@ -672,7 +698,68 @@ namespace
 
     std::string BlockerName(Blocker const& blocker)
     {
-        return Acore::StringFormat("{} L{} ({})", blocker.mob->GetName(), blocker.mob->GetLevel(), blocker.kind);
+        return Acore::StringFormat("{} L{} ({}{})", blocker.mob->GetName(), blocker.mob->GetLevel(), blocker.kind,
+                                   blocker.assists ? ", assists a chaser" : "");
+    }
+
+    // [deaths] user 2026-11-08: "no way out clear of other mobs" means a maze search - the navmesh walk round every
+    // blocker's reach (Leader::Travel::LongRoute with the reaches refused: a patrol's at every spot of its forecast
+    // walk, a reach the bot stands in lies behind it) to the spots `dist` away all round the bot (an eighth of the
+    // circle apart, the turns of the direction search) and to `extra` (the way back past its cut); the complete
+    // walks, their corners from the bot on
+    std::vector<std::vector<G3D::Vector3>> MazeWays(Player* bot, std::vector<Blocker> const& blockers, float dist,
+                                                    std::vector<G3D::Vector3> const& extra)
+    {
+        std::vector<std::vector<G3D::Vector3>> ways;
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        std::vector<G3D::Vector4> discs;
+        std::vector<Leader::Travel::RoutePenalty> edges;  // the polygons' edges tested too (penalties at no cost)
+        auto const add = [&](G3D::Vector3 const& at, float radius)
+        {
+            if ((at.x - here.x) * (at.x - here.x) + (at.y - here.y) * (at.y - here.y) <= radius * radius)
+                return;
+            discs.emplace_back(at.x, at.y, at.z, radius);
+            Leader::Travel::RoutePenalty edge;
+            edge.x = at.x;
+            edge.y = at.y;
+            edge.z = at.z;
+            edge.r = radius;
+            edges.push_back(edge);
+        };
+        for (Blocker const& blocker : blockers)
+        {
+            if (blocker.track.empty())
+                add(blocker.at, blocker.radius);
+            for (G3D::Vector3 const& at : blocker.track)
+                add(at, blocker.radius);
+        }
+        std::vector<G3D::Vector3> goals = extra;
+        constexpr uint32 MAZE_DIRECTIONS = 8;  // the direction search's quarter turns, all round
+        for (uint32 i = 0; i < MAZE_DIRECTIONS; ++i)
+        {
+            float const angle = 2.0f * float(M_PI) * float(i) / float(MAZE_DIRECTIONS);
+            float x = here.x + std::cos(angle) * dist;
+            float y = here.y + std::sin(angle) * dist;
+            float z = here.z;
+            bot->UpdateAllowedPositionZ(x, y, z);
+            goals.emplace_back(x, y, z);
+        }
+        for (G3D::Vector3 const& goal : goals)
+        {
+            Movement::PointsArray corners;
+            bool complete = false;
+            if (!Leader::Travel::LongRoute(bot, here, goal, false, corners, complete, nullptr, &discs, 0.0f, nullptr,
+                                           &edges) ||
+                !complete || corners.empty())
+                continue;
+            std::vector<G3D::Vector3> way;
+            for (G3D::Vector3 const& corner : corners)
+                if ((corner - here).length() > bot->GetCombatReach() || !way.empty())
+                    way.push_back(corner);
+            if (!way.empty())
+                ways.push_back(std::move(way));
+        }
+        return ways;
     }
 
     // the yards along `route` until it leaves the circle of `radius` round `centre` (2D), past its last spot straight
@@ -720,7 +807,8 @@ namespace
         return mob->GetHomePosition();
     }
 
-    FleePlan PlanFlee(PlayerbotAI* botAI, Player* bot, SoloSafety::Projection const& p, std::vector<Piece> const& kit)
+    FleePlan PlanFlee(PlayerbotAI* botAI, Player* bot, SoloSafety::Projection const& p, std::vector<Piece> const& kit,
+                      KitState& state)
     {
         FleePlan plan;
         float const leashRadius = sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS);
@@ -817,8 +905,11 @@ namespace
                     }
                     leashLeft = std::max(leashLeft, 0.0f);
                     // a slower chaser in reach can daze it down below its own speed: then it hits all the way too
-                    bool const canDaze = std::max(foe.dps - foe.spellDps, 0.0f) > 0.0f && head <= 0.0f &&
-                                         bot->IsWithinMeleeRange(mob) && vb * (1.0f + dazed) <= vm;
+                    // [deaths] ... and a faster one dazes it once it has caught up (Unit::AttackerStateUpdate from
+                    // behind), however far back it starts
+                    bool const canDaze = std::max(foe.dps - foe.spellDps, 0.0f) > 0.0f &&
+                                         ((head <= 0.0f && bot->IsWithinMeleeRange(mob)) || vm > vb) &&
+                                         vb * (1.0f + dazed) <= vm;
                     // [guild15] dazed it walks the leash yards at its dazed speed, the chaser on its heels
                     float const followSpeed = std::max(std::min(vm, canDaze ? vb * (1.0f + dazed) : vb), 0.1f);
                     float const until = std::max(leashLeft, needs[i] / followSpeed) + 1.0f;  // + ThreatManager's 1 s
@@ -831,8 +922,12 @@ namespace
                     else if (head > 0.0f)
                         exposure = std::max(0.0f, until - head / std::max(vm, 0.1f));
                     float const melee = std::max(foe.dps - foe.spellDps, 0.0f) * behind;
-                    float const spell = std::min(foe.spellDps, foe.dps);
-                    damage += melee * exposure + spell * until;
+                    // [deaths] user 2026-11-08 (b337 Dekorhan L7: priced 106 at hp 106, died): its casts while it
+                    // chases - every in-combat and at-range cast of its script, each repeat over the run, a cast that
+                    // does not repeat once (SoloSafety::ChaseSpellDamage); the projection's share when it has none
+                    float const casts = SoloSafety::ChaseSpellDamage(mob, until);
+                    float const spell = casts > 0.0f ? casts : std::min(foe.spellDps, foe.dps) * until;
+                    damage += melee * exposure + spell;
                     longest = std::max(longest, until);
                 }
                 if (first)
@@ -961,9 +1056,78 @@ namespace
                 break;
             }
         }
-        if (!trailClear && !straightClear)
+        // 3. [deaths] no stretch clear (b338: 12 deaths "no way out clear of other mobs"): the maze search round them,
+        // to as far as the straight run needs all round and to the oldest spot of the way back; each walk priced as
+        // the chasers follow it (on straight past its end along its last stretch, that stretch clear too)
+        FleePlan maze;
+        bool mazeClear = false;
+        G3D::Vector3 const at(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        if (!trailClear && !straightClear &&
+            !(state.mazeFailed && (state.mazeFailedAt - at).length() <= bot->GetCombatReach()))
+        {
+            std::vector<G3D::Vector3> extra;
+            if (!back.empty())
+                extra.push_back(back.back());
+            for (std::vector<G3D::Vector3> const& way :
+                 MazeWays(bot, blockers, std::max(straight.dist, bot->GetCombatReach()), extra))
+            {
+                G3D::Vector3 const& last = way.back();
+                G3D::Vector3 const& before = way.size() >= 2 ? way[way.size() - 2] : here;
+                float const onAngle = std::atan2(last.y - before.y, last.x - before.x);
+                std::vector<float> needs;
+                for (auto const& foe : p.foes)
+                {
+                    Creature* mob = foe.unit->ToCreature();
+                    std::vector<G3D::Vector3> route;
+                    route.emplace_back(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ());
+                    route.push_back(here);
+                    route.insert(route.end(), way.begin(), way.end());
+                    needs.push_back(ExitYards(route, onAngle, ResetSpot(mob), leashRadius));
+                }
+                Priced const priced = price(needs, false);
+                // each stretch clear when the bot walks it (a patrol's forecast spot then)
+                float walked = 0.0f;
+                G3D::Vector3 from = here;
+                bool clear = true;
+                for (G3D::Vector3 const& corner : way)
+                {
+                    clear = clear && !StretchBlocker(blockers, from, corner, walked / botSpeed, botSpeed);
+                    walked += std::hypot(corner.x - from.x, corner.y - from.y);
+                    from = corner;
+                }
+                if (!clear)
+                    continue;
+                float const rest = botSpeed * priced.leashSec - walked;
+                if (rest > 0.0f && StretchBlocker(blockers, last, Ahead(last, onAngle, rest), walked / botSpeed,
+                                                  botSpeed))
+                    continue;
+                if (mazeClear && priced.damage >= maze.damage)
+                    continue;
+                maze.damage = priced.damage;
+                maze.leashSec = priced.leashSec;
+                maze.first = priced.first;
+                maze.dist = botSpeed * priced.leashSec;
+                maze.angle = onAngle;
+                maze.route = way;
+                mazeClear = true;
+            }
+            state.mazeFailed = !mazeClear;
+            state.mazeFailedAt = at;
+            if (mazeClear)
+                trailNote += Acore::StringFormat(", round the other mobs ({} corners)", maze.route.size());
+        }
+        if (!trailClear && !straightClear && !mazeClear)
         {
             plan.why = "no way out clear of other mobs" + trailNote;
+            return plan;
+        }
+        if (mazeClear)
+        {
+            plan = maze;
+            plan.trailNote = trailNote;
+            plan.ok = plan.damage < p.health;
+            if (!plan.ok)
+                plan.why = Acore::StringFormat("the run costs {:.0f} at hp {:.0f}{}", plan.damage, p.health, trailNote);
             return plan;
         }
         // the way that costs less
@@ -1172,7 +1336,7 @@ namespace SurvivalKit
         if (state.noRun)
             flee.why = "no way out clear of other mobs";
         else
-            flee = PlanFlee(botAI, bot, p, pieces);
+            flee = PlanFlee(botAI, bot, p, pieces, state);
         if (flee.ok)
         {
             Piece run;
@@ -1184,10 +1348,14 @@ namespace SurvivalKit
             state.fleeAngle = flee.angle;
             state.fleeTrail = flee.trail;
             state.trailStep = 0;
+            state.fleeRoute = flee.route;
+            state.routeStep = 0;
             state.fleeFrom = p.foes.front().unit->GetGUID();
             state.why = Acore::StringFormat("leash={:.0f}s dist={:.0f} run costs {:.0f} at hp {:.0f}{}{}; {}",
                                             flee.leashSec, flee.dist, flee.damage, p.health,
-                                            flee.trail ? ", back the way it came" : ", straight", flee.trailNote,
+                                            flee.trail ? ", back the way it came"
+                                                       : (flee.route.empty() ? ", straight" : ", maze"),
+                                            flee.trailNote,
                                             numbers);
             state.active = true;
             return true;
@@ -1237,6 +1405,8 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
     bool reset = false;
     bool trail = false;
     uint8 trailStep = 0;
+    std::vector<G3D::Vector3> route;
+    uint32 routeStep = 0;
     {
         std::lock_guard<std::mutex> guard(lock);
         auto const found = states.find(bot->GetGUID().GetCounter());
@@ -1251,6 +1421,8 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
         reset = state.reset;
         trail = state.fleeTrail;
         trailStep = state.trailStep;
+        route = state.fleeRoute;
+        routeStep = state.routeStep;
         bool const runKind = piece.kind == Kind::Flee || piece.kind == Kind::Snare || piece.kind == Kind::Speed ||
                              piece.kind == Kind::Leap;
         if (!fleeing && !reset && !runKind)
@@ -1316,6 +1488,41 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
         float const leash = sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS);
         float const runSpeed = bot->GetSpeed(bot->IsInWater() ? MOVE_SWIM : MOVE_RUN);
         G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        // [deaths] along the maze search's walk, corner by corner, each stretch checked again before it is walked
+        if (!route.empty())
+        {
+            std::vector<Blocker> blockers;
+            bool searched = false;
+            for (uint32 n = routeStep; n < route.size(); ++n)
+            {
+                G3D::Vector3 const& at = route[n];
+                if (bot->GetExactDist2d(at.x, at.y) <= bot->GetCombatReach())
+                    continue;  // reached
+                if (!searched)
+                {
+                    blockers = Blockers(bot, bot->GetExactDist2d(at.x, at.y) + 40.0f);
+                    searched = true;
+                }
+                if (Blocker const* on = StretchBlocker(blockers, here, at, 0.0f, runSpeed))
+                {
+                    LOG_INFO("playerbots", "[solo] {} L{} survival flee: corner {} of the way round skipped: {} on it",
+                             bot->GetName(), bot->GetLevel(), n + 1, BlockerName(*on));
+                    break;
+                }
+                bot->GetMotionMaster()->MovePoint(0, at.x, at.y, at.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
+                std::lock_guard<std::mutex> guard(lock);
+                states[bot->GetGUID().GetCounter()].routeStep = n;
+                return true;
+            }
+            // walked (or blocked from here): on along its last stretch, the direction search from there
+            std::lock_guard<std::mutex> guard(lock);
+            KitState& state = states[bot->GetGUID().GetCounter()];
+            G3D::Vector3 const& last = route.back();
+            G3D::Vector3 const& before = route.size() >= 2 ? route[route.size() - 2] : here;
+            state.fleeAngle = angle = std::atan2(last.y - before.y, last.x - before.x);
+            state.fleeRoute.clear();
+            state.routeStep = 0;
+        }
         if (trail)
         {
             NewRpgInfo const& info = botAI->rpgInfo;
@@ -1388,6 +1595,43 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                 states[bot->GetGUID().GetCounter()].fleeAngle = a;
             }
             return true;
+        }
+        // [deaths] no stretch clear: the maze search from here before the run ends (b338 Ravelandy L9: "flee stops: no
+        // way on clear of other mobs (Murloc Lurker L9 (idle))", it fought five murlocs and died)
+        {
+            std::vector<std::vector<G3D::Vector3>> const ways = MazeWays(bot, blockers, leash, {});
+            std::vector<G3D::Vector3> const* shortest = nullptr;
+            float shortestYd = 0.0f;
+            for (std::vector<G3D::Vector3> const& way : ways)
+            {
+                if (StretchBlocker(blockers, here, way.front(), 0.0f, runSpeed))
+                    continue;  // its first stretch as the walk checks it
+                float yd = 0.0f;
+                G3D::Vector3 from = here;
+                for (G3D::Vector3 const& corner : way)
+                {
+                    yd += (corner - from).length();
+                    from = corner;
+                }
+                if (!shortest || yd < shortestYd)
+                {
+                    shortest = &way;
+                    shortestYd = yd;
+                }
+            }
+            if (shortest)
+            {
+                G3D::Vector3 const& at = shortest->front();
+                bot->GetMotionMaster()->MovePoint(0, at.x, at.y, at.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
+                LOG_INFO("playerbots", "[solo] {} L{} survival flee: no stretch clear, on round the other mobs ({} "
+                         "corners, {:.0f} yd)",
+                         bot->GetName(), bot->GetLevel(), shortest->size(), shortestYd);
+                std::lock_guard<std::mutex> guard(lock);
+                KitState& state = states[bot->GetGUID().GetCounter()];
+                state.fleeRoute = *shortest;
+                state.routeStep = 0;
+                return true;
+            }
         }
         // no stretch clear of other mobs: the run ends, the kit judges the fight again (it fights on with all it has)
         ObjectGuid fleeFrom;

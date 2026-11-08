@@ -78,7 +78,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <functional>  // [deaths] the node stages
 #include <mutex>
+#include <queue>  // [deaths] the node stages
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -366,44 +368,7 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     if (SoloSafetyStep())  // [guild13]
         return true;
     if (DestinationRefused(dest))  // [guild13]
-    {
-        NewRpgStatus const status = botAI->rpgInfo.GetStatus();
-        // a quest whose spot (its objective or its ender: b302 Kianey's q45 hand-in at Rolf's corpse among seven
-        // Murlocs, re-chosen every look) lies there is postponed: the planner takes the next one
-        if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
-        {
-            if (botAI->lowPriorityQuest.insert(quest->questId).second)
-            {
-                LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: its spot lies among mobs it does not pull",
-                         bot->GetName(), bot->GetLevel(), quest->questId);
-                NotePostpone(bot, quest->questId, "its spot lies among mobs it does not pull");
-                // [coop] a camp it cannot solo: it looks for a party for it (NewRpgCoop.h); any spot of the quest
-                // (its objective spot or a sweep spot of it; a hand-in spot ends in a [coop] no-seek line)
-                NewRpgCoop::OnSpotRefused(botAI, bot, quest->questId, quest->objectiveIdx, dest);
-            }
-        }
-        // [guild15] a gather node there: the refusal is a fact, the next node is taken at once in the same gather run
-        // (b333 Peny: every refused node cost a whole IDLE -> GATHER round, LOOP alerts); a later run's look at it is
-        // answered from DestinationRefused's memory until the danger changes
-        if (auto* gather = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data); gather && gather->nodeSpawnId)
-        {
-            LOG_INFO("playerbots", "[guild20] {} L{} TARGET_SWITCH gather node {}: its walk is refused, the next node",
-                     bot->GetName(), bot->GetLevel(), gather->nodeSpawnId);
-            gather->visited.insert(gather->nodeSpawnId);
-            gather->nodeSpawnId = 0;
-            gather->lastReach = 0;
-            return true;
-        }
-        // [guild14] a gather node / profession npc there: the state ends, its action marks the target failed and
-        // takes the next one (b303 Gilduck, Gnetlibozz: DO_GATHER failed on a refused node every tick, STUCK)
-        if (status == RPG_DO_QUEST || status == RPG_GO_CAMP || status == RPG_GO_GRIND || status == RPG_DO_GATHER ||
-            status == RPG_DO_PROFESSION)
-        {
-            botAI->rpgInfo.ChangeToIdle();
-            return true;
-        }
-        return false;
-    }
+        return RefusedWalk(dest, "its spot lies among mobs it does not pull");
     // [guild15] the next stretch of the walk passes an idle mob whose fight it wins only at full health and mana: it
     // rests first, as a player tops up before walking on through a camp (b307/b308: 26 of 47 deaths were bots
     // attacked on the way, half of them below full)
@@ -433,6 +398,257 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         return false;
 
     return WalkTo(dest);
+}
+
+bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const& why)
+{
+    NewRpgStatus const status = botAI->rpgInfo.GetStatus();
+    // a quest whose spot (its objective or its ender: b302 Kianey's q45 hand-in at Rolf's corpse among seven
+    // Murlocs, re-chosen every look) lies there is postponed: the planner takes the next one
+    if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
+    {
+        if (botAI->lowPriorityQuest.insert(quest->questId).second)
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: {}", bot->GetName(), bot->GetLevel(),
+                     quest->questId, why);
+            NotePostpone(bot, quest->questId, why);
+            // [coop] a camp it cannot solo: it looks for a party for it (NewRpgCoop.h); any spot of the quest
+            // (its objective spot or a sweep spot of it; a hand-in spot ends in a [coop] no-seek line)
+            NewRpgCoop::OnSpotRefused(botAI, bot, quest->questId, quest->objectiveIdx, dest);
+        }
+    }
+    // [guild15] a gather node there: the refusal is a fact, the next node is taken at once in the same gather run
+    // (b333 Peny: every refused node cost a whole IDLE -> GATHER round, LOOP alerts); a later run's look at it is
+    // answered from DestinationRefused's memory until the danger changes
+    if (auto* gather = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data); gather && gather->nodeSpawnId)
+    {
+        LOG_INFO("playerbots", "[guild20] {} L{} TARGET_SWITCH gather node {}: its walk is refused, the next node",
+                 bot->GetName(), bot->GetLevel(), gather->nodeSpawnId);
+        gather->visited.insert(gather->nodeSpawnId);
+        gather->nodeSpawnId = 0;
+        gather->lastReach = 0;
+        return true;
+    }
+    // [guild14] a gather node / profession npc there: the state ends, its action marks the target failed and
+    // takes the next one (b303 Gilduck, Gnetlibozz: DO_GATHER failed on a refused node every tick, STUCK)
+    if (status == RPG_DO_QUEST || status == RPG_GO_CAMP || status == RPG_GO_GRIND || status == RPG_DO_GATHER ||
+        status == RPG_DO_PROFESSION)
+    {
+        botAI->rpgInfo.ChangeToIdle();
+        return true;
+    }
+    return false;
+}
+
+namespace
+{
+    // [deaths] a solo far walk's maze search: per bot, the destination it is for, the via spot it walks to first and
+    // the via spots tried for it (none is tried twice for the same destination)
+    struct WalkAroundState
+    {
+        std::tuple<uint32, int32, int32> dest{0, 0, 0};
+        bool hasVia = false;
+        G3D::Vector3 via;
+        std::vector<G3D::Vector3> tried;
+    };
+    std::mutex walkAroundLock;
+    std::unordered_map<uint32, WalkAroundState> walkAround;
+
+    std::tuple<uint32, int32, int32> DestKey(WorldPosition const& dest)
+    {
+        return {dest.GetMapId(), int32(dest.GetPositionX()), int32(dest.GetPositionY())};
+    }
+
+    // [deaths] user 2026-11-08: a long walk in stages - the travel node graph (TravelNodeMap, loaded at startup and
+    // read only after) by its walk links on the bot's map, from the node nearest the bot to the node nearest the
+    // destination, the shortest by link length; the nodes' spots in walk order (empty: no such chain)
+    std::vector<G3D::Vector3> NodeStages(Player* bot, WorldPosition const& dest)
+    {
+        std::vector<G3D::Vector3> stages;
+        std::vector<TravelNode*> const nodes = sTravelNodeMap.getNodes(WorldPosition(bot));
+        if (nodes.size() < 2)
+            return stages;
+        TravelNode* const start = nodes.front();
+        TravelNode* goal = nullptr;
+        float goalGap = std::numeric_limits<float>::max();
+        for (TravelNode* node : nodes)
+            if (float const gap = node->fDist(dest); gap < goalGap)
+            {
+                goalGap = gap;
+                goal = node;
+            }
+        if (!goal || goal == start)
+            return stages;
+        uint32 const mapId = bot->GetMapId();
+        std::unordered_map<TravelNode*, float> cost{{start, 0.0f}};
+        std::unordered_map<TravelNode*, TravelNode*> previous;
+        using Entry = std::pair<float, TravelNode*>;
+        std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
+        open.emplace(0.0f, start);
+        while (!open.empty())
+        {
+            auto const [reached, node] = open.top();
+            open.pop();
+            if (node == goal)
+                break;
+            if (reached > cost[node])
+                continue;
+            for (auto const& [next, link] : *node->getLinks())
+            {
+                if (!next || !link || link->getPathType() != TravelNodePathType::walk || next->getMapId() != mapId)
+                    continue;
+                float const through = reached + std::max(link->getDistance(), 0.0f);
+                auto const known = cost.find(next);
+                if (known != cost.end() && known->second <= through)
+                    continue;
+                cost[next] = through;
+                previous[next] = node;
+                open.emplace(through, next);
+            }
+        }
+        if (!previous.count(goal))
+            return stages;
+        for (TravelNode* node = goal; node && node != start; node = previous[node])
+        {
+            WorldPosition const* at = node->getPosition();
+            stages.emplace_back(at->GetPositionX(), at->GetPositionY(), at->GetPositionZ());
+        }
+        std::reverse(stages.begin(), stages.end());
+        return stages;
+    }
+}
+
+bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path, float disToDest, bool deadEnd)
+{
+    float const sight = sPlayerbotAIConfig.SightDistance;
+    float const searchReach = 2.0f * sight;  // a far walk's leg is searched two sights ahead (the farRoute legs)
+    G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    G3D::Vector3 const goal(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+    uint32 const low = bot->GetGUID().GetCounter();
+    auto const tried = [&](G3D::Vector3 const& via)
+    {
+        std::lock_guard<std::mutex> guard(walkAroundLock);
+        WalkAroundState& state = walkAround[low];
+        if (state.dest != DestKey(dest))
+        {
+            state = WalkAroundState();
+            state.dest = DestKey(dest);
+        }
+        for (G3D::Vector3 const& spot : state.tried)
+            if ((spot - via).length() <= MOVE_FAR_PROGRESS)
+                return true;
+        state.tried.push_back(via);
+        return false;
+    };
+    // the walk to a via spot, as far as the bot sees; the via kept for the next legs
+    auto const walkVia = [&](G3D::Vector3 const& via, BotPath const& leg, char const* how)
+    {
+        if (leg.points.size() < 2)
+            return false;
+        G3D::Vector3 const end = leg.length > sight ? Leader::Travel::PointOnPath(leg.points, sight) : leg.actualEnd;
+        if (!MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
+            return false;
+        {
+            std::lock_guard<std::mutex> guard(walkAroundLock);
+            WalkAroundState& state = walkAround[low];
+            state.dest = DestKey(dest);
+            state.hasVia = true;
+            state.via = via;
+        }
+        LOG_INFO("playerbots", "[solo] {} L{} MAZE {} to ({:.0f},{:.0f}) via ({:.0f},{:.0f}), {:.0f} yd to it",
+                 bot->GetName(), bot->GetLevel(), how, goal.x, goal.y, via.x, via.y, leg.length);
+        return true;
+    };
+    bool const longWalk = !deadEnd && !path.throughRefused && path.type == PATHFIND_INCOMPLETE;
+    // 1. a long walk in stages: the farthest node of the chain the search reaches, nearer the destination
+    if (longWalk)
+    {
+        G3D::Vector3 const* stage = nullptr;
+        std::vector<G3D::Vector3> const stages = NodeStages(bot, dest);
+        for (G3D::Vector3 const& at : stages)
+            if (std::hypot(at.x - here.x, at.y - here.y) <= searchReach &&
+                (at - goal).length() + MOVE_FAR_PROGRESS < disToDest)
+                stage = &at;
+        if (stage && !tried(*stage))
+        {
+            BotPath const leg = FindBotPath(bot, stage->x, stage->y, stage->z);
+            if (leg.type == PATHFIND_NORMAL && !leg.throughRefused && walkVia(*stage, leg, "stage"))
+                return true;
+        }
+    }
+    if (longWalk)
+        return false;  // the walk goes on as the search gave it (partial, no refused reach on it)
+    // 2. another way round: a travel node within the search's reach whose walk and whose walk on to the destination
+    // pass no refused reach, the shortest way through it first
+    {
+        struct Via
+        {
+            G3D::Vector3 at;
+            float yards;
+        };
+        std::vector<Via> vias;
+        for (TravelNode* node : sTravelNodeMap.getNodes(WorldPosition(bot), searchReach))
+        {
+            WorldPosition const* at = node->getPosition();
+            G3D::Vector3 const spot(at->GetPositionX(), at->GetPositionY(), at->GetPositionZ());
+            if ((spot - here).length() <= MOVE_FAR_PROGRESS)
+                continue;
+            vias.push_back({spot, (spot - here).length() + (goal - spot).length()});
+        }
+        std::sort(vias.begin(), vias.end(), [](Via const& a, Via const& b) { return a.yards < b.yards; });
+        constexpr size_t MAZE_VIA_TRIES = 4;  // search cost bound (route searches per look), not a behaviour rule
+        size_t searched = 0;
+        for (Via const& via : vias)
+        {
+            if (searched >= MAZE_VIA_TRIES)
+                break;
+            if (tried(via.at))
+                continue;
+            ++searched;
+            BotPath const leg = FindBotPath(bot, via.at.x, via.at.y, via.at.z);
+            if (leg.type != PATHFIND_NORMAL || leg.throughRefused)
+                continue;
+            BotPath const on = FindBotPath(bot, via.at.x, via.at.y, via.at.z, goal.x, goal.y, goal.z);
+            bool const onward = on.type == PATHFIND_NORMAL ||
+                                (on.type == PATHFIND_INCOMPLETE && (on.actualEnd - goal).length() + MOVE_FAR_PROGRESS <
+                                                                       (via.at - goal).length());
+            if (!onward || on.throughRefused)
+                continue;
+            if (walkVia(via.at, leg, "another way"))
+                return true;
+        }
+    }
+    // 3. a refused patrol on the way: its window (the forecast's ETA)
+    if (path.throughRefused)
+    {
+        float waitSec = 0.0f;
+        std::string who;
+        if (SoloSafety::PatrolWait(bot, path.points, waitSec, who))
+        {
+            if (waitSec > 0.0f)
+            {
+                LOG_INFO("playerbots", "[solo] {} L{} MAZE waits {:.0f} s for {} to pass its walk to ({:.0f},{:.0f})",
+                         bot->GetName(), bot->GetLevel(), waitSec, who, goal.x, goal.y);
+                return ForceToWait(uint32(waitSec * float(IN_MILLISECONDS)), MovementPriority::MOVEMENT_NORMAL);
+            }
+            if (path.points.size() >= 2)
+            {
+                G3D::Vector3 const end =
+                    path.length > sight ? Leader::Travel::PointOnPath(path.points, sight) : path.actualEnd;
+                LOG_INFO("playerbots", "[solo] {} L{} MAZE walks now: {} clear of its walk to ({:.0f},{:.0f})",
+                         bot->GetName(), bot->GetLevel(), who, goal.x, goal.y);
+                if (MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
+                    return true;
+            }
+        }
+    }
+    // 4. every way blocked: another task (the quest postponed with the co-op seek for help, the next gather node)
+    std::string const why = path.throughRefused ? "every way there passes mobs it does not pull (maze search)"
+                                                : "its walk there ends in a dead end (maze search)";
+    LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {}", bot->GetName(), bot->GetLevel(), goal.x,
+             goal.y, why);
+    RefusedWalk(dest, why);
+    return true;
 }
 
 bool NewRpgBaseAction::WalkTo(WorldPosition const& dest)
@@ -1692,6 +1908,50 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                 kept.push_back(*order[i]);
         if (kept.empty())
         {
+            // [deaths] user 2026-11-08: the main region is no island - the bot's own region round it (Detour's
+            // findPolysAroundCircle within its sight): when it reaches past its sight, or fills the search, the walk
+            // is a dead end of the route (the maze search takes it: WalkAround), not an island
+            bool reachesOut = false;
+            {
+                float const point[3] = {here.y, here.z, here.x};
+                float const extents[3] = {3.0f, 50.0f, 3.0f};
+                float nearest[3] = {0.0f, 0.0f, 0.0f};
+                dtPolyRef start = 0;
+                dtNavMesh const* navMesh = query->getAttachedNavMesh();
+                if (navMesh && dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &start, nearest)) &&
+                    start)
+                {
+                    constexpr int ISLAND_POLYS = 256;  // search bound: a region that fills it is no island
+                    std::vector<dtPolyRef> region(ISLAND_POLYS);
+                    int count = 0;
+                    dtStatus const status =
+                        query->findPolysAroundCircle(start, nearest, sPlayerbotAIConfig.SightDistance, &filter,
+                                                     region.data(), nullptr, nullptr, &count, ISLAND_POLYS);
+                    reachesOut = dtStatusSucceed(status) && (dtStatusDetail(status, DT_BUFFER_TOO_SMALL) ||
+                                                             dtStatusDetail(status, DT_OUT_OF_NODES));
+                    for (int i = 0; !reachesOut && i < count; ++i)
+                    {
+                        dtMeshTile const* tile = nullptr;
+                        dtPoly const* poly = nullptr;
+                        if (dtStatusFailed(navMesh->getTileAndPolyByRef(region[size_t(i)], &tile, &poly)) || !tile ||
+                            !poly)
+                            continue;
+                        for (uint8 v = 0; v < poly->vertCount; ++v)
+                        {
+                            float const* vertex = &tile->verts[size_t(poly->verts[v]) * 3];
+                            if (std::hypot(vertex[2] - here.x, vertex[0] - here.y) >= sPlayerbotAIConfig.SightDistance)
+                                reachesOut = true;
+                        }
+                    }
+                }
+            }
+            if (reachesOut)
+            {
+                logged(Acore::StringFormat("a dead end of its route, not an island: its region reaches past its "
+                                           "sight ({} polygons in sight lead nowhere nearer)",
+                                           ways.size()));
+                return false;
+            }
             logged(Acore::StringFormat("on a navmesh island: {} polygons in sight, no step or survivable fall leads on",
                                        ways.size()));
             return false;
@@ -1940,6 +2200,37 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     // The spline system walks the whole returned path smoothly, so
     // subsequent ticks early-out via IsWaitingForLastMove and no
     // further PathGenerator calls fire until the bot arrives.
+    // [deaths] a maze search's via spot for this destination: walked to first, then the destination's walk again
+    if (SoloSafety::Applies(bot))
+    {
+        bool hasVia = false;
+        G3D::Vector3 via;
+        {
+            std::lock_guard<std::mutex> guard(walkAroundLock);
+            auto const found = walkAround.find(bot->GetGUID().GetCounter());
+            if (found != walkAround.end() && found->second.hasVia && found->second.dest == DestKey(dest))
+            {
+                hasVia = true;
+                via = found->second.via;
+            }
+        }
+        if (hasVia)
+        {
+            BotPath const leg = bot->GetExactDist(via.x, via.y, via.z) > MOVE_FAR_PROGRESS
+                                    ? FindBotPath(bot, via.x, via.y, via.z)
+                                    : BotPath();
+            if (leg.type == PATHFIND_NORMAL && !leg.throughRefused && leg.points.size() >= 2)
+            {
+                G3D::Vector3 const end = leg.length > sPlayerbotAIConfig.SightDistance
+                                             ? Leader::Travel::PointOnPath(leg.points, sPlayerbotAIConfig.SightDistance)
+                                             : leg.actualEnd;
+                if (MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
+                    return true;
+            }
+            std::lock_guard<std::mutex> guard(walkAroundLock);
+            walkAround[bot->GetGUID().GetCounter()].hasVia = false;  // reached, or no clean walk to it from here
+        }
+    }
     // [guild15] perf (b319 pmon: the leader route search was 78 % of all bot AI time, 4.9 ms a search, mostly the
     // far walks' re-plan of the whole way after every leg): on a complete route found before, the next leg is
     // searched only as far as two sights ahead along it - the mobs priced are the ones in sight either way
@@ -1966,8 +2257,8 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             {
                 G3D::Vector3 const target = Leader::Travel::PointOnPath(rest, ahead);
                 BotPath const local = FindBotPath(bot, target.x, target.y, target.z);
-                if (local.type == PATHFIND_NORMAL && (local.actualEnd - target).length() < 5.0f &&
-                    local.points.size() >= 2)
+                if (local.type == PATHFIND_NORMAL && !local.throughRefused &&
+                    (local.actualEnd - target).length() < 5.0f && local.points.size() >= 2)
                 {
                     G3D::Vector3 leg = local.length > sPlayerbotAIConfig.SightDistance
                                            ? Leader::Travel::PointOnPath(local.points, sPlayerbotAIConfig.SightDistance)
@@ -1982,8 +2273,20 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     {
         BotPath const path =  // [lead109]
             FindBotPath(bot, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
-        if (path.type == PATHFIND_NORMAL && path.leaderRoute)  // [guild15] kept for the next legs
+        if (path.type == PATHFIND_NORMAL && path.leaderRoute && !path.throughRefused)  // [guild15] the next legs
             botAI->rpgInfo.farRoute.assign(path.points.begin(), path.points.end());
+        // [deaths] user 2026-11-08: a solo walk never goes through a pack it does not fight (b338 Sylaenas L1:
+        // "complete, through a refused reach", killed by the Webwood Lurker there) and a long one goes in stages: the
+        // maze search
+        if (SoloSafety::Applies(bot) && path.leaderRoute &&
+            (path.throughRefused ||
+             (path.type == PATHFIND_INCOMPLETE && disToDest > 2.0f * sPlayerbotAIConfig.SightDistance)))
+        {
+            if (WalkAround(dest, path, disToDest, false))
+                return true;
+            if (path.throughRefused)
+                return false;
+        }
         PathType type = path.type;
         bool canReach = !(type & (~typeOk));
         if (canReach)
@@ -2039,6 +2342,9 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             NoteWalkFailure(dest, Acore::StringFormat("route {} ends {:.0f} yd short, no nearer than the bot",
                                                       type == PATHFIND_NORMAL ? "complete" : "partial",
                                                       endDistToDest));
+            // [deaths] user 2026-11-08: no walking into a dead end - the maze search (another way, else another task)
+            if (SoloSafety::Applies(bot) && path.leaderRoute && WalkAround(dest, path, disToDest, true))
+                return true;
             NoteFarSearchFailed();  // [guild15]
         }
         else
@@ -3428,6 +3734,23 @@ CreatureTemplate const* NewRpgBaseAction::TripDanger(Player* bot, float x, float
         lastX = route.points.back().x;
         lastY = route.points.back().y;
     }
+    // [deaths] user 2026-11-08: the rest of a walk longer than the search goes in stages over the travel nodes
+    // (NodeStages): the danger on that chain, not on the straight line across whatever lies between (b338
+    // TRIP_REFUSED walks of 1200-7000 yd named camps far off any road)
+    std::vector<G3D::Vector3> const stages = NodeStages(bot, WorldPosition(bot->GetMapId(), x, y, z));
+    if (!stages.empty())
+    {
+        float const restGap = std::hypot(x - lastX, y - lastY);
+        for (G3D::Vector3 const& stage : stages)
+        {
+            if (std::hypot(x - stage.x, y - stage.y) >= restGap)
+                continue;  // behind the walk's searched part
+            if (CreatureTemplate const* danger = DangerOnWay(bot, lastX, lastY, stage.x, stage.y))
+                return danger;
+            lastX = stage.x;
+            lastY = stage.y;
+        }
+    }
     return DangerOnWay(bot, lastX, lastY, x, y);
 }
 
@@ -3606,6 +3929,25 @@ CreatureTemplate const* NewRpgBaseAction::InDangerZone(Player* bot, float x, flo
             return sObjectMgr->GetCreatureTemplate(zone.entry);
     }
     return nullptr;
+}
+
+void NewRpgBaseAction::DangerDiscs(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& out)
+{
+    if (!bot)
+        return;
+    uint8 const level = bot->GetLevel();
+    std::lock_guard<std::mutex> guard(deathZonesLock);
+    auto const zones = deathZones.find(bot->GetGUID().GetCounter());
+    if (zones == deathZones.end())
+        return;
+    for (DeathZone const& zone : zones->second)
+    {
+        if (zone.mapId != bot->GetMapId() || level > zone.level)
+            continue;
+        for (auto const& [zx, zy] : {std::pair<float, float>{zone.killerX, zone.killerY}, {zone.deathX, zone.deathY}})
+            if (std::hypot(zx - x, zy - y) <= range + zone.radius)
+                out.emplace_back(zx, zy, bot->GetPositionZ(), zone.radius);
+    }
 }
 
 bool NewRpgBaseAction::NeedsItemUseCredit(Quest const* quest, std::string* why)

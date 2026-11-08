@@ -24,9 +24,11 @@
 #include "GridNotifiersImpl.h"
 #include "Group.h"
 #include "LeaderFightChecks.h"
+#include "LeaderPlannerShared.h"  // [deaths] PullPlanning::PatrolForecast
 #include "NewRpgBaseAction.h"
 #include "Log.h"
 #include "Map.h"
+#include "ModelIgnoreFlags.h"  // [deaths] the pull spot's sight of its target
 #include "Pet.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -145,6 +147,18 @@ namespace
         std::unordered_map<uint64, bool> routeMobs;
         bool routeComplete = false;
         bool routeThroughRefused = false;
+        // [deaths] the engage's pull spot (Verdict::pullSpot) and the reaches its walk goes round
+        bool pullSpot = false;
+        ObjectGuid pullTarget;
+        G3D::Vector3 pull;
+        std::vector<G3D::Vector4> pullAvoid;
+        // [deaths] the last pull spot search: its target, where the bot stood, what it found (perf: one search per
+        // target and spot of the bot, the judge looks every tick)
+        ObjectGuid searchTarget;
+        G3D::Vector3 searchFrom;
+        bool searchFound = false;
+        G3D::Vector3 searchSpot;
+        std::vector<G3D::Vector4> searchAvoid;
     };
 
     struct EntryDamage
@@ -413,6 +427,33 @@ namespace
     // aura's duration - once per repeat interval (the mean of repeatMin / repeatMax), at least its cast time and the
     // global cooldown. b303: casters were counted by their current cast only (Kobold Geomancers, Defias Rogue Wizards,
     // Gnarlpine and Bristlelimb Shamans killed bots judged to win)
+    // [deaths] a hostile spell's damage on its target as a creature casts it: its direct school damage and its periodic
+    // damage over the aura's duration (0: none, a positive spell)
+    float CastDamage(SpellInfo const* info, Creature* creature)
+    {
+        if (!info || info->IsPositive())
+            return 0.0f;
+        float damage = 0.0f;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                damage += float(std::max(effect.CalcValue(creature), 0));
+            else if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE &&
+                     effect.Amplitude > 0)
+                damage += float(std::max(effect.CalcValue(creature), 0)) *
+                          float(std::max(info->GetMaxDuration(), 0) / effect.Amplitude);
+        }
+        return damage;
+    }
+
+    // the shortest time between two casts of the spell: its cast time, the global cooldown
+    float CastEverySec(SpellInfo const* info, Creature* creature)
+    {
+        float const castSec = float(info->CalcCastTime(creature)) / float(IN_MILLISECONDS);
+        float const gcdSec = float(std::max<uint32>(info->StartRecoveryTime, 1500)) / float(IN_MILLISECONDS);
+        return std::max(castSec, gcdSec);
+    }
+
     float SpellDpsOf(Creature* creature)
     {
         static std::mutex cacheLock;
@@ -431,33 +472,139 @@ namespace
                 if (holder.event.type != SMART_EVENT_UPDATE_IC || holder.action.type != SMART_ACTION_CAST)
                     continue;
                 SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell);
-                if (!info || info->IsPositive())
-                    continue;
-                float damage = 0.0f;
-                for (SpellEffectInfo const& effect : info->GetEffects())
-                {
-                    if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
-                        damage += float(std::max(effect.CalcValue(creature), 0));
-                    else if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
-                             effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude > 0)
-                        damage += float(std::max(effect.CalcValue(creature), 0)) *
-                                  float(std::max(info->GetMaxDuration(), 0) / effect.Amplitude);
-                }
+                float const damage = CastDamage(info, creature);
                 if (damage <= 0.0f)
                     continue;
                 float const repeatSec =
                     float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f /
                     float(IN_MILLISECONDS);
-                float const castSec = float(info->CalcCastTime(creature)) / float(IN_MILLISECONDS);
-                float const gcdSec = float(std::max<uint32>(info->StartRecoveryTime, 1500)) / float(IN_MILLISECONDS);
                 // a cast with no repeat goes once a fight: counted over its cast and the cooldown only when it repeats
                 if (repeatSec <= 0.0f)
                     continue;
-                dps += damage / std::max({repeatSec, castSec, gcdSec});
+                dps += damage / std::max(repeatSec, CastEverySec(info, creature));
             }
         std::lock_guard<std::mutex> guard(cacheLock);
         cache[entry] = dps;
         return dps;
+    }
+
+    // [deaths] the casts of a creature's SmartAI that reach a bot running from it (SoloSafety::ChaseSpellDamage)
+    struct ChaseCast
+    {
+        float damage = 0.0f;
+        float everySec = 0.0f;  // 0: once
+    };
+    std::vector<ChaseCast> ChaseCastsOf(Creature* creature)
+    {
+        static std::mutex cacheLock;
+        static std::unordered_map<uint32, std::vector<ChaseCast>> cache;  // entry -> its casts at its level
+        uint32 const entry = creature->GetEntry();
+        {
+            std::lock_guard<std::mutex> guard(cacheLock);
+            auto const found = cache.find(entry);
+            if (found != cache.end())
+                return found->second;
+        }
+        std::vector<ChaseCast> casts;
+        if (creature->GetAIName() == "SmartAI")
+            for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+            {
+                if (holder.action.type != SMART_ACTION_CAST)
+                    continue;
+                // in combat, or at range from its victim (a minimum range: the cast waits for the bot to be away)
+                bool const inCombat = holder.event.type == SMART_EVENT_UPDATE_IC;
+                bool const atRange = holder.event.type == SMART_EVENT_RANGE && holder.event.minMaxRepeat.rangeMin > 0;
+                if (!inCombat && !atRange)
+                    continue;
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell);
+                ChaseCast cast;
+                cast.damage = CastDamage(info, creature);
+                if (cast.damage <= 0.0f)
+                    continue;
+                float const repeatSec =
+                    float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f /
+                    float(IN_MILLISECONDS);
+                if (!(holder.event.event_flags & SMART_EVENT_FLAG_NOT_REPEATABLE) && repeatSec > 0.0f)
+                    cast.everySec = std::max(repeatSec, CastEverySec(info, creature));
+                casts.push_back(cast);
+            }
+        std::lock_guard<std::mutex> guard(cacheLock);
+        cache[entry] = casts;
+        return casts;
+    }
+
+    // [deaths] b338 Thokhen L9: a Bristlelimb Windcaller judged at its health healed itself (Rejuvenation at 0-50 %)
+    // and outlasted the bot's potion. A creature's SmartAI heals on itself (SMART_TARGET_SELF casts of a healing
+    // spell: its direct heal and its periodic heal over the aura's duration), in combat (SMART_EVENT_UPDATE_IC) or in
+    // a health band (SMART_EVENT_HEALTH_PCT); a repeating one once per repeat (at least its cast time and the global
+    // cooldown)
+    struct SelfHeal
+    {
+        float amount = 0.0f;
+        float everySec = 0.0f;  // 0: once
+        bool band = false;      // SMART_EVENT_HEALTH_PCT: cast while its health is in [minPct, maxPct]
+        float minPct = 0.0f;
+    };
+    std::vector<SelfHeal> SelfHealsOf(Creature* creature)
+    {
+        static std::mutex cacheLock;
+        static std::unordered_map<uint32, std::vector<SelfHeal>> cache;  // entry -> its heals at its level
+        uint32 const entry = creature->GetEntry();
+        {
+            std::lock_guard<std::mutex> guard(cacheLock);
+            auto const found = cache.find(entry);
+            if (found != cache.end())
+                return found->second;
+        }
+        std::vector<SelfHeal> heals;
+        if (creature->GetAIName() == "SmartAI")
+            for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+            {
+                if (holder.action.type != SMART_ACTION_CAST || holder.target.type != SMART_TARGET_SELF ||
+                    (holder.event.type != SMART_EVENT_UPDATE_IC && holder.event.type != SMART_EVENT_HEALTH_PCT))
+                    continue;
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell);
+                if (!info || !info->IsPositive())
+                    continue;
+                SelfHeal heal;
+                for (SpellEffectInfo const& effect : info->GetEffects())
+                {
+                    if (effect.Effect == SPELL_EFFECT_HEAL)
+                        heal.amount += float(std::max(effect.CalcValue(creature), 0));
+                    else if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
+                             effect.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL && effect.Amplitude > 0)
+                        heal.amount += float(std::max(effect.CalcValue(creature), 0)) *
+                                       float(std::max(info->GetMaxDuration(), 0) / effect.Amplitude);
+                }
+                if (heal.amount <= 0.0f)
+                    continue;
+                float const repeatSec =
+                    float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f /
+                    float(IN_MILLISECONDS);
+                if (!(holder.event.event_flags & SMART_EVENT_FLAG_NOT_REPEATABLE) && repeatSec > 0.0f)
+                    heal.everySec = std::max(repeatSec, CastEverySec(info, creature));
+                heal.band = holder.event.type == SMART_EVENT_HEALTH_PCT;
+                heal.minPct = float(holder.event.minMaxRepeat.min);
+                heals.push_back(heal);
+            }
+        std::lock_guard<std::mutex> guard(cacheLock);
+        cache[entry] = heals;
+        return heals;
+    }
+
+    // the health a creature heals itself over the `fightSec` its fight lasts (a band heal only while its health has
+    // the band still ahead or under way: above its lower bound)
+    float HealToCome(Creature* creature, float fightSec)
+    {
+        float healed = 0.0f;
+        for (SelfHeal const& heal : SelfHealsOf(creature))
+        {
+            if (heal.band && creature->GetHealthPct() <= heal.minPct)
+                continue;
+            healed += heal.everySec > 0.0f ? heal.amount * (1.0f + std::floor(std::max(fightSec, 0.0f) / heal.everySec))
+                                           : heal.amount;
+        }
+        return healed;
     }
 
     // [guild14] what a mob deals the bot per second: its melee (Leader::Fight::AttackerDps, its crits counted: the
@@ -656,6 +803,143 @@ namespace SoloSafety
             else
                 spot = bot->GetPosition();
         }
+        // [deaths] user 2026-11-08: two mobs whose aggro reaches overlap are no pack when the core does not link them
+        // (the target's formation, its faction's assistance call, its script's call for help): the fault is a pull
+        // spot where both see the bot. The pull is made from a spot outside every other idle mob's reach - in the
+        // target's aggro reach for a melee bot (it comes), in its spell reach with sight of it for a ranged one -
+        // walked to round those reaches; with no such spot the overlapping mob stays in the pack (the judge refuses,
+        // the co-op seek asks for help)
+        Creature* targetMob = target->ToCreature();
+        // (a melee bot's pull is its body in the target's aggro reach: only a hostile, aggressive target comes)
+        if (targetMob && !target->IsInCombat() &&
+            (reach > 0.0f || (targetMob->IsHostileTo(bot) && targetMob->HasReactState(REACT_AGGRESSIVE))))
+        {
+            float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+            ScriptHelp const targetHelp = ScriptHelpOf(targetMob);
+            CreatureGroup* const targetFormation = targetMob->GetFormation();
+            auto const linked = [&](Creature* mob)
+            {
+                if (targetFormation && mob->GetFormation() == targetFormation)
+                    return true;
+                if (assist > 0.0f && mob->GetFaction() == targetMob->GetFaction() &&
+                    mob->IsWithinDistInMap(targetMob, assist) && mob->CanAssistTo(targetMob, bot))
+                    return true;
+                return targetHelp.callRadius > 0.0f && mob->IsWithinDistInMap(targetMob, targetHelp.callRadius) &&
+                       mob->CanAssistTo(targetMob, bot);
+            };
+            std::vector<G3D::Vector4> reaches;  // the idle mobs not linked to the target
+            bool covered = false;
+            for (ObjectGuid const& guid : GET_PLAYERBOT_AI(bot)->GetAiObjectContext()
+                                              ->GetValue<GuidVector>("possible targets no los")->Get())
+            {
+                Creature* mob = ObjectAccessor::GetCreature(*bot, guid);
+                if (!mob || mob == targetMob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                    !mob->HasReactState(REACT_AGGRESSIVE) || linked(mob))
+                    continue;
+                float radius = mob->GetAggroRange(bot) + bot->GetCombatReach();
+                Position centre = mob->GetPosition();
+                if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+                {
+                    centre = mob->GetHomePosition();
+                    radius += mob->GetWanderDistance();
+                }
+                reaches.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
+                covered = covered || centre.GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <= radius;
+            }
+            G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            bool searched = false;
+            if (covered)
+            {
+                std::lock_guard<std::mutex> guard(lock);
+                SoloBotState const& state = states[bot->GetGUID().GetCounter()];
+                if (state.searchTarget == target->GetGUID() &&
+                    (state.searchFrom - from).length() <= bot->GetCombatReach())
+                {
+                    searched = true;
+                    verdict.pullSpot = state.searchFound;
+                    verdict.pull = state.searchSpot;
+                    verdict.pullAvoid = state.searchAvoid;
+                    if (verdict.pullSpot)
+                        spot.Relocate(verdict.pull.x, verdict.pull.y, verdict.pull.z);
+                }
+            }
+            if (covered && !searched)
+            {
+                auto const outside = [&reaches](float x, float y)
+                {
+                    for (G3D::Vector4 const& r : reaches)
+                        if ((r.x - x) * (r.x - x) + (r.y - y) * (r.y - y) <= r.w * r.w)
+                            return false;
+                    return true;
+                };
+                float const pullReach =
+                    (reach > 0.0f ? reach : targetMob->GetAggroRange(bot)) - bot->GetCombatReach();
+                std::vector<std::pair<float, G3D::Vector3>> spots;
+                if (pullReach > 0.0f)
+                {
+                    // one spot per stretch of the ring as wide as the bot's reach
+                    uint32 const arcs = std::max<uint32>(
+                        8, uint32(std::ceil(2.0f * float(M_PI) * pullReach / std::max(bot->GetCombatReach(), 1.0f))));
+                    float const height = bot->GetCollisionHeight();
+                    for (uint32 i = 0; i < arcs; ++i)
+                    {
+                        float const angle = 2.0f * float(M_PI) * float(i) / float(arcs);
+                        G3D::Vector3 at(target->GetPositionX() + std::cos(angle) * pullReach,
+                                        target->GetPositionY() + std::sin(angle) * pullReach, target->GetPositionZ());
+                        if (!outside(at.x, at.y))
+                            continue;
+                        bot->UpdateAllowedPositionZ(at.x, at.y, at.z);
+                        if (!bot->GetMap()->isInLineOfSight(at.x, at.y, at.z + height, target->GetPositionX(),
+                                                            target->GetPositionY(), target->GetPositionZ() + height,
+                                                            bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                                            VMAP::ModelIgnoreFlags::Nothing))
+                            continue;
+                        spots.emplace_back(bot->GetExactDist2d(at.x, at.y), at);
+                    }
+                }
+                std::sort(spots.begin(), spots.end(),
+                          [](auto const& a, auto const& b) { return a.first < b.first; });
+                // the walk there round every such reach (a reach the bot stands in lies behind it); the polygons'
+                // edges are tested against the discs as the solo route search tests them (penalties at no cost)
+                G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                std::vector<G3D::Vector4> avoid;
+                std::vector<Leader::Travel::RoutePenalty> edges;
+                for (G3D::Vector4 const& r : reaches)
+                    if ((r.x - here.x) * (r.x - here.x) + (r.y - here.y) * (r.y - here.y) > r.w * r.w)
+                    {
+                        avoid.push_back(r);
+                        Leader::Travel::RoutePenalty edge;
+                        edge.x = r.x;
+                        edge.y = r.y;
+                        edge.z = r.z;
+                        edge.r = r.w;
+                        edges.push_back(edge);
+                    }
+                constexpr size_t PULL_SPOT_ROUTE_TRIES = 3;  // search cost bound (the nearest spots), not a rule
+                for (size_t i = 0; i < spots.size() && i < PULL_SPOT_ROUTE_TRIES; ++i)
+                {
+                    Movement::PointsArray corners;
+                    bool complete = false;
+                    if (!Leader::Travel::LongRoute(bot, here, spots[i].second, false, corners, complete, nullptr,
+                                                   &avoid, 0.0f, nullptr, &edges) ||
+                        !complete || corners.empty())
+                        continue;
+                    verdict.pullSpot = true;
+                    verdict.pull = corners.back();
+                    verdict.pullAvoid = avoid;
+                    spot.Relocate(verdict.pull.x, verdict.pull.y, verdict.pull.z);
+                    break;
+                }
+                std::lock_guard<std::mutex> guard(lock);
+                SoloBotState& state = states[bot->GetGUID().GetCounter()];
+                state.searchTarget = target->GetGUID();
+                state.searchFrom = from;
+                state.searchFound = verdict.pullSpot;
+                state.searchSpot = verdict.pull;
+                state.searchAvoid = verdict.pullAvoid;
+            }
+        }
+
         std::vector<Unit*> pack;
         PullPlanner::SoloPack(bot, target, spot, pack);
         if (pack.empty())
@@ -774,6 +1058,10 @@ namespace SoloSafety
         // while its mana lasts, then what lasts without mana
         DpsEstimate::Result const own = OwnDamage(bot, target);
         float const botDps = std::max(own.burstDps, 1.0f);
+        // [deaths] each mob's health with the heals it casts on itself over the time the bot needs for it
+        for (Mob& mob : mobs)
+            if (Creature* creature = mob.unit->ToCreature())
+                mob.hp += HealToCome(creature, mob.hp / botDps);
 
         // the kill order: the target first, then the most damage per health
         std::sort(mobs.begin() + 1, mobs.end(),
@@ -901,6 +1189,11 @@ namespace SoloSafety
             return;
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        // [deaths] the pull spot of this engage (none: the walk goes to the target as before)
+        state.pullSpot = verdict.pullSpot;
+        state.pullTarget = target->GetGUID();
+        state.pull = verdict.pull;
+        state.pullAvoid = verdict.pullAvoid;
         if (state.engaged && state.engage.target == target->GetGUID())
             return;
         state.engaged = true;
@@ -911,6 +1204,40 @@ namespace SoloSafety
         state.engage.healthPct = bot->GetHealthPct();
         state.engage.manaPct = bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f;
         state.engage.mobs = verdict.mobs;
+    }
+
+    bool PullWalk(Player* bot, G3D::Vector3 const& to, G3D::Vector3& spot, std::vector<G3D::Vector4>& avoid)
+    {
+        if (!bot || bot->IsInCombat())
+            return false;
+        ObjectGuid targetGuid;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end() || !found->second.pullSpot)
+                return false;
+            targetGuid = found->second.pullTarget;
+            spot = found->second.pull;
+            avoid = found->second.pullAvoid;
+        }
+        Creature* target = ObjectAccessor::GetCreature(*bot, targetGuid);
+        if (!target || !target->IsAlive() || target->IsInCombat() || bot->GetTarget() != targetGuid)
+            return false;
+        // a walk that heads for the target (as near it as the pull spot), and the bot not at the spot yet (there the
+        // pull is made: the walk on is its own)
+        float const spotGap = target->GetExactDist2d(spot.x, spot.y);
+        return target->GetExactDist2d(to.x, to.y) <= spotGap + bot->GetCombatReach() &&
+               bot->GetExactDist2d(spot.x, spot.y) > bot->GetCombatReach();
+    }
+
+    float ChaseSpellDamage(Creature* mob, float seconds)
+    {
+        if (!mob || seconds <= 0.0f)
+            return 0.0f;
+        float damage = 0.0f;
+        for (ChaseCast const& cast : ChaseCastsOf(mob))
+            damage += cast.everySec > 0.0f ? cast.damage * std::ceil(seconds / cast.everySec) : cast.damage;
+        return damage;
     }
 
     bool WantsRest(Player* bot, bool mana, std::string* why)
@@ -1160,6 +1487,10 @@ namespace SoloSafety
             state.sampleMelee && meleeSec >= 2.0f * SwingSec(bot))
             botDps = float(state.dealtMelee) / (meleeSec + SwingSec(bot));
         out.botDps = std::max(botDps, 1.0f);
+        // [deaths] each attacker's health with the heals it still casts on itself over the time the bot needs for it
+        for (Projection::Foe& foe : out.foes)
+            if (Creature* creature = foe.unit->ToCreature())
+                foe.hp += HealToCome(creature, foe.hp / out.botDps);
         // the rest of the fight as the judge counts it: its current target first, then the most damage per health
         Unit* const victim = bot->GetVictim();
         std::sort(out.foes.begin(), out.foes.end(),
@@ -1413,6 +1744,22 @@ namespace SoloSafety
             }
             if (never)
                 refuse.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
+            // [deaths] a patrol it must never fight is refused along its beat (its waypoint forecast), not only where
+            // it stands now: the walk crosses its beat only where PatrolWait finds the window (b338 Murloc Lurker
+            // patrols at Stone Cairn Lake on the way back of Ravelandy's runs)
+            std::vector<G3D::Vector3> track;
+            float sampleSec = 0.0f;
+            if (never && mob->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE &&
+                PullPlanning::PatrolForecast(mob, track, sampleSec))
+            {
+                G3D::Vector3 last(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ());
+                for (G3D::Vector3 const& at : track)
+                    if ((at - last).length() >= radius)  // a disc per radius of its beat: the beat covered
+                    {
+                        refuse.emplace_back(at.x, at.y, at.z, radius);
+                        last = at;
+                    }
+            }
             // the fight it starts, in yards of walk: its health over the bot's damage, at the bot's run speed
             Leader::Travel::RoutePenalty penalty;
             penalty.x = centre.GetPositionX();
@@ -1427,12 +1774,114 @@ namespace SoloSafety
             penalties.push_back(penalty);
             seen[mob->GetGUID().GetRawValue()] = never;
         }
+        // [deaths] its danger zones (where it died, a pack it refused) are refused whether or not their mobs are in
+        // sight now (b338 Keenonk L11 died twice at the same Black Slime L20 and twice among the same Dragonmaw Scouts:
+        // "unseen" in the route search before each death)
+        NewRpgBaseAction::DangerDiscs(bot, bot->GetPositionX(), bot->GetPositionY(), range, refuse);
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
         state.routeMs = getMSTime();
         state.routeMobs = std::move(seen);
         state.routeComplete = false;
         state.routeThroughRefused = false;
+    }
+
+    bool PatrolWait(Player* bot, std::vector<G3D::Vector3> const& points, float& waitSec, std::string& who)
+    {
+        waitSec = 0.0f;
+        who.clear();
+        if (!bot || points.size() < 2)
+            return false;
+        std::vector<uint64> refused;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end())
+                return false;
+            for (auto const& [guid, never] : found->second.routeMobs)
+                if (never)
+                    refused.push_back(guid);
+        }
+        float const speed = std::max(bot->GetSpeed(MOVE_RUN), 0.1f);
+        // the walk's points and the seconds the bot needs to each
+        std::vector<float> at(points.size(), 0.0f);
+        for (size_t i = 1; i < points.size(); ++i)
+            at[i] = at[i - 1] + (points[i] - points[i - 1]).length() / speed;
+        struct Beat
+        {
+            std::vector<G3D::Vector3> track;
+            float sampleSec = 0.0f;
+            float radius = 0.0f;
+            std::vector<size_t> crossing;  // the walk's points its beat comes within reach of (no others met)
+        };
+        std::vector<Beat> beats;
+        for (uint64 raw : refused)
+        {
+            Creature* mob = ObjectAccessor::GetCreature(*bot, ObjectGuid(raw));
+            if (!mob || !mob->IsAlive() || mob->IsInCombat())
+                continue;
+            Beat beat;
+            beat.radius = mob->GetAggroRange(bot) + bot->GetCombatReach();
+            bool const patrols = mob->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE &&
+                                 PullPlanning::PatrolForecast(mob, beat.track, beat.sampleSec) &&
+                                 beat.sampleSec > 0.0f && !beat.track.empty();
+            if (!patrols)
+            {
+                // a refused mob that stays where it is: no wait clears a walk through its reach
+                Position centre = mob->GetPosition();
+                float radius = beat.radius;
+                if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+                {
+                    centre = mob->GetHomePosition();
+                    radius += mob->GetWanderDistance();
+                }
+                for (G3D::Vector3 const& point : points)
+                    if (centre.GetExactDist2d(point.x, point.y) <= radius)
+                        return false;
+                continue;
+            }
+            for (size_t i = 0; i < points.size(); ++i)
+                for (G3D::Vector3 const& spot : beat.track)
+                    if (std::hypot(spot.x - points[i].x, spot.y - points[i].y) <= beat.radius)
+                    {
+                        beat.crossing.push_back(i);
+                        break;
+                    }
+            if (beat.crossing.empty())
+                continue;
+            who += (who.empty() ? "" : ", ") + Acore::StringFormat("{} L{}", mob->GetName(), mob->GetLevel());
+            beats.push_back(std::move(beat));
+        }
+        if (beats.empty())
+            return false;
+        // the first start (a forecast sample) from which the walk meets no beat while the forecasts last
+        size_t const samples = beats.front().track.size();
+        float const step = beats.front().sampleSec;
+        for (size_t k = 0; k < samples; ++k)
+        {
+            float const start = float(k) * step;
+            bool clear = true;
+            for (Beat const& beat : beats)
+                for (size_t i : beat.crossing)
+                {
+                    if (!clear)
+                        break;
+                    size_t const index = size_t((start + at[i]) / beat.sampleSec);
+                    if (index >= beat.track.size())
+                        clear = false;  // past its forecast: unknown
+                    else
+                    {
+                        G3D::Vector3 const& spot = beat.track[index];
+                        clear = std::hypot(spot.x - points[i].x, spot.y - points[i].y) > beat.radius;
+                    }
+                }
+            if (clear)
+            {
+                waitSec = start;
+                return true;
+            }
+        }
+        return false;
     }
 
     void NoteRoute(Unit* walker, bool complete, bool throughRefused)
