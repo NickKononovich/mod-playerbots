@@ -93,6 +93,9 @@ public:
     // [guild15] a creature / object objective whose credit comes from using the quest's own tool item (its start item,
     // with an on-use spell: a flute, a disguise kit) - the bot does not use quest items, so it is not taken
     static bool NeedsItemUseCredit(Quest const* quest, std::string* why = nullptr);
+    // [flit] a kill objective on a creature friendly to the bot that no kill, talk or other creature credits: a spell
+    // or a script gives it (openOnly: the objectives still to do)
+    static bool NeedsSpellCredit(Player* bot, Quest const* quest, bool openOnly, std::string* why = nullptr);
     // [guild13] where a bot goes after a death: the nearest ender of a quest in its log, else a travel hub (inn)
     static WorldPosition NearestHub(Player* bot);
     // [guild13] before any far walk: the revived bot's way to its hub, the regeneration sit of a bot that must rest
@@ -110,6 +113,8 @@ public:
     static float RemainingShare(Player* bot, Quest const* quest);
     // [guild90] the camp a bot works for a quest (questId 0: none); other bots skip it as taken
     static void ClaimSpot(Player* bot, uint32 questId, WorldPosition const& pos);
+    // [flit] the quest a bot leaves for another while its camps respawn: ChooseBestQuest takes it up again
+    static void NoteResume(Player* bot, uint32 questId);
     // [guild90] the counts of this thread's last objective resolve (spawns, spent, taken, offered), for the log
     static std::string LastResolveStats();
     // [guild90] seconds until the first spent camp of the quest respawns (spawntimesecs); 0: none pending
@@ -219,7 +224,7 @@ protected:
     uint32 ChooseBestQuest(WorldPosition& giverPos);
     // [guild11] the quest the bot is closest to being allowed: lowest min level above its own, nearest giver;
     // grindPos = the grind spot of its level nearest that giver
-    uint32 ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos);
+    uint32 ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot = true);
     // [guild11] hook for the dungeon step: logs the normal dungeons of its level
     void LogDungeonCandidates();
     float GetQuestWeight(Quest const* quest, bool rested);

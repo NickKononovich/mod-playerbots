@@ -10,6 +10,7 @@
 #include "AreaDefines.h"
 #include "CellImpl.h"
 #include "ChatHelper.h"
+#include "ConditionMgr.h"  // [flit] portal spell conditions
 #include "Corpse.h"
 #include "Creature.h"
 #include "GameEventMgr.h"
@@ -5347,7 +5348,21 @@ bool TravelRouteMgr::CanUseLine(Player* bot, Line const& line)
     return true;
 }
 
-bool TravelRouteMgr::CanUsePortal(Player* bot, Portal const& portal) { return !IsHostileFaction(bot, portal.faction); }
+bool TravelRouteMgr::CanUsePortal(Player* bot, Portal const& portal)
+{
+    if (IsHostileFaction(bot, portal.faction))
+        return false;
+    // [flit] its spell's own conditions (b341: the Exodar's Portal to Blasted Lands, spell 65728, needs level 58 -
+    // five L3 draenei planned 3000 s trips through it and stood at it for the whole run)
+    if (!portal.goEntry)
+        return true;
+    GameObjectTemplate const* goInfo = sObjectMgr->GetGameObjectTemplate(portal.goEntry);
+    if (!goInfo || goInfo->type != GAMEOBJECT_TYPE_SPELLCASTER)
+        return true;
+    ConditionList conditions =
+        sConditionMgr->GetConditionsForNotGroupedEntry(CONDITION_SOURCE_TYPE_SPELL, goInfo->spellcaster.spellId);
+    return conditions.empty() || sConditionMgr->IsObjectMeetToConditions(bot, conditions);
+}
 
 void TravelRouteMgr::Observe(MotionTransport* transport)
 {

@@ -1091,7 +1091,8 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     uint32 questId = data.questId;
     // [guild15] a quest in the log whose objective needs its tool item used (taken before this check): postponed at
     // once, never a wait for the respawn of something no kill gives credit for (b333 Kianey q6661 580 s STUCK)
-    if (std::string why; NewRpgBaseAction::NeedsItemUseCredit(data.quest, &why))
+    if (std::string why; NewRpgBaseAction::NeedsItemUseCredit(data.quest, &why) ||
+                         NewRpgBaseAction::NeedsSpellCredit(bot, data.quest, true, &why))  // [flit]
     {
         LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: unsupported: {}", bot->GetName(), bot->GetLevel(),
                  questId, why);
@@ -1166,6 +1167,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                                      "from=q" + std::to_string(questId) + " wait_s=" + std::to_string(wait) +
                                          " other_s=" + std::to_string(uint32(otherSeconds)) +
                                          " reason=all camps spent, the other quest is cheaper than the respawn");
+                NoteResume(bot, questId);  // [flit] back to it at its respawn or once the other is done
             }
             // can't find a poi pos to go, stop doing quest for now
             botAI->rpgInfo.ChangeToIdle();

@@ -19,6 +19,8 @@
 #include "GameEventMgr.h"  // [guild15] event spawns in the danger index
 #include "DatabaseEnv.h"
 #include "Formulas.h"
+#include "DpsEstimate.h"  // [flit] the kill time of a grind
+#include "SmartScriptMgr.h"  // [flit] kill credits of scripts
 #include "Group.h"
 #include "LFGMgr.h"
 #include "LootObjectStack.h"
@@ -160,8 +162,8 @@ namespace
     // bot guid counter -> quest -> the spent marks
     std::unordered_map<uint32, std::unordered_map<uint32, std::vector<SpentMark>>> spentSpots;
 
-    // [guild90] the shortest respawn (seconds) of the quest's objective sources spawned within SPENT_RADIUS of
-    // (x, y) on the bot's map; 0: none there (defined with the spawn index below)
+    // [guild90] the seconds until the first respawn of the quest's objective sources spawned within SPENT_RADIUS of
+    // (x, y) on the bot's map, by the map's respawn clock [flit]; 0: none comes back there (defined below)
     uint32 ObjectiveRespawnNear(Player* bot, uint32 questId, float x, float y);
 
     void LogQuestObject(Player* bot, GameObject* go, std::string const& verdict);
@@ -182,7 +184,7 @@ void NewRpgBaseAction::NoteSpentSpot(Player* bot, uint32 questId, WorldPosition 
                  pos.GetPositionY(), SPENT_RADIUS, respawn);
     else
         LOG_INFO("playerbots", "[rpg] {} L{} spot of q{} spent at ({:.0f},{:.0f}): nothing to pull or loot within {:.0f} "
-                 "yd, no spawn of its sources there (held until the next level)", bot->GetName(), bot->GetLevel(),
+                 "yd, no respawn of its sources due there (held until the next level)", bot->GetName(), bot->GetLevel(),
                  questId, pos.GetPositionX(), pos.GetPositionY(), SPENT_RADIUS);
     std::lock_guard<std::mutex> guard(spentLock);
     auto& marks = spentSpots[bot->GetGUID().GetCounter()][questId];
@@ -2760,7 +2762,7 @@ bool NewRpgBaseAction::IsQuestCapableDoing(Quest const* quest)
         return false;
 
     // [guild15] an objective only the quest's tool item gives credit for (b333 Kianey q6661, Farret / Feette q9531)
-    if (NeedsItemUseCredit(quest))
+    if (NeedsItemUseCredit(quest) || NeedsSpellCredit(bot, quest, false))  // [flit] or a spell / script one
         return false;
 
     // [guild12] a quest it failed once (timed, escort) is not taken again
@@ -3127,6 +3129,8 @@ namespace
         uint32 mapId;
         float x, y, z;
         uint32 respawn = 0;  // [guild90] the spawn's respawn time (spawntimesecs), 0 for enders and triggers
+        ObjectGuid::LowType spawnId = 0;  // [flit] the spawn, for the map's own respawn clock (0: a trigger, a POI)
+        bool object = false;              // [flit] a game object spawn
     };
 
     struct MobSpawn  // [guild12]
@@ -3208,10 +3212,11 @@ namespace
         std::call_once(built, []()
         {
             for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
-                index.creatures[data.id].push_back({data.mapid, data.posX, data.posY, data.posZ, data.spawntimesecs});
+                index.creatures[data.id].push_back(
+                    {data.mapid, data.posX, data.posY, data.posZ, data.spawntimesecs, spawnId, false});
             for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
                 index.objects[data.id].push_back({data.mapid, data.posX, data.posY, data.posZ,
-                                                  uint32(std::max<int32>(0, data.spawntimesecs))});
+                                                  uint32(std::max<int32>(0, data.spawntimesecs)), spawnId, true});
 
             for (auto const& [entry, questId] : *sObjectMgr->GetCreatureQuestInvolvedRelationMap())
             {
@@ -3309,6 +3314,7 @@ namespace
     std::unordered_map<uint32, uint32> zoneTarget;  // [guild15] bot -> the zone of its last [zone] line
     std::unordered_map<uint32, std::unordered_map<uint32, std::string>> postponeReasons;  // bot -> quest -> why
     std::unordered_map<uint32, uint32> committedQuest;                                    // bot -> quest
+    std::unordered_map<uint32, uint32> resumeQuest;  // [flit] bot -> the quest it left while its camps respawn
     std::unordered_map<uint32, std::string> choiceNotes;  // bot -> the last ChooseBestQuest's why
     std::unordered_map<uint32, std::set<uint32>> deferredHandIns;  // bot -> hand-ins logged as grouped
     constexpr float GROUP_ENDER_RADIUS = 50.0f;     // enders this close are one hand-in visit (one camp of NPCs)
@@ -3399,18 +3405,49 @@ namespace
     uint32 ObjectiveRespawnNear(Player* bot, uint32 questId, float x, float y)
     {
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        if (!quest)
+        Map* map = bot->GetMap();
+        if (!quest || !map)
             return 0;
-        uint32 best = 0;
+        // [flit] the map's own clock, not the spawn's static spawntimesecs (b341: 60 waits for camps whose spawns
+        // stood there alive or were pool members not up): a dead spawn's respawn time (the map's saved one, else its
+        // corpse's), a living one in a fight (it dies there: its spawntimesecs); a living one out of combat is there
+        // and not for the bot, a spawn not in the world (an idle pool member, an event's) comes back on no clock
+        time_t const now = time(nullptr);
+        time_t best = 0;
+        auto const consider = [&best, now](time_t at)
+        {
+            if (at > now && (!best || at < best))
+                best = at;
+        };
         std::vector<QuestSpot const*> spots;
         for (uint32 objective = 0; objective < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT; ++objective)
             ObjectiveSources(quest, objective, spots);
         for (QuestSpot const* spot : spots)
-            if (spot->mapId == bot->GetMapId() && spot->respawn &&
-                (spot->x - x) * (spot->x - x) + (spot->y - y) * (spot->y - y) <= SPENT_RADIUS * SPENT_RADIUS &&
-                (!best || spot->respawn < best))
-                best = spot->respawn;
-        return best;
+        {
+            if (spot->mapId != bot->GetMapId() || !spot->spawnId ||
+                (spot->x - x) * (spot->x - x) + (spot->y - y) * (spot->y - y) > SPENT_RADIUS * SPENT_RADIUS)
+                continue;
+            if (spot->object)
+            {
+                consider(map->GetGORespawnTime(spot->spawnId));
+                auto const range = map->GetGameObjectBySpawnIdStore().equal_range(spot->spawnId);
+                for (auto it = range.first; it != range.second; ++it)
+                    if (!it->second->isSpawned())
+                        consider(it->second->GetRespawnTime());
+                continue;
+            }
+            consider(map->GetCreatureRespawnTime(spot->spawnId));
+            auto const range = map->GetCreatureBySpawnIdStore().equal_range(spot->spawnId);
+            for (auto it = range.first; it != range.second; ++it)
+            {
+                Creature* creature = it->second;
+                if (!creature->IsAlive())
+                    consider(creature->GetRespawnTime());
+                else if (creature->IsInCombat() && spot->respawn)
+                    consider(now + time_t(spot->respawn));
+            }
+        }
+        return best ? uint32(best - now) : 0;
     }
 
     // [guild90] up to this many objective spots per objective go to the walk check, nearest first
@@ -3957,6 +3994,11 @@ bool NewRpgBaseAction::NeedsItemUseCredit(Quest const* quest, std::string* why)
     bool creditObjective = false;
     for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
         creditObjective = creditObjective || (quest->RequiredNpcOrGo[i] && quest->RequiredNpcOrGoCount[i]);
+    // [flit] an item objective other than the tool itself comes from the tool's use too (b341 Orenem q9452 Red Snapper:
+    // the Draenei Fishing Net on a spell-focus school; 1500 yd swept, 8 camps "seen empty")
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        creditObjective = creditObjective || (quest->RequiredItemId[i] && quest->RequiredItemCount[i] &&
+                                              quest->RequiredItemId[i] != quest->GetSrcItemId());
     if (!creditObjective)
         return false;
     ItemTemplate const* tool = sObjectMgr->GetItemTemplate(quest->GetSrcItemId());
@@ -3971,6 +4013,70 @@ bool NewRpgBaseAction::NeedsItemUseCredit(Quest const* quest, std::string* why)
                                            tool->Name1, spell.SpellId);
             return true;
         }
+    return false;
+}
+
+namespace
+{
+    // [flit] creature entries some way gives the kill credit of that the bot can take part in: the entry's own kill,
+    // another creature's kill (creature_template KillCredit), a SmartAI CALL_KILLEDMONSTER on any event but a spell
+    // hit (a gossip talk, a death, an escort's end); built once
+    std::unordered_set<uint32> const& CreditableEntries()
+    {
+        static std::unordered_set<uint32> entries;
+        static std::once_flag built;
+        std::call_once(built, []()
+        {
+            for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
+            {
+                for (uint32 const credit : tmpl.KillCredit)
+                    if (credit)
+                        entries.insert(credit);
+                for (SmartScriptHolder const& e : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+                    if (e.GetActionType() == SMART_ACTION_CALL_KILLEDMONSTER &&
+                        e.GetEventType() != SMART_EVENT_SPELLHIT && e.GetEventType() != SMART_EVENT_SPELLHIT_TARGET)
+                        entries.insert(e.action.killedMonster.creature ? e.action.killedMonster.creature : entry);
+            }
+            for (auto const& [entry, goTemplate] : *sObjectMgr->GetGameObjectTemplates())
+                for (SmartScriptHolder const& e :
+                     sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_GAMEOBJECT))
+                    if (e.GetActionType() == SMART_ACTION_CALL_KILLEDMONSTER && e.action.killedMonster.creature)
+                        entries.insert(e.action.killedMonster.creature);
+        });
+        return entries;
+    }
+}
+
+bool NewRpgBaseAction::NeedsSpellCredit(Player* bot, Quest const* quest, bool openOnly, std::string* why)
+{
+    FactionTemplateEntry const* botFaction = bot ? bot->GetFactionTemplateEntry() : nullptr;
+    if (!quest || !botFaction)
+        return false;
+    QuestStatusData const* status = nullptr;
+    if (openOnly)
+    {
+        auto const found = bot->getQuestStatusMap().find(quest->GetQuestId());
+        status = found == bot->getQuestStatusMap().end() ? nullptr : &found->second;
+    }
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+    {
+        int32 const entry = quest->RequiredNpcOrGo[i];
+        if (entry <= 0 || !quest->RequiredNpcOrGoCount[i] ||
+            (status && status->CreatureOrGOCount[i] >= quest->RequiredNpcOrGoCount[i]))
+            continue;
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(uint32(entry));
+        FactionTemplateEntry const* faction = tmpl ? sFactionTemplateStore.LookupEntry(tmpl->faction) : nullptr;
+        // a creature friendly to the bot is never its kill; with no other credit path it is a spell or script one
+        // (b341 q9283 Rescue the Survivors!: Gift of the Naaru on a Draenei Survivor, a C++ script - 60 respawn
+        // waits of 30 s for survivors that stood there alive)
+        if (!faction || !faction->IsFriendlyTo(*botFaction) || CreditableEntries().count(uint32(entry)))
+            continue;
+        if (why)
+            *why = Acore::StringFormat("its objective credit on the friendly {} comes from a spell or script, not a "
+                                       "kill or a talk",
+                                       tmpl->Name);
+        return true;
+    }
     return false;
 }
 
@@ -4682,7 +4788,23 @@ namespace
             case NORTHREND_MAP_ID:
                 return Continent::Northrend;
             default:
+            {
+                // [flit] a transit map (the Deeprun Tram) belongs to the continent its exits lead onto (b341: Maronic
+                // L1 and five L10-11 bots on map 369 saw every quest as "other continent", grinded or sat all run)
+                for (TravelRouteMgr::Portal const& portal : sTravelRouteMgr.GetPortals())
+                    if (portal.from.GetMapId() == pos.GetMapId() && portal.to.GetMapId() != pos.GetMapId())
+                        switch (portal.to.GetMapId())
+                        {
+                            case 0:
+                            case 1:
+                            case 530:
+                            case NORTHREND_MAP_ID:
+                                return ContinentOf(portal.to);
+                            default:
+                                break;
+                        }
                 return Continent::Other;
+            }
         }
     }
     // a starter on `giver`'s continent is priced for the bot (user 2026-11-08: no cross-continent zone change at low
@@ -4868,7 +4990,10 @@ float NewRpgBaseAction::OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest
             continue;
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         std::vector<POIInfo> poiInfo;
-        if (!quest || !GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
+        if (!quest ||
+            (bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE &&
+             (NeedsItemUseCredit(quest) || NeedsSpellCredit(bot, quest, true))) ||  // [flit] no candidate either
+            !GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
             continue;
         float distance = std::numeric_limits<float>::max();
         for (POIInfo const& poi : poiInfo)
@@ -4883,6 +5008,12 @@ float NewRpgBaseAction::OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest
         }
     }
     return best;
+}
+
+void NewRpgBaseAction::NoteResume(Player* bot, uint32 questId)
+{
+    std::lock_guard<std::mutex> guard(questNoteLock);
+    resumeQuest[bot->GetGUID().GetCounter()] = questId;
 }
 
 std::string NewRpgBaseAction::QuestChoiceNote(Player* bot)
@@ -4909,11 +5040,40 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     // quest's spot is taken on the way
     uint32 const counter = bot->GetGUID().GetCounter();
     uint32 committed = 0;
+    uint32 resume = 0;
     {
         std::lock_guard<std::mutex> guard(questNoteLock);
         auto const found = committedQuest.find(counter);
         if (found != committedQuest.end())
             committed = found->second;
+        auto const back = resumeQuest.find(counter);
+        if (back != resumeQuest.end())
+            resume = back->second;
+    }
+    // [flit] a quest left for another one while its camps respawn is the started quest: it is taken up again once the
+    // other is no longer being worked on or its own respawn is due (the world clock), never dropped (b341 Irorm q218)
+    if (resume)
+    {
+        bool const open =
+            bot->GetQuestStatus(resume) == QUEST_STATUS_INCOMPLETE && !botAI->lowPriorityQuest.count(resume);
+        if (!open)
+        {
+            std::lock_guard<std::mutex> guard(questNoteLock);
+            resumeQuest.erase(counter);
+        }
+        else if (resume != committed &&
+                 (!committed || bot->GetQuestStatus(committed) != QUEST_STATUS_INCOMPLETE ||
+                  !EarliestRespawn(bot, resume)))
+        {
+            QuestStats::LogEvent(bot, "resume", resume,
+                                 "from=q" + std::to_string(committed) + " reason=" +
+                                     (EarliestRespawn(bot, resume) ? "the other quest is no longer worked on"
+                                                                   : "its camps' respawn is due"));
+            committed = resume;
+            std::lock_guard<std::mutex> guard(questNoteLock);
+            committedQuest[counter] = resume;
+            resumeQuest.erase(counter);
+        }
     }
     float committedDistance = -1.0f;
     float committedSeconds = -1.0f;
@@ -4960,6 +5120,17 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
             LOG_INFO("playerbots", "[rpg] {} L{} ABANDON q{} {} reason: class quest for a spell (granted)",
                      bot->GetName(), bot->GetLevel(), questId, quest->GetTitle());
             bot->RemoveActiveQuest(questId, false);
+            continue;
+        }
+        // [flit] a quest whose open objectives only a tool's use or a spell / script credits is no candidate: it is
+        // noted once and skipped here, never entered and left on the next tick (b341: 30 of 121 switches were such
+        // DO_QUEST -> POSTPONE hops, again after every level-up)
+        if (std::string why; bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE &&
+                             (NeedsItemUseCredit(quest, &why) || NeedsSpellCredit(bot, quest, true, &why)))
+        {
+            NotePostpone(bot, questId, "unsupported: " + why);
+            if (questId == committed)
+                committedWhy = "postponed: unsupported: " + why;
             continue;
         }
         // [guild14] a quest ended only at a script-spawned object (no bot runs the script) leaves the log
@@ -5062,7 +5233,7 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     // [guild90] every switch away from the active quest: one line with the computed costs
     auto const logSwitch = [&](uint32 chosen, std::string const& why)
     {
-        if (!committed || chosen == committed)
+        if (!committed || chosen == committed || committed == resume)  // [flit] a respawn switch is logged once
             return;
         QuestStats::LogEvent(bot, "target-switch", chosen,
                              "from=q" + std::to_string(committed) + " finish_s=" +
@@ -5308,6 +5479,50 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
 
     // [zone] one line per change of the bot's questing zone: from -> to, why and the route
     uint32 const hereZone = bot->GetZoneId();
+    // [flit] a zone change is a walk of best->travel seconds; when the level a quest of this landmass needs comes
+    // sooner by killing mobs of its level here (the core's kill experience over the formula's kill time), the bot
+    // grinds to it instead (user rule: grind only toward a target - here the nearest next-level quest). b341: five
+    // L3 draenei, Ammen Vale done, left for Shadowglen 3000 s away (Azure Watch's quests open at 4)
+    if (bestZone != hereZone)
+    {
+        WorldPosition nextGiver;
+        WorldPosition nextGrind;
+        uint32 const nextQuest = ChooseNextLevelQuest(nextGiver, nextGrind, false);
+        Quest const* next = nextQuest ? sObjectMgr->GetQuestTemplate(nextQuest) : nullptr;
+        ContentLevels const content = GetContentLevelsForMapAndZone(bot->GetMapId(), hereZone);
+        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, UNIT_CLASS_WARRIOR);
+        float const dps = next ? DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo) : 0.0f;
+        if (next && stats && dps > 0.0f && TravelRouteMgr::Landmass(nextGiver) == botLandmass &&
+            next->GetMinLevel() > level)
+        {
+            uint32 missing = 0;
+            for (uint8 l = level; l < next->GetMinLevel(); ++l)
+                missing += sObjectMgr->GetXPForLevel(l);
+            uint32 const have = bot->GetUInt32Value(PLAYER_XP);
+            missing = missing > have ? missing - have : 0;
+            float const killXp = float(Acore::XP::BaseGain(level, level, content)) * sWorld->getRate(RATE_XP_KILL);
+            float const killSeconds = float(stats->BaseHealth[std::min<uint32>(content, MAX_EXPANSIONS - 1)]) / dps;
+            float const grindSeconds = killXp > 0.0f ? float(missing) / killXp * killSeconds : -1.0f;
+            if (grindSeconds >= 0.0f && grindSeconds < best->travel)
+            {
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(questNoteLock);
+                    uint32& last = zoneTarget[counter];
+                    fresh = last != hereZone;
+                    last = hereZone;
+                }
+                if (fresh)
+                    LOG_INFO("playerbots",
+                             "[zone] {} L{} stays: L{} for q{} here by grinding {} xp in {} s ({} xp a kill of {} s) "
+                             "beats the {} s walk to zone {} (first q{})",
+                             bot->GetName(), level, next->GetMinLevel(), nextQuest, missing, uint32(grindSeconds),
+                             uint32(killXp), uint32(killSeconds), uint32(best->travel), bestZone, best->questId);
+                giverPos = WorldPosition();
+                return 0;
+            }
+        }
+    }
     if (bestZone != hereZone)
     {
         bool fresh = false;
@@ -5353,7 +5568,7 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     return best->questId;
 }
 
-uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos)
+uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot)
 {
     uint8 const level = bot->GetLevel();
     uint32 bestMinLevel = std::numeric_limits<uint32>::max();
@@ -5385,6 +5600,11 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
         if (!bot->SatisfyQuestClass(quest, false) || !bot->SatisfyQuestRace(quest, false) ||
             !bot->SatisfyQuestPreviousQuest(quest, false) || !bot->SatisfyQuestSkill(quest, false))
             continue;
+        // [flit] no grind toward a quest it will not take at that level either (b341 Maronic L1 on the tram ground
+        // toward q6661, whose rats only its flute credits)
+        if (IsSpellUnlockClassQuest(quest) || EnderNeedsScript(start.questId) || NeedsItemUseCredit(quest) ||
+            NeedsSpellCredit(bot, quest, false))
+            continue;
 
         float const distance = bot->GetDistance2d(start.x, start.y);
         if (quest->GetMinLevel() == bestMinLevel && distance >= bestDistance)
@@ -5396,21 +5616,27 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
         giverPos = WorldPosition(start.mapId, start.x, start.y, start.z);
     }
 
-    if (!bestQuest)
-        return 0;
+    if (!bestQuest || !withGrindSpot)
+        return bestQuest;
 
-    // the grind spot of its level nearest the giver, other than the one the bot already stands on
-    float bestGrind = std::numeric_limits<float>::max();
+    // the grind spot of its level nearest the giver, other than the one the bot already stands on; [flit] the
+    // nearest one whose walk it does not refuse (b341 Sylaenas L1: the same refused spot 37 times, GRIND -> MAZE ->
+    // IDLE), else the nearest (the caller then tries its hub)
+    std::vector<std::pair<float, WorldPosition>> grinds;
     for (WorldLocation const& loc : sTravelMgr.GetLocsPerLevelCache(level))
+        if (loc.GetMapId() == bot->GetMapId() && bot->GetExactDist(loc) >= 10.0f)
+            grinds.emplace_back(giverPos.GetExactDist(loc), WorldPosition(loc));
+    std::sort(grinds.begin(), grinds.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+    if (!grinds.empty())
+        grindPos = grinds.front().second;
+    for (auto const& [d, pos] : grinds)
     {
-        if (loc.GetMapId() != bot->GetMapId() || bot->GetExactDist(loc) < 10.0f)
-            continue;
-
-        float const d = giverPos.GetExactDist(loc);
-        if (d < bestGrind)
+        if (d > QUEST_MAX_GIVER_DISTANCE)  // a spot that far is no grind toward this giver
+            break;
+        if (!TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), "grind spot"))
         {
-            bestGrind = d;
-            grindPos = WorldPosition(loc);
+            grindPos = pos;
+            break;
         }
     }
     return bestQuest;
