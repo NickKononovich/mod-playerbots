@@ -1085,6 +1085,21 @@ namespace Leader::Knowledge
         // never dies (he teleports away; the script sets the slot DONE), the Corruptor's slot goes FAIL when the
         // Guardian of Time timer runs out (boss_infinite.cpp SAY_FAIL).
         std::vector<ScriptSlotDef> const scriptSlots = {
+            // [kara3] karazhan.h DATA_ATTUMEN 0 .. DATA_NIGHTBANE 10: named with their creature, so a continue run
+            // (a lockout from an earlier segment) knows which bosses lie dead - the Chess Event's spot waits for
+            // Aran's and the Curator's by entry (BossKilledFor). Slot 0 is Midnight (the fight starts on him), the
+            // Opera and the Chess Event have no one creature (entry 0); no fixed order.
+            {532, -1, 0, "Midnight", 16151, -1, nullptr},
+            {532, -1, 1, "Moroes", 15687, -1, nullptr},
+            {532, -1, 2, "Maiden of Virtue", 16457, -1, nullptr},
+            {532, -1, 3, "Opera Event", 0, -1, nullptr},
+            {532, -1, 4, "The Curator", 15691, -1, nullptr},
+            {532, -1, 5, "Terestian Illhoof", 15688, -1, nullptr},
+            {532, -1, 6, "Shade of Aran", 16524, -1, nullptr},
+            {532, -1, 7, "Netherspite", 15689, -1, nullptr},
+            {532, -1, 8, "Chess Event", 0, -1, nullptr},
+            {532, -1, 9, "Prince Malchezaar", 15690, -1, nullptr},
+            {532, -1, 10, "Nightbane", 17225, -1, nullptr},
             {595, -1, 0, "Meathook", 26529, 0, nullptr},
             {595, -1, 1, "Salramm the Fleshcrafter", 26530, 1, nullptr},
             {595, -1, 2, "Chrono-Lord Epoch", 26532, 2, nullptr},

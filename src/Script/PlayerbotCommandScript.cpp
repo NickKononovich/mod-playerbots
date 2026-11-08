@@ -355,7 +355,7 @@ public:
                                                                      uint8(std::clamp<uint32>(level, 1, 80)), ilvl);
     }
 
-    // playerbots test run <content> [count] [comp]
+    // playerbots test run <content> [count] [comp] [continue]
     static bool HandleTestRunCommand(ChatHandler* handler, char const* args)
     {
         std::vector<std::string> const tokens = SplitArgs(args);
@@ -367,7 +367,9 @@ public:
 
         uint32 const count = tokens.size() > 1 ? uint32(std::strtoul(tokens[1].c_str(), nullptr, 10)) : 1;
         std::string const comp = tokens.size() > 2 ? tokens[2] : "";
-        return TestHarness::TestHarnessMgr::Instance().HandleRun(handler, tokens[0], count, comp);
+        // [kara3] "continue": the same raid instance save as the last run of these members (their lockout)
+        bool const resume = tokens.size() > 3 && tokens[3] == "continue";
+        return TestHarness::TestHarnessMgr::Instance().HandleRun(handler, tokens[0], count, comp, resume);
     }
 
     // playerbots test runall dungeons|normal|heroic|raids|all [parallel N] [variants]

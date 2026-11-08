@@ -52,7 +52,7 @@ namespace TestHarness
     // is kept out of the gear (none for a plain prepare).
     PrepareResult PrepareCharacter(Player* bot, SpecDef const& spec, uint8 level, uint32 targetIlvl,
                                    std::pair<uint16, uint16> professions, bool groupHasWarlock,
-                                   ContentDef const* content = nullptr);
+                                   ContentDef const* content = nullptr, bool keepBinds = false);
 
     // Average over the equipment slots the factory fills at the character's level (17 at 50+, a two-hander
     // counts twice): trinkets come at 50, neck and head at 30, rings at 20.

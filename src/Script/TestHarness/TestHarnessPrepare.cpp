@@ -893,7 +893,7 @@ namespace TestHarness
 
     PrepareResult PrepareCharacter(Player* bot, SpecDef const& spec, uint8 level, uint32 targetIlvl,
                                    std::pair<uint16, uint16> professions, bool groupHasWarlock,
-                                   ContentDef const* content)
+                                   ContentDef const* content, bool keepBinds)
     {
         PrepareResult result;
         result.professions = professions;
@@ -955,7 +955,8 @@ namespace TestHarness
         bot->InitStatsForLevel(true);
         bot->SetUInt32Value(PLAYER_XP, 0);
         bot->SetPlayerFlag(PLAYER_FLAGS_NO_XP_GAIN);
-        factory.UnbindInstance();
+        if (!keepBinds)  // [kara3] a continue run keeps the raid lockout
+            factory.UnbindInstance();
 
         bot->LearnDefaultSkills();
         // Riding of the level (InitSkills: Apprentice 20, Journeyman 40, Expert 60, Artisan 70 by the
