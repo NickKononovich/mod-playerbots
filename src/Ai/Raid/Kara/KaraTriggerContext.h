@@ -145,6 +145,8 @@ public:
 
         // [kara3] Chess Event
         creators["karazhan chess event active"] = &RaidKarazhanTriggerContext::karazhan_chess_event_active;
+        creators["moroes off-tank should hold second threat"] =
+            &RaidKarazhanTriggerContext::moroes_off_tank_should_hold_second_threat;
     }
 
 private:
@@ -329,6 +331,10 @@ private:
     static Trigger* karazhan_chess_event_active(PlayerbotAI* botAI)
     {
         return new KarazhanChessEventActiveTrigger(botAI);
+    }
+    static Trigger* moroes_off_tank_should_hold_second_threat(PlayerbotAI* botAI)
+    {
+        return new MoroesOffTankShouldHoldThreatTrigger(botAI);
     }
 };
 

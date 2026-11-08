@@ -407,6 +407,16 @@ namespace KaraChess
     bool Active(Player* bot);
 }
 
+// [kara3] Moroes' Gouge (boss_moroes.cpp) incapacitates his target and he turns to the next on his threat list:
+// the tank that does not tank him keeps that second place, in melee, and taunts him back off anybody else.
+class MoroesOffTankHoldsSecondThreatAction : public AttackAction
+{
+public:
+    MoroesOffTankHoldsSecondThreatAction(PlayerbotAI* botAI)
+        : AttackAction(botAI, "moroes off-tank holds second threat") {}
+    bool Execute(Event event) override;
+};
+
 class KarazhanChessPlayAction : public MovementAction
 {
 public:

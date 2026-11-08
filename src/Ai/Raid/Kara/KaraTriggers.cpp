@@ -22,6 +22,14 @@ bool KarazhanBotIsNotInCombatTrigger::IsActive()
 
 bool KarazhanChessEventActiveTrigger::IsActive() { return KaraChess::Active(bot); }  // [kara3]
 
+bool MoroesOffTankShouldHoldThreatTrigger::IsActive()  // [kara3]
+{
+    if (!PlayerbotAI::IsTank(bot))
+        return false;
+    Unit* moroes = AI_VALUE2(Unit*, "find target", "moroes");
+    return moroes && moroes->IsInCombat() && moroes->GetVictim() != bot;
+}
+
 bool KarazhanEnemiesCastFearTrigger::IsActive()
 {
     if (bot->getClass() != CLASS_SHAMAN)

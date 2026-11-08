@@ -15,6 +15,7 @@
 #include "InstanceScript.h"
 #include "Spell.h"
 #include "SpellMgr.h"
+#include "ThreatManager.h"
 #include "WorldSession.h"
 #include <set>
 #include <unordered_map>
@@ -167,6 +168,12 @@ bool AttumenTheHuntsmanHandlePhaseOneAction::Execute(Event /*event*/)
         return attumen && AssistTankMoveAttumenFromGroup(midnight, attumen);
     }
 
+    // [kara3] a healer heals: no attack order on Midnight, whose fight brings Attumen's Shadow Cleave (a front cone,
+    // 38k) to the melee spot. b356 kara-n 20261108-234616-10A-1 t=352: the holy paladin, sent onto Midnight by this
+    // Attack, stood 1.4 yd from him in front of Attumen beside both tanks and died to one Shadow Cleave.
+    if (PlayerbotAI::IsHeal(bot))
+        return false;
+
     return AI_VALUE(Unit*, "current target") != midnight && Attack(midnight);
 }
 
@@ -279,6 +286,54 @@ bool MoroesMarkTargetAction::Execute(Event /*event*/)
     }
 
     return false;
+}
+
+// [kara3] b356 kara-n 20261108-234616-10A-1: the death knight tanked Moroes, the paladin tank the guests; Gouge
+// sent Moroes to the second on his threat list - the fury warrior (4245 against the paladin's 2204), dead at 1108 s,
+// then the warlock at 1145 s. The tank he does not hit holds the second place on his threat list: above every
+// non-tank by OFF_TANK_MARGIN, in melee; while it does, it is free for the guests. Moroes on a non-tank (its tank
+// gouged): it taunts him at once.
+bool MoroesOffTankHoldsSecondThreatAction::Execute(Event /*event*/)
+{
+    constexpr float OFF_TANK_MARGIN = 1.2f;
+    Unit* moroes = AI_VALUE2(Unit*, "find target", "moroes");
+    if (!moroes || !moroes->IsAlive() || moroes->GetVictim() == bot)
+        return false;
+    Unit* victim = moroes->GetVictim();
+    Player* victimPlayer = victim ? victim->ToPlayer() : nullptr;
+    if (victimPlayer && !PlayerbotAI::IsTank(victimPlayer))
+    {
+        static constexpr std::array<char const*, 4> taunts = {"taunt", "dark command", "hand of reckoning", "growl"};
+        for (char const* taunt : taunts)
+            if (botAI->CanCastSpell(taunt, moroes) && botAI->CastSpell(taunt, moroes))
+            {
+                LOG_INFO("playerbots", "[kara3] moroes: {} taunts Moroes off {} ({})", bot->GetName(),
+                         victimPlayer->GetName(), taunt);
+                return true;
+            }
+    }
+    float const mine = moroes->GetThreatMgr().GetThreat(bot);
+    float highest = 0.0f;
+    std::string over;
+    for (ThreatReference const* ref : moroes->GetThreatMgr().GetSortedThreatList())
+    {
+        Player* other = ref->GetVictim() ? ref->GetVictim()->ToPlayer() : nullptr;
+        if (!other || other == bot || PlayerbotAI::IsTank(other))
+            continue;
+        if (ref->GetThreat() > highest)
+        {
+            highest = ref->GetThreat();
+            over = other->GetName();
+        }
+    }
+    bool const second = mine >= highest * OFF_TANK_MARGIN && mine > 0.0f;
+    if (second && bot->IsWithinMeleeRange(moroes))
+        return false;  // its place is held: free for the guests
+    if (AI_VALUE(Unit*, "current target") == moroes)
+        return false;  // on him already: its rotation and its chase hold the place
+    LOG_INFO("playerbots", "[kara3] moroes: {} holds second threat on Moroes ({:.0f} vs {} {:.0f})",
+             bot->GetName(), mine, over.empty() ? "nobody" : over, highest);
+    return Attack(moroes);
 }
 
 // Maiden of Virtue

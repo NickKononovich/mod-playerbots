@@ -41,6 +41,10 @@ void RaidKarazhanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("moroes should prioritize adds",
         { NextAction("moroes mark target", ACTION_RAID) }));
 
+    // [kara3] the second tank keeps second place on Moroes' threat (Gouge)
+    triggers.push_back(new TriggerNode("moroes off-tank should hold second threat",
+        { NextAction("moroes off-tank holds second threat", ACTION_RAID + 2) }));
+
     // Maiden of Virtue
     triggers.push_back(new TriggerNode("maiden of virtue boss engaged by tanks",
         { NextAction("maiden of virtue tank position boss", ACTION_RAID) }));

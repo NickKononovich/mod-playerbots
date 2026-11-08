@@ -312,6 +312,15 @@ public:
     bool IsActive() override;
 };
 
+// [kara3] Moroes: a tank that is not his target
+class MoroesOffTankShouldHoldThreatTrigger : public Trigger
+{
+public:
+    MoroesOffTankShouldHoldThreatTrigger(PlayerbotAI* botAI)
+        : Trigger(botAI, "moroes off-tank should hold second threat") {}
+    bool IsActive() override;
+};
+
 // [kara3] Chess Event
 class KarazhanChessEventActiveTrigger : public Trigger
 {
