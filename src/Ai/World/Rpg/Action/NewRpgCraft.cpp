@@ -720,6 +720,11 @@ bool NewRpgDoProfessionAction::ExecuteCraft(NewRpgInfo::DoProfession& data)
         {
             if (MoveWorldObjectTo(data.npc))
                 return true;
+            if (NpcOutOfWalk(npc))  // [guild15]
+            {
+                info.ChangeToIdle();
+                return true;
+            }
             return MoveRandomNear(15.0f);
         }
         bot->SetFacingToObject(npc);

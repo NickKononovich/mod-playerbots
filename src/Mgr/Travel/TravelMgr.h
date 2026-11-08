@@ -1094,6 +1094,7 @@ public:
     {
         uint32 goEntry = 0;
         uint32 faction = 0;
+        uint32 triggerId = 0;  // [guild15] a same-map area trigger teleport (Darnassus <-> Rut'theran): walked into
         WorldPosition from;
         WorldPosition to;
     };
@@ -1152,6 +1153,10 @@ public:
     static constexpr float PORTAL_SECONDS = 15.0f;       // use, load screen
     static constexpr float DALARAN_CROSS_SECONDS = 90.0f;
 
+public:
+    // [guild15] which landmass a spot is on (walks join only spots on the same one)
+    static uint32 Landmass(WorldPosition const& pos);
+
 private:
     TravelRouteMgr() = default;
 
@@ -1159,7 +1164,6 @@ private:
     void Build();
     void Solve(Player* bot, WorldPosition const* dest, std::vector<Node>& nodes, std::vector<float>& cost,
                std::vector<int32>& prev, std::vector<LegKind>& prevKind);
-    static uint32 Landmass(WorldPosition const& pos);
 
     std::once_flag _built;
     std::vector<Line> _lines;

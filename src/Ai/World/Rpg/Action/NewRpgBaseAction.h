@@ -28,6 +28,9 @@ struct POIInfo
 {
     G3D::Vector2 pos;
     int32 objectiveIdx;
+    // [guild90] the spawn's own height (INVALID_HEIGHT: unknown, a POI point): a camp on a lower floor (b319 Peny
+    // q87 Goldtooth in Fargodeep Mine, z 12.8) is walked to there, not to the ground's top above it
+    float z = INVALID_HEIGHT;
 };
 
 /// A base (composition) class for all new rpg actions
@@ -102,6 +105,9 @@ public:
     // [guild13] a far walk that cannot start: one [rpg] WALK_FAIL line per destination (the route, the refusal)
     void NoteWalkFailure(WorldPosition const& dest, std::string const& why);
     // [guild15] perf: the far route search found no walk from where the bot stands (NewRpgInfo::moveFarFailed)
+    // [guild15] b319 Selalleas stood 705 s 9 yd from her trainer (DO_PROFESSION "OK" each tick): the bot stands and
+    // no walk on the navmesh ends within interaction distance of the npc - the visit cannot happen from here
+    bool NpcOutOfWalk(WorldObject* npc);
     void NoteFarSearchFailed()
     {
         botAI->rpgInfo.moveFarFailed = true;

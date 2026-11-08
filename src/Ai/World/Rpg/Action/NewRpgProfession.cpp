@@ -688,6 +688,12 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
     {
         if (MoveWorldObjectTo(data->npc))
             return true;
+        if (NpcOutOfWalk(npc))  // [guild15]
+        {
+            MarkFailed(bot, data->npcEntry, id);
+            info.ChangeToIdle();
+            return true;
+        }
         return MoveRandomNear(15.0f);
     }
 

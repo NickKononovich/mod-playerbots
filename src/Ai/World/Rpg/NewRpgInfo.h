@@ -18,6 +18,8 @@
 #include "TravelMgr.h"
 
 #include <array>
+#include "G3D/Vector3.h"
+#include <vector>
 #include <string>
 #include <unordered_map>
 
@@ -123,6 +125,9 @@ struct NewRpgInfo
     float failedFromX{0.0f};
     float failedFromY{0.0f};
     float failedFromZ{0.0f};
+    // [guild15] perf: the last complete far route to moveFarPos; the next leg is planned only to a point on it
+    // two sights ahead (the danger penalties are of the mobs in sight, so a local search sees the same mobs)
+    std::vector<G3D::Vector3> farRoute;
     // END MOVE_FAR
 
     // Boat, zeppelin or portal leg of a far move. It spans statuses: a new destination plans it again.

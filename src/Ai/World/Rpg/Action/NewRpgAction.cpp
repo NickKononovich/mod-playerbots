@@ -498,6 +498,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                                              "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER", "DO_PROFESSION"};
         info.loggedStatus = uint8(status);
         sGuildCoordinator.OnRpgStatus(bot, uint8(status));  // [guild30] LOOP alert
+        if (status != RPG_DO_QUEST)
+            ClaimSpot(bot, 0, WorldPosition());  // [guild90] off questing: its camp is free for other bots
         std::string detail;
         if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
             detail = " q" + std::to_string(quest->questId) + (quest->quest ? " " + quest->quest->GetTitle() : "");
@@ -911,6 +913,20 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
     {
         if (MoveWorldObjectTo(data.npcOrGo))
             return true;
+        // [guild15] b319 GO_CAMP "sell junk" STUCK (Kylantino, Gnetlibozz, Rumanatol): no walk reaches the npc from
+        // here - the visit ends (a vendor run counts as visited, as when the vendor is gone)
+        if (object && NpcOutOfWalk(object))
+        {
+            if (info.vendorRunEntry)
+            {
+                info.vendorRunEntry = 0;
+                info.vendorVisited = true;
+                info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
+                info.vendorVisitMoney = bot->GetMoney();
+            }
+            info.ChangeToIdle();
+            return true;
+        }
         // NPC pathing failed (random offset in a wall, mmap hiccup, etc).
         // Take a small random step so the next tick retries from a
         // different spot instead of staring at the NPC from afar.
@@ -1012,6 +1028,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             // (spawntimesecs) while the cheapest other quest costs more than the wait, else go to that one
             if (uint32 const wait = EarliestRespawn(bot, questId))
             {
+                std::string const resolved = LastResolveStats();  // before OtherQuestSeconds resolves the others
                 uint32 other = 0;
                 float const otherSeconds = OtherQuestSeconds(questId, other);
                 if (!other || float(wait) <= otherSeconds)
@@ -1023,7 +1040,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                                                  (other ? "q" + std::to_string(other) + " " +
                                                               std::to_string(uint32(otherSeconds)) + "s"
                                                         : std::string("none")) +
-                                                 " " + LastResolveStats());
+                                                 " " + resolved);
                     }
                     // the respawn is the world's clock: re-checked in short steps, the grind and loot strategies
                     // take what appears (and wanderers) meanwhile
@@ -1054,8 +1071,15 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             }
             dx = poi.pos.x;
             dy = poi.pos.y;
-            // z = MAX_HEIGHT as we do not know accurate z
-            dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
+            // [guild90] a spawn's own height when the spot is a spawn (a mine, a cellar, a tree's floor); else the
+            // top of the column
+            if (poi.z != INVALID_HEIGHT)
+                dz = bot->GetMap()->GetHeight(dx, dy, poi.z + 2.0f) != INVALID_HEIGHT
+                         ? bot->GetMap()->GetHeight(dx, dy, poi.z + 2.0f)
+                         : poi.z;
+            else
+                // z = MAX_HEIGHT as we do not know accurate z
+                dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
             // [guild13] a grid not loaded yet has no height: the route search snaps the bot's own height to the
             // navmesh column there (the spot is not skipped for it)
             if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)

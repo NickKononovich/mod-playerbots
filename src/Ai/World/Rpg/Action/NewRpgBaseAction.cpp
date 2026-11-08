@@ -460,7 +460,8 @@ bool NewRpgBaseAction::TravelTrip(WorldPosition const& dest)
     using Phase = NewRpgInfo::TripPhase;
     NewRpgInfo& info = botAI->rpgInfo;
     NewRpgInfo::Trip& trip = info.trip;
-    if (sRandomPlayerbotMgr.IsRandomBot(bot))
+    // [guild15] random bots without the teleport shortcut (the guild's group B) ride and step through like players
+    if (sRandomPlayerbotMgr.IsRandomBot(bot) && sPlayerbotAIConfig.RandomBotTeleport)
         return false;
 
     // Off the transport after the ride: the leg is done, the rest is planned from the pier next tick.
@@ -477,7 +478,9 @@ bool NewRpgBaseAction::TravelTrip(WorldPosition const& dest)
     if (trip.phase == Phase::None)
     {
         bool const otherMap = dest.GetMapId() != bot->GetMapId();
-        if (!otherMap && bot->GetExactDist2d(dest.GetPositionX(), dest.GetPositionY()) < TRIP_PLAN_DISTANCE)
+        // [guild15] ... unless the destination lies on another landmass (the tree top and Rut'theran below)
+        if (!otherMap && bot->GetExactDist2d(dest.GetPositionX(), dest.GetPositionY()) < TRIP_PLAN_DISTANCE &&
+            TravelRouteMgr::Landmass(WorldPosition(bot)) == TravelRouteMgr::Landmass(dest))
             return false;
 
         if (trip.dest == dest && trip.plannedAt && GetMSTimeDiffToNow(trip.plannedAt) < TRIP_REPLAN_MS)
@@ -714,6 +717,37 @@ bool NewRpgBaseAction::TravelByPortal(NewRpgInfo::Trip& trip)
             return WalkTo(portal.from);
 
         info.SetTripPhase(Phase::Wait);
+    }
+
+    // [guild15] an area trigger teleport: the bot walks into it (its centre) and the core's area trigger handler
+    // checks the radius and teleports it, as a player's client reports the trigger
+    if (portal.triggerId)
+    {
+        AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(portal.triggerId);
+        WorldPosition const dest = trip.dest;
+        if (!trigger)
+        {
+            info.ClearTrip();
+            return false;
+        }
+        if (!bot->IsInAreaTriggerRadius(trigger))
+        {
+            if (bot->GetExactDist(trigger->x, trigger->y, trigger->z) > 1.0f)
+                return WalkTo(WorldPosition(trigger->map, trigger->x, trigger->y, trigger->z));
+            info.ClearTrip();
+            info.trip.dest = dest;
+            info.trip.plannedAt = getMSTime();
+            return false;
+        }
+        info.ClearTrip();
+        LOG_INFO("playerbots", "[travel] {} L{} walks into area trigger {} -> ({:.0f},{:.0f},{:.0f})", bot->GetName(),
+                 bot->GetLevel(), portal.triggerId, portal.to.GetPositionX(), portal.to.GetPositionY(),
+                 portal.to.GetPositionZ());
+        WorldPacket packet(CMSG_AREATRIGGER, 4);
+        packet << portal.triggerId;
+        packet.rpos(0);
+        bot->GetSession()->HandleAreaTriggerOpcode(packet);
+        return HoldPosition(2 * IN_MILLISECONDS);
     }
 
     // Everyone steps through together: a member left on another continent has no way to catch up.
@@ -1072,6 +1106,20 @@ bool NewRpgBaseAction::UseDalaranPortal()
     return HoldPosition();
 }
 
+bool NewRpgBaseAction::NpcOutOfWalk(WorldObject* npc)
+{
+    if (!npc || bot->isMoving() || npc->GetMapId() != bot->GetMapId())
+        return false;
+    BotPath const path = FindBotPath(bot, npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ());
+    float const endGap = npc->GetExactDist(path.actualEnd.x, path.actualEnd.y, path.actualEnd.z);
+    if ((path.type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) && endGap <= INTERACTION_DISTANCE)
+        return false;
+    LOG_INFO("playerbots", "[rpg] {} L{} npc {} out of walk: the route ends {:.0f} yd from it (type {:#x}), "
+             "{:.0f} yd away", bot->GetName(), bot->GetLevel(), npc->GetName(), endGap, uint32(path.type),
+             bot->GetExactDist(npc));
+    return true;
+}
+
 // [guild13] one line per bot and destination when its far walk cannot start: what the route and the walk said
 void NewRpgBaseAction::NoteWalkFailure(WorldPosition const& dest, std::string const& why)
 {
@@ -1397,13 +1445,6 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         last.lastdelayTime = 0.0f;
         last.msTime = 0;
     }
-    // [guild15] perf (b317 pmon: "new rpg do profession" 31 ms per call, max 1.4 s; "new rpg do quest" max 1.1 s):
-    // the route search that found no walk from this spot is not asked again from the same spot - only after the bot
-    // stands elsewhere (its random step, a fight, a fall) or the destination changes
-    if (botAI->rpgInfo.moveFarFailed &&
-        bot->GetExactDist(botAI->rpgInfo.failedFromX, botAI->rpgInfo.failedFromY, botAI->rpgInfo.failedFromZ) < 3.0f)
-        return false;
-    botAI->rpgInfo.moveFarFailed = false;
 
     // performance optimization
     if (!newDest && IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
@@ -1490,6 +1531,14 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         return bot->TeleportTo(dest);
     }
 
+    // (after the stuck check above: a bot that cannot get on still gives the destination up)
+    // [guild15] perf (b317 pmon: "new rpg do profession" 31 ms per call, max 1.4 s; "new rpg do quest" max 1.1 s):
+    // the route search that found no walk from this spot is not asked again from the same spot - only after the bot
+    // stands elsewhere (its random step, a fight, a fall) or the destination changes
+    if (botAI->rpgInfo.moveFarFailed &&
+        bot->GetExactDist(botAI->rpgInfo.failedFromX, botAI->rpgInfo.failedFromY, botAI->rpgInfo.failedFromZ) < 3.0f)
+        return false;
+    botAI->rpgInfo.moveFarFailed = false;
     float dis = bot->GetExactDist(dest);
     if (dis < pathFinderDis)
     {
@@ -1514,9 +1563,50 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     // The spline system walks the whole returned path smoothly, so
     // subsequent ticks early-out via IsWaitingForLastMove and no
     // further PathGenerator calls fire until the bot arrives.
+    // [guild15] perf (b319 pmon: the leader route search was 78 % of all bot AI time, 4.9 ms a search, mostly the
+    // far walks' re-plan of the whole way after every leg): on a complete route found before, the next leg is
+    // searched only as far as two sights ahead along it - the mobs priced are the ones in sight either way
+    if (SoloSafety::Applies(bot) && botAI->rpgInfo.farRoute.size() >= 2)
+    {
+        std::vector<G3D::Vector3> const& route = botAI->rpgInfo.farRoute;
+        G3D::Vector3 const at(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        size_t nearest = route.size();
+        float best = 8.0f * 8.0f;
+        for (size_t i = 0; i < route.size(); ++i)
+            if (float const d = (route[i] - at).squaredLength(); d < best)
+            {
+                best = d;
+                nearest = i;
+            }
+        float const ahead = 2.0f * sPlayerbotAIConfig.SightDistance;
+        if (nearest < route.size())
+        {
+            Movement::PointsArray rest(route.begin() + nearest, route.end());
+            float restLength = 0.0f;
+            for (size_t i = 1; i < rest.size(); ++i)
+                restLength += (rest[i] - rest[i - 1]).length();
+            if (restLength > ahead)
+            {
+                G3D::Vector3 const target = Leader::Travel::PointOnPath(rest, ahead);
+                BotPath const local = FindBotPath(bot, target.x, target.y, target.z);
+                if (local.type == PATHFIND_NORMAL && (local.actualEnd - target).length() < 5.0f &&
+                    local.points.size() >= 2)
+                {
+                    G3D::Vector3 leg = local.length > sPlayerbotAIConfig.SightDistance
+                                           ? Leader::Travel::PointOnPath(local.points, sPlayerbotAIConfig.SightDistance)
+                                           : local.actualEnd;
+                    if (MoveTo(bot->GetMapId(), leg.x, leg.y, leg.z, false, false, false, true))
+                        return true;
+                }
+            }
+        }
+        botAI->rpgInfo.farRoute.clear();  // off the route, at its end, or the local leg failed: the whole way again
+    }
     {
         BotPath const path =  // [lead109]
             FindBotPath(bot, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+        if (path.type == PATHFIND_NORMAL && path.leaderRoute)  // [guild15] kept for the next legs
+            botAI->rpgInfo.farRoute.assign(path.points.begin(), path.points.end());
         PathType type = path.type;
         bool canReach = !(type & (~typeOk));
         if (canReach)
@@ -2584,7 +2674,7 @@ namespace
                 blocked = true;
                 continue;
             }
-            poiInfo.push_back({{spot->x, spot->y}, objectiveIdx});
+            poiInfo.push_back({{spot->x, spot->y}, objectiveIdx, spot->z != 0.0f ? spot->z : INVALID_HEIGHT});
             ++resolveStats.offered;
             if (poiInfo.size() - first >= MAX_SPOT_CANDIDATES)
                 break;
@@ -3624,7 +3714,12 @@ void NewRpgBaseAction::NotePostpone(Player* bot, uint32 questId, std::string con
 {
     {
         std::lock_guard<std::mutex> guard(questNoteLock);
-        postponeReasons[bot->GetGUID().GetCounter()][questId] = reason;
+        std::string& last = postponeReasons[bot->GetGUID().GetCounter()][questId];
+        // [guild90] one line per reason (the planner looks at every quest of the log on every pass: b319 Peny q87
+        // x340 the same note)
+        if (last == reason)
+            return;
+        last = reason;
     }
     QuestStats::LogEvent(bot, "postpone", questId, "reason=" + reason);
 }
@@ -3633,6 +3728,8 @@ void NewRpgBaseAction::ClaimSpot(Player* bot, uint32 questId, WorldPosition cons
 {
     std::lock_guard<std::mutex> guard(questNoteLock);
     uint32 const counter = bot->GetGUID().GetCounter();
+    if (questId)
+        postponeReasons[counter].erase(questId);
     auto const old = claimOf.find(counter);
     if (old != claimOf.end() && old->second != questId)
         claims[old->second].erase(counter);
@@ -3889,7 +3986,7 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
             committedQuest[counter] = chosen;
         else if (!chosen || (committed && committedDistance < 0.0f))
             committedQuest.erase(counter);
-        if (committed && chosen != committed)
+        if (committed && (chosen != committed || bot->GetQuestStatus(committed) != QUEST_STATUS_INCOMPLETE))
         {
             auto const old = claimOf.find(counter);
             if (old != claimOf.end() && old->second == committed)

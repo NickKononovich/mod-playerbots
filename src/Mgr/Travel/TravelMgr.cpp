@@ -5205,6 +5205,28 @@ void TravelRouteMgr::Build()
         }
     }
 
+    // [guild15] same-map area trigger teleports on a continent (Darnassus <-> Rut'theran, the only way off and onto
+    // the tree): a player walks into the trigger and the core teleports it; b319 bots on the tree's edge walked at
+    // Rut'theran 1200 yd below ("on a navmesh island", 55 WALK_FAIL)
+    for (uint32 id = 1; id < 20000; ++id)
+    {
+        AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(id);
+        AreaTriggerTeleport const* teleport = trigger ? sObjectMgr->GetAreaTriggerTeleport(id) : nullptr;
+        if (!teleport || teleport->target_mapId != trigger->map)
+            continue;
+        MapEntry const* map = sMapStore.LookupEntry(trigger->map);
+        if (!map || !map->IsContinent())
+            continue;
+        Portal portal;
+        portal.triggerId = id;
+        portal.from = WorldPosition(trigger->map, trigger->x, trigger->y, trigger->z);
+        portal.to = WorldPosition(teleport->target_mapId, teleport->target_X, teleport->target_Y, teleport->target_Z);
+        _portals.push_back(portal);
+        LOG_INFO("playerbots", "[travel] area trigger {} on map {} ({:.0f},{:.0f},{:.0f}) -> ({:.0f},{:.0f},{:.0f}) as a "
+                 "portal", id, trigger->map, trigger->x, trigger->y, trigger->z, teleport->target_X,
+                 teleport->target_Y, teleport->target_Z);
+    }
+
     LOG_INFO("playerbots", "[Travel] {} boat/zeppelin lines, {} portals, {} inns", _lines.size(), _portals.size(),
              _inns.size());
 }
@@ -5337,6 +5359,10 @@ uint32 TravelRouteMgr::GetRideMs(Line const& line, uint8 fromDock, uint8 toDock)
 
 uint32 TravelRouteMgr::Landmass(WorldPosition const& pos)
 {
+    // [guild15] Teldrassil: the tree top (Shadowglen, Dolanaar, Darnassus) and Rut'theran Village below are joined
+    // only by the area trigger teleports; Rut'theran and Darkshore only by the boat
+    if (pos.GetMapId() == 1 && pos.GetPositionX() > 8000.0f)
+        return pos.GetPositionZ() > 500.0f ? 1 * 4 + 1 : 1 * 4 + 2;
     if (pos.GetMapId() != MAP_EXPANSION_ONE)
         return pos.GetMapId() * 4;
 
