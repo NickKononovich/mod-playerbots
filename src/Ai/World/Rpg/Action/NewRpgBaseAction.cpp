@@ -323,6 +323,14 @@ bool NewRpgBaseAction::DestinationRefused(WorldPosition const& dest)
     return true;
 }
 
+namespace
+{
+    // [tame14] bot -> (its level, the beasts its walk never brought in tame range and sight)
+    std::mutex tameSkipLock;
+    std::unordered_map<uint32, std::pair<uint8, std::set<ObjectGuid>>> tameSkip;
+    std::unordered_map<uint32, ObjectGuid> tameWalk;  // the beast its last tame walk went to
+}
+
 bool NewRpgBaseAction::TameFirstPet()
 {
     constexpr uint32 SPELL_TAME_BEAST = 1515;
@@ -346,6 +354,12 @@ bool NewRpgBaseAction::TameFirstPet()
             continue;
         if (NewRpgBaseAction::InDangerZone(bot, creature->GetPositionX(), creature->GetPositionY()))
             continue;
+        {
+            std::lock_guard<std::mutex> guard(tameSkipLock);
+            auto const skip = tameSkip.find(bot->GetGUID().GetCounter());
+            if (skip != tameSkip.end() && skip->second.first == bot->GetLevel() && skip->second.second.count(guid))
+                continue;  // [tame14] its walk there never brought it in range and sight
+        }
         float const d = bot->GetExactDist(creature);
         if (d < best)
         {
@@ -357,7 +371,48 @@ bool NewRpgBaseAction::TameFirstPet()
         return false;
     float const range = tame->GetMaxRange(false, bot);
     if (best > range || !bot->IsWithinLOSInMap(beast))
+    {
+        // [tame14] b354 Dandolar L10 (a hunter with no pet) in Darkshore: its walk to the q983 objective and the walk
+        // to a Pygmy Tide Crawler in the surf took turns (every MoveFarTo begins with this step) - 10 min of DO_QUEST
+        // without a line, 1180 yd walked in 20 min. A beast the bot has stopped short of (no walk on brings it in
+        // range and sight) is skipped until its next level; a beast with no walk there is never walked to
+        BotPath const path = FindBotPath(bot, beast->GetPositionX(), beast->GetPositionY(), beast->GetPositionZ());
+        bool const reaches = !(path.type & PATHFIND_NOPATH) && path.points.size() >= 2 &&
+                             beast->GetExactDist(path.actualEnd.x, path.actualEnd.y, path.actualEnd.z) <= range;
+        ObjectGuid walkTo;
+        {
+            std::lock_guard<std::mutex> guard(tameSkipLock);
+            walkTo = tameWalk[bot->GetGUID().GetCounter()];
+        }
+        bool const stoppedShort = !bot->isMoving() && walkTo == beast->GetGUID();
+        if (!reaches || stoppedShort)
+        {
+            {
+                std::lock_guard<std::mutex> guard(tameSkipLock);
+                auto& skip = tameSkip[bot->GetGUID().GetCounter()];
+                if (skip.first != bot->GetLevel())
+                    skip = {bot->GetLevel(), {}};
+                skip.second.insert(beast->GetGUID());
+                tameWalk.erase(bot->GetGUID().GetCounter());
+            }
+            LOG_INFO("playerbots", "[tame14] {} L{} skips taming {} L{} {:.0f} yd off: {}", bot->GetName(),
+                     bot->GetLevel(), beast->GetName(), beast->GetLevel(), best,
+                     reaches ? "its walk stopped short of range and sight" : "no walk brings it in range");
+            return false;
+        }
+        if (walkTo != beast->GetGUID())
+            LOG_INFO("playerbots", "[tame14] {} L{} walks to tame {} L{} ({:.0f} yd)", bot->GetName(), bot->GetLevel(),
+                     beast->GetName(), beast->GetLevel(), best);
+        {
+            std::lock_guard<std::mutex> guard(tameSkipLock);
+            tameWalk[bot->GetGUID().GetCounter()] = beast->GetGUID();
+        }
         return MoveTo(beast, range - 5.0f);
+    }
+    {
+        std::lock_guard<std::mutex> guard(tameSkipLock);
+        tameWalk.erase(bot->GetGUID().GetCounter());
+    }
     bot->StopMoving();
     bot->SetFacingToObject(beast);
     LOG_INFO("playerbots", "[rpg] {} L{} tames {} L{} (entry {})", bot->GetName(), bot->GetLevel(), beast->GetName(),
