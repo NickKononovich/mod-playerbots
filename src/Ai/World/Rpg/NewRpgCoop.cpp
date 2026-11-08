@@ -52,6 +52,9 @@
 #include "Timer.h"
 #include "Util.h"
 #include "World.h"
+#include "CellImpl.h"           // [deaths17] the pack round the target
+#include "GridNotifiers.h"      // [deaths17]
+#include "GridNotifiersImpl.h"  // [deaths17]
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include <set>  // [help13]
@@ -3602,99 +3605,143 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         openGroup = true;
     }
 
-    // [deaths16] the pack's damage lands on the member that holds it: the party's tank in sight of the leader (it
-    // takes the threat at the pull), else the leader that pulls. b355 Geron L11 (paladin tank) died twice under
-    // Manue's group pulls judged "681 dmg on Manue ... ehp 687" - the damage and the health were Manue's
-    Player* holder = leader;
+    // [deaths17] the pack lands on the member it goes for: the leader that pulls (the puller holds it until the tank
+    // takes it off), then the party's tank in sight - each prices it with its own armour, health, pet and its own heals
+    // with the healers'; the party wins only if both live through it (the worse of the two decides). b357: 13 deaths
+    // in party fights - Geron L11 (tank) x2 under Manue's pulls, Manue hit first with Geron 22-37 yd off; [deaths16]
+    // priced only the tank, b355 only the leader
+    std::vector<Player*> holders{leader};
     for (ObjectGuid const& guid : members)
         if (Player* m = SameMapPlayer(leader, guid);
-            m && m != leader && m->IsAlive() && PlayerbotAI::IsTank(m) && !PlayerbotAI::IsTank(holder) &&
+            m && m != leader && m->IsAlive() && PlayerbotAI::IsTank(m) &&
             leader->GetExactDist(m) <= sPlayerbotAIConfig.SightDistance)
-            holder = m;
-    // the party's damage: its members in sight of the leader (each the formula's, [dps1]); its heals: the
-    // holder's own and the healers', per fight second, as far as their mana lasts
+        {
+            holders.push_back(m);
+            break;
+        }
+    // the party's damage: its members in sight of the leader (each the formula's, [dps1])
     float sumDps = 0.0f;
-    float healNow = 0.0f;
-    float healFull = 0.0f;
     for (ObjectGuid const& guid : members)
     {
         Player* m = SameMapPlayer(leader, guid);
         if (!m || !m->IsAlive() || leader->GetExactDist(m) > sPlayerbotAIConfig.SightDistance)
             continue;
         sumDps += DpsEstimate::EstimateDps(m, target, DpsEstimate::BuffContext::Group);  // [dps1] the formula
-        if (m != holder && !PlayerbotAI::IsHeal(m))  // [deaths16] the holder's own heals and the healers'
-            continue;
-        auto const rate = healRate.find(guid.GetCounter());
-        if (rate == healRate.end())
-            continue;
-        float const share =
-            m->GetMaxPower(POWER_MANA) ? float(m->GetPower(POWER_MANA)) / float(m->GetMaxPower(POWER_MANA)) : 1.0f;
-        healNow += rate->second * share;
-        healFull += rate->second;
     }
     sumDps = std::max(sumDps, 1.0f);
 
-    // the pack the pull wakes: the target, the idle mobs whose aggro reach covers the fight at the target, its
-    // friends within the core's assistance radius
-    struct Mob
-    {
-        Unit* unit;
-        float hp;
-        float dps;
-    };
-    std::vector<Mob> pack;
-    float spell = 0.0f;
-    pack.push_back({target, float(target->GetHealth()), Leader::Fight::AttackerDps(target, holder, spell)});
+    // the pack the pull wakes: the target, the idle mobs whose aggro reach (a wanderer's round its home with its
+    // wander area) covers the fight at the target, its friends within the core's assistance radius. [deaths17] Looked
+    // for round the target, not only in the leader's sight (a camp judged from afar: [deaths16] for the solo judge)
     float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
-    GuidVector const targets = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get();
+    Creature* const targetCreature = target->ToCreature();
+    std::vector<Creature*> joiners;
     verdict.radius = 0.0f;
-    for (ObjectGuid const& guid : targets)
     {
-        Creature* mob = botAI->GetCreature(guid);
-        if (!mob || mob == target || !mob->IsAlive() || !mob->IsHostileTo(leader))
-            continue;
-        float const gap = mob->GetExactDist(target);
-        bool const joins = mob->IsInCombat()
-                               ? mob->GetVictim() && mob->GetVictim()->IsInRaidWith(leader)
-                               : (mob->HasReactState(REACT_AGGRESSIVE) && gap <= mob->GetAggroRange(leader)) ||
-                                     (gap <= assist && mob->IsFriendlyTo(target));
-        if (!joins)
-            continue;
-        pack.push_back({mob, float(mob->GetHealth()), Leader::Fight::AttackerDps(mob, holder, spell)});
-        verdict.radius = std::max(verdict.radius, gap);
+        float const reach = MAX_AGGRO_RADIUS + std::max(assist, 0.0f) + SoloSafety::MapWanderReach(leader->GetMapId());
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(target, reach);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, units, check);
+        Cell::VisitObjects(target, searcher, reach);
+        for (Unit* unit : units)
+        {
+            Creature* mob = unit->ToCreature();
+            if (!mob || mob == target || !mob->IsAlive() || !mob->IsHostileTo(leader) || mob->GetCharmerOrOwnerGUID())
+                continue;
+            bool const wanders = mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE;
+            float const gap = wanders ? std::max(0.0f, mob->GetHomePosition().GetExactDist(target) -
+                                                           mob->GetWanderDistance())
+                                      : mob->GetExactDist(target);
+            bool const assists = targetCreature && gap <= assist && mob->CanAssistTo(targetCreature, leader);
+            bool const joins = mob->IsInCombat()
+                                   ? mob->GetVictim() && mob->GetVictim()->IsInRaidWith(leader)
+                                   : (mob->HasReactState(REACT_AGGRESSIVE) && gap <= mob->GetAggroRange(leader)) ||
+                                         assists;
+            if (!joins)
+                continue;
+            joiners.push_back(mob);
+            verdict.radius = std::max(verdict.radius, gap);
+        }
     }
-    std::sort(pack.begin() + 1, pack.end(),
-              [](Mob const& a, Mob const& b) { return a.dps / std::max(a.hp, 1.0f) > b.dps / std::max(b.hp, 1.0f); });
-    float seconds = 0.0f;
-    float damage = 0.0f;
-    for (Mob const& mob : pack)
+    struct Priced
     {
-        seconds += mob.hp / sumDps;
-        damage += mob.dps * seconds;
-        if (mob.unit->GetLevel() > leader->GetLevel())
-            ++verdict.above;
-        verdict.topLevel = std::max<uint8>(verdict.topLevel, mob.unit->GetLevel());
-    }
-    // [deaths12] an open-world group: the leader's and its healers' own heals over this fight
-    // (SurvivalKit::HealPoints: the casts its seconds hold, the mana now / full)
-    if (openGroup)
+        Player* holder;
+        float damage, seconds, ehpNow, ehpFull;
+    };
+    auto const priceOn = [&](Player* holder)
+    {
+        struct Mob
+        {
+            Unit* unit;
+            float hp;
+            float dps;
+        };
+        std::vector<Mob> pack;
+        float spell = 0.0f;
+        pack.push_back({target, float(target->GetHealth()), Leader::Fight::AttackerDps(target, holder, spell)});
+        for (Creature* mob : joiners)
+            pack.push_back({mob, float(mob->GetHealth()), Leader::Fight::AttackerDps(mob, holder, spell)});
+        std::sort(pack.begin() + 1, pack.end(), [](Mob const& a, Mob const& b)
+                  { return a.dps / std::max(a.hp, 1.0f) > b.dps / std::max(b.hp, 1.0f); });
+        Priced p{holder, 0.0f, 0.0f, 0.0f, 0.0f};
+        for (Mob const& mob : pack)
+        {
+            p.seconds += mob.hp / sumDps;
+            p.damage += mob.dps * p.seconds;
+        }
+        // its heals: the holder's own and the healers', per fight second, as far as their mana lasts (a co-op
+        // party's measured rates; an open-world group's kit, [deaths12])
+        float healNow = 0.0f, healFull = 0.0f;
         for (ObjectGuid const& guid : members)
         {
             Player* m = SameMapPlayer(leader, guid);
             if (!m || !m->IsAlive() || (m != holder && !PlayerbotAI::IsHeal(m)) ||
                 leader->GetExactDist(m) > sPlayerbotAIConfig.SightDistance)
                 continue;
-            healNow += SurvivalKit::HealPoints(m, seconds, float(m->GetPower(POWER_MANA)), m == holder) /
-                       std::max(seconds, 1.0f);
-            healFull += SurvivalKit::HealPoints(m, seconds, float(m->GetMaxPower(POWER_MANA)), m == holder) /
-                        std::max(seconds, 1.0f);
+            if (openGroup)
+            {
+                healNow += SurvivalKit::HealPoints(m, p.seconds, float(m->GetPower(POWER_MANA)), m == holder) /
+                           std::max(p.seconds, 1.0f);
+                healFull += SurvivalKit::HealPoints(m, p.seconds, float(m->GetMaxPower(POWER_MANA)), m == holder) /
+                            std::max(p.seconds, 1.0f);
+                continue;
+            }
+            auto const rate = healRate.find(guid.GetCounter());
+            if (rate == healRate.end())
+                continue;
+            float const share = m->GetMaxPower(POWER_MANA)
+                                    ? float(m->GetPower(POWER_MANA)) / float(m->GetMaxPower(POWER_MANA))
+                                    : 1.0f;
+            healNow += rate->second * share;
+            healFull += rate->second;
         }
-    verdict.mobs = pack.size();
+        p.ehpNow = float(holder->GetHealth()) + PetHealth(holder, false) + healNow * p.seconds;
+        p.ehpFull = float(holder->GetMaxHealth()) + PetHealth(holder, true) + healFull * p.seconds;
+        return p;
+    };
+    Priced worst = priceOn(holders.front());
+    for (size_t i = 1; i < holders.size(); ++i)
+    {
+        Priced const p = priceOn(holders[i]);
+        if (p.damage / std::max(p.ehpNow, 1.0f) > worst.damage / std::max(worst.ehpNow, 1.0f))
+            worst = p;
+    }
+    verdict.mobs = uint32(1 + joiners.size());
+    verdict.above = target->GetLevel() > leader->GetLevel() ? 1 : 0;
+    verdict.topLevel = target->GetLevel();
+    for (Creature* mob : joiners)
+    {
+        verdict.above += mob->GetLevel() > leader->GetLevel() ? 1 : 0;
+        verdict.topLevel = std::max<uint8>(verdict.topLevel, mob->GetLevel());
+    }
+    float const damage = worst.damage;
+    float const seconds = worst.seconds;
+    Player* const holder = worst.holder;
     verdict.damage = damage;
     verdict.fightSec = seconds;
     verdict.at = target->GetPosition();
-    verdict.ehpNow = float(holder->GetHealth()) + PetHealth(holder, false) + healNow * seconds;
-    verdict.ehpFull = float(holder->GetMaxHealth()) + PetHealth(holder, true) + healFull * seconds;
+    verdict.ehpNow = worst.ehpNow;
+    verdict.ehpFull = worst.ehpFull;
     if (damage < verdict.ehpNow)
         verdict.kind = SoloSafety::Verdict::Kind::Win;
     else if (damage < verdict.ehpFull)

@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>          // [deaths17]
+#include <unordered_map>  // [deaths17]
 
 Unit* GrindTargetValue::Calculate()
 {
@@ -251,6 +253,26 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         {
             if (!coop)
                 SoloSafety::NoteEngage(bot, unit, verdict);
+            else
+            {
+                // [deaths17] the party's engaged pull: what its judge counted, on whom (a Win was never logged: b357's
+                // 13 party-fight deaths had no line of the pull they died in)
+                static std::mutex partyLogLock;
+                static std::unordered_map<uint32, ObjectGuid> partyLogged;
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(partyLogLock);
+                    ObjectGuid& last = partyLogged[bot->GetGUID().GetCounter()];
+                    fresh = last != unit->GetGUID();
+                    last = unit->GetGUID();
+                }
+                if (fresh)
+                    LOG_INFO("playerbots", "[deaths17] {} L{} party engages {} L{}: {} mobs ({} above), {:.0f} dmg over "
+                             "{:.0f} s, ehp {:.0f} ({})",
+                             bot->GetName(), bot->GetLevel(), unit->GetName(), unit->GetLevel(), verdict.mobs,
+                             verdict.above, verdict.damage, verdict.fightSec, verdict.ehpNow,
+                             verdict.why.empty() ? "won" : verdict.why);
+            }
             return unit;
         }
         if (verdict.kind == SoloSafety::Verdict::Kind::RestFirst)
