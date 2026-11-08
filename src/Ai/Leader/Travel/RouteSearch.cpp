@@ -518,17 +518,40 @@ namespace Leader
         };
         if (!refuse.empty())
             search(&refuse, &penalties);
-        bool const roundRefused = refuse.empty() || result.complete;
+        bool roundRefused = refuse.empty() || result.complete;
+        // [deaths] a walk the search cannot complete at all (the destination past its node / corridor budget, on
+        // another landmass): the priced walk is as complete as the unpriced one, so the priced one is walked. Before,
+        // every search came back partial and the last one - no mob priced, none refused - was walked: b337 GO_CAMP
+        // walks of 4700-18900 yd went through Dragonmaw Scouts L19 at Dun Algaz (Mutil L12 twice, Keenonk L11), the
+        // same Infected Nightstalker Runt L8 twice (Feeli L2, a danger zone remembered), wolves and bears in Dun Morogh
+        // (L1-L2 bots). A fallback is taken only when it is complete: then no walk goes round (throughRefused)
+        RouteResult pricedResult = result;
+        Movement::PointsArray pricedCorners = corners;
+        Movement::PointsArray pricedSurface = surface;
         if (!result.complete && !penalties.empty())
         {
             result.found = false;
             search(nullptr, &penalties);
+            if (!pricedResult.found && result.found)
+            {
+                pricedResult = result;
+                pricedCorners = corners;
+                pricedSurface = surface;
+            }
         }
         if (!result.complete)
         {
             result.found = false;
             search(nullptr, nullptr);
         }
+        if (!result.complete && pricedResult.found)
+        {
+            result = pricedResult;
+            corners = pricedCorners;
+            surface = pricedSurface;
+            roundRefused = true;
+        }
+        SoloSafety::NoteRoute(walker, result.complete, result.found && !roundRefused);
         if (!result.found)
             return result;
         result.throughRefused = !roundRefused;

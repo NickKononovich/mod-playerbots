@@ -101,6 +101,8 @@ namespace SoloSafety
     // Leader::Route for a solo bot: the idle mobs round the walk, refused (`refuse`: x, y, z, radius) or priced
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,
                     std::vector<Leader::Travel::RoutePenalty>& penalties);
+    // [deaths] what that route search gave (complete; through a refused reach): kept for the death line
+    void NoteRoute(Unit* walker, bool complete, bool throughRefused);
 
     // [dps1] the bot's damage per second: DpsEstimate's formula over its state now (its buff context: solo / party /
     // raid), against `target` or a mob of its level; no fight history

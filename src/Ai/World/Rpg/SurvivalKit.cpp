@@ -125,6 +125,9 @@ namespace
         // [guild15] the run goes back along the way it came: the next spot back to walk to
         bool fleeTrail = false;
         uint8 trailStep = 0;
+        // [deaths] the fight was logged lost with nothing to use (once a fight: b337 deaths "without rescue" left no
+        // line at all - Feeli, Eraelor, Rumanatol, Ginde - and the triage could not tell why)
+        bool loggedNone = false;
     };
 
     std::mutex lock;
@@ -1196,7 +1199,16 @@ namespace SurvivalKit
             if (s.due && (!best || s.gain > best->gain))
                 best = &s;
         if (!best)
+        {
+            if (!state.loggedNone)
+            {
+                state.loggedNone = true;
+                LOG_INFO("playerbots",
+                         "[solo] {} L{} survival none: no reset, no piece due ({} castable), no run: {}; {}",
+                         bot->GetName(), bot->GetLevel(), scored.size(), flee.why, numbers);
+            }
             return false;
+        }
         state.choice = *best->piece;
         state.target = best->target->GetGUID();
         state.why = Acore::StringFormat("the biggest piece ({:.0f} of {:.0f} short; no run: {}): {}", best->gain, deficit,

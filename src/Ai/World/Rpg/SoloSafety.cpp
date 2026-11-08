@@ -9,6 +9,7 @@
 
 #include "BuyAction.h"
 #include "CellImpl.h"
+#include "AttackersValue.h"  // [deaths] NO_ATTACK
 #include "ChooseTargetActions.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -136,6 +137,14 @@ namespace
         // Root Threshers, the judge then counted 1.0 dps and refused / ran from every L8 mob, the next run 0 again)
         uint32 fleeMs = 0;
         uint64 dealtAtFlee = 0;
+        // [deaths] NO_ATTACK logged this fight
+        bool loggedNoAttack = false;
+        // [deaths] the last route search round its walk: when, the idle mobs it saw (guid -> refused, else priced),
+        // and what the search gave (DeathContext: how a killer met on a walk had been seen)
+        uint32 routeMs = 0;
+        std::unordered_map<uint64, bool> routeMobs;
+        bool routeComplete = false;
+        bool routeThroughRefused = false;
     };
 
     struct EntryDamage
@@ -315,6 +324,7 @@ namespace
         state.formula = DpsEstimate::Result();
         state.formulaEntry = 0;
         state.formulaLevel = 0;
+        state.loggedNoAttack = false;
     }
 
     // [guild15] the melee-phase clock: the time since the last sample counts as melee when the bot stood in reach then
@@ -560,6 +570,29 @@ namespace SoloSafety
             }
             track.lastMs = now;
             track.damage += taken;
+            // [deaths] hit in its melee reach for two of its swings without attacking anything (no victim, no cast):
+            // the state of its target choice, once a fight (b337 Rumanatol L11 at The Lost Fold "melee 38.1 s dealt
+            // 0", Laaral L13 five fights "never attacked" for 42-111 s; the site has no model between them)
+            if (!state.loggedNoAttack && !state.actMs && !state.dealt && state.sampleMelee &&
+                float(state.meleeMs) / IN_MILLISECONDS >= 2.0f * SwingSec(bot))
+            {
+                state.loggedNoAttack = true;
+                PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+                Unit* current = botAI ? botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get() : nullptr;
+                char const* rejection = AttackersValue::PossibleTargetRejection(mob, bot);
+                LOG_INFO("playerbots",
+                         "[solo] {} L{} NO_ATTACK: {} L{} hits it in melee for {:.1f} s, no victim, no cast; engine "
+                         "{}, current target {}, {} {:.1f} yd (z {:+.1f}), sight bot->mob {} mob->bot {}, valid "
+                         "target {}{}{}, moving {}, at ({:.1f},{:.1f},{:.1f})",
+                         bot->GetName(), bot->GetLevel(), mob->GetName(), mob->GetLevel(),
+                         float(state.meleeMs) / IN_MILLISECONDS,
+                         botAI ? (botAI->GetState() == BOT_STATE_COMBAT ? "combat" : "non-combat") : "-",
+                         current ? current->GetName() : std::string("none"), mob->GetName(), bot->GetExactDist(mob),
+                         mob->GetPositionZ() - bot->GetPositionZ(), bot->IsWithinLOSInMap(mob),
+                         mob->IsWithinLOSInMap(bot), AttackersValue::IsValidTarget(mob, bot),
+                         rejection ? ", rejected: " : "", rejection ? rejection : "", bot->isMoving(),
+                         bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            }
             return;
         }
         // the bot (its pet) deals it
@@ -1113,6 +1146,14 @@ namespace SoloSafety
         // swings, the projection read 1.0 dps and it ran from L8 mobs it kills in 10 s (b321 Colian L11, Nightstalkers)
         if (elapsed >= 2.0f * SwingSec(bot) && state.dealt)
             botDps = float(state.dealt) / (elapsed + SwingSec(bot));
+        // [deaths] ... and while its attackers stand in its melee reach, what it deals there once that part covers two
+        // of its swings: the mob is on it, the rest of the fight is fought there. b337: Rumanatol L11 at The Lost Fold
+        // stood "melee 38.1 s dealt 0" under a Bloodmyst Hatchling, the formula (18.9 dps) read the fight won until his
+        // health was gone; Eraelor L7 (hunter, no pet) dealt 10.2 dps at range for 6 s, then 2.4 dps in melee for
+        // 40 s - the whole fight's average read won until the run cost more than his health, and he died
+        if (float const meleeSec = float(state.meleeMs) / IN_MILLISECONDS;
+            state.sampleMelee && meleeSec >= 2.0f * SwingSec(bot))
+            botDps = float(state.dealtMelee) / (meleeSec + SwingSec(bot));
         out.botDps = std::max(botDps, 1.0f);
         // the rest of the fight as the judge counts it: its current target first, then the most damage per health
         Unit* const victim = bot->GetVictim();
@@ -1234,6 +1275,23 @@ namespace SoloSafety
         }
         else
             out += "; no judged pull (attacked)";
+        // [deaths] how its last route search saw the mobs that hit it: refused (a walk round them was searched),
+        // priced (the walk may pass their reach), unseen (out of the search's range or not idle then)
+        if (found != states.end() && found->second.routeMs && !found->second.attackers.empty())
+        {
+            SoloBotState const& state = found->second;
+            std::string seen;
+            for (auto const& [guid, track] : state.attackers)
+            {
+                auto const mob = state.routeMobs.find(guid);
+                seen += (seen.empty() ? "" : ", ") + track.name + " " +
+                        (mob == state.routeMobs.end() ? "unseen" : mob->second ? "refused" : "priced");
+            }
+            out += Acore::StringFormat("; last route search {:.0f} s before ({}{}): {}",
+                                       float(getMSTimeDiff(state.routeMs, getMSTime())) / IN_MILLISECONDS,
+                                       state.routeComplete ? "complete" : "partial",
+                                       state.routeThroughRefused ? ", through a refused reach" : "", seen);
+        }
         return out;
     }
 
@@ -1244,8 +1302,11 @@ namespace SoloSafety
         Player* bot = walker ? walker->ToPlayer() : nullptr;
         if (!bot || bot->IsInCombat() || !bot->IsAlive() || !Applies(bot))
             return;
-        // the walk's first leg as far as the bot sees: the rest is planned again from there
-        float const range = sPlayerbotAIConfig.SightDistance;
+        // the walk's first leg as far as the bot sees: the rest is planned again from there. [deaths] The leg ends up
+        // to SightDistance from the bot, so a mob whose aggro reach (Creature::GetAggroRange, at most the core's
+        // MAX_AGGRO_RADIUS) covers its end stands up to that much farther: those are seen too
+        float const range = sPlayerbotAIConfig.SightDistance + MAX_AGGRO_RADIUS;
+        std::unordered_map<uint64, bool> seen;  // [deaths] mob -> refused (DeathContext)
         std::list<Unit*> units;
         Acore::AnyUnitInObjectRangeCheck check(bot, range);
         Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
@@ -1359,6 +1420,26 @@ namespace SoloSafety
             if (never)
                 penalty.cost = std::max(penalty.cost, (to - from).length() + 2.0f * radius);
             penalties.push_back(penalty);
+            seen[mob->GetGUID().GetRawValue()] = never;
         }
+        std::lock_guard<std::mutex> guard(lock);
+        SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        state.routeMs = getMSTime();
+        state.routeMobs = std::move(seen);
+        state.routeComplete = false;
+        state.routeThroughRefused = false;
+    }
+
+    void NoteRoute(Unit* walker, bool complete, bool throughRefused)
+    {
+        Player* bot = walker ? walker->ToPlayer() : nullptr;
+        if (!bot || !SoloPlayerBot(bot))
+            return;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        if (found == states.end() || !found->second.routeMs)
+            return;
+        found->second.routeComplete = complete;
+        found->second.routeThroughRefused = throughRefused;
     }
 }
