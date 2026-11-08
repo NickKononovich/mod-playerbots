@@ -54,6 +54,11 @@ bool PickBattleRes(LeaderGroup& group, Player* tank, std::vector<Player*> const&
 // [lead405] What the buff pass's support orders still do (empty: nothing); the pass's buff step waits for it.
 std::string BuffPassWork(LeaderGroup& group);
 
+// [raid3] A raid / the open world, where the leader's event tick does not run: the buff step issues its queued buff
+// orders itself (every step-1 tick) and takes them back when the step ends (EndRaidBuffPass)
+void TickRaidBuffPass(LeaderGroup& group, std::vector<Player*> const& members, LogFn const& logEvent);
+void EndRaidBuffPass(LeaderGroup& group, std::vector<Player*> const& members);
+
 // [lead780] the member's measured damage taken per second in the fight under way (DamageTaken since its start); 0:
 // none measured (out of a fight, nothing taken yet)
 float MemberTakenPerSec(LeaderGroup& group, Player* member);

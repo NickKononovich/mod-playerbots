@@ -500,6 +500,17 @@ namespace Leader
     // [lead15] any bot of a led 5-man dungeon group, the tank included (the command getters, LeaderCommand.h)
     bool LedBot(Player* bot);
 
+    // [raid3] the buff pass's orders in a raid / the open world, where no member is led (LedBot false): the raid
+    // leader's buff step issues them (Leader::Support::TickRaidBuffPass) and a member obeys the External it holds
+    // here out of a fight (LeaderCommand::AssignedExternal). Set: the member's order now; Clear: the spell it held
+    // (0: none); Holds: the member's held order is `spell`.
+    namespace RaidBuffOrders
+    {
+        void Set(ObjectGuid member, uint32 spell);
+        uint32 Clear(ObjectGuid member);
+        bool Holds(ObjectGuid member, uint32 spell);
+    }
+
     // [lead99] user: the leader never uses the core PathGenerator for planning or a walk check - one route search
     // (the long Detour search, TestHarness LongRoute: its cost follows the nodes it expands, so a short way costs the
     // same; its bigger pool is only a cap). `points`: the walk sampled every ROUTE_SAMPLE_YD on its ground (the

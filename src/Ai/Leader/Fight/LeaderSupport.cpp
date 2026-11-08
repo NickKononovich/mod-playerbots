@@ -1502,6 +1502,49 @@ void TickBuffPass(LeaderGroup& group, Player* tank, std::vector<Player*> const& 
 }
 }  // namespace
 
+// [raid3] b354 kara-n 10A-1: in a raid the leader's event tick (Tick above) never runs, so the buff step's queued
+// orders were never issued (209.5 s before Midnight). The raid leader's buff step issues them itself: one order per
+// caster at a time, its cast / failure / end judged as in a dungeon (TickBuffOrders); the order a caster holds is
+// marked for the member's obedience (RaidBuffOrders), an order that ended is taken back
+namespace
+{
+// [raid3] the member's raid buff order ends: its External back to none (when it still holds that order)
+void TakeBackRaidBuffOrder(ObjectGuid member)
+{
+    uint32 const held = Leader::RaidBuffOrders::Clear(member);
+    Leader::MemberEvents events;
+    if (held && Leader::Events::Get(member, events) && events.externalSpell == held)
+        Leader::Events::SetExternal(member, 0, ObjectGuid::Empty);
+}
+}  // namespace
+
+void TickRaidBuffPass(LeaderGroup& group, std::vector<Player*> const& members, LogFn const& logEvent)
+{
+    DungeonLeaderState::Support& st = group.State().support;
+    TickBuffOrders(group, members, logEvent);
+    for (Player* bot : members)
+    {
+        auto const told = st.buffTold.find(bot->GetGUID());
+        if (told != st.buffTold.end())
+        {
+            if (!Leader::RaidBuffOrders::Holds(bot->GetGUID(), told->second.spell))
+                LOG_INFO("playerbots", "[raid3] raid buff order: {} ({}, {})", told->second.what, group.Run().runId,
+                         group.Route().buffReason);
+            Leader::RaidBuffOrders::Set(bot->GetGUID(), told->second.spell);
+            continue;
+        }
+        TakeBackRaidBuffOrder(bot->GetGUID());
+    }
+}
+
+void EndRaidBuffPass(LeaderGroup& group, std::vector<Player*> const& members)
+{
+    DungeonLeaderState::Support& st = group.State().support;
+    st.buffTold.clear();
+    for (Player* bot : members)
+        TakeBackRaidBuffOrder(bot->GetGUID());
+}
+
 std::string EnergizeSplitOvertakes(Player* receiver, Player* caster, Player* tank, uint32 mana)
 {
     return receiver && caster ? ManaSplitOvertakes(receiver, tank, mana, caster) : std::string();
