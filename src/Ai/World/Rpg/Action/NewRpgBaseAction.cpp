@@ -5799,7 +5799,7 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         uint32 const nextQuest = ChooseNextLevelQuest(nextGiver, nextGrind, false);
         Quest const* next = nextQuest ? sObjectMgr->GetQuestTemplate(nextQuest) : nullptr;
         ContentLevels const content = GetContentLevelsForMapAndZone(bot->GetMapId(), hereZone);
-        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, UNIT_CLASS_WARRIOR);
+        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, CLASS_WARRIOR);
         float const dps = next ? DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo) : 0.0f;
         if (next && stats && dps > 0.0f && TravelRouteMgr::Landmass(nextGiver) == botLandmass &&
             next->GetMinLevel() > level)

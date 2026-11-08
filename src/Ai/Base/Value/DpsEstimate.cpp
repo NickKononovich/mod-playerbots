@@ -1667,7 +1667,7 @@ float PushbackHitsPerSec(Player* bot, Unit* target, BuffContext ctx, float lifeS
     if (!attackMs)
         return 0.0f;
     int32 const skillDiff =
-        int32(target->GetWeaponSkillValue(BASE_ATTACK, bot)) - int32(bot->GetMaxSkillValueForLevel(target));
+        int32(target->GetWeaponSkillValue(BASE_ATTACK, bot)) - int32(bot->Unit::GetMaxSkillValueForLevel(target));
     float const miss = std::clamp(target->MeleeSpellMissChance(bot, BASE_ATTACK, skillDiff, 0), 0.0f, MISS_MAX_PCT);
     float const avoid = std::clamp(miss + bot->GetUnitDodgeChance() + bot->GetUnitParryChance(), 0.0f, 100.0f);
     float rate = (1.0f - avoid / 100.0f) * float(IN_MILLISECONDS) / float(attackMs);

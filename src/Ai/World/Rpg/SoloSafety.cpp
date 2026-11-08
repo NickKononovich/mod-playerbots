@@ -634,7 +634,7 @@ namespace
         float const hit =
             float(Unit::CalcArmorReducedDamage(unit, bot, uint32(raw), nullptr, unit->GetLevel(), BASE_ATTACK));
         int32 const skillDiff =
-            int32(unit->GetWeaponSkillValue(BASE_ATTACK, bot)) - int32(bot->GetMaxSkillValueForLevel(unit));
+            int32(unit->GetWeaponSkillValue(BASE_ATTACK, bot)) - int32(bot->Unit::GetMaxSkillValueForLevel(unit));
         float const skillBonus = 0.04f * float(skillDiff);
         float left = 100.0f;
         auto const take = [&left](float chance)
@@ -658,7 +658,8 @@ namespace
             !(creature && creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_CRUSHING_BLOWS)))
         {
             int32 const defense =
-                std::min<int32>(int32(bot->GetDefenseSkillValue(unit)), int32(bot->GetMaxSkillValueForLevel(unit)));
+                std::min<int32>(int32(bot->GetDefenseSkillValue(unit)),
+                                int32(bot->Unit::GetMaxSkillValueForLevel(unit)));
             int32 const lack = int32(unit->GetMaxSkillValueForLevel(bot)) - defense;
             if (lack >= 15)
                 crush = take(float(lack) * 2.0f - 15.0f);
