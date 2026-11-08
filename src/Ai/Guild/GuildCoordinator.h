@@ -145,6 +145,7 @@ struct GuildRunStep
     Kind kind{NONE};
     WorldPosition pos{};
     std::string reason;
+    std::vector<uint32> entries;  // [econ1] GRIND: the creature entries of the skinning place
 };
 
 // [guild60] a five the global leader sent to a dungeon: it walks to the entrance (each member its own safe walk),
@@ -685,6 +686,7 @@ private:
     // for it until its next level (lock_; mutable: TownStops is const)
     mutable std::map<uint32, std::pair<uint8, std::set<std::pair<int32, int32>>>> townRefused_;
     bool TownRefused(uint32 low, WorldPosition const& pos) const;  // lock_ held
+    std::string CampText(uint32 requesterLow, uint32 helperLow) const;  // [econ1] "camp <area>, <zone>"
     std::string donationState_;  // the pooling for the first bank tab (lock_)
     // member -> (food count last seen, (game time, food that left its bags)) over the last hour: the SUPPLY need
     std::map<uint32, std::pair<uint32, std::deque<std::pair<uint32, uint32>>>> foodUse_;
@@ -708,7 +710,9 @@ private:
     // copper per XP + the money + the reward items' price over the time it takes now (the walk to the objective area
     // and the ender, or to the giver for a quest it may take; the kills by the source's health at its EstimateDps,
     // the drop chance). false: no quest it can price (no static row on its map); `why`: the numbers
-    bool QuestPace(BotState& st, Player* p, float& copperPerMinute, std::string* why = nullptr) const;
+    // [econ1] questing by XP per minute (xpPerMinute); copperPerMinute = that XP at the bot's quest money per XP
+    bool QuestPace(BotState& st, Player* p, float& copperPerMinute, std::string* why = nullptr,
+                   float* xpPerMinute = nullptr) const;
     // [questvalue] its green / grey log quests valued against the route's rate; the ones not worth it abandoned
     void RevalueQuests(BotState& st, Player* p);
     float GatherPace(uint32 skill) const;                              // units per minute of gathering, < 0: no data

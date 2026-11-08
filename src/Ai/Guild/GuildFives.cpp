@@ -637,7 +637,7 @@ uint32 GuildCoordinator::FormFive(uint32 leaderLow, std::vector<uint32> const& m
     if (!d)
     {
         if (error)
-            *error = "нет подземелья " + dungeon;
+            *error = "no dungeon " + dungeon;
         return 0;
     }
     std::map<uint32, std::string> roles;
