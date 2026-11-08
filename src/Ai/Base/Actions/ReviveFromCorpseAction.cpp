@@ -202,6 +202,23 @@ namespace
 
     bool HealerLeft(Player* bot) { return SafeGrave(bot) != nullptr; }
 
+    // [ghost14] the spirit healer's price: Resurrection Sickness from CONFIG_DEATH_SICKNESS_LEVEL on (Player::
+    // ResurrectPlayer: a quarter of its stats for (level - start + 1) minutes, ten at most). User 2026-11-08: the bot
+    // avoids it - it rises at its corpse whenever the corpse is reachable and a spot of its radius is safe (clear of
+    // every reach now, or the window: no mob that stays reaches it and the wanderers / patrols are out of reach), the
+    // healer only when neither holds. b354 Laaral L14 / Rumanatol L13 took the healer and died under the sickness
+    bool HealerSickens(Player* bot)
+    {
+        return int32(bot->GetLevel()) >= sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL);
+    }
+
+    uint32 SicknessMinutes(Player* bot)
+    {
+        int32 const start = sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL);
+        int32 const level = int32(bot->GetLevel());
+        return level < start ? 0 : uint32(std::min(10, level - start + 1));
+    }
+
     // [deaths3] it rises here: nothing reaches the spot (Full), or - no healer left for this death - the window is
     // open: no mob that stays reaches it and the wanderers / patrols are out of its reach now
     bool RisesHere(PlayerbotAI* botAI, Player* bot, GuidVector const& hostiles, bool& window)
@@ -212,7 +229,8 @@ namespace
         window = false;
         if (SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Full) >= 0.0f)
             return true;
-        window = !HealerLeft(bot) && SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Fixed) >= 0.0f &&
+        window = (!HealerLeft(bot) || HealerSickens(bot)) &&  // [ghost14] the healer's sickness: the window first
+                 SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Fixed) >= 0.0f &&
                  SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Now) >= 0.0f;
         return window;
     }
@@ -394,7 +412,8 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // per death, death and release, and never resets for a bot that gains no XP: from the third death every ghost
     // that had walked back in stood at its corpse calling for a healer it could not reach).
     bool const inDungeon = bot->GetMap()->IsDungeon();
-    if (((!botAI->HasGameClientMaster() && dCount >= 5 && !inDungeon) || RisesInTown(bot)) &&
+    // [ghost14] ... only where the healer costs no sickness: from its level on the corpse comes first
+    if (((!botAI->HasGameClientMaster() && dCount >= 5 && !inDungeon && !HealerSickens(bot)) || RisesInTown(bot)) &&
         HealerLeft(bot))  // [guild13] [deaths3]
         return botAI->DoSpecificAction("spirit healer", Event(), true);
 
@@ -426,7 +445,13 @@ bool FindCorpseAction::Execute(Event /*event*/)
                 return false;
         }
         else if (safeHere)  // Nothing comes at once here: the same rule as "revive from corpse".
+        {
+            if (HealerSickens(bot) && !bot->GetMap()->IsDungeon())
+                LogGhost(bot, Acore::StringFormat("[ghost14] rises at its corpse: the spot is safe (the spirit healer "
+                                                  "would cost {} min of Resurrection Sickness)",
+                                                  SicknessMinutes(bot)));
             return false;
+        }
     }
 
     // The ghost always runs back: no teleport to the corpse, also for bots with throttled activity.
@@ -450,9 +475,25 @@ bool FindCorpseAction::Execute(Event /*event*/)
             moveToPos = WorldPosition(corpsePos.GetMapId(), spot.x, spot.y, spot.z, 0.0f);
         // [deaths3] no spot of the corpse's radius out of every reach: the spirit healer, unless its spot was found in
         // reach for this death too (then the ghost keeps to the corpse and rises once a spot clears)
+        // [ghost14] the healer would sicken it: a spot where nothing that stays reaches it, risen once the wanderers
+        // and patrols are out of its reach (the window), before the healer
+        else if (!safeHere && !inDungeon && HealerLeft(bot) && HealerSickens(bot) &&
+                 SafeSpot(corpse, hostiles, reclaimDist, spot, true))
+        {
+            LogGhost(bot, Acore::StringFormat("[ghost14] rises at its corpse, not the spirit healer (its Resurrection "
+                                              "Sickness: {} min): waits at ({:.0f},{:.0f}) for the wanderers / patrols "
+                                              "to leave its reach",
+                                              SicknessMinutes(bot), spot.x, spot.y));
+            moveToPos = WorldPosition(corpsePos.GetMapId(), spot.x, spot.y, spot.z, 0.0f);
+        }
         else if (!safeHere && !inDungeon && HealerLeft(bot))
         {
-            LogGhost(bot, "no spot of its corpse's radius clear of the mobs there: to the spirit healer");
+            LogGhost(bot, HealerSickens(bot)
+                              ? Acore::StringFormat("[ghost14] no spot of its corpse's radius clear of the mobs that "
+                                                    "stay there: to the spirit healer ({} min of Resurrection Sickness)",
+                                                    SicknessMinutes(bot))
+                              : std::string("no spot of its corpse's radius clear of the mobs there: to the spirit "
+                                            "healer (no sickness at its level)"));
             ChooseHealer(bot, corpse);  // [ghost13]
             return botAI->DoSpecificAction("spirit healer", Event(), true);
         }
