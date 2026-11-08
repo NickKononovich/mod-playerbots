@@ -695,9 +695,26 @@ void GuildCoordinator::UpdateTransfers()
         // the pickup was planned only while a mailbox lay on the bot's way right then, so a bot whose walks never
         // passed one never got the task. No mailbox on its way now: its nearest friendly town mailbox, taken on
         // its next visit there (a convenient town task: the route's town stop, no special trip)
+        // [town14] ... and the mailbox once picked stays the pickup's while its walk is not refused: the nearest by the
+        // straight line changes as the bot walks (b354 Rollothan L10: "mailbox Goldshire" became Lakeshire, then
+        // Darkshire as it quested east - each trip refused through Redridge Mongrels / Venom Web Spiders, 7 letters
+        // never taken)
         else if (delivered)
-            if (WorldPosition const any = NearestFriendlyMailbox(p); Valid(any))
+        {
+            auto const last = lastPickup.find(row.low);
+            if (last != lastPickup.end() && Valid(last->second.second) &&
+                last->second.second.GetMapId() == p->GetMapId() &&
+                !TownRefused(row.low, last->second.second))
+                mailPickup_[row.low] = {delivered, last->second.second};
+            else if (WorldPosition const any = NearestFriendlyMailbox(p); Valid(any))
+            {
+                if (last != lastPickup.end() && last->second.second != any)
+                    LOG_INFO("playerbots", "[town14] {} L{} mail pickup moves to the mailbox at ({:.0f},{:.0f}): the "
+                             "last one's walk was refused", p->GetName(), p->GetLevel(), any.GetPositionX(),
+                             any.GetPositionY());
                 mailPickup_[row.low] = {delivered, any};
+            }
+        }
     }
 
     // 2. what should move
