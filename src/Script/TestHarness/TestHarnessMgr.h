@@ -203,6 +203,7 @@ namespace TestHarness
         std::string id;  // run id, or "P<seq>" for a prepared party
         Composition const* comp = nullptr;
         ContentDef const* content = nullptr;
+        uint32 worldBossSpawn = 0;  // [world_boss] the boss's creature spawn id (LoadEntrances), 0: not a world boss
         uint8 level = 80;
         uint32 targetIlvl = 0;
         std::vector<Member> members;
@@ -463,6 +464,9 @@ namespace TestHarness
         void TickGuildEnter(Party& party);
         // the content's entrances (areatrigger_teleport arrival points, a wing's own portals); false: none
         bool LoadEntrances(Party& party);
+        // [world_boss] test preparation (harness test bots only, never guild runs): the world boss of the run is
+        // alive at the start - a dead copy respawned, a pending respawn timer dropped
+        void PrepareWorldBoss(Party& party);
         void TickRun(Party& party);
         // [lead107 stage 5] TickRun's group decisions, each its own step: the phantom-combat end (anyInCombat false
         // while a phantom combat counts out), the stale-victim drop, the wait for the dead / outside members, the

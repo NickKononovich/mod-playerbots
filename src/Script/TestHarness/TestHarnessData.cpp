@@ -362,6 +362,21 @@ namespace TestHarness
             {"rs25", 724, 1, 25, 271, true, "The Ruby Sanctum 25", "wotlk-raid"},
             {"rs10h", 724, 2, 10, 334, true, "The Ruby Sanctum 10 Heroic", "wotlk-raid"}, // [ladder_v3]
             {"rs25h", 724, 3, 25, 350, true, "The Ruby Sanctum 25 Heroic", "wotlk-raid"}, // [ladder_v3]
+            // [world_boss] open-world bosses (docs/WORLD_BOSS_PLAN.md, mod-world-bosses), 25 players, no instance.
+            // Highlord Kruul has one pool per continent and one living copy: the content of the continent he is on.
+            {"wb-kazzak", 0, 0, 25, 232, true, "Lord Kazzak (world boss)", "world-boss", 80, {}, {12397}, 12397},
+            {"wb-azuregos", 1, 0, 25, 251, true, "Azuregos (world boss)", "world-boss", 80, {}, {6109}, 6109},
+            {"wb-doomwalker", 530, 0, 25, 271, true, "Doomwalker (world boss)", "world-boss", 80, {}, {17711}, 17711},
+            {"wb-doomlord", 530, 0, 25, 290, true, "Doom Lord Kazzak (world boss)", "world-boss", 80, {}, {18728},
+             18728},
+            {"wb-taerar", 0, 0, 25, 309, true, "Taerar (world boss)", "world-boss", 80, {}, {14890}, 14890},
+            {"wb-emeriss", 1, 0, 25, 318, true, "Emeriss (world boss)", "world-boss", 80, {}, {14889}, 14889},
+            {"wb-lethon", 0, 0, 25, 327, true, "Lethon (world boss)", "world-boss", 80, {}, {14888}, 14888},
+            {"wb-ysondre", 1, 0, 25, 336, true, "Ysondre (world boss)", "world-boss", 80, {}, {14887}, 14887},
+            {"wb-kruul-k", 1, 0, 25, 350, true, "Highlord Kruul, Kalimdor (world boss)", "world-boss", 80, {}, {18338},
+             18338},
+            {"wb-kruul-ek", 0, 0, 25, 350, true, "Highlord Kruul, Eastern Kingdoms (world boss)", "world-boss", 80, {},
+             {18338}, 18338},
         };
 
         // Level tiers: the first entry whose minimum level the character reaches, highest first.
@@ -508,6 +523,9 @@ namespace TestHarness
             // East 45.7 min, West to 4/5 generators at 88.7 min, North untouched; projected ~141 min at that pace,
             // ~120 min net of waits / sitting / idle; budget = net x 1.3.
             {"dme-h", 160},
+            // [world_boss] port + buffs + a fight built for ~20 min against the reference raid (enrage at 25 min)
+            {"wb-kazzak", 40}, {"wb-azuregos", 40}, {"wb-doomwalker", 40}, {"wb-doomlord", 40}, {"wb-taerar", 40},
+            {"wb-emeriss", 40}, {"wb-lethon", 40}, {"wb-ysondre", 40}, {"wb-kruul-k", 40}, {"wb-kruul-ek", 40},
         };
         if (!contentKey)
             return 0;

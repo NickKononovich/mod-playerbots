@@ -40,6 +40,7 @@
 #include "MapMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "PoolMgr.h"  // [world_boss] the pooled spot of a world boss
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -1213,6 +1214,60 @@ namespace TestHarness
         if (!party.entrances.empty() || !content)
             return !party.entrances.empty();
 
+        if (content->worldBoss)
+        {
+            // [world_boss] the boss's live copy on the content's map (Highlord Kruul: the pooled spot he stands on),
+            // else its first spawn there. The harness ticks on the world thread outside the map updates.
+            ObjectGuid::LowType spawnId = 0;
+            Map* map = sMapMgr->FindBaseMap(content->mapId);
+            if (map)
+                for (auto const& [id, creature] : map->GetCreatureBySpawnIdStore())
+                    if (creature && creature->GetEntry() == content->worldBoss && creature->IsAlive())
+                    {
+                        spawnId = id;
+                        break;
+                    }
+            // a pooled boss not loaded yet: the spot its pool spawned (the other spots of the pool hold nothing)
+            auto const poolSpot = [map](ObjectGuid::LowType id)
+            {
+                return !sPoolMgr->IsPartOfAPool<Creature>(id) ||
+                       (map && map->GetPoolData().IsSpawnedObject<Creature>(id));
+            };
+            CreatureData const* boss = nullptr;
+            for (auto const& [id, data] : sObjectMgr->GetAllCreatureData())
+                if (data.id == content->worldBoss && data.mapid == content->mapId &&
+                    (spawnId ? id == spawnId : poolSpot(id)) && (!boss || id < boss->spawnId))
+                    boss = &data;
+            if (!boss)
+                return false;
+            party.worldBossSpawn = boss->spawnId;
+            // the stand-off spot: the nearest other creature spawn WORLD_BOSS_STANDOFF_MIN..MAX yd from the boss - a
+            // point on the ground the boss does not aggro from; none: the boss's own spot
+            constexpr float WORLD_BOSS_STANDOFF_MIN = 35.0f;
+            constexpr float WORLD_BOSS_STANDOFF_MAX = 90.0f;
+            Position spot(boss->posX, boss->posY, boss->posZ, boss->orientation);
+            float best = WORLD_BOSS_STANDOFF_MAX;
+            for (auto const& [id, data] : sObjectMgr->GetAllCreatureData())
+            {
+                if (data.mapid != boss->mapid || data.id == content->worldBoss)
+                    continue;
+                float const dx = data.posX - boss->posX;
+                float const dy = data.posY - boss->posY;
+                float const dist = std::sqrt(dx * dx + dy * dy);
+                if (dist >= WORLD_BOSS_STANDOFF_MIN && dist < best && std::fabs(data.posZ - boss->posZ) < 15.0f)
+                {
+                    best = dist;
+                    spot.Relocate(data.posX, data.posY, data.posZ, std::atan2(-dy, -dx));
+                }
+            }
+            party.entrances.push_back(spot);
+            LogEvent(party, "world_boss_spot", JsonObject().Num("entry", content->worldBoss)
+                                                   .Num("spawn", int64(boss->spawnId)).Num("map", content->mapId)
+                                                   .Num("x", spot.GetPositionX()).Num("y", spot.GetPositionY())
+                                                   .Num("z", spot.GetPositionZ()).Num("standoff", best));
+            return true;
+        }
+
         if (!content->entrances.empty())
         {
             // A wing: its own portals, in the order of the content table.
@@ -1238,6 +1293,36 @@ namespace TestHarness
             } while (result->NextRow());
         }
         return !party.entrances.empty();
+    }
+
+    void TestHarnessMgr::PrepareWorldBoss(Party& party)
+    {
+        // [world_boss] test preparation of the harness test bots (the coordinator's OK 2026-11-08): the boss of the
+        // run alive. World thread, outside the map updates (TestHarnessScripts: WorldScript OnUpdate).
+        ContentDef const* content = party.content;
+        Map* map = content && party.worldBossSpawn ? sMapMgr->FindBaseMap(content->mapId) : nullptr;
+        if (!map)
+            return;
+        char const* what = "alive";
+        auto const bounds = map->GetCreatureBySpawnIdStore().equal_range(party.worldBossSpawn);
+        if (bounds.first != bounds.second)
+        {
+            Creature* boss = bounds.first->second;
+            if (boss && !boss->IsAlive())
+            {
+                boss->Respawn(true);
+                what = "respawned";
+            }
+        }
+        else if (map->GetCreatureRespawnTime(party.worldBossSpawn))
+        {
+            map->RemoveCreatureRespawnTime(party.worldBossSpawn);  // the grid spawns it when the group arrives
+            what = "respawn timer dropped";
+        }
+        else
+            what = "not loaded";
+        LogEvent(party, "world_boss_prep", JsonObject().Num("entry", content->worldBoss)
+                                               .Num("spawn", int64(party.worldBossSpawn)).Str("state", what));
     }
 
     void TestHarnessMgr::TickGuildEnter(Party& party)
@@ -1527,6 +1612,9 @@ namespace TestHarness
                     // test preparation (Scarlet Monastery heroic wave 8 entered instance 66 of the 00:06 run - Vishas
                     // and Thalnos lay dead from it, "dead, kill credit not observed"). Members still inside that map
                     // keep theirs (an unbind there starts the homebind timer, wave 7).
+                    // [world_boss] an open-world map has no instance and no bind: a member on it is ported below
+                    if (content->worldBoss)
+                        continue;
                     if (bot->GetMapId() != content->mapId)
                         sInstanceSaveMgr->PlayerUnbindInstance(bot->GetGUID(), content->mapId,
                                                                Difficulty(content->difficulty), true, bot);
@@ -1542,9 +1630,13 @@ namespace TestHarness
                     }
                 }
             PrepareEventItems(party, ObjectAccessor::FindPlayer(party.leader), true);
+            if (content->worldBoss)
+                PrepareWorldBoss(party);
         }
 
         Position const& entrance = party.entrances[party.entranceIdx];
+        // [world_boss] on an open-world map a member counts as arrived only near the stand-off spot
+        constexpr float WORLD_BOSS_ARRIVED_YD = 40.0f;
         bool all = true;
         uint32 instanceId = 0;
         bool mixed = false;
@@ -1565,7 +1657,9 @@ namespace TestHarness
                 continue;
             }
 
-            if (bot->GetMapId() != content->mapId)
+            if (bot->GetMapId() != content->mapId ||
+                (content->worldBoss && bot->GetExactDist2d(entrance.GetPositionX(), entrance.GetPositionY()) >
+                                           WORLD_BOSS_ARRIVED_YD))
             {
                 all = false;
                 // Out of the stale instance: its temporary bind goes, as for the members that were outside.
