@@ -493,6 +493,20 @@ namespace Leader::Dungeon
                                                   .Real("fightSec", fightMs / 1000.0f)
                                                   .Str("reason", route.buffReason));
         }
+        // [mount_led] b342 wb-kazzak 25A-3 / bt-h 25A-2: the group came in mounted (the open world, Black Temple's
+        // courtyard; a mounted member indoors keeps its mount, CheckMountStateAction is useless there) and every buff,
+        // flask, food and conjure failed NOT_MOUNTED for 4 minutes - the pass never ended. A buff pass is a stop: the
+        // leader has every member in it get off its mount (the members' own rule keeps a led tank off it while it
+        // stands, CheckMountStateAction)
+        if (route.needBuff)
+            for (Player* bot : players)
+                if (bot->IsAlive() && bot->IsInWorld() && bot->GetMap() == leader->GetMap() && bot->IsMounted() &&
+                    !bot->IsFlying() && !bot->IsInCombat() && bot->GetDistance(leader) <= BUFF_GROUP_RANGE)
+                {
+                    bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+                    LOG_INFO("playerbots", "[mount_led] {}: off the mount for the buff pass ({}, {})", bot->GetName(),
+                             route.buffReason, group.Run().runId);
+                }
         // A step done goes on to the next one in the same tick while that one has nothing to wait for (no flask, no
         // food): nothing missing takes about 4 s.
         for (uint32 pass = 0; pass < 4 && route.needBuff; ++pass)
