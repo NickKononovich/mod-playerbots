@@ -78,10 +78,10 @@ namespace
         uint32 const g = copper / 10000, s = (copper / 100) % 100, c = copper % 100;
         std::string out;
         if (g)
-            out += std::to_string(g) + " з ";
+            out += std::to_string(g) + " g ";
         if (g || s)
-            out += std::to_string(s) + " с ";
-        out += std::to_string(c) + " м";
+            out += std::to_string(s) + " s ";
+        out += std::to_string(c) + " c";
         return out;
     }
 
@@ -148,7 +148,7 @@ namespace
         return yards / (speed > 0.0f ? speed : 1.0f);
     }
 
-    std::string Sec(float s) { return s == NONE ? "—" : std::to_string(uint32(s + 0.5f)) + " с"; }
+    std::string Sec(float s) { return s == NONE ? "—" : std::to_string(uint32(s + 0.5f)) + " s"; }
 
     // food / drink by the item's spell (the core's eat / drink auras)
     uint8 ConsumableKind(ItemTemplate const* proto)
@@ -338,10 +338,7 @@ namespace
         return box && p->GetGameObjectIfCanInteractWith(box->GetGUID(), GAMEOBJECT_TYPE_MAILBOX) ? box : nullptr;
     }
 
-    char const* ChannelName(uint8 channel)
-    {
-        return channel == 0 ? "обмен" : channel == 1 ? "почта" : "банк";
-    }
+    char const* ChannelName(uint8 channel) { return channel == 0 ? "trade" : channel == 1 ? "mail" : "bank"; }
 
     char const* ChannelLog(uint8 channel) { return channel == 0 ? "trade" : channel == 1 ? "mail" : "bank"; }
 }
@@ -596,10 +593,10 @@ void GuildCoordinator::UpdateTransfers()
             w.guid = h.itemGuidLow;
             w.itemId = h.itemId;
             w.count = h.count;
-            w.purpose = h.purpose.rfind("улучшение", 0) == 0 ? "улучшение"
-                        : h.purpose.rfind("крафт", 0) == 0   ? "изделие"
-                        : h.purpose.rfind("распылить", 0) == 0 ? "на распыление"
-                                                               : "предмет";
+            w.purpose = h.purpose.rfind("upgrade", 0) == 0      ? "upgrade"
+                        : h.purpose.rfind("craft", 0) == 0      ? "product"
+                        : h.purpose.rfind("disenchant", 0) == 0 ? "to disenchant"
+                                                                : "item";
             w.why = h.purpose;
             wants.push_back(w);
             used.insert(h.itemGuidLow);
@@ -628,8 +625,8 @@ void GuildCoordinator::UpdateTransfers()
                 continue;
             for (auto const& [item, n] : r.reagents)
                 if (uint32 const have = c->GetItemCount(item, false); have < n)
-                    lack[{row.low, item}] = {n - have, "прокачка навыка " + std::to_string(value) + ": " +
-                                                           ItemText(r.product, 1)};
+                    lack[{row.low, item}] = {n - have,
+                                             "skill-up " + std::to_string(value) + ": " + ItemText(r.product, 1)};
         }
         // [smelt] a miner's next smelt that still gives it skill: the ore goes to it (it smelts and levels Mining)
         std::vector<std::pair<uint32, uint32>> ores;
@@ -637,7 +634,7 @@ void GuildCoordinator::UpdateTransfers()
         if (NextSmelt(c, &ores, &bar))
             for (auto const& [ore, n] : ores)
                 if (uint32 const have = c->GetItemCount(ore, false); have < n)
-                    lack[{row.low, ore}] = {n - have, "плавка (горное дело " +
+                    lack[{row.low, ore}] = {n - have, "smelt (mining " +
                                                           std::to_string(c->GetPureSkillValue(SKILL_MINING)) +
                                                           "): " + ItemText(bar, 1)};
     }
@@ -649,8 +646,8 @@ void GuildCoordinator::UpdateTransfers()
             continue;
         for (auto const& [item, n] : recipe->reagents)
             if (uint32 const have = c->GetItemCount(item, false); have < n)
-                lack[{job.crafterLow, item}] = {n - have, "крафт " + ItemText(job.itemId, 1) + " для " +
-                                                              Who(job.forLow)};
+                lack[{job.crafterLow, item}] = {n - have,
+                                                "craft " + ItemText(job.itemId, 1) + " for " + Who(job.forLow)};
     }
     std::set<std::pair<uint32, uint32>> ownNeed, incoming;
     for (auto const& [key, need] : lack)
@@ -685,8 +682,8 @@ void GuildCoordinator::UpdateTransfers()
                     best.guid = held.itemGuidLow;
                     best.itemId = item;
                     best.count = held.count;
-                    best.purpose = "реагент";
-                    best.why = "не хватает " + std::to_string(need.first) + " — " + need.second;
+                    best.purpose = "reagent";
+                    best.why = "short " + std::to_string(need.first) + " — " + need.second;
                 }
             }
         }
@@ -705,8 +702,8 @@ void GuildCoordinator::UpdateTransfers()
                                          : 0;
                 if (skill && h->HasSkill(skill))
                 {
-                    best.purpose = "снабжение";
-                    best.why = "сборщик → ремесленник; " + best.why;
+                    best.purpose = "supply";
+                    best.why = "gatherer → crafter; " + best.why;
                 }
             }
             used.insert(best.guid);
@@ -793,9 +790,9 @@ void GuildCoordinator::UpdateTransfers()
             w.guid = from->GetGUID().GetCounter();
             w.itemId = from->GetEntry();
             w.count = give;
-            w.purpose = "снабжение";
-            w.why = "еда кончилась; съел за час " + std::to_string(use) + "; повар делит " + std::to_string(total) +
-                    (measured ? " по расходу" : " поровну");
+            w.purpose = "supply";
+            w.why = "food ran out; eaten in an hour " + std::to_string(use) + "; the cook shares " +
+                    std::to_string(total) + (measured ? " by use" : " equally");
             wants.push_back(w);
             fed.insert(w.to);
         }
@@ -862,9 +859,9 @@ void GuildCoordinator::UpdateTransfers()
                 w.guid = from->GetGUID().GetCounter();
                 w.itemId = from->GetEntry();
                 w.count = give;
-                w.purpose = "расходник";
-                w.why = std::string(kind == FOOD ? "еда" : "питьё") + " кончилась; интендант пятёрки " +
-                        std::to_string(id) + " делит поровну: " + std::to_string(total) + " на " +
+                w.purpose = "consumable";
+                w.why = std::string(kind == FOOD ? "food" : "drink") + " ran out; the five's quartermaster " +
+                        std::to_string(id) + " shares equally: " + std::to_string(total) + " among " +
                         std::to_string(needy.size() + 1);
                 wants.push_back(w);
             }
@@ -952,8 +949,8 @@ void GuildCoordinator::UpdateTransfers()
                                                 ObjectGuid::Create<HighGuid::Player>(w.to));
                 c.delay = !w.gold && sAccount != rAccount ? sWorld->getIntConfig(CONFIG_MAIL_DELIVERY_DELAY) : 0;
                 // an upgrade / product / needed reagent: the core's delivery time is time until it is usable
-                bool const needed = w.purpose == "улучшение" || w.purpose == "изделие" || w.purpose == "реагент" ||
-                                    (w.purpose == "снабжение" && w.key[0] == 'r');
+                bool const needed = w.purpose == "upgrade" || w.purpose == "product" || w.purpose == "reagent" ||
+                                    (w.purpose == "supply" && w.key[0] == 'r');
                 if (needed && c.mail < NONE)
                     c.mail += float(c.delay);
             }
@@ -994,13 +991,13 @@ void GuildCoordinator::UpdateTransfers()
         {
             c.channel = Transfer::TRADE;  // a five's share: handed over when they meet
             c.cost = 0.0f;
-            c.text = "обмен при встрече в пятёрке";
+            c.text = "trade at a meeting in the five";
             return c;
         }
-        c.text = "обмен " + Sec(c.trade) +
-                 (c.walkerLow && c.trade < NONE ? " (идёт " + Who(c.walkerLow) + ")" : "") + ", почта " + Sec(c.mail) +
-                 (c.mail < NONE && c.delay ? " (доставка " + std::to_string(c.delay / 60) + " мин)" : "") +
-                 (c.mail < NONE ? ", " + Gold(MAIL_POSTAGE) : "") + ", банк " + Sec(c.bank);
+        c.text = "trade " + Sec(c.trade) + (c.walkerLow && c.trade < NONE ? " (walks " + Who(c.walkerLow) + ")" : "") +
+                 ", mail " + Sec(c.mail) +
+                 (c.mail < NONE && c.delay ? " (delivery " + std::to_string(c.delay / 60) + " min)" : "") +
+                 (c.mail < NONE ? ", " + Gold(MAIL_POSTAGE) : "") + ", bank " + Sec(c.bank);
         return c;
     };
 
@@ -1014,7 +1011,7 @@ void GuildCoordinator::UpdateTransfers()
         uint32 const gmLow = guild->GetLeaderGUID().GetCounter();
         Player* gm = Online(gmLow);
         if (!gm || !GET_PLAYERBOT_AI(gm) || HumanCharacter(gm))
-            donation = "взносы на вкладку: глава не бот в сети";
+            donation = "donations for the tab: the guild master is not a bot online";
         else
         {
             uint32 const gmFree = FoundingFreeMoney(gm);
@@ -1024,8 +1021,8 @@ void GuildCoordinator::UpdateTransfers()
                     inMail += m->money;
             uint32 const need = tabCost > gmFree + inMail ? tabCost - gmFree - inMail : 0;
             if (!need)
-                donation = "вкладка " + Gold(tabCost) + ": у главы свободно " + Gold(gmFree) +
-                           (inMail ? " + в почте " + Gold(inMail) : "") + " — хватает, взносов не нужно";
+                donation = "tab " + Gold(tabCost) + ": the guild master has free " + Gold(gmFree) +
+                           (inMail ? " + in mail " + Gold(inMail) : "") + " — enough, no donations needed";
             else
             {
                 struct Donor
@@ -1049,7 +1046,7 @@ void GuildCoordinator::UpdateTransfers()
                     w.from = row.low;
                     w.to = gmLow;
                     w.money = free - MAIL_POSTAGE;  // what it can give whichever channel (the postage kept back)
-                    w.purpose = "взнос";
+                    w.purpose = "donation";
                     Choice const c = choose(w, nullptr);
                     if (c.cost == NONE)
                         continue;
@@ -1059,10 +1056,10 @@ void GuildCoordinator::UpdateTransfers()
                     pool += w.money;
                 }
                 if (pool < need)
-                    donation = "вкладка " + Gold(tabCost) + ": у главы " + Gold(gmFree) +
-                               (inMail ? " + в почте " + Gold(inMail) : "") + ", у членов свободно " +
+                    donation = "tab " + Gold(tabCost) + ": the guild master has " + Gold(gmFree) +
+                               (inMail ? " + in mail " + Gold(inMail) : "") + ", members have free " +
                                Gold(uint32(std::min<uint64>(pool, UINT32_MAX))) +
-                               " — не хватает, взносов нет (копят сами)";
+                               " — not enough, no donations (they save themselves)";
                 else
                 {
                     // the cheapest walks first, each up to its free surplus, until the tab is paid
@@ -1078,8 +1075,8 @@ void GuildCoordinator::UpdateTransfers()
                         d.w.money = std::min(d.w.money, left);
                         left -= d.w.money;
                         walk += d.cost;
-                        d.w.why = "вкладка банка " + Gold(tabCost) + ": у главы " + Gold(gmFree) +
-                                  ", не хватает " + Gold(need);
+                        d.w.why = "bank tab " + Gold(tabCost) + ": the guild master has " + Gold(gmFree) + ", short " +
+                                  Gold(need);
                         picked.push_back(d.w);
                     }
                     float const tabWalk = WalkSeconds(gm, vaultWalk(gm));
@@ -1105,11 +1102,12 @@ void GuildCoordinator::UpdateTransfers()
                         for (HeldItem const& h : st.held)
                             stuck += !h.forLow && h.purpose != "pending" ? 1 : 0;
                     bool const pays = saving > walk || stuck > 0;
-                    donation = "вкладка " + Gold(tabCost) + ": у главы " + Gold(gmFree) +
-                               (inMail ? " + в почте " + Gold(inMail) : "") + ", взносы " +
-                               std::to_string(picked.size()) + " членов (" + Sec(walk) + " ходьбы); банк сбережёт " +
-                               Sec(saving) + " на передачах и освободит " + std::to_string(stuck) + " яч. сумок — " +
-                               (pays ? "окупается: собирают" : "не окупается: копит глава сам");
+                    donation = "tab " + Gold(tabCost) + ": the guild master has " + Gold(gmFree) +
+                               (inMail ? " + in mail " + Gold(inMail) : "") + ", donations " +
+                               std::to_string(picked.size()) + " members (" + Sec(walk) +
+                               " of walking); the bank saves " + Sec(saving) + " on transfers and frees " +
+                               std::to_string(stuck) + " bag slots — " +
+                               (pays ? "pays off: collecting" : "does not pay off: the guild master saves himself");
                     if (pays)
                         donations = std::move(picked);
                 }
@@ -1142,8 +1140,8 @@ void GuildCoordinator::UpdateTransfers()
             w.from = row.low;
             w.to = low;
             w.money = st.repairShort;
-            w.purpose = "ремонт";
-            w.why = "не хватает на ремонт " + Gold(st.repairShort);
+            w.purpose = "repair";
+            w.why = "short of the repair " + Gold(st.repairShort);
             Choice const c = choose(w, nullptr);
             if (c.cost < bestCost)
             {
@@ -1242,7 +1240,7 @@ void GuildCoordinator::UpdateTransfers()
                         continue;  // its own, learnable once its skill reaches the rank: kept
                     if (HumanCharacter(h))
                         Suggest(holderRow->low, "r:" + std::to_string(proto->ItemId),
-                                "выучи " + name + " (навык " + skillText + ") — в гильдии ты лучший для него.");
+                                "learn " + name + " (skill " + skillText + ") — in the guild you are the best for it.");
                     else
                         recipeLearn_.emplace_back(holderRow->low, it->GetGUID().GetCounter());
                     continue;
@@ -1256,13 +1254,13 @@ void GuildCoordinator::UpdateTransfers()
                 w.guid = it->GetGUID().GetCounter();
                 w.itemId = proto->ItemId;
                 w.count = 1;
-                w.purpose = "рецепт";
-                w.why = "выучит " + Who(bestLow) + " (навык " + skillText +
-                        (now ? ", учит сразу)" : ", учит, когда дорастёт)");
+                w.purpose = "recipe";
+                w.why = "learned by " + Who(bestLow) + " (skill " + skillText +
+                        (now ? ", learns at once)" : ", learns once its skill is there)");
                 if (HumanCharacter(best) && !HumanCharacter(h))
                     Suggest(bestLow, "r:" + std::to_string(proto->ItemId),
-                            name + " придёт тебе почтой от " + Who(holderRow->low) + " — выучи (навык " + skillText +
-                                ").");
+                            name + " comes to you by mail from " + Who(holderRow->low) + " — learn it (skill " +
+                                skillText + ").");
                 wants.push_back(w);
                 used.insert(w.guid);
             }
@@ -1290,8 +1288,8 @@ void GuildCoordinator::UpdateTransfers()
                                        return false;
                                    std::string const what = w.gold ? Gold(w.money) : ItemText(w.itemId, w.count);
                                    Suggest(w.from, "t:" + w.key,
-                                           "у тебя " + what + " — нужно " + Who(w.to) + " (" + w.purpose + ": " +
-                                               w.why + "). Передай обменом или почтой, если согласен.");
+                                           "you have " + what + " — needed " + Who(w.to) + " (" + w.purpose + ": " +
+                                               w.why + "). Give it by trade or mail if you agree.");
                                    return true;
                                }),
                 wants.end());
@@ -1320,7 +1318,7 @@ void GuildCoordinator::UpdateTransfers()
             }
             if (arrived || !pending)
             {
-                if (arrived && t.purpose == "на распыление")
+                if (arrived && t.purpose == "to disenchant")
                     bots_[t.toLow].disenchant.push_back(t.itemGuidLow);
                 if (!arrived && !t.gold)
                     logs.push_back("mail " + Who(t.fromLow) + " -> " + Who(t.toLow) + ": " +
@@ -1372,7 +1370,7 @@ void GuildCoordinator::UpdateTransfers()
             c.walkerLow = 0;
             c.meet = t.meet;
             c.mailbox = t.mailbox;
-            c.text += "; нет канала";
+            c.text += "; no channel";
         }
         t.itemGuidLow = d->second->guid;
         t.itemId = d->second->itemId;
@@ -1410,7 +1408,7 @@ void GuildCoordinator::UpdateTransfers()
         t.purpose = w->purpose;
         t.why = w->why;
         // [guild15] gear history: the receiver's equip of an upgrade is the global leader's decision
-        if (!t.gold && t.purpose == "улучшение")
+        if (!t.gold && t.purpose == "upgrade")
             GuildGear::HistoryNoteDecision(t.toLow, t.itemId, "leader",
                                            "guild transfer from " + Who(t.fromLow) + ": " + t.why);
         t.costs = c.text;
@@ -1421,7 +1419,7 @@ void GuildCoordinator::UpdateTransfers()
         std::string const what = t.gold ? Gold(t.money) : ItemText(t.itemId, t.count);
         logs.push_back("plan " + Who(t.fromLow) + " -> " + Who(t.toLow) + ": " + what + " by " +
                        ChannelLog(t.channel) + " (" + t.costs + ") — " + t.purpose + ": " + t.why);
-        if (t.purpose != "расходник")
+        if (t.purpose != "consumable")
             Decision(Who(t.fromLow) + " → " + Who(t.toLow) + ": " + what + ", " + ChannelName(t.channel) + " (" +
                      t.purpose + "; " + t.costs + ")");
         transfers_.emplace(t.id, std::move(t));
@@ -1551,7 +1549,7 @@ void GuildCoordinator::RunTransfers(uint32 diff)
                 continue;
             uint32 const before = s->GetMoney();
             std::string const err =
-                DoMail(s, box, name, item, money, t.gold ? "На вкладку банка гильдии" : "Для тебя: " + t.purpose);
+                DoMail(s, box, name, item, money, t.gold ? "For the guild bank tab" : "For you: " + t.purpose);
             if (err.empty())
             {
                 uint32 deliverAt = now;
@@ -1669,17 +1667,17 @@ void GuildCoordinator::RunTransfers(uint32 diff)
             t.money = o.money;
         if (o.done)
         {
-            if (t.purpose == "на распыление" && o.newGuid)
+            if (t.purpose == "to disenchant" && o.newGuid)
                 bots_[t.toLow].disenchant.push_back(o.newGuid);
-            Decision(Who(t.fromLow) + " передал " + Who(t.toLow) + " обменом: " +
-                     (t.gold ? Gold(t.money) : ItemText(t.itemId, t.count)) + " (" + t.purpose + ")");
+            Decision(Who(t.fromLow) + " gave " + Who(t.toLow) +
+                     " by trade: " + (t.gold ? Gold(t.money) : ItemText(t.itemId, t.count)) + " (" + t.purpose + ")");
             transfers_.erase(it);
         }
         else if (o.mailed)
         {
             t.mailed = true;
             t.deliverAt = o.deliverAt;
-            Decision(Who(t.fromLow) + " отправил почтой " + Who(t.toLow) + ": " +
+            Decision(Who(t.fromLow) + " mailed " + Who(t.toLow) + ": " +
                      (t.gold ? Gold(t.money) : ItemText(t.itemId, t.count)) + " (" + t.purpose + ")");
         }
         else
@@ -1724,40 +1722,40 @@ void GuildCoordinator::TransferOrders(uint32 low, Player* p, std::vector<GuildOr
         o.forLow = sender ? t.toLow : t.fromLow;
         std::string const what = t.gold ? Gold(t.money) : ItemText(t.itemId, t.count);
         o.details = sender ? what + " → " + Who(t.toLow) + ", " + ChannelName(t.channel)
-                           : "получает " + what + " от " + Who(t.fromLow) + ", " + ChannelName(t.channel);
-        o.reason = (t.purpose == "снабжение" ? "SUPPLY " : "") + t.purpose + ": " + t.why + " (" + t.costs + ")";
+                           : "receives " + what + " from " + Who(t.fromLow) + ", " + ChannelName(t.channel);
+        o.reason = (t.purpose == "supply" ? "SUPPLY " : "") + t.purpose + ": " + t.why + " (" + t.costs + ")";
         if (t.mailed)
         {
             if (sender)
                 continue;  // its part is done
-            o.status = t.deliverAt > NowSec() ? "в пути, доставка через " +
-                                                    std::to_string((t.deliverAt - NowSec() + 59) / 60) + " мин"
-                                              : "доставлено: забрать у почтового ящика";
+            o.status = t.deliverAt > NowSec()
+                           ? "in transit, delivery in " + std::to_string((t.deliverAt - NowSec() + 59) / 60) + " min"
+                           : "delivered: collect at a mailbox";
         }
         else if (t.channel == Transfer::MAIL)
         {
             o.executable = sender && !t.stalled;
             o.pos = t.mailbox;
-            o.status = sender ? "к почтовому ящику " +
-                                    std::to_string(uint32(p->GetExactDist(t.mailbox.GetPositionX(),
-                                                                          t.mailbox.GetPositionY(),
-                                                                          t.mailbox.GetPositionZ()))) +
-                                    " ярд"
-                              : "ждёт письмо";
+            o.status = sender
+                           ? "to the mailbox " +
+                                 std::to_string(uint32(p->GetExactDist(
+                                     t.mailbox.GetPositionX(), t.mailbox.GetPositionY(), t.mailbox.GetPositionZ()))) +
+                                 " yd"
+                           : "waits for the letter";
         }
         else
         {
             o.executable = t.walkerLow == low;
             o.pos = t.meet;
             if (!t.walkerLow)
-                o.status = "обмен при встрече (≤" + std::to_string(uint32(TRADE_DISTANCE)) + " ярд)";
+                o.status = "trade at a meeting (≤" + std::to_string(uint32(TRADE_DISTANCE)) + " yd)";
             else if (t.walkerLow == low)
-                o.status = Valid(t.meet) ? "идёт к месту встречи" : "идёт к " + Who(o.forLow);
+                o.status = Valid(t.meet) ? "walks to the meeting point" : "walks to " + Who(o.forLow);
             else
-                o.status = "ждёт: " + Who(t.walkerLow) + " идёт к нему";
+                o.status = "waits: " + Who(t.walkerLow) + " walks to it";
         }
         if (!t.failed.empty())
-            o.status += "; отказ: " + t.failed;
+            o.status += "; refused: " + t.failed;
         orders.push_back(o);
     }
     // the receiver's delivered mails: taken at the cheapest mailbox
@@ -1768,12 +1766,12 @@ void GuildCoordinator::TransferOrders(uint32 low, Player* p, std::vector<GuildOr
         o.type = GuildOrderType::MAIL_TO;
         o.count = pick->second.first;
         o.pos = pick->second.second;
-        o.details = "забрать почту: " + std::to_string(o.count) + " писем от гильдии";
-        o.reason = "доставлено ядром";
-        o.status = "к почтовому ящику " +
-                   std::to_string(uint32(p->GetExactDist(o.pos.GetPositionX(), o.pos.GetPositionY(),
-                                                         o.pos.GetPositionZ()))) +
-                   " ярд";
+        o.details = "collect mail: " + std::to_string(o.count) + " letters from the guild";
+        o.reason = "delivered by the core";
+        o.status =
+            "to the mailbox " +
+            std::to_string(uint32(p->GetExactDist(o.pos.GetPositionX(), o.pos.GetPositionY(), o.pos.GetPositionZ()))) +
+            " yd";
         o.executable = true;
         orders.push_back(o);
     }
@@ -1821,7 +1819,7 @@ bool GuildCoordinator::TransferStep(Player* bot, BotState& st, GuildOrder& order
                                                            dest.GetPositionZ(), what))
     {
         order.executable = false;
-        order.status = "нет безопасного пути — квестует";
+        order.status = "no safe way — quests";
         if (t)
         {
             if (t->channel == Transfer::TRADE)
@@ -1914,20 +1912,19 @@ void GuildCoordinator::TransferPlanRows(std::vector<std::vector<std::string>>& r
     {
         std::string const what = t.gold ? Gold(t.money) : ItemText(t.itemId, t.count);
         uint32 const left = t.deliverAt > NowSec() ? (t.deliverAt - NowSec() + 59) / 60 : 0;
-        std::string state = t.mailed                      ? (left ? "в почте, доставка через " + std::to_string(left) +
-                                                                       " мин"
-                                                                  : "в почте: забрать")
-                            : t.channel == Transfer::BANK ? "через банк"
-                            : t.channel == Transfer::MAIL ? "к почтовому ящику"
-                            : t.walkerLow                 ? "идёт " + Who(t.walkerLow)
-                                                          : "при встрече";
+        std::string state =
+            t.mailed ? (left ? "in the mail, delivery in " + std::to_string(left) + " min" : "in the mail: collect")
+            : t.channel == Transfer::BANK ? "via the bank"
+            : t.channel == Transfer::MAIL ? "to the mailbox"
+            : t.walkerLow                 ? "walks " + Who(t.walkerLow)
+                                          : "at a meeting";
         if (!t.failed.empty())
-            state += "; отказ";
-        rows.push_back({"передача", state, Who(t.fromLow), what, Who(t.toLow),
-                        std::string(t.gold ? "взнос, " : "") + ChannelName(t.channel),
+            state += "; refused";
+        rows.push_back({"transfer", state, Who(t.fromLow), what, Who(t.toLow),
+                        std::string(t.gold ? "donation, " : "") + ChannelName(t.channel),
                         t.purpose + ": " + t.why + " (" + t.costs + ")"});
     }
     if (!donationState_.empty())
-        rows.push_back({"деньги", "взносы", "члены гильдии", "вкладка банка 1", "глава гильдии", "почта / обмен",
-                        donationState_});
+        rows.push_back(
+            {"money", "donations", "guild members", "bank tab 1", "guild master", "mail / trade", donationState_});
 }

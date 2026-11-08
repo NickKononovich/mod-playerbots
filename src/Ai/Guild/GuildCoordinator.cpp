@@ -100,9 +100,7 @@ namespace
     }
     char const* PriorityRu(GuildTaskPriority p)
     {
-        return p == GuildTaskPriority::URGENT ? "срочно"
-               : p == GuildTaskPriority::HELP ? "помощь"
-                                              : "при случае";
+        return p == GuildTaskPriority::URGENT ? "urgent" : p == GuildTaskPriority::HELP ? "help" : "when convenient";
     }
 
     char const* PlaceCode(GuildTaskPlace p)
@@ -113,7 +111,7 @@ namespace
 
     char const* PlaceRu(GuildTaskPlace p)
     {
-        static char const* const names[] = {"поле", "город", "ящик", "банк", "торговец", "тренер"};
+        static char const* const names[] = {"field", "town", "mailbox", "bank", "vendor", "trainer"};
         return uint8(p) < std::size(names) ? names[uint8(p)] : "?";
     }
 
@@ -264,19 +262,32 @@ namespace
     {
         switch (line)
         {
-            case 164: return "кузн";
-            case 165: return "кожев";
-            case 171: return "алх";
-            case 197: return "портн";
-            case 202: return "инж";
-            case 333: return "чар";
-            case 755: return "ювел";
-            case 773: return "начерт";
-            case 185: return "кулин";
-            case 129: return "перев";
-            case 186: return "горн";
-            case 182: return "трав";
-            case 393: return "шкуры";
+            case 164:
+                return "BS";
+            case 165:
+                return "LW";
+            case 171:
+                return "Alch";
+            case 197:
+                return "Tail";
+            case 202:
+                return "Eng";
+            case 333:
+                return "Ench";
+            case 755:
+                return "JC";
+            case 773:
+                return "Insc";
+            case 185:
+                return "Cook";
+            case 129:
+                return "FA";
+            case 186:
+                return "Mine";
+            case 182:
+                return "Herb";
+            case 393:
+                return "Skin";
             default: return "?";
         }
     }
@@ -286,16 +297,26 @@ namespace
     {
         switch (line)
         {
-            case 164: return "кузнецы";
-            case 165: return "кожевники";
-            case 171: return "алхимики";
-            case 197: return "портные";
-            case 202: return "инженеры";
-            case 333: return "зачарователи";
-            case 755: return "ювелиры";
-            case 773: return "начертатели";
-            case 185: return "повара";
-            case 129: return "лекари";
+            case 164:
+                return "blacksmiths";
+            case 165:
+                return "leatherworkers";
+            case 171:
+                return "alchemists";
+            case 197:
+                return "tailors";
+            case 202:
+                return "engineers";
+            case 333:
+                return "enchanters";
+            case 755:
+                return "jewelcrafters";
+            case 773:
+                return "scribes";
+            case 185:
+                return "cooks";
+            case 129:
+                return "first-aiders";
             default: return "?";
         }
     }
@@ -454,10 +475,10 @@ namespace
     {
         std::string text;
         if (copper >= GOLD)
-            text += std::to_string(copper / GOLD) + "з ";
+            text += std::to_string(copper / GOLD) + "g ";
         if (copper >= SILVER)
-            text += std::to_string((copper % GOLD) / SILVER) + "с ";
-        return text + std::to_string(copper % SILVER) + "м";
+            text += std::to_string((copper % GOLD) / SILVER) + "s ";
+        return text + std::to_string(copper % SILVER) + "c";
     }
 
     // the smallest bag size in the member's bag slots (0 = a slot is empty)
@@ -810,21 +831,21 @@ std::string GuildCoordinator::RaidLeaderText(char grp) const
 std::string GuildCoordinator::Chain(uint32 low) const
 {
     PlanRow const* row = Row(low);
-    std::string chain = "глоб.";
+    std::string chain = "global";
     if (!row || row->grp < 'A' || row->grp > 'C')
         return chain;
     uint32 const leader = raidLeader_[row->grp - 'A'];
     if (leader == low)
-        return chain + " (рейд-лидер " + row->grp + ")";
+        return chain + " (raid leader " + row->grp + ")";
     if (leader)
-        chain += std::string(" → рейд ") + row->grp + " " + Who(leader);
+        chain += std::string(" → raid ") + row->grp + " " + Who(leader);
     auto const st = bots_.find(low);
     if (st != bots_.end() && st->second.fiveId)
     {
         auto const five = fives_.find(st->second.fiveId);
         if (five != fives_.end())
-            chain += " → пятёрка " + std::to_string(five->first) +
-                     (five->second.leaderLow == low ? " (лидер)" : " " + Who(five->second.leaderLow));
+            chain += " → five " + std::to_string(five->first) +
+                     (five->second.leaderLow == low ? " (leader)" : " " + Who(five->second.leaderLow));
     }
     return chain;
 }
@@ -861,16 +882,16 @@ uint32 GuildCoordinator::QuestProgress(Player* bot)
 std::string GuildCoordinator::StatusName(Player* bot, PlayerbotAI* botAI) const
 {
     if (!botAI)
-        return "играет человек";
+        return "human playing";
     if (!bot->IsAlive())
-        return bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? "призрак" : "мёртв";
+        return bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? "ghost" : "dead";
     std::string text = RpgName(uint32(botAI->rpgInfo.GetStatus()));
     if (bot->IsInCombat())
-        text = "бой/" + text;
+        text = "combat/" + text;
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
         text += " q" + std::to_string(quest->questId) + (quest->quest ? " " + quest->quest->GetTitle() : "");
     if (botAI->rpgInfo.vendorRunEntry)
-        text += " торговец: " + botAI->rpgInfo.vendorRunReason;
+        text += " vendor: " + botAI->rpgInfo.vendorRunReason;
     return text;
 }
 
@@ -882,7 +903,7 @@ std::string GuildCoordinator::WaitReason(Player* bot, PlayerbotAI* botAI, BotSta
     if (botAI)  // [guild70] crafting at a forge / in town: standing is the work
         if (auto const* prof = std::get_if<NewRpgInfo::DoProfession>(&botAI->rpgInfo.data))
             if (prof->kind == NewRpgCraft::TASK_CRAFT && !prof->npcEntry)
-                return "крафт " + NewRpgCraft::RecipeName(prof->spellId);
+                return "craft " + NewRpgCraft::RecipeName(prof->spellId);
     if (std::string const five = FiveWait(state); !five.empty())  // [guild60]
         return five;
     if (std::string const found = FoundWait(bot->GetGUID().GetCounter(), state); !found.empty())  // [guild80]
@@ -1020,12 +1041,12 @@ void GuildCoordinator::UpdateLeaders()
         }
         if (best != current)
         {
-            std::string const why = current ? "прежний не в сети" : "первый выбор";
+            std::string const why = current ? "the previous one is offline" : "first choice";
             current = best;
             if (best)
-                Decision(std::string("рейд ") + grp + ": лидер " + Who(best) + " (" + bestRow->role + ", L" +
+                Decision(std::string("raid ") + grp + ": leader " + Who(best) + " (" + bestRow->role + ", L" +
                          std::to_string(bestPlayer->GetLevel()) + ") — " +
-                         (bestRow->role == "tank" ? "танк с наибольшим уровнем" : "танков нет, наибольший уровень") +
+                         (bestRow->role == "tank" ? "the tank of the highest level" : "no tanks, highest level") +
                          "; " + why);
         }
     }
@@ -1293,8 +1314,7 @@ void GuildCoordinator::UpdateWanted()
                 uint32 const have = p->GetItemCount(item, false);
                 if (have >= quest->RequiredItemCount[i])
                     continue;
-                addPart(item, quest->RequiredItemCount[i], "квест q" + std::to_string(questId), WHY_QUEST, row.low,
-                        0);
+                addPart(item, quest->RequiredItemCount[i], "quest q" + std::to_string(questId), WHY_QUEST, row.low, 0);
                 // [gather] the quest's value (the core's quest XP at the member's copper per XP + its money reward),
                 // shared over the units of its item objectives
                 uint32 units = 0;
@@ -1323,7 +1343,7 @@ void GuildCoordinator::UpdateWanted()
                 std::map<uint32, double> raw;
                 ExpandReagent(item, g.count, raw, &via);
                 shareWorth(raw, g.value);  // [gather] the crafted item's price, this reagent's part of it
-                bool const bag = label.rfind("сумка", 0) == 0;
+                bool const bag = label.rfind("bag", 0) == 0;
                 for (auto const& [id, amount] : raw)
                     for (uint32 forLow : g.forLows)
                         addPart(id, amount / std::max<size_t>(1, g.forLows.size()), label,
@@ -1363,11 +1383,11 @@ void GuildCoordinator::UpdateWanted()
                 for (auto const& [product, a] : part->products)
                     products.emplace_back(a, product);
                 std::sort(products.rbegin(), products.rend());
-                piece = "реагент: ";
+                piece = "reagent: ";
                 for (size_t i = 0; i < products.size() && i < 2; ++i)
                     piece += (i ? ", " : "") + ItemName(products[i].second);
                 if (products.size() > 2)
-                    piece += " и др.";
+                    piece += " etc.";
                 size_t const crafters = std::max<size_t>(1, part->who.size());
                 piece += " (" + label + " " +
                          (crafters > 1 ? std::to_string(crafters) + "×≈" + std::to_string(amount / crafters)
@@ -1375,13 +1395,13 @@ void GuildCoordinator::UpdateWanted()
                          ")";
             }
             else if (part->kind == WHY_QUEST)
-                piece = label + " для " + (part->who.empty() ? "?" : num(*part->who.begin())) + " ×" +
+                piece = label + " for " + (part->who.empty() ? "?" : num(*part->who.begin())) + " ×" +
                         std::to_string(amount);
             else if (part->kind == WHY_BAG)
-                piece = label + " для " + std::to_string(part->who.size()) + " ботов ×" + std::to_string(amount);
+                piece = label + " for " + std::to_string(part->who.size()) + " bots ×" + std::to_string(amount);
             else
             {
-                piece = label + " для";
+                piece = label + " for";
                 for (uint32 low : part->who)
                     piece += " " + num(low);
                 piece += " ×" + std::to_string(amount);
@@ -1428,7 +1448,7 @@ void GuildCoordinator::UpdateWanted()
                 char ratio[16];
                 std::snprintf(ratio, sizeof(ratio), "%.2f", per);
                 if (text.size() < 120)
-                    text += (text.empty() ? "промежуточный, засчитан как " : ", ") + ItemName(raw) + " ×" + ratio;
+                    text += (text.empty() ? "intermediate, counted as " : ", ") + ItemName(raw) + " ×" + ratio;
             }
     for (auto const& [inter, text] : optional)
     {
@@ -1436,7 +1456,7 @@ void GuildCoordinator::UpdateWanted()
         w.itemId = inter;
         w.optional = true;
         w.have = held(inter);
-        w.forWhom = text + " (не заказывается)";
+        w.forWhom = text + " (not ordered)";
         list.push_back(w);
     }
     std::sort(list.begin(), list.end(), [](WantedItem const& a, WantedItem const& b)
@@ -1448,9 +1468,8 @@ void GuildCoordinator::UpdateWanted()
 
     std::lock_guard<std::mutex> guard(lock_);
     wanted_ = std::move(list);
-    guildState_ = guild ? "гильдия «" + guild->GetName() + "», вкладок банка " +
-                              std::to_string(guild->GetPurchasedTabsSize())
-                        : "гильдии нет: банк спит";
+    guildState_ = guild ? "guild «" + guild->GetName() + "», bank tabs " + std::to_string(guild->GetPurchasedTabsSize())
+                        : "no guild: the bank sleeps";
 }
 
 bool GuildCoordinator::IsWanted(uint32 itemId) const
@@ -1548,7 +1567,7 @@ void GuildCoordinator::UpdateOrders()
                 st->second.held.push_back({item->GetGUID().GetCounter(), e.itemId, item->GetCount(), e.forLow,
                                            e.purpose});
                 Decision(Who(row.low) + ": " + ItemName(e.itemId) + " — " + e.purpose +
-                         (GuildBankRun::BankState(p, true).empty() ? ", в банк" : ", держит до банка гильдии"));
+                         (GuildBankRun::BankState(p, true).empty() ? ", to the bank" : ", holds until the guild bank"));
             }
             else if (!item && p->IsNonMeleeSpellCast(false))
                 keep.push_back(e);
@@ -1572,9 +1591,8 @@ void GuildCoordinator::UpdateOrders()
                 if (g.kind == GuildGear::SRC_BANK && !p->GetItemCount(g.itemId, true) &&
                     !withdrawn.count({row.low, g.itemId}))
                 {
-                    withdraw_[row.low].emplace_back(g.itemId, std::string("улучшение ") +
-                                                                  GuildGear::GroupName(g.group) + " " +
-                                                                  GainText(g));
+                    withdraw_[row.low].emplace_back(
+                        g.itemId, std::string("upgrade ") + GuildGear::GroupName(g.group) + " " + GainText(g));
                     withdrawn[{row.low, g.itemId}] = true;
                 }
         // [guild50] old bags: once all four bag slots hold bags, a spare bag no bigger than the smallest worn one is
@@ -1595,8 +1613,8 @@ void GuildCoordinator::UpdateOrders()
                     std::find(st.sell.begin(), st.sell.end(), guidLow) != st.sell.end())
                     continue;
                 st.sell.push_back(guidLow);
-                Decision(Who(row.low) + ": старая сумка " + ItemName(bag->GetEntry()) + " → продать (" +
-                         std::to_string(bag->GetTemplate()->ContainerSlots) + " яч., самая малая надетая " +
+                Decision(Who(row.low) + ": old bag " + ItemName(bag->GetEntry()) + " → sell (" +
+                         std::to_string(bag->GetTemplate()->ContainerSlots) + " slots, smallest worn " +
                          std::to_string(smallest) + ")");
             }
         }
@@ -1642,21 +1660,21 @@ void GuildCoordinator::UpdateOrders()
             o.repairUrgent = repairNeed.urgent;
             o.cost = repairNeed.urgent ? repairNeed.urgentCost : repairNeed.cost;
             o.pos = NewRpgBaseAction::NearestRepairSpawn(p);
-            o.details = repairNeed.items + "; ремонт " + MoneyText(o.cost);
-            o.reason = repairNeed.weaponBroken ? "оружие сломано: новых пулов нет до ремонта"
-                       : repairNeed.urgent     ? "оружие / броня: сломается при следующей смерти или сломано"
-                                               : "броня: сломается при следующей смерти";
+            o.details = repairNeed.items + "; repair " + MoneyText(o.cost);
+            o.reason = repairNeed.weaponBroken ? "weapon broken: no new pulls until repaired"
+                       : repairNeed.urgent     ? "weapon / armor: breaks at the next death or broken"
+                                               : "armor: breaks at the next death";
             if (o.pos == WorldPosition())
-                o.status = "нет ремонтника на этом континенте";
+                o.status = "no repairer on this continent";
             else if (p->GetMoney() < o.cost)
             {
                 st.repairShort = o.cost - p->GetMoney();
-                o.status = "не хватает " + MoneyText(st.repairShort) + ": золото от гильдии";
+                o.status = "short " + MoneyText(st.repairShort) + ": gold from the guild";
             }
             else
             {
                 o.executable = true;
-                o.status = "к ремонтнику";
+                o.status = "to the repairer";
             }
             if (repairNeed.urgent)
                 orders.insert(orders.begin(), o);  // [regress10] the first executable order decides (interrupts)
@@ -1670,9 +1688,9 @@ void GuildCoordinator::UpdateOrders()
             GuildOrder o;
             o.type = GuildOrderType::DISENCHANT;
             o.count = uint32(st.disenchant.size());
-            o.details = std::to_string(o.count) + " предм.";
-            o.reason = "никому не улучшение, зачарователь — сам";
-            o.status = "распыляет";
+            o.details = std::to_string(o.count) + " items";
+            o.reason = "an upgrade for nobody, the enchanter itself";
+            o.status = "disenchants";
             o.executable = true;
             orders.push_back(o);
         }
@@ -1689,19 +1707,20 @@ void GuildCoordinator::UpdateOrders()
             o.itemId = bankHeld.front().itemId;
             o.count = uint32(bankHeld.size());
             o.forLow = bankHeld.front().forLow;
-            o.details = std::to_string(o.count) + " предм.: " + ItemName(o.itemId) + " (" + bankHeld.front().purpose + ")";
-            o.reason = "решение глоб. лидера по добыче";
+            o.details =
+                std::to_string(o.count) + " items: " + ItemName(o.itemId) + " (" + bankHeld.front().purpose + ")";
+            o.reason = "the global leader's loot decision";
             WorldPosition pos;
             float dist = 0;
             if (!st.vaultFail.empty())
                 o.status = st.vaultFail;
             else if (!GuildBankRun::NearestVault(p, pos, dist))
-                o.status = "нет хранилища на этом континенте";
+                o.status = "no vault on this continent";
             else
             {
                 o.executable = true;
                 o.pos = pos;  // [tasks] the vault's town
-                o.status = "к хранилищу " + std::to_string(uint32(dist)) + " ярд";
+                o.status = "to the vault " + std::to_string(uint32(dist)) + " yd";
             }
             orders.push_back(o);
         }
@@ -1713,16 +1732,16 @@ void GuildCoordinator::UpdateOrders()
             o.itemId = wd->second.front().first;
             o.count = uint32(wd->second.size());
             o.details = ItemName(o.itemId) + " (" + wd->second.front().second + ")";
-            o.reason = "в банке лежит улучшение для него";
+            o.reason = "an upgrade for it lies in the bank";
             WorldPosition pos;
             float dist = 0;
             if (!GuildBankRun::NearestVault(p, pos, dist))
-                o.status = "нет хранилища на этом континенте";
+                o.status = "no vault on this continent";
             else
             {
                 o.executable = true;
                 o.pos = pos;  // [tasks] the vault's town
-                o.status = "к хранилищу " + std::to_string(uint32(dist)) + " ярд";
+                o.status = "to the vault " + std::to_string(uint32(dist)) + " yd";
             }
             orders.push_back(o);
         }
@@ -1742,8 +1761,8 @@ void GuildCoordinator::UpdateOrders()
             // value test decides: a gather that pays more per minute than the bot's questing runs now (URGENT,
             // ClassifyTask); else the task waits and the bot quests (what it picks on the way counts)
             o.executable = a.worth;
-            o.status = a.worth ? "собирает (в сумках " + std::to_string(p->GetItemCount(a.itemId, false)) + ")"
-                               : "квестует: сбор не выгоднее квестов";
+            o.status = a.worth ? "gathers (in bags " + std::to_string(p->GetItemCount(a.itemId, false)) + ")"
+                               : "quests: gathering does not beat questing";
             orders.push_back(o);
         }
         // [tasks] PROFESSION: the global leader's calls (UpdateProfessions: the profession beats questing by value
@@ -1761,9 +1780,8 @@ void GuildCoordinator::UpdateOrders()
                 o.reason = pick.reason;
                 // GATHER runs as DO_GATHER here; TRAIN / BUY / CRAFT through the profession executor in town
                 o.executable = pick.kind == GuildProfessionKind::GATHER;
-                o.status = pick.kind == GuildProfessionKind::GATHER
-                               ? "собирает сам"
-                               : "при следующем визите в город (исполнитель профессий)";
+                o.status = pick.kind == GuildProfessionKind::GATHER ? "gathers itself"
+                                                                    : "on its next town visit (profession executor)";
                 // [econ1] a smelt: at the town forge on its next visit there (a convenient town task, NextStep)
                 if (pick.kind == GuildProfessionKind::CRAFT && pick.skillLine == SKILL_MINING &&
                     pick.pos != WorldPosition())
@@ -1785,10 +1803,10 @@ void GuildCoordinator::UpdateOrders()
             for (uint32 guid : st.sell)
                 if (Item* item = p->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(guid)); item && names.size() < 80)
                     names += (names.empty() ? "" : ", ") + ItemName(item->GetEntry());
-            o.details = std::to_string(o.count) + " предм." + (names.empty() ? "" : ": " + names) +
-                        " — продать любому торговцу";
-            o.reason = "никому в гильдии не нужно (решение глоб. лидера), продажа освобождает сумки";
-            o.status = "у ближайшего торговца по пути";
+            o.details =
+                std::to_string(o.count) + " items" + (names.empty() ? "" : ": " + names) + " — sell to any vendor";
+            o.reason = "nobody in the guild needs it (global leader's decision), selling frees the bags";
+            o.status = "at the nearest vendor on the way";
             orders.push_back(o);
         }
         if (!HumanCharacter(p))
@@ -1811,11 +1829,11 @@ void GuildCoordinator::UpdateOrders()
                 o.spellId = job->spellId;
                 o.forLow = job->forLow;
                 o.count = jobs;
-                o.details = ItemName(job->itemId) + " для " + (job->forLow == row.low ? "себя" : Who(job->forLow)) +
-                            (jobs > 1 ? " (всего заказов " + std::to_string(jobs) + ")" : "");
+                o.details = ItemName(job->itemId) + " for " + (job->forLow == row.low ? "self" : Who(job->forLow)) +
+                            (jobs > 1 ? " (orders in total " + std::to_string(jobs) + ")" : "");
                 o.reason = job->why;
                 o.executable = job->ready;
-                o.status = job->ready ? "материалы есть: создаёт" : "ждёт материалы (wanted list)";
+                o.status = job->ready ? "materials there: creates" : "waits for materials (wanted list)";
                 orders.push_back(o);
             }
             // BUY: the biggest upgrade it can pay for at a vendor
@@ -1857,10 +1875,10 @@ void GuildCoordinator::UpdateOrders()
                 o.pos = g.pos;
                 o.cost = g.aux;
                 o.extendedCost = g.extendedCost;
-                o.details = ItemName(g.itemId) + " для себя — " + g.text + ", цена " + Gsc(g.aux);
-                o.reason = std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g) +
-                           ", на свои деньги";
-                o.status = "к торговцу";
+                o.details = ItemName(g.itemId) + " for itself — " + g.text + ", price " + Gsc(g.aux);
+                o.reason = std::string("upgrade ") + GuildGear::GroupName(g.group) + " " + GainText(g) +
+                           ", with its own money";
+                o.status = "to the vendor";
                 o.executable = true;
                 orders.push_back(o);
                 break;
@@ -1875,7 +1893,7 @@ void GuildCoordinator::UpdateOrders()
                 o.forLow = pick.forLow;
                 o.count = uint32(st.rewards.size());
                 o.details = "q" + std::to_string(questId) + ": " + ItemName(pick.itemId) +
-                            (st.rewards.size() > 1 ? " (+" + std::to_string(st.rewards.size() - 1) + " кв.)" : "");
+                            (st.rewards.size() > 1 ? " (+" + std::to_string(st.rewards.size() - 1) + " quests)" : "");
                 o.reason = pick.why;
                 o.status = StatusName(p, GET_PLAYERBOT_AI(p));
                 orders.push_back(o);
@@ -1899,18 +1917,18 @@ void GuildCoordinator::UpdateOrders()
                 GuildOrder o;
                 o.type = GuildOrderType::DUNGEON;
                 o.count = byDungeon[bestMap].first;
-                o.details = GuildGear::MapName(bestMap) + ": " + std::to_string(o.count) + " улучш. (" +
+                o.details = GuildGear::MapName(bestMap) + ": " + std::to_string(o.count) + " upgr. (" +
                             byDungeon[bestMap].second + ")";
-                o.reason = "лучшие доступные вещи слотов — добыча этого данжа";
-                o.status = "план: пятёрку соберёт глоб. лидер";
+                o.reason = "the best available slot items — this dungeon's loot";
+                o.status = "plan: the global leader forms the five";
                 orders.push_back(o);
             }
         }
         for (GuildOrder const& ext : st.external)
             orders.push_back(ext);
         GuildOrder quest;
-        quest.details = "сам себе лидер";
-        quest.reason = "нет более полезного дела";
+        quest.details = "its own leader";
+        quest.reason = "nothing more useful to do";
         orders.push_back(quest);
 
         // [tasks] urgency, place, origin and town of every task; a convenient town task waits for that town
@@ -1921,11 +1939,11 @@ void GuildCoordinator::UpdateOrders()
             if (o.type == GuildOrderType::BANK_DEPOSIT && !freeSlots)
             {
                 o.priority = GuildTaskPriority::URGENT;  // bags full: the held items block its looting
-                o.reason += "; сумки полны";
+                o.reason += "; bags full";
             }
             o.waitsTown = o.executable && !TownReady(p, o);
             if (o.waitsTown)
-                o.status = "ждёт города: " + (o.townName.empty() ? std::string("?") : o.townName) + "; " + o.status;
+                o.status = "waits for town: " + (o.townName.empty() ? std::string("?") : o.townName) + "; " + o.status;
         }
         // [human] a human's character: no task of the leader touches its items, money or professions (the selfbot
         // that drives it while he is away included); each one is a suggestion he acts on himself
@@ -1940,10 +1958,10 @@ void GuildCoordinator::UpdateOrders()
                 bool const wasRun = o.executable;
                 o.executable = false;
                 o.waitsTown = false;
-                o.status = "совет человеку (решает сам)";
+                o.status = "advice to a human (he decides himself)";
                 if (wasRun)
                     Suggest(row.low, TaskKey(o),
-                            std::string("совет: ") + OrderName(o.type) + " — " + o.details + " (" + o.reason + ")");
+                            std::string("advice: ") + OrderName(o.type) + " — " + o.details + " (" + o.reason + ")");
             }
         // [tasks] the bag pressure (logged when its class changes): full bags block looting; with no bank tab the
         // held items for the bank stay in the bags, so what nobody in the guild uses is released to the vendor
@@ -1994,7 +2012,8 @@ void GuildCoordinator::UpdateOrders()
                 if (old.type == o.type && old.itemId == o.itemId && old.forLow == o.forLow)
                 {
                     o.since = old.since;
-                    if (o.type == GuildOrderType::GATHER && old.status.rfind("нет ", 0) == 0)
+                    if (o.type == GuildOrderType::GATHER &&
+                        (old.status.rfind("no ", 0) == 0 || old.status.rfind("нет ", 0) == 0))  // [econ1] World text
                         o.status = old.status;  // set by New RPG (no nodes here)
                 }
         }
@@ -2009,7 +2028,7 @@ void GuildCoordinator::UpdateOrders()
         {
             bool const gear =
                 o.type == GuildOrderType::BUY || o.type == GuildOrderType::CRAFT_FOR ||
-                (o.type == GuildOrderType::BANK_WITHDRAW && o.details.find("улучшение") != std::string::npos);
+                (o.type == GuildOrderType::BANK_WITHDRAW && o.details.find("upgrade") != std::string::npos);
             if (!gear || !o.itemId ||
                 std::any_of(st.orders.begin(), st.orders.end(),
                             [&](GuildOrder const& old) { return TaskKey(old) == TaskKey(o); }))
@@ -2095,7 +2114,7 @@ void GuildCoordinator::SetOrder(uint32 low, GuildOrder order, std::string const&
     BotState& st = bots_[low];
     order.since = Now();
     if (order.status.empty())
-        order.status = "этап 2: пока не выполняется";
+        order.status = "stage 2: not executed yet";
     st.external.erase(std::remove_if(st.external.begin(), st.external.end(),
                                      [&](GuildOrder const& o) { return o.type == order.type; }),
                       st.external.end());
@@ -2823,7 +2842,7 @@ void GuildCoordinator::UpdateProfessions()
                     continue;  // a recipe found elsewhere: the skill alone does not unlock it
                 needs.push_back({recipe->skillLine, recipe->reqSkill, recipe->spellId, g.itemId, 1, row->low,
                                  proto->Bonding == BIND_WHEN_PICKED_UP,
-                                 std::string("улучшение ") + GuildGear::GroupName(g.group) + " для " + Who(row->low)});
+                                 std::string("upgrade ") + GuildGear::GroupName(g.group) + " for " + Who(row->low)});
             }
     }
     // bags: the next bag size above the biggest one a guild crafter knows, for every smaller bag slot
@@ -2861,7 +2880,7 @@ void GuildCoordinator::UpdateProfessions()
                 }
             if (count)
                 needs.push_back({next->skillLine, next->reqSkill, next->spellId, next->itemId, count, 0, false,
-                                 "сумка " + std::to_string(nextSlots) + " яч. ×" + std::to_string(count)});
+                                 "bag " + std::to_string(nextSlots) + " slots ×" + std::to_string(count)});
         }
     }
     // each need goes to the member of that profession closest to it (the highest skill; BoP: the member itself)
@@ -2914,9 +2933,9 @@ void GuildCoordinator::UpdateProfessions()
                     needPlan = std::max(needPlan, n->reqSkill);
             uint32 const need = std::max(cap, needPlan);
             std::string const head = Who(row->low) + ": " + SkillShort(line) + " " + std::to_string(skill) + "/" +
-                                     std::to_string(maxSkill) + ", нужно " + std::to_string(need) +
-                                     " (ранг тренера на L" + std::to_string(level) + ": " + std::to_string(cap) +
-                                     (needPlan ? ", план: " + std::to_string(needPlan) : "") + ")";
+                                     std::to_string(maxSkill) + ", needs " + std::to_string(need) +
+                                     " (trainer rank at L" + std::to_string(level) + ": " + std::to_string(cap) +
+                                     (needPlan ? ", plan: " + std::to_string(needPlan) : "") + ")";
             // [gather] the value of one skill point of this crafter on this line, what its wanted materials are worth
             // (UpdateWanted): over the planned skill-up walk from its skill to what its level reaches, whatever the
             // reagents' availability (a crafter blocked on a material is worth what that material unblocks), the
@@ -2963,15 +2982,16 @@ void GuildCoordinator::UpdateProfessions()
             };
             if (!has)
             {
-                train(std::string("выучить ") + SkillShort(line),
-                      "в плане, не выучена; ранг тренера на L" + std::to_string(level) + " до " + std::to_string(cap));
+                train(std::string("learn ") + SkillShort(line), "in the plan, not learned; trainer rank at L" +
+                                                                    std::to_string(level) + " to " +
+                                                                    std::to_string(cap));
                 key = "learn";
-                decision = head + " — не выучена: TRAIN у тренера при следующем визите в город";
+                decision = head + " — not learned: TRAIN at the trainer on the next town visit";
             }
             else if (skill >= need)
             {
                 key = "ok";
-                decision = head + " — отставания нет: квестует";
+                decision = head + " — no lag: quests";
             }
             else
             {
@@ -2982,14 +3002,14 @@ void GuildCoordinator::UpdateProfessions()
                         if (r.maxSkill > maxSkill && r.reqLevel <= level && (!rank || r.maxSkill < rank->maxSkill))
                             rank = &r;
                 if (rank && skill >= rank->reqSkill)
-                    train("ранг до " + std::to_string(rank->maxSkill),
-                          "навык " + std::to_string(skill) + " ≥ " + std::to_string(rank->reqSkill) + ", уровень ≥ " +
+                    train("rank to " + std::to_string(rank->maxSkill),
+                          "skill " + std::to_string(skill) + " ≥ " + std::to_string(rank->reqSkill) + ", level ≥ " +
                               std::to_string(rank->reqLevel));
                 // a planned recipe its skill already allows: learned at the trainer
                 for (Need const* n : lineNeeds)
                     if (n->reqSkill <= skill && !p->HasSpell(n->spellId))
                     {
-                        train("рецепт " + ItemName(n->itemId), n->label);
+                        train("recipe " + ItemName(n->itemId), n->label);
                         break;
                     }
 
@@ -3020,14 +3040,14 @@ void GuildCoordinator::UpdateProfessions()
                     if (list == recipesBySkill_.end() || skillPlan == skillPlan_.end() ||
                         v >= skillPlan->second.size() || skillPlan->second[v] < 0)
                     {
-                        block = "нет рецепта прокачки у тренера на " + std::to_string(v);
+                        block = "no skill-up recipe at the trainer at " + std::to_string(v);
                         break;
                     }
                     Recipe const& r = list->second[size_t(skillPlan->second[v])];
                     int32 const chance = CraftChance(v, r.gray, r.yellow);
                     if (r.reqLevel > level || chance <= 0)
                     {
-                        block = NewRpgCraft::RecipeName(r.spellId) + " с уровня " + std::to_string(r.reqLevel);
+                        block = NewRpgCraft::RecipeName(r.spellId) + " from level " + std::to_string(r.reqLevel);
                         break;
                     }
                     double const crafts = 1000.0 / chance;
@@ -3081,7 +3101,7 @@ void GuildCoordinator::UpdateProfessions()
                                     }
                                     continue;
                                 }
-                                why = ItemName(rawItem) + ": нет замеров темпа сбора (" +
+                                why = ItemName(rawItem) + ": no gathering pace measured (" +
                                       SkillShort(src->second.first) + ")";
                                 break;
                             }
@@ -3090,8 +3110,8 @@ void GuildCoordinator::UpdateProfessions()
                                 if (other != p)
                                     others += other->GetItemCount(rawItem, false);
                             why = ItemName(rawItem) + " ×" + std::to_string(uint32(std::ceil(units))) + ": " +
-                                  (others ? "у членов гильдии " + std::to_string(others) + " — ждёт передачи"
-                                          : std::string("собирают другие (wanted list)"));
+                                  (others ? "guild members hold " + std::to_string(others) + " — waits for the transfer"
+                                          : std::string("others gather it (wanted list)"));
                             break;
                         }
                         if (!why.empty())
@@ -3112,13 +3132,13 @@ void GuildCoordinator::UpdateProfessions()
                     gatherMin += gmin;
                     reach = v + 1;
                 }
-                std::string const lag = ", отставание " + std::to_string(need - skill);
+                std::string const lag = ", lag " + std::to_string(need - skill);
                 if (reach <= skill)
                 {
                     key = std::string("blocked:") + (skill >= maxSkill ? "cap" : block.substr(0, 24));
-                    decision = head + lag + " — прокачать сейчас нельзя: " +
-                               (skill >= maxSkill ? "потолок ранга " + std::to_string(maxSkill) +
-                                                        (rank ? ", ранг у тренера" : ", ранг ждёт уровня")
+                    decision = head + lag + " — cannot level now: " +
+                               (skill >= maxSkill ? "rank cap " + std::to_string(maxSkill) +
+                                                        (rank ? ", rank at the trainer" : ", rank waits for the level")
                                                   : block);
                 }
                 else
@@ -3139,22 +3159,22 @@ void GuildCoordinator::UpdateProfessions()
                     float questPace = 0.0f;
                     std::string questWhy;
                     char numbers[200];
-                    std::snprintf(numbers, sizeof(numbers), "до %u за %.1f мин (крафт %.1f, сбор %.1f), ценность %s",
+                    std::snprintf(numbers, sizeof(numbers), "to %u in %.1f min (craft %.1f, gather %.1f), value %s",
                                   reach, minutes, craftMin, gatherMin, Gsc(uint64(std::max(0.0, value))).c_str());
                     std::string const reached = std::string(numbers) +
-                                                (unlockedText.empty() ? "" : "; открывает " + unlockedText) +
-                                                (block.empty() ? "" : "; дальше: " + block);
+                                                (unlockedText.empty() ? "" : "; unlocks " + unlockedText) +
+                                                (block.empty() ? "" : "; next: " + block);
                     if (!QuestPace(st, p, questPace, &questWhy))
                     {
                         key = "noquestpace";
-                        decision = head + lag + " — квесты без цены (нет квеста с данными на карте): квестует (" +
+                        decision = head + lag + " — quests without a value (no quest with data on the map): quests (" +
                                    reached + ")";
                     }
                     else if (value > 0 && value > double(questPace) * minutes)
                     {
                         double const perMinute = minutes > 0 ? value / minutes : value;
                         char pace[120];
-                        std::snprintf(pace, sizeof(pace), "профессия %.0f м/мин > квесты %.0f м/мин", perMinute,
+                        std::snprintf(pace, sizeof(pace), "profession %.0f c/min > quests %.0f c/min", perMinute,
                                       questPace);
                         auto const add = [&](GuildProfessionKind kind, uint32 itemId, double count, std::string details)
                         {
@@ -3172,20 +3192,20 @@ void GuildCoordinator::UpdateProfessions()
                         {
                             add(GuildProfessionKind::CRAFT, 0, 0,
                                 std::string(SkillShort(line)) + " " + std::to_string(skill) + "→" +
-                                    std::to_string(reach) + ": крафт из того, что есть");
+                                    std::to_string(reach) + ": crafts from what it has");
                             kinds += "craft";
                         }
                         if (buyItem)
                         {
                             add(GuildProfessionKind::BUY, buyItem, buyUnits,
-                                ItemName(buyItem) + " ×" + std::to_string(uint32(std::ceil(buyUnits))) + " для " +
+                                ItemName(buyItem) + " ×" + std::to_string(uint32(std::ceil(buyUnits))) + " for " +
                                     SkillShort(line));
                             kinds += kinds.empty() ? "buy" : "+buy";
                         }
                         if (gatherItem)
                         {
                             add(GuildProfessionKind::GATHER, gatherItem, gatherUnits,
-                                ItemName(gatherItem) + " ×" + std::to_string(uint32(std::ceil(gatherUnits))) + " для " +
+                                ItemName(gatherItem) + " ×" + std::to_string(uint32(std::ceil(gatherUnits))) + " for " +
                                     SkillShort(line));
                             kinds += kinds.empty() ? "gather" : "+gather";
                         }
@@ -3196,10 +3216,10 @@ void GuildCoordinator::UpdateProfessions()
                     else
                     {
                         char pace[120];
-                        std::snprintf(pace, sizeof(pace), "квесты %.0f м/мин ≥ профессия %.0f м/мин", questPace,
+                        std::snprintf(pace, sizeof(pace), "quests %.0f c/min ≥ profession %.0f c/min", questPace,
                                       minutes > 0 ? value / minutes : value);
                         key = "quest";
-                        decision = head + lag + " — " + pace + " (" + questWhy + "): квестует (" + reached + ")";
+                        decision = head + lag + " — " + pace + " (" + questWhy + "): quests (" + reached + ")";
                     }
                 }
             }
@@ -3224,12 +3244,12 @@ void GuildCoordinator::UpdateProfessions()
                 uint32 const skill = has ? p->GetPureSkillValue(line) : 0;
                 uint32 const maxSkill = has ? p->GetPureMaxSkillValue(line) : 0;
                 uint32 const cap = TrainerCap(line, level);
-                std::string const name = line == SKILL_HERBALISM ? "трав"
-                                         : line == SKILL_MINING  ? "горн"
-                                         : line == SKILL_SKINNING ? "шкуры"
-                                                                  : "рыбалка";
+                std::string const name = line == SKILL_HERBALISM  ? "Herb"
+                                         : line == SKILL_MINING   ? "Mine"
+                                         : line == SKILL_SKINNING ? "Skin"
+                                                                  : "fishing";
                 std::string const head = Who(row->low) + ": " + name + " " + std::to_string(skill) + "/" +
-                                         std::to_string(maxSkill) + " (ранг тренера на L" + std::to_string(level) +
+                                         std::to_string(maxSkill) + " (trainer rank at L" + std::to_string(level) +
                                          ": " + std::to_string(cap) + ")";
                 // [smelt] user 2026-11-08: received / mined ore gets used - a miner holding the ore of a smelt that
                 // still gives it Mining skill smelts it (NewRpgCraft's forge walk), the global leader's CRAFT call
@@ -3248,11 +3268,10 @@ void GuildCoordinator::UpdateProfessions()
                             pick.kind = GuildProfessionKind::CRAFT;
                             pick.skillLine = SKILL_MINING;
                             pick.itemId = bar;
-                            pick.details = "плавка: " + ItemName(ores.front().first) + " → " + ItemName(bar) +
-                                           " (горное дело " + std::to_string(skill) + "/" + std::to_string(maxSkill) +
-                                           ")";
-                            pick.reason = "руда в сумке; плавка (спелл " + std::to_string(smelt) +
-                                          ") даёт навык горного дела, слитки — кузнецам / инженерам";
+                            pick.details = "smelt: " + ItemName(ores.front().first) + " → " + ItemName(bar) +
+                                           " (mining " + std::to_string(skill) + "/" + std::to_string(maxSkill) + ")";
+                            pick.reason = "ore in bags; smelting (spell " + std::to_string(smelt) +
+                                          ") gives Mining skill, bars go to blacksmiths / engineers";
                             // [econ1] the nearest town forge of its side on its map (its walk there not refused):
                             // smelted on its next visit to that town
                             float bestDist = FLT_MAX;
@@ -3288,9 +3307,10 @@ void GuildCoordinator::UpdateProfessions()
                 };
                 if (!has && cap)
                 {
-                    call(std::string("выучить ") + name, "в плане сборщика, тренер учит на L" + std::to_string(level));
+                    call(std::string("learn ") + name,
+                         "in the gatherer plan, the trainer teaches at L" + std::to_string(level));
                     key = "learn";
-                    decision = head + " — не выучена: TRAIN у тренера";
+                    decision = head + " — not learned: TRAIN at the trainer";
                 }
                 else if (has && skill >= maxSkill && cap > maxSkill)
                 {
@@ -3301,23 +3321,23 @@ void GuildCoordinator::UpdateProfessions()
                                 rank = &r;
                     if (rank && skill >= rank->reqSkill)
                     {
-                        call("ранг до " + std::to_string(rank->maxSkill),
-                             "навык " + std::to_string(skill) + " на потолке ранга, уровень ≥ " +
-                                 std::to_string(rank->reqLevel));
+                        call("rank to " + std::to_string(rank->maxSkill), "skill " + std::to_string(skill) +
+                                                                              " at the rank cap, level ≥ " +
+                                                                              std::to_string(rank->reqLevel));
                         key = "rank";
-                        decision = head + " — потолок ранга: TRAIN ранг до " + std::to_string(rank->maxSkill);
+                        decision = head + " — rank cap: TRAIN rank to " + std::to_string(rank->maxSkill);
                     }
                 }
                 else if (has && line == SKILL_FISHING && !NewRpgFishing::HasPole(p))
                 {
-                    call("удочка (Fishing Pole)", "рыбалка выучена, удочки нет");
+                    call("Fishing Pole", "fishing learned, no pole");
                     key = "tool";
-                    decision = head + " — нет удочки: купить у торговца";
+                    decision = head + " — no pole: buy at a vendor";
                 }
                 if (key.empty())
                 {
                     key = "ok";
-                    decision = head + " — выучена, звонка нет";
+                    decision = head + " — learned, no call";
                 }
                 if (st.profDecision[line] != key)
                 {
@@ -3382,13 +3402,13 @@ bool GuildCoordinator::UrgentTask(Player* bot, std::string* why) const
         return true;
     };
     if (st.fiveId)
-        return said("пятёрка #" + std::to_string(st.fiveId));
+        return said("five #" + std::to_string(st.fiveId));
     for (GuildOrder const& o : st.orders)
     {
         if (!o.executable)
             continue;
         if (st.run && o.type == st.runType && o.priority == GuildTaskPriority::URGENT)
-            return said(std::string(OrderName(o.type)) + " (идёт к хранилищу)");
+            return said(std::string(OrderName(o.type)) + " (walks to the vault)");
         if (o.priority == GuildTaskPriority::URGENT && !o.waitsTown)
             return said(std::string(OrderName(o.type)) + ": " + o.details);
         break;  // the first executable order decides
@@ -3512,10 +3532,10 @@ void GuildCoordinator::AddCoopTask(uint32 low, uint32 partnerLow, uint32 questId
     o.itemId = questId;  // the task's key: one co-op task per quest
     o.forLow = partnerLow;
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-    o.details = std::string(leads ? "ведёт " : "помогает ") + Who(partnerLow) + ": q" +
-                std::to_string(questId) + (quest ? " " + quest->GetTitle() : "");
+    o.details = std::string(leads ? "leads " : "helps ") + Who(partnerLow) + ": q" + std::to_string(questId) +
+                (quest ? " " + quest->GetTitle() : "");
     o.reason = why;
-    o.status = "пати co-op (New RPG)";
+    o.status = "co-op party (New RPG)";
     o.executable = false;  // New RPG co-op runs it, never NextStep
     std::lock_guard<std::mutex> guard(lock_);
     ClassifyTask(o);
@@ -3613,7 +3633,7 @@ void GuildCoordinator::Suggest(uint32 low, std::string const& key, std::string c
     LOG_INFO("playerbots", "[human] suggest {} key={}: {}", Who(low), key, text);
     Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
     if (p && p->IsInWorld() && p->GetSession())
-        ChatHandler(p->GetSession()).SendSysMessage("[Гильдия] " + text);
+        ChatHandler(p->GetSession()).SendSysMessage("[Guild] " + text);
 }
 
 void GuildCoordinator::UpdateGear()
@@ -3759,7 +3779,7 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                     return ItemName(cost->reqitem[r]) + ": " + creatureName(s.id) + " (" +
                            GuildGear::MapName(s.mapId) + ")";
                 if (s.kind == GuildGear::SRC_QUEST)
-                    return ItemName(cost->reqitem[r]) + ": квест q" + std::to_string(s.id);
+                    return ItemName(cost->reqitem[r]) + ": quest q" + std::to_string(s.id);
             }
         }
         return std::string();
@@ -3779,7 +3799,7 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
         {
             GearPick p = base;
             p.kind = GuildGear::SRC_BANK;
-            p.text = "в банке гильдии";
+            p.text = "in the guild bank";
             consider(p, true);
             consider(p, false);
         }
@@ -3821,21 +3841,21 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                     {
                         if (src.aux >= 100)
                             break;  // a fixed reward comes with the turn-in anyway
-                        p.text = "награда " + title + " (в журнале)";
+                        p.text = "reward " + title + " (in the log)";
                         consider(p, true);
                         consider(p, false);
                     }
                     else if (m->CanTakeQuest(quest, false))
                     {
-                        p.text = "квест " + title + " L" + std::to_string(src.level);
+                        p.text = "quest " + title + " L" + std::to_string(src.level);
                         consider(p, false);
                     }
                     else
                     {
                         // a chain step (prerequisites, exclusive group) or a level still ahead
-                        p.text = "квест " + title + " L" + std::to_string(src.level) + " — " +
-                                 (m->SatisfyQuestLevel(quest, false) ? std::string("после цепочки")
-                                                                     : "с L" + std::to_string(src.levelMax));
+                        p.text = "quest " + title + " L" + std::to_string(src.level) + " — " +
+                                 (m->SatisfyQuestLevel(quest, false) ? std::string("after the chain")
+                                                                     : "from L" + std::to_string(src.levelMax));
                         consider(p, false);
                     }
                     break;
@@ -3845,15 +3865,15 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                     if (src.level > ahead)
                         break;  // the instance's entry level (dungeon_access_template) is still far ahead
                     MapEntry const* map = sMapStore.LookupEntry(src.mapId);
-                    p.text = std::string(map && map->IsRaid() ? "рейд " : "данж ") + GuildGear::MapName(src.mapId) +
-                             (src.difficulty ? " (сложн. " + std::to_string(src.difficulty) + ")" : std::string()) +
+                    p.text = std::string(map && map->IsRaid() ? "raid " : "dungeon ") + GuildGear::MapName(src.mapId) +
+                             (src.difficulty ? " (diff. " + std::to_string(src.difficulty) + ")" : std::string()) +
                              ": " + creatureName(src.id) + ", " + chanceText(src.chance) +
-                             (src.level > level ? ", вход с L" + std::to_string(src.level) : std::string());
+                             (src.level > level ? ", entry from L" + std::to_string(src.level) : std::string());
                     consider(p, false);
                     break;
                 }
                 case GuildGear::SRC_WORLD:
-                    p.text = "моб " + creatureName(src.id) + " " + levelText(src.level, src.levelMax) + " (" +
+                    p.text = "mob " + creatureName(src.id) + " " + levelText(src.level, src.levelMax) + " (" +
                              GuildGear::MapName(src.mapId) + "), " + chanceText(src.chance);
                     consider(p, false);
                     break;
@@ -3862,8 +3882,8 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                     GuildGear::RefInfo const* ref = GuildGear::Reference(src.id);
                     if (!ref || ref->minLevel > ahead)
                         break;
-                    p.text = "мировой дроп " + levelText(ref->minLevel, ref->maxLevel) + " (" +
-                             std::to_string(ref->users) + " источн., " + GuildGear::MapName(ref->mapId) + "), " +
+                    p.text = "world drop " + levelText(ref->minLevel, ref->maxLevel) + " (" +
+                             std::to_string(ref->users) + " sources, " + GuildGear::MapName(ref->mapId) + "), " +
                              chanceText(src.chance);
                     consider(p, false);
                     break;
@@ -3871,26 +3891,26 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                 case GuildGear::SRC_OBJECT:
                 {
                     GameObjectTemplate const* go = sObjectMgr->GetGameObjectTemplate(src.id);
-                    p.text = std::string("объект ") + (go ? go->name : std::string("?")) + " (" +
+                    p.text = std::string("object ") + (go ? go->name : std::string("?")) + " (" +
                              GuildGear::MapName(src.mapId) + "), " + chanceText(src.chance);
                     consider(p, false);
                     break;
                 }
                 case GuildGear::SRC_CONTAINER:
-                    p.text = "из " + ItemName(src.id) + ", " + chanceText(src.chance);
+                    p.text = "from " + ItemName(src.id) + ", " + chanceText(src.chance);
                     consider(p, false);
                     break;
                 case GuildGear::SRC_OTHER:
                 {
                     std::string what;
                     if (src.aux == GuildGear::OTHER_PICKPOCKET)
-                        what = "кража у " + creatureName(src.id);
+                        what = "pickpocket from " + creatureName(src.id);
                     else if (src.aux == GuildGear::OTHER_SKINNING)
-                        what = "шкура с " + creatureName(src.id);
+                        what = "skin from " + creatureName(src.id);
                     else if (src.aux == GuildGear::OTHER_FISHING)
-                        what = "рыбалка, зона " + std::to_string(src.id);
+                        what = "fishing, zone " + std::to_string(src.id);
                     else
-                        what = "почта " + std::to_string(src.id);
+                        what = "mail " + std::to_string(src.id);
                     p.text = what + ", " + chanceText(src.chance);
                     consider(p, false);
                     break;
@@ -3916,14 +3936,14 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                     }
                     if (!crafter)
                     {
-                        p.text = std::string("крафт (") + SkillShort(recipe->skillLine) + " " +
-                                 std::to_string(recipe->reqSkill) + "): рецепта нет ни у кого в гильдии";
+                        p.text = std::string("craft (") + SkillShort(recipe->skillLine) + " " +
+                                 std::to_string(recipe->reqSkill) + "): nobody in the guild has the recipe";
                         consider(p, false);
                         break;
                     }
                     p.crafterLow = crafter->GetGUID().GetCounter();
-                    p.text = "крафт " + Who(p.crafterLow) + " (" + SkillShort(recipe->skillLine) + ")" +
-                             (ready ? "" : ", материалы в wanted list");
+                    p.text = "craft " + Who(p.crafterLow) + " (" + SkillShort(recipe->skillLine) + ")" +
+                             (ready ? "" : ", materials in the wanted list");
                     if (ready)
                         consider(p, true);
                     consider(p, false);
@@ -3964,10 +3984,11 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         // a vendor on another continent: a plan only
                         p.srcId = elsewhere->entry;
                         p.mapId = elsewhere->mapId;
-                        p.text = "торговец " + creatureName(elsewhere->entry) + " (" +
-                                 GuildGear::MapName(elsewhere->mapId) + ")" +
-                                 (elsewhere->extendedCost ? ", за " + GuildGear::ExtendedCostText(elsewhere->extendedCost)
-                                                          : std::string());
+                        p.text =
+                            "vendor " + creatureName(elsewhere->entry) + " (" + GuildGear::MapName(elsewhere->mapId) +
+                            ")" +
+                            (elsewhere->extendedCost ? ", for " + GuildGear::ExtendedCostText(elsewhere->extendedCost)
+                                                     : std::string());
                         consider(p, false);
                         break;
                     }
@@ -3984,11 +4005,11 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         price = GuildGear::ExtendedCostText(nearest->extendedCost);
                     if (proto->BuyPrice || !nearest->extendedCost)
                         price += (price.empty() ? "" : " + ") + MoneyText(uint32(proto->BuyPrice));
-                    p.text = "торговец " + creatureName(nearest->entry) + " " + std::to_string(uint32(nearDist)) +
-                             " ярд, " + price +
+                    p.text = "vendor " + creatureName(nearest->entry) + " " + std::to_string(uint32(nearDist)) +
+                             " yd, " + price +
                              (money >= uint32(proto->BuyPrice) ? std::string()
-                                                               : " (копит: свободно " + MoneyText(money) + ")") +
-                             (missing.empty() ? std::string() : " (не хватает: " + missing + ")");
+                                                               : " (saving: free " + MoneyText(money) + ")") +
+                             (missing.empty() ? std::string() : " (short: " + missing + ")");
                     if (!missing.empty())
                         if (std::string const from = tokenFrom(nearest->extendedCost); !from.empty())
                             p.text += "; " + from;
@@ -4073,8 +4094,8 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                 best = ev.gain;
                 pick.index = i;
                 pick.itemId = proto->ItemId;
-                pick.why = std::string("себе: ") + GuildGear::GroupName(GuildGear::EquipGroup(proto->InventoryType)) +
-                           " " + GainText(ev);
+                pick.why = std::string("for itself: ") +
+                           GuildGear::GroupName(GuildGear::EquipGroup(proto->InventoryType)) + " " + GainText(ev);
             }
         }
         if (best < 0.0f)
@@ -4099,9 +4120,9 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         pick.index = i;
                         pick.itemId = proto->ItemId;
                         pick.forLow = other->GetGUID().GetCounter();
-                        pick.why = "BoE для " + Who(pick.forLow) + ": " +
+                        pick.why = "BoE for " + Who(pick.forLow) + ": " +
                                    GuildGear::GroupName(GuildGear::EquipGroup(proto->InventoryType)) + " " +
-                                   GainText(ev) + ", через банк";
+                                   GainText(ev) + ", via the bank";
                     }
                 }
             }
@@ -4114,7 +4135,7 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         best = 0.0f;
                         pick.index = i;
                         pick.itemId = w.itemId;
-                        pick.why = "в wanted list (" + w.forWhom + ")";
+                        pick.why = "in the wanted list (" + w.forWhom + ")";
                         break;
                     }
         if (best < 0.0f)
@@ -4128,7 +4149,7 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         price = proto->SellPrice;
                         pick.index = i;
                         pick.itemId = proto->ItemId;
-                        pick.why = "никому не улучшение: дороже продать (" + MoneyText(price) + ")";
+                        pick.why = "an upgrade for nobody: worth more sold (" + MoneyText(price) + ")";
                     }
         }
         if (best >= 0.0f)
@@ -4189,7 +4210,7 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
                     m->GetItemCount(g.itemId, true) || pending.count({low, g.itemId}))
                     continue;
                 addJob(g.crafterLow, g.srcId, low, false,
-                       std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g));
+                       std::string("upgrade ") + GuildGear::GroupName(g.group) + " " + GainText(g));
             }
     }
 
@@ -4234,11 +4255,11 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
             need = need > coming ? need - coming : 0;
             for (uint32 i = 0; i < need; ++i)
                 addJob(tailor->GetGUID().GetCounter(), bagSpell, low, true,
-                       "сумка " + std::to_string(bagSlots) + " яч. вместо " + std::to_string(SmallestBag(m)));
+                       "bag " + std::to_string(bagSlots) + " slots instead of " + std::to_string(SmallestBag(m)));
             total += need;
         }
-        bagState_ = "сумки: лучшая " + ItemName(bagItem) + " (" + std::to_string(bagSlots) + " яч.) у " +
-                    Who(tailor->GetGUID().GetCounter()) + ", нужно " + std::to_string(total);
+        bagState_ = "bags: best " + ItemName(bagItem) + " (" + std::to_string(bagSlots) + " slots) at " +
+                    Who(tailor->GetGUID().GetCounter()) + ", needs " + std::to_string(total);
     }
 
     // ready: the crafter holds the reagents, taken job by job from its bags; every job's reagents are wanted
@@ -4263,7 +4284,7 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
         for (auto const& [item, n] : recipe->reagents)
         {
             // [guild70] the reason per product: "улучшение: <item>" / "сумка <item>", for whom
-            GearNeed& g = gearWanted_[item][(job.bag ? "сумка " : "улучшение: ") + ItemName(job.itemId)];
+            GearNeed& g = gearWanted_[item][(job.bag ? "bag " : "upgrade: ") + ItemName(job.itemId)];
             g.count += n;
             g.forLows.insert(job.forLow);
             // [gather] the crafted item's price (the leader values unlocked upgrades by it), shared by reagent units
@@ -4289,7 +4310,8 @@ int32 GuildCoordinator::RewardChoice(Player* bot, Quest const* quest)
         quest->RewardChoiceItemId[pick->second.index] != pick->second.itemId)
         return -1;
     if (pick->second.forLow && pick->second.forLow != bot->GetGUID().GetCounter())
-        itr->second.expect.push_back({pick->second.itemId, pick->second.forLow, "награда для " + Who(pick->second.forLow)});
+        itr->second.expect.push_back(
+            {pick->second.itemId, pick->second.forLow, "reward for " + Who(pick->second.forLow)});
     LOG_INFO("playerbots", "[guild50] {} takes reward {} of q{}: {}", bot->GetName(), ItemName(pick->second.itemId),
              quest->GetQuestId(), pick->second.why);
     return int32(pick->second.index);
@@ -4359,7 +4381,7 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
     ItemTemplate const* proto = item->GetTemplate();
     uint32 const looterLow = looter->GetGUID().GetCounter();
     std::string const what = ItemName(report.itemId) + (report.count > 1 ? " ×" + std::to_string(report.count) : "") +
-                             " (у " + Who(looterLow) + ")";
+                             " (at " + Who(looterLow) + ")";
     bool const equipment = proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON;
 
     // 1. BoE: whom of the members it upgrades most (ItemUsage of the bot; score gain vs its slot)
@@ -4397,7 +4419,7 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
             {
                 bestGain = gain;
                 bestLow = row.low;
-                bestUsage = usage == ITEM_USAGE_EQUIP ? "пустой слот" : "замена";
+                bestUsage = usage == ITEM_USAGE_EQUIP ? "new slot" : "replacement";
             }
         }
     }
@@ -4411,12 +4433,12 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
         if (held != st.held.end())
             st.held.erase(held);
     };
-    std::string const gainText = "+" + std::to_string(int32(bestGain * 100.0f + 0.5f)) + "% к слоту";
+    std::string const gainText = "+" + std::to_string(int32(bestGain * 100.0f + 0.5f)) + "% to the slot";
 
     if (bestLow == looterLow)
     {
         release();
-        Decision("BoE " + what + " → надевает сам: " + gainText + " (" + bestUsage + ")");
+        Decision("BoE " + what + " → equips it itself: " + gainText + " (" + bestUsage + ")");
         return;
     }
     if (bestLow)
@@ -4424,10 +4446,9 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
         if (held != st.held.end())
         {
             held->forLow = bestLow;
-            held->purpose = "улучшение " + Who(bestLow);
+            held->purpose = "upgrade " + Who(bestLow);
         }
-        Decision("BoE " + what + " → " + Who(bestLow) + ": " + gainText + " (" + bestUsage +
-                 "), через банк гильдии");
+        Decision("BoE " + what + " → " + Who(bestLow) + ": " + gainText + " (" + bestUsage + "), via the guild bank");
         return;
     }
 
@@ -4437,9 +4458,10 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
         {
             if (held != st.held.end())
                 held->purpose = "wanted";
-            Decision(what + (GuildBankRun::BankState(looter, true).empty() ? " → банк" : " → держит до банка гильдии") +
-                     ": в wanted list" + (w.optional ? " (необязательный)" : "") + " (" +
-                     std::to_string(w.have) + "/" + std::to_string(w.need) + ": " + OrdersText(w.forWhom, 90) + ")");
+            Decision(what +
+                     (GuildBankRun::BankState(looter, true).empty() ? " → bank" : " → holds until the guild bank") +
+                     ": in the wanted list" + (w.optional ? " (optional)" : "") + " (" + std::to_string(w.have) + "/" +
+                     std::to_string(w.need) + ": " + OrdersText(w.forWhom, 90) + ")");
             return;
         }
 
@@ -4471,17 +4493,17 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
             if (held != st.held.end())
             {
                 held->forLow = looterLow;  // kept in its bags (no bank run, no sale)
-                held->purpose = "свой план";
+                held->purpose = "its own plan";
             }
-            Decision("BoE " + what + " → держит для себя: в его плане экипировки");
+            Decision("BoE " + what + " → holds for itself: in its gear plan");
             return;
         }
         if (held != st.held.end())
         {
             held->forLow = planned;
-            held->purpose = "улучшение по плану " + Who(planned);
+            held->purpose = "upgrade by plan of " + Who(planned);
         }
-        Decision("BoE " + what + " → " + Who(planned) + ": в его плане экипировки, держит до передачи");
+        Decision("BoE " + what + " → " + Who(planned) + ": in its gear plan, holds until the transfer");
         return;
     }
 
@@ -4494,7 +4516,7 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
         {
             release();
             st.disenchant.push_back(report.itemGuidLow);
-            Decision(what + " → распылит сам (зачарователь, навык " +
+            Decision(what + " → disenchants itself (enchanter, skill " +
                      std::to_string(looter->GetPureSkillValue(SKILL_ENCHANTING)) + ")");
             return;
         }
@@ -4511,20 +4533,20 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
             if (held != st.held.end())
             {
                 held->forLow = enchanter;
-                held->purpose = "распылить " + Who(enchanter);
+                held->purpose = "disenchant " + Who(enchanter);
             }
-            Decision(what + " → банк для зачарователя " + Who(enchanter));
+            Decision(what + " → bank for the enchanter " + Who(enchanter));
             return;
         }
         release();
         st.sell.push_back(report.itemGuidLow);
-        Decision(what + " → продать: никому не улучшение, " +
-                 (enchanter ? "зачарователь " + Who(enchanter) + " есть, банка нет" : std::string("зачарователя нет")));
+        Decision(what + " → sell: an upgrade for nobody, " +
+                 (enchanter ? "enchanter " + Who(enchanter) + " exists, no bank" : std::string("no enchanter")));
         return;
     }
     release();
     st.sell.push_back(report.itemGuidLow);
-    Decision(what + " → продать: не улучшение и не в wanted list");
+    Decision(what + " → sell: no upgrade and not in the wanted list");
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -4592,7 +4614,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                     if (uint32 const planned = item ? PlannedFor(item->GetEntry()) : 0)
                     {
                         st.held.push_back({item->GetGUID().GetCounter(), item->GetEntry(), item->GetCount(), planned,
-                                           "улучшение по плану " + Who(planned)});
+                                           "upgrade by plan of " + Who(planned)});
                         LOG_INFO("playerbots", "[tasks] {} keeps {} for {}: in its gear plan, not disenchanted",
                                  bot->GetName(), item->GetTemplate()->Name1, Who(planned));
                         continue;
@@ -4732,7 +4754,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                         {
                             sGuildGatherPlan.Refuse(bot, order.placeId, "the solo judge refused the walk to the water");
                             order.executable = false;
-                            order.status = "место отдано лидеру: путь опасен";
+                            order.status = "spot left to the leader: the way is dangerous";
                             continue;
                         }
                         if (fish == NewRpgFishing::Step::WALK || fish == NewRpgFishing::Step::BUSY)
@@ -4791,7 +4813,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                             sGuildGatherPlan.Refuse(bot, order.placeId, refusal);
                             st.gatherWalkPlace = 0;
                             order.executable = false;
-                            order.status = "место отдано лидеру: " + refusal;
+                            order.status = "spot left to the leader: " + refusal;
                             continue;
                         }
                         st.gatherWalkPlace = order.placeId;
@@ -4815,7 +4837,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                             sGuildGatherPlan.Refuse(bot, order.placeId,
                                                     "the solo judge refused the walk (TRIP_REFUSED)");
                             order.executable = false;
-                            order.status = "место отдано лидеру: путь опасен";
+                            order.status = "spot left to the leader: the way is dangerous";
                             continue;
                         }
                         step.kind = GuildRunStep::GRIND;
@@ -4844,7 +4866,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                         {
                             sGuildGatherPlan.Refuse(bot, order.placeId, "no chest of the place to open in sight");
                             order.executable = false;
-                            order.status = "место отдано лидеру: сундуков нет";
+                            order.status = "spot left to the leader: no chests";
                             continue;
                         }
                         float const left = bot->GetExactDist(chest);
@@ -4865,7 +4887,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                                 sGuildGatherPlan.Refuse(bot, order.placeId, refusal);
                                 st.gatherWalkPlace = 0;
                                 order.executable = false;
-                                order.status = "место отдано лидеру: " + refusal;
+                                order.status = "spot left to the leader: " + refusal;
                                 continue;
                             }
                             st.gatherWalkPlace = order.placeId;
@@ -4896,12 +4918,12 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                 order.executable = false;  // once per order list: the next one comes with the next update
                 if (!botAI->CastSpell(recipe->spellId, bot))
                 {
-                    order.status = "не создаётся здесь (кузня / наковальня / инструмент?) — квестует";
+                    order.status = "not made here (forge / anvil / tool?) — quests";
                     continue;
                 }
                 if (order.forLow && order.forLow != low)
-                    st.expect.push_back({recipe->itemId, order.forLow, "крафт для " + Who(order.forLow)});
-                order.status = "создаёт";
+                    st.expect.push_back({recipe->itemId, order.forLow, "craft for " + Who(order.forLow)});
+                order.status = "creates";
                 step.kind = GuildRunStep::BUSY;
                 step.reason = "craft " + ItemName(recipe->itemId) + " for " + Who(order.forLow);
                 LOG_INFO("playerbots", "[guild50] {} crafts {} for {}: {}", bot->GetName(), ItemName(recipe->itemId),
@@ -4920,11 +4942,11 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                 if (NewRpgBaseAction::TripRefused(bot, order.pos.GetPositionX(), order.pos.GetPositionY(),
                                                   order.pos.GetPositionZ(), "vendor for " + ItemName(order.itemId)))
                 {
-                    order.status = "путь к торговцу опасен — ждёт уровня";
+                    order.status = "the way to the vendor is dangerous — waits for a level";
                     continue;
                 }
                 NewRpgProfession::StartBuy(botAI, bot, order.itemId, order.npcEntry, order.pos, order.cost);
-                order.status = "идёт к торговцу";
+                order.status = "walks to the vendor";
                 step.kind = GuildRunStep::BUSY;
                 step.reason = "buy " + ItemName(order.itemId);
                 started(order);
@@ -4970,8 +4992,8 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
         if (bot->isMoving())
             return 2;
         st.run = false;
-        st.vaultFail = "не дотянуться до хранилища";
-        Decision(Who(low) + ": " + st.vaultFail + " — квестует дальше");
+        st.vaultFail = "cannot reach the vault";
+        Decision(Who(low) + ": " + st.vaultFail + " — quests on");
         return 1;
     }
     st.run = false;
@@ -4991,13 +5013,13 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
             if (bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(h.itemGuidLow)))
                 continue;  // still in the bags: not deposited
             if (h.forLow)
-                withdraw_[h.forLow].emplace_back(h.itemId, "от " + Who(low) + ": " + h.purpose);
+                withdraw_[h.forLow].emplace_back(h.itemId, "from " + Who(low) + ": " + h.purpose);
             st.held.erase(std::remove_if(st.held.begin(), st.held.end(),
                                          [&](HeldItem const& x) { return x.itemGuidLow == h.itemGuidLow; }),
                           st.held.end());
         }
-        Decision(Who(low) + " положил в банк гильдии " + std::to_string(moved) + " из " +
-                 std::to_string(guids.size()) + " предм.");
+        Decision(Who(low) + " put into the guild bank " + std::to_string(moved) + " from " +
+                 std::to_string(guids.size()) + " items");
     }
     else if (st.runType == GuildOrderType::BANK_WITHDRAW)
     {
@@ -5007,7 +5029,7 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
             uint32 const itemId = list.front().first;
             bool const ok = GuildBankRun::Withdraw(bot, itemId);
             list.erase(list.begin());
-            Decision(Who(low) + (ok ? " взял из банка " : " не смог взять из банка ") + ItemName(itemId));
+            Decision(Who(low) + (ok ? " took from the bank " : " could not take from the bank ") + ItemName(itemId));
         }
     }
     return 1;
@@ -5372,15 +5394,15 @@ void GuildCoordinator::UpdateHealth()
         std::string const wait = WaitReason(p, ai, st);
         if (!wait.empty())
         {
-            st.stillWhy = "ждёт: " + wait;  // [ui11] BotControl: why it stands
+            st.stillWhy = "waits: " + wait;  // [ui11] BotControl: why it stands
             continue;
         }
         ++stuck;
         std::string const status = StatusName(p, ai);
         std::string const order = ActiveTask(st.orders);
         // [ui11] BotControl's detail pane: the STUCK cause (status, task, the newest actions)
-        st.stillWhy = "STUCK " + std::to_string((now - st.anchorAt) / MINUTE) + " мин: " + status + ", задача " +
-                      order + ", действия " + LastAction(ai);
+        st.stillWhy = "STUCK " + std::to_string((now - st.anchorAt) / MINUTE) + " min: " + status + ", task " + order +
+                      ", actions " + LastAction(ai);
         std::string const key = status + "|" + order.substr(0, order.find(" ("));
         if (st.stuckAlerted && st.stuckKey == key)
             continue;
@@ -5416,8 +5438,8 @@ void GuildCoordinator::UpdateHealth()
 
     char buf[400];
     snprintf(buf, sizeof(buf),
-             "тик ср %u / p95 %u / макс %u мс (цель %d); AI ср %.2f / макс %.1f мс/тик; онлайн %u/%u, мёртвых %u, "
-             "застряли %u; за час: квесты %.0f, опыт %.0f, смерти %.0f, золото %.1f (окно %u мин)",
+             "tick avg %u / p95 %u / max %u ms (target %d); AI avg %.2f / max %.1f ms/tick; online %u/%u, dead %u, "
+             "stuck %u; per hour: quests %.0f, xp %.0f, deaths %.0f, gold %.1f (window %u min)",
              avg, p95, maxDiff, target, aiAvgMs, aiMax / 1000.0f, online, uint32(plan_.size()), dead, stuck,
              perHour(questsH), perHour(double(xpH)), perHour(deathsH), perHour(double(moneyH)) / GOLD, window / MINUTE);
     healthRow_ = buf;
@@ -5431,7 +5453,7 @@ void GuildCoordinator::UpdateHealth()
         }
     char tasks[160];
     snprintf(tasks, sizeof(tasks),
-             "; задачи: %u, ждут города %u, начато городских %u (ср. ожидание %u мин, %.1f за визит)", waiting,
+             "; tasks: %u, waiting for town %u, town tasks started %u (avg wait %u min, %.1f per visit)", waiting,
              waitingTown, townStarted_, townStarted_ ? uint32(townWaitSum_ / townStarted_ / MINUTE) : 0,
              townVisits_ ? float(townStarted_) / townVisits_ : 0.0f);
     healthRow_ += tasks;
@@ -5486,7 +5508,7 @@ void GuildCoordinator::SendOrders(Player* player)
     SendLine(player, "OS;n=" + std::to_string(plan_.size()));
     SendLine(player, "OR;" + OrdersText(RaidLeaderText('A'), 40) + ";" + OrdersText(RaidLeaderText('B'), 40) + ";" +
                          OrdersText(!found_.state.empty() ? found_.state  // [guild80] founding / bank tab state
-                                    : guildState_.empty() ? "гильдии нет: банк спит"
+                                    : guildState_.empty() ? "no guild: the bank sleeps"
                                                           : guildState_,
                                     80));
     for (auto const& [at, text] : decisions_)
@@ -5496,10 +5518,10 @@ void GuildCoordinator::SendOrders(Player* player)
     {
         if (w.optional || !w.Short() || ++shown > 10)
             continue;
-        std::string const source = w.gatherSkill ? std::string(SkillShort(w.gatherSkill)) + " " +
-                                                       std::to_string(w.gatherReq)
-                                   : w.vendor ? "торговец"
-                                              : "добыча";
+        std::string const source = w.gatherSkill
+                                       ? std::string(SkillShort(w.gatherSkill)) + " " + std::to_string(w.gatherReq)
+                                   : w.vendor ? "vendor"
+                                              : "loot";
         SendLine(player, "OW;" + OrdersText(ItemName(w.itemId), 30) + ";" + std::to_string(w.Short()) + ";" +
                              std::to_string(w.have) + "/" + std::to_string(w.need) + ";" + source + ";" +
                              OrdersText(w.forWhom, 130) + ";R");
@@ -5508,8 +5530,8 @@ void GuildCoordinator::SendOrders(Player* player)
     size_t optionalShown = 0;
     for (WantedItem const& w : wanted_)
         if (w.optional && w.have && ++optionalShown <= 4)
-            SendLine(player, "OW;" + OrdersText(ItemName(w.itemId), 30) + ";0;" + std::to_string(w.have) +
-                                 "/0;банк;" + OrdersText(w.forWhom, 130) + ";O");
+            SendLine(player, "OW;" + OrdersText(ItemName(w.itemId), 30) + ";0;" + std::to_string(w.have) + "/0;bank;" +
+                                 OrdersText(w.forWhom, 130) + ";O");
     SendLine(player, "OH;" + OrdersText(healthRow_, 220));
     for (auto const& [at, text] : alerts_)
         SendLine(player, "OA;" + std::to_string(now - at) + ";" + OrdersText(text, 200));
@@ -5531,7 +5553,7 @@ void GuildCoordinator::SendOrders(Player* player)
         std::string status = order.status;
         std::string details = order.details;
         if (!p || !p->IsInWorld())
-            status = "не в сети";
+            status = "offline";
         else if (order.type == GuildOrderType::QUEST)
             status = StatusName(p, GET_PLAYERBOT_AI(p));
         if (st != bots_.end() && order.type != GuildOrderType::BANK_DEPOSIT)
@@ -5540,7 +5562,7 @@ void GuildCoordinator::SendOrders(Player* player)
             for (HeldItem const& h : st->second.held)
                 hold += h.purpose != "pending" && !TransferHolds(h.itemGuidLow) ? 1 : 0;  // [guild81]
             if (hold)
-                details += "; держит для банка: " + std::to_string(hold);
+                details += "; holds for the bank: " + std::to_string(hold);
         }
         uint32 const sinceMin = order.since ? (now - order.since) / MINUTE : 0;
         SendLine(player, "O;" + std::to_string(row.num) + ";" + OrdersText(p ? p->GetName() : row.name, 12) + ";" +
@@ -5569,7 +5591,7 @@ void GuildCoordinator::SendOrders(Player* player)
                     break;
                 std::string state = o.status;
                 if (o.type == GuildOrderType::QUEST)
-                    state = runFound ? "ждёт" : "run";
+                    state = runFound ? "waits" : "run";
                 else if (o.waitsTown)
                     state = "town:" + o.townName;
                 else if (o.executable && !runFound)
@@ -5638,16 +5660,17 @@ void GuildCoordinator::SendTasks(Player* player, uint32 num)
             ++i;
             std::string state = o.status;  // as the OT line
             if (o.type == GuildOrderType::QUEST)
-                state = runFound ? "ждёт" : "run";
+                state = runFound ? "waits" : "run";
             else if (o.waitsTown)
                 state = "town:" + o.townName;
             else if (o.executable && !runFound)
                 state = "run";
             runFound |= state == "run";
-            std::string const forWhom = o.forLow ? Who(o.forLow)
-                                        : o.type == GuildOrderType::BANK_DEPOSIT || o.type == GuildOrderType::DONATE_GOLD
-                                            ? std::string("банк гильдии")
-                                            : std::string("себе");
+            std::string const forWhom =
+                o.forLow ? Who(o.forLow)
+                : o.type == GuildOrderType::BANK_DEPOSIT || o.type == GuildOrderType::DONATE_GOLD
+                    ? std::string("guild bank")
+                    : std::string("self");
             std::string const item = o.itemId ? ItemName(o.itemId) + (o.count > 1 ? " x" + std::to_string(o.count) : "")
                                               : std::string();
             std::string const n = std::to_string(i);
@@ -5788,7 +5811,7 @@ void GuildCoordinator::SendResources(Player* player)
         for (auto const& [num, count] : s.holders)
         {
             std::string const part =
-                (num ? "#" + std::to_string(num) : std::string("банк")) + " ×" + std::to_string(count);
+                (num ? "#" + std::to_string(num) : std::string("bank")) + " ×" + std::to_string(count);
             if (holders.size() + part.size() > 90)
             {
                 holders += ", …";
@@ -5836,16 +5859,26 @@ void GuildCoordinator::SendPlan(Player* player)
     {
         switch (kind)
         {
-            case GuildGear::SRC_QUEST: return "квест";
-            case GuildGear::SRC_DROP: return "босс подземелья";
-            case GuildGear::SRC_CRAFT: return "крафт";
-            case GuildGear::SRC_VENDOR: return "торговец";
-            case GuildGear::SRC_BANK: return "банк";
-            case GuildGear::SRC_WORLD: return "мобы в мире";
-            case GuildGear::SRC_REFDROP: return "мировой дроп";
-            case GuildGear::SRC_OBJECT: return "сундук / объект";
-            case GuildGear::SRC_CONTAINER: return "из предмета";
-            default: return "другое";
+            case GuildGear::SRC_QUEST:
+                return "quest";
+            case GuildGear::SRC_DROP:
+                return "dungeon boss";
+            case GuildGear::SRC_CRAFT:
+                return "craft";
+            case GuildGear::SRC_VENDOR:
+                return "vendor";
+            case GuildGear::SRC_BANK:
+                return "bank";
+            case GuildGear::SRC_WORLD:
+                return "mobs in the world";
+            case GuildGear::SRC_REFDROP:
+                return "world drop";
+            case GuildGear::SRC_OBJECT:
+                return "chest / object";
+            case GuildGear::SRC_CONTAINER:
+                return "from an item";
+            default:
+                return "other";
         }
     };
     uint32 const now = Now();
@@ -5867,8 +5900,8 @@ void GuildCoordinator::SendPlan(Player* player)
                                       std::to_string(cap);
             if (task && task->kind == NewRpgCraft::TASK_CRAFT && task->skill == line)
             {
-                rows.push_back({"крафт", "в работе", Who(row.low), NewRpgCraft::RecipeName(task->spellId), "себе",
-                                task->npcEntry ? "покупает реагент" : "крафт", "прокачка " + skill});
+                rows.push_back({"craft", "in progress", Who(row.low), NewRpgCraft::RecipeName(task->spellId), "self",
+                                task->npcEntry ? "buys a reagent" : "craft", "skill-up " + skill});
                 continue;
             }
             auto const list = recipesBySkill_.find(line);
@@ -5877,8 +5910,8 @@ void GuildCoordinator::SendPlan(Player* player)
                 continue;
             if (value >= cap)
             {
-                rows.push_back({"крафт", "ждёт ранг", Who(row.low), "—", "себе", "тренер",
-                                "навык на пределе ранга: " + skill});
+                rows.push_back({"craft", "waits for the rank", Who(row.low), "—", "self", "trainer",
+                                "skill at the rank cap: " + skill});
                 continue;
             }
             int32 const index = value < plan->second.size() ? plan->second[value] : -1;
@@ -5894,11 +5927,13 @@ void GuildCoordinator::SendPlan(Player* player)
                     mats = false;
                     missing += (missing.empty() ? "" : ", ") + ItemName(item) + " ×" + std::to_string(n);
                 }
-            rows.push_back({"крафт",
-                            !known ? "учить рецепт" : mats ? "материалы есть" : "ждёт материалы", Who(row.low),
-                            ItemName(r.product), "себе / банк", "крафт",
-                            "прокачка " + skill + " до " + std::to_string((r.yellow + r.gray) / 2) +
-                                (missing.empty() ? "" : "; нет: " + missing)});
+            rows.push_back({"craft",
+                            !known ? "learn the recipe"
+                            : mats ? "materials there"
+                                   : "waits for materials",
+                            Who(row.low), ItemName(r.product), "self / bank", "craft",
+                            "skill-up " + skill + " to " + std::to_string((r.yellow + r.gray) / 2) +
+                                (missing.empty() ? "" : "; missing: " + missing)});
         }
     }
 
@@ -5914,12 +5949,11 @@ void GuildCoordinator::SendPlan(Player* player)
         {
             uint32 const price = GuildTabPrice(tabs);
             uint64 const have = guild ? guild->GetTotalBankMoney() : 0;
-            rows.push_back({"деньги",
-                            guild ? "собрано " + Gsc(have) + " из " + Gsc(price) : std::string("нет гильдии"),
-                            "банк гильдии", "вкладка банка " + std::to_string(tabs + 1) + ": " + Gsc(price),
-                            "гильдия", "золото банка гильдии",
-                            "цена ядра (GuildBankTabCost" + std::to_string(tabs) + ")" +
-                                (guild ? "" : "; гильдию основывают боты по уставу, до тех пор 0")});
+            rows.push_back({"money", guild ? "collected " + Gsc(have) + " from " + Gsc(price) : std::string("no guild"),
+                            "guild bank", "bank tab " + std::to_string(tabs + 1) + ": " + Gsc(price), "guild",
+                            "guild bank gold",
+                            "core price (GuildBankTabCost" + std::to_string(tabs) + ")" +
+                                (guild ? "" : "; the bots found the guild by charter, 0 until then")});
         }
         for (PlanRow const& row : plan_)
         {
@@ -5928,26 +5962,26 @@ void GuildCoordinator::SendPlan(Player* player)
                 continue;
             uint32 const money = p->GetMoney();
             auto const state = [&](uint32 cost)
-            { return money >= cost ? "хватает (есть " + Gsc(money) + ")" : "копит: есть " + Gsc(money); };
+            { return money >= cost ? "enough (has " + Gsc(money) + ")" : "saving: has " + Gsc(money); };
             if (uint32 const ranks = NewRpgProfession::NextRankCost(p))
-                rows.push_back({"деньги", state(ranks), Who(row.low), "ранги профессий: " + Gsc(ranks), "себе",
-                                "тренер, свои деньги", "следующий ранг, который тренер учит сейчас"});
+                rows.push_back({"money", state(ranks), Who(row.low), "profession ranks: " + Gsc(ranks), "self",
+                                "trainer, own money", "the next rank the trainer teaches now"});
             std::string tools;
             if (uint32 const cost = NewRpgProfession::MissingTools(p, tools))
-                rows.push_back({"деньги", state(cost), Who(row.low), "инструменты: " + Gsc(cost), "себе",
-                                "торговец, свои деньги", tools});
+                rows.push_back(
+                    {"money", state(cost), Who(row.low), "tools: " + Gsc(cost), "self", "vendor, own money", tools});
             if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p))
                 if (auto const* task = std::get_if<NewRpgInfo::DoProfession>(&ai->rpgInfo.data))
                     if (task->cost)
                     {
-                        char const* const what = task->kind == 1                       ? "ранг у тренера"
-                                                 : task->kind == NewRpgCraft::TASK_RECIPES ? "рецепты у тренера"
-                                                 : task->kind == NewRpgCraft::TASK_CRAFT   ? "реагенты у торговца"
-                                                                                           : "покупка у торговца";
-                        rows.push_back({"деньги", "в пути: " + state(task->cost), Who(row.low),
-                                        std::string(what) + ": " + Gsc(task->cost), "себе", "свои деньги",
+                        char const* const what = task->kind == 1                           ? "rank at the trainer"
+                                                 : task->kind == NewRpgCraft::TASK_RECIPES ? "recipes at the trainer"
+                                                 : task->kind == NewRpgCraft::TASK_CRAFT   ? "reagents at a vendor"
+                                                                                           : "purchase at a vendor";
+                        rows.push_back({"money", "on the way: " + state(task->cost), Who(row.low),
+                                        std::string(what) + ": " + Gsc(task->cost), "self", "own money",
                                         task->kind == NewRpgCraft::TASK_CRAFT ? NewRpgCraft::RecipeName(task->spellId)
-                                                                              : std::string("поручение профессии")});
+                                                                              : std::string("profession errand")});
                     }
         }
     }
@@ -5956,24 +5990,24 @@ void GuildCoordinator::SendPlan(Player* player)
     for (auto const& [low, st] : bots_)  // [guild70] the leader's BUY orders: who pays what
         for (GuildOrder const& o : st.orders)
             if (o.type == GuildOrderType::BUY)
-                rows.push_back({"деньги", o.status, Who(low), ItemName(o.itemId) + ": " + Gsc(o.cost), "себе",
-                                "торговец, свои деньги", o.reason});
+                rows.push_back({"money", o.status, Who(low), ItemName(o.itemId) + ": " + Gsc(o.cost), "self",
+                                "vendor, own money", o.reason});
     for (CraftJob const& job : crafts_)
     {
-        std::string state = job.ready ? "материалы есть" : "ждёт материалы";
+        std::string state = job.ready ? "materials there" : "waits for materials";
         auto const st = bots_.find(job.crafterLow);
         if (st != bots_.end())
             for (GuildOrder const& o : st->second.orders)
-                if (o.type == GuildOrderType::CRAFT_FOR && o.spellId == job.spellId && o.status == "создаёт")
-                    state = "в работе";
-        rows.push_back({"крафт", state, Who(job.crafterLow), ItemName(job.itemId),
-                        job.forLow == job.crafterLow ? "себе" : Who(job.forLow), job.bag ? "крафт (сумка)" : "крафт",
+                if (o.type == GuildOrderType::CRAFT_FOR && o.spellId == job.spellId && o.status == "creates")
+                    state = "in progress";
+        rows.push_back({"craft", state, Who(job.crafterLow), ItemName(job.itemId),
+                        job.forLow == job.crafterLow ? "self" : Who(job.forLow), job.bag ? "craft (bag)" : "craft",
                         job.why});
     }
     for (CraftDone const& d : craftsDone_)
-        rows.push_back({"крафт", "сделано " + std::to_string((now - d.at) / 60) + " мин назад", Who(d.low),
-                        NewRpgCraft::RecipeName(d.spellId), "себе / банк", "крафт",
-                        "навык " + std::to_string(d.before) + "→" + std::to_string(d.after)});
+        rows.push_back({"craft", "done " + std::to_string((now - d.at) / 60) + " min ago", Who(d.low),
+                        NewRpgCraft::RecipeName(d.spellId), "self / bank", "craft",
+                        "skill " + std::to_string(d.before) + "→" + std::to_string(d.after)});
 
     // transfers: [guild81] trade / mail / bank between members, then what waits for the guild bank
     {
@@ -5984,15 +6018,15 @@ void GuildCoordinator::SendPlan(Player* player)
     }
     for (auto const& [low, list] : withdraw_)
         for (auto const& [item, why] : list)
-            rows.push_back({"передача", "ждёт похода в банк", "банк", ItemName(item), Who(low), "банк", why});
+            rows.push_back({"transfer", "waits for a bank trip", "bank", ItemName(item), Who(low), "bank", why});
     for (auto const& [low, st] : bots_)
         for (HeldItem const& h : st.held)
         {
             if (h.purpose == "pending" || TransferHolds(h.itemGuidLow))  // [guild81] listed above
                 continue;
             std::string const what = ItemName(h.itemId) + (h.count > 1 ? " ×" + std::to_string(h.count) : "");
-            rows.push_back({"передача", st.vaultFail.empty() ? "держит до банка" : st.vaultFail, Who(low), what,
-                            h.forLow ? "банк → " + Who(h.forLow) : std::string("банк"), "банк", h.purpose});
+            rows.push_back({"transfer", st.vaultFail.empty() ? "holds until the bank" : st.vaultFail, Who(low), what,
+                            h.forLow ? "bank → " + Who(h.forLow) : std::string("bank"), "bank", h.purpose});
         }
 
     // sources of what is missing: the wanted list's shortfalls and the members' gear plan
@@ -6005,13 +6039,13 @@ void GuildCoordinator::SendPlan(Player* player)
             for (GuildOrder const& o : st.orders)
                 if (o.type == GuildOrderType::GATHER && o.itemId == w.itemId)
                     gatherers += (gatherers.empty() ? "" : ", ") + Who(low);
-        std::string how = !gatherers.empty() ? "сбор: " + gatherers
-                          : w.vendor          ? "торговец (за свои деньги)"
-                          : w.gatherSkill     ? std::string("сбор ") + SkillShort(w.gatherSkill) + " " +
-                                                std::to_string(w.gatherReq) + ": нет сборщика с навыком"
-                                              : "добыча с мобов";
-        rows.push_back({"источник", "не хватает " + std::to_string(w.Short()),
-                        gatherers.empty() ? "—" : gatherers, ItemName(w.itemId), "wanted list", how, w.forWhom});
+        std::string how = !gatherers.empty() ? "gathering: " + gatherers
+                          : w.vendor         ? "vendor (own money)"
+                          : w.gatherSkill    ? std::string("gathering ") + SkillShort(w.gatherSkill) + " " +
+                                                std::to_string(w.gatherReq) + ": no gatherer with the skill"
+                                          : "loot from mobs";
+        rows.push_back({"source", "short " + std::to_string(w.Short()), gatherers.empty() ? "—" : gatherers,
+                        ItemName(w.itemId), "wanted list", how, w.forWhom});
     }
     for (auto const& [low, st] : bots_)
     {
@@ -6021,10 +6055,10 @@ void GuildCoordinator::SendPlan(Player* player)
             {
                 if (g.kind == GuildGear::SRC_BANK || !seen.insert(g.itemId).second)
                     continue;
-                rows.push_back({"источник", list == &st.gearNow ? "доступно сейчас" : "в плане",
+                rows.push_back({"source", list == &st.gearNow ? "available now" : "in the plan",
                                 g.crafterLow ? Who(g.crafterLow) : std::string("—"), ItemName(g.itemId), Who(low),
                                 kindName(g.kind),
-                                std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g) +
+                                std::string("upgrade ") + GuildGear::GroupName(g.group) + " " + GainText(g) +
                                     (g.text.empty() ? "" : ": " + g.text)});
             }
     }

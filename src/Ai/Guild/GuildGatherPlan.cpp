@@ -1246,12 +1246,13 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
         auto const qw = questWhy.find(a.botLow);
         std::string const pace =
             a.questPerMin < 0.0f
-                ? Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт), квесты без цены (нет квеста с данными)",
-                                      a.valuePerMin, valueOf(a.itemId))
-                : Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт) {} квесты {:.1f} м/мин ({})", a.valuePerMin,
-                                      valueOf(a.itemId), a.worth ? ">" : "≤", a.questPerMin,
-                                      qw == questWhy.end() ? std::string("формула") : qw->second);
-        a.why = Acore::StringFormat("не хватает {}, здесь {:.1f}/ч, путь {:.0f} с, ботов на месте {}; {}", a.need,
+                ? Acore::StringFormat(
+                      "gathering {:.1f} c/min ({:.1f} c/unit), quests without a value (no quest with data)",
+                      a.valuePerMin, valueOf(a.itemId))
+                : Acore::StringFormat("gathering {:.1f} c/min ({:.1f} c/unit) {} quests {:.1f} c/min ({})",
+                                      a.valuePerMin, valueOf(a.itemId), a.worth ? ">" : "≤", a.questPerMin,
+                                      qw == questWhy.end() ? std::string("formula") : qw->second);
+        a.why = Acore::StringFormat("short {}, here {:.1f}/h, walk {:.0f} s, bots at the spot {}; {}", a.need,
                                     a.ratePerHour, a.travelSec, a.worth ? placeLoad[a.placeId - 1] : 0, pace);
     }
 
