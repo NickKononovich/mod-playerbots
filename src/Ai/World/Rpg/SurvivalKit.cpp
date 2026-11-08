@@ -1216,6 +1216,15 @@ namespace SurvivalKit
             // cast when its caster moves (Spell::update, SPELL_INTERRUPT_FLAG_MOVEMENT); an item's on-use is instant
             if (onTheMove && !piece.item && !piece.instant)
                 continue;
+            // [deaths13] a heal the aura on the bot forbids (SpellInfo::CheckCast: ExcludeCasterAuraSpell /
+            // ExcludeTargetAuraSpell, the bot heals itself) is no heal now: Lay on Hands under Forbearance after a
+            // Divine Protection (b353 Geron L10: run-past "hp 500" at 250 max health counted Lay on Hands; Divine
+            // Protection went first in the fight, Lay on Hands never came, it died at hp 20)
+            if (!piece.item)
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(piece.spell);
+                    info && ((info->ExcludeCasterAuraSpell && bot->HasAura(info->ExcludeCasterAuraSpell)) ||
+                             (info->ExcludeTargetAuraSpell && bot->HasAura(info->ExcludeTargetAuraSpell))))
+                    continue;
             if (piece.item)
             {
                 SpellInfo const* info = sSpellMgr->GetSpellInfo(piece.spell);

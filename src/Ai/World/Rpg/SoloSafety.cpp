@@ -1062,7 +1062,14 @@ namespace
                     }
                 }
                 // a member that flees for assistance runs to the nearest mob that answers within the flee radius
-                float const flee = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS);
+                // [deaths13] the runner searches from where it stands when it flees (Creature::DoFleeToGetAssistance:
+                // NearestAssistCreatureInCreatureRangeCheck round the mob), and the mob stands within the bot's own
+                // fighting reach of the fight spot then - a ranged bot's spell reach (it kites a rooted mob there),
+                // else its melee reach. b353 Thamesh L10 (mage): the Tunnel Rat Scout ran for help at 15 % from 31 yd,
+                // judged 1, came 5, died; the search had looked 30 yd round the bot only
+                float const flee = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS) +
+                                   (PlayerbotAI::IsRanged(bot) ? Leader::Fight::LeaderSpellReach(bot)
+                                                               : bot->GetCombatReach());
                 for (size_t i = 0; i < pack.size(); ++i)
                 {
                     if (!ScriptHelpOf(pack[i].mob).flees || !fled.insert(pack[i].mob).second)
@@ -1080,6 +1087,24 @@ namespace
                     {
                         pack.push_back({nearest, true});
                         changed = true;
+                        // one line per runner and helper beyond the radius round the fight spot alone
+                        if (best > sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS))
+                        {
+                            static std::mutex fleeLogLock;
+                            static std::unordered_set<uint64> fleeLogged;
+                            uint64 const key = pack[i].mob->GetGUID().GetCounter() * 1000003ull +
+                                               nearest->GetGUID().GetCounter();
+                            bool fresh = false;
+                            {
+                                std::lock_guard<std::mutex> guard(fleeLogLock);
+                                fresh = fleeLogged.insert(key).second;
+                            }
+                            if (fresh)
+                                LOG_INFO("playerbots", "[deaths13] {} L{} judge: {} flees for help to {} {:.0f} yd "
+                                         "from the fight (its runner's reach {:.0f} yd)",
+                                         bot->GetName(), bot->GetLevel(), pack[i].mob->GetName(), nearest->GetName(),
+                                         best, flee);
+                        }
                     }
                 }
             }
@@ -2395,6 +2420,23 @@ namespace SoloSafety
                 return false;
             set = found->second.legRunPast;
             points = found->second.legPoints;
+            // [deaths13] the bot's own judged pull is among its attackers: it fights that pull where it stands, no
+            // walk on past the camp with it in tow. b353 Eraelor L9 (Gnarlpine Defender) and Nurlian L7 (Wrathscale
+            // Siren): "PULL ... brings 1", then "RUN_PAST keeps walking past" the very mob it pulled (it was priced on
+            // the leg), the walk dragged the fight into the next camp - judged 1, came 3 / 2, both died
+            if (found->second.engaged)
+                for (Unit* attacker : bot->getAttackers())
+                    if (attacker && attacker->IsAlive() && attacker->GetGUID() == found->second.engage.target)
+                    {
+                        LOG_INFO("playerbots", "[deaths13] {} L{} ends its run past: it fights its own pull of {} L{} "
+                                 "(the leg's chase set holds {} mobs)",
+                                 bot->GetName(), bot->GetLevel(), attacker->GetName(), attacker->GetLevel(),
+                                 found->second.legRunPast.size());
+                        found->second.legRunPast.clear();
+                        found->second.legPoints.clear();
+                        found->second.legNamed.clear();
+                        return false;
+                    }
         }
         // still on the leg: its nearest point within the far walk's own tolerance (MoveFarToDirect's farRoute, 8 yd);
         // at its end or off it the leg is over
