@@ -2642,7 +2642,7 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
 
     // [guild13] a solo bot rests to full when its next pull needs it, and after a death (SoloSafety)
     if (!Leader::LedGroup(bot) && SoloSafety::WantsRest(bot, true, why))
-        return true;
+        return !SoloSafety::RestSpotInReach(bot);  // [deaths14] out of every reach first (RestEscape)
 
     // [lead47] b96 rfc-h 332-372 s: the leader's Rest ("the boss pull waits: mana 78 % < 90 %") never reached the
     // drink - "rest mana" fires only below the member's own line (70 % before a mini-boss). Under the leader's Rest
@@ -2824,7 +2824,7 @@ float HealthLine(Player* bot)
 bool WantsFood(Player* bot, std::string* why)
 {
     if (!Leader::LedGroup(bot) && SoloSafety::WantsRest(bot, false, why))  // [guild13]
-        return true;
+        return !SoloSafety::RestSpotInReach(bot);  // [deaths14] out of every reach first (RestEscape)
     float const health = bot->GetHealthPct();
     // [lead116] b151 rfc-h 16-56 s: the tank ate at 95 % (its next pull cost 0.5 tank hp), stood up, ate again - a
     // led group rests health to its computed line, never to full above it, and not with a healer free to heal it

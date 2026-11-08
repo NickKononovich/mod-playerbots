@@ -2279,6 +2279,31 @@ namespace SoloSafety
         return true;
     }
 
+    bool RestSpotInReach(Player* bot)
+    {
+        // [deaths14] b354 Bhogagnuth L8 began its rest-first ("rests to full: before walking past Mangeclaw") on its
+        // walk 19 yd from Mangeclaw L11 (idle, aggro 21): the rare walked in, it died. RestEscape steps out of every
+        // reach only before a rest; the eat / drink sat it down where it stood first
+        if (!bot || bot->IsInCombat() || !Applies(bot))
+            return false;
+        std::string who;
+        std::vector<G3D::Vector3> spots;
+        if (!StandsInReach(bot, who, spots) || spots.empty())
+            return false;
+        static std::mutex restLogLock;
+        static std::unordered_map<uint32, std::string> restLogged;
+        {
+            std::lock_guard<std::mutex> guard(restLogLock);
+            std::string& last = restLogged[bot->GetGUID().GetCounter()];
+            if (last == who)
+                return true;
+            last = who;
+        }
+        LOG_INFO("playerbots", "[deaths14] {} L{} rests not here: within the aggro reach of {} ({} spots out of every "
+                 "reach round it)", bot->GetName(), bot->GetLevel(), who, spots.size());
+        return true;
+    }
+
     bool HoldsPulls(Player* bot)
     {
         if (!bot || !bot->IsAlive() || bot->IsInCombat())
