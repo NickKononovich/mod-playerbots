@@ -17,6 +17,7 @@
 #include "Bag.h"  // [prof13]
 #include "Creature.h"
 #include "DBCStores.h"
+#include "GuildCoordinator.h"  // [prof13] the leader's errand gate
 #include "TravelMgr.h"  // [guild15] trips to another landmass
 #include "Log.h"
 #include "Map.h"
@@ -279,6 +280,14 @@ namespace
         return false;
     }
 
+    // [prof13] econ2 hook: the global leader called this errand for the skill and the npc stands in the town the bot is
+    // in now (a tool also wants a free bag slot); a bot outside the guild plan leads itself (always true)
+    bool ErrandAllowed(Player* bot, uint32 skill, bool tool, NpcSpawn const& spawn)
+    {
+        return sGuildCoordinator.ProfessionErrand(bot, skill, tool,
+                                                  WorldPosition(spawn.mapId, spawn.x, spawn.y, spawn.z));
+    }
+
     char const* SkillName(uint32 skill)
     {
         SkillLineEntry const* line = sSkillLineStore.LookupEntry(skill);
@@ -325,7 +334,7 @@ namespace
                     continue;
                 if (sameZone && spawn.zoneId != zone)
                     continue;
-                if (FailedBefore(bot, spawn.entry, rank.spellId))
+                if (FailedBefore(bot, spawn.entry, rank.spellId) || !ErrandAllowed(bot, skill, false, spawn))
                     continue;
                 if (bot->GetMoney() < rank.cost)
                 {
@@ -378,7 +387,7 @@ namespace
                 continue;
             if (sameZone && spawn.zoneId != zone)
                 continue;
-            if (FailedBefore(bot, spawn.entry, itemId))
+            if (FailedBefore(bot, spawn.entry, itemId) || !ErrandAllowed(bot, skill, true, spawn))
                 continue;
             if (bot->GetMoney() < proto->BuyPrice)
             {
@@ -422,7 +431,7 @@ namespace
                 continue;
             float const d = TripDist(bot, spawn);
             if (d >= best.dist || !Friendly(bot, spawn.entry) ||
-                FailedBefore(bot, spawn.entry, RecipeFailId(skill)))
+                FailedBefore(bot, spawn.entry, RecipeFailId(skill)) || !ErrandAllowed(bot, skill, false, spawn))
                 continue;
             auto itr = teaches.find(spawn.entry);
             if (itr == teaches.end())
