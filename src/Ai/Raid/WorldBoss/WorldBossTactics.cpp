@@ -252,9 +252,43 @@ BossTactic const* Tactic(uint32 entry)
 
 Unit* FightBoss(Player* bot, PlayerbotAI* botAI) { return SnapshotUnit(botAI, Picture(bot, botAI).boss); }
 
+namespace
+{
+// [b348] the add a damage dealer committed to: kept while it is a live priority add of the fight in reach (its
+// state, not a timer). b348 wb-kazzak: 155-190 "switches to Dreadlord" per bot - the nearest priority add changed
+// with every move between the two Dreadlords, and the rotation went back to the boss in between.
+thread_local std::unordered_map<ObjectGuid, ObjectGuid> tCommitted;
+
+bool StillPriority(Player* bot, Unit* add)
+{
+    return add && add->IsAlive() && add->IsInCombat() && add->IsInWorld() && add->GetMap() == bot->GetMap() &&
+           !add->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE) && bot->GetDistance(add) <= SPELL_REACH + 10.0f &&
+           (IsHealerAdd(add) || add->GetEntry() == NPC_SPIRIT_SHADE);
+}
+}  // namespace
+
 Unit* PriorityAdd(Player* bot, PlayerbotAI* botAI, Unit* /*boss*/)
 {
-    return SnapshotUnit(botAI, Picture(bot, botAI).priorityAdd);
+    auto const committed = tCommitted.find(bot->GetGUID());
+    if (committed != tCommitted.end())
+    {
+        if (Unit* add = botAI->GetUnit(committed->second); StillPriority(bot, add))
+            return add;
+        tCommitted.erase(committed);
+    }
+    Unit* add = SnapshotUnit(botAI, Picture(bot, botAI).priorityAdd);
+    if (add)
+        tCommitted[bot->GetGUID()] = add->GetGUID();
+    return add;
+}
+
+Unit* CommittedAdd(Player* bot, PlayerbotAI* botAI)
+{
+    auto const committed = tCommitted.find(bot->GetGUID());
+    if (committed == tCommitted.end())
+        return nullptr;
+    Unit* add = botAI->GetUnit(committed->second);
+    return StillPriority(bot, add) ? add : nullptr;
 }
 
 uint8 Stacks(Unit* unit, uint32 spellId)
@@ -269,28 +303,57 @@ bool IsTauntAction(std::string const& name)
 {
     return name == "taunt" || name == "growl" || name == "hand of reckoning" || name == "dark command" ||
            name == "righteous defense" || name == "mocking blow" || name == "challenging shout" ||
-           name == "challenging roar" || name == "taunt spell";
+           name == "challenging roar" || name == "death grip" || name == "taunt spell";
 }
 
 namespace
 {
-char const* ClassTauntName(Player* bot)
+// a class's taunts, first the single-target one, then the backups (Hand of Reckoning / Righteous Defense,
+// Taunt / Mocking Blow / Challenging Shout, Growl / Challenging Roar, Dark Command / Death Grip); `onAlly`: cast on
+// the member the mob attacks (Righteous Defense), not on the mob
+struct TauntDef
 {
+    char const* name;
+    bool onAlly;
+};
+
+std::vector<TauntDef> const& ClassTaunts(Player* bot)
+{
+    static std::vector<TauntDef> const warrior = {
+        {"taunt", false}, {"mocking blow", false}, {"challenging shout", false}};
+    static std::vector<TauntDef> const paladin = {{"hand of reckoning", false}, {"righteous defense", true}};
+    static std::vector<TauntDef> const knight = {{"dark command", false}, {"death grip", false}};
+    static std::vector<TauntDef> const druid = {{"growl", false}, {"challenging roar", false}};
+    static std::vector<TauntDef> const none;
     switch (bot->getClass())
     {
         case CLASS_WARRIOR:
-            return "taunt";
+            return warrior;
         case CLASS_PALADIN:
-            return "hand of reckoning";
+            return paladin;
         case CLASS_DEATH_KNIGHT:
-            return "dark command";
+            return knight;
         case CLASS_DRUID:
-            return "growl";
+            return druid;
         default:
-            return nullptr;
+            return none;
     }
 }
+
+uint32 SpellIdOf(PlayerbotAI* botAI, char const* name)
+{
+    return botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+}
 }  // namespace
+
+uint32 TauntReadyInMs(Player* bot, PlayerbotAI* botAI)
+{
+    uint32 best = UINT32_MAX;
+    for (TauntDef const& def : ClassTaunts(bot))
+        if (uint32 const spellId = SpellIdOf(botAI, def.name))
+            best = std::min(best, bot->HasSpellCooldown(spellId) ? bot->GetSpellCooldownDelay(spellId) : 0u);
+    return best;
+}
 
 bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target)
 {
@@ -310,27 +373,42 @@ bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target, std::string& 
         why = Acore::StringFormat("{:.1f} yd away", bot->GetDistance(target));
         return false;
     }
-    char const* name = ClassTauntName(bot);
-    if (!name)
+    std::vector<TauntDef> const& taunts = ClassTaunts(bot);
+    if (taunts.empty())
     {
         why = "no class taunt";
         return false;
     }
-    if (!botAI->CanCastSpell(name, target))
+    why.clear();
+    for (TauntDef const& def : taunts)
     {
-        uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
-        why = std::string(name) + (!spellId                         ? " not known"
-                                   : bot->HasSpellCooldown(spellId) ? " on cooldown"
-                                                                    : " cannot be cast now");
-        return false;
+        Unit* on = def.onAlly ? target->GetVictim() : target;
+        if (!on || (def.onAlly && (!on->IsPlayer() || on == bot)))
+            continue;
+        uint32 const spellId = SpellIdOf(botAI, def.name);
+        if (!spellId)
+            continue;
+        if (bot->HasSpellCooldown(spellId))
+        {
+            why += (why.empty() ? "" : ", ") + Acore::StringFormat("{} on cooldown {:.1f} s", def.name,
+                                                                   bot->GetSpellCooldownDelay(spellId) / 1000.0f);
+            continue;
+        }
+        if (!botAI->CanCastSpell(def.name, on))
+        {
+            why += (why.empty() ? "" : ", ") + std::string(def.name) + " cannot be cast now";
+            continue;
+        }
+        if (botAI->CastSpell(def.name, on))
+        {
+            why = def.name;
+            return true;
+        }
+        why += (why.empty() ? "" : ", ") + std::string(def.name) + " cast failed";
     }
-    if (!botAI->CastSpell(name, target))
-    {
-        why = std::string(name) + " cast failed";
-        return false;
-    }
-    why = name;
-    return true;
+    if (why.empty())
+        why = "no taunt known";
+    return false;
 }
 
 bool Note(Player* bot, char const* key, std::string const& text)
@@ -351,6 +429,43 @@ bool Note(Player* bot, char const* key, std::string const& text)
 // --- helpers for the tank rules -----------------------------------------------------------------------------------
 namespace
 {
+constexpr uint32 SWAP_LEAD_MS = 1500;  // a taunt's global cooldown: the swap lands before the holder's next stack
+
+// [b348] the holder's stack rate, measured from its own aura (ms between two stacks); thread-local per holder
+struct StackRate
+{
+    uint8 stacks = 0;
+    uint32 atMs = 0;
+    uint32 msPerStack = 0;
+};
+thread_local std::unordered_map<ObjectGuid, StackRate> tStackRates;
+
+uint32 StackRateMs(Unit* holder, uint8 stacks, uint32& sinceLast)
+{
+    StackRate& r = tStackRates[holder->GetGUID()];
+    uint32 const now = getMSTime();
+    if (stacks != r.stacks)
+    {
+        if (stacks == r.stacks + 1 && r.atMs)
+            r.msPerStack = getMSTimeDiff(r.atMs, now);
+        r.stacks = stacks;
+        r.atMs = now ? now : 1;
+    }
+    sinceLast = r.atMs ? getMSTimeDiff(r.atMs, now) : 0;
+    return r.msPerStack;
+}
+
+// the tank carries the swap stacks and another living tank holds the boss
+bool StackedTankOff(Player* bot, Unit* boss)
+{
+    BossTactic const* t = boss ? Tactic(boss->GetEntry()) : nullptr;
+    if (!t || !t->swapAura || Stacks(bot, t->swapAura) < t->swapStacks)
+        return false;
+    Unit* holder = boss->GetVictim();
+    Player* player = holder ? holder->ToPlayer() : nullptr;
+    return player && player != bot && player->IsAlive() && PlayerbotAI::IsTank(player);
+}
+
 // the bot is a tank and may take the boss: it does not carry the swap stacks
 bool TankMayTake(Player* bot, Unit* boss, BossTactic const* t)
 {
@@ -375,7 +490,28 @@ bool WorldBossTankSwapTrigger::IsActive()
     Player* holder = victim ? victim->ToPlayer() : nullptr;
     if (!holder || holder == bot || !PlayerbotAI::IsTank(holder))
         return false;
-    return Stacks(holder, t->swapAura) >= t->swapStacks && TankMayTake(bot, boss, t);
+    if (!TankMayTake(bot, boss, t))
+        return false;
+    // [b348] no retry while every taunt of the class is on cooldown (271 "on cooldown" lines in wb-kazzak b348)
+    if (TauntReadyInMs(bot, botAI) > 0)
+        return false;
+    // the swap planned from the holder's measured stack rate: taunt when the holder would take the threshold stack
+    // before the taunt lands (a global cooldown's lead), not after it has taken it
+    uint8 const stacks = Stacks(holder, t->swapAura);
+    uint32 sinceLast = 0;
+    uint32 const msPerStack = StackRateMs(holder, stacks, sinceLast);
+    uint8 predicted = stacks;
+    if (msPerStack && sinceLast + SWAP_LEAD_MS >= msPerStack)
+        ++predicted;
+    return predicted >= t->swapStacks;
+}
+
+bool WorldBossStackedTankTrigger::IsActive()
+{
+    if (!PlayerbotAI::IsTank(bot))
+        return false;
+    Unit* boss = FightBoss(bot, botAI);
+    return boss && bot->GetVictim() == boss && StackedTankOff(bot, boss);
 }
 
 bool WorldBossThreatResetTrigger::IsActive()
@@ -390,7 +526,8 @@ bool WorldBossThreatResetTrigger::IsActive()
     Player* holder = victim ? victim->ToPlayer() : nullptr;
     if (holder && PlayerbotAI::IsTank(holder))
         return false;
-    return TankMayTake(bot, boss, t);
+    // a non-tank hit is worse than a stacked tank: any tank in reach takes him; [b348] no retry on cooldown
+    return bot->GetDistance(boss) <= TAUNT_RANGE && TauntReadyInMs(bot, botAI) == 0;
 }
 
 bool WorldBossLooseAddTrigger::IsActive()
@@ -525,6 +662,21 @@ bool WorldBossTauntAddAction::Execute(Event /*event*/)
     return bot->GetVictim() != add && Attack(add);
 }
 
+bool WorldBossStepOffAction::Execute(Event /*event*/)
+{
+    Unit* boss = FightBoss(bot, botAI);
+    BossTactic const* t = boss ? Tactic(boss->GetEntry()) : nullptr;
+    if (!boss || !t || bot->GetVictim() != boss)
+        return false;
+    bot->AttackStop();
+    botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
+    Unit* holder = boss->GetVictim();
+    Note(bot, "step_off",
+         Acore::StringFormat("off {} with {} stacks, {} holds him: no threat until the stacks drop", boss->GetName(),
+                             Stacks(bot, t->swapAura), holder ? holder->GetName() : std::string("nobody")));
+    return true;
+}
+
 bool WorldBossInterruptAddAction::Execute(Event /*event*/)
 {
     Unit* caster = SnapshotUnit(botAI, Picture(bot, botAI).healCaster);
@@ -644,12 +796,31 @@ bool WorldBossRaidCooldownAction::Execute(Event /*event*/)
 // --- multiplier ---------------------------------------------------------------------------------------------------
 float WorldBossStackedTankMultiplier::GetValue(Action* action)
 {
-    if (!action || !PlayerbotAI::IsTank(bot) || !bot->IsInCombat() || !IsTauntAction(action->getName()))
+    if (!action || !PlayerbotAI::IsTank(bot) || !bot->IsInCombat())
         return 1.0f;
     Unit* boss = FightBoss(bot, botAI);
     BossTactic const* t = boss ? Tactic(boss->GetEntry()) : nullptr;
     if (!t || !t->swapAura || Stacks(bot, t->swapAura) < t->swapStacks)
         return 1.0f;
+    std::string const name = action->getName();
     // a taunt on an add stays allowed; this tank only leaves the boss to the other tank
+    if (IsTauntAction(name))
+        return action->GetTarget() == boss ? 0.0f : 1.0f;
+    // [b348] the other tank took the boss: no threat on him until the stacks drop - wb-kazzak b348, Rtpalaa kept
+    // hitting Kazzak after each swap, took him back with its threat when the taunt ended and reached 10 stacks
+    if (!StackedTankOff(bot, boss) || dynamic_cast<MovementAction*>(action) || name.rfind("world boss", 0) == 0)
+        return 1.0f;
     return action->GetTarget() == boss ? 0.0f : 1.0f;
+}
+
+float WorldBossCommittedAddMultiplier::GetValue(Action* action)
+{
+    if (!action || !bot->IsInCombat() || PlayerbotAI::IsTank(bot) || PlayerbotAI::IsHeal(bot))
+        return 1.0f;
+    Unit* add = CommittedAdd(bot, botAI);
+    if (!add || dynamic_cast<MovementAction*>(action) || action->getName().rfind("world boss", 0) == 0)
+        return 1.0f;
+    // [b348] committed to a priority add: nothing on the boss until it is dead or out of reach (no flip-flop)
+    Unit* boss = FightBoss(bot, botAI);
+    return boss && action->GetTarget() == boss ? 0.0f : 1.0f;
 }

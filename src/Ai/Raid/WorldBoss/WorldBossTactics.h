@@ -69,6 +69,10 @@ BossTactic const* Tactic(uint32 entry);
 Unit* FightBoss(Player* bot, PlayerbotAI* botAI);
 // the healer add (Heal on the boss) / Spirit Shade the damage dealers kill first, nearest; nullptr: none
 Unit* PriorityAdd(Player* bot, PlayerbotAI* botAI, Unit* boss);
+// the priority add this damage dealer committed to (live, in reach), nullptr: none
+Unit* CommittedAdd(Player* bot, PlayerbotAI* botAI);
+// ms until the first of the class's taunts is ready (0: one is ready now, UINT32_MAX: none known)
+uint32 TauntReadyInMs(Player* bot, PlayerbotAI* botAI);
 uint8 Stacks(Unit* unit, uint32 spellId);
 bool IsTauntAction(std::string const& name);
 bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target);
@@ -83,6 +87,14 @@ class WorldBossTankSwapTrigger : public Trigger
 {
 public:
     WorldBossTankSwapTrigger(PlayerbotAI* botAI) : Trigger(botAI, "world boss tank swap") {}
+    bool IsActive() override;
+};
+
+// the tank carries the swap stacks, another tank holds the boss, and it still hits him
+class WorldBossStackedTankTrigger : public Trigger
+{
+public:
+    WorldBossStackedTankTrigger(PlayerbotAI* botAI) : Trigger(botAI, "world boss stacked tank") {}
     bool IsActive() override;
 };
 
@@ -168,6 +180,14 @@ public:
     bool Execute(Event event) override;
 };
 
+// the stacked tank stops attacking the boss (no threat): the other tank keeps him until the stacks drop
+class WorldBossStepOffAction : public Action
+{
+public:
+    WorldBossStepOffAction(PlayerbotAI* botAI) : Action(botAI, "world boss step off") {}
+    bool Execute(Event event) override;
+};
+
 class WorldBossTauntAddAction : public AttackAction
 {
 public:
@@ -236,6 +256,14 @@ class WorldBossStackedTankMultiplier : public Multiplier
 {
 public:
     WorldBossStackedTankMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "world boss stacked tank") {}
+    float GetValue(Action* action) override;
+};
+
+// a damage dealer committed to a priority add does nothing on the boss until the add is dead or out of reach
+class WorldBossCommittedAddMultiplier : public Multiplier
+{
+public:
+    WorldBossCommittedAddMultiplier(PlayerbotAI* botAI) : Multiplier(botAI, "world boss committed add") {}
     float GetValue(Action* action) override;
 };
 
