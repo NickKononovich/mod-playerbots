@@ -406,6 +406,19 @@ bool NewRpgDoQuestAction::SettleQuestUse()
         LOG_INFO("playerbots", "[quest] use {} q{} {} on {} result credited {}/{}", bot->GetName(), cast.questId,
                  tool, cast.entry, now, need);
         drop();
+        // [quest13] the tool's aura on the bot (a disguise that roots it, b353 q9531 Tree's Company: Colian and
+        // Hobliir stood 90 s rooted after the credit, every walk refused by IsMovingAllowed) is clicked off once it
+        // credited, as a player cancels it - only an aura the client may cancel (WorldSession::HandleCancelAuraOpcode:
+        // positive, not SPELL_ATTR0_NO_AURA_CANCEL, not passive, not a channel)
+        if (SpellInfo const* info = sSpellMgr->GetSpellInfo(cast.spellId);
+            info && bot->HasAura(cast.spellId, bot->GetGUID()) && info->IsPositive() && !info->IsPassive() &&
+            !info->HasAttribute(SPELL_ATTR0_NO_AURA_CANCEL) && !info->IsChanneled())
+        {
+            bot->RemoveAurasDueToSpell(cast.spellId, bot->GetGUID(), 0, AURA_REMOVE_BY_CANCEL);
+            LOG_INFO("playerbots", "[quest13] {} L{} q{} cancels the aura of its quest tool {} after the credit "
+                     "(can move now: {})",
+                     bot->GetName(), bot->GetLevel(), cast.questId, tool, botAI->CanMove());
+        }
         return false;
     }
     if (bot->IsInCombat())

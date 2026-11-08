@@ -3402,6 +3402,7 @@ namespace
         std::unordered_map<uint32, std::vector<QuestSpot>> creatures;  // creature entry -> spawns
         std::unordered_map<uint32, std::vector<QuestSpot>> objects;    // object entry -> spawns
         std::unordered_map<uint32, std::vector<QuestSpot>> triggers;   // quest id -> explore area triggers
+        std::unordered_map<uint32, std::vector<uint32>> triggerIds;    // [quest13] quest id -> those triggers' ids
     };
 
     QuestSpawnIndex const& GetQuestSpawnIndex()
@@ -3438,8 +3439,11 @@ namespace
                 {
                     Field* fields = result->Fetch();
                     if (AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(fields[0].Get<uint32>()))
+                    {
                         index.triggers[fields[1].Get<uint32>()].push_back(
                             {trigger->map, trigger->x, trigger->y, trigger->z});
+                        index.triggerIds[fields[1].Get<uint32>()].push_back(trigger->entry);  // [quest13]
+                    }
                 } while (result->NextRow());
             }
 
@@ -4734,6 +4738,51 @@ namespace
         poiInfo.push_back({{best->x, best->y}, objectiveIdx});
         return true;
     }
+}
+
+// [quest13] an explore objective is the core's area trigger: a player's client reports every trigger it enters
+// (CMSG_AREATRIGGER) and WorldSession::HandleAreaTriggerOpcode credits the quest (AreaExploredOrEventHappens) when the
+// player stands in the trigger's radius / box. A bot has no client: it reports the trigger it stands in, as the client
+// does. b353: 8 bots swept q62 The Fargodeep Mine 3-5 yd from its trigger for the whole run (2300 sweep lines, 0
+// credit). `walkTo`: the nearest trigger of the quest on this map, its centre (the bot stands outside every one)
+bool NewRpgBaseAction::ReportExploreTrigger(uint32 questId, WorldPosition* walkTo)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest || !quest->HasSpecialFlag(QUEST_SPECIAL_FLAGS_EXPLORATION_OR_EVENT) ||
+        bot->GetQuestStatus(questId) != QUEST_STATUS_INCOMPLETE || !bot->IsAlive())
+        return false;
+    auto const statusItr = bot->getQuestStatusMap().find(questId);
+    if (statusItr == bot->getQuestStatusMap().end() || statusItr->second.Explored)
+        return false;
+    QuestSpawnIndex const& index = GetQuestSpawnIndex();
+    auto const ids = index.triggerIds.find(questId);
+    if (ids == index.triggerIds.end())
+        return false;
+    float best = std::numeric_limits<float>::max();
+    for (uint32 const id : ids->second)
+    {
+        AreaTrigger const* at = sObjectMgr->GetAreaTrigger(id);
+        if (!at || at->map != bot->GetMapId())
+            continue;
+        if (bot->IsInAreaTriggerRadius(at))
+        {
+            LOG_INFO("playerbots", "[quest13] {} L{} q{} explore: reports area trigger {} it stands in ({:.1f} yd "
+                     "from its centre)",
+                     bot->GetName(), bot->GetLevel(), questId, id, bot->GetExactDist(at->x, at->y, at->z));
+            WorldPacket packet(CMSG_AREATRIGGER, 4);
+            packet << uint32(id);
+            packet.rpos(0);
+            bot->GetSession()->HandleAreaTriggerOpcode(packet);
+            return true;
+        }
+        float const d = bot->GetExactDist(at->x, at->y, at->z);
+        if (walkTo && d < best)
+        {
+            best = d;
+            *walkTo = WorldPosition(at->map, at->x, at->y, at->z);
+        }
+    }
+    return false;
 }
 
 bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector<POIInfo>& poiInfo, bool toComplete)

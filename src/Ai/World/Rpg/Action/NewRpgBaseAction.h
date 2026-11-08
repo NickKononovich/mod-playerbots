@@ -184,6 +184,9 @@ public:
     // [guild13] the walk's end lies in a danger zone or among idle mobs whose pull the judge refuses (logged, the pack
     // remembered as a danger zone): the walk is not made
     bool DestinationRefused(WorldPosition const& dest);
+    // [quest13] the bot stands in an area trigger of the quest's explore objective: reported as a client reports it
+    // (true); else `walkTo` gets the nearest such trigger's centre on this map
+    bool ReportExploreTrigger(uint32 questId, WorldPosition* walkTo = nullptr);
 
 protected:
     // [guild3] full bags or low ammo: GO_CAMP to the nearest friendly vendor; true when the walk starts

@@ -54,6 +54,7 @@
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include <set>  // [help13]
 
 namespace
 {
@@ -197,6 +198,8 @@ struct Party
     bool campOnly = false;
     std::vector<ObjectGuid> campMobs;
     WorldPosition retry{};
+    // [help13] the camp's mobs seen dead since the assign: killed for good (their respawn is a new camp, not this one)
+    std::set<ObjectGuid> campDead;
 };
 
 std::mutex lock;
@@ -2051,26 +2054,38 @@ bool HelpUnits(Player* p, uint32 questId, int32 index, bool whole, uint32& units
 }
 
 // [help12] a camp request's mobs: alive ones on the bot's map (open) and the killed count (its units)
-bool CampOpen(Player* p, std::vector<ObjectGuid> const& mobs, uint32& killed)
+// [help13] `dead`: the mobs seen dead before - killed for good. b353 Dandolar's camp party (Nelaeleas) never ended:
+// the camp's Coastrunners killed early respawned and counted as the camp again, the party ground Pygmy Tide Crawlers
+// round it for 15 min, "camp cleared" never came
+bool CampOpen(Player* p, std::vector<ObjectGuid> const& mobs, uint32& killed, std::set<ObjectGuid>* dead = nullptr)
 {
     killed = 0;
     bool open = false;
     for (ObjectGuid const& guid : mobs)
     {
+        if (dead && dead->count(guid))
+        {
+            ++killed;
+            continue;
+        }
         Creature* mob = p ? ObjectAccessor::GetCreature(*p, guid) : nullptr;
         if (mob && mob->IsAlive())
             open = true;
         else
+        {
             ++killed;
+            if (dead && mob)  // seen dead (a mob not loaded here is not seen)
+                dead->insert(guid);
+        }
     }
     return open;
 }
 
-bool HelpOpen(Player* p, Party const& party)
+bool HelpOpen(Player* p, Party& party)
 {
     uint32 units = 0;
     if (party.campOnly)
-        return p && CampOpen(p, party.campMobs, units);
+        return p && CampOpen(p, party.campMobs, units, &party.campDead);
     return p && HelpUnits(p, party.helpObj.questId, party.helpObj.index, party.wholeQuest, units);
 }
 
@@ -2596,7 +2611,10 @@ bool HelpFormOperation::Execute()
     if (campOnly)
     {
         if (PlayerbotAI* ai = GET_PLAYERBOT_AI(req); ai && campAt != WorldPosition())
+        {
             ai->rpgInfo.ChangeToGoGrind(campAt);
+            std::get<NewRpgInfo::GoGrind>(ai->rpgInfo.data).forCamp = true;  // [help13]
+        }
         return true;
     }
     // the requester works its objective at the camp again (its postponed quest comes back)
@@ -2728,7 +2746,7 @@ void HelpEndLocked(Party& party, uint32 who, std::string const& reason, bool don
     if (Player* req = ObjectAccessor::FindPlayer(party.requester))
     {
         if (party.campOnly)  // [help12] the camp's mobs killed
-            CampOpen(req, party.campMobs, unitsNow);
+            CampOpen(req, party.campMobs, unitsNow, &party.campDead);
         else
             HelpUnits(req, party.helpObj.questId, party.helpObj.index, party.wholeQuest, unitsNow);
     }
@@ -3269,7 +3287,8 @@ bool HelpCampOf(Player* bot, WorldPosition& pos)
     float best = std::numeric_limits<float>::max();
     pos = party->second.campAt;
     for (ObjectGuid const& guid : party->second.campMobs)
-        if (Creature* mob = ObjectAccessor::GetCreature(*bot, guid); mob && mob->IsAlive())
+        if (Creature* mob = ObjectAccessor::GetCreature(*bot, guid);
+            mob && mob->IsAlive() && !party->second.campDead.count(guid))  // [help13]
             if (float const d = bot->GetExactDist(mob); d < best)
             {
                 best = d;

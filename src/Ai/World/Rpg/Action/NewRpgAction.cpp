@@ -856,6 +856,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 LOG_INFO("playerbots", "[help] camp {} L{} grinds the camp at ({:.0f},{:.0f}) with its helpers",
                          bot->GetName(), bot->GetLevel(), camp.GetPositionX(), camp.GetPositionY());
                 info.ChangeToGoGrind(camp);
+                std::get<NewRpgInfo::GoGrind>(info.data).forCamp = true;  // [help13]
                 return true;
             }
             // [help12] the requester of a quest help party back from a pause (a sell run, a rest): its help quest
@@ -1058,8 +1059,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 LOG_INFO("playerbots", "[rpg] {} L{} WANDER reason: grind spot reached", bot->GetName(),
                          bot->GetLevel());
                 bool const forSkin = data.forSkin;
+                bool const forCamp = data.forCamp;
                 info.ChangeToWanderRandom();
                 std::get<NewRpgInfo::WanderRandom>(info.data).forSkin = forSkin;  // [skin12]
+                std::get<NewRpgInfo::WanderRandom>(info.data).forCamp = forCamp;  // [help13]
                 return true;
             }
             break;
@@ -1097,6 +1100,28 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // needs (or quests postponed round it until the next level); a level-up re-runs the choice. No mob of its
             // level left in reach also ends it (NewRpgWanderRandomAction); the global leader's URGENT task interrupts
             auto& data = std::get<NewRpgInfo::WanderRandom>(info.data);
+            // [help13] a camp party's grind: at the camp's live mobs while the party lasts (the nearest one beyond
+            // sight: walked to), over with the party (camp cleared, party gone). b353 Dandolar: GO_GRIND to the camp,
+            // then WANDER_RANDOM on the Pygmy Tide Crawlers round it for 15 min, ended only by its level-up
+            if (data.forCamp && !bot->IsInCombat())
+            {
+                WorldPosition camp;
+                if (!NewRpgCoop::HelpCampOf(bot, camp))
+                {
+                    LOG_INFO("playerbots", "[help13] {} L{} IDLE reason: its camp help party is over, the choice runs "
+                             "again", bot->GetName(), bot->GetLevel());
+                    info.ChangeToIdle();
+                    return true;
+                }
+                if (camp.GetMapId() == bot->GetMapId() && bot->GetExactDist(camp) > sPlayerbotAIConfig.SightDistance)
+                {
+                    LOG_INFO("playerbots", "[help13] {} L{} GO_GRIND reason: the camp's nearest live mob {:.0f} yd off",
+                             bot->GetName(), bot->GetLevel(), bot->GetExactDist(camp));
+                    info.ChangeToGoGrind(camp);
+                    std::get<NewRpgInfo::GoGrind>(info.data).forCamp = true;
+                    return true;
+                }
+            }
             if (!data.level)
                 data.level = bot->GetLevel();
             else if (data.level != bot->GetLevel())
@@ -1464,11 +1489,29 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
     }
     else
     {
-        if (MoveWorldObjectTo(data.npcOrGo))
+        // [vendor13] the bot stands at the end of the walk to the npc and the game's interaction reach is still not
+        // met (a counter on a floor above, behind a rail): no walk takes it closer, the visit ends as for an npc out of
+        // walk. b353 Sylaenas L2 walked 7649 yd round vendor Keina (14 yd) for 1203 s, re-walking random spots by it
+        bool atWalkEnd = false;
+        if (object && !bot->isMoving() && object->GetMapId() == bot->GetMapId())
+        {
+            BotPath const path =
+                FindBotPath(bot, object->GetPositionX(), object->GetPositionY(), object->GetPositionZ());
+            atWalkEnd = !(path.type & PATHFIND_NOPATH) &&
+                        bot->GetExactDist(path.actualEnd.x, path.actualEnd.y, path.actualEnd.z) <=
+                            bot->GetCombatReach() &&
+                        !IsWithinInteractionDist(object);
+            if (atWalkEnd)
+                LOG_INFO("playerbots", "[vendor13] {} L{} npc {} out of reach: at its walk's end, {:.1f} yd from it "
+                         "(z {:+.1f})",
+                         bot->GetName(), bot->GetLevel(), object->GetName(), bot->GetExactDist(object),
+                         object->GetPositionZ() - bot->GetPositionZ());
+        }
+        if (!atWalkEnd && MoveWorldObjectTo(data.npcOrGo))
             return true;
         // [guild15] b319 GO_CAMP "sell junk" STUCK (Kylantino, Gnetlibozz, Rumanatol): no walk reaches the npc from
         // here - the visit ends (a vendor run counts as visited, as when the vendor is gone)
-        if (object && NpcOutOfWalk(object))
+        if (object && (atWalkEnd || NpcOutOfWalk(object)))
         {
             if (info.vendorRunEntry)
             {
@@ -1591,6 +1634,10 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                 quest->RequiredItemCount[currentObjective - QUEST_OBJECTIVES_COUNT])
                 completed = false;
         }
+        // [quest13] the explore objective (its index past the kill and item objectives) is done once explored; before,
+        // it counted as done at once and the spot was planned again every tick (b353 q62: 2300 sweep lines)
+        else if (!q_status.Explored && bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+            completed = false;
         // the current objective is completed, clear and find a new objective later
         if (completed)
         {
@@ -1745,6 +1792,30 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             }
         }
     }
+    // [quest13] the explore objective: the trigger it stands in is reported (its client's report); at the spot the
+    // walk goes on into the trigger's radius - the 10 yd of a camp spot is no trigger reach
+    if (data.objectiveIdx >= QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT)
+    {
+        WorldPosition inside;
+        if (ReportExploreTrigger(questId, &inside))
+            return true;
+        if (inside != WorldPosition() && bot->GetDistance(data.pos) <= 10.0f && !bot->isMoving() &&
+            bot->GetExactDist(inside) > 1.0f)
+        {
+            // the walk's end: where the bot stands already means no walk takes it closer (the spent-spot rule below)
+            BotPath const path = FindBotPath(bot, inside.GetPositionX(), inside.GetPositionY(), inside.GetPositionZ());
+            if (!(path.type & PATHFIND_NOPATH) &&
+                bot->GetExactDist(path.actualEnd.x, path.actualEnd.y, path.actualEnd.z) > bot->GetCombatReach() &&
+                MoveTo(inside.GetMapId(), path.actualEnd.x, path.actualEnd.y, path.actualEnd.z))
+            {
+                LOG_INFO("playerbots", "[quest13] {} L{} q{} explore: walks into its trigger ({:.0f},{:.0f},{:.0f}), "
+                         "{:.1f} yd", bot->GetName(), bot->GetLevel(), questId, inside.GetPositionX(),
+                         inside.GetPositionY(), inside.GetPositionZ(), bot->GetExactDist(inside));
+                return true;
+            }
+        }
+    }
+
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
     {
         // [guild12] a needed quest object passed on the way is looted on the way

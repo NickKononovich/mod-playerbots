@@ -14,6 +14,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "Bag.h"  // [prof13]
 #include "Creature.h"
 #include "DBCStores.h"
 #include "TravelMgr.h"  // [guild15] trips to another landmass
@@ -255,6 +256,29 @@ namespace
         return bot->HasItemCount(itemId, 1, false);
     }
 
+    // [prof13] a bag slot for one `itemId` (the core's buy check, Player::BuyItemFromVendorSlot -> CanStoreNewItem)
+    bool RoomFor(Player* bot, uint32 itemId)
+    {
+        ItemPosCountVec dest;
+        return bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, 1) == EQUIP_ERR_OK;
+    }
+
+    // [prof13] a gray item in its bags (what a vendor takes to free a slot)
+    bool HasGrayItem(Player* bot)
+    {
+        auto const gray = [](Item* item)
+        { return item && item->GetTemplate()->Quality == ITEM_QUALITY_POOR && item->GetTemplate()->SellPrice; };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (gray(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot)))
+                return true;
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            if (Bag* container = bot->GetBagByPos(bag))
+                for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
+                    if (gray(container->GetItemByPos(uint8(slot))))
+                        return true;
+        return false;
+    }
+
     char const* SkillName(uint32 skill)
     {
         SkillLineEntry const* line = sSkillLineStore.LookupEntry(skill);
@@ -336,6 +360,14 @@ namespace
         auto spawns = index.toolVendors.find(itemId);
         if (spawns == index.toolVendors.end())
             return;
+        // [prof13] full bags and nothing gray to sell: the core refuses the buy at every vendor (b353 Ryarii L7, bags
+        // 0/16 free: "could not buy Mining Pick" at 3 vendors, then walks of 1582 and 4074 yd to the next ones) - the
+        // tool waits for a free slot
+        if (!RoomFor(bot, itemId) && !HasGrayItem(bot))
+        {
+            waiting = true;
+            return;
+        }
         uint32 const zone = bot->GetZoneId();
         for (NpcSpawn const& spawn : spawns->second)
         {
@@ -794,6 +826,14 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
                 if (!item || item->item != data->itemId || (item->ExtendedCost && data->skill))
                     continue;
                 uint32 const before = bot->GetItemCount(data->itemId, false);
+                // [prof13] no slot for it: its gray items to this vendor first, as a player frees the slot
+                if (!RoomFor(bot, data->itemId))
+                {
+                    botAI->DoSpecificAction("sell", Event("sell", "gray"), true);
+                    LOG_INFO("playerbots", "[prof13] {} L{} sells its gray items to {} for a slot for {}: room now {}",
+                             bot->GetName(), bot->GetLevel(), npc->GetName(), data->itemId,
+                             RoomFor(bot, data->itemId));
+                }
                 bot->BuyItemFromVendorSlot(npc->GetGUID(), slot, data->itemId, 1, NULL_BAG, NULL_SLOT);
                 bought = bot->GetItemCount(data->itemId, false) > before;
                 break;
@@ -802,7 +842,8 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         LOG_INFO("playerbots", "[guild20] {} L{} {} {} for {} at {}: paid {}c ({}c left)", bot->GetName(),
                  bot->GetLevel(), bought ? "bought" : "could not buy", proto ? proto->Name1 : "?",
                  SkillName(data->skill), npc->GetName(), moneyBefore - bot->GetMoney(), bot->GetMoney());
-        if (!bought)
+        // [prof13] a buy the bags refused is no fault of this vendor (the tool waits for a slot, ToolCandidate)
+        if (!bought && RoomFor(bot, data->itemId))
             MarkFailed(bot, data->npcEntry, id);
     }
     info.ChangeToIdle();
