@@ -6,6 +6,7 @@
 
 #include "ThreatStrategy.h"
 #include "AttackerCountValues.h"
+#include "AttackersValue.h"  // [kara4] IsCharmedAlly
 #include "Creature.h"
 #include "GenericSpellActions.h"
 #include "Group.h"
@@ -793,6 +794,10 @@ namespace
 // kept logs (b185-b351), 15290 of them under the game's line (41 %), and the leader-less fights (raids, world bosses,
 // the open world) had no survival rule at all. Over the line the aggro-loss-if-survives rule decides (SurvivesTaking);
 // a mob on nobody or not yet pulled is never taken by an area the leader did not plan.
+// [kara4] a charmed member this far outside an area's radius still counts (Pestilence spreads round a target that
+// moves, the member walks)
+constexpr float CHARMED_AREA_SLACK = 2.0f;
+
 bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info)
 {
     Group* group = bot->GetGroup();
@@ -809,6 +814,28 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info)
         return false;
 
     float const radius = AreaRadius(bot, info, spell);
+
+    // [kara4] a group member an enemy charms stands in the area: the area would hit it (a charmed player is hostile
+    // to its group, an area spell's targets are picked by the core, not by the bot's target lists). b358 kara-n
+    // 20261109-003901-10A-1 t=339: a Spectral Retainer's Mind Control took the fury warrior; the death knight's
+    // diseases (Pestilence spreads them) and the group's areas took it to 1 %, Blood Plague's tick killed it. The
+    // charm ends, the member is the group's again: no area until then.
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* member = ref->GetSource(); member && member != bot && member->IsAlive() &&
+                                                member->GetMap() == bot->GetMap() &&
+                                                AttackersValue::IsCharmedAlly(member, bot) &&
+                                                center->IsWithinDist(member, radius + CHARMED_AREA_SLACK, false))
+        {
+            std::string const kind = "held charmed " + std::string(member->GetName());
+            std::string& last = _aoeVerdicts[spell];
+            if (last != kind)
+            {
+                last = kind;
+                LOG_INFO("playerbots", "[kara4] [aoe] {} {}: held, {} is charmed inside the area ({:.0f} yd)",
+                         bot->GetName(), spell, member->GetName(), center->GetExactDist(member));
+            }
+            return true;
+        }
 
     // [rot47] The threat the spell adds to each mob it hits: the single-target projection's "next cast threat" over
     // the time the spell keeps hitting - a lasting area (Death and Decay, Consecration, Rain of Fire: a persistent
