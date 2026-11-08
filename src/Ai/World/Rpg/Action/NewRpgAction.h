@@ -129,6 +129,9 @@ class NewRpgWanderRandomAction : public NewRpgBaseAction
 public:
     NewRpgWanderRandomAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg wander random") {}
     bool Execute(Event event) override;
+
+private:
+    Creature* NextSkinMob();  // [skin12] the nearest live skinnable mob of a skinning grind beyond its reach
 };
 
 class NewRpgWanderNpcAction : public NewRpgBaseAction

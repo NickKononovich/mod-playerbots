@@ -40,6 +40,7 @@
 #include "RouteSearch.h"
 #include "SpellInfo.h"
 #include "SurvivalKit.h"  // [deaths3] its heals now
+#include "QuestStats.h"   // [budget12] the time budget
 #include "SpellMgr.h"
 #include "SmartScriptMgr.h"  // [guild14] creature casts
 #include "StringFormat.h"
@@ -331,6 +332,7 @@ namespace
             sample.ctx = state.formulaCtx;
             DpsEstimate::RecordFight(bot, sample);
         }
+        QuestStats::NoteCombat(bot, uint32(std::max(seconds, 0.0f) * float(IN_MILLISECONDS)), false);  // [budget12]
         std::string came;
         for (auto const& [guid, track] : state.attackers)
             came += (came.empty() ? "" : ", ") + track.name + " L" + std::to_string(track.level);
@@ -1239,6 +1241,37 @@ namespace SoloSafety
                 if (mob != target && mob->IsAlive() && !mob->IsInCombat() && mob->IsHostileTo(bot) &&
                     mob->HasReactState(REACT_AGGRESSIVE))
                     idle.push_back(mob);
+        // [deaths12] a wanderer whose home lies beyond the bot's sight walks its wander area into the fight's
+        // assistance calls all the same (PullModel::Grow prices it by its home and wander distance): the judge looks
+        // as far as the route search does (sight + the map's largest wander distance, at most the map's view).
+        // Before, only the mobs in sight were in the model: b350 Ganna L11 (judged 2 Tunnel Rats, came 4), Ginde L6
+        // (judged 1 Kobold Geomancer, came 2 with a Kobold Miner), Thamesh L10 (judged 2 Rockjaws, came 5) died to
+        // wanderers "assists a chaser"
+        {
+            float const sight = sPlayerbotAIConfig.SightDistance;
+            float const wander = std::min(MaxWanderDistance(bot->GetMapId()), bot->GetMap()->GetVisibilityRange());
+            float const range = std::min(sight + wander, bot->GetMap()->GetVisibilityRange());
+            if (range > sight)
+            {
+                std::list<Unit*> units;
+                Acore::AnyUnitInObjectRangeCheck check(bot, range);
+                Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+                Cell::VisitObjects(bot, searcher, range);
+                for (Unit* unit : units)
+                {
+                    Creature* mob = unit->ToCreature();
+                    if (!mob || mob == target || mob->GetDefaultMovementType() != RANDOM_MOTION_TYPE ||
+                        bot->GetExactDist2d(mob) <= sight || !mob->IsAlive() || mob->IsInCombat() ||
+                        !mob->IsHostileTo(bot) || !mob->HasReactState(REACT_AGGRESSIVE) ||
+                        mob->GetCharmerOrOwnerGUID() ||
+                        std::find(idle.begin(), idle.end(), mob) != idle.end())
+                        continue;
+                    // its wander area comes within the bot's sight (the fight is fought within it)
+                    if (mob->GetHomePosition().GetExactDist2d(bot) - mob->GetWanderDistance() <= sight)
+                        idle.push_back(mob);
+                }
+            }
+        }
 
         // [pullplan] user 2026-11-08: a player pulls the target away from its camp - from range (its spells, Throw /
         // Shoot) or with its body at the edge of the target's aggro reach - and fights where it stands. The fight
@@ -2303,7 +2336,7 @@ namespace SoloSafety
         if (!bot || damage == std::numeric_limits<float>::max())
             return false;
         float const mana = float(bot->GetPower(POWER_MANA));
-        return damage < float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, mana, true);
+        return damage < float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, mana, true, true);
     }
 
     void CommitRunPast(Player* bot, std::vector<G3D::Vector3> const& points)
@@ -2400,7 +2433,7 @@ namespace SoloSafety
         rest.push_back(here);
         rest.insert(rest.end(), points.begin() + std::min(nearest + 1, points.size() - 1), points.end());
         float const mana = float(bot->GetPower(POWER_MANA));
-        float const hp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, left.seconds, mana, true);
+        float const hp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, left.seconds, mana, true, true);
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
         for (Creature* mob : chasers)
@@ -2480,20 +2513,56 @@ namespace SoloSafety
         {
             RunPast with = runPast;
             std::vector<std::pair<uint64, float>> added;
+            // [deaths12] the chasers call for assistance on the way (Creature::Update's periodic CallAssistance every
+            // CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD from where each chases, AnyAssistCreatureInRangeCheck within
+            // CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS): they trail the bot along its leg, so an idle mob within that
+            // radius of the stretch the chase covers (from the leg's point nearest the chaser on, the chase's seconds
+            // at the bot's run speed) that can assist a chaser joins the chase. Before, only the linked pack was
+            // priced: b350 Eraelor L9, Enyssia L6, Tuihgrelfim L8, Lyleria L9 ran past a camp's first pack and died
+            // to the camp ("no judged pull (attacked)", 3-4 attackers)
+            std::vector<Creature*> chasers;
             for (PullModel::Member const& m : model.pack)
+                chasers.push_back(m.mob);
+            float const assistRadius = model.assist;
+            G3D::Vector3 const leg = to - from;
+            float const legLen = std::max(std::hypot(leg.x, leg.y), 0.01f);
+            auto const chaseCovers = [&](Creature* chaser, float seconds, Creature* c)
             {
-                uint64 const key = m.mob->GetGUID().GetRawValue();
+                float const along0 = std::clamp(((chaser->GetPositionX() - from.x) * leg.x +
+                                                 (chaser->GetPositionY() - from.y) * leg.y) /
+                                                    legLen,
+                                                0.0f, legLen);
+                float const along1 = std::min(legLen, along0 + seconds * speed);
+                float const along = std::clamp(((c->GetPositionX() - from.x) * leg.x +
+                                                (c->GetPositionY() - from.y) * leg.y) /
+                                                   legLen,
+                                               along0, along1);
+                float const px = from.x + leg.x * (along / legLen), py = from.y + leg.y * (along / legLen);
+                return std::hypot(c->GetPositionX() - px, c->GetPositionY() - py) <= assistRadius;
+            };
+            for (size_t i = 0; i < chasers.size(); ++i)
+            {
+                Creature* chaser = chasers[i];
+                uint64 const key = chaser->GetGUID().GetRawValue();
                 if (chasing.count(key))
                     continue;
-                RunPast const chase = RunPastChase(bot, m.mob);
+                RunPast const chase = RunPastChase(bot, chaser);
                 with.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage
                                                                                  : with.damage + chase.damage;
                 with.seconds = std::max(with.seconds, chase.seconds);
                 added.push_back({key, chase.damage});
+                if (assistRadius <= 0.0f || chaser->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE) ||
+                    chase.damage == std::numeric_limits<float>::max())
+                    continue;
+                for (Creature* c : around)
+                    if (c != chaser && std::find(chasers.begin(), chasers.end(), c) == chasers.end() &&
+                        !chasing.count(c->GetGUID().GetRawValue()) && c->CanAssistTo(chaser, bot) &&
+                        chaseCovers(chaser, chase.seconds, c))
+                        chasers.push_back(c);  // its own chase and calls are counted in turn
             }
             price = with.damage;
             hp = float(bot->GetHealth()) +
-                 SurvivalKit::HealPoints(bot, with.seconds, float(bot->GetPower(POWER_MANA)), true);
+                 SurvivalKit::HealPoints(bot, with.seconds, float(bot->GetPower(POWER_MANA)), true, true);
             if (!SurvivesRunPast(bot, with.damage, with.seconds))
                 return false;
             runPast = with;
@@ -2502,8 +2571,12 @@ namespace SoloSafety
                 chasing.insert(key);
                 chaseOf[key] = damage;
             }
-            ranPastNames.push_back(Acore::StringFormat("{} L{} pack {}", mob->GetName(), mob->GetLevel(),
-                                                       model.pack.size()));
+            ranPastNames.push_back(Acore::StringFormat("{} L{} pack {}{}", mob->GetName(), mob->GetLevel(),
+                                                       model.pack.size(),
+                                                       chasers.size() > model.pack.size()
+                                                           ? Acore::StringFormat(" +{} assisting on the chase",
+                                                                                 chasers.size() - model.pack.size())
+                                                           : std::string()));
             return true;
         };
         for (Unit* unit : units)
@@ -2652,7 +2725,8 @@ namespace SoloSafety
         if (!ranPastNames.empty())
         {
             float const kit = float(bot->GetHealth()) +
-                              SurvivalKit::HealPoints(bot, runPast.seconds, float(bot->GetPower(POWER_MANA)), true);
+                              SurvivalKit::HealPoints(bot, runPast.seconds, float(bot->GetPower(POWER_MANA)), true,
+                                                      true);
             runPastLine = Acore::StringFormat("run-past priced {:.0f} hp vs hp {:.0f} ({:.0f} s of chase): ",
                                               runPast.damage, kit, runPast.seconds);
             for (size_t i = 0; i < ranPastNames.size(); ++i)

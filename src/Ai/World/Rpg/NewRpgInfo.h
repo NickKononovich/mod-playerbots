@@ -34,6 +34,7 @@ struct NewRpgInfo
     struct GoGrind
     {
         WorldPosition pos{};
+        bool forSkin{false};  // [skin12] the global leader's skinning GRIND: the place's mobs are for their skins
     };
     // RPG_GO_CAMP
     struct GoCamp
@@ -51,6 +52,7 @@ struct NewRpgInfo
     {
         WanderRandom() = default;
         uint8 level{0};  // [timers] its level when the grind began: a level-up ends it (the choice runs again)
+        bool forSkin{false};  // [skin12] carried from GO_GRIND (a gray mob of a skinning place counts)
     };
     // RPG_DO_QUEST
     struct DoQuest

@@ -81,6 +81,18 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     bool const solo = SoloSafety::Applies(bot) || coop;
     std::vector<std::pair<float, Unit*>> candidates;
     std::unordered_map<uint32, bool> needForQuestMap;
+    // [skin12] a skinning grind of the global leader (GO_GRIND / WANDER_RANDOM flagged so): a skinnable mob counts
+    bool const forSkin =
+        bot->HasSkill(SKILL_SKINNING) &&
+        ((std::holds_alternative<NewRpgInfo::WanderRandom>(botAI->rpgInfo.data) &&
+          std::get<NewRpgInfo::WanderRandom>(botAI->rpgInfo.data).forSkin) ||
+         (std::holds_alternative<NewRpgInfo::GoGrind>(botAI->rpgInfo.data) &&
+          std::get<NewRpgInfo::GoGrind>(botAI->rpgInfo.data).forSkin));
+    auto const skinTarget = [&](Unit* u)
+    {
+        Creature* c = forSkin ? u->ToCreature() : nullptr;
+        return c && c->GetCreatureTemplate() && c->GetCreatureTemplate()->SkinLootId;
+    };
     // [guild12] a needed quest object in reach comes before mobs the quest does not need (the loot of objects)
     bool const questObjectNear =
         botAI->rpgInfo.GetStatus() == RPG_DO_QUEST && NewRpgBaseAction::FindNeededQuestObject(bot);
@@ -111,13 +123,18 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
             return needForQuestMap[unit->GetEntry()];
         };
 
-        if (!bot->isHonorOrXPTarget(unit) && !neededForQuest())
+        // [skin12] the global leader's skinning grind: a gray mob that carries skins is the order's target too (the
+        // skin, not the XP: b350 Keenonk L12 at the Grizzled Den - the L6 Wendigos gray, "no mob of its level")
+        if (!bot->isHonorOrXPTarget(unit) && !neededForQuest() && !skinTarget(unit))
             continue;
 
         if (questObjectNear && !neededForQuest())
             continue;
 
-        if (abs(bot->GetPositionZ() - unit->GetPositionZ()) > INTERACTION_DISTANCE)
+        // [skin12] another floor: a solo bot's candidate is checked by its path (the reachability below, before the
+        // judge); the height gap alone dropped the mobs of a sloped cave floor (the den's Wendigos 9-18 yd above the
+        // spot)
+        if (!solo && abs(bot->GetPositionZ() - unit->GetPositionZ()) > INTERACTION_DISTANCE)
             continue;
 
         if (!bot->InBattleground() && GetTargetingPlayerCount(unit) > assistCount)

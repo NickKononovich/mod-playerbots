@@ -82,6 +82,13 @@ void NoWalk(Player* bot, std::string const& why);
 // MoveFarTo refused the walk to the bot's quest objective (a camp it does not pull): the objective is put on the
 // board as one it looks for a party for
 void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& dest);
+// [help12] a walk that is no quest spot (a town stop, a gather node, a grind / profession spot) refused for a camp its
+// judge refuses: a help request of kind camp to the global leader (its mobs; done when none is alive)
+void OnCampRefused(PlayerbotAI* botAI, Player* bot, WorldPosition const& dest, std::string const& why);
+// [help12] the requester of a formed camp party: where it grinds now (the nearest live camp mob, else the camp)
+bool HelpCampOf(Player* bot, WorldPosition& pos);
+// [help12] the requester of a formed quest help party: the quest, its objective and the camp it asked help for
+bool HelpQuestOf(Player* bot, uint32& questId, int32& objectiveIdx, WorldPosition& pos);
 
 // a formed party's member that is not its leader (its own plan stands down)
 bool IsMember(Player* bot);

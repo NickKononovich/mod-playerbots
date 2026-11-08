@@ -19,10 +19,15 @@ class Player;
 namespace QuestStats
 {
     // the New RPG status tick (out of combat): yards walked since the last tick, the active quest's progress line
-    void OnRpgTick(Player* bot, uint32 activeQuest);
+    // [budget12] `bucket`: what the bot does now (its New RPG status, a group wait, a skinning grind, a vendor run);
+    // the time from the last tick to this one goes to the last tick's bucket, out of combat and alive, else to
+    // "COMBAT" / "DEAD" (the [qstat] line's budget= field: seconds per bucket)
+    void OnRpgTick(Player* bot, uint32 activeQuest, char const* bucket);
     // one timestamped event line: [quest] <event> <bot> L<level> q<id> t=<unix ms> at=(x,y) <extra>
     // events: accept, progress, complete, turnin, abandon, postpone, target-switch, sweep, wait-respawn, kill
     void LogEvent(Player* bot, char const* event, uint32 questId, std::string const& extra);
+    // [budget12] a fight's (or a death's: died, from the death to the rise) milliseconds, for the time budget
+    void NoteCombat(Player* bot, uint32 combatMs, bool died);
     uint64 NowMs();
 }
 
