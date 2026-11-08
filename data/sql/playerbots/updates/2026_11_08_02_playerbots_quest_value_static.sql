@@ -30,13 +30,15 @@ CREATE TABLE IF NOT EXISTS playerbots_quest_value_static (
   `reward_money` INT UNSIGNED,
   `reward_items` VARCHAR(120),
   `choice_items` VARCHAR(120),
-  `reward_spell` INT UNSIGNED,
-  `next_quests` VARCHAR(200),
+  `reward_spell` INT,
+  `next_quests` VARCHAR(1024),
   `leads_to` VARCHAR(120),
   `cluster` INT UNSIGNED,
   `flags` VARCHAR(250),
   PRIMARY KEY (quest)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+-- [guild15] RewardSpell can be -1 (q13833): signed; next_quests up to 359 chars (VARCHAR(200) refused the rows); also for a table created by the first version of this file
+ALTER TABLE playerbots_quest_value_static MODIFY `reward_spell` INT, MODIFY `next_quests` VARCHAR(1024);
 DELETE FROM playerbots_quest_value_static;
 INSERT INTO playerbots_quest_value_static (`quest`,`title`,`quest_level`,`min_level`,`base_xp`,`xp_level`,`doable`,`objectives`,`need_kills`,`tour_yd`,`ideal_yd`,`kill_s_ph`,`forced_wait_s`,`ideal_area_s`,`map`,`zone`,`zone_name`,`area_x`,`area_y`,`giver_x`,`giver_y`,`ender_x`,`ender_y`,`reward_money`,`reward_items`,`choice_items`,`reward_spell`,`next_quests`,`leads_to`,`cluster`,`flags`) VALUES
 (26,'A Lesson to Learn',-1,16,120,16,'class',NULL,0,0,5669,0.0,0,809,1,1657,'Darnassis',10179,2563,10179,2563,8020,-2678,0,NULL,NULL,0,'29','class_item',0,'class'),
