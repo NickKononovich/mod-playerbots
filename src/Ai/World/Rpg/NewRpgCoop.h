@@ -10,8 +10,10 @@
 // [coop] user design 2026-11-08: co-op questing of the guild bots. Bots of the guild plan (GuildCoordinator::
 // IsPlanned) that work the same quest objective (the same creature to kill, the same item to loot) in the same zone,
 // or one whose objective lies in a camp it cannot solo, form a real core party when the computed time together beats
-// the time alone, the partner's walk included. The core shares the kill credit (Player::RewardPlayerAndGroupAtKill),
-// gives each member its own quest drops and splits the kill XP (Acore::XP::xp_in_group_rate).
+// the time alone, the partner's walk included. The core shares the kill credit (KillRewarder::_RewardKillCredit) and
+// splits the kill XP (KillRewarder: the highest not-gray member's base x xp_in_group_rate x the level share); a quest
+// drop is rolled once per corpse and only a MULTI_DROP item gives each member a copy, any other is one item for the
+// first looter (Loot::FillQuestLoot): the party then makes the sum of the counters at its pace (the forecast's model).
 // - The party's leader is computed: the tank, else the highest level (the lowest guid on a tie). It offers, runs its
 // own
 //   New RPG plan and judges every pull for the party (JudgePull); the members stand their own plan down and go with it.
@@ -22,6 +24,10 @@
 // - No history: the times alone and together come from the formula only (the objective's source creature at the
 //   core's base health over DpsEstimate's damage, the walk between its spawns, the loot chance, the respawns of
 //   spawns shared with the board), the partner's walk from its route to the leader (checked before the offer).
+// - A party that takes one more member forecasts every member: each already in it must gain against the party without
+//   the newcomer, not only the leader.
+// - A party's member does not break the party for a sell run while its bags still hold a free slot (the party is a
+//   task above the convenient ones); a repair or ammo run goes at once.
 // Log: [coop] offer|accept|refuse|join|wait|shared-kill|exit|gain|seek|no-seek <bot> k=v ... t=<unix ms>
 // [reason=<text>]; gain / solo in XP per hour, solo=never when one side cannot close it alone (no ratio)
 // (C:/WoW/tools/quest_metrics.py "groups").
