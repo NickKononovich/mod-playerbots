@@ -763,7 +763,11 @@ bool NewRpgBaseAction::TravelByPortal(NewRpgInfo::Trip& trip)
     TravelRouteMgr::Portal const& portal = portals[trip.leg.portalIndex];
     if (trip.phase == Phase::ToStart)
     {
-        if (bot->GetExactDist(portal.from) > INTERACTION_DISTANCE - 1.0f)
+        // [guild15] an area trigger is reached inside its radius: its centre can hang in the air (b327 the Deeprun
+        // Tram entrances 2173 / 2175, radius 10, centre 4-5 yd above the floor: bots stood in the trigger walking to
+        // its unreachable centre, gave up, STUCK; no bot ever rode the tram)
+        AreaTrigger const* const at = portal.triggerId ? sObjectMgr->GetAreaTrigger(portal.triggerId) : nullptr;
+        if (at ? !bot->IsInAreaTriggerRadius(at) : bot->GetExactDist(portal.from) > INTERACTION_DISTANCE - 1.0f)
             return WalkTo(portal.from);
 
         info.SetTripPhase(Phase::Wait);
