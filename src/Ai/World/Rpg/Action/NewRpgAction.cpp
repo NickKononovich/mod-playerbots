@@ -342,6 +342,45 @@ bool NewRpgBaseAction::TownTaskHere()
     return false;
 }
 
+// [quest16] a party member's complete quest handed in where its leader's route stands it at the ender (the leader
+// routes its members' hand-ins: NewRpgBaseAction::CurrentRoute, "HAND_IN ... (for <member>)"): an npc in sight that
+// ends one of its complete quests, its leader in sight of it too (the party is there) - walked to and handed in. b355
+
+// Gilduck L11 held q315 complete 1079 s (its ender 2nd in its own route) while it followed Bhogagnuth's help party
+bool NewRpgBaseAction::MemberHandInHere()
+{
+    Group* group = bot->GetGroup();
+    if (!group || bot->IsInCombat() || group->GetLeaderGUID() == bot->GetGUID())
+        return false;
+    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    if (!leader || leader->GetMapId() != bot->GetMapId())
+        return false;
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
+    {
+        Creature* npc = botAI->GetCreature(guid);
+        if (!npc || !npc->IsAlive() || !npc->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ||
+            leader->GetExactDist2d(npc) > sPlayerbotAIConfig.SightDistance)  // the party is at it
+            continue;
+        uint32 ends = 0;
+        QuestRelationBounds const bounds = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(npc->GetEntry());
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+            if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
+                ends = itr->second;
+        if (!ends)
+            continue;
+        if (IsWithinInteractionDist(npc))
+        {
+            LOG_INFO("playerbots", "[quest16] {} L{} hands in q{} at {} where its leader {} stands", bot->GetName(),
+                     bot->GetLevel(), ends, npc->GetName(), leader->GetName());
+            return InteractWithNpcOrGameObjectForQuest(npc->GetGUID());
+        }
+        if (MoveTo(npc->GetMapId(), npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), false, false,
+                   false, true))
+            return true;
+    }
+    return false;
+}
+
 bool NewRpgBaseAction::GuildStepGivenUp(GuildRunStep const& step)
 {
     if (step.pos == WorldPosition() || step.pos.GetMapId() != bot->GetMapId() ||
@@ -480,7 +519,28 @@ bool NewRpgBaseAction::StartVendorRun()
 
     uint8 const bagUsed = AI_VALUE(uint8, "bag space");
     // [coop] a co-op party is a task above the convenient ones: its sell run waits while a bag slot is free
-    bool const sell = AI_VALUE(bool, "should sell") && AI_VALUE(bool, "can sell") &&
+    // [vendor15] a sell run when its bags hold no more than the slots its log's open item objectives still need (an
+    // item of each it holds none of yet takes a slot; with none, the bag is full: loot is lost from the next kill
+    // on). Before, the generic "should sell" sent it at 80 % used: b355 128 vendor visits, 62 of the 148 runs at 81 %
+    // (a sale of greys left the kept items near 80 %, the next few loots crossed it again), VENDOR 11 % of the time
+    // (the item objectives bound the need: with more slots free than they could take, no item count is read)
+    uint32 const freeSlots = bot->GetFreeInventorySpace();
+    std::vector<uint32> objectiveItems;
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+            if (bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+                if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+                    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                        if (quest->RequiredItemId[i] && quest->RequiredItemCount[i])
+                            objectiveItems.push_back(quest->RequiredItemId[i]);
+    uint32 slotsNeeded = 0;
+    if (freeSlots <= objectiveItems.size())
+        for (uint32 item : objectiveItems)
+            if (!bot->GetItemCount(item))
+                ++slotsNeeded;
+    bool const bagsNeeded = freeSlots <= slotsNeeded;
+
+    bool const sell = bagsNeeded && AI_VALUE(bool, "can sell") &&
                       (!info.vendorVisited || bagUsed > info.vendorVisitBagUsed) &&
                       (bagUsed >= 100 || !NewRpgCoop::InParty(bot->GetGUID().GetCounter()));
 
@@ -533,6 +593,10 @@ bool NewRpgBaseAction::StartVendorRun()
     LOG_INFO("playerbots", "[New RPG] {} goes to vendor {} ({:.0f} yd): {} (bags {}% full, {} ammo, {}c)",
              bot->GetName(), tmpl ? tmpl->Name : "?", dist, reason, bagUsed,
              AI_VALUE2(uint32, "item count", "ammo"), bot->GetMoney());
+    if (sell)
+        LOG_INFO("playerbots", "[vendor15] {} L{} sells: {} bag slots free, its open item objectives need {}",
+                 bot->GetName(), bot->GetLevel(), freeSlots, slotsNeeded);
+
     return true;
 }
 
@@ -820,6 +884,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         {
             if (TownTaskHere())  // [town12] the leader's route brought it to its own town stop
                 return true;
+            if (MemberHandInHere())  // [quest16] ... or to the ender of its complete quest
+                return true;
             NewRpgStatus const before = info.GetStatus();
             if (coop.farWalk ? MoveFarTo(coop.pos) : Follow(coop.leader))
                 return true;
@@ -833,7 +899,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return false;
         }
         if (coop.kind == NewRpgCoop::Order::Kind::Stay)
-            return TownTaskHere();  // [town12] its own town task where the party stands
+            return TownTaskHere() || MemberHandInHere();  // [town12] [quest16] its own task where the party stands
+
     }
 
     // [guild3] full bags or low ammo: to a vendor first, as a player does (not out of a flight, rest or pvp)
@@ -1537,6 +1604,13 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         // met (a counter on a floor above, behind a rail): no walk takes it closer, the visit ends as for an npc out of
         // walk. b353 Sylaenas L2 walked 7649 yd round vendor Keina (14 yd) for 1203 s, re-walking random spots by it
         bool atWalkEnd = false;
+        // [vendor15] a walk to the npc under way is let finish: the walk-end check above needs the bot standing, and
+        // a new MoveWorldObjectTo every tick (a new spot round the npc each time) kept it moving for the whole run -
+        // b355 Sylaenas L2 again 1203 s and 7660 yd round vendor Keina in Aldrassil, [vendor13] / [vendor14] never
+        // fired for it
+        if (object && bot->isMoving() &&
+            bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            return true;
         if (object && !bot->isMoving() && object->GetMapId() == bot->GetMapId())
         {
             BotPath const path =
@@ -1619,6 +1693,10 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
         if (data.giverPos.GetMapId() != bot->GetMapId() || bot->GetExactDist(data.giverPos) > 30.0f)
             return MoveFarTo(data.giverPos);
 
+        // [giver15] a giver whose script gives the quest-giver flag: its trigger (a cast, an item, a gossip, a kill
+        // near it, its fight), then the quest
+        if (TriggerQuestGiver(questId))
+            return true;
         // reached the giver but it did not offer the quest (despawned, phased, wrong spawn)
         botAI->lowPriorityQuest.insert(questId);
         botAI->rpgInfo.ChangeToIdle();

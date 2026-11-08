@@ -49,6 +49,10 @@ namespace QuestRoute
         uint32 node{0};              // [routeplan] its point in the build's LegTable (0: the bot's spot)
         float leg{0.0f};             // [routeplan] seconds of the leg that reaches it in the plan (walk + fights)
         float legYd{0.0f};           // [routeplan] the yards walked on that leg
+        // [quest15] an ender: the experience handed in there (the route's hand-in times are weighted by it); ready:
+        // every quest it hands in is complete already (no objective stop before it)
+        float xp{0.0f};
+        bool ready{false};
     };
 
     // a giver the route may pass: the quests the bot would take there, each with its area and ender
@@ -130,6 +134,8 @@ namespace QuestRoute
         float walkYd{0.0f};
         float xp{0.0f};
         uint32 takes{0};          // quests it plans to take on the way
+        uint32 earlierHandIns{0};  // [quest15] enders moved sooner by the hand-in weighting (HandInsEarlier)
+
         float walkRatio{1.0f};    // [routeplan] the build's measured walk over straight yards
         float fightPerYd{0.0f};   // [routeplan] the build's measured fight seconds per straight yard
         float speed{1.0f};
@@ -146,6 +152,10 @@ namespace QuestRoute
     // one short word per stop for the [route] line: O218 E218+219 G2:q1,q2 T(bank)
     std::string Describe(Stop const& stop);
     uint64 SpotKey(float x, float y);
+    // [quest16] the experience its party members hand in at a town stop of the route being built on this thread (the
+    // leader's "HAND_IN ... (for <member>)" stops, by SpotKey): weighed as an ender's (HandInsEarlier)
+    float MemberHandInXp(uint64 spotKey);
+
 
     // the bot's cached route (map thread of the bot only; the container is locked)
     struct BotRoute

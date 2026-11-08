@@ -159,6 +159,22 @@ protected:
     // [questitems] NewRpgQuestUse.cpp: an objective credited by using a quest item or a spell on a target
     bool UseQuestTool(uint32 questId);
     bool SettleQuestUse();  // the last use's credit (logged), awaited while its cast or aura runs
+    // [giver15] NewRpgGiverTrigger.cpp: at a giver whose script gives the quest-giver flag, its trigger step by step
+    // and the quest taken once the flag is up
+    bool TriggerQuestGiver(uint32 questId);
+    struct GiverRun
+    {
+        uint32 questId{0};
+        ObjectGuid giver;
+        size_t trigger{0};  // its index in NewRpgGiverTrigger::For(questId)
+        size_t step{0};     // the next step
+        ObjectGuid kill;    // a kill step's target
+        bool casting{false};
+        bool fighting{false};
+        bool waitLogged{false};  // a kill step's respawn wait was logged
+        uint32 doneMs{0};  // getMSTime of the last step (the script's own delay to the flag runs from it)
+    };
+    GiverRun _giverRun;
     uint32 _fishLogged{0};  // [fish14] one line per quest it fishes for
 };
 

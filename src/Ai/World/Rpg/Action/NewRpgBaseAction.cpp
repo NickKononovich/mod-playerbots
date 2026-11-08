@@ -48,6 +48,7 @@
 #include "MapDefines.h"         // [guild14] NAV_* flags
 #include <map>
 #include <memory>
+#include <optional>  // [runpast15]
 #include <tuple>
 #include "Object.h"
 #include "ObjectAccessor.h"
@@ -55,6 +56,7 @@
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
 #include "NewRpgFishing.h"  // [fish14]
+#include "NewRpgGiverTrigger.h"  // [giver15]
 #include "GuildGatherPlan.h"  // [fish14]
 #include "OutdoorPvPMgr.h"
 #include "PathGenerator.h"
@@ -616,7 +618,7 @@ static void CommitLeg(Player* bot, Movement::PointsArray const& points, G3D::Vec
             break;
         }
     }
-    SoloSafety::CommitRunPast(bot, leg);
+    SoloSafety::CommitRunPast(bot, leg, std::vector<G3D::Vector3>(points.begin(), points.end()));  // [runpast15]
 }
 
 bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path, float disToDest, bool deadEnd)
@@ -1961,7 +1963,12 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     if (bot->IsInWater())
         return false;
     dtQueryFilter filter;
-    filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER));
+    // [stuck15] the steep polygons too: the route search walks them when it finds no complete way without them
+    // (Leader::Route's steep pass), so a bot can stand on a ridge reached that way. b355 Sycina L11 walked 240 yd from
+    // Shadowglen's inn to (10235,1052,1385) in 43 s - a ridge over Shadowglen, as b308 Bierya L7 at z 1410 - and its
+    // island search, blind to the slope it came up, found "no step or survivable fall": 26 STUCK. A step onto the
+    // slope is a step its ground carries (carried) like any other
+    filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
     filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
     // [guild15] the polygons round the bot: the core's search box (3 yd round, 50 yd tall) at the bot and at points
     // all round it out to its sight (b308 Bierya L7 on a ridge over Shadowglen, z 1410: the one nearest polygon lay
@@ -1990,9 +1997,13 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     // one search per spot: a spot with no way off is not searched again until the bot has moved. [runpast11] its
     // verdict (an island or not) is kept with it: the caller reads it on every walk from the spot
     static std::mutex islandLock;
-    static std::unordered_map<uint32, std::pair<std::tuple<uint32, int32, int32, int32>, bool>> searched;
-    std::tuple<uint32, int32, int32, int32> const spotKey{bot->GetMapId(), int32(here.x), int32(here.y),
-                                                          int32(here.z)};
+    // [stuck15] ... and with the health it had: a fall it survives is one its health now outlives (way.damage <
+    // GetHealth()), so a spot searched hurt is searched again once its health changed. b355 Sycina L11 at (10235,1052,
+    // 1385): "on a navmesh island" found once, the verdict kept through its rests - 26 STUCK, it waited for its
+    // Hearthstone (1750 s) on the spot while every walk off it failed
+    static std::unordered_map<uint32, std::pair<std::tuple<uint32, int32, int32, int32, uint32>, bool>> searched;
+    std::tuple<uint32, int32, int32, int32, uint32> const spotKey{bot->GetMapId(), int32(here.x), int32(here.y),
+                                                                  int32(here.z), bot->GetHealth()};
     {
         std::lock_guard<std::mutex> guard(islandLock);
         auto& last = searched[bot->GetGUID().GetCounter()];
@@ -2146,8 +2157,18 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                                            ways.size()));
                 return false;
             }
+            // [stuck15] the falls its full health outlives but its health now does not: it rests, then searches again
+            uint32 atFull = 0;
+            for (Way const& way : ways)
+                if (!way.carried && way.drop > 0.0f && way.damage >= float(bot->GetHealth()) &&
+                    way.damage < float(bot->GetMaxHealth()))
+                    ++atFull;
             logged(Acore::StringFormat("on a navmesh island: {} polygons in sight, no step or survivable fall leads on",
                                        ways.size()));
+            if (atFull)
+                LOG_INFO("playerbots", "[stuck15] {} L{} on an island: {} falls off it need more health than its {} "
+                         "of {}: searched again once its health changed",
+                         bot->GetName(), bot->GetLevel(), atFull, bot->GetHealth(), bot->GetMaxHealth());
             noteIsland();  // [runpast11]
             return false;
         }
@@ -2318,6 +2339,12 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 return true;
         }
     }
+
+    // [runpast15] every search below is for a stage or leg of the walk to `dest`: a run past is measured to it
+    // (another map's destination: no stop on this map - each search is measured to its own end)
+    std::optional<SoloSafety::WalkStopScope> walkStop;
+    if (dest.GetMapId() == bot->GetMapId())
+        walkStop.emplace(G3D::Vector3(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()));
 
     // stuck check
     float disToDest = bot->GetDistance(dest);
@@ -4624,81 +4651,6 @@ bool NewRpgBaseAction::EnderNeedsScript(uint32 questId)
     return quests.count(questId) > 0;
 }
 
-bool NewRpgBaseAction::GiverNeedsScript(uint32 questId)
-{
-    // [giver14] quest id -> every giver is a creature whose SmartAI takes its quest-giver flag off (SET_NPC_FLAG without
-    // UNIT_NPC_FLAG_QUESTGIVER, REMOVE_NPC_FLAG with it) and gives it back only on its script's event - b354 q9612 A
-    // Hearty Thanks!: the Draenei Youngling talks only after a Gift of the Naaru on it, then drops the flag again out
-    // of combat; 8 bots (Zharet, Almored, Feeli, Nurlian, Orenem, Pherua, Uraela, Dekorhan) walked their route stop to
-    // it (Zharet 272 s) and left it "postponed". No game object or item starts it
-    static std::unordered_set<uint32> quests;
-    static std::once_flag built;
-    std::call_once(built, []()
-    {
-        std::unordered_map<uint32, bool> scriptedEntry;  // creature entry -> its SmartAI drops the giver flag
-        auto const scripted = [&scriptedEntry](uint32 entry)
-        {
-            auto const found = scriptedEntry.find(entry);
-            if (found != scriptedEntry.end())
-                return found->second;
-            bool drops = false;
-            CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
-            if (tmpl && tmpl->AIName == "SmartAI")
-            {
-                SmartAIEventList const& events = sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE);
-                // the idle state's events: out of combat, respawn, reset (after a fight, at spawn), creation - and
-                // the events linked from them. An escort's flag drop on its quest's accept is no idle state
-                auto const idleEvent = [](uint32 type)
-                {
-                    return type == SMART_EVENT_UPDATE_OOC || type == SMART_EVENT_RESPAWN || type == SMART_EVENT_RESET ||
-                           type == SMART_EVENT_JUST_CREATED;
-                };
-                auto const idle = [&](SmartScriptHolder const& holder)
-                {
-                    if (idleEvent(holder.GetEventType()))
-                        return true;
-                    if (holder.GetEventType() != SMART_EVENT_LINK)
-                        return false;
-                    return std::any_of(events.begin(), events.end(), [&](SmartScriptHolder const& from)
-                                       { return from.link == holder.event_id && idleEvent(from.GetEventType()); });
-                };
-                if (!(tmpl->npcflag & UNIT_NPC_FLAG_QUESTGIVER))
-                    drops = true;  // the template has no giver flag: only its script hands it out
-                for (SmartScriptHolder const& holder : events)
-                    if (((holder.GetActionType() == SMART_ACTION_SET_NPC_FLAG &&
-                          !(holder.action.flag.flag & UNIT_NPC_FLAG_QUESTGIVER)) ||
-                         (holder.GetActionType() == SMART_ACTION_REMOVE_NPC_FLAG &&
-                          (holder.action.flag.flag & UNIT_NPC_FLAG_QUESTGIVER))) &&
-                        idle(holder))
-                        drops = true;
-            }
-            scriptedEntry[entry] = drops;
-            return drops;
-        };
-        std::unordered_map<uint32, bool> allScripted;  // quest -> every starter so far a scripted creature
-        for (auto const& [entry, questId] : *sObjectMgr->GetCreatureQuestRelationMap())
-        {
-            bool const s = scripted(entry);
-            auto const found = allScripted.find(questId);
-            if (found == allScripted.end())
-                allScripted[questId] = s;
-            else
-                found->second = found->second && s;
-        }
-        for (auto const& [entry, questId] : *sObjectMgr->GetGOQuestRelationMap())
-            allScripted[questId] = false;
-        for (auto const& [itemId, tmpl] : *sObjectMgr->GetItemTemplateStore())
-            if (tmpl.StartQuest)
-                allScripted[tmpl.StartQuest] = false;
-        for (auto const& [questId, s] : allScripted)
-            if (s)
-                quests.insert(questId);
-        LOG_INFO("playerbots", "[giver14] {} quests start only at creatures whose script gives the giver flag: not "
-                 "planned", quests.size());
-    });
-    return quests.count(questId) > 0;
-}
-
 bool NewRpgBaseAction::FishOnlyItem(Player* bot, Quest const* quest, uint32& itemId, WorldPosition& water)
 {
     // [fish14] b354 Nelaeleas L12 took q1141 The Family and the Fishing Pole (6 Darkshore Grouper): its sweeps found
@@ -5763,12 +5715,17 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
     if (in.pinnedQuest && (bot->GetQuestStatus(in.pinnedQuest) != QUEST_STATUS_INCOMPLETE ||
                            botAI->lowPriorityQuest.count(in.pinnedQuest)))
         in.pinnedQuest = 0;
-    auto const addToHub = [&](float x, float y, float z, uint32 questId)
+    // [quest15] the quests complete already hand in at a hub of their own (ready): one hub with an open quest waits
+    // for that quest's objective (Feasible), which held a done quest's hand-in to the route's end (b355: 10 of the 50
+    // bots without a turn-in had a complete quest - Manue q224 behind O267's hub "E224+267", Kylantino "E313+317").
+    // Same spot, so the solver still visits them together where that is the cheaper order; HandInsEarlier weighs it
+    auto const addToHub = [&](float x, float y, float z, uint32 questId, float questXp, bool complete)
     {
         for (Stop& s : in.stops)
-            if (s.kind == StopKind::Ender && std::hypot(s.x - x, s.y - y) <= in.hubRadius)
+            if (s.kind == StopKind::Ender && s.ready == complete && std::hypot(s.x - x, s.y - y) <= in.hubRadius)
             {
                 s.quests.push_back(questId);
+                s.xp += questXp;
                 return;
             }
         Stop hub;
@@ -5777,6 +5734,8 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         hub.y = y;
         hub.z = z;
         hub.quests.push_back(questId);
+        hub.xp = questXp;
+        hub.ready = complete;
         in.stops.push_back(hub);
     };
     // the formula's work at an area: the kills left and the walk between its spawns; unpriced: the planner's old
@@ -5915,7 +5874,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
                 in.greyHandIns.push_back(hand);
                 continue;
             }
-            addToHub(ex, ey, ez, questId);
+            addToHub(ex, ey, ez, questId, xp, true);
             in.logXp += xp;
             continue;
         }
@@ -5961,7 +5920,8 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         objective.work = workOf(quest, nullptr);
         in.stops.push_back(objective);
         if (hasEnder && onLandmass(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ()))
-            addToHub(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ(), questId);
+            addToHub(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ(), questId, xp, false);
+
         in.logXp += xp;
     }
     in.freeSlots = inLog < MAX_QUEST_LOG_SIZE ? MAX_QUEST_LOG_SIZE - inLog : 0;
@@ -5978,7 +5938,9 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         town.y = pos.GetPositionY();
         town.z = pos.GetPositionZ();
         town.what = what;
+        town.xp = QuestRoute::MemberHandInXp(QuestRoute::SpotKey(town.x, town.y));  // [quest16]
         in.stops.push_back(town);
+
     }
 
     if (!in.freeSlots || bot->GetMap()->Instanceable())
@@ -6010,8 +5972,11 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
             continue;
         if (!IsQuestWorthDoing(quest) || !IsQuestCapableDoing(quest) || !bot->CanTakeQuest(quest, false))
             continue;
-        if (GiverNeedsScript(start.questId))  // [giver14]
+        // [giver15] a giver whose script gives the quest-giver flag: planned when the bot can trigger it, the
+        // trigger's seconds in the quest's work (the cast and its cooldown, the kill or fight, the script's delay)
+        if (!NewRpgGiverTrigger::Plannable(bot, start.questId))
             continue;
+        float const triggerSec = NewRpgGiverTrigger::Seconds(bot, start.questId, dps);
         offered.insert(start.questId);
 
         QuestRoute::Offer::Take take;
@@ -6020,7 +5985,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         GuildCoordinator::QuestWork work;
         take.objective.kind = StopKind::Objective;
         take.objective.quests.push_back(start.questId);
-        take.objective.work = workOf(quest, &work);
+        take.objective.work = workOf(quest, &work) + triggerSec;
         take.objective.x = start.x;
         take.objective.y = start.y;
         take.objective.z = INVALID_HEIGHT;
@@ -6657,7 +6622,16 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         float const toEnder =
             objKnown ? std::hypot(enderX - objX, enderY - objY) : objectiveDistance;  // no POI: as far back
         float const walkYd = objectiveDistance + toEnder;
-        float const local = walkYd / QUEST_TRAVEL_SPEED + QUEST_OBJECTIVE_TIME;
+        float local = walkYd / QUEST_TRAVEL_SPEED + QUEST_OBJECTIVE_TIME;
+        // [giver15] a giver whose script gives the quest-giver flag: only with a trigger the bot can do, its seconds
+        // in the quest's own time
+        if (NewRpgGiverTrigger::IsScripted(start.questId))
+        {
+            if (!NewRpgGiverTrigger::Plannable(bot, start.questId))
+                continue;
+            local += NewRpgGiverTrigger::Seconds(
+                bot, start.questId, DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo));
+        }
         // the core's quest XP at the bot's level (Quest::XPValue: a quest below its level gives less, gray none)
         float const xp = GetQuestWeight(quest, rested) * quest->XPValue(level);
         // the zone the quest belongs to (QuestSortID > 0); a class / profession / holiday quest (sort <= 0) counts
@@ -6922,7 +6896,8 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
             continue;
         // [flit] no grind toward a quest it will not take at that level either (b341 Maronic L1 on the tram ground
         // toward q6661, whose rats only its flute credits)
-        if (IsSpellUnlockClassQuest(quest) || EnderNeedsScript(start.questId) || GiverNeedsScript(start.questId) ||
+        if (IsSpellUnlockClassQuest(quest) || EnderNeedsScript(start.questId) ||
+            !NewRpgGiverTrigger::Plannable(bot, start.questId) ||
             NeedsItemUseCredit(quest) ||
             NeedsSpellCredit(bot, quest, false))
             continue;
@@ -7195,6 +7170,6 @@ void NewRpgBaseAction::BuildQuestIndexes()
     GetQuestSpawnIndex();
     GetQuestStartPoints();
     EnderNeedsScript(0);  // [guild14]
-    GiverNeedsScript(0);  // [giver14]
+    NewRpgGiverTrigger::Build();  // [giver15]
     NewRpgQuestUse::Build();  // [questitems]
 }

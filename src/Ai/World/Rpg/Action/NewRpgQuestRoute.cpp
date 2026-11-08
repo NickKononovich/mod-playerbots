@@ -14,6 +14,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"  // [town15] SightDistance
 #include "QuestDef.h"
 #include "QuestStats.h"
 #include "StringFormat.h"
@@ -214,6 +215,76 @@ namespace
         }
     }
 
+    // [quest15] the order's experience-weighted hand-in seconds: each ender's arrival (the legs and work before it,
+    // its own leg) times the experience handed in there. The run's measure is the hand-ins it makes: a route that
+    // walks the same stops but hands in sooner gets its experience sooner (the bot builds its route again at each
+    // level, a town task, a new quest - stops at the end of a long route are reached late or never)
+    double HandInSeconds(QuestRoute::LegTable const& legs, Pool const& at, std::vector<size_t> const& order)
+    {
+        double weighted = 0.0;
+        float seconds = 0.0f;
+        uint32 prev = 0;
+        for (size_t i : order)
+        {
+            Stop const& s = at(i);
+            seconds += legs.Seconds(prev, s.node);
+            // an ender, or a town stop where its party members hand in ([quest16])
+            if (s.kind == StopKind::Ender || s.kind == StopKind::Town)
+                weighted += double(s.xp) * double(seconds);
+            seconds += s.work;
+            prev = s.node;
+        }
+        return weighted;
+    }
+
+    // [quest15] user 2026-11-08: a completed quest's ender comes early in the route unless its detour costs more
+    // than handing in now gains. Each ender moves to the earliest place where the experience-weighted hand-in seconds
+    // drop: the experience it hands in that much sooner against the detour's seconds added to every hand-in after it
+    // (HandInSeconds) - the order stays feasible (a giver and an objective before their ender), the first stop stays
+    // when pinned. The rest of the order is the shortest one found (Improve)
+    uint32 HandInsEarlier(QuestRoute::LegTable const& legs, Pool const& at, std::vector<size_t>& order,
+                          bool pinnedFirst)
+    {
+        size_t const from = pinnedFirst ? 1 : 0;
+        uint32 moved = 0;
+        double best = HandInSeconds(legs, at, order);
+        for (size_t pass = 0; pass < order.size(); ++pass)  // each pass moves an ender sooner or ends the search
+        {
+            bool improved = false;
+            for (size_t i = from + 1; i < order.size(); ++i)
+            {
+                if ((at(order[i]).kind != StopKind::Ender && at(order[i]).kind != StopKind::Town) ||
+                    at(order[i]).xp <= 0.0f)
+                    continue;
+                size_t bestPos = i;
+                for (size_t j = from; j < i; ++j)
+                {
+                    std::vector<size_t> trial = order;
+                    size_t const stop = trial[i];
+                    trial.erase(trial.begin() + i);
+                    trial.insert(trial.begin() + j, stop);
+                    double const cost = HandInSeconds(legs, at, trial);
+                    if (cost + SECONDS_EPSILON < best && Feasible(at, trial))
+                    {
+                        best = cost;
+                        bestPos = j;
+                    }
+                }
+                if (bestPos != i)
+                {
+                    size_t const stop = order[i];
+                    order.erase(order.begin() + i);
+                    order.insert(order.begin() + bestPos, stop);
+                    improved = true;
+                    ++moved;
+                }
+            }
+            if (!improved)
+                break;
+        }
+        return moved;
+    }
+
     // the cheapest place (>= minPos) for a stop at `node` in the order: its position and the seconds it adds
     size_t CheapestInsert(QuestRoute::LegTable const& legs, Pool const& at, std::vector<size_t> const& order,
                           uint32 node, size_t minPos, float& addedSeconds)
@@ -241,7 +312,8 @@ namespace
     struct Trial
     {
         std::vector<Stop> added;
-        std::vector<std::pair<size_t, uint32>> merges;  // an existing hub (index) hands in this quest too
+        // an existing hub (index) hands in this quest too, with its experience ([quest15])
+        std::vector<std::tuple<size_t, uint32, float>> merges;
         std::vector<size_t> order;
         float xp{0.0f};
         uint32 takes{0};
@@ -295,19 +367,25 @@ namespace
                 for (size_t k = objectivePos + 1; k < t.order.size() && !merged; ++k)
                 {
                     Stop const& hub = at(t.order[k]);
-                    if (hub.kind == StopKind::Ender &&
+                    // [quest15] not a ready hub (its complete quests): the new quest's objective would hold it back
+                    if (hub.kind == StopKind::Ender && !hub.ready &&
                         Dist(hub.x, hub.y, take->ender.x, take->ender.y) <= in.hubRadius)
                     {
                         if (t.order[k] < all.size())
-                            t.merges.emplace_back(t.order[k], take->questId);
+                            t.merges.emplace_back(t.order[k], take->questId, take->xp);
                         else
+                        {
                             t.added[t.order[k] - all.size()].quests.push_back(take->questId);
+                            t.added[t.order[k] - all.size()].xp += take->xp;
+                        }
                         merged = true;
                     }
                 }
                 if (!merged)
                 {
                     t.added.push_back(take->ender);
+                    t.added.back().xp = take->xp;  // [quest15]
+                    t.added.back().ready = false;
                     size_t const enderIndex = all.size() + t.added.size() - 1;
                     size_t const enderPos =
                         CheapestInsert(legs, at, t.order, take->ender.node, posOf(objectiveIndex) + 1, seconds);
@@ -444,6 +522,17 @@ void QuestRoute::NoteQuestEvent(Player* bot, uint32 questId)
         if (!StopQuestDone(bot, r.current.kind, q))
             return;
     r.currentDoneMs = QuestStats::NowMs();
+}
+
+namespace
+{
+    thread_local std::unordered_map<uint64, float> memberHandInXp;  // [quest16] the build on this thread
+}
+
+float QuestRoute::MemberHandInXp(uint64 spotKey)
+{
+    auto const found = memberHandInXp.find(spotKey);
+    return found == memberHandInXp.end() ? 0.0f : found->second;
 }
 
 uint64 QuestRoute::SpotKey(float x, float y)
@@ -586,8 +675,12 @@ QuestRoute::Plan QuestRoute::Solve(Input const& in)
         if (bestOffer == offers.size())
             break;
         used[bestOffer] = true;
-        for (auto const& [hub, quest] : best.merges)
+        for (auto const& [hub, quest, questXp] : best.merges)
+        {
             all[hub].quests.push_back(quest);
+            all[hub].xp += questXp;  // [quest15]
+        }
+
         for (Stop& s : best.added)
             all.push_back(std::move(s));
         order = std::move(best.order);
@@ -602,10 +695,13 @@ QuestRoute::Plan QuestRoute::Solve(Input const& in)
             Improve(legs, Pool{all, nullptr}, order, pinnedFirst);
     }
 
+    plan.earlierHandIns = HandInsEarlier(legs, Pool{all, nullptr}, order, pinnedFirst);  // [quest15]
+
     uint32 prev = 0;
     for (size_t i : order)
     {
         Stop s = all[i];
+
         s.leg = legs.Seconds(prev, s.node);
         s.legYd = legs.Yards(prev, s.node);
         plan.eta += s.leg + s.work;
@@ -853,17 +949,42 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
     // [town12] the leader of a group walks its members' town stops too (econ b350: the mail pickups and smelts of
     // group followers - Lanbuzz, Manue - never ran: a member's own route is not run while it follows); the member runs
     // its task there itself (NewRpgStatusUpdateAction, TownTaskHere)
+    memberHandInXp.clear();  // [quest16] this build's member hand-ins
     if (Group* group = bot->GetGroup(); group && group->GetLeaderGUID() == bot->GetGUID())
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+
         {
             Player* member = ref->GetSource();
             if (!member || member == bot || member->GetMapId() != bot->GetMapId() || !GET_PLAYERBOT_AI(member))
+                continue;
+            // [town15] ... of a member with it (in its sight): the member runs its task only standing at the stop
+            // (TownTaskHere), so a member away on its own walk gets nothing from the leader's walk there. b355
+            // Gnetlibozz L11 walked 98 s to "BUY The Farstrider Lodge (for Kianey)" with Kianey 724 yd off on its
+            // own route; [town12] never fired
+            if (member->GetExactDist2d(bot) > sPlayerbotAIConfig.SightDistance)
                 continue;
             std::vector<std::pair<WorldPosition, std::string>> theirs;
             sGuildCoordinator.TownStops(member, theirs);
             for (auto& [pos, what] : theirs)
                 if (!TownListed(towns, pos.GetPositionX(), pos.GetPositionY()))
                     towns.emplace_back(pos, what + " (for " + member->GetName() + ")");
+            // [quest16] coordinator decision 2026-11-09: its complete quests' enders are stops of the leader's route,
+            // weighed as its own hand-ins (the experience each member hands in there); the member hands in at the
+            // ender (MemberHandInHere). One its leader has complete too is the leader's own ender stop already
+            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            {
+                uint32 const questId = member->GetQuestSlotQuestId(slot);
+                Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+                WorldPosition ender;
+                if (!quest || member->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE ||
+                    bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE ||
+                    !NearestEnderSpot(member, questId, ender) || ender.GetMapId() != bot->GetMapId())
+                    continue;
+                memberHandInXp[QuestRoute::SpotKey(ender.GetPositionX(), ender.GetPositionY())] +=
+                    float(quest->XPValue(member->GetLevel()));
+                if (!TownListed(towns, ender.GetPositionX(), ender.GetPositionY()))
+                    towns.emplace_back(ender, Acore::StringFormat("HAND_IN q{} (for {})", questId, member->GetName()));
+            }
         }
     // [stuck12] a town stop whose walk the bot gave up at this level (MOVE_FAR_LOOP, the maze search: every way there
     // passes mobs it does not pull) is no stop of its route: TrimRoute drops it as a task gone. Before, the stop stayed
@@ -925,10 +1046,11 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
                                                [](Stop const& s) { return s.kind == StopKind::Objective; });
         LOG_INFO("playerbots",
                  "{} stops={} eta={} walk={} xp={} open={} takes={} left_out={} offers={} legs={} walk_ratio={:.2f} "
-                 "fight_s_per_100yd={:.1f} why={} |{}",
+                 "fight_s_per_100yd={:.1f} handins_sooner={} why={} |{}",  // [quest15] handins_sooner
                  RouteHead(bot, "plan"), r.plan.stops.size(), uint32(r.plan.eta), uint32(r.plan.walkYd),
                  uint32(r.plan.xp), logQuests, r.plan.takes, in.leftOut, in.offers.size(), r.plan.measured,
-                 r.plan.walkRatio, r.plan.fightPerYd * 100.0f, why, stops);
+                 r.plan.walkRatio, r.plan.fightPerYd * 100.0f, r.plan.earlierHandIns, why, stops);
+
     }
     // a town stop it stands at is visited: the guild's NextStep runs its task there
     while (!r.plan.stops.empty() && r.plan.stops.front().kind == StopKind::Town &&
