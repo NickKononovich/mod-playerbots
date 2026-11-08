@@ -60,6 +60,7 @@ void GenericHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     // Mark/Ammo/Mana Triggers
     triggers.push_back(new TriggerNode("no ammo", { NextAction("equip upgrades packet action", 30.0f) }));
+    triggers.push_back(new TriggerNode("wrong ammo", { NextAction("equip matching ammo", 30.0f) }));  // [rot608]
     // [guild2] no ammo, or meleed inside Auto Shot's minimum range: melee auto-attack on (Raptor Strike needs it)
     // [guild14] out of the dead zone to shoot when the mob does not follow (above the melee fallback)
     triggers.push_back(new TriggerNode("hunter step out", {NextAction("hunter step out", 30.3f)}));

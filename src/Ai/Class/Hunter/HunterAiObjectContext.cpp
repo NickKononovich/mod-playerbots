@@ -85,6 +85,7 @@ public:
         creators["scare beast"] = &HunterTriggerFactoryInternal::scare_beast;
         creators["low ammo"] = &HunterTriggerFactoryInternal::low_ammo;
         creators["no ammo"] = &HunterTriggerFactoryInternal::no_ammo;
+        creators["wrong ammo"] = &HunterTriggerFactoryInternal::wrong_ammo;  // [rot608]
         creators["has ammo"] = &HunterTriggerFactoryInternal::has_ammo;
         creators["hunter needs melee"] = &HunterTriggerFactoryInternal::needs_melee;  // [guild2]
         creators["hunter step out"] = &HunterTriggerFactoryInternal::step_out;  // [guild14]
@@ -129,6 +130,7 @@ private:
     static Trigger* aspect_of_the_wild(PlayerbotAI* botAI) { return new HunterAspectOfTheWildTrigger(botAI); }
     static Trigger* low_ammo(PlayerbotAI* botAI) { return new HunterLowAmmoTrigger(botAI); }
     static Trigger* no_ammo(PlayerbotAI* botAI) { return new HunterNoAmmoTrigger(botAI); }
+    static Trigger* wrong_ammo(PlayerbotAI* botAI) { return new HunterWrongAmmoTrigger(botAI); }
     static Trigger* has_ammo(PlayerbotAI* botAI) { return new HunterHasAmmoTrigger(botAI); }
     static Trigger* needs_melee(PlayerbotAI* botAI) { return new HunterNeedsMeleeTrigger(botAI); }
     static Trigger* step_out(PlayerbotAI* botAI) { return new HunterStepOutTrigger(botAI); }
@@ -154,6 +156,7 @@ public:
     HunterAiObjectContextInternal()
     {
         creators["auto shot"] = &HunterAiObjectContextInternal::auto_shot;
+        creators["equip matching ammo"] = &HunterAiObjectContextInternal::equip_matching_ammo;  // [rot608]
         creators["aimed shot"] = &HunterAiObjectContextInternal::aimed_shot;
         creators["chimera shot"] = &HunterAiObjectContextInternal::chimera_shot;
         creators["arcane shot"] = &HunterAiObjectContextInternal::arcane_shot;
@@ -226,6 +229,7 @@ private:
     static Action* trueshot_aura(PlayerbotAI* botAI) { return new CastTrueshotAuraAction(botAI); }
     static Action* track_humanoids(PlayerbotAI* botAI) { return new CastBuffSpellAction(botAI, "track humanoids"); }
     static Action* auto_shot(PlayerbotAI* botAI) { return new CastAutoShotAction(botAI); }
+    static Action* equip_matching_ammo(PlayerbotAI* botAI) { return new HunterEquipMatchingAmmoAction(botAI); }
     static Action* aimed_shot(PlayerbotAI* botAI) { return new CastAimedShotAction(botAI); }
     static Action* chimera_shot(PlayerbotAI* botAI) { return new CastChimeraShotAction(botAI); }
     static Action* arcane_shot(PlayerbotAI* botAI) { return new CastArcaneShotAction(botAI); }

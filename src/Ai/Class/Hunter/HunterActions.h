@@ -287,6 +287,15 @@ public:
     bool isUseful() override;
 };
 
+// [rot608] the fitting ammo from its bags into the ammo slot (HunterAmmoMismatch)
+class HunterEquipMatchingAmmoAction : public Action
+{
+public:
+    HunterEquipMatchingAmmoAction(PlayerbotAI* botAI) : Action(botAI, "equip matching ammo") {}
+    bool isUseful() override;
+    bool Execute(Event event) override;
+};
+
 class CastArcaneShotAction : public CastSpellAction
 {
 public:

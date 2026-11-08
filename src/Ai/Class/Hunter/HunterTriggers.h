@@ -108,6 +108,22 @@ public:
     bool IsActive() override;
 };
 
+// [rot608] The equipped ammo (PLAYER_AMMO_ID) does not fit the ranged weapon - Spell::CheckItems: a bow or a crossbow
+// shoots arrows, a gun bullets - or is used up. "item count ammo" counts the fitting ammo in the bags, so the "no ammo"
+// trigger stays off and every Auto Shot fails: b341 Feette (Pellet Rifle, Rough Arrow equipped, 1000 Light Shot in its
+// bags) never fired one, its ammo stayed at 8000 the whole run.
+bool HunterAmmoMismatch(Player* bot);
+
+class HunterWrongAmmoTrigger : public Trigger
+{
+public:
+    HunterWrongAmmoTrigger(PlayerbotAI* botAI) : Trigger(botAI, "wrong ammo", HUNTER_AMMO_CHECK_SEC) {}
+    bool IsActive() override;
+
+private:
+    static constexpr int32 HUNTER_AMMO_CHECK_SEC = 10;  // the "no ammo" trigger's cadence
+};
+
 class HunterHasAmmoTrigger : public AmmoCountTrigger
 {
 public:

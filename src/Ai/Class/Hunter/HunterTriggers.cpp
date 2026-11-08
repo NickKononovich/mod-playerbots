@@ -13,6 +13,8 @@
 #include "GenericSpellActions.h"
 #include "GenericTriggers.h"
 #include "HunterActions.h"
+#include "Item.h"
+#include "ObjectMgr.h"
 #include "Pet.h"  // [guide_b31_dead]
 #include "PetDefines.h"             // [b31_deep] PetStable
 #include "Player.h"
@@ -317,6 +319,31 @@ bool HunterStepOutTrigger::IsActive()
     Position spot;
     return HunterStepOutSpot(bot, AI_VALUE(Unit*, "current target"), spot);
 }
+
+bool HunterAmmoMismatch(Player* bot)
+{
+    Item* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    if (!ranged)
+        return false;
+    uint32 required = 0;
+    switch (ranged->GetTemplate()->SubClass)
+    {
+        case ITEM_SUBCLASS_WEAPON_GUN:
+            required = ITEM_SUBCLASS_BULLET;
+            break;
+        case ITEM_SUBCLASS_WEAPON_BOW:
+        case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+            required = ITEM_SUBCLASS_ARROW;
+            break;
+        default:
+            return false;  // a thrown weapon or a wand: no ammo slot
+    }
+    uint32 const ammo = bot->GetUInt32Value(PLAYER_AMMO_ID);
+    ItemTemplate const* proto = ammo ? sObjectMgr->GetItemTemplate(ammo) : nullptr;
+    return !proto || proto->SubClass != required || !bot->HasItemCount(ammo);
+}
+
+bool HunterWrongAmmoTrigger::IsActive() { return HunterAmmoMismatch(bot) && botAI->FindAmmo(); }
 
 bool HunterHasAmmoTrigger::IsActive()
 {

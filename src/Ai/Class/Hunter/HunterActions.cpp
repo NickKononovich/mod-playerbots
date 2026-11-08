@@ -304,6 +304,17 @@ bool CastAutoShotAction::isUseful()
     return AI_VALUE(uint32, "active spell") != AI_VALUE2(uint32, "spell id", getName());
 }
 
+bool HunterEquipMatchingAmmoAction::isUseful() { return HunterAmmoMismatch(bot); }
+
+bool HunterEquipMatchingAmmoAction::Execute(Event /*event*/)
+{
+    Item* ammo = botAI->FindAmmo();
+    if (!ammo)
+        return false;
+    bot->SetAmmo(ammo->GetEntry());
+    return true;
+}
+
 bool CastDisengageAction::Execute(Event event)
 {
     Unit* target = AI_VALUE(Unit*, "current target");
