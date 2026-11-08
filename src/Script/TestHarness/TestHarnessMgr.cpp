@@ -2199,6 +2199,31 @@ namespace TestHarness
                 party.bosses.push_back(boss);
             }
 
+        // [world_boss] b346 wb-kazzak 25A-1: an open-world boss has no InstanceScript slot and no DungeonEncounter.dbc
+        // row, so the run had no boss track - every pull was "trash", no boss attempt, and run_end read "Lord Kazzak -
+        // alive, not engaged" after his fight. His own track: a dbc-style one credited by his entry (the kill), in
+        // progress while he fights, his creature known from the spawn LoadEntrances found.
+        if (party.content->worldBoss)
+        {
+            BossTrack boss;
+            boss.bossId = 0;
+            boss.dbc = true;
+            boss.order = 0;
+            boss.entry = party.content->worldBoss;
+            boss.credits = {party.content->worldBoss};
+            CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(party.content->worldBoss);
+            boss.name = info ? info->Name : party.content->name;
+            auto const bounds = map->GetCreatureBySpawnIdStore().equal_range(party.worldBossSpawn);
+            if (bounds.first != bounds.second && bounds.first->second)
+            {
+                boss.creature = bounds.first->second->GetGUID();
+                boss.homePos = bounds.first->second->GetHomePosition();
+            }
+            boss.killed = false;
+            boss.lastState = uint8(NOT_STARTED);
+            party.bosses.push_back(boss);
+        }
+
         for (BossTrack& boss : party.bosses)
             ResolveBoss(party, boss, map, script);
         DropDbcTwins(party);

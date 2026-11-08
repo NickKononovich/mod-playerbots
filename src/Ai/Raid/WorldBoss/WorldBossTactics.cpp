@@ -16,6 +16,7 @@
 #include "Spell.h"
 #include "SpellAuras.h"
 #include "SpellInfo.h"
+#include "StringFormat.h"
 #include "Timer.h"
 
 namespace WorldBoss
@@ -271,23 +272,80 @@ bool IsTauntAction(std::string const& name)
            name == "challenging roar" || name == "taunt spell";
 }
 
-bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target)
+namespace
 {
-    if (!target || !target->IsAlive() || bot->GetDistance(target) > TAUNT_RANGE)
-        return false;
+char const* ClassTauntName(Player* bot)
+{
     switch (bot->getClass())
     {
         case CLASS_WARRIOR:
-            return botAI->CastSpell("taunt", target);
+            return "taunt";
         case CLASS_PALADIN:
-            return botAI->CastSpell("hand of reckoning", target);
+            return "hand of reckoning";
         case CLASS_DEATH_KNIGHT:
-            return botAI->CastSpell("dark command", target);
+            return "dark command";
         case CLASS_DRUID:
-            return botAI->CastSpell("growl", target);
+            return "growl";
         default:
-            return false;
+            return nullptr;
     }
+}
+}  // namespace
+
+bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target)
+{
+    std::string why;
+    return CastClassTaunt(bot, botAI, target, why);
+}
+
+bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target, std::string& why)
+{
+    if (!target || !target->IsAlive())
+    {
+        why = "no living target";
+        return false;
+    }
+    if (bot->GetDistance(target) > TAUNT_RANGE)
+    {
+        why = Acore::StringFormat("{:.1f} yd away", bot->GetDistance(target));
+        return false;
+    }
+    char const* name = ClassTauntName(bot);
+    if (!name)
+    {
+        why = "no class taunt";
+        return false;
+    }
+    if (!botAI->CanCastSpell(name, target))
+    {
+        uint32 const spellId = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+        why = std::string(name) + (!spellId                         ? " not known"
+                                   : bot->HasSpellCooldown(spellId) ? " on cooldown"
+                                                                    : " cannot be cast now");
+        return false;
+    }
+    if (!botAI->CastSpell(name, target))
+    {
+        why = std::string(name) + " cast failed";
+        return false;
+    }
+    why = name;
+    return true;
+}
+
+bool Note(Player* bot, char const* key, std::string const& text)
+{
+    // [world_boss] one line per bot and kind every NOTE_MS: the fight's decisions are readable in Playerbots.log
+    // without a line per tick (bots of one map tick on one map thread: thread-local)
+    constexpr uint32 NOTE_MS = 5 * IN_MILLISECONDS;
+    thread_local std::unordered_map<std::string, uint32> last;
+    uint32 const now = getMSTime();
+    uint32& at = last[bot->GetName() + "|" + key];
+    if (at && getMSTimeDiff(at, now) < NOTE_MS)
+        return false;
+    at = now ? now : 1;
+    LOG_INFO("playerbots", "[world_boss] {}: {}", bot->GetName(), text);
+    return true;
 }
 
 // --- helpers for the tank rules -----------------------------------------------------------------------------------
@@ -433,9 +491,21 @@ bool WorldBossTauntAction::Execute(Event /*event*/)
     Unit* boss = FightBoss(bot, botAI);
     if (!boss)
         return false;
-    if (CastClassTaunt(bot, botAI, boss))
+    BossTactic const* t = Tactic(boss->GetEntry());
+    Unit* holder = boss->GetVictim();
+    std::string const off =
+        holder ? Acore::StringFormat("{} ({} stacks)", holder->GetName(), t ? Stacks(holder, t->swapAura) : 0)
+               : std::string("nobody");
+    std::string why;
+    if (CastClassTaunt(bot, botAI, boss, why))
+    {
+        Note(bot, "taunt",
+             Acore::StringFormat("tank swap / threat reset: {} on {} off {}, own stacks {}", why, boss->GetName(), off,
+                                 t ? Stacks(bot, t->swapAura) : 0));
         return true;
-    return Attack(boss);
+    }
+    Note(bot, "taunt_failed", Acore::StringFormat("taunt of {} off {} failed: {}", boss->GetName(), off, why));
+    return bot->GetVictim() != boss && Attack(boss);
 }
 
 bool WorldBossTauntAddAction::Execute(Event /*event*/)
@@ -443,9 +513,16 @@ bool WorldBossTauntAddAction::Execute(Event /*event*/)
     Unit* add = SnapshotUnit(botAI, Picture(bot, botAI).looseAdd);
     if (!add)
         return false;
-    if (CastClassTaunt(bot, botAI, add))
+    Unit* victim = add->GetVictim();
+    std::string why;
+    if (CastClassTaunt(bot, botAI, add, why))
+    {
+        Note(bot, "taunt_add",
+             Acore::StringFormat("loose add {} off {}: {}", add->GetName(),
+                                 victim ? victim->GetName() : std::string("nobody"), why));
         return true;
-    return Attack(add);
+    }
+    return bot->GetVictim() != add && Attack(add);
 }
 
 bool WorldBossInterruptAddAction::Execute(Event /*event*/)
@@ -454,34 +531,62 @@ bool WorldBossInterruptAddAction::Execute(Event /*event*/)
     if (!caster || !CastingAddHeal(caster) || !Leader::Fight::LeaderInterruptReaches(bot, caster))
         return false;
     uint32 const spell = Leader::Fight::LeaderReadyInterrupt(bot);
-    return spell && botAI->CastSpell(spell, caster);
+    if (!spell || !botAI->CastSpell(spell, caster))
+        return false;
+    Note(bot, "interrupt", Acore::StringFormat("interrupts the Heal of {} (spell {})", caster->GetName(), spell));
+    return true;
 }
 
 bool WorldBossAttackPriorityAddAction::Execute(Event /*event*/)
 {
     Unit* add = PriorityAdd(bot, botAI, FightBoss(bot, botAI));
-    return add && Attack(add);
+    if (!add || !Attack(add))
+        return false;
+    Note(bot, "priority", Acore::StringFormat("switches to {} ({:.0f} % hp)", add->GetName(), add->GetHealthPct()));
+    return true;
 }
 
 bool WorldBossDispelAction::Execute(Event /*event*/)
 {
     Snapshot const& s = Picture(bot, botAI);
     Unit* member = SnapshotUnit(botAI, s.dispelTarget);
-    return member && !s.dispelSpell.empty() && botAI->CastSpell(s.dispelSpell, member);
+    if (!member || s.dispelSpell.empty() || !botAI->CastSpell(s.dispelSpell, member))
+        return false;
+    Note(bot, "dispel", Acore::StringFormat("{} on {}", s.dispelSpell, member->GetName()));
+    return true;
 }
 
-bool WorldBossCarrierMoveAction::Execute(Event /*event*/) { return MoveFromGroup(CARRIER_DISTANCE); }
+bool WorldBossCarrierMoveAction::Execute(Event /*event*/)
+{
+    if (!MoveFromGroup(CARRIER_DISTANCE))
+        return false;
+    Note(bot, "carrier", "carries a bomb / mark / infection: away from the group");
+    return true;
+}
 
-bool WorldBossSpreadAction::Execute(Event /*event*/) { return MoveFromGroup(SPREAD_DISTANCE); }
+bool WorldBossSpreadAction::Execute(Event /*event*/)
+{
+    if (!MoveFromGroup(SPREAD_DISTANCE))
+        return false;
+    Note(bot, "spread", "spreads out (chain spell)");
+    return true;
+}
 
 bool WorldBossMoveOutAction::Execute(Event /*event*/)
 {
     if (Aura* storm = bot->GetAura(SPELL_MANASTORM))
         if (WorldObject* owner = storm->GetOwner())
-            if (owner != bot)
-                return FleePosition(owner->GetPosition(), MANASTORM_RADIUS);
+            if (owner != bot && FleePosition(owner->GetPosition(), MANASTORM_RADIUS))
+            {
+                Note(bot, "move_out", "out of Manastorm");
+                return true;
+            }
     if (Unit* fog = SnapshotUnit(botAI, Picture(bot, botAI).dreamFog))
-        return FleePosition(fog->GetPosition(), DREAM_FOG_RADIUS);
+        if (FleePosition(fog->GetPosition(), DREAM_FOG_RADIUS))
+        {
+            Note(bot, "move_out", "away from a Dream Fog");
+            return true;
+        }
     return false;
 }
 
@@ -517,17 +622,23 @@ bool WorldBossPositionAction::Execute(Event /*event*/)
     }
     float const x = boss->GetPositionX() + dist * std::cos(angle);
     float const y = boss->GetPositionY() + dist * std::sin(angle);
-    return MoveTo(boss->GetMapId(), x, y, boss->GetPositionZ(), false, false, false, false,
-                  MovementPriority::MOVEMENT_COMBAT);
+    if (!MoveTo(boss->GetMapId(), x, y, boss->GetPositionZ(), false, false, false, false,
+                MovementPriority::MOVEMENT_COMBAT))
+        return false;
+    Note(bot, "position", t->sides ? "to the boss's side" : "to the front cone / out of it");
+    return true;
 }
 
 bool WorldBossRaidCooldownAction::Execute(Event /*event*/)
 {
-    if (bot->getClass() == CLASS_PRIEST)
-        return botAI->CastSpell("divine hymn", bot);
-    if (bot->getClass() == CLASS_DRUID)
-        return botAI->CastSpell("tranquility", bot);
-    return false;
+    char const* name = bot->getClass() == CLASS_PRIEST  ? "divine hymn"
+                       : bot->getClass() == CLASS_DRUID ? "tranquility"
+                                                        : nullptr;
+    if (!name || !botAI->CastSpell(name, bot))
+        return false;
+    Note(bot, "raid_cooldown",
+         Acore::StringFormat("{}: raid-damage phase, {} members hurt", name, Picture(bot, botAI).hurt));
+    return true;
 }
 
 // --- multiplier ---------------------------------------------------------------------------------------------------

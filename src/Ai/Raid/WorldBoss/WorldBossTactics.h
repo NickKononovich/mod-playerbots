@@ -7,6 +7,8 @@
 #ifndef PLAYERBOTS_WORLDBOSSTACTICS_H
 #define PLAYERBOTS_WORLDBOSSTACTICS_H
 
+#include <string>
+
 #include "AttackAction.h"
 #include "MovementActions.h"
 #include "Multiplier.h"
@@ -70,6 +72,10 @@ Unit* PriorityAdd(Player* bot, PlayerbotAI* botAI, Unit* boss);
 uint8 Stacks(Unit* unit, uint32 spellId);
 bool IsTauntAction(std::string const& name);
 bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target);
+// the same with what happened: the spell cast, or why not (range, not known, cooldown, cannot be cast now)
+bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target, std::string& why);
+// [world_boss] a decision line in Playerbots.log, at most one per bot and kind every 5 s; true: written
+bool Note(Player* bot, char const* key, std::string const& text);
 }  // namespace WorldBoss
 
 // --- triggers ---------------------------------------------------------------------------------------------------
