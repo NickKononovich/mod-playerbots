@@ -3643,10 +3643,38 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // [raid3] what really joins a pull of `target` where it stands: the planner's own pack count (CollectPack: its
     // formation, the engage call within the core's assistance radius to mobs that may assist, the walk's and the
     // spot's proximity aggro) - a world boss counts only when that brings him
+    // [kara4] b358 kara-n 20261109-003901-10A-1: the whole Moroes ballroom (21 mobs of six clusters 10-20 yd apart)
+    // was "one pack" through CollectPack's call chains, danger 108.9 > capacity 24.7, 23 pull holds and the run
+    // stalled at 624 s. The manageable gate counts what joins the pull itself: the target, its formation
+    // (creature_formations, FormationBrings) and the target's own engage call - an idle mob within the core's
+    // assistance radius of it that may assist it (Creature::CallAssistance: CanAssistTo, in its line of sight). The
+    // chain's spread is the planner's estimate of the fight (its plan and rest), not the gate's.
     void PackJoiners(PlayerbotAI* botAI, Player* bot, Unit* target, std::vector<Unit*>& pack)
     {
+        pack.clear();
+        pack.push_back(target);
+        auto const add = [&pack](Unit* mob)
+        {
+            if (std::find(pack.begin(), pack.end(), mob) == pack.end())
+                pack.push_back(mob);
+        };
+        Creature* const creature = target->ToCreature();
+        if (CreatureGroup const* formation = creature ? creature->GetFormation() : nullptr;
+            formation && FormationBrings(creature, formation))
+            for (auto const& member : formation->GetMembers())
+                if (member.first != creature && IsIdleEnemy(bot, member.first))
+                    add(member.first);
+        float const assistRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        if (!creature || assistRadius <= 0.0f || !CallsOnEngage(creature))
+            return;
         GuidVector const possible = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets")->Get();
-        CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, FightHere(target->GetPosition()));
+        for (ObjectGuid const& guid : possible)
+        {
+            Creature* mob = botAI->GetCreature(guid);
+            if (mob && mob != creature && IsIdleEnemy(bot, mob) && creature->IsWithinDistInMap(mob, assistRadius) &&
+                mob->CanAssistTo(creature, bot) && creature->IsWithinLOSInMap(mob))
+                add(mob);
+        }
     }
 
     // "[b43_plan] ..." lines, one per tank per 5 s, throttled apart from LogPatrol (so the "[pull patrol]" and
