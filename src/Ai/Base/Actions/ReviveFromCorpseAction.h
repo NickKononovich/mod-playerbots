@@ -34,9 +34,11 @@ public:
     bool isUseful() override;
 
 private:
-    bool SafeSpot(Corpse* corpse, GuidVector const& hostiles, float radius, G3D::Vector3& spot);
+    // window: a spot only the mobs that stay keep out of reach of (the wanderers / patrols leave it)
+    bool SafeSpot(Corpse* corpse, GuidVector const& hostiles, float radius, G3D::Vector3& spot, bool window = false);
 
     uint32 _spotMs = 0;
+    bool _spotWindow = false;
     bool _spotFound = false;
     G3D::Vector3 _spot;
 };
