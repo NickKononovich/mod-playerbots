@@ -95,6 +95,8 @@ namespace TestHarness
         constexpr uint32 TICK_MS = 1000;
         constexpr uint32 POSITIONS_SETUP_MS = 5 * IN_MILLISECONDS;  // out of combat, while a pull is set up
         constexpr uint32 POSITIONS_MS = 2 * IN_MILLISECONDS;  // the run ticks every second: at most every 2nd tick
+        // [raid4] a boss attempt's aura snapshot ("boss_auras") on every n-th positions sample (1: each, 2 s)
+        constexpr uint32 BOSS_AURAS_EVERY = 1;
         constexpr uint32 SETUP_TICK_MS = 1000;
         constexpr uint32 QUEUE_TICK_MS = 2000;
         constexpr uint32 LOGIN_TIMEOUT_MS = 120 * IN_MILLISECONDS;
@@ -3013,6 +3015,28 @@ namespace TestHarness
                     for (uint32 entry : killedEntries)
                         credited = credited ||
                                    std::find(boss.credits.begin(), boss.credits.end(), entry) != boss.credits.end();
+                    // [raid4] b355 wb-kazzak: Lord Kazzak died in the raid's fight (985 s, 0 deaths) and the run read
+                    // "dead, kill credit not observed", a boss wipe. An open-world boss has no encounter credit: he is
+                    // killed when he dies while the party's attempt on him runs - his creature dead, or gone with a
+                    // respawn time on his spawn - an attempt the party was engaged in (IN_PROGRESS, engaged)
+                    if (!credited && party.content->worldBoss && boss.entry == party.content->worldBoss &&
+                        boss.lastState == IN_PROGRESS && boss.engaged)
+                    {
+                        bool const dead = bossCreature ? !bossCreature->IsAlive()
+                                                       : party.worldBossSpawn &&
+                                                             map->GetCreatureRespawnTime(party.worldBossSpawn) != 0;
+                        if (dead)
+                        {
+                            credited = true;
+                            LOG_INFO("playerbots", "[raid4] {}: world boss {} died in the party's attempt {} ({}): "
+                                     "killed", party.id, boss.name, boss.attempts,
+                                     bossCreature ? "his corpse" : "his spawn's respawn time");
+                            LogEvent(party, "world_boss_kill",
+                                     JsonObject().Str("boss", boss.name).Num("entry", boss.entry)
+                                         .Num("attempt", boss.attempts)
+                                         .Str("by", bossCreature ? "corpse" : "respawn time"));
+                        }
+                    }
                     if (credited)
                         state = DONE;
                     else
@@ -3390,6 +3414,11 @@ namespace TestHarness
             LogPositions(party, players);
             if (anyInCombat)
                 LogAuraStacks(party, players, "tick");  // [harness30]
+            // [raid4] every BOSS_AURAS_EVERY-th sample of a boss attempt: the boss's own auras (JoW uptime)
+            if (anyInCombat && activeBoss && map && !activeBoss->creature.IsEmpty() &&
+                ++party.bossAuraSamples % BOSS_AURAS_EVERY == 0)
+                if (Creature* boss = map->GetCreature(activeBoss->creature); boss && boss->IsAlive())
+                    LogBossAuras(party, boss, activeBoss->name);
         }
 
         // [b34_arc] arc-h 20261026-014521-arc-h-5F-31 (696-1898 s): a Warder Corpse (21304, Arcatraz rooted trap;

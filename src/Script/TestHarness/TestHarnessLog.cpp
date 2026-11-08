@@ -1019,7 +1019,7 @@ namespace TestHarness
             return;
         }
 
-        if (!instanceId || !victim->IsCreature())
+        if (!victim->IsCreature())
             return;
 
         // [rot66] a member's own summon (Army of the Dead ghouls, a Raise Dead ghoul, treants, Feral Spirits) is no
@@ -1027,11 +1027,33 @@ namespace TestHarness
         if (victim->GetCharmerOrOwnerPlayerOrPlayerItself())
             return;
 
-        auto itr = _instanceRun.find(instanceId);
-        if (itr != _instanceRun.end())
+        uint32 runSeq = 0;
+        if (instanceId)
         {
-            ++_kills[itr->second];
-            std::vector<uint32>& entries = _killedEntries[itr->second];
+            auto itr = _instanceRun.find(instanceId);
+            runSeq = itr != _instanceRun.end() ? itr->second : 0;
+        }
+        else
+        {
+            // [raid4] b355 wb-kazzak: the open world has no instance to name the run - every kill there was lost
+            // (run_end kills 0, Lord Kazzak "dead, kill credit not observed"). The run whose member killed it, else
+            // whose member or group holds its loot (the tap: the creature fought that group)
+            if (Player* by = killer ? killer->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr)
+                runSeq = RunOfMember(by->GetGUID());
+            Creature* creature = victim->ToCreature();
+            if (!runSeq && creature)
+                if (Player* recipient = creature->GetLootRecipient())
+                    runSeq = RunOfMember(recipient->GetGUID());
+            if (!runSeq && creature)
+                if (Group* group = creature->GetLootRecipientGroup())
+                    for (GroupReference* ref = group->GetFirstMember(); ref && !runSeq; ref = ref->next())
+                        if (Player* member = ref->GetSource())
+                            runSeq = RunOfMember(member->GetGUID());
+        }
+        if (runSeq)
+        {
+            ++_kills[runSeq];
+            std::vector<uint32>& entries = _killedEntries[runSeq];
             if (entries.size() < 256)  // drained every harness tick; the cap only guards a stopped run
                 entries.push_back(victim->GetEntry());
         }
