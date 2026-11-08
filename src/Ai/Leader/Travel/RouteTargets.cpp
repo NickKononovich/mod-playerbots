@@ -4194,7 +4194,9 @@ namespace Leader::Travel
                 onOculus && (!ROUTE_OCULUS_DRAKE_ONLY || otherRing);
             if (!path.reachable || (oculusFootOnly && !path.complete))
             {
-                group.SkipTarget(creature->GetGUID(), UNREACHABLE_SKIP_MS, "unreachable");
+                // [kara1] a straight route over a mmaps hole, out of sight: named for the log (the data defect)
+                group.SkipTarget(creature->GetGUID(), UNREACHABLE_SKIP_MS,
+                                 path.navHole ? "unreachable: navmesh hole, out of sight" : "unreachable");
                 continue;
             }
             // Not through a part closed to this run (AreaGateDef: an LBRS group never walks the UBRS hall).
