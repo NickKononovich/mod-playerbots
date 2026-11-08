@@ -42,6 +42,7 @@ private:
     std::string MemberNotReady(Player* member);
 
     std::string _waitReason;  // the member and reason kind last logged (one [rpg] GROUP_WAIT line per change)
+    std::string _ownPlanLogged;  // [wait13] the members not waited for, last logged (one line per change)
 };
 
 // Taxi splines sometimes stop mid-route (#2863, #2664). The watch is shared by the trigger and the recovery

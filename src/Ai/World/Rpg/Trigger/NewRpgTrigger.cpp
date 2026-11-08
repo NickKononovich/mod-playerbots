@@ -82,17 +82,37 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
     // [timers] the members' facts alone hold the group: no wait cap, no ignore window
     std::string reason;
     std::string key;  // the member and the kind of its reason (a distance changes every check)
+    std::string ownPlan;  // [wait13]
     for (GroupReference* ref = group->GetFirstMember(); ref && reason.empty(); ref = ref->next())
     {
         Player* member = ref->GetSource();
         if (!member || member == bot)
             continue;
+        // [wait13] the leader waits only for a member that comes to it: a bot member that plays its own New RPG plan
+        // (no co-op / help party that has it follow the leader) walks its own route and never comes - a wait for it
+        // has no end. b353: Ravelandy (Rollothan), Orton (Febineysh), Lanbuzz (Geefeelli) and Emdyl (Thamesh, Idunk)
+        // stood in GROUP_WAIT for 1129-1239 s, the whole run, while those members quested alone
+        if (PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+            memberAI && !memberAI->HasGameClientMaster() && memberAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT) &&
+            !NewRpgCoop::InParty(member->GetGUID().GetCounter()))
+        {
+            ownPlan += (ownPlan.empty() ? "" : ", ") + member->GetName();
+            continue;
+        }
         std::string const why = MemberNotReady(member);
         if (!why.empty())
         {
             reason = member->GetName() + " " + why;
             key = member->GetName() + (why.find(" yd behind") != std::string::npos ? std::string(" behind") : why);
         }
+    }
+
+    if (ownPlan != _ownPlanLogged)
+    {
+        if (!ownPlan.empty())
+            LOG_INFO("playerbots", "[wait13] {} L{} does not wait for {}: each plays its own plan (not coming to it)",
+                     bot->GetName(), bot->GetLevel(), ownPlan);
+        _ownPlanLogged = ownPlan;
     }
 
     if (key != _waitReason)
