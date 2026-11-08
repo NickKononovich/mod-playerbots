@@ -3992,15 +3992,20 @@ uint32 PlayerbotFactory::InitClassTrainerSpells(std::vector<std::string>* learne
 
 uint32 PlayerbotFactory::InitWeaponMasterSkills(std::vector<std::string>* learned)
 {
-    // weapon masters: class-type trainers with no class requirement; built once (thread-safe static init)
+    // weapon masters: trainers with no requirement (class or race); built once (thread-safe static init).
+    // [equip] the world DB keeps every weapon master as Type 2 (Tradeskill, trainer 47-57, Requirement 0), not
+    // Class: the old Class-only filter found none, so no guild bot ever learned a weapon skill here (DB 2026-11-08:
+    // 28 of the 75 without Daggers / Swords / Bows ... their class may use). weaponSkillOf keeps only weapon skills.
     static std::vector<Trainer::Trainer*> const weaponMasters = []()
     {
         std::vector<Trainer::Trainer*> list;
         for (auto const& [entry, creatureTemplate] : *sObjectMgr->GetCreatureTemplates())
         {
             Trainer::Trainer* trainer = sObjectMgr->GetTrainer(entry);
-            if (trainer && trainer->GetTrainerType() == Trainer::Type::Class && !trainer->GetTrainerRequirement() &&
-                std::find(list.begin(), list.end(), trainer) == list.end())
+            if (trainer &&
+                (trainer->GetTrainerType() == Trainer::Type::Class ||
+                 trainer->GetTrainerType() == Trainer::Type::Tradeskill) &&
+                !trainer->GetTrainerRequirement() && std::find(list.begin(), list.end(), trainer) == list.end())
                 list.push_back(trainer);
         }
         return list;

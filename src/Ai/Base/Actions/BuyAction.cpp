@@ -9,6 +9,8 @@
 #include "BudgetValues.h"
 #include "DBCStores.h"
 #include "Event.h"
+#include "GuildGear.h"
+#include "GuildHonest.h"
 #include "ItemCountValue.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
@@ -173,11 +175,21 @@ bool BuyAction::Execute(Event event)
                     if (needMoneyFor == NeedMoneyFor::none)
                         break;
 
+                    // [equip] a guild-plan bot buys gear only on the global leader's verdict (b337: Thokhen bought
+                    // Hunter's Boomstick on its own check, [alert] DOUBLE_DECISION source vendor buy)
+                    std::string leaderDecision;
+                    if (needMoneyFor == NeedMoneyFor::gear && GuildHonest::IsHonestBot(bot) &&
+                        !GuildGear::ShouldBuy(bot, proto, leaderDecision))
+                        break;
+
                     if (AI_VALUE2(uint32, "free money for", uint32(needMoneyFor)) < price)
                         break;
 
                     if (!BuyItem(tItems, vendorguid, proto))
                         break;
+                    if (!leaderDecision.empty())
+                        GuildGear::HistoryNoteDecisionIfNone(bot->GetGUID().GetCounter(), proto->ItemId, "leader",
+                                                             leaderDecision);
 
                     // Store the best item score per InventoryType
                     bestPurchasedItemScore[invType] = newScore;

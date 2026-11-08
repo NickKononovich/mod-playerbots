@@ -141,6 +141,20 @@ namespace GuildGear
     // who decided the bot equips `itemEntry` and why (the global leader's plan text): taken by its next equip of it
     void HistoryNoteDecision(uint32 botLow, uint32 itemEntry, std::string const& decider, std::string const& reason);
     void HistoryForget(Player* bot);
+    // the same, unless a decision for that item is already pending (a leader BUY / QUEST_REWARD / transfer reason)
+    void HistoryNoteDecisionIfNone(uint32 botLow, uint32 itemEntry, std::string const& decider,
+                                   std::string const& reason);
+
+    // [equip] user 2026-11-08: the global leader is the only gear decider. A guild-plan bot equips an item from its
+    // bags only on the leader's yes: Evaluate's rules on the owned item (its random suffix, the same
+    // StatsWeightCalculator weights and EquipUpgradeThreshold as ItemUsageValue, class armor / weapon rules, ties by
+    // armor / item level / quality, a worn piece the class should not wear or a broken one is replaced), nothing the
+    // leader holds for another member (GuildCoordinator::IsHeld), bags and quivers by size. `slot`: the equipment
+    // slot (the weakest of the group's slots), NULL_SLOT for a bag (the equip action picks the bag slot); `gain` ranks
+    // several yes answers; `decision`: the leader's text for HistoryNoteDecision. Map thread (the bot's own).
+    bool ShouldEquip(Player* bot, Item* item, uint8& slot, float& gain, std::string& decision);
+    // whether the leader lets the bot buy this gear at the vendor it stands at (the same verdict, not owned yet)
+    bool ShouldBuy(Player* bot, ItemTemplate const* proto, std::string& decision);
 }
 
 #endif

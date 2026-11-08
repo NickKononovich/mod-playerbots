@@ -28,6 +28,8 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "AiFactory.h"
+#include "Bag.h"
+#include "GuildCoordinator.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "RandomItemMgr.h"
@@ -673,7 +675,10 @@ namespace GuildGear
         }
     }
 
-    bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out, bool plan)
+    // [equip] the evaluation behind Evaluate (an item the member does not own) and ShouldEquip (`owned`: an item in
+    // its bags, with its random suffix): one rule set for the plan and for the equip itself
+    static bool EvaluateFor(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, int32 randomProp,
+                            Item* owned, Eval& out, bool plan)
     {
         if (!proto)
             return false;
@@ -702,9 +707,21 @@ namespace GuildGear
             !sRandomItemMgr.CanEquipArmor(proto, member->getClass(), std::max<uint32>(member->GetLevel(),
                                                                                         proto->RequiredLevel)))
             return false;
-        // already owned (worn or in the bags): the member's own equip logic handles it
-        if (member->GetItemCount(proto->ItemId, true))
-            return false;
+        if (!owned)
+        {
+            // already owned (worn or in the bags): ShouldEquip decides it when the member equips from its bags
+            if (member->GetItemCount(proto->ItemId, true))
+                return false;
+        }
+        else
+        {
+            // a broken piece gives nothing; a unique-equipped one may be worn once
+            if (owned->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 && owned->GetUInt32Value(ITEM_FIELD_MAXDURABILITY))
+                return false;
+            if (proto->HasFlag(ITEM_FLAG_UNIQUE_EQUIPPABLE) &&
+                member->GetItemCount(proto->ItemId, true) > member->GetItemCount(proto->ItemId, false))
+                return false;
+        }
         std::vector<uint8> const slots = SlotsFor(member, proto);
         if (slots.empty())
             return false;
@@ -731,7 +748,7 @@ namespace GuildGear
                 weakestSlot = slot;
             }
         }
-        float const score = calc.CalculateItem(proto->ItemId, 0);
+        float const score = calc.CalculateItem(proto->ItemId, randomProp);
         out.score = score;
         out.current = std::max(0.0f, current);
         out.slot = weakestSlot;
@@ -742,8 +759,16 @@ namespace GuildGear
             return true;
         }
         ItemTemplate const* old = weakest->GetTemplate();
-        if ((score || out.current) && score > out.current * sPlayerbotAIConfig.EquipUpgradeThreshold &&
-            score > out.current)
+        // as ItemUsageValue: a worn piece the class should not wear (module armor / weapon rules) is replaced by any
+        // better one, the threshold only guards a swap between two fitting pieces; a broken worn piece by a whole one
+        bool const oldFits =
+            (old->Class != ITEM_CLASS_WEAPON || sRandomItemMgr.CanEquipWeapon(old, member->getClass())) &&
+            (old->Class != ITEM_CLASS_ARMOR ||
+             sRandomItemMgr.CanEquipArmor(old, member->getClass(), member->GetLevel()));
+        bool const oldBroken = weakest->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 &&
+                               weakest->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+        float const threshold = oldFits ? sPlayerbotAIConfig.EquipUpgradeThreshold : 1.0f;
+        if ((score || out.current) && score > out.current * threshold && score > out.current)
         {
             out.gain = out.current > 0.0f ? (score - out.current) / out.current : 1.0f;
             return true;
@@ -765,7 +790,17 @@ namespace GuildGear
                 return true;
             }
         }
+        if (owned && oldBroken)
+        {
+            out.gain = 0.001f;  // a whole piece beats a broken one (no stats while broken), as ItemUsageValue
+            return true;
+        }
         return false;
+    }
+
+    bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out, bool plan)
+    {
+        return EvaluateFor(member, calc, proto, 0, nullptr, out, plan);
     }
 }
 
@@ -944,5 +979,145 @@ namespace GuildGear
                  item->GetTemplate()->Name1, ItemLevelOf(entry), source, decider, reason);
         WriteRow(bot, slot, old, entry, source, decider, reason);
         return true;
+    }
+}
+
+// [equip] the global leader's equip verdict (user 2026-11-08: one decider; b337: 61 loot equips and 1 vendor buy came
+// from the bot's own upgrade check, [alert] DOUBLE_DECISION)
+namespace GuildGear
+{
+    namespace
+    {
+        std::string Percent(float gain)
+        {
+            if (gain < 0.005f)
+                return "вес равный, больше брони / ур. предмета / цела";
+            return "+" + std::to_string(int32(gain * 100.0f + 0.5f)) + "%";
+        }
+
+        // a generic bag or a hunter's quiver: worth a bag slot when one is free or it is bigger than the one it
+        // replaces (the smallest generic bag / the worn quiver), as ItemUsageValue
+        bool BagVerdict(Player* bot, ItemTemplate const* proto, std::string& why)
+        {
+            bool const quiver = proto->Class == ITEM_CLASS_QUIVER;
+            if (quiver ? bot->getClass() != CLASS_HUNTER
+                       : proto->Class != ITEM_CLASS_CONTAINER || proto->SubClass != ITEM_SUBCLASS_CONTAINER)
+                return false;
+            bool freeSlot = false;
+            uint32 smallest = 0, quiverSlots = 0;
+            bool wornQuiver = false;
+            for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+            {
+                Bag* bag = bot->GetBagByPos(slot);
+                if (!bag)
+                {
+                    freeSlot = true;
+                    continue;
+                }
+                ItemTemplate const* b = bag->GetTemplate();
+                if (b->Class == ITEM_CLASS_QUIVER)
+                {
+                    wornQuiver = true;
+                    quiverSlots = std::max<uint32>(quiverSlots, b->ContainerSlots);
+                }
+                else if (b->Class == ITEM_CLASS_CONTAINER && b->SubClass == ITEM_SUBCLASS_CONTAINER &&
+                         (!smallest || b->ContainerSlots < smallest))
+                    smallest = b->ContainerSlots;
+            }
+            if (quiver)
+            {
+                if (wornQuiver ? quiverSlots >= proto->ContainerSlots : !freeSlot)
+                    return false;
+                why = wornQuiver ? "колчан " + std::to_string(quiverSlots) + " → " +
+                                       std::to_string(proto->ContainerSlots)
+                                 : "колчан в свободный слот сумки";
+                return true;
+            }
+            if (!freeSlot && smallest >= proto->ContainerSlots)
+                return false;
+            why = freeSlot ? "сумка " + std::to_string(proto->ContainerSlots) + " ячеек в свободный слот"
+                           : "сумка " + std::to_string(smallest) + " → " + std::to_string(proto->ContainerSlots) +
+                                 " ячеек";
+            return true;
+        }
+
+        std::string GearWhy(Eval const& ev, ItemTemplate const* proto)
+        {
+            ItemTemplate const* was = ev.worn ? sObjectMgr->GetItemTemplate(ev.worn) : nullptr;
+            return std::string(GroupName(EquipGroup(proto->InventoryType))) + " " + Percent(ev.gain) +
+                   (was ? " вместо " + was->Name1 : std::string(", слот пуст"));
+        }
+    }
+
+    bool ShouldEquip(Player* bot, Item* item, uint8& slot, float& gain, std::string& decision)
+    {
+        slot = NULL_SLOT;
+        gain = 0.0f;
+        decision.clear();
+        ItemTemplate const* proto = bot && item ? item->GetTemplate() : nullptr;
+        if (!proto || proto->InventoryType == INVTYPE_NON_EQUIP || proto->InventoryType == INVTYPE_AMMO)
+            return false;
+        // a BoE given to another member, or not decided yet
+        if (sGuildCoordinator.IsHeld(bot, item))
+            return false;
+        std::string why;
+        if (proto->Class == ITEM_CLASS_CONTAINER || proto->Class == ITEM_CLASS_QUIVER)
+        {
+            if (!BagVerdict(bot, proto, why))
+                return false;
+            gain = 0.001f;  // the equip action picks the bag slot
+        }
+        else
+        {
+            if (EquipGroup(proto->InventoryType) == 0xFF)
+                return false;
+            StatsWeightCalculator calc(bot);
+            calc.SetItemSetBonus(false);
+            calc.SetOverflowPenalty(false);
+            Eval ev;
+            if (!EvaluateFor(bot, calc, proto, item->GetItemRandomPropertyId(), item, ev, false))
+                return false;
+            slot = ev.slot;
+            gain = ev.gain;
+            why = GearWhy(ev, proto);
+        }
+        decision = std::string(bot->GetName()) + " → EQUIP: " + proto->Name1 + " — " + why;
+        return true;
+    }
+
+    bool ShouldBuy(Player* bot, ItemTemplate const* proto, std::string& decision)
+    {
+        decision.clear();
+        if (!bot || !proto || proto->InventoryType == INVTYPE_NON_EQUIP || proto->InventoryType == INVTYPE_AMMO)
+            return false;
+        std::string why;
+        if (proto->Class == ITEM_CLASS_CONTAINER || proto->Class == ITEM_CLASS_QUIVER)
+        {
+            if (bot->GetItemCount(proto->ItemId, false) || !BagVerdict(bot, proto, why))
+                return false;
+        }
+        else
+        {
+            if (EquipGroup(proto->InventoryType) == 0xFF)
+                return false;
+            StatsWeightCalculator calc(bot);
+            calc.SetItemSetBonus(false);
+            calc.SetOverflowPenalty(false);
+            Eval ev;
+            if (!Evaluate(bot, calc, proto, ev))
+                return false;
+            why = GearWhy(ev, proto);
+        }
+        decision = std::string(bot->GetName()) + " → BUY: " + proto->Name1 + " — улучшение " + why + ", на свои деньги";
+        return true;
+    }
+
+    void HistoryNoteDecisionIfNone(uint32 botLow, uint32 itemEntry, std::string const& decider,
+                                   std::string const& reason)
+    {
+        std::lock_guard<std::mutex> guard(historyLock);
+        if (worn.find(botLow) == worn.end())
+            return;
+        decisions.emplace(std::make_pair(botLow, itemEntry), std::make_pair(decider, reason));
     }
 }

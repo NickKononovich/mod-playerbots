@@ -6,6 +6,8 @@
 
 #include "EquipAction.h"
 #include "GuildCoordinator.h"
+#include "GuildGear.h"
+#include "GuildHonest.h"
 #include "Event.h"
 #include "ItemCountValue.h"
 #include "ItemPackets.h"
@@ -13,6 +15,7 @@
 #include "ItemVisitors.h"
 #include "Playerbots.h"
 #include "StatsWeightCalculator.h"
+#include <algorithm>
 #include <utility>
 
 bool EquipAction::Execute(Event event)
@@ -371,6 +374,74 @@ ItemIds EquipAction::SelectInventoryItemsToEquip()
     return items;
 }
 
+bool EquipAction::EquipLeaderUpgrades()
+{
+    CollectItemsVisitor visitor;
+    IterateItems(&visitor, ITERATE_ITEMS_IN_BAGS);
+    std::vector<Item*> candidates;
+    for (Item* item : visitor.items)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || proto->InventoryType == INVTYPE_NON_EQUIP)
+            continue;
+        // ammo is no gear choice (no slot, no history): the bot's own ammo rule, as before
+        if (proto->InventoryType == INVTYPE_AMMO)
+        {
+            ItemUsage const usage = AI_VALUE2(ItemUsage, "item upgrade", std::to_string(proto->ItemId));
+            if (usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_REPLACE || usage == ITEM_USAGE_BAD_EQUIP)
+                EquipItem(item);
+            continue;
+        }
+        candidates.push_back(item);
+    }
+
+    // one equip per pass, the biggest gain first: each equip changes what the rest are compared with (two rings,
+    // a two-hander against a one-hander)
+    bool equipped = false;
+    while (!candidates.empty())
+    {
+        Item* best = nullptr;
+        uint8 bestSlot = NULL_SLOT;
+        float bestGain = -1.0f;
+        std::string bestDecision;
+        for (Item* item : candidates)
+        {
+            uint8 slot = NULL_SLOT;
+            float gain = 0.0f;
+            std::string decision;
+            if (GuildGear::ShouldEquip(bot, item, slot, gain, decision) && gain > bestGain)
+            {
+                best = item;
+                bestSlot = slot;
+                bestGain = gain;
+                bestDecision = std::move(decision);
+            }
+        }
+        if (!best)
+            break;
+        candidates.erase(std::find(candidates.begin(), candidates.end(), best));
+        // the leader's decision behind the equip (a pending BUY / QUEST_REWARD / transfer reason is kept)
+        GuildGear::HistoryNoteDecisionIfNone(bot->GetGUID().GetCounter(), best->GetEntry(), "leader", bestDecision);
+        if (bestSlot == NULL_SLOT)
+        {
+            EquipItem(best);  // a bag or quiver: the bag slot logic
+        }
+        else
+        {
+            WorldPacket packet(CMSG_AUTOEQUIP_ITEM_SLOT, 2);
+            packet << best->GetGUID() << bestSlot;
+            WorldPackets::Item::AutoEquipItemSlot nicePacket(std::move(packet));
+            nicePacket.Read();
+            bot->GetSession()->HandleAutoEquipItemSlotOpcode(nicePacket);
+            std::ostringstream out;
+            out << "Equipping " << chat->FormatItem(best->GetTemplate());
+            botAI->TellMaster(out);
+        }
+        equipped = true;
+    }
+    return equipped;
+}
+
 bool EquipUpgradesPacketAction::Execute(Event event)
 {
     if (!sPlayerbotAIConfig.AutoEquipUpgradeLoot && !sRandomPlayerbotMgr.IsRandomBot(bot))
@@ -408,6 +479,11 @@ bool EquipUpgradesPacketAction::Execute(Event event)
             return false;
     }
 
+    if (GuildHonest::IsHonestBot(bot))
+    {
+        EquipLeaderUpgrades();
+        return true;
+    }
     ItemIds items = SelectInventoryItemsToEquip();
     EquipItems(items);
     return true;
@@ -415,6 +491,11 @@ bool EquipUpgradesPacketAction::Execute(Event event)
 
 bool EquipUpgradeAction::Execute(Event /*event*/)
 {
+    if (GuildHonest::IsHonestBot(bot))
+    {
+        EquipLeaderUpgrades();
+        return true;
+    }
     ItemIds items = SelectInventoryItemsToEquip();
     EquipItems(items);
     return true;

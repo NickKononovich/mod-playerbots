@@ -24,6 +24,10 @@ public:
     void EquipItems(ItemIds ids);
     ItemIds SelectInventoryItemsToEquip();
 
+protected:
+    // [equip] a guild-plan bot: the global leader's verdict (GuildGear::ShouldEquip) decides each equip from the bags
+    bool EquipLeaderUpgrades();
+
 private:
     void EquipItem(FindItemVisitor* visitor);
     uint8 GetSmallestBagSlot();
