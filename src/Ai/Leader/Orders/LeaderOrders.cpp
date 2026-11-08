@@ -472,6 +472,39 @@ namespace Leader
         return map && map->IsDungeon() && !map->IsRaid() && LedGroup(bot);
     }
 
+    namespace RaidBuffOrders
+    {
+        namespace
+        {
+            std::mutex raidBuffLock;
+            std::unordered_map<ObjectGuid, uint32> raidBuffHeld;  // member -> its buff order's spell
+        }
+
+        void Set(ObjectGuid member, uint32 spell)
+        {
+            std::lock_guard<std::mutex> lock(raidBuffLock);
+            raidBuffHeld[member] = spell;
+        }
+
+        uint32 Clear(ObjectGuid member)
+        {
+            std::lock_guard<std::mutex> lock(raidBuffLock);
+            auto const found = raidBuffHeld.find(member);
+            if (found == raidBuffHeld.end())
+                return 0;
+            uint32 const spell = found->second;
+            raidBuffHeld.erase(found);
+            return spell;
+        }
+
+        bool Holds(ObjectGuid member, uint32 spell)
+        {
+            std::lock_guard<std::mutex> lock(raidBuffLock);
+            auto const found = raidBuffHeld.find(member);
+            return spell && found != raidBuffHeld.end() && found->second == spell;
+        }
+    }
+
     bool WalksOffStand(Player* member, MemberEvents const& events)
     {
         if ((events.move != MoveEvent::StandAt && events.move != MoveEvent::Hold) || !ExecutorMember(member) ||

@@ -848,11 +848,29 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return support;
     }
 
+    void PackJoiners(PlayerbotAI* botAI, Player* bot, Unit* target, std::vector<Unit*>& pack);  // [raid3] below
+
     // Danger points (MobDanger sum) the group takes at once.
     float PackCapacity(Player* bot, PartyStrength const& strength, GroupSupport const& support)
     {
         bool const hasHealer = support.healers > 0;
         float capacity = PACK_BASE_CAPACITY + PACK_CAPACITY_PER_MEMBER * std::min(support.helpers, PACK_MAX_HELPERS);
+        // [raid3] b354 wb-kazzak 25A-2 877-1093 s: the 25 took one Doomguard Commander for "not manageable" - a raid
+        // was read as one 5-man (PACK_MAX_HELPERS). A raid's capacity is its parties' together: each subgroup with
+        // members present takes what a party of that size takes
+        Group* group = bot->GetGroup();
+        if (group && group->isRaidGroup())
+        {
+            std::map<uint8, uint32> present;  // subgroup -> members alive on the tank's map
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource();
+                    member && member->IsAlive() && member->GetMap() == bot->GetMap())
+                    ++present[member->GetSubGroup()];
+            float raid = 0.0f;
+            for (auto const& [subgroup, count] : present)
+                raid += PACK_BASE_CAPACITY + PACK_CAPACITY_PER_MEMBER * std::min(count - 1, PACK_MAX_HELPERS);
+            capacity = std::max(capacity, raid);
+        }
         if (bot->GetMap() && bot->GetMap()->IsDungeon() && hasHealer)
             capacity *= PACK_DUNGEON_CAPACITY_SCALE;
         if (!hasHealer)
@@ -872,25 +890,39 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // smaller packs, a stronger one bigger (party strength pull scale, clamped 0.6..1.5).
     bool IsPackManageable(PlayerbotAI* botAI, Player* bot, Unit* target, PartyStrength const& strength, float& danger)
     {
+        // [raid3] b354 wb-kazzak 25A-2: every hostile idle mob within PACK_SOCIAL_RADIUS of the target or near the
+        // straight line counted, whether it would come or not. The pack is what the game brings (PackJoiners: the
+        // planner's own count); a mob held by crowd control does not join in
         danger = MobDanger(target, bot);
         uint32 mobs = 1;
-        for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets")->Get())
+        std::vector<Unit*> pack;
+        PackJoiners(botAI, bot, target, pack);
+        std::string names = target->GetName();
+        for (Unit* mob : pack)
         {
-            Unit* mob = botAI->GetUnit(guid);
-            // a mob held by crowd control (a Sap before the pull) does not join in
-            if (!mob || mob == target || !mob->IsAlive() || mob->IsInCombat() || !bot->IsHostileTo(mob) ||
-                IsCrowdControlled(mob))
+            if (!mob || mob == target || !mob->IsAlive() || IsCrowdControlled(mob))
                 continue;
-
-            if (mob->GetDistance(target) <= PACK_SOCIAL_RADIUS || IsOnPullPath(bot, *target, mob))
-            {
-                danger += MobDanger(mob, bot);
-                ++mobs;
-            }
+            danger += MobDanger(mob, bot);
+            ++mobs;
+            names += ", " + mob->GetName();
         }
 
         danger = SwarmDanger(danger, mobs, strength);
-        return danger <= PackCapacity(bot, strength, CountSupport(bot));
+        float const capacity = PackCapacity(bot, strength, CountSupport(bot));
+        if (danger > capacity)
+        {
+            thread_local std::map<std::pair<uint64, uint64>, uint32> logged;  // (tank, target) -> mobs logged
+            if (logged.size() > 1024)
+                logged.clear();
+            uint32& last = logged[{bot->GetGUID().GetRawValue(), target->GetGUID().GetRawValue()}];
+            if (last != mobs)
+            {
+                last = mobs;
+                LOG_INFO("playerbots", "[raid3] {}: pack of {} not manageable: danger {:.1f} > capacity {:.1f} ({} "
+                         "mob(s): {})", bot->GetName(), target->GetName(), danger, capacity, mobs, names);
+            }
+        }
+        return danger <= capacity;
     }
 
     // What a tank checks before a pull of the given danger: nobody dead, and everyone (the tank too) has the
@@ -3608,6 +3640,15 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         }
     }
 
+    // [raid3] what really joins a pull of `target` where it stands: the planner's own pack count (CollectPack: its
+    // formation, the engage call within the core's assistance radius to mobs that may assist, the walk's and the
+    // spot's proximity aggro) - a world boss counts only when that brings him
+    void PackJoiners(PlayerbotAI* botAI, Player* bot, Unit* target, std::vector<Unit*>& pack)
+    {
+        GuidVector const possible = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets")->Get();
+        CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, FightHere(target->GetPosition()));
+    }
+
     // "[b43_plan] ..." lines, one per tank per 5 s, throttled apart from LogPatrol (so the "[pull patrol]" and
     // "[patrol_meet_imminent]" lines that follow them still log)
     void LogPatrolSurroundings(Player* bot, std::string const& line)
@@ -4275,8 +4316,27 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             for (uint32 spellId : proto->spells)
             {
                 SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
-                if (info)
-                    add(spellId, float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)), 1.0f);
+                if (!info)
+                    continue;
+                // [raid3] b354 kara-n 10A-1: Midnight's template spell Knockdown 29711 (1500 physical, instant, no
+                // cooldown, no global cooldown in its data) was read as cast every 1 ms - the healers' boss line
+                // read his melee as 249675/s (405 tank healths). His C++ script casts it every 15-25 s: a spell whose
+                // data gives no interval at all (no cooldown, category cooldown, cast time or global cooldown) has
+                // no repeat the data knows; it is left out like a once-per-fight spell, the dungeon's measured
+                // intake corrects the rest
+                if (!info->RecoveryTime && !info->CategoryRecoveryTime && !info->StartRecoveryTime &&
+                    !info->CalcCastTime(creature))
+                {
+                    thread_local std::set<std::pair<uint32, uint32>> logged;
+                    if (logged.size() > 1024)
+                        logged.clear();
+                    if (logged.insert({creature->GetEntry(), spellId}).second)
+                        LOG_INFO("playerbots", "[raid3] {} ({}): its template spell {} ({}) has no interval in its "
+                                 "data: no repeat counted in its damage estimate",
+                                 creature->GetName(), creature->GetEntry(), info->SpellName[LOCALE_enUS], spellId);
+                    continue;
+                }
+                add(spellId, float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)), 1.0f);
             }
         }
 
@@ -8879,6 +8939,12 @@ bool AggressiveTargetAction::DecideLook()
                 }
             }
         }
+        // [raid3] the open world: a raid's pull of the world boss himself is his encounter (the boss strategy's), never
+        // a pack the estimate refuses; trash near him is judged as any pack (he counts only when the pull brings him,
+        // PackJoiners)
+        else if (!bot->GetMap()->Instanceable() && bot->GetGroup() && bot->GetGroup()->isRaidGroup() &&
+                 IsBossMob(target))
+            raidEncounter = true;
 
         if (!raidEncounter && !IsPackManageable(botAI, bot, target, strength, danger))
         {

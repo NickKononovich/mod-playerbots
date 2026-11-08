@@ -17,6 +17,7 @@
 #include "UKTriggers.h"
 
 #include <algorithm>
+#include <map>
 #include <mutex>
 #include <set>
 #include <unordered_map>
@@ -700,7 +701,8 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
         master = nullptr;
 
     GuidVector targets = AI_VALUE(GuidVector, "possible targets");
-    if (targets.empty() && routeTarget.IsEmpty())
+    // [raid3] a raid tank looks on with none in sight: a raid boss round a corner is a target (below)
+    if (targets.empty() && routeTarget.IsEmpty() && !(bot->GetMap()->IsRaid() && PlayerbotAI::IsTank(bot)))
         return nullptr;
 
     float aggroRange = sPlayerbotAIConfig.AggroDistance;
@@ -724,6 +726,20 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
         if (std::find(unseen.begin(), unseen.end(), routeTarget) != unseen.end())
             targets.push_back(routeTarget);
     }
+    // [raid3] b354 kara-n 10A-1: "possible targets" keeps the bot's line of sight (NearestUnitsValue, ignoreLos
+    // false). The mage 4 yd away saw Midnight ("ritual of refreshment waits: Midnight at 20 yd"), the tank's spot did
+    // not: "no aggressive target of 1 possible (1 range 40)" - the boss was in no list of the tank's. A raid boss
+    // round a corner is a pull target as the route target is: the engage walks into sight first
+    std::vector<ObjectGuid> bossesUnseen;
+    if (LedRouteMap(bot) && PlayerbotAI::IsTank(bot) && !bot->IsInCombat() && bot->GetMap()->IsRaid())
+        for (ObjectGuid const guid : AI_VALUE(GuidVector, "possible targets no los"))
+            if (Creature* boss = botAI->GetCreature(guid);
+                boss && (boss->IsDungeonBoss() || boss->isWorldBoss()) &&
+                std::find(targets.begin(), targets.end(), guid) == targets.end())
+            {
+                targets.push_back(guid);
+                bossesUnseen.push_back(guid);
+            }
 
     uint32 dropHeight = 0, dropLos = 0, dropRange = 0, dropSkip = 0, dropOrder = 0, dropOther = 0;  // diagnostics
     std::vector<ObjectGuid> rejected;  // another floor or no path: TankRejects
@@ -739,8 +755,11 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
             continue;
         }
 
-        if (unit->ToCreature() && !unit->ToCreature()->GetCreatureTemplate()->lootid &&
-            bot->GetReactionTo(unit) >= REP_NEUTRAL)
+        // [raid3] a lootless neutral creature is no pull - but a neutral boss is his encounter's only way in
+        // (Karazhan's Midnight, faction 7: Attumen comes when he is attacked), a boss-gate pull target like any boss
+        if (Creature const* creature = unit->ToCreature();
+            creature && !creature->GetCreatureTemplate()->lootid && bot->GetReactionTo(unit) >= REP_NEUTRAL &&
+            !(creature->IsDungeonBoss() || creature->isWorldBoss()))
         {
             ++dropOther;
             continue;
@@ -798,7 +817,9 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
             continue;
         }
 
-        if (guid != routeTarget && !bot->IsWithinLOSInMap(unit))
+        if (guid != routeTarget &&
+            std::find(bossesUnseen.begin(), bossesUnseen.end(), guid) == bossesUnseen.end() &&
+            !bot->IsWithinLOSInMap(unit))
         {
             ++dropLos;
             continue;
@@ -906,6 +927,41 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
                   "{} height, {} los, {} range {:.0f}, {} careful skip, {} encounter order, {} other)", bot->GetName(),
                   targets.size(), candidates.size(), dropHeight, dropLos, dropRange, aggroRange, dropSkip, dropOrder,
                   dropOther);
+    // [raid3] b354 kara-n 10A-1: the tank held "no aggressive target of 1 possible (1 range 40)" with Midnight 20
+    // yd off. A boss in sight that is no pick: where the pick leaves him (in the possible targets or not, the core's
+    // reason when not, the pick's own verdict), once per tank, boss and verdict
+    if (LedRouteMap(bot) && PlayerbotAI::IsTank(bot) && !bot->IsInCombat())
+    {
+        GuidVector seen = AI_VALUE(GuidVector, "possible targets no los");
+        if (!routeTarget.IsEmpty() && std::find(seen.begin(), seen.end(), routeTarget) == seen.end())
+            seen.push_back(routeTarget);
+        // one look per tank and boss every BOSS_PICK_LOG_MS (the verdict's path check): the log only
+        constexpr uint32 BOSS_PICK_LOG_MS = 10 * IN_MILLISECONDS;
+        thread_local std::map<std::pair<uint64, uint64>, std::pair<uint32, std::string>> bossLogged;
+        if (bossLogged.size() > 1024)
+            bossLogged.clear();
+        uint32 const now = getMSTime();
+        for (ObjectGuid const guid : seen)
+        {
+            Creature* boss = botAI->GetCreature(guid);
+            if (!boss || !boss->IsAlive() || !(boss->IsDungeonBoss() || boss->isWorldBoss()))
+                continue;
+            auto& [lookedMs, last] = bossLogged[{bot->GetGUID().GetRawValue(), guid.GetRawValue()}];
+            if (lookedMs && getMSTimeDiff(lookedMs, now) < BOSS_PICK_LOG_MS)
+                continue;
+            lookedMs = now ? now : 1;
+            bool const listed = std::find(targets.begin(), targets.end(), guid) != targets.end();
+            std::string const verdict = std::string(listed ? "in" : "not in") + " this pick's possible targets; " +
+                                        Explain(bot, boss, routeTarget);
+            if (last == verdict)
+                continue;
+            last = verdict;
+            LOG_INFO("playerbots", "[raid3] {}: boss {} at {:.1f} yd ({}, reaction {}) is no pick: {}", bot->GetName(),
+                     boss->GetName(), bot->GetDistance(boss),
+                     guid == routeTarget ? "the route target" : "not the route target",
+                     uint32(bot->GetReactionTo(boss)), verdict);
+        }
+    }
     if (heightDropped && LedRouteMap(bot) && PlayerbotAI::IsTank(bot) && !bot->IsInCombat())
         LOG_DEBUG("playerbots", "[pull hold] {}: height rule left out {} (dz {:.1f}, {:.1f} yd{})", bot->GetName(),
                   heightDropped->GetName(), heightDropped->GetPositionZ() - bot->GetPositionZ(),
@@ -950,7 +1006,8 @@ std::string AggressiveTargetValue::Explain(Player* bot, Unit* unit, ObjectGuid r
     if (LedRouteMap(bot) && PlayerbotAI::IsTank(bot))
         aggroRange = std::max(aggroRange, DUNGEON_TANK_PULL_RANGE);
     if (unit->ToCreature() && !unit->ToCreature()->GetCreatureTemplate()->lootid &&
-        bot->GetReactionTo(unit) >= REP_NEUTRAL)
+        bot->GetReactionTo(unit) >= REP_NEUTRAL &&
+        !(unit->ToCreature()->IsDungeonBoss() || unit->ToCreature()->isWorldBoss()))  // [raid3] a neutral boss
         verdict = "aggressive target: not hostile, no loot";
     else if (!bot->IsHostileTo(unit) && unit->GetNpcFlags() != UNIT_NPC_FLAG_NONE)
         verdict = "aggressive target: npc flags";

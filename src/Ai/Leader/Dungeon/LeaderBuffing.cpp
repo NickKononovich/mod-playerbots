@@ -463,6 +463,7 @@ namespace Leader::Dungeon
         struct BuffWait
         {
             std::string waitedFor;
+            std::string waitLogged;  // [raid3] the last wait the log named (one line per change)
             bool consumableUsed = false;  // step 1 -> 2: a flask was used; step 2 -> 3: food was used
             std::set<ObjectGuid> fed;     // step 2 -> 3: the members given food
             bool ordering = false;  // [lead165] [lead975] step 1: the leader orders the missing buffs
@@ -595,6 +596,15 @@ namespace Leader::Dungeon
                         orderState.buffCast = 0;
                         orderState.buffOrderWork.clear();
                     }
+                    // [raid3] b354 kara-n 10A-1 319-529 s: step 1 before Midnight waited 209.5 s. In a raid (and the
+                    // open world) the leader's event tick does not run (LeaderDecides false: the harness keeps a raid's
+                    // pulls), so TickBuffOrders never issued the queued orders, and the members are not led
+                    // (Leader::LedBot is false on a raid map) - the step waited on "N buff order(s) queued" until the
+                    // missing blessing came back by the paladin's own pass. There the step issues its orders itself
+                    // (Leader::Support::TickRaidBuffPass, below) and the members obey them (RaidBuffOrders); a buff
+                    // still missing ends the step only when no caster can give it (its report: no reagent, out of
+                    // range, ...), named in the step's line
+                    bool const leaderOrders = group.LeaderDecides();
                     if (workers.empty() && !missing.empty())
                         wait.ordering = true;
                     orderState.buffQueue.clear();
@@ -653,6 +663,16 @@ namespace Leader::Dungeon
                                 wait.fed.insert(bot->GetGUID());
                         }
                     }
+                    // [raid3] no leader event tick here: the raid leader's step issues the queued orders
+                    if (!leaderOrders)
+                        Leader::Support::TickRaidBuffPass(
+                            group, players,
+                            [&group](Player* bot, char const* kind, JsonObject fields)
+                            {
+                                fields.Str("member", bot->GetName()).Str("event", kind);
+                                Decisions().Write(group.Run(), "leader", "leader_event", bot->GetGUID(),
+                                                  bot->GetName(), true, fields);
+                            });
                     if (!orderState.buffQueue.empty())
                         workers += (workers.empty() ? "" : ", ") +
                                    (orderState.buffOrderWork.empty()
@@ -663,6 +683,13 @@ namespace Leader::Dungeon
                     if (!support.empty())
                         workers += (workers.empty() ? "" : ", ") + support;
                     waitingFor(workers.empty() ? missing : workers);
+                    // [raid3] what the step waits for, once per change (the step line clears it when all is present)
+                    if (!wait.waitedFor.empty() && wait.waitedFor != wait.waitLogged)
+                    {
+                        wait.waitLogged = wait.waitedFor;
+                        LOG_INFO("playerbots", "[raid3] buff step 1 waits for: {} ({}, {}, leader orders {})",
+                                 wait.waitedFor, group.Run().runId, route.buffReason, leaderOrders ? "yes" : "no");
+                    }
                     // [lead136] b162 20261101-121409 (271 s: 12 s "every buff the group can give is present",
                     // waited for "Rtdruaa rebuff window open"; 73 s over the run): every buff present (lasting the
                     // next fight) ends the step at once - an open rebuff window with nothing missing to cast is no
@@ -697,6 +724,15 @@ namespace Leader::Dungeon
                                                           .Str("failures", failed)
                                                           .Str("unordered", unordered)
                                                           .Str("reason", route.buffReason));
+                    }
+                    if (!leaderOrders)
+                    {
+                        Leader::Support::EndRaidBuffPass(group, players);  // [raid3] the raid's orders taken back
+                        if (!missing.empty())
+                            LOG_INFO("playerbots", "[raid3] raid buff step ends with missing: {}{}{} ({}, {})", missing,
+                                     failed.empty() ? std::string() : "; failed: " + failed,
+                                     unordered.empty() ? std::string() : "; no order: " + unordered,
+                                     group.Run().runId, route.buffReason);
                     }
                     orderState.buffQueue.clear();
                     orderState.buffTold.clear();

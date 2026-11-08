@@ -104,7 +104,13 @@ namespace LeaderCommand
     {
         Leader::MemberEvents command;
         if (!CurrentCommand(bot, command) || !command.externalSpell)
-            return false;
+        {
+            // [raid3] a raid's buff pass order: obeyed out of a fight although the member is not led (LedBot false
+            // on a raid map / in the open world) - the raid leader's buff step issued it
+            if (!bot || bot->IsInCombat() || !Leader::Events::Get(bot->GetGUID(), command) || !command.externalSpell ||
+                !Leader::RaidBuffOrders::Holds(bot->GetGUID(), command.externalSpell))
+                return false;
+        }
         // [lead1320] the leader's order holds only while no mob attacks the member (its own condition, Life Tap):
         // a mob that attacks it between the leader's ticks ends the order there
         if (command.externalUnattacked && !bot->getAttackers().empty())
