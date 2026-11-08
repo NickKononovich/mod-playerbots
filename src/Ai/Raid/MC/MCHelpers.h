@@ -19,6 +19,10 @@ enum MoltenCoreNPCs
 
     // Core Hound (trash)
     NPC_CORE_HOUND = 11671,
+
+    // Firelord (trash) and the Lava Spawns it summons
+    NPC_FIRELORD = 11668,
+    NPC_LAVA_SPAWN = 12265,
 };
 enum MoltenCoreSpells
 {

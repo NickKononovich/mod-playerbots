@@ -82,4 +82,17 @@ public:
     bool IsActive() override;
 };
 
+// A Lava Spawn (npc_lava_spawn, molten_core.cpp) splits in two 15 s after it enters combat, and again while fewer than
+// 16 are near: the dps kill the Lava Spawns before their Firelord, the one longest in combat first. Lava Spawns enter
+// combat as they are summoned (by the Firelord or a split), so the oldest summon - the lowest guid of the entry - is
+// the one closest to its split, and every bot of the raid picks the same one. Null: none alive among its attackers.
+Unit* McOldestLavaSpawn(PlayerbotAI* botAI);
+
+class McLavaSpawnFocusTrigger : public Trigger
+{
+public:
+    McLavaSpawnFocusTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mc lava spawn focus") {}
+    bool IsActive() override;
+};
+
 #endif

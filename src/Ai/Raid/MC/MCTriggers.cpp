@@ -91,3 +91,26 @@ bool McCoreHoundMarkTrigger::IsActive()
 {
     return PlayerbotAI::IsMainTank(bot) && AI_VALUE2(Unit*, "find target", "core hound");
 }
+
+Unit* McOldestLavaSpawn(PlayerbotAI* botAI)
+{
+    Unit* oldest = nullptr;
+    for (ObjectGuid const guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get())
+    {
+        if (guid.GetEntry() != NPC_LAVA_SPAWN || (oldest && oldest->GetGUID() < guid))
+            continue;
+        Unit* unit = botAI->GetUnit(guid);
+        if (unit && unit->IsAlive())
+            oldest = unit;
+    }
+    return oldest;
+}
+
+bool McLavaSpawnFocusTrigger::IsActive()
+{
+    if (PlayerbotAI::IsTank(bot) || PlayerbotAI::IsHeal(bot))
+        return false;
+
+    Unit* spawn = McOldestLavaSpawn(botAI);
+    return spawn && AI_VALUE(Unit*, "current target") != spawn;
+}

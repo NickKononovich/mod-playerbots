@@ -7,6 +7,7 @@
 #include "MCStrategy.h"
 #include "MCHelpers.h"
 #include "MCMultipliers.h"
+#include "MCTriggers.h"
 #include "Playerbots.h"
 #include "Strategy.h"
 
@@ -91,6 +92,9 @@ void RaidMcStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(
         new TriggerNode("mc core hound mark",
                         { NextAction("mc core hound mark", ACTION_RAID) }));
+    triggers.push_back(
+        new TriggerNode("mc lava spawn focus",
+                        { NextAction("mc lava spawn focus", ACTION_RAID) }));
 
     // Anywhere in MC: escaping a lava pool outranks everything else.
     triggers.push_back(
@@ -117,13 +121,16 @@ void RaidMcStrategy::AppendTargetExclusions(GuidSet& exclusions, TargetValueExcl
     // through their own target selection.
     AiObjectContext* context = botAI->GetAiObjectContext();
     bool const golemaggAlive = AI_VALUE2(Unit*, "find target", "golemagg the incinerator") != nullptr;
+    // A Firelord waits for its Lava Spawns (they split while they live); an area spell still takes it with them
+    bool const lavaSpawnsAlive = type != TargetValueExclusionType::Aoe && McOldestLavaSpawn(botAI);
     for (ObjectGuid const guid : AI_VALUE(GuidVector, "attackers"))
     {
         Unit* unit = botAI->GetUnit(guid);
         if (!unit)
             continue;
 
-        if ((golemaggAlive && unit->GetEntry() == NPC_CORE_RAGER) || unit->GetEntry() == NPC_MAJORDOMO_EXECUTUS)
+        if ((golemaggAlive && unit->GetEntry() == NPC_CORE_RAGER) || unit->GetEntry() == NPC_MAJORDOMO_EXECUTUS ||
+            (lavaSpawnsAlive && unit->GetEntry() == NPC_FIRELORD))
             exclusions.insert(guid);
     }
 }

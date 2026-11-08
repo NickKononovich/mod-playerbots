@@ -6,6 +6,7 @@
 
 #include "MCActions.h"
 #include "MCHelpers.h"
+#include "MCTriggers.h"
 #include "Playerbots.h"
 #include "RtiTargetValue.h"
 #include <algorithm>
@@ -340,4 +341,10 @@ bool McCoreHoundMarkAction::Execute(Event /*event*/)
 
     bot->GetGroup()->SetTargetIcon(RtiTargetValue::skullIndex, bot->GetGUID(), target->GetGUID());
     return true;
+}
+
+bool McLavaSpawnFocusAction::Execute(Event /*event*/)
+{
+    Unit* spawn = McOldestLavaSpawn(botAI);
+    return spawn && Attack(spawn);
 }

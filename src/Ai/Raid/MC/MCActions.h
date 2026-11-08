@@ -103,4 +103,14 @@ public:
     bool Execute(Event event) override;
 };
 
+// The dps on the Lava Spawn closest to its split (McOldestLavaSpawn); the area spells and cleaves of the aoe strategy
+// take the clump around it
+class McLavaSpawnFocusAction : public AttackAction
+{
+public:
+    McLavaSpawnFocusAction(PlayerbotAI* botAI, std::string const name = "mc lava spawn focus")
+        : AttackAction(botAI, name) {}
+    bool Execute(Event event) override;
+};
+
 #endif
