@@ -617,16 +617,27 @@ namespace
         for (Unit* attacker : bot->getAttackers())
             if (attacker && attacker->IsAlive())
                 chasers.push_back(attacker);
+        // [deaths12] a wanderer whose home lies beyond the run's reach walks its wander area onto it all the same
+        // (its blocker is its home with that area, below): the search looks that much farther, at most as far as the
+        // map shows the bot units. b350 Sycina L11: the flee was planned clear, a Thistle Bear L12 wanderer from
+        // beyond the search cut its way back ("flee stops"), 6 s lost under the bear and dead
+        float const search =
+            std::min(range + SoloSafety::MapWanderReach(bot->GetMapId()), bot->GetMap()->GetVisibilityRange());
         std::list<Unit*> units;
-        Acore::AnyUnitInObjectRangeCheck check(bot, range);
+        Acore::AnyUnitInObjectRangeCheck check(bot, std::max(search, range));
         Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
-        Cell::VisitObjects(bot, searcher, range);
+        Cell::VisitObjects(bot, searcher, std::max(search, range));
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
             if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
                 !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() ||
                 mob->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE))
+                continue;
+            // beyond `range` only a wanderer whose area comes within it counts
+            if (bot->GetExactDist2d(mob) > range &&
+                (mob->GetDefaultMovementType() != RANDOM_MOTION_TYPE ||
+                 mob->GetHomePosition().GetExactDist2d(bot) - mob->GetWanderDistance() > range))
                 continue;
             Blocker blocker;
             blocker.mob = mob;

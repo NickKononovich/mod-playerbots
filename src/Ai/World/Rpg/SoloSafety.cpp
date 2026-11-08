@@ -428,6 +428,25 @@ namespace
         state.formula = DpsEstimate::Estimate(bot, mob, state.formulaCtx);
         state.formulaEntry = mob ? mob->GetEntry() : 0;
         state.formulaLevel = mob ? mob->GetLevel() : 0;
+        // [deaths12] a fight the judge did not open (b350 Geron L10 at Frostmane Hold, Lyleria L9 at Ban'ethil
+        // Hollow: "no judged pull (attacked)", nothing in the log says what came): the first mob, how it moves
+        // (wanderer: its home and area; patrol; idle), where it stood against its aggro reach, the bot's state
+        if (!state.engaged && mob)
+            if (Creature* c = mob->ToCreature())
+            {
+                PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+                char const* const moves = c->GetDefaultMovementType() == RANDOM_MOTION_TYPE     ? "wanderer"
+                                          : c->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE ? "patrol"
+                                                                                                 : "idle";
+                LOG_INFO("playerbots",
+                         "[solo] {} L{} UNJUDGED fight: {} L{} ({}, home {:.0f} yd off, wander {:.0f}, aggro {:.0f}) "
+                         "at {:.0f} yd; the bot {} ({}), status {}, hp {:.0f} %",
+                         bot->GetName(), bot->GetLevel(), c->GetName(), c->GetLevel(), moves,
+                         c->GetHomePosition().GetExactDist2d(bot), c->GetWanderDistance(), c->GetAggroRange(bot),
+                         bot->GetExactDist2d(c), bot->isMoving() ? "moving" : "standing",
+                         bot->GetVictim() ? "attacking " + bot->GetVictim()->GetName() : std::string("no target"),
+                         ai ? ai->rpgInfo.ToString() : std::string("-"), bot->GetHealthPct());
+            }
         // [pullplan] the pull it made: where it stood when the fight opened (its pull spot, else where it was)
         if (state.pullSpot && !state.pullLogged && mob && mob->GetGUID() == state.pullTarget)
         {
@@ -1109,6 +1128,8 @@ namespace
 
 namespace SoloSafety
 {
+    float MapWanderReach(uint32 mapId) { return MaxWanderDistance(mapId); }
+
     bool Applies(Player* bot)
     {
         if (!SoloPlayerBot(bot))

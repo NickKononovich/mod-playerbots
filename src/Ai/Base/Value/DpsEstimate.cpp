@@ -1798,8 +1798,12 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     // [rot609] a fresh solo mob: it comes to the fight with full energy (Player::Regenerate fills it out of combat),
     // spent on top of the regeneration over the fight (b341 L10-19 assassination: 188 energy cast a ~10 s fight
     // against the formula's 100, 1.13 of it)
+    // [deaths12] ... with the energy it has now: a pull right after a fight starts with what that fight left
+    // (Player::Regenerate fills it only out of combat, 10 a second): b350 assassination 10-19 fights of 10 s and more
+    // dealt 0.76 of the formula's specials (one source of it), Sycina L11's pulls among them. The ideal keeps the
+    // full bar
     if (lifeSec > 0.0f && bot->getPowerType() == POWER_ENERGY)
-        energy += float(bot->GetMaxPower(POWER_ENERGY)) / lifeSec;
+        energy += float(ideal ? bot->GetMaxPower(POWER_ENERGY) : bot->GetPower(POWER_ENERGY)) / lifeSec;
     float runes[RUNE_TYPES] = {};
     if (cls == CLASS_DEATH_KNIGHT)
         for (uint8 i = 0; i < RUNE_SLOTS; ++i)
@@ -2175,6 +2179,9 @@ uint64 Signature(Player* bot, Unit* target, BuffContext ctx)
     mixF(bot->m_modMeleeHitChance);
     mixF(bot->m_modSpellHitChance);
     mixF(bot->GetFloatValue(uint16(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER) + uint16(POWER_MANA)));
+    // [deaths12] the energy it opens with (ComputeAt): the cache key in steps of 20 energy
+    if (bot->getPowerType() == POWER_ENERGY)
+        mix(bot->GetPower(POWER_ENERGY) / 20);
     mix(bot->GetGroup() ? bot->GetGroup()->GetMembersCount() : 0);
     // [deaths9] the members present (PlannedBuffs' providers: alive within the group reward distance)
     if (ctx == BuffContext::Group)
