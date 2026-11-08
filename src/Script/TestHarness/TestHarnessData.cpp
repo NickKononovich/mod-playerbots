@@ -348,19 +348,20 @@ namespace TestHarness
             {"voa25", 624, 1, 25, 213, true, "Vault of Archavon 25", "wotlk-raid"},
             {"uld10", 603, 0, 10, 219, true, "Ulduar 10", "wotlk-raid"},
             {"uld25", 603, 1, 25, 226, true, "Ulduar 25", "wotlk-raid"},
-            {"uld25h", 603, 3, 25, 287, true, "Ulduar 25 Heroic", "wotlk-raid"}, // [ladder_v2] 284-293
+            {"uld10h", 603, 2, 10, 322, true, "Ulduar 10 Heroic", "wotlk-raid"}, // [ladder_v3] 322-331
+            {"uld25h", 603, 3, 25, 338, true, "Ulduar 25 Heroic", "wotlk-raid"}, // [ladder_v3] 338-347
             {"toc10", 649, 0, 10, 232, true, "Trial of the Crusader 10", "wotlk-raid"},
             {"toc25", 649, 1, 25, 245, true, "Trial of the Crusader 25", "wotlk-raid"},
-            {"toc10h", 649, 2, 10, 245, true, "Trial of the Crusader 10 Heroic", "wotlk-raid"},
-            {"toc25h", 649, 3, 25, 258, true, "Trial of the Crusader 25 Heroic", "wotlk-raid"},
+            {"toc10h", 649, 2, 10, 318, true, "Trial of the Crusader 10 Heroic", "wotlk-raid"}, // [ladder_v3]
+            {"toc25h", 649, 3, 25, 334, true, "Trial of the Crusader 25 Heroic", "wotlk-raid"}, // [ladder_v3]
             {"icc10", 631, 0, 10, 251, true, "Icecrown Citadel 10", "wotlk-raid"},
             {"icc25", 631, 1, 25, 264, true, "Icecrown Citadel 25", "wotlk-raid"},
-            {"icc10h", 631, 2, 10, 264, true, "Icecrown Citadel 10 Heroic", "wotlk-raid"},
-            {"icc25h", 631, 3, 25, 277, true, "Icecrown Citadel 25 Heroic", "wotlk-raid"},
+            {"icc10h", 631, 2, 10, 328, true, "Icecrown Citadel 10 Heroic", "wotlk-raid"}, // [ladder_v3] 328-334
+            {"icc25h", 631, 3, 25, 344, true, "Icecrown Citadel 25 Heroic", "wotlk-raid"}, // [ladder_v3] 344-350
             {"rs10", 724, 0, 10, 258, true, "The Ruby Sanctum 10", "wotlk-raid"},
             {"rs25", 724, 1, 25, 271, true, "The Ruby Sanctum 25", "wotlk-raid"},
-            {"rs10h", 724, 2, 10, 271, true, "The Ruby Sanctum 10 Heroic", "wotlk-raid"},
-            {"rs25h", 724, 3, 25, 284, true, "The Ruby Sanctum 25 Heroic", "wotlk-raid"},
+            {"rs10h", 724, 2, 10, 334, true, "The Ruby Sanctum 10 Heroic", "wotlk-raid"}, // [ladder_v3]
+            {"rs25h", 724, 3, 25, 350, true, "The Ruby Sanctum 25 Heroic", "wotlk-raid"}, // [ladder_v3]
         };
 
         // Level tiers: the first entry whose minimum level the character reaches, highest first.
