@@ -703,7 +703,9 @@ Bonus PlannedBuffs(Player* bot, Unit* target, BuffContext ctx)
         if (Group* group = bot->GetGroup())
             for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
                 if (Player* member = ref->GetSource())
-                    if (member != bot && member->IsInWorld() && member->GetMapId() == bot->GetMapId() &&
+                    // [deaths9] a member present: alive within the group reward distance (one far away buffs no one)
+                    if (member != bot && member->IsInWorld() && member->IsAlive() &&
+                        member->IsAtGroupRewardDistance(bot) &&
                         (!group->isRaidGroup() || member->GetSubGroup() == bot->GetSubGroup()))
                         providers.push_back(member);
 
@@ -1399,6 +1401,12 @@ std::unordered_map<std::string, uint32> KnownByName(Player* bot, SpecRotation co
             continue;
         SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
         if (!info || info->IsPassive())
+            continue;
+        // [deaths9] a spell whose equipped-item requirement it cannot meet now is no part of its rotation (Spell::
+        // CheckItems: SPELL_FAILED_EQUIPPED_ITEM_CLASS; a broken weapon is not usable, Player::GetUseableItemByPos).
+        // b345 Ginde L5 (rogue, both weapons at 0 durability): Sinister Strike / Eviscerate need a melee weapon
+        // (Spell.dbc EquippedItemClass 2), 0 casts in 21 fights, the formula read 7.0 dps, it dealt 1-3, died twice
+        if (!bot->HasItemFitToSpellRequirements(info))
             continue;
         auto const found = known.find(info->SpellName[LOCALE_enUS]);
         if (found == known.end())
@@ -2168,6 +2176,13 @@ uint64 Signature(Player* bot, Unit* target, BuffContext ctx)
     mixF(bot->m_modSpellHitChance);
     mixF(bot->GetFloatValue(uint16(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER) + uint16(POWER_MANA)));
     mix(bot->GetGroup() ? bot->GetGroup()->GetMembersCount() : 0);
+    // [deaths9] the members present (PlannedBuffs' providers: alive within the group reward distance)
+    if (ctx == BuffContext::Group)
+        if (Group* group = bot->GetGroup())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource())
+                    mix(member != bot && member->IsInWorld() && member->IsAlive() &&
+                        member->IsAtGroupRewardDistance(bot));
     if (Pet* pet = bot->GetPet())
     {
         mix(pet->GetEntry());
@@ -2235,14 +2250,9 @@ struct LiveFight
 std::mutex liveLock;
 std::unordered_map<uint64, LiveFight> live;  // bot guid -> its open fight
 
-// SoloSafety::SoloPlayerBot: a bot out in the world, alone (RecordFight is called for those fights only)
-bool SoloBot(Player* bot)
-{
-    if (!bot || !bot->IsInWorld() || !GET_PLAYERBOT_AI(bot) || !bot->GetMap() || bot->GetMap()->Instanceable())
-        return false;
-    Group* group = bot->GetGroup();
-    return !group || group->GetMembersCount() <= 1;
-}
+// SoloSafety::SoloPlayerBot: a bot out in the world, alone (RecordFight is called for those fights only).
+// [deaths9] a grouped bot far from every living member too: b345 Guinudrond's fights logged "casts: -" and no ideal
+bool SoloBot(Player* bot) { return bot && GET_PLAYERBOT_AI(bot) && DpsEstimate::FightsAlone(bot); }
 
 std::string SpellName(uint32 id)
 {
@@ -2396,9 +2406,26 @@ char const* ContextName(BuffContext ctx)
 BuffContext ContextOf(Player* bot)
 {
     Group* group = bot ? bot->GetGroup() : nullptr;
-    if (!group || group->GetMembersCount() <= 1)
+    if (!group || group->GetMembersCount() <= 1 || FightsAlone(bot))
         return BuffContext::Solo;
     return group->isRaidGroup() ? BuffContext::Raid : BuffContext::Group;
+}
+
+bool FightsAlone(Player* bot)
+{
+    if (!bot || !bot->IsInWorld() || !bot->GetMap() || bot->GetMap()->Instanceable())
+        return false;
+    Group* group = bot->GetGroup();
+    if (!group || group->GetMembersCount() <= 1)
+        return true;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (member && member != bot && member->IsInWorld() && member->IsAlive() &&
+            member->IsAtGroupRewardDistance(bot))
+            return false;
+    }
+    return true;
 }
 
 void RecordFight(Player* bot, FightSample const& sample)

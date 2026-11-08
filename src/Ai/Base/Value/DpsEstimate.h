@@ -79,8 +79,14 @@ float RemainingLifeSec(Player* bot, Unit* target);
 bool DebuffPays(Player* bot, Unit* target, uint32 spellId);
 
 char const* ContextName(BuffContext ctx);
-// a solo bot outside a group: Solo; a party: Group; a raid group: Raid
+// a solo bot outside a group: Solo; a party: Group; a raid group: Raid. [deaths9] A grouped bot with no living
+// member within the core's group reward distance (Player::IsAtGroupRewardDistance) fights alone: Solo (b345
+// Guinudrond L11, a user pack's leader questing hundreds of yards from its members, was judged with their buffs)
 BuffContext ContextOf(Player* bot);
+
+// [deaths9] alone out in the world (SoloSafety::SoloPlayerBot's rule): not in an instance, no group or no living
+// member within the group reward distance
+bool FightsAlone(Player* bot);
 
 // [dps1] one closed fight, formula vs what it dealt: logged as a [dps] line and written to
 // playerbots_fight_history for the analysis scripts only (no decision reads either)

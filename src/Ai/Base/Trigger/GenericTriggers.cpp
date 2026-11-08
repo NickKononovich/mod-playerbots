@@ -778,6 +778,12 @@ bool HealerShouldAttackTrigger::IsActive()
 {
     if (botAI->GetNearGroupMemberCount(sPlayerbotAIConfig.SightDistance) <= 1)
         return true;
+    // [deaths9] alone by SoloSafety's rule (no living member within the group reward distance): it fights as a solo
+    // bot - its judge and the dps formula count its spells. b345 Guinudrond L11 (holy, a user pack's leader questing
+    // apart from its members, one within sight): under 65 % mana or 85 % health it held every spell, meleed at
+    // 4.9-5.8 dps where the formula read 19.5, and died 4 times (3x Elder Black Bear, 2 Tunnel Rats)
+    if (DpsEstimate::FightsAlone(bot))
+        return true;
 
     if (AI_VALUE2(uint8, "health", "party member to heal") < sPlayerbotAIConfig.AlmostFullHealth)
         return false;
