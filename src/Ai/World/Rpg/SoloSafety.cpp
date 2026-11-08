@@ -2187,10 +2187,15 @@ namespace SoloSafety
         if (!bot || !bot->IsAlive())
             return false;
         float const sight = sPlayerbotAIConfig.SightDistance;
+        // [deaths13] a wanderer whose home lies beyond sight walks its wander area to within it: the look reaches as
+        // far as the map's largest wander distance past sight (at most the map's view), as the judge's does
+        float const range = std::min(sight + std::min(MaxWanderDistance(bot->GetMapId()),
+                                                      bot->GetMap()->GetVisibilityRange()),
+                                     bot->GetMap()->GetVisibilityRange());
         std::list<Unit*> units;
-        Acore::AnyUnitInObjectRangeCheck check(bot, sight);
+        Acore::AnyUnitInObjectRangeCheck check(bot, std::max(range, sight));
         Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
-        Cell::VisitObjects(bot, searcher, sight);
+        Cell::VisitObjects(bot, searcher, std::max(range, sight));
         G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
         std::vector<G3D::Vector4> discs;
         float out = 0.0f;  // the yards out of the covering reaches

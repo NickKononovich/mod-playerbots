@@ -207,6 +207,9 @@ protected:
     // [regress10] the bot's first New RPG tick after its login: when idle mobs' reach covers its login spot, a step
     // out of every reach on a walk the route search judges (its walls round the camp); true when it walks
     bool LoginEscape();
+    // [deaths13] hurt out of a fight within an idle mob's reach (a wanderer's area): the step out of every reach to
+    // rest there; true when it walks
+    bool RestEscape();
 
     /* MOVEMENT RELATED */
     bool MoveFarTo(WorldPosition dest);

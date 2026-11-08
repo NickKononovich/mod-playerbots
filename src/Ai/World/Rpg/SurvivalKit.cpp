@@ -95,6 +95,35 @@ namespace
         bool needsWindow = false;  // a bandage: channelled, broken by damage
     };
 
+    // [deaths13] the aura that locks a defensive out and that it applies itself: the spell data's exclusion
+    // (SpellInfo ExcludeCasterAuraSpell / ExcludeTargetAuraSpell, the DBC), else the aura the core's spell script
+    // applies where the DBC has none (spell_paladin.cpp spell_pal_immunities / spell_pal_lay_on_hands: Forbearance
+    // 25771; spell_mage.cpp Ice Block: Hypothermia 41425) by the spell's first rank; 0: none
+    uint32 ExclusionGroup(uint32 spellId)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info)
+            return 0;
+        if (info->ExcludeCasterAuraSpell)
+            return info->ExcludeCasterAuraSpell;
+        if (info->ExcludeTargetAuraSpell)
+            return info->ExcludeTargetAuraSpell;
+        constexpr uint32 FORBEARANCE = 25771;
+        constexpr uint32 HYPOTHERMIA = 41425;
+        switch (info->GetFirstRankSpell()->Id)
+        {
+            case 633:   // Lay on Hands
+            case 498:   // Divine Protection
+            case 642:   // Divine Shield
+            case 1022:  // Hand of Protection
+                return FORBEARANCE;
+            case 45438:  // Ice Block
+                return HYPOTHERMIA;
+            default:
+                return 0;
+        }
+    }
+
     struct BotKit
     {
         size_t spells = size_t(-1);
@@ -133,6 +162,7 @@ namespace
         uint32 routeStep = 0;
         // [deaths] where a maze search found no walk out this fight (searched again once the bot stands elsewhere)
         bool mazeFailed = false;
+        std::string exclusiveLogged;  // [deaths13] the pieces left out for an exclusion group, last logged
         G3D::Vector3 mazeFailedAt;
         // [deaths] the fight was logged lost with nothing to use (once a fight: b337 deaths "without rescue" left no
         // line at all - Feeli, Eraelor, Rumanatol, Ginde - and the triage could not tell why)
@@ -1418,6 +1448,35 @@ namespace SurvivalKit
                           return a.piece->cooldownSec < b.piece->cooldownSec;
                       return a.gain > b.gain;
                   });
+        // [deaths13] one piece per exclusion group: pieces that lock each other out (Forbearance: Divine Protection,
+        // Divine Shield, Hand of Protection, Lay on Hands; Hypothermia: Ice Block) count once in the plan - the biggest
+        // gain of the group, the others cannot follow it in this fight (b353 Geron L10: Divine Protection "turns it",
+        // Lay on Hands planned behind it never came under Forbearance, died at hp 20)
+        {
+            std::vector<Scored> kept;
+            std::string dropped;
+            for (Scored const& sc : scored)
+            {
+                uint32 const group = ExclusionGroup(sc.piece->spell);
+                bool beaten = false;
+                for (Scored const& other : scored)
+                    if (&other != &sc && group && ExclusionGroup(other.piece->spell) == group &&
+                        (other.gain > sc.gain || (other.gain == sc.gain && &other < &sc)))
+                        beaten = true;
+                if (beaten)
+                    dropped += (dropped.empty() ? "" : ", ") + std::to_string(sc.piece->spell);
+                else
+                    kept.push_back(sc);
+            }
+            if (dropped != state.exclusiveLogged)
+            {
+                if (!dropped.empty())
+                    LOG_INFO("playerbots", "[deaths13] {} L{} survival plan leaves out spell(s) {}: each shares an "
+                             "exclusion aura with a bigger piece", bot->GetName(), bot->GetLevel(), dropped);
+                state.exclusiveLogged = dropped;
+            }
+            scored.swap(kept);
+        }
         float planned = 0.0f;
         Scored const* now = nullptr;
         for (Scored const& s : scored)

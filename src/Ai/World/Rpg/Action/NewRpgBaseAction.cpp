@@ -4287,6 +4287,39 @@ bool NewRpgBaseAction::LoginEscape()
     return false;
 }
 
+// [deaths13] a hurt bot out of a fight stands in an idle mob's reach (a wanderer's area, a patrol's beat): it rests out
+// of every reach - its rest there lets the wanderer walk in at reduced health. b353 Guinudrond L11: after a won fight
+// (took 100 of 232) a Stonesplinter Trogg wandering 20 yd off (wander 3, aggro 19) walked into it, the fight began at
+// reduced health and mana, it died ("no judged pull (attacked)")
+bool NewRpgBaseAction::RestEscape()
+{
+    if (bot->IsInCombat() || bot->isMoving() || !SoloSafety::Applies(bot))
+        return false;
+    bool const hurt = bot->GetHealth() < bot->GetMaxHealth() ||
+                      (bot->GetMaxPower(POWER_MANA) && bot->GetPower(POWER_MANA) < bot->GetMaxPower(POWER_MANA));
+    if (!hurt || !(SoloSafety::WantsRest(bot, false) || SoloSafety::WantsRest(bot, true) || bot->IsSitState()))
+        return false;
+    std::string who;
+    std::vector<G3D::Vector3> spots;
+    if (!SoloSafety::StandsInReach(bot, who, spots))
+        return false;
+    for (G3D::Vector3 const& at : spots)
+    {
+        Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+        if (!route.found || !route.complete || route.throughRefused)
+            continue;
+        if (bot->IsSitState())
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+        if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+            continue;
+        LOG_INFO("playerbots", "[deaths13] {} L{} REST_ESCAPE reason: hurt (hp {:.0f} %) within the reach of {}: "
+                 "rests at ({:.0f},{:.0f}), {:.0f} yd walk",
+                 bot->GetName(), bot->GetLevel(), bot->GetHealthPct(), who, at.x, at.y, route.length);
+        return true;
+    }
+    return false;
+}
+
 bool NewRpgBaseAction::InDeathZone(Player* bot, float x, float y)
 {
     if (!bot)

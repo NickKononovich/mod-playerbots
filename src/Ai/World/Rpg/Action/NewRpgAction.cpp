@@ -801,6 +801,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         if (LoginEscape())
             return true;
     }
+    // [deaths13] hurt, out of a fight, in a wanderer's reach: the rest is taken out of every reach
+    if (RestEscape())
+        return true;
 
     // [regress10] the recovery after a death comes first: before, only a far walk's MoveFarTo took it, so a quest spot
     // in reach of the corpse was fought at once (b345 Guinudrond L11 at the Silver Stream Mine)
