@@ -2484,6 +2484,119 @@ namespace TestHarness
         GameObject* door = map ? map->GetGameObject(party.doorCutDoor) : nullptr;
         if (!door || door->GetGoState() != GO_STATE_READY)
             return;
+        // [kara2] A door a click opens (no key of this content on it, no event): whoever of the group stands in the
+        // core's reach of it (OpenDoorByUse: IsWithinDistInMap with the door's interaction distance), either side,
+        // clicks it - the leader waiting on its side too (LeaderRest's door_reopen_for walk stops it 3 yd from the
+        // door). kara-n b355 20261108-231538-10A-1: the druid stood 4.6 yd from the Gatehouse Door 183450, out of the
+        // old 4.5 yd click reach and within the runner's 2.5 yd of its 3 yd step point (it never moved), and the leader
+        // 3.1 yd from the door never clicked it: member_key_step x30, 240 s held, stalled.
+        bool keyOnDoor = false;
+        for (StarterTrack const& track : party.starters)
+            if (track.def->kind == StarterKind::UseItem && track.def->itemId &&
+                std::find(track.def->entries.begin(), track.def->entries.end(), door->GetEntry()) !=
+                    track.def->entries.end())
+                keyOnDoor = true;
+        if (!keyOnDoor && !DoorEventOf(door) && DoorOpensByUse(door))
+        {
+            Player* cutBot = ObjectAccessor::FindPlayer(party.doorCutMember);
+            Player* opener = nullptr;
+            bool groupFights = false;
+            for (Member const& each : party.members)
+            {
+                Player* other = ObjectAccessor::FindPlayer(each.guid);
+                if (!other || other->GetMap() != map || !other->IsAlive())
+                    continue;
+                groupFights = groupFights || other->IsInCombat();
+                if (other->IsInCombat() || !door->IsWithinDistInMap(other, door->GetInteractionDistance()) ||
+                    !other->IsWithinLOS(door->GetPositionX(), door->GetPositionY(), door->GetPositionZ() + 1.5f,
+                                        VMAP::ModelIgnoreFlags::M2, LINEOFSIGHT_CHECK_VMAP))
+                    continue;
+                // the stranded member itself first, then the nearest
+                if (!opener || other == cutBot ||
+                    (opener != cutBot && other->GetExactDist(door) < opener->GetExactDist(door)))
+                    opener = other;
+            }
+            if (groupFights)
+                return;  // OpenDoorByUse: never during a fight of the group
+            if (opener)
+            {
+                // Who stands on the other side from the leader (its walk to the leader runs through this door, read
+                // while the door is still shut: an open door's model has no collision). The door closes again by
+                // itself (3 s at the Gatehouse Door): each of them is walked through at once, to the leader's spot,
+                // not left to a follow that a member 2-4 yd from the leader never starts.
+                std::vector<Member*> stranded;
+                for (Member& each : party.members)
+                {
+                    Player* other = ObjectAccessor::FindPlayer(each.guid);
+                    if (!other || other == leader || other->GetMap() != map || !other->IsAlive() ||
+                        other->GetExactDist(door) > 40.0f)
+                        continue;
+                    PathResult const way = RoutePath(other, leader->GetPositionX(), leader->GetPositionY(),
+                                                     leader->GetPositionZ());
+                    if (way.reachable &&
+                        RouteThroughClosedDoor(way.points, std::vector<GameObject*>{door}, leader->GetPhaseMask()))
+                        stranded.push_back(&each);
+                }
+                bool const opened = OpenDoorByUse(opener, door);
+                std::string walkedThrough;
+                if (opened)
+                    for (Member* each : stranded)
+                        if (Player* other = ObjectAccessor::FindPlayer(each->guid))
+                        {
+                            SetMemberWaypoint(party, *each, other, leader->GetPositionX(), leader->GetPositionY(),
+                                              leader->GetPositionZ());
+                            MarkGateWaypoint(other);  // cleared with the cut (ClearGateWaypoints)
+                            if (PlayerbotAI* otherAI = GET_PLAYERBOT_AI(other))
+                                otherAI->SetNextCheckDelay(0);
+                            walkedThrough += (walkedThrough.empty() ? "" : ",") + std::string(other->GetName());
+                        }
+                ++party.memberKeyUses;
+                party.memberKeyMs = now ? now : 1;
+                LogEvent(party, "member_door_use",
+                         JsonObject().Str("name", opener->GetName()).Str("door", door->GetName())
+                             .Num("doorEntry", door->GetEntry()).Real("distance", opener->GetExactDist(door))
+                             .Bool("opened", opened).Bool("leaderInCombat", leader->IsInCombat())
+                             .Bool("byLeader", opener == leader)
+                             .Str("for", cutBot ? cutBot->GetName() : "?").Str("walkedThrough", walkedThrough)
+                             .Num("uses", party.memberKeyUses));
+                LOG_INFO("playerbots", "[kara2] leader: {} separated by {} {} (closed, opens by use); action {} "
+                         "clicks it ({:.1f} yd){}{}",
+                         cutBot ? cutBot->GetName() : "?", door->GetName(), door->GetEntry(), opener->GetName(),
+                         opener->GetExactDist(door), opened ? "" : " - still closed",
+                         walkedThrough.empty() ? "" : ", walks through: " + walkedThrough);
+                return;
+            }
+            // nobody in reach: the stranded member steps up to it on its own side (the leader walks to its side in
+            // LeaderRest). The step point stands MEMBER_KEY_STEP yd from the centre; a member already within the
+            // runner's reach of it but still out of the core's reach is walked to 1 yd from the centre instead.
+            if (!cutBot || cutBot->GetMap() != map || !cutBot->IsAlive() ||
+                (cutBot->IsInCombat() && !cutBot->getAttackers().empty()))
+                return;
+            Member* cutMember = nullptr;
+            for (Member& each : party.members)
+                if (each.guid == cutBot->GetGUID())
+                    cutMember = &each;
+            if (!cutMember)
+                return;
+            float const dx = cutBot->GetPositionX() - door->GetPositionX();
+            float const dy = cutBot->GetPositionY() - door->GetPositionY();
+            float const len = std::max(0.1f, std::hypot(dx, dy));
+            float const step = std::min(MEMBER_KEY_STEP, std::max(1.0f, len - 3.0f));
+            float const x = door->GetPositionX() + dx / len * step;
+            float const y = door->GetPositionY() + dy / len * step;
+            float const ground =
+                map->GetHeight(cutBot->GetPhaseMask(), x, y, door->GetPositionZ() + 3.0f, true, 10.0f);
+            SetMemberWaypoint(party, *cutMember, cutBot, x, y, ground > INVALID_HEIGHT ? ground : cutBot->GetPositionZ());
+            MarkGateWaypoint(cutBot);
+            party.memberKeyMs = now ? now : 1;
+            LogEvent(party, "member_key_step", JsonObject().Str("name", cutBot->GetName()).Str("door", door->GetName())
+                                                   .Real("distance", cutBot->GetExactDist(door)).Real("step", step)
+                                                   .Bool("inCombat", cutBot->IsInCombat()));
+            LOG_INFO("playerbots", "[kara2] leader: {} separated by {} {} (closed, opens by use); action {} steps to "
+                     "{:.1f} yd of it, nobody of the group in reach", cutBot->GetName(), door->GetName(),
+                     door->GetEntry(), cutBot->GetName(), step);
+            return;
+        }
         auto const canKey = [&](Player const* each)
         {
             return each && each->GetMap() == map && each->IsAlive() && !each->IsNonMeleeSpellCast(false) &&
@@ -4096,7 +4209,9 @@ namespace TestHarness
         G3D::Vector3 point(x, y, z);
         ObjectGuid doorGuid;
         float walked = 0.0f;
-        bool doorStop = LeaderDoorStop(leader, point, doorGuid, walked);
+        // [kara2] an auto-closing door is clicked with the whole group gathered at the leader (DoorGatherHolds)
+        bool doorStop = LeaderDoorStop(leader, point, doorGuid, walked,
+                                       [&](GameObject* door) { return DoorGatherHolds(party, leader, door); });
         // [door_hold_pass] EventStarterDef::passDoors: the escort's own doors (Gnomeregan: Emi opens / seals the Cave
         // Ins herself) - the waypoint as asked.
         if (doorStop && PassDoorOfActiveStarter(party, leader->GetMap(), doorGuid))

@@ -865,7 +865,8 @@ namespace Leader::Travel
 
     // true: the waypoint ran through a closed door, `point` is now the hold before it (the leader's own spot when
     // the door is closer than DOOR_HOLD_BACK + DOOR_HOLD_MIN_WALK); door / walked say which and how far on.
-    bool LeaderDoorStop(Player* leader, G3D::Vector3& point, ObjectGuid& door, float& walked)
+    bool LeaderDoorStop(Player* leader, G3D::Vector3& point, ObjectGuid& door, float& walked,
+                        std::function<bool(GameObject*)> const& beforeOpen)
     {
         if (!ROUTE_CLOSED_DOORS_ALL)
             return false;
@@ -912,6 +913,18 @@ namespace Leader::Travel
         // ("[door] <leader>: opens <name> <entry>"), and the waypoint goes on; until then the hold is closer, in
         // reach. The followers' own walks stop before it (MovementAction::GuardClosedDoor) until it is open.
         bool const openable = !DoorEventOf(hit.door) && DoorOpensByUse(hit.door);
+        // [kara2] a door that closes again by itself is clicked with the group gathered at the leader (DoorGatherHolds):
+        // kara-n b355 20261108-231538-10A-1, the leader clicked the Gatehouse Door 183450 (closes after 3 s) at 6 s
+        // while the warlock cast its soulstone and the druid stood 11 yd back; both were shut out, the group held 240 s.
+        if (openable && beforeOpen && hit.door->IsWithinDistInMap(leader, hit.door->GetInteractionDistance()) &&
+            beforeOpen(hit.door))
+        {
+            memo.ms = 0;  // judged again next time: the gather may be over
+            point = here;
+            door = hit.door->GetGUID();
+            walked = hit.walked;
+            return true;
+        }
         if (openable && OpenDoorByUse(leader, hit.door))
         {
             memo.ms = 0;  // judged again next time: the walk may run through another door further on

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
  * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
  * or (at your option) any later version.
@@ -110,6 +110,7 @@
 #include <vector>
 #include "RouteTargets.h"
 #include "RouteSteer.h"
+#include "RouteLegs.h"  // [kara2] RoutePath, ClosedDoors
 #include "RouteMeet.h"
 #include "RouteWater.h"
 #include "RouteReenter.h"  // [lead341] the stranded re-entry
@@ -165,6 +166,93 @@ namespace Leader::Dungeon
         group.NoteActivity(leader->IsAlive() ? LeaderGroup::Activity::Waiting : LeaderGroup::Activity::Reviving);
     }
 
+
+    // [kara2] Why a member the route waits for is apart, read from the game state, and what answers it - one line per
+    // member each time the cause changes ("[kara2] leader: <member> separated by <cause>; action <what>"). The
+    // answers run where they are owned: a closed door the door-cut hold opens (TickDoorCut / MemberKeyAtDoor: a
+    // click by whoever of the group stands in reach, a key, or the event's own opening), a busy member is waited
+    // for, everything else is the leader's walk to meet it (MeetMember).
+    static std::unordered_map<ObjectGuid, std::pair<std::string, uint32>> separatedCause;  // world thread only
+
+    static void NoteSeparated(LeaderGroup& group, Player* leader, Player* bot, bool doorCut)
+    {
+        constexpr uint32 SEPARATED_CHECK_MS = 2 * IN_MILLISECONDS;  // the diagnosis' path cost only, no decision
+        std::string cause;
+        std::string action;
+        if (!bot)
+            return;
+        uint32 const now = getMSTime();
+        auto& [last, checkedMs] = separatedCause[bot->GetGUID()];
+        if (checkedMs && getMSTimeDiff(checkedMs, now) < SEPARATED_CHECK_MS)
+            return;
+        checkedMs = now ? now : 1;
+        if (bot->GetMap() != leader->GetMap())
+        {
+            cause = "another map";
+            action = "waits for its walk in";
+        }
+        else if (bot->IsNonMeleeSpellCast(false))
+        {
+            Spell const* spell = bot->GetCurrentSpell(CURRENT_CHANNELED_SPELL);
+            if (!spell)
+                spell = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            cause = std::string("busy: casting ") +
+                    (spell && spell->GetSpellInfo() ? spell->GetSpellInfo()->SpellName[0] : "a spell");
+            action = "waits for the cast, then its follow";
+        }
+        else if (RestState::IsEating(bot) || RestState::IsDrinking(bot))
+        {
+            cause = "busy: eating / drinking";
+            action = "waits for its rest line";
+        }
+        else if (bot->IsInCombat())
+        {
+            cause = "busy: in combat";
+            action = "waits for its fight";
+        }
+        else
+        {
+            GameObject* door = nullptr;
+            std::vector<GameObject*> doors = Travel::ClosedDoors(bot->GetMap(), leader);
+            Travel::PathResult const way = Travel::RoutePath(bot, leader->GetPositionX(), leader->GetPositionY(),
+                                                     leader->GetPositionZ());
+            if (way.reachable && !doors.empty())
+                door = Travel::RouteThroughClosedDoor(way.points, doors, leader->GetPhaseMask());
+            if (door)
+            {
+                bool const click = !Travel::DoorEventOf(door) && DoorOpensByUse(door);
+                cause = Acore::StringFormat("closed door {} {} ({})", door->GetName(), door->GetEntry(),
+                                            click                      ? "opens by use"
+                                            : Travel::DoorEventOf(door) ? "the instance's event opens it"
+                                                                        : "a key or a script opens it");
+                action = doorCut ? (click ? "the nearest member in reach (the leader too) clicks it"
+                                          : "the door-cut hold: a key from either side, or the event")
+                                 : "the leader waits on its side";
+            }
+            else if (!way.reachable)
+            {
+                cause = "no path to the leader (navmesh gap)";
+                action = "the leader walks to meet it";
+            }
+            else if (bot->isMoving())
+            {
+                cause = "walking, closing in";
+                action = "waits";
+            }
+            else
+            {
+                cause = "standing, not following";
+                action = "the leader walks to meet it";
+            }
+        }
+        if (last == cause)
+            return;
+        last = cause;
+        LOG_INFO("playerbots", "[kara2] leader: {} separated by {}; action {} ({}, {:.1f} yd from {})",
+                 bot->GetName(), cause, action, group.Run().runId, bot->GetExactDist(leader), leader->GetName());
+        group.LogEvent("member_separated", JsonObject().Str("name", bot->GetName()).Str("cause", cause)
+                                               .Str("action", action).Real("distance", bot->GetExactDist(leader)));
+    }
 
     bool RestWait(LeaderGroup& group, std::vector<Player*> const& players, Player* leader, uint32 now,
                   bool wingWalking, bool& ledGather)
@@ -367,9 +455,13 @@ namespace Leader::Dungeon
             {
                 farAway.push_back(member.name);
                 rest.farWaited = true;
+                NoteSeparated(group, leader, bot, doorCut);  // [kara2]
             }
             else
+            {
                 rest.farWaited = false;
+                separatedCause.erase(member.guid);  // [kara2] together: the next separation is logged afresh
+            }
         }
 
         // [lead128] user: no elapsed-time rule decides - the wait has no timeout and no cooldown (the 60 s / 180 s

@@ -17,6 +17,7 @@
 #include "Creature.h"
 #include "G3D/Vector3.h"
 #include "G3D/Vector4.h"
+#include <functional>
 #include "GameObject.h"
 #include "MoveSplineInitArgs.h"
 #include "ObjectGuid.h"
@@ -333,7 +334,10 @@ namespace Leader::Travel
 
     // true: the waypoint ran through a closed door, `point` is now the hold before it (the leader's own spot when
     // the door is closer than DOOR_HOLD_BACK + DOOR_HOLD_MIN_WALK); door / walked say which and how far on.
-    bool LeaderDoorStop(Player* leader, G3D::Vector3& point, ObjectGuid& door, float& walked);
+    // [kara2] beforeOpen: asked before the leader clicks a door that opens by use; true holds the click (the group
+    // gathers first at a door that closes again by itself), the leader stands where it is.
+    bool LeaderDoorStop(Player* leader, G3D::Vector3& point, ObjectGuid& door, float& walked,
+                        std::function<bool(GameObject*)> const& beforeOpen = {});
 }
 
 #endif
