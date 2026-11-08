@@ -16,6 +16,7 @@
 
 #include "Creature.h"
 #include "DBCStores.h"
+#include "TravelMgr.h"  // [guild15] trips to another landmass
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
@@ -63,6 +64,21 @@ namespace
         float x, y, z;
         uint32 zoneId;  // set for the secondary skills' trainers and the fishing pole vendors only
     };
+
+    // [guild15] the trip's length: straight on the bot's landmass; on another one (Shattrath from Azuremyst, both map
+    // 530; Stormwind from Ironforge) the travel planner's route (rides, portals, the Deeprun Tram) in walking yards,
+    // none: out of reach (b323 Dekorhan L7 walked at Sessoh in Shattrath from Azuremyst, 19 WALK_FAIL)
+    float TripDist(Player* bot, NpcSpawn const& spawn)
+    {
+        WorldPosition const to(spawn.mapId, spawn.x, spawn.y, spawn.z);
+        if (TravelRouteMgr::Landmass(WorldPosition(bot)) == TravelRouteMgr::Landmass(to))
+            return bot->GetExactDist(spawn.x, spawn.y, spawn.z);
+        TravelRouteMgr::Leg leg;
+        float seconds = 0.0f;
+        if (!sTravelRouteMgr.FindRoute(bot, to, leg, seconds))
+            return FLT_MAX;
+        return seconds * TravelRouteMgr::WALK_SPEED;
+    }
 
     struct Index
     {
@@ -269,7 +285,7 @@ namespace
         {
             if (spawn.mapId != bot->GetMapId() || !Friendly(bot, spawn.entry) || skip.count(&spawn))
                 continue;
-            float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
+            float const d = TripDist(bot, spawn);
             if (d >= best.dist)
                 continue;
             auto ranks = index.ranks.find(spawn.entry);
@@ -325,7 +341,7 @@ namespace
         {
             if (spawn.mapId != bot->GetMapId() || !Friendly(bot, spawn.entry) || skip.count(&spawn))
                 continue;
-            float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
+            float const d = TripDist(bot, spawn);
             if (d >= best.dist)
                 continue;
             if (sameZone && spawn.zoneId != zone)
@@ -372,7 +388,7 @@ namespace
         {
             if (spawn.mapId != bot->GetMapId() || skip.count(&spawn) || (sameZone && spawn.zoneId != bot->GetZoneId()))
                 continue;
-            float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
+            float const d = TripDist(bot, spawn);
             if (d >= best.dist || !Friendly(bot, spawn.entry) ||
                 FailedBefore(bot, spawn.entry, RecipeFailId(skill)))
                 continue;

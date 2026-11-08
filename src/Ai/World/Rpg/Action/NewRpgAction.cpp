@@ -1026,6 +1026,14 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         {
             // [guild90] every camp of the area spent (or taken by other bots): wait here for the first respawn
             // (spawntimesecs) while the cheapest other quest costs more than the wait, else go to that one
+            // [guild15] ... unless this resolve postponed it: its unspent camps lie among mobs it does not pull, the
+            // spent one comes back empty of what it may fight (b323 Kianey L9 q46: wait 180 s, sweep, spent, postpone,
+            // wait again at Stone Cairn Lake for 10 min, 3 STUCK)
+            if (botAI->lowPriorityQuest.count(questId))
+            {
+                botAI->rpgInfo.ChangeToIdle();
+                return true;
+            }
             if (uint32 const wait = EarliestRespawn(bot, questId))
             {
                 std::string const resolved = LastResolveStats();  // before OtherQuestSeconds resolves the others
