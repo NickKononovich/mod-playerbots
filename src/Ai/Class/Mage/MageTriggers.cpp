@@ -11,6 +11,7 @@
 #include "AiFactory.h"  // [rot250] spec tab
 #include "EstimatedLifetimeValue.h"  // [rot251] ExpectedLifetime
 #include "Creature.h"
+#include "DpsEstimate.h"  // [rot603] CastPays
 #include "DynamicObject.h"
 #include "GameObject.h"
 #include "Map.h"
@@ -445,6 +446,49 @@ bool FireFightEndTarget(Player* bot, Unit* target)
            AiFactory::GetPlayerSpecTab(bot) == MAGE_TAB_FIRE;
 }
 }  // namespace
+
+namespace
+{
+// [rot604] the filler the mage casts when it stands: Fireball for Fire, else the stronger of Fireball / Frostbolt
+uint32 MageFillerId(PlayerbotAI* botAI, Player* bot, Unit* target)
+{
+    AiObjectContext* context = botAI->GetAiObjectContext();
+    uint32 const fireball = AI_VALUE2(uint32, "spell id", "fireball");
+    uint32 const frostbolt = AI_VALUE2(uint32, "spell id", "frostbolt");
+    if (AiFactory::GetPlayerSpecTab(bot) == MAGE_TAB_FIRE || !frostbolt)
+        return fireball ? fireball : frostbolt;
+    if (!fireball)
+        return frostbolt;
+    return SpellPayoff::FillerDps(bot, target, fireball) > SpellPayoff::FillerDps(bot, target, frostbolt) ? fireball
+                                                                                                           : frostbolt;
+}
+}  // namespace
+
+bool FireballOverFrostboltTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive())
+        return false;
+    uint32 const fireball = AI_VALUE2(uint32, "spell id", "fireball");
+    uint32 const frostbolt = AI_VALUE2(uint32, "spell id", "frostbolt");
+    return fireball && frostbolt &&
+           SpellPayoff::FillerDps(bot, target, fireball) > SpellPayoff::FillerDps(bot, target, frostbolt);
+}
+
+bool FireBlastPaysTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive())
+        return false;
+    uint32 const fireBlast = AI_VALUE2(uint32, "spell id", "fire blast");
+    if (!fireBlast || bot->HasSpellCooldown(fireBlast))
+        return false;
+    // within its range from where it stands (20 yd, inside the 30-35 yd it casts the fillers from): no walk for it
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(fireBlast);
+    if (!info || !bot->IsWithinCombatRange(target, info->GetMaxRange(false, bot)))
+        return false;
+    return DpsEstimate::CastPays(bot, target, fireBlast, MageFillerId(botAI, bot, target));
+}
 
 bool FireBlastFightEndTrigger::IsActive()
 {

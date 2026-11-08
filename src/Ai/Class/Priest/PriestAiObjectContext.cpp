@@ -115,6 +115,7 @@ public:
         creators["mind sear channel check"] = &PriestTriggerFactoryInternal::mind_sear_channel_check;
         creators["mind sear heavy aoe"] = &PriestTriggerFactoryInternal::mind_sear_heavy_aoe;  // [b31_deep]
         creators["mind sear pays"] = &PriestTriggerFactoryInternal::mind_sear_pays;  // [rot401]
+        creators["mind blast pays"] = &PriestTriggerFactoryInternal::mind_blast_pays;  // [rot603]
         creators["mind flay clip"] = &PriestTriggerFactoryInternal::mind_flay_clip;  // [guide_b31_dead] (+ next line)
         creators["shadowform out of combat"] = &PriestTriggerFactoryInternal::shadowform_out_of_combat;
         creators["battle resurrected member"] = &PriestTriggerFactoryInternal::battle_resurrected_member;
@@ -184,6 +185,7 @@ private:
     // [b31_deep]
     static Trigger* mind_sear_heavy_aoe(PlayerbotAI* botAI) { return new MindSearHeavyAoeTrigger(botAI); }
     static Trigger* mind_sear_pays(PlayerbotAI* botAI) { return new MindSearPaysTrigger(botAI); }
+    static Trigger* mind_blast_pays(PlayerbotAI* botAI) { return new MindBlastPaysTrigger(botAI); }
     static Trigger* mind_flay_clip(PlayerbotAI* botAI) { return new MindFlayClipTrigger(botAI); }  // [guide_b31_dead]
     static Trigger* shadowform_out_of_combat(PlayerbotAI* botAI)  // [guide_b31_dead]
     {

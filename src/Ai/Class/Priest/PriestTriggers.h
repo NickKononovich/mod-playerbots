@@ -162,6 +162,16 @@ public:
 
 // [rot401] Mind Sear where its ticks on the mobs around the target (never the target itself) beat Mind Flay on the
 // target: the break-even count from the two spells (AoePaysTrigger) instead of 3 mobs in 8 yd ("medium aoe")
+// [rot603] Mind Blast off cooldown where one cast deals at least Smite's damage in its cast (DpsEstimate::CastPays):
+// the solo holy / discipline priest (b338 L10-19 ideal / formula 1.11; PriestHealerDpsStrategy ranks it below Smite)
+class MindBlastPaysTrigger : public Trigger
+{
+public:
+    MindBlastPaysTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mind blast pays") {}
+    std::string const GetTargetName() override { return "current target"; }
+    bool IsActive() override;
+};
+
 class MindSearPaysTrigger : public AoePaysTrigger
 {
 public:

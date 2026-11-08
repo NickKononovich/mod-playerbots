@@ -21,6 +21,7 @@
 #include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "DpsEstimate.h"  // [rot603] CastPays
 #include "SpellPayoff.h"  // [rot564] Read, FillerDps
 #include "TargetValue.h"
 #include "ThreatValues.h"  // [b31_deep]
@@ -606,4 +607,15 @@ float MindSearPaysTrigger::FillerScale()
 
     float const lost = chance * painCast.tick * std::floor(lostMs / static_cast<float>(painCast.amplitudeMs));
     return 1.0f + lost / (fillerDps * sear.executeMs / static_cast<float>(IN_MILLISECONDS));
+}
+
+bool MindBlastPaysTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive())
+        return false;
+    uint32 const mindBlast = AI_VALUE2(uint32, "spell id", "mind blast");
+    if (!mindBlast || bot->HasSpellCooldown(mindBlast))
+        return false;
+    return DpsEstimate::CastPays(bot, target, mindBlast, AI_VALUE2(uint32, "spell id", "smite"));
 }

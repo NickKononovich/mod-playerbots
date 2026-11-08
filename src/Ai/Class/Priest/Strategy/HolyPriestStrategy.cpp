@@ -51,6 +51,8 @@ void HolyDpsPriestStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [rot603] Mind Blast where it pays against Smite, below Holy Fire
+    triggers.push_back(new TriggerNode("mind blast pays", { NextAction("mind blast", ACTION_NORMAL + 8) }));
     triggers.push_back(
         new TriggerNode(
             "shadowfiend",

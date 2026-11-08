@@ -109,6 +109,11 @@ void FrostMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
 
+    // [rot603] Fire Blast where it pays against the filler; [rot604] Fireball over Frostbolt where it deals more (just
+    // above the Frostbolt default, below every trigger)
+    triggers.push_back(new TriggerNode("fire blast pays", { NextAction("fire blast", ACTION_NORMAL + 5) }));
+    triggers.push_back(new TriggerNode("fireball over frostbolt", { NextAction("fireball", ACTION_DEFAULT + 0.45f) }));
+
     // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
     triggers.push_back(new TriggerNode("set bonus ice lance", { NextAction("ice lance", 18.5f) }));
     triggers.push_back(new TriggerNode("set bonus arcane surge", { NextAction("frostbolt", 18.4f) }));

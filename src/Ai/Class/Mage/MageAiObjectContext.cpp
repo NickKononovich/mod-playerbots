@@ -123,6 +123,8 @@ public:
         creators["mana at or below 25"] = &MageTriggerFactoryInternal::mana_at_or_below_25;
         creators["evocation"] = &MageTriggerFactoryInternal::evocation;  // [rot250]
         creators["fire blast fight end"] = &MageTriggerFactoryInternal::fire_blast_fight_end;  // [rot251]
+        creators["fire blast pays"] = &MageTriggerFactoryInternal::fire_blast_pays;                // [rot603]
+        creators["fireball over frostbolt"] = &MageTriggerFactoryInternal::fireball_over_frostbolt;  // [rot604]
         creators["scorch fight end"] = &MageTriggerFactoryInternal::scorch_fight_end;  // [rot251]
         creators["arcane blast 4 stacks and mana at or below 25"] =
             &MageTriggerFactoryInternal::arcane_blast_4_stacks_and_conserve_mana;
@@ -198,6 +200,8 @@ private:
     static Trigger* mana_at_or_below_25(PlayerbotAI* botAI) { return new ManaAtOrBelow25Trigger(botAI); }
     static Trigger* evocation(PlayerbotAI* botAI) { return new EvocationTrigger(botAI); }
     static Trigger* fire_blast_fight_end(PlayerbotAI* botAI) { return new FireBlastFightEndTrigger(botAI); }
+    static Trigger* fire_blast_pays(PlayerbotAI* botAI) { return new FireBlastPaysTrigger(botAI); }
+    static Trigger* fireball_over_frostbolt(PlayerbotAI* botAI) { return new FireballOverFrostboltTrigger(botAI); }
     static Trigger* scorch_fight_end(PlayerbotAI* botAI) { return new ScorchFightEndTrigger(botAI); }
     static Trigger* arcane_blast_4_stacks_and_conserve_mana(PlayerbotAI* botAI)
     {
