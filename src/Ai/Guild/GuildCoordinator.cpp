@@ -252,6 +252,33 @@ namespace
         return free;
     }
 
+    // [econ2] the tool a profession's work needs (NewRpgProfession's list), 0 = none
+    uint32 ProfessionTool(uint32 line)
+    {
+        switch (line)
+        {
+            case SKILL_MINING:        return 2901;   // Mining Pick
+            case SKILL_SKINNING:      return 7005;   // Skinning Knife
+            case SKILL_BLACKSMITHING: return 5956;   // Blacksmith Hammer
+            case SKILL_ENGINEERING:   return 6219;   // Arclight Spanner
+            case SKILL_JEWELCRAFTING: return 20815;  // Jeweler's Kit
+            case SKILL_INSCRIPTION:   return 39505;  // Virtuoso Inking Set
+            case SKILL_FISHING:       return 6256;   // Fishing Pole
+            default:                  return 0;
+        }
+    }
+
+    bool HasProfessionTool(Player* p, uint32 line)
+    {
+        uint32 const tool = ProfessionTool(line);
+        if (!tool)
+            return true;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(tool);
+        if (proto && proto->TotemCategory && p->HasItemTotemCategory(proto->TotemCategory))
+            return true;
+        return p->HasItemCount(tool, 1, false);
+    }
+
     char const* RpgName(uint32 status)
     {
         static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC", "DO_QUEST",
@@ -3459,19 +3486,17 @@ void GuildCoordinator::UpdateProfessions()
                 }
                 std::string key;
                 std::string decision;
-                auto const call = [&](std::string details, std::string reason, bool pole = false)
+                auto const call = [&](std::string details, std::string reason, uint32 tool = 0)
                 {
                     ProfessionPick pick;
                     pick.kind = GuildProfessionKind::TRAIN;
                     pick.skillLine = line;
-                    // [econ2] the town of its nearest trainer (of the nearest pole vendor): its next visit there
-                    static std::vector<NpcSpot> const noSpots;
-                    auto const spots = trainerSpots_.find(line);
-                    if (NpcSpot const* n = NearestSpot(p, row->low,
-                                                       pole                          ? poleVendors_
-                                                       : spots != trainerSpots_.end() ? spots->second
-                                                                                      : noSpots))
-                        pick.pos = n->spot.pos;
+                    pick.itemId = tool;  // [econ2] a tool buy: the tool's item (ProfessionErrand)
+                    // [econ2] the town of its nearest trainer (of the nearest tool vendor): its next visit there
+                    auto const& lists = tool ? toolVendors_ : trainerSpots_;
+                    if (auto const spots = lists.find(tool ? tool : line); spots != lists.end())
+                        if (NpcSpot const* n = NearestSpot(p, row->low, spots->second))
+                            pick.pos = n->spot.pos;
                     pick.details = std::move(details);
                     pick.reason = std::move(reason);
                     picks.push_back(pick);
@@ -3501,9 +3526,18 @@ void GuildCoordinator::UpdateProfessions()
                 }
                 else if (has && line == SKILL_FISHING && !NewRpgFishing::HasPole(p))
                 {
-                    call("Fishing Pole", "fishing learned, no pole", true);
+                    call("Fishing Pole", "fishing learned, no pole", ProfessionTool(line));
                     key = "tool";
                     decision = head + " — no pole: buy at a vendor";
+                }
+                // [econ2] the executor buys a tool only on the leader's call: a learned Mining / Skinning without
+                // its tool (the node / the corpse needs it)
+                else if (has && (line == SKILL_MINING || line == SKILL_SKINNING) && !HasProfessionTool(p, line))
+                {
+                    uint32 const tool = ProfessionTool(line);
+                    call(ItemName(tool), std::string(name) + " learned, no tool", tool);
+                    key = "tool";
+                    decision = head + " — no " + ItemName(tool) + ": buy at a vendor";
                 }
                 if (key.empty())
                 {
@@ -3516,6 +3550,28 @@ void GuildCoordinator::UpdateProfessions()
                     Decision(decision);
                 }
             }
+        // [econ2] a crafting line the leader calls (its value beat questing) whose crafts need a tool it lacks
+        // (Blacksmith Hammer, Arclight Spanner, Jeweler's Kit, Virtuoso Inking Set): the nearest vendor's town
+        {
+            std::set<uint32> toolLines;
+            for (ProfessionPick const& pick : picks)
+                if (pick.kind == GuildProfessionKind::CRAFT && ProfessionTool(pick.skillLine) &&
+                    !HasProfessionTool(p, pick.skillLine))
+                    toolLines.insert(pick.skillLine);
+            for (uint32 line : toolLines)
+            {
+                ProfessionPick pick;
+                pick.kind = GuildProfessionKind::TRAIN;
+                pick.skillLine = line;
+                pick.itemId = ProfessionTool(line);
+                if (auto const spots = toolVendors_.find(pick.itemId); spots != toolVendors_.end())
+                    if (NpcSpot const* n = NearestSpot(p, row->low, spots->second))
+                        pick.pos = n->spot.pos;
+                pick.details = ItemName(pick.itemId);
+                pick.reason = std::string("its called ") + SkillShort(line) + " crafts need it";
+                picks.push_back(pick);
+            }
+        }
         std::stable_sort(picks.begin(), picks.end(), [](ProfessionPick const& a, ProfessionPick const& b)
                          { return uint8(a.kind) > uint8(b.kind); });  // craft, buy, gather, then the trainer
         professions_[row->low] = std::move(picks);
@@ -3614,20 +3670,51 @@ bool GuildCoordinator::ProfessionErrand(Player* bot, uint32 skillLine, bool tool
         return true;  // a bot outside the guild plan leads itself
     if (tool && !FreeBagSlots(bot))
         return false;  // the core refuses a buy into full bags (b353: Ryarii / Shalaeth 4 vendors each, 0 bought)
+    // the npc stands in the town the bot is in now (a capital: anywhere inside the city)
+    if (npc.GetMapId() != bot->GetMapId())
+        return false;
     uint32 const npcArea = sMapMgr->GetAreaId(PHASEMASK_NORMAL, npc.GetMapId(), npc.GetPositionX(),
                                               npc.GetPositionY(), npc.GetPositionZ());
+    uint32 const npcZone = sMapMgr->GetZoneId(PHASEMASK_NORMAL, npc.GetMapId(), npc.GetPositionX(),
+                                              npc.GetPositionY(), npc.GetPositionZ());
+    AreaTableEntry const* zone = sAreaTableStore.LookupEntry(npcZone);
+    bool const here = zone && (zone->flags & AREA_FLAG_CAPITAL) ? bot->GetZoneId() == npcZone
+                                                                 : SameTown(bot->GetAreaId(), npcArea);
+    if (!here)
+        return false;
     std::lock_guard<std::mutex> guard(lock_);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     if (itr == bots_.end())
         return false;
     for (GuildOrder const& o : itr->second.orders)
-        if (o.type == GuildOrderType::PROFESSION && o.profession == GuildProfessionKind::TRAIN &&
-            o.skillLine == skillLine && o.townArea && TownReady(bot, o) &&
-            (o.townCapital ? sMapMgr->GetZoneId(PHASEMASK_NORMAL, npc.GetMapId(), npc.GetPositionX(),
-                                                npc.GetPositionY(), npc.GetPositionZ()) == o.townZone
-                           : SameTown(npcArea, o.townArea)))
+    {
+        if (o.type != GuildOrderType::PROFESSION || o.skillLine != skillLine)
+            continue;
+        // its called tool buy; its training, or a recipe trip on a line it is called to train / craft
+        if (tool ? o.profession == GuildProfessionKind::TRAIN && o.itemId && o.itemId == ProfessionTool(skillLine)
+                 : o.profession == GuildProfessionKind::TRAIN || o.profession == GuildProfessionKind::CRAFT)
             return true;
+    }
     return false;
+}
+
+bool GuildCoordinator::NeedsForOwnCalls(Player* bot, uint32 itemId) const
+{
+    if (!bot || !itemId || !IsPlanned(bot->GetGUID().GetCounter()))
+        return false;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+            if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                quest && bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+                for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                    if (quest->RequiredItemId[i] == itemId)
+                        return true;
+    std::lock_guard<std::mutex> guard(lock_);
+    auto const own = crafterNeed_.find(bot->GetGUID().GetCounter());
+    if (own == crafterNeed_.end())
+        return false;
+    auto const need = own->second.find(itemId);
+    return need != own->second.end() && need->second > 0;
 }
 
 GuildCoordinator::RepairCall GuildCoordinator::Repair(Player* bot) const
@@ -3681,9 +3768,14 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
         auto const itr = bots_.find(low);
         if (itr == bots_.end() || itr->second.fiveId)
             return;
+        // [econ2] world2 [town12]: the mail pickup (MAIL_TO without a transfer, GuildTransfer TransferOrders) is a
+        // town stop until the bot stands in its mailbox's town - whatever its waitsTown flag says - so a party
+        // leader's route takes its followers there (b353: party followers held most of the ~100 letters)
         for (GuildOrder const& o : itr->second.orders)
-            if (o.executable && o.waitsTown && o.priority == GuildTaskPriority::CONVENIENT &&
-                o.pos != WorldPosition() && o.pos.GetMapId() == bot->GetMapId())
+            if (o.executable && o.priority == GuildTaskPriority::CONVENIENT && o.pos != WorldPosition() &&
+                o.pos.GetMapId() == bot->GetMapId() &&
+                (o.waitsTown || (o.type == GuildOrderType::MAIL_TO && !o.transferId &&
+                                 (!o.townArea || !TownReady(bot, o)))))
                 stops.emplace_back(o.pos,
                                    std::string(OrderName(o.type)) + (o.townName.empty() ? "" : " " + o.townName));
     }
