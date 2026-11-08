@@ -296,7 +296,13 @@ public:
     // [econ2] map thread, for the profession executors' errands (NewRpgProfession train / tool / recipe trips): the
     // global leader called this errand for this skill line (TRAIN, a tool = TRAIN "tool"), the npc stands in the town
     // the bot is in now, and a bought tool has a free bag slot. The executors pick only errands this allows
+    // [econ2] ... also a tool buy the leader called (TRAIN with the tool's item: Mining Pick, Skinning Knife, Fishing
+    // Pole, a called crafting line's tool) with bag room, and a recipe trip on a line it is called to (TRAIN or
+    // CRAFT); each only with the npc in the town the bot is in now
     bool ProfessionErrand(Player* bot, uint32 skillLine, bool tool, WorldPosition const& npc);
+    // [econ2] map thread: the item is a reagent of the bot's own called skill-ups (UpdateWanted, the lines the leader
+    // calls it to) or an objective item of a quest in its log: the vendor sale keeps it
+    bool NeedsForOwnCalls(Player* bot, uint32 itemId) const;
     // [coop] map thread, read only: the bot runs or must start an URGENT task now (its first executable urgent order
     // not waiting for a town, its five, an urgent vault run); why: the task's name
     bool UrgentTask(Player* bot, std::string* why) const;
@@ -689,7 +695,7 @@ private:
         Mailbox spot;
     };
     std::unordered_map<uint32, std::vector<NpcSpot>> trainerSpots_;
-    std::vector<NpcSpot> poleVendors_;
+    std::unordered_map<uint32, std::vector<NpcSpot>> toolVendors_;  // tool item -> its vendors (Fishing Pole, ...)
     // the nearest friendly spot of the list on the bot's map whose walk its trip judge did not refuse (lock_ held)
     NpcSpot const* NearestSpot(Player* p, uint32 low, std::vector<NpcSpot> const& list) const;
     // [econ2] member -> raw item -> its own skill-up need on the lines the global leader calls it to (UpdateWanted):

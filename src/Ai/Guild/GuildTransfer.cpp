@@ -461,8 +461,10 @@ void GuildCoordinator::LoadMailboxes()
     // trainer teaching one of its ranks or recipes) and the Fishing Pole vendors: the call waits for the bot's visit
     // to the town of the nearest one
     trainerSpots_.clear();
-    poleVendors_.clear();
-    constexpr uint32 FISHING_POLE = 6256;
+    toolVendors_.clear();
+    // the professions' tools (NewRpgProfession's list): Mining Pick, Skinning Knife, Blacksmith Hammer, Arclight
+    // Spanner, Jeweler's Kit, Virtuoso Inking Set, Fishing Pole
+    std::set<uint32> const tools{2901, 7005, 5956, 6219, 20815, 39505, 6256};
     auto const spotOf = [](CreatureData const& data)
     {
         NpcSpot n;
@@ -523,17 +525,17 @@ void GuildCoordinator::LoadMailboxes()
         if (tmpl->npcflag & UNIT_NPC_FLAG_VENDOR)
             if (VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(data.id))
                 for (VendorItem const* item : items->m_items)
-                    if (item && item->item == FISHING_POLE && !item->ExtendedCost)
-                    {
-                        poleVendors_.push_back(spotOf(data));
-                        break;
-                    }
+                    if (item && tools.count(item->item) && !item->ExtendedCost)
+                        toolVendors_[item->item].push_back(spotOf(data));
     }
     size_t trainers = 0;
     for (auto const& [line, list] : trainerSpots_)
         trainers += list.size();
-    LOG_INFO("playerbots", "[econ2] profession towns: {} trainer spawns over {} skill lines, {} Fishing Pole vendors",
-             trainers, trainerSpots_.size(), poleVendors_.size());
+    size_t vendors = 0;
+    for (auto const& [item, list] : toolVendors_)
+        vendors += list.size();
+    LOG_INFO("playerbots", "[econ2] profession towns: {} trainer spawns over {} skill lines, {} tool vendor spawns",
+             trainers, trainerSpots_.size(), vendors);
     LOG_INFO("playerbots", "[guild81] transfers: {} mailboxes on the continents, postage {} copper per item, item "
              "delivery between accounts {} s, trade distance {} yd", mailboxes_.size(), MAIL_POSTAGE,
              sWorld->getIntConfig(CONFIG_MAIL_DELIVERY_DELAY), TRADE_DISTANCE);
