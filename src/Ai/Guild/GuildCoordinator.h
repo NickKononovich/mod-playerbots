@@ -458,6 +458,10 @@ private:
         // as last logged ([gear] durability line on change)
         uint32 repairShort{0};
         std::string durabilityKey;
+        // [human] the suggestions sent to a human member: key -> text (sent again only when the text changes)
+        std::map<std::string, std::string> suggested;
+        // [tasks] the bag pressure last logged (free slots class: 0 full, 1 low, 2 ok; -1 not logged yet)
+        int8 bagClass{-1};
     };
 
     // [tasks] the global leader's profession call for one member (UpdateProfessions, lock_)
@@ -608,6 +612,9 @@ private:
         bool mailRefused{false};
         uint32 refusedLevels{0};  // the members' levels (from << 8 | to) at the refusal: reset on a level-up
         bool stalled{false};    // no channel possible now: kept (its refusals too), traded if they meet
+        // [human] the trade was refused while the receiver held this many free bag slots: no new try until that count
+        // changes (a fact, no timer); -1: no such refusal
+        int32 refusedFree{-1};
         bool mailed{false};     // sent: in the receiver's mailbox until it takes it
         uint32 deliverAt{0};    // the core's delivery time of the mail (game seconds)
         std::string failed;     // the last refusal of the core handler (logged once)
@@ -632,6 +639,9 @@ private:
     void TransferPlanRows(std::vector<std::vector<std::string>>& rows) const;
     std::vector<Mailbox> mailboxes_;        // read-only after Load
     std::map<uint32, Transfer> transfers_;  // id -> transfer (lock_)
+    // [recipes] (member, recipe item guid): recipes their holder is the best placed to learn, used on the next
+    // RunTransfers (lock_)
+    std::vector<std::pair<uint32, uint32>> recipeLearn_;
     // receiver -> its delivered mails from members (count, the cheapest mailbox), what is still in transit (lock_)
     std::map<uint32, std::pair<uint32, WorldPosition>> mailPickup_;
     std::map<uint32, std::vector<std::string>> mailTransit_;
@@ -669,6 +679,13 @@ private:
                   std::map<uint32, uint32> const& bank, std::vector<WantedItem> const& wanted);
     void UpdateCrafts(uint32 now);  // [guild50] craft queue (upgrade crafts + bags), its wanted mats; lock_ held
     static bool HumanControls(Player* p);
+    // [human] user rule 2026-11-08: the leader never acts with the items or inventory of a human's character - one
+    // the human controls (HumanControls) or one with a real client session (a SelfBot the human plays with); it only
+    // suggests in chat and lets the human act (Suggest)
+    static bool HumanCharacter(Player* p);
+    // [human] lock_ held: a suggestion to the human member (a system line from the global leader), sent once per key
+    // while its text stays the same
+    void Suggest(uint32 low, std::string const& key, std::string const& text);
     void ProcessLoot();
     void ProcessDeaths();
     void UpdateHealth();

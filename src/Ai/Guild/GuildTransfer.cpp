@@ -30,6 +30,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
+#include <tuple>
 
 #include "AiObjectContext.h"
 #include "Bag.h"
@@ -175,6 +176,37 @@ namespace
                 for (uint32 j = 0; j < bag->GetBagSize(); ++j)
                     if (Item* i = bag->GetItemByPos(uint8(j)))
                         f(i);
+    }
+
+    // [recipes] the spell a recipe item teaches: the generic "Learning" layout (Spells[0] = 483 / 55884, Spells[1] =
+    // the recipe) or a spell whose SPELL_EFFECT_LEARN_SPELL teaches it; 0 when none
+    uint32 RecipeSpell(ItemTemplate const* proto)
+    {
+        constexpr int32 SPELL_LEARNING = 483;
+        constexpr int32 SPELL_LEARNING_NORTHREND = 55884;
+        int32 const first = proto->Spells[0].SpellId;
+        if (first == SPELL_LEARNING || first == SPELL_LEARNING_NORTHREND)
+            return proto->Spells[1].SpellId > 0 ? uint32(proto->Spells[1].SpellId) : 0;
+        if (SpellInfo const* info = first > 0 ? sSpellMgr->GetSpellInfo(uint32(first)) : nullptr)
+            for (SpellEffectInfo const& effect : info->Effects)
+                if (effect.Effect == SPELL_EFFECT_LEARN_SPELL && effect.TriggerSpell)
+                    return effect.TriggerSpell;
+        return 0;
+    }
+
+    // [recipes] the bot uses its recipe item as a player does (CMSG_USE_ITEM on itself); "" when it learned the spell
+    std::string LearnRecipe(Player* p, Item* item)
+    {
+        ItemTemplate const* proto = item->GetTemplate();
+        uint32 const taught = RecipeSpell(proto);
+        if (p->IsInCombat() || p->IsNonMeleeSpellCast(false) || p->IsInFlight() || p->CanUseItem(item) != EQUIP_ERR_OK)
+            return "cannot use it now";
+        WorldPacket packet(CMSG_USE_ITEM);
+        uint32 const spellId = uint32(std::max<int32>(proto->Spells[0].SpellId, 0));
+        packet << item->GetBagSlot() << item->GetSlot() << uint8(1) << spellId << item->GetGUID() << uint32(0)
+               << uint8(0) << uint32(TARGET_FLAG_NONE);
+        p->GetSession()->HandleUseItemOpcode(packet);
+        return !taught || p->HasSpell(taught) || p->IsNonMeleeSpellCast(false) ? "" : "the core did not teach it";
     }
 
     uint32 CountKind(Player* p, uint8 kind, uint8 level)
@@ -363,7 +395,7 @@ void GuildCoordinator::UpdateTransfers()
 
     auto const canWalk = [&](Player* p)
     {
-        if (!p || !p->IsAlive() || !GET_PLAYERBOT_AI(p) || HumanControls(p))
+        if (!p || !p->IsAlive() || !GET_PLAYERBOT_AI(p) || HumanCharacter(p))
             return false;
         auto const st = bots_.find(p->GetGUID().GetCounter());
         return st == bots_.end() || !st->second.fiveId;  // a five's dungeon first
@@ -461,7 +493,7 @@ void GuildCoordinator::UpdateTransfers()
     for (PlanRow const& row : plan_)
     {
         Player* p = Online(row.low);
-        if (!p || !GET_PLAYERBOT_AI(p) || HumanControls(p))
+        if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p))
             continue;
         uint32 delivered = 0;
         for (Mail const* m : p->GetMails())
@@ -526,7 +558,7 @@ void GuildCoordinator::UpdateTransfers()
     for (PlanRow const& row : plan_)
     {
         Player* c = Online(row.low);
-        if (!c || !GET_PLAYERBOT_AI(c) || HumanControls(c))
+        if (!c || !GET_PLAYERBOT_AI(c) || HumanCharacter(c))
             continue;
         for (auto const& [line, plan] : skillPlan_)
         {
@@ -627,7 +659,7 @@ void GuildCoordinator::UpdateTransfers()
     for (PlanRow const& row : plan_)
     {
         Player* cook = Online(row.low);
-        if (!cook || !GET_PLAYERBOT_AI(cook) || HumanControls(cook) || !cook->HasSkill(SKILL_COOKING))
+        if (!cook || !GET_PLAYERBOT_AI(cook) || HumanCharacter(cook) || !cook->HasSkill(SKILL_COOKING))
             continue;
         auto const useOf = [&](uint32 low)
         {
@@ -643,7 +675,7 @@ void GuildCoordinator::UpdateTransfers()
         for (PlanRow const& m : plan_)
         {
             Player* p = m.low == row.low || fed.count(m.low) ? nullptr : Online(m.low);
-            if (!p || !GET_PLAYERBOT_AI(p) || HumanControls(p) || CountKind(p, FOOD, p->GetLevel()))
+            if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) || CountKind(p, FOOD, p->GetLevel()))
                 continue;
             if (auto const st = bots_.find(m.low); st != bots_.end() && st->second.fiveId)
                 continue;
@@ -723,7 +755,7 @@ void GuildCoordinator::UpdateTransfers()
             for (uint32 m : five.members)
             {
                 Player* p = m == five.quartermasterLow ? nullptr : Online(m);
-                if (!p || !GET_PLAYERBOT_AI(p) || HumanControls(p) ||
+                if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
                     (kind == DRINK && p->getPowerType() != POWER_MANA) || CountKind(p, kind, p->GetLevel()))
                     continue;
                 needy.push_back(p);
@@ -788,7 +820,10 @@ void GuildCoordinator::UpdateTransfers()
         if (!s)
             return c;
         // trade: next to each other, or one walks to the other (to where it stands, or where it walks anyway)
-        if (r && s->GetMap() == r->GetMap() && s->GetLevel() >= tradeLevel && r->GetLevel() >= tradeLevel)
+        // [human] the trade below runs both sides' opcodes: never with a human receiver (he gets it by mail and
+        // takes it himself)
+        if (r && !HumanCharacter(r) && s->GetMap() == r->GetMap() && s->GetLevel() >= tradeLevel &&
+            r->GetLevel() >= tradeLevel)
         {
             if (s->IsWithinDistInMap(r, TRADE_DISTANCE))
                 c.trade = 0.0f;
@@ -912,7 +947,7 @@ void GuildCoordinator::UpdateTransfers()
     {
         uint32 const gmLow = guild->GetLeaderGUID().GetCounter();
         Player* gm = Online(gmLow);
-        if (!gm || !GET_PLAYERBOT_AI(gm) || HumanControls(gm))
+        if (!gm || !GET_PLAYERBOT_AI(gm) || HumanCharacter(gm))
             donation = "взносы на вкладку: глава не бот в сети";
         else
         {
@@ -1025,14 +1060,14 @@ void GuildCoordinator::UpdateTransfers()
         if (!st.repairShort || !IsPlanned(low))
             continue;
         Player* r = Online(low);
-        if (!r || !GET_PLAYERBOT_AI(r) || HumanControls(r))
+        if (!r || !GET_PLAYERBOT_AI(r) || HumanCharacter(r))
             continue;
         Want best;
         float bestCost = NONE;
         for (PlanRow const& row : plan_)
         {
             Player* s = row.low == low ? nullptr : Online(row.low);
-            if (!s || !GET_PLAYERBOT_AI(s) || HumanControls(s) || !canWalk(s) ||
+            if (!s || !GET_PLAYERBOT_AI(s) || HumanCharacter(s) || !canWalk(s) ||
                 FoundingFreeMoney(s) < st.repairShort + MAIL_POSTAGE)
                 continue;
             Want w;
@@ -1053,6 +1088,91 @@ void GuildCoordinator::UpdateTransfers()
         if (bestCost < NONE)
             wants.push_back(best);
     }
+
+    // e. [recipes] user 2026-11-08 (Eraelor held Recipe: Brilliant Smallfish): every recipe item in a member's bags
+    // goes to the member best placed to learn it - one with that profession (its own or planned, GuildProfPath's
+    // lines) that can learn it now, the highest skill first, the holder itself on a tie; the learner uses the item
+    // itself (RunTransfers: the core's CMSG_USE_ITEM). A human holder or learner gets a suggestion
+    recipeLearn_.clear();
+    {
+        std::vector<std::pair<PlanRow const*, Player*>> members;
+        for (PlanRow const& row : plan_)
+            if (Player* p = Online(row.low); p && p->IsAlive())
+                members.emplace_back(&row, p);
+        using RecipeScore = std::tuple<bool, uint32, bool, bool>;  // learns now, skill, the holder, a bot
+        for (auto const& [holderRow, h] : members)
+        {
+            std::vector<Item*> recipes;
+            ForEachBagItem(h,
+                           [&](Item* it)
+                           {
+                               ItemTemplate const* proto = it->GetTemplate();
+                               if (proto->Class == ITEM_CLASS_RECIPE && proto->RequiredSkill &&
+                                   !used.count(it->GetGUID().GetCounter()))
+                                   recipes.push_back(it);
+                           });
+            for (Item* it : recipes)
+            {
+                ItemTemplate const* proto = it->GetTemplate();
+                uint32 const taught = RecipeSpell(proto);
+                uint32 const line = proto->RequiredSkill;
+                Player* best = nullptr;
+                RecipeScore bestScore{};
+                for (auto const& [row, m] : members)
+                {
+                    bool const planned =
+                        std::find(row->profs.begin(), row->profs.end(), line) != row->profs.end() ||
+                        std::find(row->secondary.begin(), row->secondary.end(), line) != row->secondary.end();
+                    if ((taught && m->HasSpell(taught)) || (!m->HasSkill(line) && !planned) ||
+                        m->GetLevel() < proto->RequiredLevel)
+                        continue;
+                    uint32 const skill = m->HasSkill(line) ? m->GetPureSkillValue(line) : 0;
+                    RecipeScore const score{m->HasSkill(line) && skill >= proto->RequiredSkillRank, skill, m == h,
+                                            !HumanCharacter(m)};
+                    if (!best || score > bestScore)
+                    {
+                        best = m;
+                        bestScore = score;
+                    }
+                }
+                if (!best)
+                    continue;
+                bool const now = std::get<0>(bestScore);
+                uint32 const bestLow = best->GetGUID().GetCounter();
+                std::string const name = ItemText(proto->ItemId, 1);
+                std::string const skillText =
+                    std::to_string(std::get<1>(bestScore)) + "/" + std::to_string(proto->RequiredSkillRank);
+                if (best == h)
+                {
+                    if (!now)
+                        continue;  // its own, learnable once its skill reaches the rank: kept
+                    if (HumanCharacter(h))
+                        Suggest(holderRow->low, "r:" + std::to_string(proto->ItemId),
+                                "выучи " + name + " (навык " + skillText + ") — в гильдии ты лучший для него.");
+                    else
+                        recipeLearn_.emplace_back(holderRow->low, it->GetGUID().GetCounter());
+                    continue;
+                }
+                Want w;
+                w.key = "l" + std::to_string(it->GetGUID().GetCounter());
+                w.from = holderRow->low;
+                w.to = bestLow;
+                w.guid = it->GetGUID().GetCounter();
+                w.itemId = proto->ItemId;
+                w.count = 1;
+                w.purpose = "рецепт";
+                w.why = "выучит " + Who(bestLow) + " (навык " + skillText +
+                        (now ? ", учит сразу)" : ", учит, когда дорастёт)");
+                if (HumanCharacter(best) && !HumanCharacter(h))
+                    Suggest(bestLow, "r:" + std::to_string(proto->ItemId),
+                            name + " придёт тебе почтой от " + Who(holderRow->low) + " — выучи (навык " + skillText +
+                                ").");
+                wants.push_back(w);
+                used.insert(w.guid);
+            }
+        }
+    }
+
     if (donation != donationState_)
     {
         donationState_ = donation;
@@ -1062,6 +1182,23 @@ void GuildCoordinator::UpdateTransfers()
             Decision(donation);
         }
     }
+
+    // [human] user rule 2026-11-08 (b349: TRADE_TO Eraelor -> Thamesh Linen Cloth opened trades from the human's
+    // character every second, "target does not have space"): nothing moves out of a human's bags by the leader's
+    // hand - he gets the suggestion and gives it himself
+    wants.erase(std::remove_if(wants.begin(), wants.end(),
+                               [&](Want const& w)
+                               {
+                                   Player* s = Online(w.from);
+                                   if (!s || !HumanCharacter(s))
+                                       return false;
+                                   std::string const what = w.gold ? Gold(w.money) : ItemText(w.itemId, w.count);
+                                   Suggest(w.from, "t:" + w.key,
+                                           "у тебя " + what + " — нужно " + Who(w.to) + " (" + w.purpose + ": " +
+                                               w.why + "). Передай обменом или почтой, если согласен.");
+                                   return true;
+                               }),
+                wants.end());
 
     // 3. reconcile: keep what still moves (its channel while possible), drop the rest, plan the new ones
     std::map<std::string, Want const*> desired;
@@ -1208,13 +1345,27 @@ void GuildCoordinator::RunTransfers(uint32 diff)
     transferTimer_ = 0;
     std::vector<Transfer> list;
     std::vector<uint32> pickups;
+    std::vector<std::pair<uint32, uint32>> learn;  // [recipes] (member, recipe item guid) it learns now
     {
         std::lock_guard<std::mutex> guard(lock_);
+        learn.swap(recipeLearn_);
         for (auto const& [id, t] : transfers_)
             if (t.channel != Transfer::BANK && !t.mailed)
                 list.push_back(t);
         for (auto const& [low, pick] : mailPickup_)
             pickups.push_back(low);
+    }
+    for (auto const& [low, guid] : learn)
+    {
+        Player* p = Online(low);
+        Item* item = p && p->IsAlive() && !HumanCharacter(p)
+                         ? p->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(guid))
+                         : nullptr;
+        if (!item)
+            continue;
+        std::string const name = ItemText(item->GetEntry(), 1);
+        std::string const err = LearnRecipe(p, item);
+        LOG_INFO("playerbots", "[recipes] {} learns {}: {}", p->GetName(), name, err.empty() ? "used" : err);
     }
     if (list.empty() && pickups.empty())
         return;
@@ -1228,6 +1379,7 @@ void GuildCoordinator::RunTransfers(uint32 diff)
         uint32 newGuid;
         std::string failed;
         uint32 money;  // gold handed over (what the budget left at that moment)
+        int32 refusedFree = -1;  // [human] a refused trade: the receiver's free bag slots then
     };
     std::vector<Outcome> outcomes;
     std::vector<std::string> logs;
@@ -1235,8 +1387,8 @@ void GuildCoordinator::RunTransfers(uint32 diff)
     for (Transfer const& t : list)
     {
         Player* s = Online(t.fromLow);
-        if (!s || !s->IsAlive() || s->IsInFlight() || s->GetTradeData())
-            continue;
+        if (!s || !s->IsAlive() || s->IsInFlight() || s->GetTradeData() || HumanCharacter(s))
+            continue;  // [human] never a human's items (the planner suggests instead)
         Player* r = Online(t.toLow);
         Item* item = t.gold ? nullptr : s->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(t.itemGuidLow));
         if (!t.gold && !item)
@@ -1255,14 +1407,28 @@ void GuildCoordinator::RunTransfers(uint32 diff)
         if (t.channel == Transfer::TRADE)
         {
             if (!r || !r->IsAlive() || r->GetTradeData() || s->GetMap() != r->GetMap() ||
-                !s->IsWithinDistInMap(r, TRADE_DISTANCE))
+                !s->IsWithinDistInMap(r, TRADE_DISTANCE) || HumanCharacter(r))
                 continue;
+            // [human] refused before with the receiver's bags as they are now: no new try until its free slots change
+            int32 const free = int32(r->GetFreeInventorySpace());
+            if (t.refusedFree >= 0 && free == t.refusedFree)
+                continue;
+            if (item)
+            {
+                ItemPosCountVec dest;
+                if (r->CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) != EQUIP_ERR_OK)
+                {
+                    outcomes.push_back(
+                        {t.id, false, false, 0, 0, "the receiver's bags have no room for it", 0, free});
+                    continue;
+                }
+            }
             if (item && t.count && t.count < item->GetCount())
             {
                 item = Split(s, item, t.count);
                 if (!item)
                 {
-                    outcomes.push_back({t.id, false, false, 0, 0, "no free bag slot to split the stack", 0});
+                    outcomes.push_back({t.id, false, false, 0, 0, "no free bag slot to split the stack", 0, -1});
                     continue;
                 }
             }
@@ -1272,10 +1438,10 @@ void GuildCoordinator::RunTransfers(uint32 diff)
             {
                 logs.push_back("trade " + Who(t.fromLow) + " -> " + Who(t.toLow) + ": " + what + " (" + t.purpose +
                                ": " + t.why + "; " + t.costs + ")");
-                outcomes.push_back({t.id, true, false, 0, guid, "", money});
+                outcomes.push_back({t.id, true, false, 0, guid, "", money, -1});
             }
             else
-                outcomes.push_back({t.id, false, false, 0, 0, err, 0});
+                outcomes.push_back({t.id, false, false, 0, 0, err, 0, int32(r->GetFreeInventorySpace())});
         }
         else if (t.channel == Transfer::MAIL)
         {
@@ -1301,17 +1467,18 @@ void GuildCoordinator::RunTransfers(uint32 diff)
                                Gold(before - s->GetMoney() - money) + ", delivery in " +
                                std::to_string(deliverAt - now) + " s (" + t.purpose + ": " + t.why + "; " + t.costs +
                                ")");
-                outcomes.push_back({t.id, false, true, deliverAt, 0, "", money});
+                outcomes.push_back({t.id, false, true, deliverAt, 0, "", money, -1});
             }
             else
-                outcomes.push_back({t.id, false, false, 0, 0, err, 0});
+                outcomes.push_back({t.id, false, false, 0, 0, err, 0, -1});
         }
     }
     // the delivered mails of members, taken at the mailbox the receiver stands at
     for (uint32 low : pickups)
     {
         Player* r = Online(low);
-        GameObject* box = r && r->IsAlive() ? MailboxAt(r) : nullptr;
+        // [human] a human takes his mail himself
+        GameObject* box = r && r->IsAlive() && !HumanCharacter(r) ? MailboxAt(r) : nullptr;
         if (!box)
             continue;
         std::vector<uint32> ids;
@@ -1392,8 +1559,13 @@ void GuildCoordinator::RunTransfers(uint32 diff)
             Decision(Who(t.fromLow) + " отправил почтой " + Who(t.toLow) + ": " +
                      (t.gold ? Gold(t.money) : ItemText(t.itemId, t.count)) + " (" + t.purpose + ")");
         }
-        else if (o.failed != t.failed)
+        else
         {
+            // [human] the receiver's free slots at a refused trade (a new try only once they change)
+            if (t.channel == Transfer::TRADE)
+                t.refusedFree = o.refusedFree;
+            if (o.failed == t.failed)
+                continue;
             t.failed = o.failed;
             logs.push_back(std::string(ChannelLog(t.channel)) + " " + Who(t.fromLow) + " -> " + Who(t.toLow) +
                            " refused: " + o.failed);

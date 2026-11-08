@@ -1479,7 +1479,7 @@ void GuildCoordinator::UpdateOrders()
             for (PlanRow const& row : plan_)
                 if (row.grp == 'B' || row.grp == 'C')
                     if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
-                        p && p->IsInWorld() && !HumanControls(p))
+                        p && p->IsInWorld() && !HumanCharacter(p))
                     {
                         gatherers.push_back(p);
                         // [questrate] its questing by formula (QuestPace), not by measured history
@@ -1548,7 +1548,7 @@ void GuildCoordinator::UpdateOrders()
         if (!p || !p->IsInWorld())
             continue;
         // [guild50] an upgrade lying in the guild bank: the member takes it out itself
-        if (!HumanControls(p))
+        if (!HumanCharacter(p))
             for (GearPick const& g : st.gearNow)
                 if (g.kind == GuildGear::SRC_BANK && !p->GetItemCount(g.itemId, true) &&
                     !withdrawn.count({row.low, g.itemId}))
@@ -1560,7 +1560,7 @@ void GuildCoordinator::UpdateOrders()
                 }
         // [guild50] old bags: once all four bag slots hold bags, a spare bag no bigger than the smallest worn one is
         // sold at the next vendor
-        if (!HumanControls(p))
+        if (!HumanCharacter(p))
         {
             uint32 const smallest = SmallestBag(p);
             std::vector<Item*> spare;
@@ -1598,7 +1598,7 @@ void GuildCoordinator::UpdateOrders()
         // URGENT for a weapon broken or at one death's loss and for a broken armour piece, CONVENIENT for other armour
         // at one death's loss (in the repairer's town); its money against the core's cost, the shortfall sent by a
         // member (GuildTransfer)
-        RepairNeed const repairNeed = GET_PLAYERBOT_AI(p) && !HumanControls(p) ? RepairNeedOf(p) : RepairNeed();
+        RepairNeed const repairNeed = GET_PLAYERBOT_AI(p) && !HumanCharacter(p) ? RepairNeedOf(p) : RepairNeed();
         if (repairNeed.items != st.durabilityKey)
         {
             st.durabilityKey = repairNeed.items;
@@ -1723,7 +1723,7 @@ void GuildCoordinator::UpdateOrders()
         }
         // [tasks] PROFESSION: the global leader's calls (UpdateProfessions: the profession beats questing by value
         // per minute, or a rank / the planned profession waits at the trainer)
-        if (auto const calls = professions_.find(row.low); calls != professions_.end() && !HumanControls(p))
+        if (auto const calls = professions_.find(row.low); calls != professions_.end() && !HumanCharacter(p))
             for (ProfessionPick const& pick : calls->second)
             {
                 GuildOrder o;
@@ -1752,7 +1752,7 @@ void GuildCoordinator::UpdateOrders()
             o.status = "у ближайшего торговца по пути";
             orders.push_back(o);
         }
-        if (!HumanControls(p))
+        if (!HumanCharacter(p))
         {
             // [guild50] CRAFT_FOR: this crafter's jobs, the first it holds the reagents for
             CraftJob const* job = nullptr;
@@ -1862,6 +1862,63 @@ void GuildCoordinator::UpdateOrders()
             o.waitsTown = o.executable && !TownReady(p, o);
             if (o.waitsTown)
                 o.status = "ждёт города: " + (o.townName.empty() ? std::string("?") : o.townName) + "; " + o.status;
+        }
+        // [human] a human's character: no task of the leader touches its items, money or professions (the selfbot
+        // that drives it while he is away included); each one is a suggestion he acts on himself
+        if (HumanCharacter(p))
+            for (GuildOrder& o : orders)
+            {
+                bool const touches = o.type != GuildOrderType::QUEST && o.type != GuildOrderType::COOP &&
+                                     o.type != GuildOrderType::DUNGEON && o.type != GuildOrderType::QUEST_REWARD &&
+                                     o.type != GuildOrderType::JOIN && o.type != GuildOrderType::SIGN_CHARTER;
+                if (!touches)
+                    continue;
+                bool const wasRun = o.executable;
+                o.executable = false;
+                o.waitsTown = false;
+                o.status = "совет человеку (решает сам)";
+                if (wasRun)
+                    Suggest(row.low, TaskKey(o),
+                            std::string("совет: ") + OrderName(o.type) + " — " + o.details + " (" + o.reason + ")");
+            }
+        // [tasks] the bag pressure (logged when its class changes): full bags block looting; with no bank tab the
+        // held items for the bank stay in the bags, so what nobody in the guild uses is released to the vendor
+        {
+            uint32 total = INVENTORY_SLOT_ITEM_END - INVENTORY_SLOT_ITEM_START;
+            for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+                if (Bag* bag = p->GetBagByPos(b))
+                    if (!bag->GetTemplate()->BagFamily)
+                        total += bag->GetBagSize();
+            int8 const cls = freeSlots == 0 ? 0 : (freeSlots * 5 <= total ? 1 : 2);
+            bool const noBank = !GuildBankRun::BankState(p, true).empty();
+            uint32 heldBank = 0;
+            for (HeldItem const& h : st.held)
+                if (!h.forLow && h.purpose != "pending")
+                    ++heldBank;
+            if (cls != st.bagClass)
+            {
+                st.bagClass = cls;
+                LOG_INFO("playerbots", "[tasks] {} bags free={}/{} pressure={} held_for_bank={} sell_marked={} bank={}",
+                         Who(row.low), freeSlots, total, cls == 0 ? "full" : (cls == 1 ? "low" : "ok"), heldBank,
+                         st.sell.size(), noBank ? "no tab" : "yes");
+            }
+            // full bags and no bank: a held item no member's craft or quest wants (IsWanted) goes to the vendor
+            // (sold, never destroyed); a wanted one stays and the transfers move it to the member who lacks it
+            if (cls == 0 && noBank && !HumanCharacter(p))
+                for (auto it = st.held.begin(); it != st.held.end();)
+                {
+                    if (it->forLow || it->purpose == "pending" || TransferHolds(it->itemGuidLow) ||
+                        std::any_of(wanted_.begin(), wanted_.end(), [&](WantedItem const& w)
+                                    { return w.itemId == it->itemId && !w.optional; }) || PlannedFor(it->itemId))
+                    {
+                        ++it;
+                        continue;
+                    }
+                    LOG_INFO("playerbots", "[tasks] {} bags full, no bank tab: {} released to the vendor (nobody "
+                             "wants it)", Who(row.low), ItemName(it->itemId));
+                    st.sell.push_back(it->itemGuidLow);
+                    it = st.held.erase(it);
+                }
         }
 
         // keep the since-time of an order that stays the same; log a decision when the first order changes
@@ -2599,7 +2656,7 @@ void GuildCoordinator::UpdateProfessions()
         uint32 best = 0, bestSkill = 0;
         for (auto const& [row, m] : members)
         {
-            if (HumanControls(m) || (n.bop && row->low != n.forLow) || !plansLine(*row, m, n.line))
+            if (HumanCharacter(m) || (n.bop && row->low != n.forLow) || !plansLine(*row, m, n.line))
                 continue;
             uint32 const skill = m->HasSkill(n.line) ? m->GetPureSkillValue(n.line) : 0;
             if (!best || skill > bestSkill)
@@ -2614,7 +2671,7 @@ void GuildCoordinator::UpdateProfessions()
 
     for (auto const& [row, p] : members)
     {
-        if (HumanControls(p))
+        if (HumanCharacter(p))
         {
             professions_.erase(row->low);
             continue;
@@ -3199,6 +3256,25 @@ bool GuildCoordinator::HumanControls(Player* p)
     // user 2026-11-07: a character counts as the human's only while he controls it (no AI, or a SelfBot just taken
     // over by input); handed to its bot (SelfBot on) it is a normal member, geared like the others
     return !GET_PLAYERBOT_AI(p) || SelfBotControl::IsSuspended(p);
+}
+
+bool GuildCoordinator::HumanCharacter(Player* p)
+{
+    // a bot's session has no socket (WorldSession: address "headless"); a SelfBot the human plays with keeps his
+    return p && (HumanControls(p) || (p->GetSession() && p->GetSession()->GetRemoteAddress() != "headless"));
+}
+
+void GuildCoordinator::Suggest(uint32 low, std::string const& key, std::string const& text)
+{
+    BotState& st = bots_[low];
+    auto const old = st.suggested.find(key);
+    if (old != st.suggested.end() && old->second == text)
+        return;
+    st.suggested[key] = text;
+    LOG_INFO("playerbots", "[human] suggest {} key={}: {}", Who(low), key, text);
+    Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+    if (p && p->IsInWorld() && p->GetSession())
+        ChatHandler(p->GetSession()).SendSysMessage("[Гильдия] " + text);
 }
 
 void GuildCoordinator::UpdateGear()
@@ -4528,6 +4604,11 @@ bool GuildCoordinator::IsHeld(Player* bot, Item* item)
     for (HeldItem const& h : itr->second.held)
         if (h.itemGuidLow == item->GetGUID().GetCounter())
             return true;
+    // [recipes] a recipe item on its way to the member who learns it, or one it learns itself: no sale
+    if (TransferHolds(item->GetGUID().GetCounter()) ||
+        std::any_of(recipeLearn_.begin(), recipeLearn_.end(),
+                    [&](auto const& r) { return r.second == item->GetGUID().GetCounter(); }))
+        return true;
     // [guild50] an item just made / rewarded for another member: held from its first sight (no auto-equip, no sale)
     auto& expect = itr->second.expect;
     for (auto e = expect.begin(); e != expect.end(); ++e)
@@ -4544,7 +4625,8 @@ bool GuildCoordinator::IsHeld(Player* bot, Item* item)
 void GuildCoordinator::SellMarked(PlayerbotAI* botAI)
 {
     Player* bot = botAI ? botAI->GetBot() : nullptr;
-    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+    // [human] a human's character sells what he decides himself (the SELL task is a suggestion)
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()) || HumanCharacter(bot))
         return;
     std::vector<uint32> sell;
     {

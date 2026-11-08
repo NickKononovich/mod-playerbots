@@ -138,7 +138,7 @@ uint32 GuildCoordinator::FoundingFreeMoney(Player* p)
 
 bool GuildCoordinator::FoundingEligible(uint32 low, Player* p) const
 {
-    if (!p || !p->IsInWorld() || !p->GetSession() || !p->IsAlive() || !GET_PLAYERBOT_AI(p) || HumanControls(p) ||
+    if (!p || !p->IsInWorld() || !p->GetSession() || !p->IsAlive() || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
         p->GetGuildId() || p->GetGuildIdInvited())
         return false;
     PlanRow const* row = Row(low);
@@ -247,7 +247,7 @@ void GuildCoordinator::UpdateFounding()
                 joinState[row.low] = "не в сети: пригласят при входе";
                 continue;
             }
-            if (!GET_PLAYERBOT_AI(p) || HumanControls(p))
+            if (!GET_PLAYERBOT_AI(p) || HumanCharacter(p))
                 continue;  // the human's own play: never commanded
             if (p->GetGuildId())
             {
