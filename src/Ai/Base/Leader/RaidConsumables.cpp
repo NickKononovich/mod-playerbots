@@ -7,6 +7,8 @@
 #include "RaidConsumables.h"
 
 #include <algorithm>
+#include <set>
+#include <utility>
 
 #include "Bag.h"
 #include "GameObject.h"
@@ -506,6 +508,21 @@ namespace RaidConsumables
             Unit* unit = botAI->GetUnit(guid);
             if (!unit || !unit->IsAlive() || unit->IsPlayer())
                 continue;
+
+            // [raid3] b354 kara-n 10A-1 319-529 s: "ritual of refreshment waits: Midnight at 20 yd" 35 times - the
+            // mage's trigger asks for a boss within its reach, this check refused the same boss. Midnight is neutral
+            // (faction 7, Blizzard data): a creature that is not hostile never starts a fight by itself (the core's
+            // proximity aggro needs hostility, Creature::CanStartAttack), so it is no pack the channel stands next to
+            if (!unit->IsInCombat() && !bot->IsHostileTo(unit))
+            {
+                thread_local std::set<std::pair<uint64, uint64>> logged;
+                if (logged.size() > 1024)
+                    logged.clear();
+                if (logged.insert({bot->GetGUID().GetRawValue(), unit->GetGUID().GetRawValue()}).second)
+                    LOG_INFO("playerbots", "[raid3] {}: the ritual ignores {} ({:.0f} yd): not hostile, it starts no "
+                             "fight", bot->GetName(), unit->GetName(), bot->GetDistance(unit));
+                continue;
+            }
 
             float const distance = bot->GetDistance(unit);
             if (distance <= RITUAL_HOSTILE_RANGE)

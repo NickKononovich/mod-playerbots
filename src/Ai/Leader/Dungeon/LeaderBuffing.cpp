@@ -463,6 +463,7 @@ namespace Leader::Dungeon
         struct BuffWait
         {
             std::string waitedFor;
+            std::string waitLogged;  // [raid3] the last wait the log named (one line per change)
             bool consumableUsed = false;  // step 1 -> 2: a flask was used; step 2 -> 3: food was used
             std::set<ObjectGuid> fed;     // step 2 -> 3: the members given food
             bool ordering = false;  // [lead165] [lead975] step 1: the leader orders the missing buffs
@@ -595,7 +596,14 @@ namespace Leader::Dungeon
                         orderState.buffCast = 0;
                         orderState.buffOrderWork.clear();
                     }
-                    if (workers.empty() && !missing.empty())
+                    // [raid3] b354 kara-n 10A-1 319-529 s: step 1 before Midnight waited 209.5 s. In a raid (and the
+                    // open world) the leader's event tick does not run (LeaderDecides false: the harness keeps a raid's
+                    // pulls), so TickBuffPass / TickBuffOrders never issue the queued orders, and the members are not
+                    // led (Leader::LedBot is false on a raid map) - the step waited on "N buff order(s) queued" until
+                    // the missing blessing came back by the paladin's own pass. Orders only where the leader issues
+                    // them; elsewhere a buff the casters' own passes left missing ends the step
+                    bool const leaderOrders = group.LeaderDecides();
+                    if (workers.empty() && !missing.empty() && leaderOrders)
                         wait.ordering = true;
                     orderState.buffQueue.clear();
                     std::string failed;    // [lead975] the missing buffs a caster reported it cannot cast
@@ -663,6 +671,13 @@ namespace Leader::Dungeon
                     if (!support.empty())
                         workers += (workers.empty() ? "" : ", ") + support;
                     waitingFor(workers.empty() ? missing : workers);
+                    // [raid3] what the step waits for, once per change (the step line clears it when all is present)
+                    if (!wait.waitedFor.empty() && wait.waitedFor != wait.waitLogged)
+                    {
+                        wait.waitLogged = wait.waitedFor;
+                        LOG_INFO("playerbots", "[raid3] buff step 1 waits for: {} ({}, {}, leader orders {})",
+                                 wait.waitedFor, group.Run().runId, route.buffReason, leaderOrders ? "yes" : "no");
+                    }
                     // [lead136] b162 20261101-121409 (271 s: 12 s "every buff the group can give is present",
                     // waited for "Rtdruaa rebuff window open"; 73 s over the run): every buff present (lasting the
                     // next fight) ends the step at once - an open rebuff window with nothing missing to cast is no
@@ -671,7 +686,8 @@ namespace Leader::Dungeon
                     if (missing.empty() && support.empty())
                         why = "every buff the group can give is present";
                     else if (workers.empty())
-                        why = "every caster's buff pass ended, missing: " + missing;
+                        why = "every caster's buff pass ended, missing: " + missing +
+                              (leaderOrders ? std::string() : " [raid3] (no leader orders: the members are not led)");
                     if (missing.empty() && support.empty())
                         wait.waitedFor.clear();
                     if (why.empty())
