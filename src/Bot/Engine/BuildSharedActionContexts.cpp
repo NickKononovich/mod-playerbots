@@ -25,6 +25,7 @@
 #include "NaxxActionContext.h"
 #include "OSActionContext.h"
 #include "OnyActionContext.h"
+#include "WorldBossStrategy.h"  // [world_boss]
 #include "RSActionContext.h"
 #include "SSCActionContext.h"
 #include "TKActionContext.h"
@@ -62,6 +63,7 @@ void AiObjectContext::BuildSharedActionContexts(
     actionContexts.Add(new RaidVoAActionContext());
     actionContexts.Add(new RaidUlduarActionContext());
     actionContexts.Add(new RaidOnyxiaActionContext());
+    actionContexts.Add(new WorldBossActionContext());  // [world_boss]
     actionContexts.Add(new RaidIccActionContext());
     actionContexts.Add(new RaidRsActionContext());
     actionContexts.Add(new TbcDungeonAuchenaiCryptsActionContext());

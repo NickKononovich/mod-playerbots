@@ -2374,7 +2374,7 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
         "voa", "wotlk-an", "wotlk-cos", "wotlk-dtk", "wotlk-eoe", "wotlk-fos", "wotlk-gd", "wotlk-hol",
         "wotlk-hor", "wotlk-hos", "wotlk-nex", "wotlk-occ", "wotlk-ok", "wotlk-os", "wotlk-pos", "wotlk-toc",
         "wotlk-uk", "wotlk-up", "wotlk-vh",
-        "zulaman", "zulgurub"
+        "zulaman", "zulgurub", "world-boss"
     };
 
     for (std::string const& strat : allInstanceStrategies)
@@ -2384,6 +2384,7 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
     }
 
     std::string strategyName;
+    bool quiet = false;  // [world_boss]
     switch (mapId)
     {
         case 90:
@@ -2566,6 +2567,14 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
         case 724:
             strategyName = "rs";  // Ruby Sanctum
             break;
+        case 0:
+        case 1:
+        case 530:
+            // [world_boss] the world boss ladder (docs/WORLD_BOSS_PLAN.md): its triggers return at once out of a
+            // world boss fight; not told to the master (every continent teleport would announce it)
+            strategyName = "world-boss";
+            quiet = true;
+            break;
         default:
             break;
     }
@@ -2586,7 +2595,7 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
     engines[BOT_STATE_COMBAT]->addStrategy(strategyName);
     engines[BOT_STATE_NON_COMBAT]->addStrategy(strategyName);
 
-    if (tellMaster && !strategyName.empty())
+    if (tellMaster && !strategyName.empty() && !quiet)
     {
         std::ostringstream out;
         out << "Added " << strategyName << " instance strategy";

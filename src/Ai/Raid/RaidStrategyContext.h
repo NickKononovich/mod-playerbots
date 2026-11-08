@@ -20,6 +20,7 @@
 #include "NaxxStrategy.h"
 #include "OSStrategy.h"
 #include "OnyStrategy.h"
+#include "WorldBossStrategy.h"  // [world_boss]
 #include "RSStrategy.h"
 #include "SSCStrategy.h"
 #include "Strategy.h"
@@ -52,6 +53,7 @@ public:
         creators["voa"] = &RaidStrategyContext::voa;
         creators["ulduar"] = &RaidStrategyContext::ulduar;
         creators["onyxia"] = &RaidStrategyContext::onyxia;
+        creators["world-boss"] = &RaidStrategyContext::world_boss;  // [world_boss]
         creators["icc"] = &RaidStrategyContext::icc;
         creators["rs"] = &RaidStrategyContext::rs;
     }
@@ -74,6 +76,7 @@ private:
     static Strategy* wotlk_eoe(PlayerbotAI* botAI) { return new RaidEoEStrategy(botAI); }
     static Strategy* voa(PlayerbotAI* botAI) { return new RaidVoAStrategy(botAI); }
     static Strategy* onyxia(PlayerbotAI* botAI) { return new RaidOnyxiaStrategy(botAI); }
+    static Strategy* world_boss(PlayerbotAI* botAI) { return new WorldBossStrategy(botAI); }  // [world_boss]
     static Strategy* ulduar(PlayerbotAI* botAI) { return new RaidUlduarStrategy(botAI); }
     static Strategy* icc(PlayerbotAI* botAI) { return new RaidIccStrategy(botAI); }
     static Strategy* rs(PlayerbotAI* botAI) { return new RaidRsStrategy(botAI); }

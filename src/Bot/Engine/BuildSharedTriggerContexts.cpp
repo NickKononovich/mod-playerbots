@@ -24,6 +24,7 @@
 #include "NaxxTriggerContext.h"
 #include "OSTriggerContext.h"
 #include "OnyTriggerContext.h"
+#include "WorldBossStrategy.h"  // [world_boss]
 #include "RSTriggerContext.h"
 #include "SSCTriggerContext.h"
 #include "TKTriggerContext.h"
@@ -62,6 +63,7 @@ void AiObjectContext::BuildSharedTriggerContexts(
     triggerContexts.Add(new RaidVoATriggerContext());
     triggerContexts.Add(new RaidUlduarTriggerContext());
     triggerContexts.Add(new RaidOnyxiaTriggerContext());
+    triggerContexts.Add(new WorldBossTriggerContext());  // [world_boss]
     triggerContexts.Add(new RaidIccTriggerContext());
     triggerContexts.Add(new RaidRsTriggerContext());
     triggerContexts.Add(new TbcDungeonAuchenaiCryptsTriggerContext());
