@@ -12,6 +12,7 @@
 #include "BattlegroundWS.h"
 #include "DBCStores.h"
 #include "Event.h"
+#include "LeaderOrders.h"  // [mount_led] Leader::Orders::IsTracked
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotSpellRepository.h"
@@ -134,6 +135,18 @@ bool CheckMountStateAction::Execute(Event /*event*/)
             return Dismount();
         }
 
+        return false;
+    }
+
+    // [mount_led] b342 wb-kazzak 25A-3 / bt-h 25A-2: the led run's tank (the harness or a guild leader leads it, Orders
+    // tracked) had no target while the group buffed at the start, so "no target" mounted it outdoors (the open world,
+    // Black Temple's courtyard); the members follow their mount leader's state, so all 25 sat mounted, every buff,
+    // food and conjure failed NOT_MOUNTED and the buff step waited for 4 minutes. A led tank standing still has no
+    // ride to take: it stays off the mount (and gets off), and mounts only for a walk (it is moving)
+    if (noRealMaster && !inBattleground && Leader::Orders::IsTracked(bot->GetGUID()) && !bot->isMoving())
+    {
+        if (bot->IsMounted() && !bot->IsFlying())
+            return Dismount();
         return false;
     }
 

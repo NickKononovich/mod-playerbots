@@ -1295,15 +1295,16 @@ namespace TestHarness
         return !party.entrances.empty();
     }
 
-    void TestHarnessMgr::PrepareWorldBoss(Party& party)
+    bool TestHarnessMgr::PrepareWorldBoss(Party& party)
     {
         // [world_boss] test preparation of the harness test bots (the coordinator's OK 2026-11-08): the boss of the
         // run alive. World thread, outside the map updates (TestHarnessScripts: WorldScript OnUpdate).
         ContentDef const* content = party.content;
         Map* map = content && party.worldBossSpawn ? sMapMgr->FindBaseMap(content->mapId) : nullptr;
         if (!map)
-            return;
+            return false;
         char const* what = "alive";
+        bool alive = false;
         auto const bounds = map->GetCreatureBySpawnIdStore().equal_range(party.worldBossSpawn);
         if (bounds.first != bounds.second)
         {
@@ -1313,6 +1314,7 @@ namespace TestHarness
                 boss->Respawn(true);
                 what = "respawned";
             }
+            alive = boss && boss->IsAlive();
         }
         else if (map->GetCreatureRespawnTime(party.worldBossSpawn))
         {
@@ -1321,8 +1323,13 @@ namespace TestHarness
         }
         else
             what = "not loaded";
-        LogEvent(party, "world_boss_prep", JsonObject().Num("entry", content->worldBoss)
-                                               .Num("spawn", int64(party.worldBossSpawn)).Str("state", what));
+        if (party.worldBossPrepState != what)
+        {
+            party.worldBossPrepState = what;
+            LogEvent(party, "world_boss_prep", JsonObject().Num("entry", content->worldBoss)
+                                                   .Num("spawn", int64(party.worldBossSpawn)).Str("state", what));
+        }
+        return alive;
     }
 
     void TestHarnessMgr::TickGuildEnter(Party& party)
@@ -1723,6 +1730,17 @@ namespace TestHarness
                 {
                     SelfTravel::MoveReport stale;
                     SelfTravel::TakeReport(member.guid, stale);
+                }
+                // [b342] the world boss's grid is loaded now that the group stands near it: the prep again; a boss
+                // whose respawn timer was just dropped appears with the next grid update - the run starts then
+                if (content->worldBoss && !PrepareWorldBoss(party))
+                {
+                    constexpr uint32 WORLD_BOSS_APPEAR_MS = 30 * IN_MILLISECONDS;
+                    if (!party.worldBossWaitMs)
+                        party.worldBossWaitMs = now ? now : 1;
+                    else if (getMSTimeDiff(party.worldBossWaitMs, now) > WORLD_BOSS_APPEAR_MS)
+                        Finish(party, "failed", "the world boss did not appear at its spawn");
+                    return false;
                 }
                 EnterInstance(party, leader);
                 return true;
