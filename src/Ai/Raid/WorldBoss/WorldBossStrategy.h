@@ -30,6 +30,8 @@ public:
     WorldBossTriggerContext()
     {
         creators["world boss tank swap"] = [](PlayerbotAI* ai) -> Trigger* { return new WorldBossTankSwapTrigger(ai); };
+        creators["world boss stacked tank"] = [](PlayerbotAI* ai) -> Trigger*
+        { return new WorldBossStackedTankTrigger(ai); };
         creators["world boss threat reset"] = [](PlayerbotAI* ai) -> Trigger*
         { return new WorldBossThreatResetTrigger(ai); };
         creators["world boss loose add"] = [](PlayerbotAI* ai) -> Trigger* { return new WorldBossLooseAddTrigger(ai); };
@@ -53,6 +55,7 @@ public:
     WorldBossActionContext()
     {
         creators["world boss taunt"] = [](PlayerbotAI* ai) -> Action* { return new WorldBossTauntAction(ai); };
+        creators["world boss step off"] = [](PlayerbotAI* ai) -> Action* { return new WorldBossStepOffAction(ai); };
         creators["world boss taunt add"] = [](PlayerbotAI* ai) -> Action* { return new WorldBossTauntAddAction(ai); };
         creators["world boss interrupt add"] = [](PlayerbotAI* ai) -> Action*
         { return new WorldBossInterruptAddAction(ai); };

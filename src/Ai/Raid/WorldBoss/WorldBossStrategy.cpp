@@ -16,6 +16,8 @@ void WorldBossStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 
     // tanks: swap by the boss's stacking debuff, take the boss back after a threat reset, pick up loose adds
     triggers.push_back(new TriggerNode("world boss tank swap", {NextAction("world boss taunt", ACTION_RAID + 5)}));
+    triggers.push_back(
+        new TriggerNode("world boss stacked tank", {NextAction("world boss step off", ACTION_RAID + 6)}));
     triggers.push_back(new TriggerNode("world boss threat reset", {NextAction("world boss taunt", ACTION_RAID + 4)}));
     triggers.push_back(new TriggerNode("world boss loose add", {NextAction("world boss taunt add", ACTION_RAID + 2)}));
 
@@ -40,4 +42,5 @@ void WorldBossStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 void WorldBossStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 {
     multipliers.push_back(new WorldBossStackedTankMultiplier(botAI));
+    multipliers.push_back(new WorldBossCommittedAddMultiplier(botAI));
 }
