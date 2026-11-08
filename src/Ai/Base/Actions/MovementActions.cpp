@@ -4267,6 +4267,45 @@ namespace
         Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
         return !(leader && GET_PLAYERBOT_AI(leader)) && PlayerbotAI::IsMainTank(bot);
     }
+
+    // [kara3] A door that closes again by itself (its template's auto-close time) is opened with the group at it:
+    // who of the group stands on the opener's side of it and is not yet within DOOR_GATHER_RADIUS of it, or still
+    // casting there, is waited for. Members on the far side are the ones the opening is for; members farther than
+    // DOOR_GATHER_FAR are no part of this walk. Empty: open it.
+    // b356 kara-n 20261108-234616-10A-1: the leader's own walk clicked the Gatehouse Door 183450 (3 s) with the
+    // warlock casting Create Soulstone and the druid 15 yd back - both shut out again, the door cut's rescue clicks
+    // brought them through (0 door gathers: the harness's DoorGatherHolds only guards the leader's waypoint).
+    std::string DoorGatherWait(Player* opener, GameObject* door)
+    {
+        constexpr float DOOR_GATHER_RADIUS = 8.0f;
+        constexpr float DOOR_GATHER_FAR = 45.0f;
+        GameObjectTemplate const* info = door->GetGOInfo();
+        Group* group = opener->GetGroup();
+        if (!group || !info || !info->GetAutoCloseTime())
+            return "";
+        float const fx = std::cos(door->GetOrientation());
+        float const fy = std::sin(door->GetOrientation());
+        auto const side = [&](WorldObject const* who)
+        {
+            return (who->GetPositionX() - door->GetPositionX()) * fx +
+                   (who->GetPositionY() - door->GetPositionY()) * fy;
+        };
+        bool const openerSide = side(opener) >= 0.0f;
+        std::string wait;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == opener || !member->IsAlive() || member->GetMap() != opener->GetMap() ||
+                (side(member) >= 0.0f) != openerSide || member->GetExactDist(door) > DOOR_GATHER_FAR)
+                continue;
+            if (member->GetExactDist(door) > DOOR_GATHER_RADIUS)
+                wait += (wait.empty() ? "" : ",") + std::string(member->GetName()) +
+                        Acore::StringFormat(" ({:.0f} yd)", member->GetExactDist(door));
+            else if (member->IsNonMeleeSpellCast(false))
+                wait += (wait.empty() ? "" : ",") + std::string(member->GetName()) + " (casting)";
+        }
+        return wait;
+    }
 }
 
 bool MovementAction::GuardClosedDoor(float& x, float& y, float& z)
@@ -4291,7 +4330,14 @@ bool MovementAction::GuardClosedDoor(float& x, float& y, float& z)
     // A door a player opens by a click (TerrainHazard.h DoorOpensByUse: Scholomance's Iron Gates): the group's opener
     // walks up to it and uses it, out of combat; everyone else stops before it until it is open. An opened door is
     // no barrier any more, the walk is judged again for the next one.
-    bool const opener = DoorOpensByUse(hit.door) && IsDoorOpener(bot);
+    bool opener = DoorOpensByUse(hit.door) && IsDoorOpener(bot);
+    if (opener)
+        if (std::string const wait = DoorGatherWait(bot, hit.door); !wait.empty())
+        {
+            // [kara3] it stands at the door, the group comes to it (they follow it); no click yet
+            opener = false;
+            LogDoorVeto(bot, getName(), x, y, z, hit, "[kara3] door gather: waits for " + wait);
+        }
     if (opener && OpenDoorByUse(bot, hit.door))
         return GuardClosedDoor(x, y, z);
 
