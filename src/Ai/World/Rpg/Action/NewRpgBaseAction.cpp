@@ -717,8 +717,10 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
         {
             // [guild15] the transport left while the bot walked off: back to the middle of the deck, not the edge
             info.SetTripPhase(Phase::Ride);
-            LOG_INFO("playerbots", "[rpg] {} L{} back onto the deck of {}: it left the stop before the bot was off",
-                     bot->GetName(), bot->GetLevel(), line->entry);
+            LOG_INFO("playerbots", "[rpg] {} L{} back onto the deck of {}: it left the stop before the bot was off "
+                     "(moving {}, offset on the transport ({:.1f},{:.1f},{:.1f}))",
+                     bot->GetName(), bot->GetLevel(), line->entry, bot->isMoving() ? "yes" : "no",
+                     bot->GetTransOffsetX(), bot->GetTransOffsetY(), bot->GetTransOffsetZ());
             float x = 0.0f, y = 0.0f, z = 0.0f;
             if (FindDeckPoint(transport, x, y, z))
             {
@@ -733,11 +735,13 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
     if (trip.phase != Phase::Leave)
     {
         info.SetTripPhase(Phase::Leave);
-        LOG_DEBUG("playerbots", "[New RPG] {} leaves transport {} at map {}", bot->GetName(), line->entry,
-                  exitDock->mapId);
+        LOG_INFO("playerbots", "[rpg] {} L{} leaves transport {} at map {}: pier {:.0f} yd, the stop ends in {} ms",
+                 bot->GetName(), bot->GetLevel(), line->entry, exitDock->mapId, bot->GetExactDist(exitDock->pier),
+                 remaining);
     }
 
-    if (!IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+    // [guild15] a walk off that stopped (or never started: a last move still timed) is sent again at once
+    if (!bot->isMoving() || !IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
         MovePointDirect(exitDock->pier.GetPositionX(), exitDock->pier.GetPositionY(), exitDock->pier.GetPositionZ());
 
     return true;

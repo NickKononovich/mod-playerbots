@@ -7,6 +7,7 @@
 #include "PlayerbotRepository.h"
 #include "PlayerbotsDatabase.h"
 #include "AiObjectContext.h"
+#include "SoloSafety.h"  // [guild15]
 
 void PlayerbotRepository::Load(PlayerbotAI* botAI)
 {
@@ -39,6 +40,8 @@ void PlayerbotRepository::Load(PlayerbotAI* botAI)
             }
             else if (key == "dead")
                 botAI->ChangeStrategy(value, BOT_STATE_DEAD);
+            else if (key == "solo")  // [guild15] its measured solo damage
+                SoloSafety::LoadMeasured(botAI->GetBot(), value);
         } while (result->NextRow());
 
         botAI->GetAiObjectContext()->GetUntypedValue("outfit list");

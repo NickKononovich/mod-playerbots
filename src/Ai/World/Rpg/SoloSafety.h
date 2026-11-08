@@ -82,6 +82,8 @@ namespace SoloSafety
     bool RestBeforeWalk(Player* bot, Position const& dest);
     // [guild15] its gear was repaired: its damage is measured again
     void OnRepaired(Player* bot);
+    // [guild15] at login: its damage measured in its last session at this level ("solo" in playerbots_db_store)
+    void LoadMeasured(Player* bot, std::string const& value);
     // the bot died: rest to full and the walk to its hub after the revive
     void OnDeath(Player* bot);
     // once after the revive: true and the hub to walk to

@@ -932,10 +932,20 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 if (creature->HasNpcFlag(UNIT_NPC_FLAG_REPAIR) && AI_VALUE(uint8, "durability") < 100 &&
                     bot->GetMoney() > 0)
                 {
+                    // [guild15] only broken gear (0 durability) loses its stats in 3.3.5; worn gear deals the same:
+                    // a repair of worn gear kept the measurement (b325 Cassand: every repair sent the judge back to
+                    // the white weapon damage, 3.2 dps, and it refused every mob of its level)
+                    bool broken = false;
+                    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END && !broken; ++slot)
+                        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                            broken = item->IsBroken();
                     botAI->DoSpecificAction("repair", Event("repair"), true);
-                    // [guild15] its damage and the fights it refused were measured with the worn gear
-                    SoloSafety::OnRepaired(bot);
-                    NewRpgBaseAction::ForgetRefusals(bot);
+                    // [guild15] its damage and the fights it refused were measured with the broken gear
+                    if (broken)
+                    {
+                        SoloSafety::OnRepaired(bot);
+                        NewRpgBaseAction::ForgetRefusals(bot);
+                    }
                 }
             }
         }

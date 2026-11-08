@@ -33,6 +33,9 @@
 #include "SpellMgr.h"
 #include "SmartScriptMgr.h"  // [guild14] creature casts
 #include "StringFormat.h"
+#include "PlayerbotsDatabase.h"  // [guild15] the measured damage kept
+#include <sstream>
+#include <cstdio>
 #include "Timer.h"
 
 #include <algorithm>
@@ -162,6 +165,32 @@ namespace
         return std::max(float(unit->GetAttackTime(type)) / float(IN_MILLISECONDS), 0.1f);
     }
 
+    // [guild15] the bot's own damage measurement outlives a restart (b325: Cassand L9 mage, Dekorhan L7 hunter judged
+    // at their white weapon damage, 3.2 / 2.6 dps, after the restart refused every mob of their level - 13 / 15
+    // refusals, a 300 s STUCK - the judge never saw a fight to measure): kept in playerbots_db_store under "solo"
+    // with the level it was measured at; another level measures again
+    void SaveMeasured(Player* bot, SoloBotState const& state)
+    {
+        std::string value = "L" + std::to_string(bot->GetLevel()) + " " + std::to_string(uint64(state.dealtSum)) +
+                            " " + std::to_string(uint32(state.fightSecSum * 10.0)) + " " +
+                            std::to_string(uint64(state.manaSum)) + " " + std::to_string(uint64(state.healedSum)) +
+                            " " + std::to_string(state.fights);
+        for (auto const& [gap, at] : state.gapDealt)
+        {
+            std::string const part = " g" + std::to_string(gap) + ":" + std::to_string(uint64(at.first)) + ":" +
+                                     std::to_string(uint32(at.second * 10.0));
+            if (value.size() + part.size() > 250)
+                break;
+            value += part;
+        }
+        uint32 const guid = bot->GetGUID().GetCounter();
+        PlayerbotsDatabaseTransaction trans = PlayerbotsDatabase.BeginTransaction();
+        trans->Append(Acore::StringFormat("DELETE FROM playerbots_db_store WHERE guid = {} AND `key` = 'solo'", guid));
+        trans->Append(Acore::StringFormat(
+            "INSERT INTO playerbots_db_store (guid, `key`, value) VALUES ({}, 'solo', '{}')", guid, value));
+        PlayerbotsDatabase.CommitTransaction(trans);
+    }
+
     // a closed fight goes into the bot's and the entries' measurements (caller holds the lock)
     void CloseFight(Player* bot, SoloBotState& state, bool died)
     {
@@ -254,6 +283,8 @@ namespace
                                  died ? "died" : "disengaged", int32(track.level) - int32(bot->GetLevel()));
                     }
         }
+        if (measured)
+            SaveMeasured(bot, state);  // [guild15]
         // [guild80] a run / reset closes with a rest to full (WantsRest drops a rest asked for in combat: b319
         // Ravelandy L8 went questing at hp 53 after a run and died to the same Prowler)
         if (state.fleeing && !died)
@@ -1001,6 +1032,40 @@ namespace SoloSafety
             return false;
         RequestRest(bot, std::string("before walking past ") + first->GetName() + ": " + verdict.why);
         return true;
+    }
+
+    void LoadMeasured(Player* bot, std::string const& value)
+    {
+        if (!bot)
+            return;
+        std::istringstream in(value);
+        std::string level;
+        uint64 dealt = 0, mana = 0, healed = 0;
+        uint32 secTenths = 0, fights = 0;
+        if (!(in >> level >> dealt >> secTenths >> mana >> healed >> fights) ||
+            level != "L" + std::to_string(bot->GetLevel()))
+            return;  // measured at another level: measured again
+        std::lock_guard<std::mutex> guard(lock);
+        SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        if (state.fights)
+            return;  // already measured in this session
+        state.dealtSum = double(dealt);
+        state.fightSecSum = double(secTenths) / 10.0;
+        state.manaSum = double(mana);
+        state.healedSum = double(healed);
+        state.fights = fights;
+        std::string part;
+        while (in >> part)
+        {
+            int32 gap = 0;
+            unsigned long long d = 0;
+            uint32 tenths = 0;
+            if (part.size() > 1 && part[0] == 'g' && sscanf(part.c_str() + 1, "%d:%llu:%u", &gap, &d, &tenths) == 3)
+                state.gapDealt[gap] = {double(d), double(tenths) / 10.0};
+        }
+        LOG_INFO("playerbots", "[solo] {} L{} measured damage from its last session: {:.1f} dps over {} fights",
+                 bot->GetName(), bot->GetLevel(),
+                 state.fightSecSum > 0.0 ? state.dealtSum / state.fightSecSum : 0.0, state.fights);
     }
 
     void OnRepaired(Player* bot)

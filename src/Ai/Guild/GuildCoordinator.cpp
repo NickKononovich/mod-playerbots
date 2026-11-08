@@ -502,14 +502,23 @@ void GuildCoordinator::LoadGatherSources()
 {
     gatherSource_.clear();
     // herb / ore nodes: chest gameobjects whose lock needs the gathering skill
+    // [guild15] ... and whose spawns of the world yield at least one of it per round of them (spawns x drop chance
+    // >= 1): b325 Tangy Clam Meat, 0.035 % of an Iron Coral, was a "gatherable" wanted item - 2600 of it called every
+    // gatherer of level 10+ off its quests (GATHER orders above QUEST) to nodes that never give it
     if (QueryResult result = WorldDatabase.Query(
-            "SELECT glt.Item, gt.Data0 FROM gameobject_loot_template glt JOIN gameobject_template gt ON gt.type = 3 "
-            "AND gt.Data1 = glt.Entry WHERE glt.Reference = 0 AND gt.Data0 <> 0 GROUP BY glt.Item, gt.Data0"))
+            "SELECT glt.Item, gt.Data0, CAST(MAX(IF(glt.Chance > 0, glt.Chance, 100.0 / g0.c) * s.n) AS DOUBLE) "
+            "FROM gameobject_loot_template glt JOIN gameobject_template gt ON gt.type = 3 AND gt.Data1 = glt.Entry "
+            "JOIN (SELECT id, COUNT(*) n FROM gameobject GROUP BY id) s ON s.id = gt.entry "
+            "JOIN (SELECT Entry, GroupId, SUM(Chance = 0) c FROM gameobject_loot_template GROUP BY Entry, GroupId) g0 "
+            "ON g0.Entry = glt.Entry AND g0.GroupId = glt.GroupId "
+            "WHERE glt.Reference = 0 AND gt.Data0 <> 0 GROUP BY glt.Item, gt.Data0"))
     {
         do
         {
             Field* f = result->Fetch();
             uint32 const item = f[0].Get<uint32>();
+            if (f[2].Get<double>() < 100.0)  // chance in percent x spawns: below one per round of the spawns
+                continue;
             LockEntry const* lock = sLockStore.LookupEntry(f[1].Get<uint32>());
             if (!lock)
                 continue;
