@@ -5933,7 +5933,9 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         town.y = pos.GetPositionY();
         town.z = pos.GetPositionZ();
         town.what = what;
+        town.xp = QuestRoute::MemberHandInXp(QuestRoute::SpotKey(town.x, town.y));  // [quest16]
         in.stops.push_back(town);
+
     }
 
     if (!in.freeSlots || bot->GetMap()->Instanceable())

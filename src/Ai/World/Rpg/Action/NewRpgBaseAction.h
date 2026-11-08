@@ -206,6 +206,7 @@ protected:
     bool GuildStepGivenUp(GuildRunStep const& step);
     // [town12] a party member at one of its own town stops runs the task there (the leader's route takes them)
     bool TownTaskHere();
+    bool MemberHandInHere();  // [quest16] its complete quest at the ender its leader stands at
     // [regress10] an innkeeper within reach whose inn is not its bind point: it binds there (the innkeeper's own
     // "make this inn your home"), so the Hearthstone takes it back to the town it quests from
     bool BindAtInnHere();

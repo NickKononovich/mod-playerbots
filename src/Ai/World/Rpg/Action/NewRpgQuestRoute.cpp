@@ -228,7 +228,8 @@ namespace
         {
             Stop const& s = at(i);
             seconds += legs.Seconds(prev, s.node);
-            if (s.kind == StopKind::Ender)
+            // an ender, or a town stop where its party members hand in ([quest16])
+            if (s.kind == StopKind::Ender || s.kind == StopKind::Town)
                 weighted += double(s.xp) * double(seconds);
             seconds += s.work;
             prev = s.node;
@@ -252,7 +253,8 @@ namespace
             bool improved = false;
             for (size_t i = from + 1; i < order.size(); ++i)
             {
-                if (at(order[i]).kind != StopKind::Ender || at(order[i]).xp <= 0.0f)
+                if ((at(order[i]).kind != StopKind::Ender && at(order[i]).kind != StopKind::Town) ||
+                    at(order[i]).xp <= 0.0f)
                     continue;
                 size_t bestPos = i;
                 for (size_t j = from; j < i; ++j)
@@ -520,6 +522,17 @@ void QuestRoute::NoteQuestEvent(Player* bot, uint32 questId)
         if (!StopQuestDone(bot, r.current.kind, q))
             return;
     r.currentDoneMs = QuestStats::NowMs();
+}
+
+namespace
+{
+    thread_local std::unordered_map<uint64, float> memberHandInXp;  // [quest16] the build on this thread
+}
+
+float QuestRoute::MemberHandInXp(uint64 spotKey)
+{
+    auto const found = memberHandInXp.find(spotKey);
+    return found == memberHandInXp.end() ? 0.0f : found->second;
 }
 
 uint64 QuestRoute::SpotKey(float x, float y)
@@ -936,8 +949,10 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
     // [town12] the leader of a group walks its members' town stops too (econ b350: the mail pickups and smelts of
     // group followers - Lanbuzz, Manue - never ran: a member's own route is not run while it follows); the member runs
     // its task there itself (NewRpgStatusUpdateAction, TownTaskHere)
+    memberHandInXp.clear();  // [quest16] this build's member hand-ins
     if (Group* group = bot->GetGroup(); group && group->GetLeaderGUID() == bot->GetGUID())
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+
         {
             Player* member = ref->GetSource();
             if (!member || member == bot || member->GetMapId() != bot->GetMapId() || !GET_PLAYERBOT_AI(member))
@@ -949,11 +964,27 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
             if (member->GetExactDist2d(bot) > sPlayerbotAIConfig.SightDistance)
                 continue;
             std::vector<std::pair<WorldPosition, std::string>> theirs;
-
             sGuildCoordinator.TownStops(member, theirs);
             for (auto& [pos, what] : theirs)
                 if (!TownListed(towns, pos.GetPositionX(), pos.GetPositionY()))
                     towns.emplace_back(pos, what + " (for " + member->GetName() + ")");
+            // [quest16] coordinator decision 2026-11-09: its complete quests' enders are stops of the leader's route,
+            // weighed as its own hand-ins (the experience each member hands in there); the member hands in at the
+            // ender (MemberHandInHere). One its leader has complete too is the leader's own ender stop already
+            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            {
+                uint32 const questId = member->GetQuestSlotQuestId(slot);
+                Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+                WorldPosition ender;
+                if (!quest || member->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE ||
+                    bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE ||
+                    !NearestEnderSpot(member, questId, ender) || ender.GetMapId() != bot->GetMapId())
+                    continue;
+                memberHandInXp[QuestRoute::SpotKey(ender.GetPositionX(), ender.GetPositionY())] +=
+                    float(quest->XPValue(member->GetLevel()));
+                if (!TownListed(towns, ender.GetPositionX(), ender.GetPositionY()))
+                    towns.emplace_back(ender, Acore::StringFormat("HAND_IN q{} (for {})", questId, member->GetName()));
+            }
         }
     // [stuck12] a town stop whose walk the bot gave up at this level (MOVE_FAR_LOOP, the maze search: every way there
     // passes mobs it does not pull) is no stop of its route: TrimRoute drops it as a task gone. Before, the stop stayed

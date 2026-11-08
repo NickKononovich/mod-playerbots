@@ -152,6 +152,10 @@ namespace QuestRoute
     // one short word per stop for the [route] line: O218 E218+219 G2:q1,q2 T(bank)
     std::string Describe(Stop const& stop);
     uint64 SpotKey(float x, float y);
+    // [quest16] the experience its party members hand in at a town stop of the route being built on this thread (the
+    // leader's "HAND_IN ... (for <member>)" stops, by SpotKey): weighed as an ender's (HandInsEarlier)
+    float MemberHandInXp(uint64 spotKey);
+
 
     // the bot's cached route (map thread of the bot only; the container is locked)
     struct BotRoute

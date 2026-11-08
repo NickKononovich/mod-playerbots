@@ -342,6 +342,45 @@ bool NewRpgBaseAction::TownTaskHere()
     return false;
 }
 
+// [quest16] a party member's complete quest handed in where its leader's route stands it at the ender (the leader
+// routes its members' hand-ins: NewRpgBaseAction::CurrentRoute, "HAND_IN ... (for <member>)"): an npc in sight that
+// ends one of its complete quests, its leader in sight of it too (the party is there) - walked to and handed in. b355
+
+// Gilduck L11 held q315 complete 1079 s (its ender 2nd in its own route) while it followed Bhogagnuth's help party
+bool NewRpgBaseAction::MemberHandInHere()
+{
+    Group* group = bot->GetGroup();
+    if (!group || bot->IsInCombat() || group->GetLeaderGUID() == bot->GetGUID())
+        return false;
+    Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+    if (!leader || leader->GetMapId() != bot->GetMapId())
+        return false;
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
+    {
+        Creature* npc = botAI->GetCreature(guid);
+        if (!npc || !npc->IsAlive() || !npc->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ||
+            leader->GetExactDist2d(npc) > sPlayerbotAIConfig.SightDistance)  // the party is at it
+            continue;
+        uint32 ends = 0;
+        QuestRelationBounds const bounds = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(npc->GetEntry());
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+            if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
+                ends = itr->second;
+        if (!ends)
+            continue;
+        if (IsWithinInteractionDist(npc))
+        {
+            LOG_INFO("playerbots", "[quest16] {} L{} hands in q{} at {} where its leader {} stands", bot->GetName(),
+                     bot->GetLevel(), ends, npc->GetName(), leader->GetName());
+            return InteractWithNpcOrGameObjectForQuest(npc->GetGUID());
+        }
+        if (MoveTo(npc->GetMapId(), npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), false, false,
+                   false, true))
+            return true;
+    }
+    return false;
+}
+
 bool NewRpgBaseAction::GuildStepGivenUp(GuildRunStep const& step)
 {
     if (step.pos == WorldPosition() || step.pos.GetMapId() != bot->GetMapId() ||
@@ -845,6 +884,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         {
             if (TownTaskHere())  // [town12] the leader's route brought it to its own town stop
                 return true;
+            if (MemberHandInHere())  // [quest16] ... or to the ender of its complete quest
+                return true;
             NewRpgStatus const before = info.GetStatus();
             if (coop.farWalk ? MoveFarTo(coop.pos) : Follow(coop.leader))
                 return true;
@@ -858,7 +899,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return false;
         }
         if (coop.kind == NewRpgCoop::Order::Kind::Stay)
-            return TownTaskHere();  // [town12] its own town task where the party stands
+            return TownTaskHere() || MemberHandInHere();  // [town12] [quest16] its own task where the party stands
+
     }
 
     // [guild3] full bags or low ammo: to a vendor first, as a player does (not out of a flight, rest or pvp)
