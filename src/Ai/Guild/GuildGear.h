@@ -138,6 +138,8 @@ namespace GuildGear
     void HistoryNoteSource(Player* bot, Item* item, char const* source);
     // the core equipped `item` into equipment slot `slot`: true when the slot holds a different item than before
     bool HistoryOnEquip(Player* bot, Item* item, uint8 slot);
+    // who decided the bot equips `itemEntry` and why (the global leader's plan text): taken by its next equip of it
+    void HistoryNoteDecision(uint32 botLow, uint32 itemEntry, std::string const& decider, std::string const& reason);
     void HistoryForget(Player* bot);
 }
 

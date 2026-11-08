@@ -27,6 +27,8 @@
 #include "MapMgr.h"
 #include "ObjectMgr.h"
 #include "Player.h"
+#include "AiFactory.h"
+#include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "RandomItemMgr.h"
 #include "SpellInfo.h"
@@ -777,11 +779,72 @@ namespace GuildGear
         std::unordered_map<uint32, std::array<uint32, EQUIPMENT_SLOT_END>> worn;
         // item guid -> where the bot got it
         std::unordered_map<uint32, char const*> itemSource;
+        // (bot guid, item entry) -> who decided it and why (the global leader's plan)
+        std::map<std::pair<uint32, uint32>, std::pair<std::string, std::string>> decisions;
 
         uint32 ItemLevelOf(uint32 entry)
         {
             ItemTemplate const* proto = entry ? sObjectMgr->GetItemTemplate(entry) : nullptr;
             return proto ? proto->ItemLevel : 0;
+        }
+
+        std::string Escaped(std::string text, size_t max)
+        {
+            if (text.size() > max)
+                text.resize(max);
+            std::string out;
+            for (char c : text)
+            {
+                if (c == '\\' || c == '\'')
+                    out += '\\';
+                out += c;
+            }
+            return out;
+        }
+
+        // one row: the change and the full equipment after it (async: the database worker writes it)
+        void WriteRow(Player* bot, uint8 slot, uint32 oldEntry, uint32 newEntry, char const* source,
+                      std::string const& decider, std::string const& reason)
+        {
+            std::string entries, levels, enchants;
+            uint32 levelSum = 0, counted = 0;
+            for (uint8 s = EQUIPMENT_SLOT_START; s < EQUIPMENT_SLOT_END; ++s)
+            {
+                Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, s);
+                uint32 const entry = item ? item->GetEntry() : 0;
+                uint32 const ilvl = ItemLevelOf(entry);
+                entries += ", " + std::to_string(entry);
+                levels += ", " + std::to_string(ilvl);
+                if (item && s != EQUIPMENT_SLOT_BODY && s != EQUIPMENT_SLOT_TABARD)
+                {
+                    levelSum += ilvl;
+                    ++counted;
+                }
+                if (!item)
+                    continue;
+                uint32 const perm = item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT);
+                uint32 const g1 = item->GetEnchantmentId(SOCK_ENCHANTMENT_SLOT);
+                uint32 const g2 = item->GetEnchantmentId(SOCK_ENCHANTMENT_SLOT_2);
+                uint32 const g3 = item->GetEnchantmentId(SOCK_ENCHANTMENT_SLOT_3);
+                if (perm || g1 || g2 || g3)
+                    enchants += (enchants.empty() ? "" : ";") + std::to_string(s) + ":" + std::to_string(perm) + "/" +
+                                std::to_string(g1) + "," + std::to_string(g2) + "," + std::to_string(g3);
+            }
+            float const avg = counted ? float(levelSum) / float(counted) : 0.0f;
+            uint32 const score = PlayerbotAI::GetMixedGearScore(bot, false, false);
+            std::string columns;
+            for (uint8 s = EQUIPMENT_SLOT_START; s < EQUIPMENT_SLOT_END; ++s)
+                columns += ", e" + std::to_string(s);
+            for (uint8 s = EQUIPMENT_SLOT_START; s < EQUIPMENT_SLOT_END; ++s)
+                columns += ", i" + std::to_string(s);
+            PlayerbotsDatabase.Execute(
+                "INSERT INTO playerbots_gear_history (guid, name, level, class, spec, slot, old_entry, old_ilvl, "
+                "new_entry, new_ilvl, source, decider, reason{}, enchants, avg_ilvl, gear_score) VALUES ({}, '{}', {}, "
+                "{}, '{}', {}, {}, {}, {}, {}, '{}', '{}', '{}'{}{}, '{}', {:.2f}, {})",
+                columns, bot->GetGUID().GetCounter(), bot->GetName(), bot->GetLevel(), bot->getClass(),
+                Escaped(AiFactory::GetPlayerSpecName(bot), 32), slot, oldEntry, ItemLevelOf(oldEntry), newEntry,
+                ItemLevelOf(newEntry), source, Escaped(decider, 8), Escaped(reason, 255), entries, levels,
+                Escaped(enchants, 1024), avg, score);
         }
     }
 
@@ -793,8 +856,17 @@ namespace GuildGear
         for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
             if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                 now[slot] = item->GetEntry();
-        std::lock_guard<std::mutex> guard(historyLock);
-        worn[bot->GetGUID().GetCounter()] = now;
+        {
+            std::lock_guard<std::mutex> guard(historyLock);
+            worn[bot->GetGUID().GetCounter()] = now;
+        }
+        // its first login with the history: a baseline snapshot (login path, world thread: one indexed lookup)
+        if (!PlayerbotsDatabase.Query("SELECT 1 FROM playerbots_gear_history WHERE guid = {} LIMIT 1",
+                                      bot->GetGUID().GetCounter()))
+        {
+            WriteRow(bot, 255, 0, 0, "baseline", "bot", "baseline");
+            LOG_INFO("playerbots", "[gear] {} L{} baseline snapshot", bot->GetName(), bot->GetLevel());
+        }
     }
 
     void HistoryForget(Player* bot)
@@ -815,6 +887,14 @@ namespace GuildGear
         itemSource[item->GetGUID().GetCounter()] = source;
     }
 
+    void HistoryNoteDecision(uint32 botLow, uint32 itemEntry, std::string const& decider, std::string const& reason)
+    {
+        std::lock_guard<std::mutex> guard(historyLock);
+        if (worn.find(botLow) == worn.end())
+            return;
+        decisions[{botLow, itemEntry}] = {decider, reason};
+    }
+
     bool HistoryOnEquip(Player* bot, Item* item, uint8 slot)
     {
         if (!bot || !item || slot >= EQUIPMENT_SLOT_END)
@@ -822,6 +902,8 @@ namespace GuildGear
         uint32 const entry = item->GetEntry();
         uint32 old = 0;
         char const* source = "other";
+        std::string decider = "bot";
+        std::string reason;
         {
             std::lock_guard<std::mutex> guard(historyLock);
             auto found = worn.find(bot->GetGUID().GetCounter());
@@ -837,20 +919,24 @@ namespace GuildGear
                 source = src->second;
                 itemSource.erase(src);
             }
+            auto const why = decisions.find({bot->GetGUID().GetCounter(), entry});
+            if (why != decisions.end())
+            {
+                decider = why->second.first;
+                reason = why->second.second;
+                decisions.erase(why);
+            }
         }
         // a crafted item carries its maker
         if (!strcmp(source, "other") && item->GetGuidValue(ITEM_FIELD_CREATOR))
             source = "craft";
-        uint32 const oldLevel = ItemLevelOf(old);
-        uint32 const newLevel = ItemLevelOf(entry);
+        if (reason.empty())
+            reason = old ? "the bot's own upgrade pick" : "an empty slot filled";
         ItemTemplate const* oldProto = old ? sObjectMgr->GetItemTemplate(old) : nullptr;
-        LOG_INFO("playerbots", "[gear] {} L{} slot {}: {} (ilvl {}) -> {} (ilvl {}), from {}", bot->GetName(),
-                 bot->GetLevel(), slot, oldProto ? oldProto->Name1 : std::string("empty"), oldLevel,
-                 item->GetTemplate()->Name1, newLevel, source);
-        PlayerbotsDatabase.Execute(
-            "INSERT INTO playerbots_gear_history (guid, name, slot, old_entry, old_ilvl, new_entry, new_ilvl, source, "
-            "level) VALUES ({}, '{}', {}, {}, {}, {}, {}, '{}', {})",
-            bot->GetGUID().GetCounter(), bot->GetName(), slot, old, oldLevel, entry, newLevel, source, bot->GetLevel());
+        LOG_INFO("playerbots", "[gear] {} L{} slot {}: {} (ilvl {}) -> {} (ilvl {}), from {}, {}: {}", bot->GetName(),
+                 bot->GetLevel(), slot, oldProto ? oldProto->Name1 : std::string("empty"), ItemLevelOf(old),
+                 item->GetTemplate()->Name1, ItemLevelOf(entry), source, decider, reason);
+        WriteRow(bot, slot, old, entry, source, decider, reason);
         return true;
     }
 }

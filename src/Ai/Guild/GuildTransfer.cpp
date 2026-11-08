@@ -412,6 +412,26 @@ void GuildCoordinator::UpdateTransfers()
         }
         return best;
     };
+    auto const NearestFriendlyMailbox = [&](Player* p)
+    {
+        WorldPosition best{};
+        float bestDist = NONE;
+        for (Mailbox const& box : mailboxes_)
+        {
+            if (box.pos.GetMapId() != p->GetMapId())
+                continue;
+            if ((box.areaTeam == AREATEAM_ALLY && p->GetTeamId() != TEAM_ALLIANCE) ||
+                (box.areaTeam == AREATEAM_HORDE && p->GetTeamId() != TEAM_HORDE))
+                continue;
+            float const d = Dist(Pos(p), box.pos);
+            if (d < bestDist)
+            {
+                bestDist = d;
+                best = box.pos;
+            }
+        }
+        return best;
+    };
     auto const vaultWalk = [&](Player* p)
     {
         WorldPosition pos;
@@ -817,6 +837,14 @@ void GuildCoordinator::UpdateTransfers()
                     c.mail = WalkSeconds(s, ys);
                     c.mailbox = box;
                 }
+                // [guild15] no mailbox on its way right now: its nearest friendly mailbox in any town, mailed on its
+                // next visit there (MAIL_TO waits for that town, no special trip: no walk counted). Before, the
+                // channel was offered only while a box lay on the way, and the plan flipped once the sender left town.
+                else if (WorldPosition const any = NearestFriendlyMailbox(s); Valid(any))
+                {
+                    c.mail = 0.0f;
+                    c.mailbox = any;
+                }
                 uint32 const sAccount = s->GetSession()->GetAccountId();
                 uint32 const rAccount = r ? r->GetSession()->GetAccountId()
                                           : sCharacterCache->GetCharacterAccountIdByGuid(
@@ -1037,8 +1065,12 @@ void GuildCoordinator::UpdateTransfers()
         }
         auto const d = desired.find(t.key);
         // a consumable share may come from another stack of the quartermaster: the same transfer
+        // [guild15] a reagent / supply transfer ("r<to>:<item>") is the same while the same member sends the same item:
+        // its stack's guid changes when the gatherer loots more onto it (b333: Bami -> Guinudrond Silverleaf, Baridrol
+        // -> Dekorhan Linen planned and dropped 4 times, one trade done)
         bool const same = d != desired.end() && d->second->from == t.fromLow && d->second->to == t.toLow &&
-                          (t.gold || d->second->tradeOnly || t.key[0] == 's' || d->second->guid == t.itemGuidLow);
+                          (t.gold || d->second->tradeOnly || t.key[0] == 's' ||
+                           (t.key[0] == 'r' && d->second->itemId == t.itemId) || d->second->guid == t.itemGuidLow);
         if (!same)
         {
             logs.push_back("drop " + std::string(ChannelLog(t.channel)) + " " + Who(t.fromLow) + " -> " +
@@ -1108,6 +1140,10 @@ void GuildCoordinator::UpdateTransfers()
         t.money = w->money;
         t.purpose = w->purpose;
         t.why = w->why;
+        // [guild15] gear history: the receiver's equip of an upgrade is the global leader's decision
+        if (!t.gold && t.purpose == "улучшение")
+            GuildGear::HistoryNoteDecision(t.toLow, t.itemId, "leader",
+                                           "guild transfer from " + Who(t.fromLow) + ": " + t.why);
         t.costs = c.text;
         t.walkerLow = c.walkerLow;
         t.meet = c.meet;
