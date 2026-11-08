@@ -583,18 +583,33 @@ void GuildCoordinator::LoadRecipes()
         do
         {
             Field* f = result->Fetch();
-            uint32 spellId = f[0].Get<uint32>();
+            uint32 const trainerSpell = f[0].Get<uint32>();
+            uint32 spellId = trainerSpell;
             if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
                 for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
                     if (info->Effects[e].Effect == SPELL_EFFECT_LEARN_SPELL && info->Effects[e].TriggerSpell)
                         spellId = info->Effects[e].TriggerSpell;
-            // [tasks] a profession rank (Apprentice ... Grand Master): its level, the skill it needs, its new cap
-            if (SpellInfo const* rank = sSpellMgr->GetSpellInfo(spellId))
-                for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
-                    if (rank->Effects[e].Effect == SPELL_EFFECT_SKILL_STEP && rank->Effects[e].MiscValue > 0)
+            // [tasks] a profession rank (Apprentice ... Grand Master): its level, the skill it needs, its new cap.
+            // [econ1] b350 "trainer ranks: 0 skill lines": the trainer's spell (2020 Apprentice Blacksmith) carries
+            // the SKILL_STEP effect itself and teaches 2018, whose skill effect is SPELL_EFFECT_SKILL (the step in
+            // its value); the check looked only at 2018's SKILL_STEP, so every TrainerCap was 0 and every craft lag
+            // "need 0" (b350: Enchanting max 2, Inscription 1, ... while the plans asked for 75 / 150). Both
+            // spells are looked at, both effect kinds count (Spell::EffectLearnSkill / EffectSkill: step x 75)
+            bool rankFound = false;
+            for (uint32 const id : {trainerSpell, spellId})
+            {
+                SpellInfo const* rank = rankFound ? nullptr : sSpellMgr->GetSpellInfo(id);
+                if (!rank)
+                    continue;
+                for (uint8 e = 0; e < MAX_SPELL_EFFECTS && !rankFound; ++e)
+                    if ((rank->Effects[e].Effect == SPELL_EFFECT_SKILL_STEP ||
+                         rank->Effects[e].Effect == SPELL_EFFECT_SKILL) &&
+                        rank->Effects[e].MiscValue > 0)
                     {
-                        // Spell::EffectLearnSkill: the new max skill is the step x 75
                         uint32 const maxSkill = uint32(std::max(0, rank->Effects[e].CalcValue())) * SKILL_STEP_MAX;
+                        if (!maxSkill)
+                            continue;
+                        rankFound = true;
                         auto& ranks = trainerRanks_[uint32(rank->Effects[e].MiscValue)];
                         auto const same = std::find_if(ranks.begin(), ranks.end(),
                                                        [&](TrainerRank const& r) { return r.maxSkill == maxSkill; });
@@ -604,6 +619,7 @@ void GuildCoordinator::LoadRecipes()
                         else if (level < same->reqLevel)
                             *same = {level, req, maxSkill};
                     }
+            }
             if (!f[1].Get<uint32>())
                 continue;
             auto& req = trainerReq[spellId];
@@ -1748,6 +1764,14 @@ void GuildCoordinator::UpdateOrders()
                 o.status = pick.kind == GuildProfessionKind::GATHER
                                ? "собирает сам"
                                : "при следующем визите в город (исполнитель профессий)";
+                // [econ1] a smelt: at the town forge on its next visit there (a convenient town task, NextStep)
+                if (pick.kind == GuildProfessionKind::CRAFT && pick.skillLine == SKILL_MINING &&
+                    pick.pos != WorldPosition())
+                {
+                    o.pos = pick.pos;
+                    o.executable = true;
+                    o.status = "smelts at the town forge on its next visit";
+                }
                 orders.push_back(o);
             }
         // [tasks] SELL: what the global leader gave up goes at the next vendor visit (SellMarked), never a trip
@@ -3229,6 +3253,24 @@ void GuildCoordinator::UpdateProfessions()
                                            ")";
                             pick.reason = "руда в сумке; плавка (спелл " + std::to_string(smelt) +
                                           ") даёт навык горного дела, слитки — кузнецам / инженерам";
+                            // [econ1] the nearest town forge of its side on its map (its walk there not refused):
+                            // smelted on its next visit to that town
+                            float bestDist = FLT_MAX;
+                            for (Mailbox const& forge : forges_)
+                            {
+                                if (forge.pos.GetMapId() != p->GetMapId() ||
+                                    (forge.areaTeam == AREATEAM_ALLY && p->GetTeamId() != TEAM_ALLIANCE) ||
+                                    (forge.areaTeam == AREATEAM_HORDE && p->GetTeamId() != TEAM_HORDE) ||
+                                    TownRefused(row->low, forge.pos))
+                                    continue;
+                                float const d = p->GetExactDist(forge.pos.GetPositionX(), forge.pos.GetPositionY(),
+                                                                forge.pos.GetPositionZ());
+                                if (d < bestDist)
+                                {
+                                    bestDist = d;
+                                    pick.pos = forge.pos;
+                                }
+                            }
                             picks.push_back(pick);
                         }
                     }
@@ -3359,14 +3401,55 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
     out.clear();
     if (!bot)
         return;
-    std::lock_guard<std::mutex> guard(lock_);
-    auto const itr = bots_.find(bot->GetGUID().GetCounter());
-    if (itr == bots_.end() || itr->second.fiveId)
+    uint32 const low = bot->GetGUID().GetCounter();
+    std::vector<std::pair<WorldPosition, std::string>> stops;
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        auto const itr = bots_.find(low);
+        if (itr == bots_.end() || itr->second.fiveId)
+            return;
+        for (GuildOrder const& o : itr->second.orders)
+            if (o.executable && o.waitsTown && o.priority == GuildTaskPriority::CONVENIENT &&
+                o.pos != WorldPosition() && o.pos.GetMapId() == bot->GetMapId())
+                stops.emplace_back(o.pos,
+                                   std::string(OrderName(o.type)) + (o.townName.empty() ? "" : " " + o.townName));
+    }
+    // [econ1] b349/b350 Geron: MAIL_TO waited for Kharanos 1083 yd away, its walk there was given up and the route
+    // put the stop back again (182 MAIL_TO lines, ~70 min). A stop its own trip judge refuses (a danger on the way,
+    // or the walk given up: NewRpgBaseAction::TripRefused) is left out and remembered: the planner then picks
+    // another mailbox / channel for it (UpdateTransfers), until its next level. Judged outside lock_ (map thread)
+    std::vector<std::pair<int32, int32>> refused;
+    for (auto& stop : stops)
+    {
+        WorldPosition const& pos = stop.first;
+        if (NewRpgBaseAction::TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
+                                          "town task " + stop.second))
+            refused.emplace_back(int32(pos.GetPositionX()), int32(pos.GetPositionY()));
+        else
+            out.push_back(std::move(stop));
+    }
+    if (refused.empty())
         return;
-    for (GuildOrder const& o : itr->second.orders)
-        if (o.executable && o.waitsTown && o.priority == GuildTaskPriority::CONVENIENT &&
-            o.pos != WorldPosition() && o.pos.GetMapId() == bot->GetMapId())
-            out.emplace_back(o.pos, std::string(OrderName(o.type)) + (o.townName.empty() ? "" : " " + o.townName));
+    std::lock_guard<std::mutex> guard(lock_);
+    auto& entry = townRefused_[low];
+    if (entry.first != bot->GetLevel())
+        entry = {bot->GetLevel(), {}};
+    for (auto const& xy : refused)
+        if (entry.second.insert(xy).second)
+            LOG_INFO("playerbots", "[econ1] {} L{} town stop refused at ({},{}): its walk there is refused or "
+                     "given up - another mailbox / forge or channel is planned", bot->GetName(), bot->GetLevel(),
+                     xy.first, xy.second);
+}
+
+bool GuildCoordinator::TownRefused(uint32 low, WorldPosition const& pos) const
+{
+    auto const itr = townRefused_.find(low);
+    if (itr == townRefused_.end())
+        return false;
+    Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+    if (!p || p->GetLevel() != itr->second.first)
+        return false;
+    return itr->second.second.count({int32(pos.GetPositionX()), int32(pos.GetPositionY())}) != 0;
 }
 
 bool GuildCoordinator::QuestWorkOf(Player* bot, uint32 questId, float dps, QuestWork& out) const
@@ -4572,6 +4655,62 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                 }
                 continue;
             case GuildOrderType::PROFESSION:  // [tasks] the leader's call: gathering its own reagents
+                // [econ1] a smelt at the town forge: the walk to it in town, then the smelt cast there (the core's
+                // spell, its ore, the forge in reach: SpellInfo RequiresSpellFocus), one bar per cast while it
+                // still gives skill (NextSmelt); the craft executor's look is not needed for it
+                if (order.profession == GuildProfessionKind::CRAFT && order.skillLine == SKILL_MINING &&
+                    order.pos != WorldPosition())
+                {
+                    if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(false))
+                        continue;
+                    std::vector<std::pair<uint32, uint32>> ores;
+                    uint32 const smelt = NextSmelt(bot, &ores);
+                    bool enough = smelt && !ores.empty();
+                    for (auto const& [ore, n] : ores)
+                        enough = enough && bot->GetItemCount(ore, false) >= n;
+                    if (!enough)
+                        continue;
+                    if (NewRpgCraft::FocusNear(bot, NewRpgCraft::RecipeFocus(smelt)))
+                    {
+                        if (bot->isMoving())
+                            bot->StopMoving();
+                        uint32 const before = bot->GetPureSkillValue(SKILL_MINING);
+                        if (botAI->CastSpell(smelt, bot))
+                        {
+                            LOG_INFO("playerbots", "[econ1] smelt {} L{} casts {} at the forge (mining {}/{})",
+                                     bot->GetName(), bot->GetLevel(), NewRpgCraft::RecipeName(smelt), before,
+                                     bot->GetPureMaxSkillValue(SKILL_MINING));
+                            step.kind = GuildRunStep::BUSY;
+                            step.reason = "smelt " + NewRpgCraft::RecipeName(smelt);
+                            started(order);
+                            return step;
+                        }
+                        continue;
+                    }
+                    float const toForge = bot->GetExactDist(order.pos.GetPositionX(), order.pos.GetPositionY(),
+                                                            order.pos.GetPositionZ());
+                    if (toForge <= 2.0f)
+                        continue;  // at the forge and still not in its reach: nothing to walk to
+                    if (toForge <= 12.0f)
+                    {
+                        // the camp walk ends within its arrival distance: the last steps up to the forge
+                        if (!bot->isMoving())
+                            bot->GetMotionMaster()->MovePoint(0, order.pos.GetPositionX(), order.pos.GetPositionY(),
+                                                              order.pos.GetPositionZ());
+                        step.kind = GuildRunStep::BUSY;
+                        step.reason = "steps up to the forge";
+                        return step;
+                    }
+                    step.kind = GuildRunStep::WALK;
+                    step.pos = order.pos;
+                    step.reason = "PROFESSION smelt at the forge, " +
+                                  std::to_string(uint32(bot->GetExactDist(order.pos.GetPositionX(),
+                                                                          order.pos.GetPositionY(),
+                                                                          order.pos.GetPositionZ()))) +
+                                  " yd";
+                    started(order);
+                    return step;
+                }
                 if (order.profession != GuildProfessionKind::GATHER)
                     continue;
                 [[fallthrough]];

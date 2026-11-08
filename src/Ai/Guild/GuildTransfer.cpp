@@ -201,8 +201,14 @@ namespace
         uint32 const taught = RecipeSpell(proto);
         if (p->IsInCombat() || p->IsNonMeleeSpellCast(false) || p->IsInFlight() || p->CanUseItem(item) != EQUIP_ERR_OK)
             return "cannot use it now";
-        WorldPacket packet(CMSG_USE_ITEM);
         uint32 const spellId = uint32(std::max<int32>(proto->Spells[0].SpellId, 0));
+        // [econ1] b350: 22 "the core did not teach it" for Guinudrond - the use was sent while the global cooldown
+        // ran (the core refuses the Learning cast, SPELL_FAILED_NOT_READY) and retried every second; a use waits
+        // for the cooldown like a player's click does
+        if (SpellInfo const* use = sSpellMgr->GetSpellInfo(spellId))
+            if (p->GetGlobalCooldownMgr().HasGlobalCooldown(use))
+                return "cannot use it now";
+        WorldPacket packet(CMSG_USE_ITEM);
         packet << item->GetBagSlot() << item->GetSlot() << uint8(1) << spellId << item->GetGUID() << uint32(0)
                << uint8(0) << uint32(TARGET_FLAG_NONE);
         p->GetSession()->HandleUseItemOpcode(packet);
@@ -368,6 +374,40 @@ void GuildCoordinator::LoadMailboxes()
         }
         mailboxes_.push_back(box);
     }
+    // [econ1] b350: 1 smelt in the whole run - the craft executor smelts only with a forge in sight, and the smelt
+    // call had no place. The forges of the towns (a forge spell focus in an area with a mailbox): the smelt call
+    // waits for the miner's visit to the nearest one
+    forges_.clear();
+    std::set<uint32> towns;
+    for (Mailbox const& box : mailboxes_)
+        if (box.areaId)
+            towns.insert(box.areaId);
+    constexpr uint32 FOCUS_FORGE = 3;  // SpellFocusObject.dbc 3: Forge (the smelting spells' RequiresSpellFocus)
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
+    {
+        GameObjectTemplate const* proto = sObjectMgr->GetGameObjectTemplate(data.id);
+        if (!proto || proto->type != GAMEOBJECT_TYPE_SPELL_FOCUS || proto->spellFocus.focusId != FOCUS_FORGE)
+            continue;
+        MapEntry const* map = sMapStore.LookupEntry(data.mapid);
+        if (!map || map->Instanceable())
+            continue;
+        uint32 const areaId = sMapMgr->GetAreaId(PHASEMASK_NORMAL, data.mapid, data.posX, data.posY, data.posZ);
+        if (!towns.count(areaId))
+            continue;
+        Mailbox forge;
+        forge.pos = WorldPosition(data.mapid, data.posX, data.posY, data.posZ, data.orientation);
+        forge.areaId = areaId;
+        forge.zoneId = sMapMgr->GetZoneId(PHASEMASK_NORMAL, data.mapid, data.posX, data.posY, data.posZ);
+        if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(areaId))
+        {
+            forge.areaTeam = area->team;
+            if (!forge.areaTeam && area->zone)
+                if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(area->zone))
+                    forge.areaTeam = zone->team;
+        }
+        forges_.push_back(forge);
+    }
+    LOG_INFO("playerbots", "[econ1] smelting: {} town forges on the continents", forges_.size());
     LOG_INFO("playerbots", "[guild81] transfers: {} mailboxes on the continents, postage {} copper per item, item "
              "delivery between accounts {} s, trade distance {} yd", mailboxes_.size(), MAIL_POSTAGE,
              sWorld->getIntConfig(CONFIG_MAIL_DELIVERY_DELAY), TRADE_DISTANCE);
@@ -435,6 +475,8 @@ void GuildCoordinator::UpdateTransfers()
             if ((box.areaTeam == AREATEAM_ALLY && p->GetTeamId() != TEAM_ALLIANCE) ||
                 (box.areaTeam == AREATEAM_HORDE && p->GetTeamId() != TEAM_HORDE))
                 continue;  // a hostile town's mailbox
+            if (TownRefused(p->GetGUID().GetCounter(), box.pos))
+                continue;  // [econ1] its walk there was refused / given up at this level
             float const d = Detour(p, box.pos);
             if (d < best)
             {
@@ -455,6 +497,8 @@ void GuildCoordinator::UpdateTransfers()
             if ((box.areaTeam == AREATEAM_ALLY && p->GetTeamId() != TEAM_ALLIANCE) ||
                 (box.areaTeam == AREATEAM_HORDE && p->GetTeamId() != TEAM_HORDE))
                 continue;
+            if (TownRefused(p->GetGUID().GetCounter(), box.pos))
+                continue;  // [econ1] its walk there was refused / given up at this level
             float const d = Dist(Pos(p), box.pos);
             if (d < bestDist)
             {
@@ -504,9 +548,11 @@ void GuildCoordinator::UpdateTransfers()
             uint8 bag = 0, slot = 0;
             if (uint32(m->deliver_time) <= now && (m->money || FreeSlot(p, bag, slot)))
                 ++delivered;  // bags full: an item mail waits (no stand at the mailbox it cannot empty)
+            else if (uint32(m->deliver_time) <= now)
+                mailTransit_[row.low].push_back(Who(m->sender) + ": delivered, bags full");
             else
-                mailTransit_[row.low].push_back(Who(m->sender) + ": через " +
-                                                std::to_string((uint32(m->deliver_time) - now + 59) / 60) + " мин");
+                mailTransit_[row.low].push_back(Who(m->sender) + ": in " +
+                                                std::to_string((uint32(m->deliver_time) - now + 59) / 60) + " min");
         }
         WorldPosition box;
         uint32 keepArea = 0;
@@ -516,6 +562,13 @@ void GuildCoordinator::UpdateTransfers()
                                           last->second.second.GetPositionZ());
         if (delivered && nearestMailbox(p, box, keepArea) < NONE)
             mailPickup_[row.low] = {delivered, box};
+        // [econ1] b350: 143 letters lay in the members' mailboxes (Lanbuzz 19, Emdyl 11) and 15 were ever taken -
+        // the pickup was planned only while a mailbox lay on the bot's way right then, so a bot whose walks never
+        // passed one never got the task. No mailbox on its way now: its nearest friendly town mailbox, taken on
+        // its next visit there (a convenient town task: the route's town stop, no special trip)
+        else if (delivered)
+            if (WorldPosition const any = NearestFriendlyMailbox(p); Valid(any))
+                mailPickup_[row.low] = {delivered, any};
     }
 
     // 2. what should move
@@ -865,8 +918,12 @@ void GuildCoordinator::UpdateTransfers()
         {
             // mail: the sender's cheapest mailbox (it pays the postage out of its free money), the receiver's
             uint32 const postage = MAIL_POSTAGE;
+            // [econ1] mail only to a receiver that passes a mailbox: a bot with a friendly town mailbox on its map
+            // its walks are not refused to (it takes the letter on its next visit there); a human takes his own
+            bool const receiverBox = !r || HumanCharacter(r) || !GET_PLAYERBOT_AI(r) ||
+                                     Valid(NearestFriendlyMailbox(r));
             if (s->GetLevel() >= mailLevel && canWalk(s) && FoundingFreeMoney(s) >= postage + w.money &&
-                !(old && old->mailRefused))
+                !(old && old->mailRefused) && receiverBox)
             {
                 WorldPosition box;
                 uint32 const keepArea =
@@ -1109,6 +1166,33 @@ void GuildCoordinator::UpdateTransfers()
             if (Player* p = Online(row.low); p && p->IsAlive())
                 members.emplace_back(&row, p);
         using RecipeScore = std::tuple<bool, uint32, bool, bool>;  // learns now, skill, the holder, a bot
+        // [econ1] b350: 10 members held Recipe: Brilliant Smallfish and every copy was mailed to #23 Lanbuzz (19
+        // letters, one recipe learned). One copy per (learner, taught spell): the one it holds itself, the one in
+        // its mailbox, the one already on its way; a further copy goes to the next best learner or stays
+        std::set<std::pair<uint32, uint32>> claimed;
+        for (auto const& [row, m] : members)
+        {
+            ForEachBagItem(m,
+                           [&](Item* it)
+                           {
+                               if (it->GetTemplate()->Class == ITEM_CLASS_RECIPE)
+                                   if (uint32 const spell = RecipeSpell(it->GetTemplate()))
+                                       claimed.insert({row->low, spell});
+                           });
+            for (Mail const* mail : m->GetMails())
+                if (mail && mail->state != MAIL_STATE_DELETED)
+                    for (MailItemInfo const& info : mail->items)
+                        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(info.item_template))
+                            if (proto->Class == ITEM_CLASS_RECIPE)
+                                if (uint32 const spell = RecipeSpell(proto))
+                                    claimed.insert({row->low, spell});
+        }
+        for (auto const& [id, t] : transfers_)
+            if (!t.gold && t.mailed)
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(t.itemId);
+                    proto && proto->Class == ITEM_CLASS_RECIPE)
+                    if (uint32 const spell = RecipeSpell(proto))
+                        claimed.insert({t.toLow, spell});
         for (auto const& [holderRow, h] : members)
         {
             std::vector<Item*> recipes;
@@ -1133,7 +1217,8 @@ void GuildCoordinator::UpdateTransfers()
                         std::find(row->profs.begin(), row->profs.end(), line) != row->profs.end() ||
                         std::find(row->secondary.begin(), row->secondary.end(), line) != row->secondary.end();
                     if ((taught && m->HasSpell(taught)) || (!m->HasSkill(line) && !planned) ||
-                        m->GetLevel() < proto->RequiredLevel)
+                        m->GetLevel() < proto->RequiredLevel ||
+                        (m != h && taught && claimed.count({row->low, taught})))
                         continue;
                     uint32 const skill = m->HasSkill(line) ? m->GetPureSkillValue(line) : 0;
                     RecipeScore const score{m->HasSkill(line) && skill >= proto->RequiredSkillRank, skill, m == h,
@@ -1162,6 +1247,8 @@ void GuildCoordinator::UpdateTransfers()
                         recipeLearn_.emplace_back(holderRow->low, it->GetGUID().GetCounter());
                     continue;
                 }
+                if (taught)
+                    claimed.insert({bestLow, taught});
                 Want w;
                 w.key = "l" + std::to_string(it->GetGUID().GetCounter());
                 w.from = holderRow->low;
@@ -1504,22 +1591,41 @@ void GuildCoordinator::RunTransfers(uint32 diff)
             std::vector<MailItemInfo> const items = m->items;
             uint32 taken = 0;
             std::string got;
+            bool full = false;
             for (MailItemInfo const& info : items)
             {
                 Item* it = r->GetMItem(info.item_guid);
                 std::string const name =
                     it ? ItemText(it->GetEntry(), it->GetCount()) : ItemText(info.item_template, 1);
+                // [econ1] b350: Idunk "could not take ... (bags full?)" 11 times a letter, every second at the box -
+                // the core's own check first (HandleMailTakeItem: CanStoreItem); full bags end the take here, the
+                // rest stays in the mail for the next visit (its vendor visit makes room)
+                ItemPosCountVec dest;
+                if (it && r->CanStoreItem(NULL_BAG, NULL_SLOT, dest, it, false) != EQUIP_ERR_OK)
+                {
+                    full = true;
+                    break;
+                }
                 WorldPacket take(CMSG_MAIL_TAKE_ITEM);
                 take << box->GetGUID() << mailId << info.item_guid;
                 r->GetSession()->HandleMailTakeItem(take);
-                if (r->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(info.item_guid)))
+                // taken = gone from the letter (a stack merged into the bags has no item of that guid any more)
+                Mail const* after = r->GetMail(mailId);
+                bool const still = after && std::any_of(after->items.begin(), after->items.end(),
+                                                        [&](MailItemInfo const& i)
+                                                        { return i.item_guid == info.item_guid; });
+                if (!still)
                 {
                     ++taken;
                     got += (got.empty() ? "" : ", ") + name;
                 }
                 else
+                {
                     logs.push_back(r->GetName() + " could not take " + name + " from the mail of " + Who(sender) +
-                                   " (bags full?)");
+                                   " (the core refused it)");
+                    full = true;
+                    break;
+                }
             }
             m = r->GetMail(mailId);
             if (m && m->money)
@@ -1541,6 +1647,14 @@ void GuildCoordinator::RunTransfers(uint32 diff)
             }
             if (!got.empty())
                 logs.push_back(Who(low) + " takes the mail of " + Who(sender) + " at a mailbox: " + got);
+            if (taken)
+                LOG_INFO("playerbots", "[econ1] mail collected: {} took {} item(s) from {}", Who(low), taken,
+                         Who(sender));
+            if (full)
+            {
+                LOG_INFO("playerbots", "[econ1] mail waits: {} has no bag room for the rest of its mail", Who(low));
+                break;
+            }
         }
     }
 
