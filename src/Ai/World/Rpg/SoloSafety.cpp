@@ -2924,8 +2924,12 @@ namespace SoloSafety
                     // on from its end to that stop (straight: no more than the walk) - the executor walks on past the
                     // leg's end while the chase lasts (RunPastStep)
                     float walkOn = legLen - meets;
+                    // (only along a far route the executor can walk on: a complete one found to that stop)
                     if (walkStopSet)
-                        walkOn += std::hypot(walkStop.x - to.x, walkStop.y - to.y);
+                        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+                            ai && ai->rpgInfo.farRoute.size() >= 2 &&
+                            (ai->rpgInfo.farRoute.back() - walkStop).length() <= 8.0f)  // the farRoute tolerance
+                            walkOn += std::hypot(walkStop.x - to.x, walkStop.y - to.y);
                     if (chase.seconds * speed > walkOn)
                     {
                         price = std::numeric_limits<float>::max();
