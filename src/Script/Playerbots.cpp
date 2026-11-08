@@ -14,6 +14,8 @@
 #include "DBCStores.h"
 #include "AiFactory.h"
 #include "DpsEstimate.h"  // [dps1]
+#include "Spell.h"  // [dpscal]
+#include "UnitScript.h"  // [dpscal]
 #include "BuiltInConfig.h"
 #include "DBUpdater.h"
 #include "DatabaseEnv.h"
@@ -173,7 +175,17 @@ public:
 class PlayerbotsDpsFormulaScript : public PlayerScript
 {
 public:
-    PlayerbotsDpsFormulaScript() : PlayerScript("PlayerbotsDpsFormulaScript", {PLAYERHOOK_ON_PLAYER_ENTER_COMBAT}) {}
+    PlayerbotsDpsFormulaScript()
+        : PlayerScript("PlayerbotsDpsFormulaScript", {PLAYERHOOK_ON_PLAYER_ENTER_COMBAT, PLAYERHOOK_ON_SPELL_CAST})
+    {
+    }
+
+    // [dpscal] a solo bot's casts, for its fight's [dpsparts] line (DpsEstimate::NoteCast)
+    void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skipCheck*/) override
+    {
+        if (spell && !spell->IsTriggered())
+            DpsEstimate::NoteCast(player, spell->GetSpellInfo());
+    }
 
     void OnPlayerEnterCombat(Player* player, Unit* enemy) override
     {
@@ -192,6 +204,21 @@ public:
                  AiFactory::GetPlayerSpecName(player), DpsEstimate::ContextName(ctx), boss->GetEntry(),
                  uint32(boss->GetLevel()), r.burstDps, r.whiteDps, r.petDps, r.tps, r.manaPerSec, uint32(r.spells),
                  player->GetMapId(), boss->GetName());
+    }
+};
+
+// [dpscal] a solo bot's hits dealt and taken, overkill included, for its fight's [dps] line (DpsEstimate::NoteDealt;
+// DealDamage runs every UnitScript before the victim's health changes)
+class PlayerbotsDpsMeasureScript : public UnitScript
+{
+public:
+    PlayerbotsDpsMeasureScript() : UnitScript("PlayerbotsDpsMeasureScript") {}
+
+    uint32 DealDamage(Unit* attacker, Unit* victim, uint32 damage, DamageEffectType damageType) override
+    {
+        if (damage && attacker && victim && attacker != victim)
+            DpsEstimate::NoteDealt(attacker, victim, damage, uint8(damageType));
+        return damage;
     }
 };
 
@@ -832,6 +859,7 @@ void AddPlayerbotsScripts()
     new PlayerbotsPlayerScript();
     new PlayerbotsGearScript();       // [guild15]
     new PlayerbotsDpsFormulaScript();  // [dps1]
+    new PlayerbotsDpsMeasureScript();  // [dpscal]
     new PlayerbotsGuildBankScript();  // [guild15]
     new PlayerbotsDeathAndOnlineScript();  // [guild5]
     new PlayerbotsMiscScript();

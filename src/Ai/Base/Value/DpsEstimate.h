@@ -13,6 +13,7 @@
 #include "Define.h"
 
 class Player;
+class SpellInfo;
 class Unit;
 
 // [dps1] What a bot can deal per second against a target, from a formula over its state now (user 2026-11-08: no
@@ -74,6 +75,14 @@ struct FightSample
     BuffContext ctx = BuffContext::Solo;
 };
 void RecordFight(Player* bot, FightSample const& sample);
+
+// [dpscal] what a solo bot (and its pet, its totems) does between two RecordFight calls, for that fight's [dps] /
+// [dpsparts] lines only (nothing stored, no decision reads it): every hit with its overkill (the formula is the
+// damage it deals, a kill's last hit is dealt in full), the hits it takes, and its casts by spell.
+// NoteDealt from the UnitScript DealDamage hook (before the victim's health changes), NoteCast from
+// PlayerScript::OnPlayerSpellCast (a cast that went off)
+void NoteDealt(Unit* attacker, Unit* victim, uint32 damage, uint8 damageType);
+void NoteCast(Player* player, SpellInfo const* info);
 }  // namespace DpsEstimate
 
 #endif

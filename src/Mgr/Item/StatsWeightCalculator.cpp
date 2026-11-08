@@ -25,6 +25,7 @@
 #include "Timer.h"
 #include "Unit.h"
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <unordered_map>
 
@@ -457,6 +458,22 @@ float StatsWeightCalculator::CalculateEnchant(uint32 enchantId, uint32 weaponDel
     {
         weight_ += stats_weights_[i] * collector_->stats[i];
     }
+
+    // [upgrades] Wyrmglass «Resonance» (mod-raid-rescale RaidRescaleResonance.cpp): 3 / 6 gems of a tier give
+    // 2 x round(10 k) of the highest primary, 9 gems add the Surge (round(100 k) at 25 % uptime). Spread over the
+    // 9 gems of a full set, every Wyrmglass gem is worth this much of the bot's best primary stat on top of its stats.
+    if (enchant->GemID)
+        if (ItemTemplate const* gem = sObjectMgr->GetItemTemplate(enchant->GemID))
+            if (gem->GemProperties >= 1800 && gem->GemProperties < 1800 + 5 * 80)
+            {
+                static constexpr float TIER_K[5] = {1.126f, 1.273f, 1.463f, 1.652f, 1.810f};
+                float const k = TIER_K[(gem->GemProperties - 1800) / 80];
+                float const perGem = (2.0f * std::round(10.0f * k) + 0.25f * std::round(100.0f * k)) / 9.0f;
+                float const bestPrimary = std::max({stats_weights_[STATS_TYPE_STRENGTH],
+                                                    stats_weights_[STATS_TYPE_AGILITY],
+                                                    stats_weights_[STATS_TYPE_INTELLECT]});
+                weight_ += perGem * bestPrimary;
+            }
 
     return weight_;
 }

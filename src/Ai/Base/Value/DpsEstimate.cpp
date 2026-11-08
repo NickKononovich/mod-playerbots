@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 #include <vector>
@@ -23,11 +25,14 @@
 #include "Pet.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "SharedDefines.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "SpellPayoff.h"
+#include "Timer.h"
 #include "StringFormat.h"
 #include "Unit.h"
 #include "World.h"
@@ -118,7 +123,10 @@ struct SpecRotation
     std::vector<Ability> abilities;
 };
 
-// priorities after the wowsims APLs (ui/<spec>/apls/*.apl.json) without procs, trinkets and execute phases
+// priorities after the wowsims APLs (ui/<spec>/apls/*.apl.json) without procs, trinkets and execute phases.
+// [dpscal] Only what the bot's own strategy casts (src/Ai/Class/<Class>/Strategy): the fillers in its priority order,
+// the first one it knows is the one it casts (b337: frost mages measured 0.63 of a formula that took Fireball over
+// the Frostbolt the bot always casts, holy priests 0.67-0.71 with a Mind Blast the bot never casts)
 std::vector<SpecRotation> const& Rotations()
 {
     static std::vector<SpecRotation> const rotations = {
@@ -212,20 +220,20 @@ std::vector<SpecRotation> const& Rotations()
           {"Sinister Strike", Kind::Builder},
           {"Rupture", Kind::ComboDot, Script::Rupture},
           {"Eviscerate", Kind::Finisher, Script::Eviscerate}}},
-        // healing_priest / smite_priest apls
+        // smite_priest/apls/default (Holy Fire, Shadow Word: Pain, Smite; no Mind Blast): the solo "holy dps" strategy
+        // (HolyDpsPriestStrategy: Smite, the "holy fire" trigger, "shadow debuff"); PriestHealerDpsStrategy ranks Mind
+        // Blast below Smite, so it is never cast
         {CLASS_PRIEST,
          0,
          true,
          {{"Shadow Word: Pain", Kind::Dot},
           {"Holy Fire", Kind::Cooldown},
-          {"Mind Blast", Kind::Cooldown},
           {"Smite", Kind::Filler}}},
         {CLASS_PRIEST,
          1,
          true,
          {{"Shadow Word: Pain", Kind::Dot},
           {"Holy Fire", Kind::Cooldown},
-          {"Mind Blast", Kind::Cooldown},
           {"Smite", Kind::Filler}}},
         // shadow_priest/apls/default
         {CLASS_PRIEST,
@@ -286,27 +294,24 @@ std::vector<SpecRotation> const& Rotations()
           {"Earth Shock", Kind::Cooldown},
           {"Lava Lash", Kind::Cooldown}}},
         {CLASS_SHAMAN, 2, true, {{"Flame Shock", Kind::Dot}, {"Lightning Bolt", Kind::Filler}}},
-        // mage/apls arcane / fire / frost
+        // mage/apls arcane / fire / frost; the bot's defaults (Arcane / Fire / FrostMageStrategy): Arcane Blast, Arcane
+        // Missiles, Frostbolt; Fireball, Frostbolt; Frostbolt, Fireball. Fire Blast only on the move (below the
+        // filler), Arcane Barrage too
         {CLASS_MAGE,
          0,
          true,
-         {{"Arcane Barrage", Kind::Cooldown},
-          {"Arcane Blast", Kind::Filler},
+         {{"Arcane Blast", Kind::Filler},
           {"Arcane Missiles", Kind::Filler},
-          {"Fireball", Kind::Filler},
           {"Frostbolt", Kind::Filler}}},
         {CLASS_MAGE,
          1,
          true,
          {{"Living Bomb", Kind::Dot},
-          {"Fire Blast", Kind::Cooldown},
           {"Fireball", Kind::Filler},
           {"Frostbolt", Kind::Filler}}},
-        {CLASS_MAGE,
-         2,
-         true,
-         {{"Frostbolt", Kind::Filler}, {"Fireball", Kind::Filler}, {"Fire Blast", Kind::Cooldown}}},
-        // warlock/apls affliction / demonology / destruction
+        {CLASS_MAGE, 2, true, {{"Frostbolt", Kind::Filler}, {"Fireball", Kind::Filler}}},
+        // warlock/apls affliction / demonology / destruction; AfflictionWarlockStrategy (+ "curse of agony"): Haunt,
+        // Unstable Affliction, Corruption, Curse of Agony, Shadow Bolt (no Immolate)
         {CLASS_WARLOCK,
          0,
          true,
@@ -314,23 +319,23 @@ std::vector<SpecRotation> const& Rotations()
           {"Unstable Affliction", Kind::Dot},
           {"Corruption", Kind::Dot},
           {"Curse of Agony", Kind::Dot},
-          {"Immolate", Kind::Dot},
           {"Shadow Bolt", Kind::Filler}}},
+        // DemonologyWarlockStrategy: Corruption, Immolate, Shadow Bolt before Incinerate (Molten Core only); no Curse
+        // of Agony (WarlockCurseOfAgonyStrategy is Affliction's)
         {CLASS_WARLOCK,
          1,
          true,
          {{"Corruption", Kind::Dot},
           {"Immolate", Kind::Dot},
-          {"Curse of Agony", Kind::Dot},
-          {"Incinerate", Kind::Filler},
-          {"Shadow Bolt", Kind::Filler}}},
+          {"Shadow Bolt", Kind::Filler},
+          {"Incinerate", Kind::Filler}}},
+        // DestructionWarlockStrategy [rot410]: no Corruption (the wowsims destro APL never casts it)
         {CLASS_WARLOCK,
          2,
          true,
          {{"Immolate", Kind::Dot},
           {"Conflagrate", Kind::Cooldown, Script::Conflagrate},
           {"Chaos Bolt", Kind::Cooldown},
-          {"Corruption", Kind::Dot},
           {"Incinerate", Kind::Filler},
           {"Shadow Bolt", Kind::Filler}}},
         // balance_druid/apls (no Eclipse modelled)
@@ -1303,10 +1308,84 @@ std::unordered_map<std::string, uint32> KnownByName(Player* bot, SpecRotation co
     return known;
 }
 
-SpecRotation const* RotationOf(Player* bot)
+// [dpscal] The ideal: the wowsims / Rawr priority for the spec (ui/<spec>/apls, Rawr 2.3.23) where the bot's own
+// strategy casts less (the specs Rotations() trims to the bot's casts); the strongest filler it knows is cast (Compute)
+// and a DoT where it pays by the core's numbers. Logged as ideal= beside the formula: a gap above 10 % names a rotation
+// the bot should fix. No decision reads it.
+std::vector<SpecRotation> const& IdealRotations()
+{
+    static std::vector<SpecRotation> const rotations = {
+        {CLASS_PRIEST,
+         0,
+         true,
+         {{"Shadow Word: Pain", Kind::Dot},
+          {"Holy Fire", Kind::Cooldown},
+          {"Mind Blast", Kind::Cooldown},
+          {"Smite", Kind::Filler}}},
+        {CLASS_PRIEST,
+         1,
+         true,
+         {{"Shadow Word: Pain", Kind::Dot},
+          {"Holy Fire", Kind::Cooldown},
+          {"Mind Blast", Kind::Cooldown},
+          {"Smite", Kind::Filler}}},
+        {CLASS_MAGE,
+         0,
+         true,
+         {{"Arcane Barrage", Kind::Cooldown},
+          {"Arcane Blast", Kind::Filler},
+          {"Arcane Missiles", Kind::Filler},
+          {"Fireball", Kind::Filler},
+          {"Frostbolt", Kind::Filler}}},
+        {CLASS_MAGE,
+         1,
+         true,
+         {{"Living Bomb", Kind::Dot},
+          {"Fire Blast", Kind::Cooldown},
+          {"Fireball", Kind::Filler},
+          {"Frostbolt", Kind::Filler}}},
+        {CLASS_MAGE,
+         2,
+         true,
+         {{"Frostbolt", Kind::Filler}, {"Fireball", Kind::Filler}, {"Fire Blast", Kind::Cooldown}}},
+        {CLASS_WARLOCK,
+         0,
+         true,
+         {{"Haunt", Kind::Cooldown},
+          {"Unstable Affliction", Kind::Dot},
+          {"Corruption", Kind::Dot},
+          {"Curse of Agony", Kind::Dot},
+          {"Immolate", Kind::Dot},
+          {"Shadow Bolt", Kind::Filler}}},
+        {CLASS_WARLOCK,
+         1,
+         true,
+         {{"Corruption", Kind::Dot},
+          {"Immolate", Kind::Dot},
+          {"Curse of Agony", Kind::Dot},
+          {"Incinerate", Kind::Filler},
+          {"Shadow Bolt", Kind::Filler}}},
+        {CLASS_WARLOCK,
+         2,
+         true,
+         {{"Immolate", Kind::Dot},
+          {"Conflagrate", Kind::Cooldown, Script::Conflagrate},
+          {"Chaos Bolt", Kind::Cooldown},
+          {"Corruption", Kind::Dot},
+          {"Incinerate", Kind::Filler},
+          {"Shadow Bolt", Kind::Filler}}},
+    };
+    return rotations;
+}
+
+SpecRotation const* RotationOf(Player* bot, bool ideal = false)
 {
     uint8 const cls = bot->getClass();
     uint8 const tab = AiFactory::GetPlayerSpecTab(bot);
+    if (ideal)
+        for (SpecRotation const& rotation : IdealRotations())
+            if (rotation.cls == cls && (rotation.tab == 255 || rotation.tab == tab))
+                return &rotation;
     if (cls == CLASS_DRUID && tab == 1)
     {
         ShapeshiftForm const form = bot->GetShapeshiftForm();
@@ -1330,6 +1409,8 @@ struct Profile
     bool lifeTap = false;
     float cycleSec = 0.0f;
     uint8 spells = 0;
+    float lifeSec = 0.0f;                          // [dpscal] the fight it was computed for (0: the steady state)
+    std::vector<std::pair<uint32, float>> parts;  // [dpscal] damage per second by rotation spell ([dpsparts] log)
 };
 
 // the pet's white damage and its autocast spells on cooldown (focus-limited for a hunter's)
@@ -1363,9 +1444,49 @@ float PetDps(Model const& m, Pet* pet)
     return dps;
 }
 
-Profile Compute(Player* bot, Unit* target, BuffContext ctx)
+// [dpscal] A DoT over a fight of `lifeSec` (a solo bot's fresh mob: its health over this formula, Compute below),
+// cast as the bot's DoT triggers cast it (DebuffTrigger::DotPaysOff, SpellPayoff::DotPays): every application that
+// runs its full duration, and the last one when the ticks that land before the death beat the filler in its execute
+// time. `cast.damage` becomes the mean per application; returns the applications per second (0: none pays). b337:
+// warlocks measured 0.44-0.66 of a formula that kept Immolate / Corruption up on mobs dying in 8-13 s, where the bot
+// holds them ("[rot400] Idunk holds corruption on Wendigo: lives 8.5 s").
+float DotRateOver(Player* bot, Unit* target, Cast& cast, uint32 fillerId, float lifeSec)
+{
+    SpellPayoff::Cast dot;
+    if (cast.periodSec <= 0.0f || lifeSec <= 0.0f || !SpellPayoff::Read(bot, target, cast.id, dot) ||
+        dot.Total() <= 0.0f)
+        return 0.0f;
+    float const whole = std::floor(lifeSec / cast.periodSec);
+    float const restMs = (lifeSec - whole * cast.periodSec) * float(IN_MILLISECONDS);
+    float applications = whole;
+    float damage = whole * cast.damage;
+    // the last application: its direct hit once it lands, the ticks before the death
+    float const afterLandMs = restMs - dot.castMs;
+    if (afterLandMs >= 0.0f)
+    {
+        float ticks = float(dot.ticks);
+        if (dot.amplitudeMs)
+            ticks = std::min(ticks, std::floor(afterLandMs / float(dot.amplitudeMs)));
+        float const landed = dot.direct + dot.tick * ticks;
+        float const filler =
+            fillerId ? SpellPayoff::FillerDps(bot, target, fillerId) * dot.executeMs / float(IN_MILLISECONDS) : 0.0f;
+        if (landed > 0.0f && landed >= filler)
+        {
+            applications += 1.0f;
+            damage += cast.damage * landed / dot.Total();
+        }
+    }
+    if (applications <= 0.0f)
+        return 0.0f;
+    cast.damage = damage / applications;
+    return applications / lifeSec;
+}
+
+// `lifeSec` > 0: the fight's length (a solo bot on a fresh mob); 0: the steady state
+Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, bool ideal)
 {
     Profile p;
+    p.lifeSec = lifeSec;
     Model m;
     m.bot = bot;
     m.front = ctx == BuffContext::Solo || PlayerbotAI::IsTank(bot);
@@ -1405,7 +1526,7 @@ Profile Compute(Player* bot, Unit* target, BuffContext ctx)
     m.spGain = m.bonus.sp + (bot->GetStat(STAT_SPIRIT) + stat[STAT_SPIRIT]) * m.bonus.spFromSpiritPct / 100.0f;
     m.armorFactor = std::max(0.0f, 1.0f - m.bonus.armorCut / 100.0f);
 
-    SpecRotation const* rotation = RotationOf(bot);
+    SpecRotation const* rotation = RotationOf(bot, ideal);
     std::unordered_map<std::string, uint32> known;
     if (rotation)
         known = KnownByName(bot, *rotation);
@@ -1527,6 +1648,8 @@ Profile Compute(Player* bot, Unit* target, BuffContext ctx)
             strikes += rate * cast.landed;
         cycle += cast.executeSec;
         ++p.spells;
+        if (cast.id)
+            p.parts.emplace_back(cast.id, rate * cast.damage);
     };
 
     if (rotation)
@@ -1540,6 +1663,26 @@ Profile Compute(Player* bot, Unit* target, BuffContext ctx)
         uint32 seal = 0;
         if (cls == CLASS_PALADIN)
             seal = known["Seal of Righteousness"];
+        // [dpscal] the filler it casts: the first one it knows in the bot's priority (the list's order)
+        // (the ideal: the strongest one it knows, SpellPayoff::FillerDps)
+        uint32 fillerId = 0;
+        float fillerBest = 0.0f;
+        for (Ability const& ability : rotation->abilities)
+            if (ability.kind == Kind::Filler && known[ability.name])
+            {
+                uint32 const id = known[ability.name];
+                if (!ideal)
+                {
+                    fillerId = id;
+                    break;
+                }
+                float const dps = m.standIn ? 0.0f : SpellPayoff::FillerDps(bot, target, id);
+                if (!fillerId || dps > fillerBest)
+                {
+                    fillerId = id;
+                    fillerBest = dps;
+                }
+            }
         for (Ability const& ability : rotation->abilities)
         {
             uint32 const id = known[ability.name];
@@ -1568,10 +1711,28 @@ Profile Compute(Player* bot, Unit* target, BuffContext ctx)
                 }
                 cast.kind = Kind::Cooldown;
             }
+            // [dpscal] a mana spell over a fight of lifeSec: a DoT as the bot's payoff rule casts it, a cooldown at the
+            // fight's start and then on its cooldown (the casts that land before the death)
+            bool const finite = lifeSec > 0.0f && cast.power == POWER_MANA;
             switch (cast.kind)
             {
                 case Kind::Dot:
+                    if (finite)
+                    {
+                        float const rate = DotRateOver(bot, target, cast, fillerId, lifeSec);
+                        if (rate > 0.0f)
+                            spend(cast, affordable(cast, rate));
+                        break;
+                    }
+                    [[fallthrough]];
                 case Kind::Cooldown:
+                    if (finite && cast.kind == Kind::Cooldown && cast.periodSec > 0.0f)
+                    {
+                        float const landSec = lifeSec - cast.executeSec;
+                        if (landSec >= 0.0f)
+                            spend(cast, affordable(cast, (std::floor(landSec / cast.periodSec) + 1.0f) / lifeSec));
+                        break;
+                    }
                     spend(cast, affordable(cast, cast.periodSec > 0.0f ? 1.0f / cast.periodSec
                                                                        : std::numeric_limits<float>::max()));
                     break;
@@ -1635,12 +1796,15 @@ Profile Compute(Player* bot, Unit* target, BuffContext ctx)
             }
             else
             {
-                Cast const* best = nullptr;
-                for (Cast const& filler : fillers)
-                    if (!best || filler.damage / std::max(filler.executeSec, 0.1f) >
-                                     best->damage / std::max(best->executeSec, 0.1f))
-                        best = &filler;
-                spend(*best, affordable(*best, std::numeric_limits<float>::max()));
+                // [dpscal] the first it knows in the bot's priority, not the best one: the bot casts that one (the
+                // ideal: the best one)
+                Cast const* pick = &fillers.front();
+                if (ideal)
+                    for (Cast const& filler : fillers)
+                        if (filler.damage / std::max(filler.executeSec, 0.1f) >
+                            pick->damage / std::max(pick->executeSec, 0.1f))
+                            pick = &filler;
+                spend(*pick, affordable(*pick, std::numeric_limits<float>::max()));
             }
         }
 
@@ -1688,6 +1852,17 @@ Profile Compute(Player* bot, Unit* target, BuffContext ctx)
                   rate;
     p.cycleSec = std::max(cycle, float(GCD_MAX_MS) / float(IN_MILLISECONDS));
     return p;
+}
+
+// [dpscal] A solo bot kills its mob alone: the formula is the one over that fight, the mob's full health over the
+// steady state's damage (the judge weighs a fresh pull; the [dps] check opens at the first hit). A group or raid shares
+// the kill: the steady state.
+Profile Compute(Player* bot, Unit* target, BuffContext ctx, bool ideal)
+{
+    Profile p = ComputeAt(bot, target, ctx, 0.0f, ideal);
+    if (ctx != BuffContext::Solo || !target || target == bot || !target->GetMaxHealth() || p.burst <= 0.0f)
+        return p;
+    return ComputeAt(bot, target, ctx, float(target->GetMaxHealth()) / p.burst, ideal);
 }
 
 // ---- cache ----------------------------------------------------------------------------------------------------
@@ -1748,6 +1923,63 @@ struct CacheEntry
 
 std::mutex cacheLock;
 std::unordered_map<uint64, std::vector<CacheEntry>> cache;  // bot guid -> its last profiles
+
+// the profile for this signature: the cached one, else computed and cached
+Profile ProfileOf(Player* bot, Unit* target, BuffContext ctx, bool ideal = false)
+{
+    uint64 signature = Signature(bot, target, ctx);
+    if (ideal)
+        signature = (signature ^ 0x1DEA1ULL) * 1099511628211ULL;  // FNV step: the ideal's own entry
+    uint64 const guid = bot->GetGUID().GetRawValue();
+    {
+        std::lock_guard<std::mutex> guard(cacheLock);
+        for (CacheEntry const& entry : cache[guid])
+            if (entry.signature == signature)
+                return entry.profile;
+    }
+    Profile profile = Compute(bot, target, ctx, ideal);
+    std::lock_guard<std::mutex> guard(cacheLock);
+    std::vector<CacheEntry>& entries = cache[guid];
+    if (entries.size() >= CACHE_PER_BOT)
+        entries.erase(entries.begin());
+    entries.push_back({signature, profile});
+    return profile;
+}
+
+// ---- [dpscal] the fight as it went ------------------------------------------------------------------------------
+
+struct LiveFight
+{
+    uint64 raw = 0;  // its, its pet's and its totems' damage to creatures, the overkill of a killing hit included
+    uint64 pet = 0, white = 0, spell = 0, dot = 0;
+    uint32 firstDealtMs = 0, lastDealtMs = 0, firstTakenMs = 0;
+    bool shared = false;                        // a mob of the fight took damage from someone else
+    std::unordered_map<uint64, uint64> mobs;    // mob guid -> its damage on it (up to the mob's health)
+    std::map<uint32, uint32> casts;             // spell id -> casts that went off
+    uint32 timedCasts = 0;                      // its cast / channel / global cooldown spells at a mob (no auto-repeat)
+    float timedMs = 0.0f;                       // ... and their execute time
+    Profile formula;                            // the formula at its first hit
+    Profile ideal;                              // the ideal rotation's at its first hit
+    bool petOut = false;
+};
+
+std::mutex liveLock;
+std::unordered_map<uint64, LiveFight> live;  // bot guid -> its open fight
+
+// SoloSafety::SoloPlayerBot: a bot out in the world, alone (RecordFight is called for those fights only)
+bool SoloBot(Player* bot)
+{
+    if (!bot || !bot->IsInWorld() || !GET_PLAYERBOT_AI(bot) || !bot->GetMap() || bot->GetMap()->Instanceable())
+        return false;
+    Group* group = bot->GetGroup();
+    return !group || group->GetMembersCount() <= 1;
+}
+
+std::string SpellName(uint32 id)
+{
+    SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
+    return info ? std::string(info->SpellName[LOCALE_enUS]) : std::to_string(id);
+}
 }  // namespace
 
 namespace DpsEstimate
@@ -1757,29 +1989,7 @@ Result Estimate(Player* bot, Unit* target, BuffContext ctx, float fightSec)
     Result out;
     if (!bot || !bot->IsInWorld() || (target && !target->IsInWorld()))
         return out;
-    uint64 const signature = Signature(bot, target, ctx);
-    uint64 const guid = bot->GetGUID().GetRawValue();
-    Profile profile;
-    bool cached = false;
-    {
-        std::lock_guard<std::mutex> guard(cacheLock);
-        for (CacheEntry const& entry : cache[guid])
-            if (entry.signature == signature)
-            {
-                profile = entry.profile;
-                cached = true;
-                break;
-            }
-    }
-    if (!cached)
-    {
-        profile = Compute(bot, target, ctx);
-        std::lock_guard<std::mutex> guard(cacheLock);
-        std::vector<CacheEntry>& entries = cache[guid];
-        if (entries.size() >= CACHE_PER_BOT)
-            entries.erase(entries.begin());
-        entries.push_back({signature, profile});
-    }
+    Profile const profile = ProfileOf(bot, target, ctx);
 
     out.burstDps = profile.burst;
     out.whiteDps = profile.white;
@@ -1832,20 +2042,100 @@ void RecordFight(Player* bot, FightSample const& sample)
 {
     if (!bot)
         return;
-    float const active = std::max(sample.activeSec, 0.0f);
-    float const actual = active > 0.0f ? float(sample.dealt) / active : 0.0f;
+    LiveFight f;
+    {
+        std::lock_guard<std::mutex> guard(liveLock);
+        auto const found = live.find(bot->GetGUID().GetRawValue());
+        if (found != live.end())
+        {
+            f = std::move(found->second);
+            live.erase(found);
+        }
+    }
+    float active = std::max(sample.activeSec, 0.0f);
+    float actual = active > 0.0f ? float(sample.dealt) / active : 0.0f;
+    float const cappedActual = actual;
+    // [dpscal] its own damage over the time it fought, measured as the formula counts it (b337: 0.73 of the formula
+    // in the median, 17 % within 10 %):
+    // - every hit in full: the hit that kills is dealt in full (SoloSafety caps it at the mob's health: at L1-9 a mob
+    //   dies to 2-4 casts, half a cast of overkill on average);
+    // - the time from its first action to its last hit: one interval of its damage before the first hit, the mean
+    //   execute time of its casts for a caster, its ranged speed for a hunter, its swing else (SoloSafety adds one
+    //   swing: a mage's 2.9 s staff for a 1.5-1.8 s Frostbolt), or from the first hit it took when that came first;
+    // - less the time SoloSafety found it not attacking (fight_s - active_s).
+    // A run keeps SoloSafety's numbers (they stop at the run).
+    float leadSec = 0.0f;
+    bool const fled = !strcmp(sample.outcome, "fled");
+    if (f.firstDealtMs && f.raw && !fled)
+    {
+        SpecRotation const* rotation = RotationOf(bot);
+        leadSec = std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
+        if (rotation && rotation->caster && f.timedCasts)
+            leadSec = f.timedMs / float(f.timedCasts) / float(IN_MILLISECONDS);
+        else if (bot->getClass() == CLASS_HUNTER && bot->GetWeaponForAttack(RANGED_ATTACK, true))
+            leadSec = std::max(float(bot->GetAttackTime(RANGED_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
+        float before = leadSec;
+        if (f.firstTakenMs)
+        {
+            uint32 const takenBefore = getMSTimeDiff(f.firstTakenMs, f.firstDealtMs);
+            if (takenBefore < getMSTimeDiff(f.firstDealtMs, f.firstTakenMs))
+                before = std::max(before, float(takenBefore) / float(IN_MILLISECONDS));
+        }
+        float const idle = std::max(0.0f, sample.fightSec - sample.activeSec);
+        float const window =
+            float(getMSTimeDiff(f.firstDealtMs, f.lastDealtMs)) / float(IN_MILLISECONDS) + before - idle;
+        if (window > 0.0f)
+        {
+            active = window;
+            actual = float(f.raw) / window;
+        }
+    }
     std::string why = sample.invalidWhy;
-    if (why.empty() && sample.fightSec < sample.cycleSec)
+    // [dpscal] the time it fought covers one pass of the rotation (was the fight's length: b337 Laaral L13 attacked
+    // 5.3 s of an 89.9 s fight and passed)
+    if (why.empty() && active < sample.cycleSec)
         why = Acore::StringFormat("shorter than one rotation ({:.1f} s)", sample.cycleSec);
+    // [dpscal] a mob someone else hit too dies sooner than its damage would kill it (b337 L1 start areas: a balance
+    // druid "won" after 4 damage)
+    if (why.empty() && f.shared)
+        why = "a mob took damage from someone else";
     bool const valid = why.empty();
+    // [dpscal] the ideal rotation's formula with the expected one's mana limit (its share of the burst)
+    float const idealDps = f.formula.burst > 0.0f ? f.ideal.burst * sample.formulaDps / f.formula.burst : 0.0f;
     std::string const spec = AiFactory::GetPlayerSpecName(bot);
     char const* ctx = ContextName(sample.ctx);
     LOG_INFO("playerbots",
-             "[dps] {} L{} {}/{} ctx={} target={} L{} mobs={} formula={:.1f} actual={:.1f} fight_s={:.1f} "
-             "active_s={:.1f} taken={} outcome={} valid={} why={}",
+             "[dps] {} L{} {}/{} ctx={} target={} L{} mobs={} formula={:.1f} ideal={:.1f} actual={:.1f} "
+             "fight_s={:.1f} active_s={:.1f} taken={} outcome={} valid={} why={}",
              bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), spec, ctx, sample.targetEntry,
-             uint32(sample.targetLevel), sample.mobs, sample.formulaDps, actual, sample.fightSec, active, sample.taken,
-             sample.outcome, valid ? 1 : 0, valid ? "-" : why);
+             uint32(sample.targetLevel), sample.mobs, sample.formulaDps, idealDps, actual, sample.fightSec, active,
+             sample.taken, sample.outcome, valid ? 1 : 0, valid ? "-" : why);
+    // [dpscal] the formula's parts at the first hit against what went off: no decision reads it
+    {
+        std::string plan;
+        std::vector<std::pair<uint32, float>> parts = f.formula.parts;
+        std::sort(parts.begin(), parts.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+        for (auto const& [id, part] : parts)
+            plan += Acore::StringFormat("{}{} {:.1f}", plan.empty() ? "" : ", ", SpellName(id), part);
+        std::string idealPlan;
+        std::vector<std::pair<uint32, float>> idealParts = f.ideal.parts;
+        std::sort(idealParts.begin(), idealParts.end(),
+                  [](auto const& a, auto const& b) { return a.second > b.second; });
+        for (auto const& [id, part] : idealParts)
+            idealPlan += Acore::StringFormat("{}{} {:.1f}", idealPlan.empty() ? "" : ", ", SpellName(id), part);
+        std::string casts;
+        for (auto const& [id, count] : f.casts)
+            casts += Acore::StringFormat("{}{} x{}", casts.empty() ? "" : ", ", SpellName(id), count);
+        LOG_INFO("playerbots",
+                 "[dpsparts] {} L{} {}/{} formula {:.1f} over {:.1f} s: {}{}white {:.1f}, pet {:.1f} ({}) | dealt {} "
+                 "(spell {}, dot {}, white {}, pet {}) = {:.1f} dps over {:.1f} s (lead {:.1f} s), capped {:.1f} "
+                 "| casts: {} | ideal {:.1f}: {}",
+                 bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), AiFactory::GetPlayerSpecName(bot),
+                 sample.formulaDps, f.formula.lifeSec, plan, plan.empty() ? "" : ", ",
+                 f.formula.white - f.formula.pet, f.formula.pet, f.petOut ? "out" : "none", f.raw, f.spell, f.dot,
+                 f.white, f.pet, actual, active, leadSec, cappedActual, casts.empty() ? "-" : casts, idealDps,
+                 idealPlan.empty() ? "-" : idealPlan);
+    }
 
     // async (the module pool's own thread), never read by a decision; the last 1000 fights per bot are kept
     std::string escapedName = bot->GetName();
@@ -1881,5 +2171,91 @@ void RecordFight(Player* bot, FightSample const& sample)
         "ORDER BY id DESC LIMIT 1 OFFSET 1000) old ON h.id <= old.id WHERE h.guid = {}",
         guid, guid));
     PlayerbotsDatabase.CommitTransaction(trans);
+}
+
+void NoteDealt(Unit* attacker, Unit* victim, uint32 damage, uint8 damageType)
+{
+    if (!attacker || !victim || !damage)
+        return;
+    uint32 const now = getMSTime();
+    // a hit it takes from a mob (or the mob's pet / totem)
+    if (Player* bot = victim->ToPlayer())
+    {
+        Unit* source = attacker->GetCharmerOrOwnerOrSelf();
+        if (!source || !source->ToCreature() || !SoloBot(bot))
+            return;
+        std::lock_guard<std::mutex> guard(liveLock);
+        LiveFight& f = live[bot->GetGUID().GetRawValue()];
+        if (!f.firstTakenMs)
+            f.firstTakenMs = now ? now : 1;
+        return;
+    }
+    // a hit it (its pet, its totem) deals to a mob
+    Creature* mob = victim->ToCreature();
+    Player* bot = attacker->GetCharmerOrOwnerPlayerOrPlayerItself();
+    if (!mob || !bot || mob->GetCharmerOrOwnerPlayerOrPlayerItself() || !SoloBot(bot))
+        return;
+    uint32 const health = mob->GetHealth();
+    uint32 const maxHealth = mob->GetMaxHealth();
+    bool first = false;
+    {
+        std::lock_guard<std::mutex> guard(liveLock);
+        LiveFight& f = live[bot->GetGUID().GetRawValue()];
+        first = !f.firstDealtMs;
+        if (first)
+            f.firstDealtMs = now ? now : 1;
+        f.lastDealtMs = now;
+        f.raw += damage;
+        if (attacker != bot)
+            f.pet += damage;
+        else if (damageType == DOT)
+            f.dot += damage;
+        else if (damageType == DIRECT_DAMAGE)
+            f.white += damage;
+        else
+            f.spell += damage;
+        // its health (before this hit) below what this bot took off it: someone else hit it
+        uint64& mine = f.mobs[mob->GetGUID().GetRawValue()];
+        if (uint64(health) + mine < uint64(maxHealth))
+            f.shared = true;
+        mine += std::min(damage, health);
+    }
+    if (!first)
+        return;
+    // the formula at the fight's first hit (the profile SoloSafety's open reads: cached, the same signature)
+    BuffContext const ctx = ContextOf(bot);
+    Profile const formula = ProfileOf(bot, mob, ctx);
+    Profile const ideal = ProfileOf(bot, mob, ctx, true);
+    bool const petOut = bot->GetPet() && bot->GetPet()->IsAlive();
+    std::lock_guard<std::mutex> guard(liveLock);
+    LiveFight& f = live[bot->GetGUID().GetRawValue()];
+    f.formula = formula;
+    f.ideal = ideal;
+    f.petOut = petOut;
+}
+
+void NoteCast(Player* player, SpellInfo const* info)
+{
+    if (!player || !info || info->IsPassive() || !SoloBot(player))
+        return;
+    bool const harmful = !info->IsPositive();
+    // a buff before the pull is no part of the fight; its opener (cast before it is in combat) is
+    if (!harmful && !player->IsInCombat())
+        return;
+    float executeMs = 0.0f;
+    if (harmful && !info->IsAutoRepeatRangedSpell())
+    {
+        float const castMs = info->IsChanneled() ? float(std::max(info->GetDuration(), 0))
+                                                 : float(info->CalcCastTime(player));
+        executeMs = std::max(castMs, float(info->StartRecoveryTime));
+    }
+    std::lock_guard<std::mutex> guard(liveLock);
+    LiveFight& f = live[player->GetGUID().GetRawValue()];
+    ++f.casts[info->Id];
+    if (executeMs > 0.0f)
+    {
+        ++f.timedCasts;
+        f.timedMs += executeMs;
+    }
 }
 }  // namespace DpsEstimate
