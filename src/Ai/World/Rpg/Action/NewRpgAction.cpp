@@ -480,7 +480,28 @@ bool NewRpgBaseAction::StartVendorRun()
 
     uint8 const bagUsed = AI_VALUE(uint8, "bag space");
     // [coop] a co-op party is a task above the convenient ones: its sell run waits while a bag slot is free
-    bool const sell = AI_VALUE(bool, "should sell") && AI_VALUE(bool, "can sell") &&
+    // [vendor15] a sell run when its bags hold no more than the slots its log's open item objectives still need (an
+    // item of each it holds none of yet takes a slot; with none, the bag is full: loot is lost from the next kill
+    // on). Before, the generic "should sell" sent it at 80 % used: b355 128 vendor visits, 62 of the 148 runs at 81 %
+    // (a sale of greys left the kept items near 80 %, the next few loots crossed it again), VENDOR 11 % of the time
+    // (the item objectives bound the need: with more slots free than they could take, no item count is read)
+    uint32 const freeSlots = bot->GetFreeInventorySpace();
+    std::vector<uint32> objectiveItems;
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+            if (bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+                if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+                    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                        if (quest->RequiredItemId[i] && quest->RequiredItemCount[i])
+                            objectiveItems.push_back(quest->RequiredItemId[i]);
+    uint32 slotsNeeded = 0;
+    if (freeSlots <= objectiveItems.size())
+        for (uint32 item : objectiveItems)
+            if (!bot->GetItemCount(item))
+                ++slotsNeeded;
+    bool const bagsNeeded = freeSlots <= slotsNeeded;
+
+    bool const sell = bagsNeeded && AI_VALUE(bool, "can sell") &&
                       (!info.vendorVisited || bagUsed > info.vendorVisitBagUsed) &&
                       (bagUsed >= 100 || !NewRpgCoop::InParty(bot->GetGUID().GetCounter()));
 
@@ -533,6 +554,10 @@ bool NewRpgBaseAction::StartVendorRun()
     LOG_INFO("playerbots", "[New RPG] {} goes to vendor {} ({:.0f} yd): {} (bags {}% full, {} ammo, {}c)",
              bot->GetName(), tmpl ? tmpl->Name : "?", dist, reason, bagUsed,
              AI_VALUE2(uint32, "item count", "ammo"), bot->GetMoney());
+    if (sell)
+        LOG_INFO("playerbots", "[vendor15] {} L{} sells: {} bag slots free, its open item objectives need {}",
+                 bot->GetName(), bot->GetLevel(), freeSlots, slotsNeeded);
+
     return true;
 }
 
@@ -1537,6 +1562,13 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         // met (a counter on a floor above, behind a rail): no walk takes it closer, the visit ends as for an npc out of
         // walk. b353 Sylaenas L2 walked 7649 yd round vendor Keina (14 yd) for 1203 s, re-walking random spots by it
         bool atWalkEnd = false;
+        // [vendor15] a walk to the npc under way is let finish: the walk-end check above needs the bot standing, and
+        // a new MoveWorldObjectTo every tick (a new spot round the npc each time) kept it moving for the whole run -
+        // b355 Sylaenas L2 again 1203 s and 7660 yd round vendor Keina in Aldrassil, [vendor13] / [vendor14] never
+        // fired for it
+        if (object && bot->isMoving() &&
+            bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+            return true;
         if (object && !bot->isMoving() && object->GetMapId() == bot->GetMapId())
         {
             BotPath const path =

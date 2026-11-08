@@ -181,6 +181,7 @@ namespace
         std::unordered_map<uint64, float> pendingRunPast;
         std::unordered_map<uint64, float> legRunPast;
         std::vector<G3D::Vector3> legPoints;
+        std::vector<G3D::Vector3> legSearched;  // [runpast15] the searched walk the leg was cut from
         std::unordered_set<uint64> legNamed;
         bool routeComplete = false;
         bool routeThroughRefused = false;
@@ -2407,6 +2408,11 @@ namespace SoloSafety
         // Gilduck L11 led a help party into five Frostmane trolls and its line said "no judged pull (attacked)"
         else if (NewRpgCoop::InParty(bot->GetGUID().GetCounter()))
             out += "; [deaths14] a party fight (the co-op / help party judge's pull)";
+        // [deaths15] ... and an open-world group's (its leader judges with the party judge, [deaths12]): b355 Geron
+        // L11 x2 tanked Manue's group pulls of Tunnel Rats ("the party wins only at full: 5 mobs") - "no judged pull"
+        else if (Group const* group = bot->GetGroup();
+                 group && group->GetMembersCount() > 1 && !bot->GetMap()->Instanceable())
+            out += "; [deaths14] a party fight (the open-world group judge's pull)";
         else
             out += "; no judged pull (attacked)";
         // [deaths] how its last route search saw the mobs that hit it: refused (a walk round them was searched),
@@ -2521,7 +2527,8 @@ namespace SoloSafety
         return damage < float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, mana, true, true);
     }
 
-    void CommitRunPast(Player* bot, std::vector<G3D::Vector3> const& points)
+    void CommitRunPast(Player* bot, std::vector<G3D::Vector3> const& points,
+                       std::vector<G3D::Vector3> const& searched)
     {
         if (!bot)
             return;
@@ -2529,7 +2536,109 @@ namespace SoloSafety
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
         state.legRunPast = state.pendingRunPast;
         state.legPoints = state.legRunPast.empty() ? std::vector<G3D::Vector3>() : points;
+        state.legSearched = state.legRunPast.empty() ? std::vector<G3D::Vector3>() : searched;  // [runpast15]
         state.legNamed.clear();
+    }
+
+    namespace
+    {
+        // [runpast15] the stop of the walk whose searches run on this thread (WalkStopScope)
+        thread_local bool walkStopSet = false;
+        thread_local G3D::Vector3 walkStop;
+
+        // [runpast15] the stretch `points` crosses no reach of an idle hostile mob outside `chasing` (its aggro range
+        // with the bot's combat reach round the mob; a wanderer's round its home with its wander distance - the reach
+        // RouteCosts walls / prices): a walk on past the leg's end wakes nobody new
+        bool StretchClear(Player* bot, std::vector<G3D::Vector3> const& points,
+                          std::unordered_map<uint64, float> const& chasing)
+        {
+            if (points.size() < 2)
+                return false;
+            float length = 0.0f;
+            for (size_t i = 1; i < points.size(); ++i)
+                length += (points[i] - points[i - 1]).length();
+            float const wander = std::min(MaxWanderDistance(bot->GetMapId()), bot->GetMap()->GetVisibilityRange());
+            float const range = length + MAX_AGGRO_RADIUS + wander;
+            std::list<Unit*> units;
+            Acore::AnyUnitInObjectRangeCheck check(bot, range);
+            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+            Cell::VisitObjects(bot, searcher, range);
+            for (Unit* unit : units)
+            {
+                Creature* mob = unit->ToCreature();
+                if (!mob || !mob->IsAlive() || mob->IsInCombat() || mob->IsCivilian() || mob->IsTotem() ||
+                    !mob->IsHostileTo(bot) || !mob->HasReactState(REACT_AGGRESSIVE) ||
+                    mob->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE) ||
+                    mob->GetCharmerOrOwnerGUID() || chasing.count(mob->GetGUID().GetRawValue()))
+                    continue;
+                float const aggro = mob->GetAggroRange(bot);
+                if (aggro <= 0.0f)
+                    continue;
+                Position centre = mob->GetPosition();
+                float radius = aggro + bot->GetCombatReach();
+                if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+                {
+                    centre = mob->GetHomePosition();
+                    radius += mob->GetWanderDistance();
+                }
+                G3D::Vector3 const c(centre.GetPositionX(), centre.GetPositionY(), 0.0f);
+                for (size_t i = 1; i < points.size(); ++i)
+                {
+                    G3D::Vector3 const a(points[i - 1].x, points[i - 1].y, 0.0f);
+                    G3D::Vector3 const ab = G3D::Vector3(points[i].x, points[i].y, 0.0f) - a;
+                    float const t = std::clamp((c - a).dot(ab) / std::max(ab.squaredLength(), 0.01f), 0.0f, 1.0f);
+                    if ((a + ab * t - c).squaredLength() <= radius * radius)
+                        return false;
+                }
+            }
+            return true;
+        }
+
+        // [runpast15] the walk on from `here` along `walk` (from its point nearest `here`), `yards` long; empty when
+        // the walk ends sooner (its stop lies inside the chase) or `here` is off it
+        std::vector<G3D::Vector3> WalkOn(G3D::Vector3 const& here, std::vector<G3D::Vector3> const& walk, float yards)
+        {
+            std::vector<G3D::Vector3> out;
+            size_t nearest = walk.size();
+            float best = 8.0f * 8.0f;  // the farRoute tolerance (NewRpgBaseAction::MoveFarToDirect)
+            for (size_t i = 0; i < walk.size(); ++i)
+                if (float const d = (walk[i] - here).squaredLength(); d < best)
+                {
+                    best = d;
+                    nearest = i;
+                }
+            if (nearest == walk.size())
+                return out;
+            out.push_back(here);
+            float left = yards;
+            G3D::Vector3 at = here;
+            for (size_t i = nearest + 1; i < walk.size(); ++i)
+            {
+                float const d = (walk[i] - at).length();
+                if (d >= left)
+                {
+                    out.push_back(at + (walk[i] - at) * (left / std::max(d, 0.01f)));
+                    return out;
+                }
+                left -= d;
+                at = walk[i];
+                out.push_back(at);
+            }
+            out.clear();  // the walk ends inside the chase
+            return out;
+        }
+    }
+
+    WalkStopScope::WalkStopScope(G3D::Vector3 const& stop) : had(walkStopSet), previous(walkStop)
+    {
+        walkStopSet = true;
+        walkStop = stop;
+    }
+
+    WalkStopScope::~WalkStopScope()
+    {
+        walkStopSet = had;
+        walkStop = previous;
     }
 
     bool HasRunPastLeg(Player* bot)
@@ -2595,7 +2704,61 @@ namespace SoloSafety
             if ((points[i - 1] + ab * t - here).squaredLength() < ON_LEG * ON_LEG)
                 nearest = i;
         }
-        bool const legOver = nearest == points.size() || (points.back() - here).length() <= ON_LEG;
+        bool legOver = nearest == points.size() || (points.back() - here).length() <= ON_LEG;
+        // [runpast15] the leg (cut at the bot's sight) is over but its walk is not: the chase goes on while the bot
+        // walks, so it walks on along its searched walk, else its far route, as far as the chases still to come run
+        // (the leash's seconds left at its run speed) - when that stretch exists (the walk's stop lies past it) and
+        // wakes no idle mob. Before, the run past ended at the leg's end and the bot fought there the very mobs it had
+        // priced as never to fight; [deaths14] then walled every such mob instead (b355: 953 walls, 0 run pasts)
+        if (legOver && bot->GetExactDist(points.back().x, points.back().y, points.back().z) <= ON_LEG)
+        {
+            float seconds = 0.0f;
+            bool priced = true;
+            uint32 chasing = 0;
+            for (Unit* attacker : bot->getAttackers())
+            {
+                if (!attacker || !attacker->IsAlive())
+                    continue;
+                Creature* mob = attacker->ToCreature();
+                if (!mob || !set.count(mob->GetGUID().GetRawValue()))
+                {
+                    priced = false;
+                    break;
+                }
+                seconds = std::max(seconds, RunPastChase(bot, mob).seconds);
+                ++chasing;
+            }
+            if (priced && chasing && seconds > 0.0f)
+            {
+                float const yards = seconds * bot->GetSpeed(MOVE_RUN);
+                std::vector<G3D::Vector3> searched;
+                {
+                    std::lock_guard<std::mutex> guard(lock);
+                    searched = states[bot->GetGUID().GetCounter()].legSearched;
+                }
+                std::vector<G3D::Vector3> on = WalkOn(here, searched, yards);
+                char const* along = "its searched walk";
+                if (on.empty())
+                    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot))
+                    {
+                        on = WalkOn(here, ai->rpgInfo.farRoute, yards);
+                        along = "its far route";
+                    }
+                if (!on.empty() && StretchClear(bot, on, set))
+                {
+                    LOG_INFO("playerbots", "[runpast15] {} L{} walks on past its leg's end: {:.0f} yd along {}, {} "
+                             "chasing for {:.0f} s more",
+                             bot->GetName(), bot->GetLevel(), yards, along, chasing, seconds);
+                    std::lock_guard<std::mutex> guard(lock);
+                    SoloBotState& state = states[bot->GetGUID().GetCounter()];
+                    state.legPoints = on;
+                    state.legSearched.clear();
+                    points = on;
+                    nearest = 0;
+                    legOver = false;
+                }
+            }
+        }
         if (legOver)
         {
             std::lock_guard<std::mutex> guard(lock);
@@ -2757,7 +2920,13 @@ namespace SoloSafety
                                                     (chaser->GetPositionY() - from.y) * leg.y) /
                                                        legLen,
                                                    0.0f, legLen);
-                    if (meets + chase.seconds * speed > legLen)
+                    // [runpast15] ... the walk's own stop: a search for a stage of a longer walk (WalkStopScope) goes
+                    // on from its end to that stop (straight: no more than the walk) - the executor walks on past the
+                    // leg's end while the chase lasts (RunPastStep)
+                    float walkOn = legLen - meets;
+                    if (walkStopSet)
+                        walkOn += std::hypot(walkStop.x - to.x, walkStop.y - to.y);
+                    if (chase.seconds * speed > walkOn)
                     {
                         price = std::numeric_limits<float>::max();
                         hp = float(bot->GetHealth());
@@ -2775,7 +2944,7 @@ namespace SoloSafety
                             LOG_INFO("playerbots", "[deaths14] {} L{} no run past {} L{}: the walk ends {:.0f} yd past "
                                      "where it meets the walk, the chase runs {:.0f} s ({:.0f} yd) - a wall",
                                      bot->GetName(), bot->GetLevel(), chaser->GetName(), chaser->GetLevel(),
-                                     legLen - meets, chase.seconds, chase.seconds * speed);
+                                     walkOn, chase.seconds, chase.seconds * speed);
                         return false;
                     }
                 }

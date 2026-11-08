@@ -48,6 +48,7 @@
 #include "MapDefines.h"         // [guild14] NAV_* flags
 #include <map>
 #include <memory>
+#include <optional>  // [runpast15]
 #include <tuple>
 #include "Object.h"
 #include "ObjectAccessor.h"
@@ -616,7 +617,7 @@ static void CommitLeg(Player* bot, Movement::PointsArray const& points, G3D::Vec
             break;
         }
     }
-    SoloSafety::CommitRunPast(bot, leg);
+    SoloSafety::CommitRunPast(bot, leg, std::vector<G3D::Vector3>(points.begin(), points.end()));  // [runpast15]
 }
 
 bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path, float disToDest, bool deadEnd)
@@ -1990,9 +1991,13 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     // one search per spot: a spot with no way off is not searched again until the bot has moved. [runpast11] its
     // verdict (an island or not) is kept with it: the caller reads it on every walk from the spot
     static std::mutex islandLock;
-    static std::unordered_map<uint32, std::pair<std::tuple<uint32, int32, int32, int32>, bool>> searched;
-    std::tuple<uint32, int32, int32, int32> const spotKey{bot->GetMapId(), int32(here.x), int32(here.y),
-                                                          int32(here.z)};
+    // [stuck15] ... and with the health it had: a fall it survives is one its health now outlives (way.damage <
+    // GetHealth()), so a spot searched hurt is searched again once its health changed. b355 Sycina L11 at (10235,1052,
+    // 1385): "on a navmesh island" found once, the verdict kept through its rests - 26 STUCK, it waited for its
+    // Hearthstone (1750 s) on the spot while every walk off it failed
+    static std::unordered_map<uint32, std::pair<std::tuple<uint32, int32, int32, int32, uint32>, bool>> searched;
+    std::tuple<uint32, int32, int32, int32, uint32> const spotKey{bot->GetMapId(), int32(here.x), int32(here.y),
+                                                                  int32(here.z), bot->GetHealth()};
     {
         std::lock_guard<std::mutex> guard(islandLock);
         auto& last = searched[bot->GetGUID().GetCounter()];
@@ -2146,8 +2151,18 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                                            ways.size()));
                 return false;
             }
+            // [stuck15] the falls its full health outlives but its health now does not: it rests, then searches again
+            uint32 atFull = 0;
+            for (Way const& way : ways)
+                if (!way.carried && way.drop > 0.0f && way.damage >= float(bot->GetHealth()) &&
+                    way.damage < float(bot->GetMaxHealth()))
+                    ++atFull;
             logged(Acore::StringFormat("on a navmesh island: {} polygons in sight, no step or survivable fall leads on",
                                        ways.size()));
+            if (atFull)
+                LOG_INFO("playerbots", "[stuck15] {} L{} on an island: {} falls off it need more health than its {} "
+                         "of {}: searched again once its health changed",
+                         bot->GetName(), bot->GetLevel(), atFull, bot->GetHealth(), bot->GetMaxHealth());
             noteIsland();  // [runpast11]
             return false;
         }
@@ -2318,6 +2333,12 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 return true;
         }
     }
+
+    // [runpast15] every search below is for a stage or leg of the walk to `dest`: a run past is measured to it
+    // (another map's destination: no stop on this map - each search is measured to its own end)
+    std::optional<SoloSafety::WalkStopScope> walkStop;
+    if (dest.GetMapId() == bot->GetMapId())
+        walkStop.emplace(G3D::Vector3(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()));
 
     // stuck check
     float disToDest = bot->GetDistance(dest);
@@ -5763,12 +5784,17 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
     if (in.pinnedQuest && (bot->GetQuestStatus(in.pinnedQuest) != QUEST_STATUS_INCOMPLETE ||
                            botAI->lowPriorityQuest.count(in.pinnedQuest)))
         in.pinnedQuest = 0;
-    auto const addToHub = [&](float x, float y, float z, uint32 questId)
+    // [quest15] the quests complete already hand in at a hub of their own (ready): one hub with an open quest waits
+    // for that quest's objective (Feasible), which held a done quest's hand-in to the route's end (b355: 10 of the 50
+    // bots without a turn-in had a complete quest - Manue q224 behind O267's hub "E224+267", Kylantino "E313+317").
+    // Same spot, so the solver still visits them together where that is the cheaper order; HandInsEarlier weighs it
+    auto const addToHub = [&](float x, float y, float z, uint32 questId, float questXp, bool complete)
     {
         for (Stop& s : in.stops)
-            if (s.kind == StopKind::Ender && std::hypot(s.x - x, s.y - y) <= in.hubRadius)
+            if (s.kind == StopKind::Ender && s.ready == complete && std::hypot(s.x - x, s.y - y) <= in.hubRadius)
             {
                 s.quests.push_back(questId);
+                s.xp += questXp;
                 return;
             }
         Stop hub;
@@ -5777,6 +5803,8 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         hub.y = y;
         hub.z = z;
         hub.quests.push_back(questId);
+        hub.xp = questXp;
+        hub.ready = complete;
         in.stops.push_back(hub);
     };
     // the formula's work at an area: the kills left and the walk between its spawns; unpriced: the planner's old
@@ -5915,7 +5943,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
                 in.greyHandIns.push_back(hand);
                 continue;
             }
-            addToHub(ex, ey, ez, questId);
+            addToHub(ex, ey, ez, questId, xp, true);
             in.logXp += xp;
             continue;
         }
@@ -5961,7 +5989,8 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         objective.work = workOf(quest, nullptr);
         in.stops.push_back(objective);
         if (hasEnder && onLandmass(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ()))
-            addToHub(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ(), questId);
+            addToHub(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ(), questId, xp, false);
+
         in.logXp += xp;
     }
     in.freeSlots = inLog < MAX_QUEST_LOG_SIZE ? MAX_QUEST_LOG_SIZE - inLog : 0;

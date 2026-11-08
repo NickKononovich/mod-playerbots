@@ -176,7 +176,22 @@ namespace SoloSafety
     // attacker is a fight the judge wins for less damage than its chase -> true with the rest of the leg (`rest`, from
     // the bot on) and the RUN_PAST line for a mob not named yet this leg (`line`, empty when none). False: it fights as
     // before. The leg ends at its end, off it, or at the next commit
-    void CommitRunPast(Player* bot, std::vector<G3D::Vector3> const& points);
+    // [runpast15] `searched`: the whole searched walk the leg was cut from (to the search's end, past the leg's sight)
+    void CommitRunPast(Player* bot, std::vector<G3D::Vector3> const& points,
+                       std::vector<G3D::Vector3> const& searched = {});
+    // [runpast15] the stop of the walk being searched (a far walk's destination) while its stage / leg searches run
+    // on this thread: RouteCosts measures a run past's walk on to that stop, not to the search's own end (a stage two
+    // sights ahead). b355: 953 "[deaths14] no run past" walls measured to the stage - MAZE 20 -> 57, MOVE_FAR_LOOP
+    // 16 -> 57 against b354, no run past walked at all
+    struct WalkStopScope
+    {
+        explicit WalkStopScope(G3D::Vector3 const& stop);
+        ~WalkStopScope();
+        WalkStopScope(WalkStopScope const&) = delete;
+        WalkStopScope& operator=(WalkStopScope const&) = delete;
+        bool had;
+        G3D::Vector3 previous;
+    };
     // O(1): a committed leg with a run-past set (the trigger's check; RunPastStep is the action's)
     bool HasRunPastLeg(Player* bot);
     bool RunPastStep(Player* bot, std::vector<G3D::Vector3>& rest, std::string& line);
