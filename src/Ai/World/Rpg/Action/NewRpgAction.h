@@ -150,6 +150,9 @@ protected:
     bool HandInBlocked(NewRpgInfo::DoQuest& data);  // [guild15] why the turn-in at the ender does not happen
     bool BuyQuestVendorItem(uint32 questId);        // [guild15] an item objective a vendor in sight sells
     bool TalkToQuestNpc(uint32 questId);  // [guild15]
+    // [questitems] NewRpgQuestUse.cpp: an objective credited by using a quest item or a spell on a target
+    bool UseQuestTool(uint32 questId);
+    bool SettleQuestUse();  // the last use's credit (logged), awaited while its cast or aura runs
 };
 
 class NewRpgTravelFlightAction : public NewRpgBaseAction

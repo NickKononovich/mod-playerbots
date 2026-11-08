@@ -36,6 +36,7 @@
 #include "NewRpgStrategy.h"
 #include "SoloSafety.h"  // [guild13]
 #include "NewRpgCoop.h"  // [coop]
+#include "NewRpgQuestUse.h"  // [questitems]
 #include "PerfMonitor.h"  // [guild15]
 #include "QuestStats.h"  // [guild90]
 #include "World.h"  // [guild13]
@@ -3378,6 +3379,17 @@ namespace
                 for (QuestSpot const& spot : found->second)
                     out.push_back(&spot);
         };
+        // [questitems] an objective a tool's use credits: the spawns of what it is used on (rats, a school, a flag)
+        std::vector<uint32> useCreatures, useObjects;
+        NewRpgQuestUse::SourceEntries(quest, objective, useCreatures, useObjects);
+        if (!useCreatures.empty() || !useObjects.empty())
+        {
+            for (uint32 const entry : useCreatures)
+                addEntry(index.creatures, entry);
+            for (uint32 const entry : useObjects)
+                addEntry(index.objects, entry);
+            return;
+        }
         if (objective < QUEST_OBJECTIVES_COUNT)
         {
             int32 const npcOrGo = quest->RequiredNpcOrGo[objective];
@@ -4001,6 +4013,8 @@ bool NewRpgBaseAction::NeedsItemUseCredit(Quest const* quest, std::string* why)
                                               quest->RequiredItemId[i] != quest->GetSrcItemId());
     if (!creditObjective)
         return false;
+    if (NewRpgQuestUse::CoversToolObjectives(nullptr, quest))  // [questitems] the use step does them
+        return false;
     ItemTemplate const* tool = sObjectMgr->GetItemTemplate(quest->GetSrcItemId());
     if (!tool)
         return false;
@@ -4069,7 +4083,8 @@ bool NewRpgBaseAction::NeedsSpellCredit(Player* bot, Quest const* quest, bool op
         // a creature friendly to the bot is never its kill; with no other credit path it is a spell or script one
         // (b341 q9283 Rescue the Survivors!: Gift of the Naaru on a Draenei Survivor, a C++ script - 60 respawn
         // waits of 30 s for survivors that stood there alive)
-        if (!faction || !faction->IsFriendlyTo(*botFaction) || CreditableEntries().count(uint32(entry)))
+        if (!faction || !faction->IsFriendlyTo(*botFaction) || CreditableEntries().count(uint32(entry)) ||
+            NewRpgQuestUse::PlanFor(bot, quest, i))  // [questitems] the use step casts it
             continue;
         if (why)
             *why = Acore::StringFormat("its objective credit on the friendly {} comes from a spell or script, not a "
@@ -5870,4 +5885,5 @@ void NewRpgBaseAction::BuildQuestIndexes()
     GetQuestSpawnIndex();
     GetQuestStartPoints();
     EnderNeedsScript(0);  // [guild14]
+    NewRpgQuestUse::Build();  // [questitems]
 }

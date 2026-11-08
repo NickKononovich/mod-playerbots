@@ -1035,6 +1035,9 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
 
 bool NewRpgDoQuestAction::Execute(Event /*event*/)
 {
+    if (SettleQuestUse())  // [questitems]
+        return true;
+
     if (SearchQuestGiverAndAcceptOrReward())
         return true;
 
@@ -1277,6 +1280,8 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         // [guild12] a needed quest object passed on the way is looted on the way
         if (UseQuestGameObject(questId))
             return true;
+        if (UseQuestTool(questId))  // [questitems] a target of its tool in sight on the way
+            return true;
         if (MoveFarTo(data.pos))
             return true;
         // Long-range sampler couldn't land a candidate — nudge the
@@ -1298,6 +1303,9 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
 
     // objects to use for the quest (#2725)
     if (UseQuestGameObject(questId))
+        return true;
+
+    if (UseQuestTool(questId))  // [questitems]
         return true;
 
     if (TalkToQuestNpc(questId))  // [guild15]
