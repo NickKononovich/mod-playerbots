@@ -1651,6 +1651,10 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
         if (data.giverPos.GetMapId() != bot->GetMapId() || bot->GetExactDist(data.giverPos) > 30.0f)
             return MoveFarTo(data.giverPos);
 
+        // [giver15] a giver whose script gives the quest-giver flag: its trigger (a cast, an item, a gossip, a kill
+        // near it, its fight), then the quest
+        if (TriggerQuestGiver(questId))
+            return true;
         // reached the giver but it did not offer the quest (despawned, phased, wrong spawn)
         botAI->lowPriorityQuest.insert(questId);
         botAI->rpgInfo.ChangeToIdle();
