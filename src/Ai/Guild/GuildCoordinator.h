@@ -500,6 +500,7 @@ private:
         uint32 skillLine{0};
         uint32 itemId{0};  // GATHER / BUY: the reagent
         uint32 count{0};
+        WorldPosition pos{};  // [econ1] CRAFT smelt: the town forge it smelts at on its next visit there
         std::string details;
         std::string reason;
     };
@@ -667,6 +668,7 @@ private:
     bool TransferHolds(uint32 itemGuidLow) const;
     void TransferPlanRows(std::vector<std::vector<std::string>>& rows) const;
     std::vector<Mailbox> mailboxes_;        // read-only after Load
+    std::vector<Mailbox> forges_;           // [econ1] forges in a town (an area with a mailbox), read-only after Load
     std::map<uint32, Transfer> transfers_;  // id -> transfer (lock_)
     // [recipes] (member, recipe item guid): recipes their holder is the best placed to learn, used on the next
     // RunTransfers (lock_)
@@ -674,6 +676,11 @@ private:
     // receiver -> its delivered mails from members (count, the cheapest mailbox), what is still in transit (lock_)
     std::map<uint32, std::pair<uint32, WorldPosition>> mailPickup_;
     std::map<uint32, std::vector<std::string>> mailTransit_;
+    // [econ1] member -> (level, town task spots (x, y)) its own trip judge refused or its walk gave up on
+    // (NewRpgBaseAction::TripRefused, judged in TownStops on the map thread): no mailbox / forge there is planned
+    // for it until its next level (lock_; mutable: TownStops is const)
+    mutable std::map<uint32, std::pair<uint8, std::set<std::pair<int32, int32>>>> townRefused_;
+    bool TownRefused(uint32 low, WorldPosition const& pos) const;  // lock_ held
     std::string donationState_;  // the pooling for the first bank tab (lock_)
     // member -> (food count last seen, (game time, food that left its bags)) over the last hour: the SUPPLY need
     std::map<uint32, std::pair<uint32, std::deque<std::pair<uint32, uint32>>>> foodUse_;

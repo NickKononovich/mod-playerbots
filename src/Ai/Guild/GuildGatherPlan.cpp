@@ -11,6 +11,8 @@
 #include <cmath>
 #include <functional>
 #include <iterator>
+#include <map>
+#include <tuple>
 
 #include "Creature.h"
 #include "DpsEstimate.h"  // [questrate] the kill time of a skinning place
@@ -911,9 +913,40 @@ float GuildGatherPlan::Rate(GatherPlace const& place, uint32 itemId, Player* bot
         if (castSec <= 0.0f)
             return 0.0f;
         int32 const noMiss = place.reqSkill + FISHING_NO_MISS_OVER_ZONE;
-        float chance = noMiss > 0 && skill < noMiss ? std::pow(float(skill) / float(noMiss), 2.0f) : 1.0f;
-        chance = std::max(chance, 0.01f);
         float const casts = 3600.0f / castSec;
+        // [econ1] b350: Fishing 1/75 on 21 members with a pole and nobody fished - the rate took the catch chance
+        // at today's skill for the whole hour ((1/25)^2 -> the 1 % floor at the starting zones' -70: ~2 fish / h,
+        // never worth a task). The core raises the skill at every bobber click before the catch roll
+        // (GameObject::Use -> Player::UpdateFishingSkill, getProbabilityOfLevelUp: 100 % below 115, then 1/2 ...
+        // 1/12, up to the rank cap), so the hour's chance is the mean over its casts as the skill grows
+        static constexpr uint32 LEVEL_UP_BOUNDS[] = {115, 135, 160, 190, 215, 295, 315, 355, 425, 450};
+        static constexpr float LEVEL_UP_DENS[] = {1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 1};
+        float const cap = float(bot->GetMaxSkillValue(SKILL_FISHING));
+        float const gain = float(std::max<uint32>(1, sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING)));
+        float s = float(skill), chanceSum = 0.0f;
+        uint32 const n = uint32(casts);
+        // the same (skill, cap, zone) gives the same mean: the greedy assignment asks it many times per update
+        thread_local std::map<std::tuple<int32, uint32, int32, uint32>, float> memo;
+        auto const key = std::make_tuple(skill, uint32(cap), noMiss, n);
+        if (auto const hit = memo.find(key); hit != memo.end())
+            return casts * hit->second * perUnit + perPool * 3600.0f / castSec /
+                                                       float(std::max<uint32>(1, place.spawns)) / float(others + 1);
+        for (uint32 i = 0; i < n; ++i)
+        {
+            float const c = noMiss > 0 && s < float(noMiss) ? std::pow(s / float(noMiss), 2.0f) : 1.0f;
+            chanceSum += std::max(c, 0.01f);
+            if (s < cap && s > 0.0f)
+            {
+                size_t k = 0;
+                while (k < std::size(LEVEL_UP_BOUNDS) && uint32(s) > LEVEL_UP_BOUNDS[k])
+                    ++k;
+                s = std::min(cap, s + gain / LEVEL_UP_DENS[k]);
+            }
+        }
+        float const chance = n ? chanceSum / float(n) : 0.01f;
+        if (memo.size() > 4096)
+            memo.clear();
+        memo[key] = chance;
         // pools are shared like nodes; open water is not
         return casts * chance * perUnit + perPool * 3600.0f / castSec / float(std::max<uint32>(1, place.spawns)) /
                                               float(others + 1);
@@ -1213,12 +1246,13 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
         auto const qw = questWhy.find(a.botLow);
         std::string const pace =
             a.questPerMin < 0.0f
-                ? Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт), квесты без цены (нет квеста с данными)",
-                                      a.valuePerMin, valueOf(a.itemId))
-                : Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт) {} квесты {:.1f} м/мин ({})", a.valuePerMin,
-                                      valueOf(a.itemId), a.worth ? ">" : "≤", a.questPerMin,
-                                      qw == questWhy.end() ? std::string("формула") : qw->second);
-        a.why = Acore::StringFormat("не хватает {}, здесь {:.1f}/ч, путь {:.0f} с, ботов на месте {}; {}", a.need,
+                ? Acore::StringFormat(
+                      "gathering {:.1f} c/min ({:.1f} c/unit), quests without a value (no quest with data)",
+                      a.valuePerMin, valueOf(a.itemId))
+                : Acore::StringFormat("gathering {:.1f} c/min ({:.1f} c/unit) {} quests {:.1f} c/min ({})",
+                                      a.valuePerMin, valueOf(a.itemId), a.worth ? ">" : "≤", a.questPerMin,
+                                      qw == questWhy.end() ? std::string("formula") : qw->second);
+        a.why = Acore::StringFormat("short {}, here {:.1f}/h, walk {:.0f} s, bots at the spot {}; {}", a.need,
                                     a.ratePerHour, a.travelSec, a.worth ? placeLoad[a.placeId - 1] : 0, pace);
     }
 
@@ -1237,6 +1271,11 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                      bot ? bot->GetName() : std::to_string(a.botLow), bot ? uint32(bot->GetLevel()) : 0u, a.itemId,
                      ItemName(a.itemId), a.need, a.share, a.placeName, KindName(a.kind), a.spot.GetMapId(),
                      a.ratePerHour, a.travelSec, a.worth ? "URGENT" : "QUESTS_ON", a.why);
+            if (a.kind == GatherKind::FISH && bot)  // [econ1] the rate with the skill growing over the hour
+                LOG_INFO("playerbots", "[econ1] fishing plan {} L{} fishing {}/{}: {} {:.1f}/h at {} ({})",
+                         bot->GetName(), uint32(bot->GetLevel()), bot->GetPureSkillValue(SKILL_FISHING),
+                         bot->GetPureMaxSkillValue(SKILL_FISHING), ItemName(a.itemId), a.ratePerHour, a.placeName,
+                         a.worth ? "URGENT" : "QUESTS_ON");
             if (old == assigned_.end() || old->second.itemId != a.itemId)
                 sessions_[a.botLow] = {a.itemId, getMSTime(), 0};
         }

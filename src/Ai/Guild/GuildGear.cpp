@@ -48,9 +48,9 @@ namespace
     };
     static_assert(G_COUNT == GuildGear::GROUP_COUNT, "GROUP_COUNT");
 
-    char const* const GROUP_NAMES[G_COUNT] = {"голова", "шея", "плечи", "спина", "грудь", "запястья", "кисти",
-                                              "пояс", "ноги", "ступни", "кольцо", "аксессуар", "правая рука",
-                                              "двуручное", "левая рука", "дальний бой"};
+    char const* const GROUP_NAMES[G_COUNT] = {"head",      "neck",     "shoulders", "back",  "chest", "wrists",
+                                              "hands",     "waist",    "legs",      "feet",  "ring",  "trinket",
+                                              "main hand", "two-hand", "off hand",  "ranged"};
 
     constexpr uint32 MAX_REFERENCE_DEPTH = 4;  // LootTemplate::Process nests references deeper than any table does
 
@@ -608,11 +608,11 @@ namespace GuildGear
                 add(std::to_string(cost->reqitemcount[r]) + "× " + (proto ? proto->Name1 : "?"));
             }
         if (cost->reqhonorpoints)
-            add(std::to_string(cost->reqhonorpoints) + " чести");
+            add(std::to_string(cost->reqhonorpoints) + " honor");
         if (cost->reqarenapoints)
-            add(std::to_string(cost->reqarenapoints) + " очков арены");
+            add(std::to_string(cost->reqarenapoints) + " arena points");
         if (cost->reqpersonalarenarating)
-            add("рейтинг " + std::to_string(cost->reqpersonalarenarating));
+            add("rating " + std::to_string(cost->reqpersonalarenarating));
         return text;
     }
 
@@ -634,11 +634,11 @@ namespace GuildGear
                 }
             }
         if (member->GetHonorPoints() < cost->reqhonorpoints)
-            add(std::to_string(cost->reqhonorpoints - member->GetHonorPoints()) + " чести");
+            add(std::to_string(cost->reqhonorpoints - member->GetHonorPoints()) + " honor");
         if (member->GetArenaPoints() < cost->reqarenapoints)
-            add(std::to_string(cost->reqarenapoints - member->GetArenaPoints()) + " очков арены");
+            add(std::to_string(cost->reqarenapoints - member->GetArenaPoints()) + " arena points");
         if (cost->reqpersonalarenarating)
-            add("рейтинг " + std::to_string(cost->reqpersonalarenarating));  // no PvP for guild bots
+            add("rating " + std::to_string(cost->reqpersonalarenarating));  // no PvP for guild bots
         return text;
     }
 
@@ -690,13 +690,13 @@ namespace GuildGear
             if (!plan)
                 return false;
             if (use == EQUIP_ERR_CANT_EQUIP_LEVEL_I)
-                out.locked = "с L" + std::to_string(proto->RequiredLevel);
+                out.locked = "from L" + std::to_string(proto->RequiredLevel);
             else if (use == EQUIP_ERR_CANT_EQUIP_REPUTATION)
             {
                 FactionEntry const* faction = sFactionStore.LookupEntry(proto->RequiredReputationFaction);
-                static char const* const ranks[] = {"ненависть", "враждебность", "неприязнь", "равнодушие",
-                                                    "дружелюбие", "уважение", "почтение", "превознесение"};
-                out.locked = std::string("репутация ") + (faction ? faction->name[0] : "?") + ": " +
+                static char const* const ranks[] = {"hated",    "hostile", "unfriendly", "neutral",
+                                                    "friendly", "honored", "revered",    "exalted"};
+                out.locked = std::string("reputation ") + (faction ? faction->name[0] : "?") + ": " +
                              (proto->RequiredReputationRank < 8 ? ranks[proto->RequiredReputationRank] : "?");
             }
             else
@@ -988,21 +988,23 @@ namespace GuildGear
 {
     std::string GainText(float gain, float score, float current)
     {
-        // a 10x jump is a slot with next to nothing in it: the weights say more than a 6-digit percentage
-        constexpr float WEIGHTS_OVER_GAIN = 10.0f;
+        // [econ1] b350 plan rows "+550 %", "+400 %", "empty slot (weight 0.0)": a percentage of a slot that held
+        // next to nothing says nothing (L10 whites: weight 2 -> 13 is "+550 %"). An empty slot is "new slot" with
+        // the weight it brings; above +100 % the real stat weight delta is shown instead of the percentage
+        constexpr float PERCENT_SHOWN_UP_TO = 1.0f;
         char buf[64];
         if (current <= 0.0f)
         {
-            if (score <= 0.0f)
-                return "пустой слот";
-            snprintf(buf, sizeof(buf), "пустой слот (вес %.1f)", score);
+            if (score < 0.05f)
+                return "new slot";
+            snprintf(buf, sizeof(buf), "new slot (+%.1f weight)", score);
             return buf;
         }
         if (gain < 0.005f)
-            return "вес равный, больше брони / ур. предмета / цела";
-        if (gain > WEIGHTS_OVER_GAIN)
+            return "equal weight, more armor / item level / intact";
+        if (gain > PERCENT_SHOWN_UP_TO)
         {
-            snprintf(buf, sizeof(buf), "вес %.1f → %.1f", current, score);
+            snprintf(buf, sizeof(buf), "+%.1f weight (%.1f -> %.1f)", score - current, current, score);
             return buf;
         }
         return "+" + std::to_string(int32(gain * 100.0f + 0.5f)) + "%";
@@ -1049,16 +1051,16 @@ namespace GuildGear
             {
                 if (wornQuiver ? quiverSlots >= proto->ContainerSlots : !freeSlot)
                     return false;
-                why = wornQuiver ? "колчан " + std::to_string(quiverSlots) + " → " +
-                                       std::to_string(proto->ContainerSlots)
-                                 : "колчан в свободный слот сумки";
+                why = wornQuiver
+                          ? "quiver " + std::to_string(quiverSlots) + " → " + std::to_string(proto->ContainerSlots)
+                          : "quiver into a free bag slot";
                 return true;
             }
             if (!freeSlot && smallest >= proto->ContainerSlots)
                 return false;
-            why = freeSlot ? "сумка " + std::to_string(proto->ContainerSlots) + " ячеек в свободный слот"
-                           : "сумка " + std::to_string(smallest) + " → " + std::to_string(proto->ContainerSlots) +
-                                 " ячеек";
+            why = freeSlot
+                      ? "bag " + std::to_string(proto->ContainerSlots) + " slots into a free slot"
+                      : "bag " + std::to_string(smallest) + " → " + std::to_string(proto->ContainerSlots) + " slots";
             return true;
         }
 
@@ -1066,9 +1068,9 @@ namespace GuildGear
         {
             ItemTemplate const* was = ev.worn ? sObjectMgr->GetItemTemplate(ev.worn) : nullptr;
             if (!was)  // [ui11] an empty slot: no percentage of nothing
-                return std::string(GroupName(EquipGroup(proto->InventoryType))) + " в пустой слот";
+                return std::string(GroupName(EquipGroup(proto->InventoryType))) + " into an empty slot";
             return std::string(GroupName(EquipGroup(proto->InventoryType))) + " " +
-                   GainText(ev.gain, ev.score, ev.current) + " вместо " + was->Name1;
+                   GainText(ev.gain, ev.score, ev.current) + " instead of " + was->Name1;
         }
     }
 
@@ -1131,7 +1133,8 @@ namespace GuildGear
                 return false;
             why = GearWhy(ev, proto);
         }
-        decision = std::string(bot->GetName()) + " → BUY: " + proto->Name1 + " — улучшение " + why + ", на свои деньги";
+        decision =
+            std::string(bot->GetName()) + " → BUY: " + proto->Name1 + " — upgrade " + why + ", with its own money";
         return true;
     }
 

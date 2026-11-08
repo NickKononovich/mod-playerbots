@@ -56,7 +56,7 @@ namespace
     constexpr size_t FIVE_DROPS_KEPT = 40;
     // [guild70] markers in the five-leader's report reason (FiveRunReport -> GuildFiveReport)
     constexpr char const* FIVE_LFG_REFUSED = "lfg refused: ";
-    constexpr char const* FIVE_ITEM_NEED = "нужен предмет: ";
+    constexpr char const* FIVE_ITEM_NEED = "item needed: ";
     // [guild70] the last "no Dungeon Finder" reason logged per five (world thread)
     std::map<uint32, std::string> fiveLfgWhy;
 
@@ -105,7 +105,7 @@ namespace
 
     char const* RoleRu(std::string const& role)
     {
-        return role == "tank" ? "танк" : role == "healer" ? "хил" : "дд";
+        return role == "tank" ? "tank" : role == "healer" ? "healer" : "dps";
     }
 
     // the user controls the character himself (no AI, or his SelfBot suspended): never commanded, waited for. A
@@ -405,17 +405,17 @@ GuildCoordinator::DungeonOption const* GuildCoordinator::FindDungeon(std::string
 std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p) const
 {
     if (p->GetLevel() < d.minLevel || p->GetLevel() > d.maxLevel)
-        return "L" + std::to_string(p->GetLevel()) + " вне " + std::to_string(d.minLevel) + "-" +
+        return "L" + std::to_string(p->GetLevel()) + " outside " + std::to_string(d.minLevel) + "-" +
                std::to_string(d.maxLevel);
     // a walk across continents has no solo safety check yet (TripRefused judges the bot's own map)
     if (p->GetMapId() != d.entrance.GetMapId())
-        return "вход на другом континенте (карта " + std::to_string(d.entrance.GetMapId()) + ")";
+        return "entrance on another continent (map " + std::to_string(d.entrance.GetMapId()) + ")";
     // the entrance in the other faction's capital: its guards
     if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(d.entranceZone))
     {
         uint32 const own = p->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
         if ((zone->flags & AREA_FLAG_CAPITAL) && zone->team && zone->team != own && zone->team != AREATEAM_ANY)
-            return std::string("вход в чужой столице ") + zone->area_name[0];
+            return std::string("entrance in an enemy capital ") + zone->area_name[0];
     }
     return "";
 }
@@ -440,26 +440,26 @@ bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) cons
         return false;
     };
     if (!p || !p->IsInWorld() || p->IsBeingTeleported())
-        return refuse("не в сети");
+        return refuse("offline");
     if (!p->IsAlive())
-        return refuse("мёртв");
+        return refuse("dead");
     if (p->IsInCombat())
-        return refuse("в бою");
+        return refuse("in combat");
     if (p->GetMap()->Instanceable())
-        return refuse("в подземелье");
+        return refuse("in a dungeon");
     // [coop] a co-op party is no group for the five: the five's ChangeToIdle takes the member out of it
     if (p->GetGroup() && !NewRpgCoop::InParty(low))
-        return refuse("в группе");
+        return refuse("in a group");
     auto const st = bots_.find(low);
     if (st != bots_.end())
     {
         if (st->second.fiveId)
-            return refuse("уже в пятёрке");
+            return refuse("already in a five");
         if (st->second.run)
-            return refuse("идёт к хранилищу");
+            return refuse("walks to the vault");
         if (!st->second.orders.empty() && st->second.orders.front().type != GuildOrderType::QUEST &&
             st->second.orders.front().executable)
-            return refuse("занят приказом");
+            return refuse("busy with an order");
     }
     return true;
 }
@@ -563,12 +563,12 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
         return 0;
     };
     if (members.size() != 5 || std::find(members.begin(), members.end(), leaderLow) == members.end())
-        return fail("нужно 5 членов вместе с лидером");
+        return fail("needs 5 members with the leader");
     for (uint32 low : members)
     {
         auto const st = bots_.find(low);
         if (st != bots_.end() && st->second.fiveId)
-            return fail(Who(low) + " уже в пятёрке " + std::to_string(st->second.fiveId));
+            return fail(Who(low) + " already in five " + std::to_string(st->second.fiveId));
     }
 
     GuildFive five;
@@ -606,10 +606,10 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
     {
         auto const role = roles.find(low);
         list += (list.empty() ? "" : ", ") + Who(low) + " " + RoleRu(role != roles.end() ? role->second : "dps") +
-                (low == leaderLow ? " (лидер пятёрки, интендант)" : "");
+                (low == leaderLow ? " (five leader, quartermaster)" : "");
     }
-    Decision("пятёрка " + std::to_string(five.id) + " → " + d.name + ": " + list + "; зачарователь " +
-             (five.enchanterLow ? Who(five.enchanterLow) : std::string("нет")) + " — " + why);
+    Decision("five " + std::to_string(five.id) + " → " + d.name + ": " + list + "; enchanter " +
+             (five.enchanterLow ? Who(five.enchanterLow) : std::string("none")) + " — " + why);
     // consumables: each member withdraws its share from the guild bank before leaving, once the bank exists (it
     // sleeps until the guild and its tab exist: the members go with what they carry)
     for (uint32 low : five.humans)
@@ -621,10 +621,10 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
               ")");
         if (p && p->GetSession())
             ChatHandler(p->GetSession())
-                .PSendSysMessage("[Гильдия] Пятёрка {} идёт в {}: ждём вас у входа (карта {}, {:.0f}, {:.0f}). "
-                                 "Без вас не входим.",
-                                 five.id, d.name, d.entrance.GetMapId(), d.entrance.GetPositionX(),
-                                 d.entrance.GetPositionY());
+                .PSendSysMessage(
+                    "[Guild] Five {} goes to {}: we wait for you at the entrance (map {}, {:.0f}, {:.0f}). "
+                    "We do not enter without you.",
+                    five.id, d.name, d.entrance.GetMapId(), d.entrance.GetPositionX(), d.entrance.GetPositionY());
     }
     fives_[five.id] = five;
     return five.id;
@@ -645,8 +645,8 @@ uint32 GuildCoordinator::FormFive(uint32 leaderLow, std::vector<uint32> const& m
         if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low)))
             roles[low] = PlanRole(low, p);
     std::lock_guard<std::mutex> guard(lock_);
-    return FormFiveLocked(leaderLow, members, *d, roles, forced ? "приказ командой" : "решение глоб. лидера", forced,
-                          error);
+    return FormFiveLocked(leaderLow, members, *d, roles, forced ? "order by command" : "global leader's decision",
+                          forced, error);
 }
 
 void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
@@ -686,8 +686,8 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
                         ai->rpgInfo.ChangeToIdle();
         }
     }
-    Decision("пятёрка " + std::to_string(fiveId) + " (" + itr->second.dungeon + ") распущена" +
-             (reason.empty() ? "" : ": " + reason) + " — полномочия у глоб. лидера, члены квестуют");
+    Decision("five " + std::to_string(fiveId) + " (" + itr->second.dungeon + ") disbanded" +
+             (reason.empty() ? "" : ": " + reason) + " — authority back with the global leader, members quest");
     fives_.erase(itr);
 }
 
@@ -741,7 +741,7 @@ void GuildCoordinator::UpdateFives()
                 Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
                 if (!p)
                 {
-                    why = Who(low) + " не в сети";
+                    why = Who(low) + " offline";
                     break;
                 }
                 BotState& st = bots_[low];
@@ -825,7 +825,7 @@ void GuildCoordinator::UpdateFives()
                 if (itr != fives_.end())
                     itr->second.stage = GuildFive::Stage::Gather;  // nothing runs: disbanded as a gathering five
             }
-            DisbandFive(id, "подземелье не начать: " + error);
+            DisbandFive(id, "dungeon cannot start: " + error);
             continue;
         }
         std::lock_guard<std::mutex> guard(lock_);
@@ -833,9 +833,9 @@ void GuildCoordinator::UpdateFives()
         if (itr == fives_.end())
             continue;
         itr->second.runId = runId;
-        Decision("пятёрка " + std::to_string(id) + (viaLfg ? " встаёт в поиск подземелий: " : " у входа в ") +
-                 itr->second.dungeon + ": группа собрана, ведёт лидер пятёрки " + Who(itr->second.leaderLow) +
-                 " (его команды окончательны)");
+        Decision("five " + std::to_string(id) + (viaLfg ? " queues for the dungeon finder: " : " at the entrance of ") +
+                 itr->second.dungeon + ": group formed, the five leader leads " + Who(itr->second.leaderLow) +
+                 " (its commands are final)");
     }
 
     // the global leader forms new fives every sixth look (30 s)
@@ -919,9 +919,9 @@ void GuildCoordinator::AutoFive()
             clears += c.needsClear ? 1 : 0;
             upgrades += c.upgrade ? 1 : 0;
         }
-        std::string const why = "свободны танк, хил и 3 дд уровня " + std::to_string(best->minLevel) + "-" +
-                                std::to_string(best->maxLevel) + "; не пройдено у " + std::to_string(clears) +
-                                ", улучшения у " + std::to_string(upgrades);
+        std::string const why = "free: a tank, a healer and 3 dps of level " + std::to_string(best->minLevel) + "-" +
+                                std::to_string(best->maxLevel) + "; not cleared by " + std::to_string(clears) +
+                                ", upgrades for " + std::to_string(upgrades);
         std::lock_guard<std::mutex> guard(lock_);
         // still free (nothing changed since the look: world thread)
         for (uint32 low : members)
@@ -941,21 +941,21 @@ std::string GuildCoordinator::FormFiveCommand(Player* issuer, std::string const&
 {
     DungeonOption const* d = FindDungeon(contentKey);
     if (!d)
-        return "нет подземелья '" + contentKey + "' (playerbots guild dungeons)";
+        return "no dungeon '" + contentKey + "' (playerbots guild dungeons)";
 
     std::vector<uint32> chosen;
     std::map<uint32, std::string> roles;
     auto add = [&](Player* p) -> std::string
     {
         if (!p)
-            return "не найден";
+            return "not found";
         uint32 const low = p->GetGUID().GetCounter();
         if (std::find(chosen.begin(), chosen.end(), low) != chosen.end())
             return "";
         std::string why;
         {
             std::lock_guard<std::mutex> guard(lock_);
-            if (!FreeForFive(low, p, &why) && !(IsHuman(p) && why == "в группе"))
+            if (!FreeForFive(low, p, &why) && !(IsHuman(p) && why == "in a group"))
                 return p->GetName() + ": " + why;
         }
         std::string const refusal = DungeonRefusal(*d, p);
@@ -997,8 +997,8 @@ std::string GuildCoordinator::FormFiveCommand(Player* issuer, std::string const&
         }
     }
     if (chosen.size() != 5 || !tanks || !healers)
-        return "не собрать пятёрку для " + d->name + ": танков " + std::to_string(tanks) + ", хилов " +
-               std::to_string(healers) + ", дд " + std::to_string(dps) + " свободных на континенте входа";
+        return "cannot form a five for " + d->name + ": tanks " + std::to_string(tanks) + ", healers " +
+               std::to_string(healers) + ", dps " + std::to_string(dps) + " free on the entrance's continent";
 
     // the five-leader: its tank (the dungeon leader leads from the tank), never a human
     uint32 leaderLow = 0;
@@ -1007,7 +1007,7 @@ std::string GuildCoordinator::FormFiveCommand(Player* issuer, std::string const&
             !IsHuman(ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low))))
             leaderLow = low;
     if (!leaderLow)
-        return "танк пятёрки — человек: лидер пятёрки только бот";
+        return "the five's tank is a human: the five leader is a bot only";
 
     std::string levels;
     for (uint32 low : chosen)
@@ -1019,13 +1019,13 @@ std::string GuildCoordinator::FormFiveCommand(Player* issuer, std::string const&
     {
         std::lock_guard<std::mutex> guard(lock_);
         id = FormFiveLocked(leaderLow, chosen, *d, roles,
-                            "приказ командой" + (levels.empty() ? std::string() : " (вне уровня: " + levels + ")"),
+                            "order by command" + (levels.empty() ? std::string() : " (out of level: " + levels + ")"),
                             true, &error);
     }
     if (!id)
-        return "пятёрка не сформирована: " + error;
-    return "пятёрка " + std::to_string(id) + " → " + d->name + " (" + d->contentKey + "), лидер " + Who(leaderLow) +
-           (levels.empty() ? "" : "; вне уровня: " + levels);
+        return "five not formed: " + error;
+    return "five " + std::to_string(id) + " → " + d->name + " (" + d->contentKey + "), leader " + Who(leaderLow) +
+           (levels.empty() ? "" : "; out of level: " + levels);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1044,8 +1044,8 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         five.stage = GuildFive::Stage::Gather;
         five.arrived.clear();
         five.runId.clear();
-        Decision("пятёрка " + std::to_string(fiveId) + " (" + five.dungeon + "): " +
-                 report.reason.substr(std::strlen(FIVE_LFG_REFUSED)) + " — идёт ко входу пешком");
+        Decision("five " + std::to_string(fiveId) + " (" + five.dungeon +
+                 "): " + report.reason.substr(std::strlen(FIVE_LFG_REFUSED)) + " — walks to the entrance");
         return;
     }
     for (auto const& [name, count] : report.deaths)
@@ -1068,7 +1068,7 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
     std::string const reason = items != std::string::npos ? report.reason.substr(0, items) : report.reason;
     size_t const cut = reason.find("not killed: ");
     if (report.result != "done")
-        needs = "повторить " + five.dungeon + (cut != std::string::npos ? " (" + reason.substr(cut) + ")" : "");
+        needs = "repeat " + five.dungeon + (cut != std::string::npos ? " (" + reason.substr(cut) + ")" : "");
     for (size_t at = items; at != std::string::npos; at = report.reason.find(FIVE_ITEM_NEED, at + 1))
     {
         size_t const end = report.reason.find("; " + std::string(FIVE_ITEM_NEED), at + 1);
@@ -1080,14 +1080,14 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         if (PlanRow const* row = Row(low); row && !Cleared(five.contentKey, low))
             open += (open.empty() ? "" : ", ") + Who(low);
     if (!open.empty())
-        needs += (needs.empty() ? "" : "; ") + std::string("не пройдено у ") + open;
+        needs += (needs.empty() ? "" : "; ") + std::string("not cleared by ") + open;
 
-    std::string const text = "пятёрка " + std::to_string(fiveId) + " (" + five.dungeon + ") вернула полномочия глоб. " +
-                             "лидеру: " + report.result + ", боссы " + std::to_string(report.bossesKilled.size()) + "/" +
-                             std::to_string(report.bossesTotal) + ", " + std::to_string(report.durationSec / 60) +
-                             " мин, вайпов " + std::to_string(report.wipes) + "; смерти: " +
-                             (deaths.empty() ? "нет" : deaths) + "; добыча: " + (drops.empty() ? "нет" : drops) +
-                             "; нужно: " + (needs.empty() ? "ничего" : needs);
+    std::string const text =
+        "five " + std::to_string(fiveId) + " (" + five.dungeon + ") handed authority back to the global " +
+        "leader: " + report.result + ", bosses " + std::to_string(report.bossesKilled.size()) + "/" +
+        std::to_string(report.bossesTotal) + ", " + std::to_string(report.durationSec / 60) + " min, wipes " +
+        std::to_string(report.wipes) + "; deaths: " + (deaths.empty() ? "none" : deaths) +
+        "; loot: " + (drops.empty() ? "none" : drops) + "; needed: " + (needs.empty() ? "nothing" : needs);
     LOG_INFO("playerbots", "[guild60] report {} run {}: {} ({})", fiveId, report.runId, text, report.reason);
     Decision(text);
 
@@ -1157,10 +1157,10 @@ void GuildCoordinator::FiveOrder(BotState const& st, uint32 low, Player* p, std:
     GuildOrder o;
     o.type = GuildOrderType::DUNGEON;
     o.itemId = five.id;
-    o.details = five.dungeon + " — пятёрка " + std::to_string(five.id) + ", " +
-                RoleRu(role != five.roles.end() ? role->second : "dps") +
-                (low == five.leaderLow ? std::string(", лидер пятёрки, интендант")
-                                       : ", лидер " + Who(five.leaderLow));
+    o.details =
+        five.dungeon + " — five " + std::to_string(five.id) + ", " +
+        RoleRu(role != five.roles.end() ? role->second : "dps") +
+        (low == five.leaderLow ? std::string(", five leader, quartermaster") : ", leader " + Who(five.leaderLow));
     o.reason = five.why;
     if (five.stage == GuildFive::Stage::Gather)
     {
@@ -1173,11 +1173,12 @@ void GuildCoordinator::FiveOrder(BotState const& st, uint32 low, Player* p, std:
                 human |= five.humans.count(m) != 0;
             }
         if (five.arrived.count(low))
-            o.status = (human ? "у входа, ждёт игрока (приоритет): " : "у входа, ждёт: ") + waiting;
+            o.status =
+                (human ? "at the entrance, waits for the player (priority): " : "at the entrance, waits: ") + waiting;
         else if (p->GetMapId() == five.entrance.GetMapId())
-            o.status = "идёт ко входу " + std::to_string(uint32(p->GetExactDist(five.entrance))) + " ярд";
+            o.status = "walks to the entrance " + std::to_string(uint32(p->GetExactDist(five.entrance))) + " yd";
         else
-            o.status = "идёт ко входу (карта " + std::to_string(five.entrance.GetMapId()) + ")";
+            o.status = "walks to the entrance (map " + std::to_string(five.entrance.GetMapId()) + ")";
         if (!st.fiveRefused.empty())
             o.status = st.fiveRefused;
         o.executable = !IsHuman(p);
@@ -1185,7 +1186,7 @@ void GuildCoordinator::FiveOrder(BotState const& st, uint32 low, Player* p, std:
     else
     {
         std::string const phase = Leader::Dungeon::DungeonRuns::Instance().Phase(five.id);
-        o.status = phase.empty() ? "сдаёт отчёт" : "в подземелье: " + phase;
+        o.status = phase.empty() ? "hands in the report" : "in the dungeon: " + phase;
     }
     orders.push_back(o);
 }
@@ -1202,7 +1203,7 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
         NewRpgBaseAction::TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
                                       "dungeon entrance " + five.contentKey))
     {
-        st.fiveRefused = "нет безопасного пути ко входу в " + five.dungeon;
+        st.fiveRefused = "no safe way to the entrance of " + five.dungeon;
         return false;
     }
     st.run = true;
@@ -1256,11 +1257,12 @@ void GuildCoordinator::SendFives(Player* player) const
         }
         std::string status;
         if (five.stage == GuildFive::Stage::Gather)
-            status = "сбор у входа " + std::to_string(five.arrived.size()) + "/" + std::to_string(five.members.size());
+            status = "gathering at the entrance " + std::to_string(five.arrived.size()) + "/" +
+                     std::to_string(five.members.size());
         else
         {
             std::string const phase = Leader::Dungeon::DungeonRuns::Instance().Phase(id);
-            status = phase.empty() ? "отчёт" : phase;
+            status = phase.empty() ? "report" : phase;
         }
         SendLine(player, "OF;" + std::to_string(id) + ";" + FiveCell(five.dungeon, 30) + ";" + FiveCell(status, 30) + ";" +
                              FiveCell(Who(five.leaderLow), 20) + ";" + FiveCell(members, 60) + ";" + FiveCell(five.why, 80));
@@ -1399,9 +1401,9 @@ bool GuildCoordinator::FiveRollVote(Player* bot, uint64 lootGuid, uint32 itemId,
         auto const [roll, inserted] = five->second.rolls.emplace(key, decided);
         decided = roll->second;
         if (inserted && decided.first)
-            Decision("пятёрка " + std::to_string(fiveId) + ": BoP " + ItemName(itemId) + " → " + Who(decided.first) +
-                     (decided.second ? " (никому не улучшение, распылит)"
-                                     : " (+" + std::to_string(int32(bestGain * 100.0f + 0.5f)) + "% к слоту)"));
+            Decision("five " + std::to_string(fiveId) + ": BoP " + ItemName(itemId) + " → " + Who(decided.first) +
+                     (decided.second ? " (an upgrade for nobody, disenchants)"
+                                     : " (+" + std::to_string(int32(bestGain * 100.0f + 0.5f)) + "% to the slot)"));
     }
     if (!decided.first)
         return false;
@@ -1439,6 +1441,6 @@ void GuildCoordinator::FiveLoot(Player* player, Item* item, uint32 count)
         st->second.disenchant.push_back(item->GetGUID().GetCounter());
     else
         st->second.sell.push_back(item->GetGUID().GetCounter());
-    Decision("пятёрка " + std::to_string(five->first) + ": BoP " + ItemName(proto->ItemId) + " у " + Who(low) +
-             " — никому не улучшение, " + (disenchant ? "распылит" : "продаст"));
+    Decision("five " + std::to_string(five->first) + ": BoP " + ItemName(proto->ItemId) + " at " + Who(low) +
+             " — an upgrade for nobody, " + (disenchant ? "disenchants" : "sells"));
 }

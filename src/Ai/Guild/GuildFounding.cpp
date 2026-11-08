@@ -65,7 +65,7 @@ namespace
     std::string Gold(uint32 copper)
     {
         uint32 const g = copper / 10000, s = (copper / 100) % 100;
-        return g ? std::to_string(g) + " з " + std::to_string(s) + " с" : std::to_string(s) + " с";
+        return g ? std::to_string(g) + " g " + std::to_string(s) + " s" : std::to_string(s) + " s";
     }
 
     float Dist(WorldPosition const& a, WorldPosition const& b)
@@ -244,7 +244,7 @@ void GuildCoordinator::UpdateFounding()
                 continue;
             if (!p)
             {
-                joinState[row.low] = "не в сети: пригласят при входе";
+                joinState[row.low] = "offline: invited on login";
                 continue;
             }
             if (!GET_PLAYERBOT_AI(p) || HumanCharacter(p))
@@ -252,12 +252,12 @@ void GuildCoordinator::UpdateFounding()
             if (p->GetGuildId())
             {
                 Guild* other = sGuildMgr->GetGuildById(p->GetGuildId());
-                joinState[row.low] = "в другой гильдии «" + (other ? other->GetName() : std::string("?")) + "»";
+                joinState[row.low] = "in another guild «" + (other ? other->GetName() : std::string("?")) + "»";
                 continue;
             }
             if (!inviter)
             {
-                joinState[row.low] = "ждёт: никого с правом приглашать в сети";
+                joinState[row.low] = "waits: nobody with invite rights online";
                 continue;
             }
             if (p->GetGuildIdInvited() != guild->GetId())
@@ -271,7 +271,7 @@ void GuildCoordinator::UpdateFounding()
                 logs.push_back(p->GetName() + " joins «" + guild->GetName() + "» (invited by " + inviter->GetName() +
                                ")");
             else
-                joinState[row.low] = "приглашение не прошло (" + inviter->GetName() + ")";
+                joinState[row.low] = "the invite failed (" + inviter->GetName() + ")";
         }
 
         // the first bank tab: the guild master's own gold, at a vault
@@ -287,7 +287,7 @@ void GuildCoordinator::UpdateFounding()
                 if (p->GetGuildId() == guild->GetId() && p != gm && GET_PLAYERBOT_AI(p))
                     pool += FoundingFreeMoney(p);
             if (!gm || !gm->IsInWorld() || !gm->GetSession())
-                state = "«" + guild->GetName() + "»: вкладка банка ждёт главу (не в сети)";
+                state = "«" + guild->GetName() + "»: the bank tab waits for the guild master (offline)";
             else
             {
                 uint32 const own = GET_PLAYERBOT_AI(gm) ? FoundingFreeMoney(gm) : 0;
@@ -314,22 +314,24 @@ void GuildCoordinator::UpdateFounding()
                                                          guild->GetRankRights(rank), 0, rights);
                             logs.push_back(gm->GetName() + " buys bank tab 1 of «" + guild->GetName() + "» for " +
                                            Gold(tabCost) + " of its own gold; member ranks may deposit / withdraw");
-                            decisions.push_back("«" + guild->GetName() + "»: глава " + gm->GetName() +
-                                                " купил вкладку банка за свои " + Gold(tabCost) + " — банк открыт");
+                            decisions.push_back("«" + guild->GetName() + "»: guild master " + gm->GetName() +
+                                                " bought the bank tab with its own " + Gold(tabCost) +
+                                                " — the bank is open");
                             tabGm = 0;
                         }
                     }
                     else
-                        state = "«" + guild->GetName() + "»: глава " + gm->GetName() + " идёт к хранилищу (" +
-                                std::to_string(uint32(dist)) + " ярд) купить вкладку за " + Gold(tabCost);
+                        state = "«" + guild->GetName() + "»: guild master " + gm->GetName() + " walks to the vault (" +
+                                std::to_string(uint32(dist)) + " yd) to buy the tab for " + Gold(tabCost);
                 }
                 else
-                    state = "«" + guild->GetName() + "»: вкладка банка " + Gold(tabCost) + " — у главы свободно " +
-                            Gold(own) + (own + pool >= tabCost
-                                             ? ", взносы членов покрыли бы (" + Gold(pool) +
-                                                   ") — взносы решает глоб. лидер"
-                                             : ", у всех членов свободно " + Gold(pool) + " — копит глава сам") +
-                            "; банк спит, вещи держат при себе";
+                    state = "«" + guild->GetName() + "»: bank tab " + Gold(tabCost) + " — the guild master has free " +
+                            Gold(own) +
+                            (own + pool >= tabCost
+                                 ? ", members' donations would cover it (" + Gold(pool) +
+                                       ") — the global leader decides donations"
+                                 : ", all members have free " + Gold(pool) + " — the guild master saves himself") +
+                            "; the bank sleeps, items are held by their holders";
             }
         }
 
@@ -337,9 +339,9 @@ void GuildCoordinator::UpdateFounding()
         if (found_.guildId != guild->GetId())
         {
             if (found_.founderLow && found_.charterGuid)
-                decisions.push_back("гильдия «" + guild->GetName() + "» основана: глава " +
+                decisions.push_back("guild «" + guild->GetName() + "» founded: guild master " +
                                     Who(guild->GetLeaderGUID().GetCounter()) + ", " +
-                                    std::to_string(guild->GetMemberCount()) + " членов; остальных приглашает");
+                                    std::to_string(guild->GetMemberCount()) + " members; invites the rest");
             found_ = Founding{};
             found_.guildId = guild->GetId();
         }
@@ -427,7 +429,7 @@ void GuildCoordinator::UpdateFounding()
                 spot = bestSpot;
             else
                 pick(guildMasters_[spot], founderLow, best);
-            why = "держит хартию «" + charterName + "»";
+            why = "holds the charter «" + charterName + "»";
         }
         else
         {
@@ -443,7 +445,7 @@ void GuildCoordinator::UpdateFounding()
                     spot = found_.spot;
                     best = cand;
                     bestCost = found_.planCost;
-                    why = found_.signerWhy.count(founderLow) ? found_.signerWhy[founderLow] : "прежний выбор";
+                    why = found_.signerWhy.count(founderLow) ? found_.signerWhy[founderLow] : "previous choice";
                 }
             }
             for (size_t i = 0; i < guildMasters_.size() && !founderLow; ++i)
@@ -474,8 +476,8 @@ void GuildCoordinator::UpdateFounding()
                     }
                 }
             if (founderLow && why.empty())
-                why = "наименьшая стоимость встречи: " + std::to_string(uint32(bestCost)) + " ярд пути на всех" +
-                      (founderLow == raidLeader_[0] ? " (рейд-лидер A)" : "");
+                why = "lowest meeting cost: " + std::to_string(uint32(bestCost)) + " yd of walking in total" +
+                      (founderLow == raidLeader_[0] ? " (raid leader A)" : "");
         }
 
         std::string state;
@@ -484,9 +486,9 @@ void GuildCoordinator::UpdateFounding()
             uint32 rich = 0;
             for (auto const& [low, p] : pool)
                 rich += FoundingFreeMoney(p) >= charterCost ? 1 : 0;
-            state = !rich ? "гильдии нет: ни у кого нет свободных " + Gold(charterCost) + " на хартию"
-                          : "гильдии нет: ни у одного мастера гильдий не собрать " + std::to_string(need + 1) +
-                                " свободных ботов на одном континенте (свободно " + std::to_string(pool.size()) + ")";
+            state = !rich ? "no guild: nobody has a free " + Gold(charterCost) + " for the charter"
+                          : "no guild: at no guild master can one gather " + std::to_string(need + 1) +
+                                " free bots on one continent (free " + std::to_string(pool.size()) + ")";
             found_.founderLow = 0;
             found_.spot = -1;
             found_.signers.clear();
@@ -495,9 +497,8 @@ void GuildCoordinator::UpdateFounding()
         else
         {
             if (found_.founderLow != founderLow || found_.spot != spot)
-                decisions.push_back("основатель гильдии " + Who(founderLow) + ", встреча у " +
-                                    guildMasters_[spot].name + " (" +
-                                    GuildGear::MapName(guildMasters_[spot].pos.GetMapId()) + ") — " + why);
+                decisions.push_back("guild founder " + Who(founderLow) + ", meeting at " + guildMasters_[spot].name +
+                                    " (" + GuildGear::MapName(guildMasters_[spot].pos.GetMapId()) + ") — " + why);
             // keep called signers that still can come, fill up with the cheapest
             std::vector<uint32> signers;
             std::map<uint32, std::string> signerWhy;
@@ -520,9 +521,10 @@ void GuildCoordinator::UpdateFounding()
                                                          guildMasters_[spot].pos.GetPositionY(),
                                                          guildMasters_[spot].pos.GetPositionZ())
                                        : c;
-                signerWhy[low] = c + 1.0f < direct ? "попутно: уже идёт в город, " + std::to_string(uint32(c)) + " ярд"
-                                                   : "из ближайших " + std::to_string(missing) + ", " +
-                                                         std::to_string(uint32(c)) + " ярд";
+                signerWhy[low] =
+                    c + 1.0f < direct
+                        ? "on the way: already walks to town, " + std::to_string(uint32(c)) + " yd"
+                        : "of the nearest " + std::to_string(missing) + ", " + std::to_string(uint32(c)) + " yd";
             }
             signerWhy[founderLow] = why;
             found_.founderLow = founderLow;
@@ -532,10 +534,10 @@ void GuildCoordinator::UpdateFounding()
             found_.planCost = bestCost;
             uint32 const shortBy = missing > signers.size() ? missing - uint32(signers.size()) : 0;
             found_.shortBy = shortBy;
-            state = "гильдия основывается: " + Who(founderLow) + " у " + guildMasters_[spot].name +
-                    (founder ? ", хартия «" + charterName + "» " + std::to_string(signs) + "/" + std::to_string(need)
-                             : ", хартию ещё покупает") +
-                    (shortBy ? "; не хватает свободных подписантов: " + std::to_string(shortBy) : "");
+            state = "guild being founded: " + Who(founderLow) + " at " + guildMasters_[spot].name +
+                    (founder ? ", charter «" + charterName + "» " + std::to_string(signs) + "/" + std::to_string(need)
+                             : ", still buying the charter") +
+                    (shortBy ? "; short of free signers: " + std::to_string(shortBy) : "");
         }
         found_.charterGuid = charter.GetRawValue();
         found_.charterName = charterName;
@@ -636,8 +638,8 @@ void GuildCoordinator::UpdateFounding()
     if (Guild* g = f->GetGuildId() ? sGuildMgr->GetGuildById(f->GetGuildId()) : nullptr)
     {
         found_.guildId = g->GetId();
-        Decision("гильдия «" + g->GetName() + "» основана у " + gmSpot.name + ": глава " + Who(founderLow) + ", " +
-                 std::to_string(g->GetMemberCount()) + " членов (подписавшие); остальных приглашает");
+        Decision("guild «" + g->GetName() + "» founded at " + gmSpot.name + ": guild master " + Who(founderLow) + ", " +
+                 std::to_string(g->GetMemberCount()) + " members (the signers); invites the rest");
         found_.signers.clear();
     }
     for (std::string const& text : logs)
@@ -656,12 +658,12 @@ void GuildCoordinator::FoundingOrders(BotState const& st, uint32 low, Player* p,
             o.type = GuildOrderType::BANK_TAB;
             o.pos = found_.vault;
             o.cost = sWorld->getIntConfig(CONFIG_GUILD_BANK_TAB_COST_0);
-            o.details = "вкладка банка 1 за " + Gold(o.cost);
-            o.reason = "глава гильдии, свои деньги хватает";
-            o.status = "к хранилищу " + std::to_string(uint32(p->GetExactDist(found_.vault.GetPositionX(),
-                                                                                 found_.vault.GetPositionY(),
-                                                                                 found_.vault.GetPositionZ()))) +
-                       " ярд";
+            o.details = "bank tab 1 for " + Gold(o.cost);
+            o.reason = "guild master, own money is enough";
+            o.status = "to the vault " +
+                       std::to_string(uint32(p->GetExactDist(found_.vault.GetPositionX(), found_.vault.GetPositionY(),
+                                                             found_.vault.GetPositionZ()))) +
+                       " yd";
             o.executable = true;
             orders.push_back(o);
         }
@@ -671,8 +673,8 @@ void GuildCoordinator::FoundingOrders(BotState const& st, uint32 low, Player* p,
             GuildOrder o;
             o.type = GuildOrderType::JOIN;
             Guild* g = sGuildMgr->GetGuildById(found_.guildId);
-            o.details = "в гильдию «" + (g ? g->GetName() : std::string("?")) + "»";
-            o.reason = "все гильдейские боты — в одну гильдию";
+            o.details = "into the guild «" + (g ? g->GetName() : std::string("?")) + "»";
+            o.reason = "all guild bots — into one guild";
             o.status = join->second;
             orders.push_back(o);
         }
@@ -685,10 +687,10 @@ void GuildCoordinator::FoundingOrders(BotState const& st, uint32 low, Player* p,
     if (found_.charterGuid && found_.shortBy)
         return;
     GuildMasterSpot const& spot = guildMasters_[found_.spot];
-    std::string const charter =
-        found_.charterGuid ? "хартия «" + found_.charterName + "» " + std::to_string(found_.signs) + "/" +
-                                 std::to_string(found_.needSigns)
-                           : "хартия ещё не куплена";
+    std::string const charter = found_.charterGuid
+                                    ? "charter «" + found_.charterName + "» " + std::to_string(found_.signs) + "/" +
+                                          std::to_string(found_.needSigns)
+                                    : "the charter is not bought yet";
     auto const why = found_.signerWhy.find(low);
     if (low == found_.founderLow)
     {
@@ -697,11 +699,11 @@ void GuildCoordinator::FoundingOrders(BotState const& st, uint32 low, Player* p,
         o.pos = spot.pos;
         o.npcEntry = spot.entry;
         o.cost = sWorld->getIntConfig(CONFIG_CHARTER_COST_GUILD);
-        o.details = charter + ", у " + spot.name;
-        o.reason = "основатель: " + (why != found_.signerWhy.end() ? why->second : std::string("план"));
+        o.details = charter + ", at " + spot.name;
+        o.reason = "founder: " + (why != found_.signerWhy.end() ? why->second : std::string("plan"));
         o.status = st.run && st.runType == GuildOrderType::FOUND_GUILD && st.runApproached
-                       ? (found_.charterGuid ? "ждёт подписи у мастера гильдий" : "покупает хартию")
-                       : "идёт к мастеру гильдий";
+                       ? (found_.charterGuid ? "waits for signatures at the guild master" : "buys the charter")
+                       : "walks to the guild master";
         o.executable = true;
         orders.push_back(o);
     }
@@ -712,10 +714,10 @@ void GuildCoordinator::FoundingOrders(BotState const& st, uint32 low, Player* p,
         o.pos = spot.pos;
         o.npcEntry = spot.entry;
         o.forLow = found_.founderLow;
-        o.details = charter + " у " + Who(found_.founderLow) + ", " + spot.name;
-        o.reason = why != found_.signerWhy.end() ? why->second : "подписант";
-        o.status = st.run && st.runType == GuildOrderType::SIGN_CHARTER ? "у основателя: подписывает"
-                                                                        : "идёт к основателю";
+        o.details = charter + " at " + Who(found_.founderLow) + ", " + spot.name;
+        o.reason = why != found_.signerWhy.end() ? why->second : "signer";
+        o.status =
+            st.run && st.runType == GuildOrderType::SIGN_CHARTER ? "at the founder: signs" : "walks to the founder";
         o.executable = true;
         orders.push_back(o);
     }
@@ -733,11 +735,11 @@ bool GuildCoordinator::FoundStep(Player* bot, BotState& st, GuildOrder& order, G
         NewRpgBaseAction::TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
                                       order.type == GuildOrderType::BANK_TAB ? "guild vault" : "guild master"))
     {
-        st.foundRefused = order.type == GuildOrderType::BANK_TAB ? "нет безопасного пути к хранилищу"
-                                                                  : "нет безопасного пути к мастеру гильдий";
+        st.foundRefused =
+            order.type == GuildOrderType::BANK_TAB ? "no safe way to the vault" : "no safe way to the guild master";
         st.foundRefusedLevel = bot->GetLevel();
         order.executable = false;
-        order.status = st.foundRefused + " — квестует";
+        order.status = st.foundRefused + " — quests";
         LOG_INFO("playerbots", "[guild80] {} L{}: {} ({} yd), left out until its next level", bot->GetName(),
                  bot->GetLevel(), st.foundRefused, uint32(dist));
         return false;

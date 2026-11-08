@@ -843,12 +843,12 @@ namespace
             }
             if (packPrefix && (lower == "stop" || lower == "\xD1\x81\xD1\x82\xD0\xBE\xD0\xBF"))  // "стоп"
             {
-                CancelOrder("отменено по команде");
+                CancelOrder("cancelled by command");
                 return true;
             }
             if (lower == "\xD0\xBE\xD1\x82\xD0\xBC\xD0\xB5\xD0\xBD\xD0\xB0")  // "отмена"
             {
-                CancelOrder("отменено по команде");
+                CancelOrder("cancelled by command");
                 return true;
             }
             // "данж", "лети", "иди"
@@ -952,17 +952,17 @@ namespace
                     if (!Proven(content))
                         out << " " << StreakText(content);
                 }
-                Say("Уровень группы " + std::to_string(minLevel) + "-" + std::to_string(maxLevel) +
-                    ". Можно: " + (allowed.tellp() > 0 ? allowed.str() : std::string("ничего")));
+                Say("Group level " + std::to_string(minLevel) + "-" + std::to_string(maxLevel) +
+                    ". Possible: " + (allowed.tellp() > 0 ? allowed.str() : std::string("nothing")));
                 if (waiting.tellp() > 0)
-                    Say("Ещё не проверены тестовыми ботами (серия): " + waiting.str());
+                    Say("Not yet checked by test bots (series): " + waiting.str());
                 return;
             }
 
             std::vector<TestHarness::ContentDef const*> found = FindDungeons(lower);
             if (found.empty())
             {
-                Say("Не знаю подземелье \"" + text + "\". Скажи: dungeon list");
+                Say("Unknown dungeon \"" + text + "\". Say: dungeon list");
                 return;
             }
             if (found.size() > 1)
@@ -970,7 +970,7 @@ namespace
                 std::ostringstream out;
                 for (TestHarness::ContentDef const* content : found)
                     out << (out.tellp() > 0 ? ", " : "") << content->name << " [" << content->key << "]";
-                Say("Уточни, какое: " + out.str());
+                Say("Which one: " + out.str());
                 return;
             }
             StartDungeon(*found.front(), minLevel, maxLevel);
@@ -980,15 +980,14 @@ namespace
         {
             if (!Proven(content))
             {
-                Say(std::string(content.name) + " ещё не проверены тестовыми ботами (серия " + StreakText(content) +
-                    ")");
+                Say(std::string(content.name) + " not yet checked by test bots (series " + StreakText(content) + ")");
                 return;
             }
             if (!LevelFits(content, minLevel, maxLevel))
             {
-                Say(std::string(content.name) + ": уровень группы " + std::to_string(minLevel) + "-" +
-                    std::to_string(maxLevel) + ", подходит от " +
-                    std::to_string(std::max<int32>(1, int32(content.level) - int32(cfg.levelBelow))) + " до " +
+                Say(std::string(content.name) + ": group level " + std::to_string(minLevel) + "-" +
+                    std::to_string(maxLevel) + ", fits from " +
+                    std::to_string(std::max<int32>(1, int32(content.level) - int32(cfg.levelBelow))) + " to " +
                     std::to_string(content.level + cfg.levelAbove));
                 return;
             }
@@ -996,14 +995,14 @@ namespace
             std::vector<Player*> bots = OnlineBots();
             if (bots.empty())
             {
-                Say("Никого из группы нет в игре");
+                Say("Nobody of the group is in game");
                 return;
             }
 
-            CancelOrder("заменено новой командой", false);
+            CancelOrder("replaced by a new command", false);
             Order order;
             order.type = OrderType::Dungeon;
-            order.title = std::string("подземелье ") + content.name;
+            order.title = std::string("dungeon ") + content.name;
             order.content = &content;
             for (Player* bot : bots)
                 order.executors.insert(bot->GetGUID());
@@ -1042,8 +1041,8 @@ namespace
                 else
                     group->SetDungeonDifficulty(Difficulty(content.difficulty));
             }
-            Say(std::string("Идём в ") + content.name + " (серия тестов " + StreakText(content) +
-                "): пешком до входа и внутрь.");
+            Say(std::string("Going to ") + content.name + " (test series " + StreakText(content) +
+                "): on foot to the entrance and inside.");
         }
 
         // A taxi node of the bot's faction whose name contains the text; known ones first.
@@ -1081,7 +1080,7 @@ namespace
                 if (node && node->map_id == bot->GetMapId() && bot->m_taxi.IsTaximaskNodeKnown(i))
                     out << (out.tellp() > 0 ? "; " : "") << DbcName(node->name);
             }
-            return out.tellp() > 0 ? out.str() : std::string("ни одной");
+            return out.tellp() > 0 ? out.str() : std::string("none");
         }
 
         // Who carries out an order: every bot while the user plays (he does not walk with them), the bot leader
@@ -1103,29 +1102,29 @@ namespace
             std::vector<Player*> executors = Executors(false);
             if (executors.empty())
             {
-                Say("Никого из группы нет в игре");
+                Say("Nobody of the group is in game");
                 return;
             }
             Player* first = executors.front();
             if (lower.empty() || lower == "?" || lower == "list")
             {
-                Say(first->GetName() + " знает точки полёта: " + KnownNodes(first));
+                Say(first->GetName() + " knows flight points: " + KnownNodes(first));
                 return;
             }
 
             uint32 const node = FindTaxiNode(first, lower, false);
             if (!node)
             {
-                Say("Нет такой точки полёта. Известные: " + KnownNodes(first));
+                Say("No such flight point. Known: " + KnownNodes(first));
                 return;
             }
             TaxiNodesEntry const* nodeEntry = sTaxiNodesStore.LookupEntry(node);
             std::string const nodeName = DbcName(nodeEntry->name);
 
-            CancelOrder("заменено новой командой", false);
+            CancelOrder("replaced by a new command", false);
             Order order;
             order.type = OrderType::Fly;
-            order.title = "полёт в " + nodeName;
+            order.title = "flight to " + nodeName;
             order.toNode = node;
             std::ostringstream refused;
             for (Player* bot : executors)
@@ -1138,8 +1137,8 @@ namespace
                 if (path.empty())
                 {
                     refused << (refused.tellp() > 0 ? ", " : "") << bot->GetName()
-                            << (bot->m_taxi.IsTaximaskNodeKnown(node) ? " (нет маршрута по известным точкам)"
-                                                                     : " (точка не открыта)");
+                            << (bot->m_taxi.IsTaximaskNodeKnown(node) ? " (no route over known points)"
+                                                                      : " (point not discovered)");
                     continue;
                 }
                 order.executors.insert(bot->GetGUID());
@@ -1149,13 +1148,13 @@ namespace
             }
             if (order.executors.empty())
             {
-                Say("Не можем лететь в " + nodeName + ": " + refused.str() + ". " + first->GetName() +
-                    " знает: " + KnownNodes(first));
+                Say("Cannot fly to " + nodeName + ": " + refused.str() + ". " + first->GetName() +
+                    " knows: " + KnownNodes(first));
                 return;
             }
             BeginOrder(order);
-            Say("Летим в " + nodeName + ": идём к ближайшему распорядителю полётов." +
-                (refused.tellp() > 0 ? " Не полетят: " + refused.str() : std::string()));
+            Say("Flying to " + nodeName + ": walking to the nearest flight master." +
+                (refused.tellp() > 0 ? " Will not fly: " + refused.str() : std::string()));
         }
 
         // A place: zone coordinates "x,y" of the leader's zone, a dungeon, a taxi node, a zone, an NPC name.
@@ -1215,7 +1214,7 @@ namespace
                     if (z > INVALID_HEIGHT)
                         pos = WorldPosition(area->mapid, cx, cy, z);
                 }
-                title = std::string(DbcName(area->area_name)) + " (середина зоны)";
+                title = std::string(DbcName(area->area_name)) + " (middle of the zone)";
                 return true;
             }
 
@@ -1269,12 +1268,12 @@ namespace
             std::vector<Player*> executors = Executors(false);
             if (executors.empty())
             {
-                Say("Никого из группы нет в игре");
+                Say("Nobody of the group is in game");
                 return;
             }
             if (lower.empty())
             {
-                Say("Куда? goto <x>,<y> | goto <зона/город/точка полёта/имя NPC> | dungeon <название>");
+                Say("Where? goto <x>,<y> | goto <zone/town/flight point/NPC name> | dungeon <name>");
                 return;
             }
 
@@ -1293,15 +1292,16 @@ namespace
             std::string title;
             if (!ResolvePlace(executors.front(), lower, pos, title))
             {
-                Say("Не нашёл место \"" + text + "\". Можно: goto 52,41 (координаты карты зоны), goto <зона>, "
-                    "goto <точка полёта>, goto <имя NPC>");
+                Say("Place not found \"" + text +
+                    "\". Possible: goto 52,41 (zone map coordinates), goto <zone>, "
+                    "goto <flight point>, goto <NPC name>");
                 return;
             }
 
-            CancelOrder("заменено новой командой", false);
+            CancelOrder("replaced by a new command", false);
             Order order;
             order.type = OrderType::Go;
-            order.title = "идём к " + title;
+            order.title = "walking to " + title;
             order.pos = pos;
             for (Player* bot : executors)
             {
@@ -1312,8 +1312,8 @@ namespace
             }
             BeginOrder(order);
             std::string const where =
-                pos.GetMapId() == executors.front()->GetMapId() ? "" : " (другой континент: корабль/дирижабль)";
-            Say("Идём к " + title + where + ", своим ходом.");
+                pos.GetMapId() == executors.front()->GetMapId() ? "" : " (another continent: ship/zeppelin)";
+            Say("Walking to " + title + where + ", on foot.");
         }
 
         // The class trainer of the bot's faction nearest to it on its map.
@@ -1356,13 +1356,13 @@ namespace
             std::vector<Player*> bots = Executors(true);
             if (bots.empty())
             {
-                Say("Никого из группы нет в игре");
+                Say("Nobody of the group is in game");
                 return;
             }
-            CancelOrder("заменено новой командой", false);
+            CancelOrder("replaced by a new command", false);
             Order order;
             order.type = OrderType::Train;
-            order.title = "к учителям";
+            order.title = "to the trainers";
             std::ostringstream missing;
             for (Player* bot : bots)
             {
@@ -1382,12 +1382,12 @@ namespace
             }
             if (order.executors.empty())
             {
-                Say("Не нашёл учителей класса на этом континенте");
+                Say("No class trainers found on this continent");
                 return;
             }
             BeginOrder(order);
-            Say("Идём к учителям класса учить новые заклинания (за свои деньги)." +
-                (missing.tellp() > 0 ? " Без учителя рядом: " + missing.str() : std::string()));
+            Say("Walking to the class trainers to learn new spells (own money)." +
+                (missing.tellp() > 0 ? " No trainer nearby: " + missing.str() : std::string()));
         }
 
         void MaybeAutoTrain(std::vector<Player*> const& bots)
@@ -1448,7 +1448,7 @@ namespace
             if (_order.type == OrderType::None)
             {
                 if (say)
-                    Say("Нет активной команды");
+                    Say("No active command");
                 return;
             }
             for (ObjectGuid const& guid : _order.executors)
@@ -1543,9 +1543,8 @@ namespace
                         // A bot with a master learns from the unit its master has selected (TrainerAction).
                         if (botAI->GetMaster())
                         {
-                            report << (report.tellp() > 0 ? ", " : "") << bot->GetName() << " у "
-                                   << trainer->GetName() << ": выдели учителя и скажи /w " << bot->GetName()
-                                   << " trainer learn";
+                            report << (report.tellp() > 0 ? ", " : "") << bot->GetName() << " at " << trainer->GetName()
+                                   << ": target the trainer and say /w " << bot->GetName() << " trainer learn";
                             break;
                         }
                         bot->SetSelection(trainer->GetGUID());
@@ -1566,7 +1565,7 @@ namespace
                     continue;
                 }
                 if (!arrived)
-                    report << (report.tellp() > 0 ? ", " : "") << bot->GetName() << " не дошёл";
+                    report << (report.tellp() > 0 ? ", " : "") << bot->GetName() << " did not arrive";
                 RestoreAfterOrder(bot, arrived);
                 itr = _order.executors.erase(itr);
             }
@@ -1575,8 +1574,9 @@ namespace
                 Say(_order.title + ": " + report.str());
             if (_order.executors.empty())
             {
-                Say(_order.title + ": готово." +
-                    (_order.human ? std::string(" Ждём тебя; скажи follow, чтобы шли за тобой.") : std::string()));
+                Say(_order.title + ": done." +
+                    (_order.human ? std::string(" Waiting for you; say follow to have them follow you.")
+                                  : std::string()));
                 _order = Order();
             }
         }
@@ -1869,7 +1869,7 @@ private:
         {
             if (player && player->GetSession())
                 ChatHandler(player->GetSession())
-                    .SendSysMessage("Пак играет честно: эта команда (бесплатные вещи/заклинания/телепорт) отключена.");
+                    .SendSysMessage("The pack plays honestly: this command (free items/spells/teleport) is disabled.");
             return false;
         }
         if (player && IsHuman(player) && IsPackLow(player->GetGUID().GetCounter()) && LooksLikePackCommand(msg))

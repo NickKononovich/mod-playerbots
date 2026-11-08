@@ -75,11 +75,11 @@ namespace GuildBankRun
     {
         Guild* guild = BotGuild(bot);
         if (!guild)
-            return "нет гильдии";
+            return "no guild";
         if (!guild->GetPurchasedTabsSize())
-            return "нет вкладки банка";
+            return "no guild bank tab";
         if (TabWithRights(guild, bot, deposit ? GUILD_BANK_RIGHT_DEPOSIT_ITEM : GUILD_BANK_RIGHT_VIEW_TAB) < 0)
-            return "нет прав на вкладку";
+            return "no rights to the bank tab";
         return "";
     }
 
