@@ -52,6 +52,9 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
+#include "PlayerbotsDatabase.h"  // [guild15] death zones kept
+#include "StringFormat.h"
+#include <cstdio>
 #include "PlayerbotMgr.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -3107,12 +3110,34 @@ void NewRpgBaseAction::RecordDeath(Player* bot, Creature* killer)
         return;
     // the killer's aggro radius for this bot (Creature::GetAggroRange)
     float const radius = std::max(killer->GetAggroRange(bot), killer->GetCombatReach() + bot->GetCombatReach());
+    std::string saved;
     {
         std::lock_guard<std::mutex> guard(deathZonesLock);
-        deathZones[bot->GetGUID().GetCounter()].push_back({bot->GetMapId(), killer->GetPositionX(),
-                                                           killer->GetPositionY(), bot->GetPositionX(),
-                                                           bot->GetPositionY(), killer->GetEntry(),
-                                                           uint8(killer->GetLevel()), radius});
+        auto& list = deathZones[bot->GetGUID().GetCounter()];
+        list.push_back({bot->GetMapId(), killer->GetPositionX(), killer->GetPositionY(), bot->GetPositionX(),
+                        bot->GetPositionY(), killer->GetEntry(), uint8(killer->GetLevel()), radius});
+        // [guild15] its deaths outlive a restart (b327-b331: Baridrol L9 died to the Gnarlpine at (9891,1553) in
+        // every run, Cassand to the Stone Cairn Lake murlocs - the zones were forgotten at each restart); the
+        // newest that fit playerbots_db_store's 255 characters, still in force (its level not above the killer's)
+        for (auto it = list.rbegin(); it != list.rend(); ++it)
+        {
+            if (it->refused || bot->GetLevel() > it->level)
+                continue;
+            std::string const part = Acore::StringFormat("{},{:.0f},{:.0f},{:.0f},{:.0f},{},{},{:.0f};", it->mapId,
+                                                         it->killerX, it->killerY, it->deathX, it->deathY,
+                                                         it->entry, uint32(it->level), it->radius);
+            if (saved.size() + part.size() > 250)
+                break;
+            saved += part;
+        }
+    }
+    {
+        uint32 const guid = bot->GetGUID().GetCounter();
+        PlayerbotsDatabaseTransaction trans = PlayerbotsDatabase.BeginTransaction();
+        trans->Append(Acore::StringFormat("DELETE FROM playerbots_db_store WHERE guid = {} AND `key` = 'dz'", guid));
+        trans->Append(Acore::StringFormat(
+            "INSERT INTO playerbots_db_store (guid, `key`, value) VALUES ({}, 'dz', '{}')", guid, saved));
+        PlayerbotsDatabase.CommitTransaction(trans);
     }
     LOG_INFO("playerbots", "[rpg] {} L{} DANGER remembered: {} L{} at ({:.0f},{:.0f}), {:.0f} yd, kept away until L{}",
              bot->GetName(), bot->GetLevel(), killer->GetName(), killer->GetLevel(), killer->GetPositionX(),
@@ -3122,6 +3147,34 @@ void NewRpgBaseAction::RecordDeath(Player* bot, Creature* killer)
         if (botAI->rpgInfo.GetStatus() == RPG_DO_QUEST)
             botAI->rpgInfo.ChangeToIdle();
     SoloSafety::OnDeath(bot);  // [guild13] back to the hub and rest to full after the revive
+}
+
+void NewRpgBaseAction::LoadDeathZones(Player* bot, std::string const& value)
+{
+    if (!bot)
+        return;
+    std::vector<DeathZone> loaded;
+    size_t start = 0;
+    while (start < value.size())
+    {
+        size_t const end = value.find(';', start);
+        std::string const part = value.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        start = end == std::string::npos ? value.size() : end + 1;
+        unsigned mapId = 0, entry = 0, level = 0;
+        float kx = 0, ky = 0, dx = 0, dy = 0, radius = 0;
+        if (sscanf(part.c_str(), "%u,%f,%f,%f,%f,%u,%u,%f", &mapId, &kx, &ky, &dx, &dy, &entry, &level, &radius) != 8)
+            continue;
+        if (bot->GetLevel() > level)
+            continue;  // outlevelled
+        loaded.push_back({mapId, kx, ky, dx, dy, entry, uint8(level), radius});
+    }
+    if (loaded.empty())
+        return;
+    std::lock_guard<std::mutex> guard(deathZonesLock);
+    auto& list = deathZones[bot->GetGUID().GetCounter()];
+    list.insert(list.end(), loaded.begin(), loaded.end());
+    LOG_INFO("playerbots", "[rpg] {} L{} DANGER remembered from its last session: {} death zone(s)", bot->GetName(),
+             bot->GetLevel(), loaded.size());
 }
 
 void NewRpgBaseAction::RememberDanger(Player* bot, float x, float y, float radius, uint32 entry, uint8 level)

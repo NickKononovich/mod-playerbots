@@ -62,6 +62,8 @@ public:
     // [guild14] TripDanger once per bot, destination and bot level (the route is searched once; a danger zone is
     // looked up every time); a refusal is logged once: [solo] <bot> TRIP_REFUSED <what>
     static bool TripRefused(Player* bot, float x, float y, float z, std::string const& what);
+    // [guild15] at login: its death zones of the last session ("dz" in playerbots_db_store)
+    static void LoadDeathZones(Player* bot, std::string const& value);
     // [guild12] a quest the bot failed (timed, escort) is not taken again
     static bool HasFailedQuest(Player* bot, uint32 questId);
     // [guild12] builds the shared quest spawn / starter indexes (world DB reads) once at server startup, never on a

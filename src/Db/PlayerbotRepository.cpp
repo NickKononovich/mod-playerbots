@@ -7,7 +7,9 @@
 #include "PlayerbotRepository.h"
 #include "PlayerbotsDatabase.h"
 #include "AiObjectContext.h"
+#include "StringFormat.h"
 #include "SoloSafety.h"  // [guild15]
+#include "NewRpgBaseAction.h"  // [guild15]
 
 void PlayerbotRepository::Load(PlayerbotAI* botAI)
 {
@@ -42,6 +44,8 @@ void PlayerbotRepository::Load(PlayerbotAI* botAI)
                 botAI->ChangeStrategy(value, BOT_STATE_DEAD);
             else if (key == "solo")  // [guild15] its measured solo damage
                 SoloSafety::LoadMeasured(botAI->GetBot(), value);
+            else if (key == "dz")  // [guild15] its death zones
+                NewRpgBaseAction::LoadDeathZones(botAI->GetBot(), value);
         } while (result->NextRow());
 
         botAI->GetAiObjectContext()->GetUntypedValue("outfit list");
@@ -56,10 +60,10 @@ void PlayerbotRepository::Save(PlayerbotAI* botAI)
 
     PlayerbotsDatabaseTransaction trans = PlayerbotsDatabase.BeginTransaction();
 
-    PlayerbotsDatabasePreparedStatement* deleteStatement =
-        PlayerbotsDatabase.GetPreparedStatement(PLAYERBOTS_DEL_DB_STORE);
-    deleteStatement->SetData(0, guid);
-    trans->Append(deleteStatement);
+    // [guild15] only the keys this save writes: the solo judge's measured damage ("solo") and death zones ("dz")
+    // are kept by their own writers
+    trans->Append(Acore::StringFormat(
+        "DELETE FROM playerbots_db_store WHERE guid = {} AND `key` IN ('value', 'co', 'nc', 'dead')", guid));
 
     std::vector<std::string> data = botAI->GetAiObjectContext()->Save();
     for (std::vector<std::string>::iterator i = data.begin(); i != data.end(); ++i)
