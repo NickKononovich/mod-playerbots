@@ -2325,6 +2325,10 @@ namespace SoloSafety
                                        engage.targetName, engage.mobs, engage.predicted, engage.healthPct,
                                        engage.manaPct);
         }
+        // [deaths14] a co-op / help party's pulls are the party judge's (NewRpgCoop::JudgePull), not noted here: b354
+        // Gilduck L11 led a help party into five Frostmane trolls and its line said "no judged pull (attacked)"
+        else if (NewRpgCoop::InParty(bot->GetGUID().GetCounter()))
+            out += "; [deaths14] a party fight (the co-op / help party judge's pull)";
         else
             out += "; no judged pull (attacked)";
         // [deaths] how its last route search saw the mobs that hit it: refused (a walk round them was searched),
