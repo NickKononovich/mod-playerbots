@@ -192,8 +192,12 @@ protected:
     // mechanic), its cooldown waited out where it stands (logged with the ETA); false when it cannot (no stone, the
     // bind point here)
     bool HearthOut(std::string const& why);
+    // [vendor12] the cheapest usable stack of its ammo bought straight from the vendor's list
+    void BuyAmmoDirect(Creature* vendor, uint32 subClass, uint32 have);
     // [stuck12] the guild's WALK / GRIND step goes to a spot whose walk the bot gave up at this level
     bool GuildStepGivenUp(GuildRunStep const& step);
+    // [town12] a party member at one of its own town stops runs the task there (the leader's route takes them)
+    bool TownTaskHere();
     // [regress10] an innkeeper within reach whose inn is not its bind point: it binds there (the innkeeper's own
     // "make this inn your home"), so the Hearthstone takes it back to the town it quests from
     bool BindAtInnHere();

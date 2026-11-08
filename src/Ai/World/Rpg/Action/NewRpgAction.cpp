@@ -237,6 +237,51 @@ namespace
     constexpr uint32 VENDOR_LOW_AMMO = 100;
 }
 
+void NewRpgBaseAction::BuyAmmoDirect(Creature* vendor, uint32 subClass, uint32 have)
+{
+    VendorItemData const* items = vendor->GetVendorItems();
+    if (!items)
+        return;
+    int32 bestSlot = -1;
+    uint32 bestPrice = 0;
+    ItemTemplate const* best = nullptr;
+    for (size_t i = 0; i < items->m_items.size(); ++i)
+    {
+        VendorItem const* item = items->m_items[i];
+        ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
+        if (!proto || proto->Class != ITEM_CLASS_PROJECTILE || proto->SubClass != subClass ||
+            proto->RequiredLevel > bot->GetLevel() || item->ExtendedCost || bot->CanUseItem(proto) != EQUIP_ERR_OK)
+            continue;
+        uint32 const price = std::max<uint32>(1, proto->BuyPrice);
+        if (!best || price < bestPrice)
+        {
+            best = proto;
+            bestPrice = price;
+            bestSlot = int32(i);
+        }
+    }
+    std::string why;
+    uint32 bought = 0;
+    if (!best)
+        why = "the vendor sells no ammo it can use";
+    else
+    {
+        uint32 const stack = std::max<uint32>(1, best->BuyCount);
+        while (have + bought < VENDOR_LOW_AMMO && bot->GetMoney() >= bestPrice)
+        {
+            if (!bot->BuyItemFromVendorSlot(vendor->GetGUID(), uint32(bestSlot), best->ItemId, uint8(1), NULL_BAG,
+                                            NULL_SLOT))
+            {
+                why = "the core refused the purchase (bags / money / stock)";
+                break;
+            }
+            bought += stack;
+        }
+    }
+    LOG_INFO("playerbots", "[vendor12] {} L{} ammo at {}: had {}, bought {} of {}{}", bot->GetName(), bot->GetLevel(),
+             vendor->GetName(), have, bought, best ? best->Name1 : std::string("-"), why.empty() ? "" : " - " + why);
+}
+
 float NewRpgBaseAction::DeathDurabilityLoss(Player* bot)
 {
     return (sWorld->getRate(RATE_DURABILITY_LOSS_ON_DEATH) +
@@ -271,6 +316,29 @@ WorldPosition NewRpgBaseAction::NearestRepairSpawn(Player* bot)
     return best ? WorldPosition(best->mapId, best->x, best->y, best->z) : WorldPosition();
 }
 
+bool NewRpgBaseAction::TownTaskHere()
+{
+    // a party member's town stop it stands at (its leader's route takes its stops): the global leader's step for it
+    // runs here (NextStep acts on a convenient town task only in its town: BUSY); any other step waits for its party
+    std::vector<std::pair<WorldPosition, std::string>> towns;
+    sGuildCoordinator.TownStops(bot, towns);
+    for (auto const& [pos, what] : towns)
+    {
+        // the town stop's reach (GO_CAMP's, NewRpgQuestRoute TOWN_STOP_REACHED)
+        if (bot->IsInCombat() || bot->GetDistance2d(pos.GetPositionX(), pos.GetPositionY()) > 10.0f)
+            continue;
+        GuildRunStep const step = sGuildCoordinator.NextStep(bot, botAI);
+        if (step.kind == GuildRunStep::BUSY)
+        {
+            LOG_INFO("playerbots", "[town12] {} L{} runs its town task {} with its party", bot->GetName(),
+                     bot->GetLevel(), what);
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
 bool NewRpgBaseAction::GuildStepGivenUp(GuildRunStep const& step)
 {
     if (step.pos == WorldPosition() || step.pos.GetMapId() != bot->GetMapId() ||
@@ -294,7 +362,7 @@ bool NewRpgBaseAction::GuildStepGivenUp(GuildRunStep const& step)
                  "given up at L{}; it quests on",
                  bot->GetName(), bot->GetLevel(), step.pos.GetPositionX(), step.pos.GetPositionY(),
                  bot->GetExactDist2d(step.pos.GetPositionX(), step.pos.GetPositionY()), step.reason, bot->GetLevel());
-        sGuildCoordinator.SetOrderStatus(bot, "walk given up (no safe walk there): quests on");
+        sGuildCoordinator.SetOrderStatus(bot, "no safe walk there (given up): quests on");
     }
     return true;
 }
@@ -744,6 +812,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         NewRpgCoop::Order const coop = NewRpgCoop::Tick(botAI, bot);
         if (coop.kind == NewRpgCoop::Order::Kind::Follow)
         {
+            if (TownTaskHere())  // [town12] the leader's route brought it to its own town stop
+                return true;
             NewRpgStatus const before = info.GetStatus();
             if (coop.farWalk ? MoveFarTo(coop.pos) : Follow(coop.leader))
                 return true;
@@ -757,7 +827,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return false;
         }
         if (coop.kind == NewRpgCoop::Order::Kind::Stay)
-            return false;
+            return TownTaskHere();  // [town12] its own town task where the party stands
     }
 
     // [guild3] full bags or low ammo: to a vendor first, as a player does (not out of a flight, rest or pvp)
@@ -848,7 +918,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                         info.ChangeToDoGather();
                         return true;
                     }
-                    sGuildCoordinator.SetOrderStatus(bot, "нет узлов для навыка в этой зоне - квестует");
+                    sGuildCoordinator.SetOrderStatus(bot, "no nodes for its skill in this zone - quests on");
                 }
             }
             // [guild10] a purposeful target only, never an aimless walk: a quest (hand in, objective, then a
@@ -1332,6 +1402,19 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                     if (bot->GetMoney() >= MIN_VENDOR_BALANCE || vendorRun)
                         botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
 
+                    // [vendor12] a run for ammo that the generic buy left at the same count (its item-usage /
+                    // weight look found no use for it: b350 Sehdrurmund L6, four runs to Adlin Pridedrift, ammo
+                    // 0 -> 0 each time): the cheapest usable stack of the ammo its ranged weapon fires, as a player
+                    // buys it, until its count passes the low-ammo line that sent it (VENDOR_LOW_AMMO), within its
+                    // money and bags
+                    if (vendorRun)
+                        if (uint32 const sub = RequiredAmmoSubClass(bot))
+                        {
+                            botAI->GetAiObjectContext()->GetValue<uint32>("item count", "ammo")->Reset();
+                            uint32 const after = AI_VALUE2(uint32, "item count", "ammo");
+                            if (after <= ammoBefore && after < VENDOR_LOW_AMMO)
+                                BuyAmmoDirect(creature, sub, after);
+                        }
                     if (vendorRun)
                     {
                         botAI->GetAiObjectContext()->GetValue<uint32>("item count", "ammo")->Reset();

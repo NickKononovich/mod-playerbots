@@ -7,6 +7,8 @@
 #include "NewRpgQuestRoute.h"
 
 #include "GuildCoordinator.h"
+#include "Group.h"  // [town12]
+#include "Playerbots.h"  // [town12] GET_PLAYERBOT_AI
 #include "Log.h"
 #include "NewRpgBaseAction.h"
 #include "ObjectMgr.h"
@@ -848,6 +850,21 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
     QuestRoute::BotRoute& r = QuestRoute::Of(bot->GetGUID().GetCounter());
     std::vector<std::pair<WorldPosition, std::string>> towns;
     sGuildCoordinator.TownStops(bot, towns);
+    // [town12] the leader of a group walks its members' town stops too (econ b350: the mail pickups and smelts of
+    // group followers - Lanbuzz, Manue - never ran: a member's own route is not run while it follows); the member runs
+    // its task there itself (NewRpgStatusUpdateAction, TownTaskHere)
+    if (Group* group = bot->GetGroup(); group && group->GetLeaderGUID() == bot->GetGUID())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || member->GetMapId() != bot->GetMapId() || !GET_PLAYERBOT_AI(member))
+                continue;
+            std::vector<std::pair<WorldPosition, std::string>> theirs;
+            sGuildCoordinator.TownStops(member, theirs);
+            for (auto& [pos, what] : theirs)
+                if (!TownListed(towns, pos.GetPositionX(), pos.GetPositionY()))
+                    towns.emplace_back(pos, what + " (for " + member->GetName() + ")");
+        }
     // [stuck12] a town stop whose walk the bot gave up at this level (MOVE_FAR_LOOP, the maze search: every way there
     // passes mobs it does not pull) is no stop of its route: TrimRoute drops it as a task gone. Before, the stop stayed
     // first in the route and IDLE walked to it again on every look (b350 Baridrol L10: BUY at Ratchet 3567 yd off
