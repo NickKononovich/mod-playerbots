@@ -6276,6 +6276,10 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         float travel, local, xp, rate;
         WorldPosition pos;
         int32 questLevel;
+        // [zone13] the quest's walk on the giver's map: the objective (its POI centre, else the giver) and the ender
+        // (its nearest spawn to the objective, else the giver); the yards giver -> objective -> ender
+        float ox = 0.0f, oy = 0.0f, ex = 0.0f, ey = 0.0f;
+        float walkYd = 0.0f;
     };
     std::vector<StartCandidate> starts;
     FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
@@ -6334,6 +6338,8 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
             continue;
 
         float objectiveDistance = QUEST_UNKNOWN_DISTANCE;
+        float objX = start.x, objY = start.y;  // [zone13]
+        bool objKnown = false;
         if (QuestPOIVector const* pois = sObjectMgr->GetQuestPOIVector(start.questId))
         {
             for (QuestPOI const& poi : *pois)
@@ -6351,12 +6357,35 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
                 cx /= poi.points.size();
                 cy /= poi.points.size();
                 objectiveDistance = std::sqrt((cx - start.x) * (cx - start.x) + (cy - start.y) * (cy - start.y));
+                objX = cx;
+                objY = cy;
+                objKnown = true;
                 break;
             }
         }
 
-        // walk to the giver, out to the objective and back to hand it in, plus the work itself
-        float const local = 2.0f * objectiveDistance / QUEST_TRAVEL_SPEED + QUEST_OBJECTIVE_TIME;
+        // [zone13] the quest's own walk: giver -> objective -> its ender (the nearest ender spawn on the map to the
+        // objective; none known: back to the giver), plus the work itself. Before, giver -> objective and back only
+        float enderX = start.x, enderY = start.y;
+        {
+            QuestSpawnIndex const& spawnIndex = GetQuestSpawnIndex();
+            auto const enders = spawnIndex.enders.find(start.questId);
+            float bestEnder = std::numeric_limits<float>::max();
+            if (enders != spawnIndex.enders.end())
+                for (QuestSpot const& e : enders->second)
+                    if (e.mapId == start.mapId)
+                        if (float const d = std::hypot(e.x - objX, e.y - objY); d < bestEnder)
+                        {
+                            bestEnder = d;
+                            enderX = e.x;
+                            enderY = e.y;
+                        }
+        }
+        float const toEnder =
+            objKnown ? std::hypot(enderX - objX, enderY - objY) : objectiveDistance;  // no POI: as far back
+        float const walkYd = objectiveDistance + toEnder;
+        float const local = walkYd / QUEST_TRAVEL_SPEED + QUEST_OBJECTIVE_TIME;
+        // the core's quest XP at the bot's level (Quest::XPValue: a quest below its level gives less, gray none)
         float const xp = GetQuestWeight(quest, rested) * quest->XPValue(level);
         // the zone the quest belongs to (QuestSortID > 0); a class / profession / holiday quest (sort <= 0) counts
         // to the bot's own zone on its landmass, else to its giver's landmass (no terrain lookup of far grids)
@@ -6369,13 +6398,15 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         // one entry per quest (a quest with several givers: the cheapest)
         auto const same = std::find_if(starts.begin(), starts.end(),
                                        [&](StartCandidate const& c) { return c.questId == start.questId; });
+        StartCandidate const candidate{start.questId, zone,  travelSeconds, local, xp,   rate,
+                                       giver,         questLevel, objX, objY, enderX, enderY, walkYd};
         if (same != starts.end())
         {
             if (rate > same->rate)
-                *same = {start.questId, zone, travelSeconds, local, xp, rate, giver, questLevel};
+                *same = candidate;
             continue;
         }
-        starts.push_back({start.questId, zone, travelSeconds, local, xp, rate, giver, questLevel});
+        starts.push_back(candidate);
     }
 
     struct ZoneValue
@@ -6389,6 +6420,7 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         float Rate() const { return xp / (travel + local); }
     };
     std::map<uint32, ZoneValue> zones;
+    std::map<uint32, std::vector<StartCandidate const*>> byZone;  // [zone13]
     for (StartCandidate const& c : starts)
     {
         ZoneValue& z = zones[c.zone];
@@ -6398,6 +6430,41 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         ++z.quests;
         z.minLevel = std::min(z.minLevel, c.questLevel);
         z.maxLevel = std::max(z.maxLevel, c.questLevel);
+        byZone[c.zone].push_back(&c);
+    }
+    // [zone13] the zone's local time is its real route: from the nearest giver, each quest's giver -> objective ->
+    // ender, then on to the next quest's giver nearest to that ender (the nearest-neighbour tour over its quests, as
+    // the route planner walks them). Before, the sum of each quest's giver -> objective -> giver alone: the walk
+    // between the zone's quests was not counted (b353 Ellosera L13 on Azuremyst routes of ~9 km for green quests)
+    for (auto& [zone, z] : zones)
+    {
+        std::vector<StartCandidate const*> left = byZone[zone];
+        float tourYd = 0.0f;
+        StartCandidate const* at = nullptr;
+        for (StartCandidate const* c : left)
+            if (!at || c->travel < at->travel)
+                at = c;
+        while (at)
+        {
+            left.erase(std::find(left.begin(), left.end(), at));
+            tourYd += at->walkYd;
+            StartCandidate const* next = nullptr;
+            float bestGap = std::numeric_limits<float>::max();
+            for (StartCandidate const* c : left)
+                if (c->pos.GetMapId() == at->pos.GetMapId())
+                    if (float const gap = std::hypot(c->pos.GetPositionX() - at->ex, c->pos.GetPositionY() - at->ey);
+                        gap < bestGap)
+                    {
+                        bestGap = gap;
+                        next = c;
+                    }
+            if (next)
+                tourYd += bestGap;
+            else if (!left.empty())
+                next = left.front();  // another map of the zone key: its walk is in its travel already
+            at = next;
+        }
+        z.local = tourYd / QUEST_TRAVEL_SPEED + float(z.quests) * QUEST_OBJECTIVE_TIME;
     }
     uint32 bestZone = 0;
     float bestZoneRate = 0.0f;
@@ -6409,6 +6476,39 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         }
     if (!bestZone)
         return 0;
+    // [zone13] one line per change of the best zone: the top 3 zones by rate
+    {
+        bool fresh = false;
+        {
+            static std::mutex zone13Lock;
+            static std::unordered_map<uint32, uint32> zone13Last;
+            std::lock_guard<std::mutex> guard(zone13Lock);
+            uint32& last = zone13Last[counter];
+            fresh = last != bestZone;
+            last = bestZone;
+        }
+        if (fresh)
+        {
+            std::vector<std::pair<float, uint32>> ranked;
+            for (auto const& [zone, value] : zones)
+                ranked.emplace_back(value.Rate(), zone);
+            std::sort(ranked.begin(), ranked.end(), std::greater<>());
+            std::string top;
+            for (size_t i = 0; i < ranked.size() && i < 3; ++i)
+            {
+                ZoneValue const& v = zones[ranked[i].second];
+                AreaTableEntry const* area =
+                    ranked[i].second < LANDMASS_ZONE_KEY ? sAreaTableStore.LookupEntry(ranked[i].second) : nullptr;
+                top += Acore::StringFormat("{}{} {} xp/h ({} quests L{}-{}, {:.0f} xp, travel {:.0f} s, route {:.0f} s)",
+                                           top.empty() ? "" : "; ",
+                                           area ? std::string(area->area_name[0])
+                                                : "key " + std::to_string(ranked[i].second),
+                                           uint32(v.Rate() * 3600.0f), v.quests, v.minLevel, v.maxLevel, v.xp,
+                                           v.travel, v.local);
+            }
+            LOG_INFO("playerbots", "[zone13] {} L{} best zones: {}", bot->GetName(), level, top);
+        }
+    }
 
     StartCandidate const* best = nullptr;
     for (StartCandidate const& c : starts)
