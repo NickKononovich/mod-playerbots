@@ -1171,7 +1171,7 @@ namespace SoloSafety
             bool const comes = targetMob->IsHostileTo(bot) && targetMob->HasReactState(REACT_AGGRESSIVE);
             G3D::Vector3 const home(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
             // a target beyond sight: the spot is a forecast (the judge of a camp ahead); its walk is searched near it
-            bool const far = gap > sPlayerbotAIConfig.SightDistance;
+            bool const farTarget = gap > sPlayerbotAIConfig.SightDistance;
             G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
             if (!target->IsInCombat() && (pullReach > 0.0f || comes))
             {
@@ -1180,7 +1180,7 @@ namespace SoloSafety
                     std::lock_guard<std::mutex> guard(lock);
                     SoloBotState const& state = states[bot->GetGUID().GetCounter()];
                     // the search holds while the bot stands where it searched, or walks on to the spot it found
-                    if (state.searchTarget == target->GetGUID() && (state.searchRouted || far) &&
+                    if (state.searchTarget == target->GetGUID() && (state.searchRouted || farTarget) &&
                         ((state.searchFrom - from).length() <= bot->GetCombatReach() ||
                          (state.searchFound &&
                           (state.searchSpot - from).length() <= (state.searchSpot - state.searchFrom).length())))
@@ -1325,7 +1325,7 @@ namespace SoloSafety
                                                             home.z + height, bot->GetPhaseMask(),
                                                             LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
                             continue;
-                        if (c.walk <= bot->GetCombatReach() || far)
+                        if (c.walk <= bot->GetCombatReach() || farTarget)
                         {
                             verdict.pullSpot = true;
                             verdict.pull = c.at;
@@ -1360,7 +1360,7 @@ namespace SoloSafety
                     state.searchTarget = target->GetGUID();
                     state.searchFrom = from;
                     state.searchFound = verdict.pullSpot;
-                    state.searchRouted = !far;
+                    state.searchRouted = !farTarget;
                     state.searchSpot = verdict.pull;
                     state.searchAvoid = verdict.pullAvoid;
                 }

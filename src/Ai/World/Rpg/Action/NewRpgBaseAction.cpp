@@ -5373,7 +5373,7 @@ namespace
     {
         bool corridor{false};  // the navmesh gave one (else the straight line)
         float walkYd{0.0f};
-        std::vector<LegNear> near;
+        std::vector<LegNear> nearMobs;
     };
     constexpr float LEG_CACHE_GRAIN = 5.0f;    // spots this close share a corridor (the key's grid, yards)
     constexpr size_t LEG_CACHE_MAX = 200000;   // memory bound of the cache (entries), cleared past it
@@ -5462,9 +5462,9 @@ namespace
                 }
             }
         }
-        leg->near.reserve(gaps.size());
+        leg->nearMobs.reserve(gaps.size());
         for (auto const& [spawn, gap] : gaps)
-            leg->near.push_back({spawn, gap});
+            leg->nearMobs.push_back({spawn, gap});
         return leg;
     }
 }
@@ -5507,10 +5507,10 @@ bool NewRpgBaseAction::MeasureLeg(Player* bot, QuestRoute::Point const& from, Qu
         return leg->corridor;
     uint8 const level = bot->GetLevel();
     float const speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
-    for (LegNear const& near : leg->near)
+    for (LegNear const& close : leg->nearMobs)
     {
-        CreatureTemplate const* tmpl = near.spawn->tmpl;
-        if (!SpawnPresent(*near.spawn) || (tmpl->flags_extra & CREATURE_FLAG_EXTRA_CIVILIAN))
+        CreatureTemplate const* tmpl = close.spawn->tmpl;
+        if (!SpawnPresent(*close.spawn) || (tmpl->flags_extra & CREATURE_FLAG_EXTRA_CIVILIAN))
             continue;
         FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(tmpl->faction);
         if (!faction || !faction->IsHostileTo(*botFaction))
@@ -5518,13 +5518,13 @@ bool NewRpgBaseAction::MeasureLeg(Player* bot, QuestRoute::Point const& from, Qu
         uint8 const mobLevel = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
         float const aggro = std::clamp(tmpl->detection_range + float(int32(mobLevel) - int32(level)), 5.0f,
                                        MAX_AGGRO_RADIUS);
-        if (near.gap >= aggro)
+        if (close.gap >= aggro)
             continue;
-        float const half = std::sqrt(aggro * aggro - near.gap * near.gap);
+        float const half = std::sqrt(aggro * aggro - close.gap * close.gap);
         float const roundSec = (aggro * 2.0f * std::asin(std::min(1.0f, half / aggro)) - 2.0f * half) / speed;
         bool const never = tmpl->rank != CREATURE_ELITE_NORMAL ||
                            Acore::XP::GetColorCode(level, mobLevel) <= XP_ORANGE ||
-                           InDangerZone(bot, near.spawn->x, near.spawn->y);
+                           InDangerZone(bot, close.spawn->x, close.spawn->y);
         float seconds = roundSec;
         if (!never && dps > 0.0f)
             if (CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(mobLevel, tmpl->unit_class))
