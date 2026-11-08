@@ -578,6 +578,15 @@ void GuildCoordinator::UpdateTransfers()
                     lack[{row.low, item}] = {n - have, "прокачка навыка " + std::to_string(value) + ": " +
                                                            ItemText(r.product, 1)};
         }
+        // [smelt] a miner's next smelt that still gives it skill: the ore goes to it (it smelts and levels Mining)
+        std::vector<std::pair<uint32, uint32>> ores;
+        uint32 bar = 0;
+        if (NextSmelt(c, &ores, &bar))
+            for (auto const& [ore, n] : ores)
+                if (uint32 const have = c->GetItemCount(ore, false); have < n)
+                    lack[{row.low, ore}] = {n - have, "плавка (горное дело " +
+                                                          std::to_string(c->GetPureSkillValue(SKILL_MINING)) +
+                                                          "): " + ItemText(bar, 1)};
     }
     for (CraftJob const& job : crafts_)
     {

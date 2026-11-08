@@ -118,6 +118,10 @@ namespace GuildGear
         std::string locked;  // plan mode: what the member still lacks to wear it (level, reputation), "" = nothing
     };
 
+    // [ui11] the gain as text: "пустой слот" for an empty slot (no % of nothing), the weights for a slot whose worn
+    // piece weighs next to nothing (BotControl showed +563800 % - an L74 piece over a grey one), else "+N%"
+    std::string GainText(float gain, float score, float current);
+
     // Whether the item is an upgrade for the member in its weakest slot of the group: the core's CanUseItem, the
     // module's class armor / weapon rules, the StatsWeightCalculator score against the worn item scaled by
     // EquipUpgradeThreshold (as ItemUsageValue), equal scores broken as [guild12] (armor, item level, quality).

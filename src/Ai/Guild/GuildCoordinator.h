@@ -241,6 +241,10 @@ public:
     // the human controls (HumanControls) or one with a real client session (a SelfBot the human plays with); it only
     // suggests in chat and lets the human act (Suggest)
     static bool HumanCharacter(Player* p);
+    // [smelt] the smelting recipe the miner knows that still gives it Mining skill (not gray, below its rank's cap),
+    // the cheapest first; 0: none. Its reagents and product (the bar)
+    static uint32 NextSmelt(Player* p, std::vector<std::pair<uint32, uint32>>* reagents = nullptr,
+                            uint32* product = nullptr);
 
     // [guild60] fives: the global leader forms them (UpdateFives) or the command does; world thread.
     // FormFive: members incl. the leader, `dungeon` = the content key ("wc-n"); 0 with `error` when it cannot.
@@ -475,6 +479,7 @@ private:
         std::map<std::string, std::string> suggested;
         // [tasks] the bag pressure last logged (free slots class: 0 full, 1 low, 2 ok; -1 not logged yet)
         int8 bagClass{-1};
+        uint64 revalueKey{0};  // [questvalue] level | login time of the last re-valuation of its log
     };
 
     // [tasks] the global leader's profession call for one member (UpdateProfessions, lock_)
@@ -682,6 +687,8 @@ private:
     // and the ender, or to the giver for a quest it may take; the kills by the source's health at its EstimateDps,
     // the drop chance). false: no quest it can price (no static row on its map); `why`: the numbers
     bool QuestPace(BotState& st, Player* p, float& copperPerMinute, std::string* why = nullptr) const;
+    // [questvalue] its green / grey log quests valued against the route's rate; the ones not worth it abandoned
+    void RevalueQuests(BotState& st, Player* p);
     float GatherPace(uint32 skill) const;                              // units per minute of gathering, < 0: no data
     uint32 TrainerCap(uint32 skillLine, uint8 level) const;            // the highest rank's max skill by level
     void RecordPace(BotState& st, Player* p) const;                    // UpdateHealth: its copper per quest XP

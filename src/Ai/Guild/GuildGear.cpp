@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <array>
@@ -982,18 +983,38 @@ namespace GuildGear
     }
 }
 
+// [ui11] the gain as text (GuildGear.h)
+namespace GuildGear
+{
+    std::string GainText(float gain, float score, float current)
+    {
+        // a 10x jump is a slot with next to nothing in it: the weights say more than a 6-digit percentage
+        constexpr float WEIGHTS_OVER_GAIN = 10.0f;
+        char buf[64];
+        if (current <= 0.0f)
+        {
+            if (score <= 0.0f)
+                return "пустой слот";
+            snprintf(buf, sizeof(buf), "пустой слот (вес %.1f)", score);
+            return buf;
+        }
+        if (gain < 0.005f)
+            return "вес равный, больше брони / ур. предмета / цела";
+        if (gain > WEIGHTS_OVER_GAIN)
+        {
+            snprintf(buf, sizeof(buf), "вес %.1f → %.1f", current, score);
+            return buf;
+        }
+        return "+" + std::to_string(int32(gain * 100.0f + 0.5f)) + "%";
+    }
+}
+
 // [equip] the global leader's equip verdict (user 2026-11-08: one decider; b337: 61 loot equips and 1 vendor buy came
 // from the bot's own upgrade check, [alert] DOUBLE_DECISION)
 namespace GuildGear
 {
     namespace
     {
-        std::string Percent(float gain)
-        {
-            if (gain < 0.005f)
-                return "вес равный, больше брони / ур. предмета / цела";
-            return "+" + std::to_string(int32(gain * 100.0f + 0.5f)) + "%";
-        }
 
         // a generic bag or a hunter's quiver: worth a bag slot when one is free or it is bigger than the one it
         // replaces (the smallest generic bag / the worn quiver), as ItemUsageValue
@@ -1044,8 +1065,10 @@ namespace GuildGear
         std::string GearWhy(Eval const& ev, ItemTemplate const* proto)
         {
             ItemTemplate const* was = ev.worn ? sObjectMgr->GetItemTemplate(ev.worn) : nullptr;
-            return std::string(GroupName(EquipGroup(proto->InventoryType))) + " " + Percent(ev.gain) +
-                   (was ? " вместо " + was->Name1 : std::string(", слот пуст"));
+            if (!was)  // [ui11] an empty slot: no percentage of nothing
+                return std::string(GroupName(EquipGroup(proto->InventoryType))) + " в пустой слот";
+            return std::string(GroupName(EquipGroup(proto->InventoryType))) + " " +
+                   GainText(ev.gain, ev.score, ev.current) + " вместо " + was->Name1;
         }
     }
 

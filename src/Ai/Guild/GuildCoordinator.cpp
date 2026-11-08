@@ -55,6 +55,8 @@
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "QuestDef.h"
+#include "QuestPackets.h"  // [questvalue] the abandon
+#include "QuestStats.h"    // [questvalue] t= stamps
 #include "ScriptMgr.h"
 #include "SelfBotControl.h"
 #include "SellAction.h"
@@ -1592,6 +1594,12 @@ void GuildCoordinator::UpdateOrders()
         st.sell.erase(std::remove_if(st.sell.begin(), st.sell.end(), gone), st.sell.end());
         st.disenchant.erase(std::remove_if(st.disenchant.begin(), st.disenchant.end(), gone), st.disenchant.end());
 
+        // [questvalue] a level-up or a login: the green / grey quests of its log are valued again
+        if (uint64 const key = uint64(p->GetLevel()) | (uint64(p->m_logintime) << 8); key != st.revalueKey)
+        {
+            st.revalueKey = key;
+            RevalueQuests(st, p);
+        }
         std::vector<GuildOrder> orders;
         FiveOrder(st, row.low, p, orders);  // [guild60] a five's dungeon comes first
         // [regress10] REPAIR: the leader tracks every member's durability (b345 Ginde L5 fought on with both
@@ -1910,7 +1918,8 @@ void GuildCoordinator::UpdateOrders()
                 {
                     if (it->forLow || it->purpose == "pending" || TransferHolds(it->itemGuidLow) ||
                         std::any_of(wanted_.begin(), wanted_.end(), [&](WantedItem const& w)
-                                    { return w.itemId == it->itemId && !w.optional; }) || PlannedFor(it->itemId))
+                                    { return w.itemId == it->itemId && !w.optional && w.Short() > 0; }) ||
+                        PlannedFor(it->itemId))
                     {
                         ++it;
                         continue;
@@ -2360,6 +2369,156 @@ void GuildCoordinator::LoadQuestValue()
 //                    complete: to the ender; one it may take: to the giver + giver -> tour -> ender (ideal_yd)
 // Its log quests together (the work it is on: their value over their time); an empty or unpriced log: the best quest
 // it may take now on its map.
+// [questvalue] user 2026-11-08: a quest in the log that turned green or grey for the bot's level is valued again
+// (on a level-up and on login): its value by the questing formula (quest XP x the realm's rate at its level at the
+// bot's copper per XP + money + the reward items' price) over the time it still takes (the walk to its area, the
+// tour share left, the kills, the walk to its ender) against the route's own rate (the yellow / orange quests of its
+// log, else the best quest it may take). Kept when worth it, or when a reward is an upgrade in some member's gear
+// plan, or when it leads to a follow-up that is not grey; else abandoned (the core's CMSG_QUESTLOG_REMOVE_QUEST)
+void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
+{
+    PlayerbotAI* ai = GET_PLAYERBOT_AI(p);
+    if (!ai || HumanCharacter(p) || questStatic_.empty() || NewRpgCoop::InParty(p->GetGUID().GetCounter()))
+        return;
+    uint8 const level = p->GetLevel();
+    float const rate = sWorld->getRate(RATE_XP_QUEST);
+    float const speed = std::max(p->GetSpeed(MOVE_RUN), 1.0f);
+    float const dps = DpsEstimate::EstimateDps(p, nullptr, DpsEstimate::BuffContext::Solo);
+    float const x = p->GetPositionX(), y = p->GetPositionY();
+    struct Row
+    {
+        uint16 slot;
+        Quest const* quest;
+        XPColorChar color;
+        double copper;
+        double seconds;
+        bool priced;
+    };
+    std::vector<Row> rows;
+    double routeCopper = 0.0, routeSeconds = 0.0;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const questId = p->GetQuestSlotQuestId(slot);
+        Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+        if (!quest)
+            continue;
+        QuestStatus const status = p->GetQuestStatus(questId);
+        XPColorChar const color = Acore::XP::GetColorCode(level, uint8(std::max<int32>(1, p->GetQuestLevel(quest))));
+        double const xp = double(quest->XPValue(level)) * rate;
+        double perXp = st.copperPerXp;
+        if (perXp <= 0.0 && xp > 0.0)
+            perXp = double(quest->GetRewMoneyMaxLevel()) / xp;
+        double copper = xp * perXp + double(std::max<int32>(0, quest->GetRewOrReqMoney(level)));
+        for (uint8 i = 0; i < QUEST_REWARDS_COUNT; ++i)
+            if (ItemTemplate const* proto =
+                    quest->RewardItemId[i] ? sObjectMgr->GetItemTemplate(quest->RewardItemId[i]) : nullptr)
+                copper += double(proto->SellPrice) * quest->RewardItemIdCount[i];
+        double choice = 0.0;
+        for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT; ++i)
+            if (ItemTemplate const* proto =
+                    quest->RewardChoiceItemId[i] ? sObjectMgr->GetItemTemplate(quest->RewardChoiceItemId[i]) : nullptr)
+                choice = std::max(choice, double(proto->SellPrice) * quest->RewardChoiceItemCount[i]);
+        copper += choice;
+        // the time it still takes, by the static table (no row: not priced, kept)
+        bool priced = false;
+        double seconds = 0.0;
+        auto const q = questStatic_.find(questId);
+        if (q != questStatic_.end() && q->second.map == p->GetMapId() && q->second.ender)
+        {
+            QuestStatic const& s = q->second;
+            if (status == QUEST_STATUS_COMPLETE)
+            {
+                seconds = std::hypot(x - s.enderX, y - s.enderY) / speed;
+                priced = true;
+            }
+            else if (status == QUEST_STATUS_INCOMPLETE && dps > 0.0f)
+            {
+                auto const data = p->getQuestStatusMap().find(questId);
+                QuestStatusData const* st2 = data == p->getQuestStatusMap().end() ? nullptr : &data->second;
+                uint32 left = 0, total = 0;
+                double kills = 0.0;
+                for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+                    if (uint32 const need = quest->RequiredNpcOrGoCount[i]; need && quest->RequiredNpcOrGo[i])
+                    {
+                        uint32 const done = st2 ? std::min<uint32>(st2->CreatureOrGOCount[i], need) : 0;
+                        total += need;
+                        left += need - done;
+                        kills += double(need - done) * s.npcHp[i] / dps;
+                    }
+                for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                    if (uint32 const need = quest->RequiredItemCount[i]; need && quest->RequiredItemId[i])
+                    {
+                        uint32 const done = st2 ? std::min<uint32>(st2->ItemCount[i], need) : 0;
+                        total += need;
+                        left += need - done;
+                        kills += double(need - done) * s.itemHp[i] / dps;
+                    }
+                double const part = total ? double(left) / double(total) : 1.0;
+                double const walk = std::hypot(x - s.areaX, y - s.areaY) + s.tourYd * part +
+                                    std::hypot(s.areaX - s.enderX, s.areaY - s.enderY);
+                seconds = walk / speed + kills;
+                priced = true;
+            }
+        }
+        rows.push_back({slot, quest, color, copper, seconds, priced});
+        if (priced && color != XP_GRAY && color != XP_GREEN)
+        {
+            routeCopper += copper;
+            routeSeconds += seconds;
+        }
+    }
+    float routeRate = 0.0f;  // copper per minute
+    std::string routeWhy;
+    if (routeSeconds > 0.0)
+    {
+        routeRate = float(routeCopper * MINUTE / routeSeconds);
+        routeWhy = "yellow / orange quests of its log";
+    }
+    else if (QuestPace(st, p, routeRate, &routeWhy))
+        routeWhy = "the best quest it may take (" + routeWhy + ")";
+    else
+        return;  // nothing to compare with: the log stays as it is
+    for (Row const& r : rows)
+    {
+        if ((r.color != XP_GRAY && r.color != XP_GREEN) || !r.priced)
+            continue;
+        uint32 const questId = r.quest->GetQuestId();
+        float const value = float(r.copper * MINUTE / std::max(r.seconds, 1.0));
+        std::string keep;
+        for (uint8 i = 0; i < QUEST_REWARDS_COUNT + QUEST_REWARD_CHOICES_COUNT && keep.empty(); ++i)
+        {
+            uint32 const item = i < QUEST_REWARDS_COUNT ? r.quest->RewardItemId[i]
+                                                        : r.quest->RewardChoiceItemId[i - QUEST_REWARDS_COUNT];
+            if (uint32 const forLow = item ? PlannedFor(item) : 0)
+                keep = "reward " + ItemName(item) + " is an upgrade in " + Who(forLow) + "'s gear plan";
+        }
+        for (uint32 next : {r.quest->GetNextQuestInChain(), r.quest->GetNextQuestId()})
+            if (Quest const* follow = keep.empty() && next ? sObjectMgr->GetQuestTemplate(next) : nullptr)
+                if (Acore::XP::GetColorCode(level, uint8(std::max<int32>(1, p->GetQuestLevel(follow)))) != XP_GRAY)
+                    keep = "it leads to q" + std::to_string(next) + " (not grey)";
+        if (keep.empty() && value >= routeRate)
+            keep = Acore::StringFormat("value {:.0f} >= route rate {:.0f}", value, routeRate);
+        char const* colorName = r.color == XP_GRAY ? "grey" : "green";
+        if (!keep.empty())
+        {
+            LOG_INFO("playerbots", "[quest] keep {} L{} q{} t={} at=({:.0f},{:.0f}) reason: {}, {}", p->GetName(),
+                     level, questId, QuestStats::NowMs(), x, y, colorName, keep);
+            continue;
+        }
+        LOG_INFO("playerbots",
+                 "[quest] abandon {} L{} q{} t={} at=({:.0f},{:.0f}) reason: {}, value {:.0f} < route rate {:.0f} "
+                 "(copper per minute; route: {})",
+                 p->GetName(), level, questId, QuestStats::NowMs(), x, y, colorName, value, routeRate, routeWhy);
+        if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data); doing && doing->questId == questId)
+            ai->rpgInfo.ChangeToIdle();
+        WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
+        packet << uint8(r.slot);
+        WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
+        removeQuest.Read();
+        p->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
+    }
+}
+
 bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute, std::string* why) const
 {
     if (!p || questStatic_.empty())
@@ -3017,6 +3176,32 @@ void GuildCoordinator::UpdateProfessions()
                 std::string const head = Who(row->low) + ": " + name + " " + std::to_string(skill) + "/" +
                                          std::to_string(maxSkill) + " (ранг тренера на L" + std::to_string(level) +
                                          ": " + std::to_string(cap) + ")";
+                // [smelt] user 2026-11-08: received / mined ore gets used - a miner holding the ore of a smelt that
+                // still gives it Mining skill smelts it (NewRpgCraft's forge walk), the global leader's CRAFT call
+                if (line == SKILL_MINING && has)
+                {
+                    std::vector<std::pair<uint32, uint32>> ores;
+                    uint32 bar = 0;
+                    if (uint32 const smelt = NextSmelt(p, &ores, &bar))
+                    {
+                        bool enough = !ores.empty();
+                        for (auto const& [ore, n] : ores)
+                            enough = enough && p->GetItemCount(ore, false) >= n;
+                        if (enough)
+                        {
+                            ProfessionPick pick;
+                            pick.kind = GuildProfessionKind::CRAFT;
+                            pick.skillLine = SKILL_MINING;
+                            pick.itemId = bar;
+                            pick.details = "плавка: " + ItemName(ores.front().first) + " → " + ItemName(bar) +
+                                           " (горное дело " + std::to_string(skill) + "/" + std::to_string(maxSkill) +
+                                           ")";
+                            pick.reason = "руда в сумке; плавка (спелл " + std::to_string(smelt) +
+                                          ") даёт навык горного дела, слитки — кузнецам / инженерам";
+                            picks.push_back(pick);
+                        }
+                    }
+                }
                 std::string key;
                 std::string decision;
                 auto const call = [&](std::string details, std::string reason)
@@ -3263,6 +3448,45 @@ bool GuildCoordinator::HumanCharacter(Player* p)
 {
     // a bot's session has no socket (WorldSession: address "headless"); a SelfBot the human plays with keeps his
     return p && (HumanControls(p) || (p->GetSession() && p->GetSession()->GetRemoteAddress() != "headless"));
+}
+
+uint32 GuildCoordinator::NextSmelt(Player* p, std::vector<std::pair<uint32, uint32>>* reagents, uint32* product)
+{
+    if (!p || !p->HasSkill(SKILL_MINING))
+        return 0;
+    uint32 const skill = p->GetPureSkillValue(SKILL_MINING);
+    if (skill >= p->GetPureMaxSkillValue(SKILL_MINING))
+        return 0;
+    uint32 best = 0, bestGray = 0;
+    for (uint32 i = 0; i < sSkillLineAbilityStore.GetNumRows(); ++i)
+    {
+        SkillLineAbilityEntry const* a = sSkillLineAbilityStore.LookupEntry(i);
+        if (!a || a->SkillLine != SKILL_MINING || skill >= a->TrivialSkillLineRankHigh || !p->HasSpell(a->Spell))
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(a->Spell);
+        if (!info || info->Reagent[0] <= 0)
+            continue;
+        if (!best || a->TrivialSkillLineRankHigh < bestGray)
+        {
+            best = a->Spell;
+            bestGray = a->TrivialSkillLineRankHigh;
+        }
+    }
+    if (SpellInfo const* info = best ? sSpellMgr->GetSpellInfo(best) : nullptr)
+    {
+        if (reagents)
+        {
+            reagents->clear();
+            for (uint8 r = 0; r < MAX_SPELL_REAGENTS; ++r)
+                if (info->Reagent[r] > 0 && info->ReagentCount[r] > 0)
+                    reagents->emplace_back(uint32(info->Reagent[r]), info->ReagentCount[r]);
+        }
+        if (product)
+            for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+                if (info->Effects[e].Effect == SPELL_EFFECT_CREATE_ITEM && info->Effects[e].ItemType)
+                    *product = info->Effects[e].ItemType;
+    }
+    return best;
 }
 
 void GuildCoordinator::Suggest(uint32 low, std::string const& key, std::string const& text)
