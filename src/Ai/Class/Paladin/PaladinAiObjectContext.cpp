@@ -176,6 +176,7 @@ public:
         creators["paladin tank judges wisdom"] = &PaladinTriggerFactoryInternal::paladin_tank_judges_wisdom;
         creators["tank hammer of wrath"] = &PaladinTriggerFactoryInternal::tank_hammer_of_wrath;  // [lead87]
         creators["tank divine plea"] = &PaladinTriggerFactoryInternal::tank_divine_plea;
+        creators["boss judgement duty"] = &PaladinTriggerFactoryInternal::boss_judgement_duty;  // [kzk1]
         creators["infusion of light"] = &PaladinTriggerFactoryInternal::infusion_of_light;
         creators["holy light boss tank"] = &PaladinTriggerFactoryInternal::holy_light_boss_tank;
         creators["holy avenging wrath"] = &PaladinTriggerFactoryInternal::holy_avenging_wrath;
@@ -293,6 +294,7 @@ private:
     static Trigger* paladin_tank_judges_wisdom(PlayerbotAI* botAI) { return new PaladinTankJudgesWisdomTrigger(botAI); }
     static Trigger* tank_hammer_of_wrath(PlayerbotAI* botAI) { return new TankHammerOfWrathTrigger(botAI); }
     static Trigger* tank_divine_plea(PlayerbotAI* botAI) { return new TankDivinePleaTrigger(botAI); }
+    static Trigger* boss_judgement_duty(PlayerbotAI* botAI) { return new BossJudgementDutyTrigger(botAI); }
     static Trigger* infusion_of_light(PlayerbotAI* botAI) { return new InfusionOfLightTrigger(botAI); }
     static Trigger* holy_light_boss_tank(PlayerbotAI* botAI) { return new HolyLightBossTankTrigger(botAI); }
     static Trigger* holy_avenging_wrath(PlayerbotAI* botAI) { return new HolyAvengingWrathTrigger(botAI); }
@@ -383,6 +385,7 @@ public:
             &PaladinAiObjectContextInternal::hammer_of_the_righteous_on_group_member_attacker;
         creators["shield of righteousness on group member attacker"] =
             &PaladinAiObjectContextInternal::shield_of_righteousness_on_group_member_attacker;
+        creators["boss judgement duty"] = &PaladinAiObjectContextInternal::boss_judgement_duty;  // [kzk1]
         creators["judgement of wisdom on group member attacker"] =
             &PaladinAiObjectContextInternal::judgement_of_wisdom_on_group_member_attacker;
         creators["consecration on group member attackers"] =
@@ -455,6 +458,7 @@ private:
     static Action* judgement(PlayerbotAI* botAI) { return new CastJudgementAction(botAI); }
     static Action* judgement_of_light(PlayerbotAI* botAI) { return new CastJudgementOfLightAction(botAI); }
     static Action* judgement_of_wisdom(PlayerbotAI* botAI) { return new CastJudgementOfWisdomAction(botAI); }
+    static Action* boss_judgement_duty(PlayerbotAI* botAI) { return new BossJudgementDutyAction(botAI); }
     static Action* divine_shield(PlayerbotAI* botAI) { return new CastDivineShieldAction(botAI); }
     static Action* divine_protection(PlayerbotAI* botAI) { return new CastDivineProtectionAction(botAI); }
     static Action* divine_protection_on_party(PlayerbotAI* botAI)

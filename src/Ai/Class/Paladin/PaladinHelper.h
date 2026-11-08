@@ -38,6 +38,13 @@ inline bool KeepsDivinePleaUpByHits(Player* bot)
 // melee hit refreshes it there: b257 5E every pre-pull cast ran out before the first swing on the boss)
 bool TankPleaNow(Player* bot);
 
+// [kzk1] the judgement debuff this paladin keeps on the boss of its fight (dungeon, raid or world boss): one paladin of
+// the group keeps Judgement of Wisdom on him (the raid's mana), a second one Judgement of Light. Computed from the
+// group each call: the paladins alive in the boss's fight within Judgement's range of him, ranked damage dealer, then
+// healer, then tank (a tank judges its adds for threat), then the lower guid. "judgement of wisdom" / "judgement of
+// light", nullptr: none (no boss, not ranked); boss is set to him. Logs "[judge] ..." on an owner change
+char const* BossJudgementDuty(Player* bot, Unit*& boss);
+
 inline bool HasHandFromCaster(Unit* target, Unit* caster, std::initializer_list<uint32> spellIds)
 {
     if (!target || !caster)

@@ -24,6 +24,10 @@ void GenericPaladinStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         { NextAction("hammer of justice on enemy healer", ACTION_INTERRUPT) }));
     triggers.push_back(new TriggerNode("hammer of justice on snare target",
         { NextAction("hammer of justice on snare target", ACTION_INTERRUPT) }));
+    // [kzk1] one paladin keeps Judgement of Wisdom on the boss (the raid's mana), a second one Judgement of Light:
+    // ai::paladin::BossJudgementDuty; above the rotations' own judgements (ACTION_HIGH + 5.7 the tank's), below the
+    // emergencies and interrupts
+    triggers.push_back(new TriggerNode("boss judgement duty", { NextAction("boss judgement duty", ACTION_HIGH + 6) }));
     triggers.push_back(new TriggerNode("critical health", { NextAction("divine shield", ACTION_EMERGENCY) }));
     triggers.push_back(new TriggerNode("party member critical health",
         { NextAction("lay on hands on party", ACTION_EMERGENCY + 2) }));

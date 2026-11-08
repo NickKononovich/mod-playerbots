@@ -527,4 +527,13 @@ public:
     bool isUseful() override;
 };
 
+// [kzk1] the judgement duty on the boss (ai::paladin::BossJudgementDuty)
+class BossJudgementDutyAction : public Action
+{
+public:
+    BossJudgementDutyAction(PlayerbotAI* botAI) : Action(botAI, "boss judgement duty") {}
+
+    bool Execute(Event event) override;
+};
+
 #endif

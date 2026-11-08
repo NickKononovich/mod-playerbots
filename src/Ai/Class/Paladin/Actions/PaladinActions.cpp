@@ -284,3 +284,15 @@ bool CastHolyShieldPrePullAction::Execute(Event event)
              bot->GetPowerPct(POWER_MANA));
     return true;
 }
+
+// [kzk1] the judgement duty on the boss (ai::paladin::BossJudgementDuty: one Wisdom owner, one Light owner)
+bool BossJudgementDutyAction::Execute(Event /*event*/)
+{
+    Unit* boss = nullptr;
+    char const* duty = ai::paladin::BossJudgementDuty(bot, boss);
+    if (!duty || !boss || !botAI->CastSpell(duty, boss))
+        return false;
+    LOG_INFO("playerbots", "[judge] {}: {} on {} (its judgement duty; {:.0f} % mana)", bot->GetName(), duty,
+             boss->GetName(), bot->GetPowerPct(POWER_MANA));
+    return true;
+}

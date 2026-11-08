@@ -407,6 +407,16 @@ public:
     bool IsActive() override;
 };
 
+// [kzk1] this paladin's judgement duty on the boss (ai::paladin::BossJudgementDuty) and the boss lacks that debuff or
+// it runs out within a global cooldown; the judgements ready. Checked once a second (the duty reads the group)
+class BossJudgementDutyTrigger : public Trigger
+{
+public:
+    BossJudgementDutyTrigger(PlayerbotAI* botAI) : Trigger(botAI, "boss judgement duty", 1000) {}
+
+    bool IsActive() override;
+};
+
 // [b31_deep] Holy: the Infusion of Light proc (53672 rank 1, 54149 rank 2; two aura lookups) and a member to heal
 // below almost-full health (the cached "party member to heal").
 class InfusionOfLightTrigger : public Trigger

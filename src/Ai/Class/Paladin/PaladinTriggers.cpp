@@ -7,7 +7,13 @@
 #include "PaladinTriggers.h"
 #include "HealthTriggers.h"  // [lead87] RestState::OwnManaLine
 #include "LeaderOrders.h"    // [lead1083] Leader::LedBot
+#include <algorithm>
+#include <cstring>
 #include <map>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
+#include "Group.h"
 #include "SpellMgr.h"
 #include "GenericBuffUtils.h"
 #include "PaladinActions.h"
@@ -15,6 +21,7 @@
 #include "PartyMemberToHeal.h"
 #include "Playerbots.h"
 #include "Spell.h"
+#include "SpellAuras.h"
 #include "SpellInfo.h"
 
 bool SealTrigger::IsActive()
@@ -479,4 +486,109 @@ bool HolyAvengingWrathTrigger::IsActive()
         return false;
 
     return InBossFight(botAI);
+}
+
+// [kzk1] wb-kazzak 20261108-183632: the prot paladin's Judgement of Wisdom went on the Doomguard Commander it tanked
+// (164 samples on the add), and Judgement of Wisdom sat on Kazzak in 327 of 559 samples only - the judgements follow
+// each paladin's own target and nobody owned "the boss carries Wisdom". One owner per debuff, computed from the group
+namespace
+{
+constexpr uint32 SPELL_JUDGEMENT_OF_LIGHT = 20271;
+constexpr uint32 SPELL_JUDGEMENT_OF_WISDOM = 53408;
+constexpr uint32 AURA_JUDGEMENT_OF_LIGHT = 20185;
+constexpr uint32 AURA_JUDGEMENT_OF_WISDOM = 20186;
+constexpr uint32 GCD_MS = 1500;  // the global cooldown
+
+Unit* FightBossOf(Player* bot)
+{
+    auto const isBoss = [](Unit* unit)
+    {
+        Creature const* creature = unit ? unit->ToCreature() : nullptr;
+        return creature && unit->IsAlive() && (creature->IsDungeonBoss() || creature->isWorldBoss());
+    };
+    if (isBoss(bot->GetVictim()))
+        return bot->GetVictim();
+    for (auto const& [guid, ref] : bot->GetCombatManager().GetPvECombatRefs())
+        if (Unit* other = ref ? ref->GetOther(bot) : nullptr; isBoss(other))
+            return other;
+    return nullptr;
+}
+
+uint8 JudgeRank(Player* paladin)
+{
+    if (PlayerbotAI::IsTank(paladin))
+        return 2;
+    return PlayerbotAI::IsHeal(paladin) ? 1 : 0;
+}
+}  // namespace
+
+char const* ai::paladin::BossJudgementDuty(Player* bot, Unit*& boss)
+{
+    boss = nullptr;
+    if (!bot || bot->getClass() != CLASS_PALADIN || !bot->IsInCombat() || !bot->HasSpell(SPELL_JUDGEMENT_OF_WISDOM))
+        return nullptr;
+    Unit* fight = FightBossOf(bot);
+    SpellInfo const* judgement = sSpellMgr->GetSpellInfo(SPELL_JUDGEMENT_OF_WISDOM);
+    if (!fight || !judgement)
+        return nullptr;
+    float const range = judgement->GetMaxRange(false);
+    std::vector<Player*> paladins;
+    if (Group* group = bot->GetGroup())
+    {
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource();
+                member && member->getClass() == CLASS_PALADIN && member->IsAlive() && member->IsInWorld() &&
+                member->GetMap() == bot->GetMap() && member->HasSpell(SPELL_JUDGEMENT_OF_WISDOM) &&
+                member->IsInCombatWith(fight) && member->IsWithinCombatRange(fight, range))
+                paladins.push_back(member);
+    }
+    else if (bot->IsWithinCombatRange(fight, range))
+        paladins.push_back(bot);
+    std::sort(paladins.begin(), paladins.end(),
+              [](Player* a, Player* b)
+              {
+                  uint8 const ra = JudgeRank(a);
+                  uint8 const rb = JudgeRank(b);
+                  return ra != rb ? ra < rb : a->GetGUID().GetCounter() < b->GetGUID().GetCounter();
+              });
+    // the owners logged on a change (whichever paladin computes it first); shared: a map's bots tick on any worker
+    {
+        static std::mutex lock;
+        static std::unordered_map<ObjectGuid, std::string> owners;
+        std::string const now =
+            paladins.empty() ? std::string("none")
+                             : paladins[0]->GetName() + std::string(" wisdom") +
+                                   (paladins.size() > 1 && paladins[1]->HasSpell(SPELL_JUDGEMENT_OF_LIGHT)
+                                        ? ", " + paladins[1]->GetName() + " light"
+                                        : std::string());
+        bool changed = false;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            std::string& was = owners[fight->GetGUID()];
+            changed = was != now;
+            was = now;
+        }
+        if (changed)
+            LOG_INFO("playerbots", "[judge] {}: judgement owners {} ({} paladins in Judgement's {:.0f} yd)",
+                     fight->GetName(), now, paladins.size(), range);
+    }
+    boss = fight;
+    if (!paladins.empty() && paladins[0] == bot)
+        return "judgement of wisdom";
+    if (paladins.size() > 1 && paladins[1] == bot && bot->HasSpell(SPELL_JUDGEMENT_OF_LIGHT))
+        return "judgement of light";
+    return nullptr;
+}
+
+bool BossJudgementDutyTrigger::IsActive()
+{
+    Unit* boss = nullptr;
+    char const* duty = ai::paladin::BossJudgementDuty(bot, boss);
+    if (!duty || !boss || !bot->IsWithinLOSInMap(boss))
+        return false;
+    uint32 const aura = strcmp(duty, "judgement of wisdom") == 0 ? AURA_JUDGEMENT_OF_WISDOM : AURA_JUDGEMENT_OF_LIGHT;
+    // up from any paladin with more than a global cooldown left: nothing to do (the debuff is one per target)
+    if (Aura const* up = boss->GetAura(aura); up && up->GetDuration() > int32(GCD_MS))
+        return false;
+    return !bot->HasSpellCooldown(SPELL_JUDGEMENT_OF_WISDOM);
 }
