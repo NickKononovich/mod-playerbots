@@ -8,12 +8,14 @@
 #define PLAYERBOTS_WORLDBOSSTACTICS_H
 
 #include <string>
+#include <vector>
 
 #include "AttackAction.h"
 #include "MovementActions.h"
 #include "Multiplier.h"
 #include "Trigger.h"
 
+class Creature;
 class Player;
 class PlayerbotAI;
 class Unit;
@@ -80,6 +82,11 @@ bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target);
 bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target, std::string& why);
 // [world_boss] a decision line in Playerbots.log, at most one per bot and kind every 5 s; true: written
 bool Note(Player* bot, char const* key, std::string const& text);
+// [kzk1] an area spell of this member may take these adds off their tank (user rule aggro-loss-if-survives, no leader
+// in an open-world fight): it survives their hits until a tank of the group has them back with its ready taunts (one
+// per global cooldown; Challenging Shout / Roar all, Righteous Defense three) and a healer reaches it. Logs
+// "[world_boss] ...: aoe ...". False outside a world boss fight or for any mob that is no add of the boss
+bool AreaMayTake(Player* bot, PlayerbotAI* botAI, std::vector<Creature*> const& mobs, std::string const& spell);
 }  // namespace WorldBoss
 
 // --- triggers ---------------------------------------------------------------------------------------------------
@@ -180,11 +187,12 @@ public:
     bool Execute(Event event) override;
 };
 
-// the stacked tank stops attacking the boss (no threat): the other tank keeps him until the stacks drop
-class WorldBossStepOffAction : public Action
+// the stacked tank stops attacking the boss and leaves his melee reach (no threat): the other tank keeps him until
+// the stacks have expired
+class WorldBossStepOffAction : public MovementAction
 {
 public:
-    WorldBossStepOffAction(PlayerbotAI* botAI) : Action(botAI, "world boss step off") {}
+    WorldBossStepOffAction(PlayerbotAI* botAI) : MovementAction(botAI, "world boss step off") {}
     bool Execute(Event event) override;
 };
 

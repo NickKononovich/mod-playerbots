@@ -26,6 +26,7 @@
 #include "ThreatManager.h"
 #include "ThreatValues.h"
 #include "Timer.h"
+#include "WorldBossTactics.h"  // [kzk1] AreaMayTake
 
 #include <algorithm>
 #include <cstring>
@@ -706,6 +707,8 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
     }
 
     std::vector<ObjectGuid> seen;
+    std::vector<Creature*> over;  // [kzk1] the mobs the area takes off their holder
+    uint8 firstShare = 0;
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
@@ -764,23 +767,35 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
             if (share < limit)
                 continue;
 
-            uint32 const now = getMSTime();
-            if (!_aoeLoggedMs || getMSTimeDiff(_aoeLoggedMs, now) >= HOLD_LOG_MS)
-            {
-                _aoeLoggedMs = now ? now : 1;
-                Unit* victim = mob->GetVictim();
-                LOG_INFO("playerbots", "[rot1] [aoe-threat] {} holds {}: {} {} ({:.1f} yd from the {} centre, on {}) "
-                         "at {} % of the tank's threat after {:.1f} s of the spell [rot47], limit {} % in {:.0f} yd",
-                         bot->GetName(), spell, mob->GetName(), mob->GetEntry(), center->GetExactDist2d(mob),
-                         selfCentred ? "own" : "target", victim ? victim->GetName() : "nobody", share, commit, limit,
-                         radius);
-            }
-
-            return true;
+            if (over.empty())
+                firstShare = share;
+            over.push_back(mob);
         }
     }
 
-    return false;
+    if (over.empty())
+        return false;
+
+    // [kzk1] user 2026-11-03 (aggro-loss-if-survives) where no leader leads (an open-world boss fight): the adds the
+    // area takes off their tank at once are allowed when this member survives them until a tank has them back
+    // (WorldBoss::AreaMayTake: their damage on it over the tank's taunts, a healer in reach); wb-kazzak 20261108-183632
+    // held Death and Decay / Seed of Corruption / Volley / Hurricane on the Doomguard Commanders next to Kazzak
+    if (WorldBoss::AreaMayTake(bot, botAI, over, spell))
+        return false;
+
+    Creature* mob = over.front();
+    uint32 const now = getMSTime();
+    if (!_aoeLoggedMs || getMSTimeDiff(_aoeLoggedMs, now) >= HOLD_LOG_MS)
+    {
+        _aoeLoggedMs = now ? now : 1;
+        Unit* victim = mob->GetVictim();
+        LOG_INFO("playerbots", "[rot1] [aoe-threat] {} holds {}: {} {} ({:.1f} yd from the {} centre, on {}) "
+                 "at {} % of the tank's threat after {:.1f} s of the spell [rot47], limit {} % in {:.0f} yd",
+                 bot->GetName(), spell, mob->GetName(), mob->GetEntry(), center->GetExactDist2d(mob),
+                 selfCentred ? "own" : "target", victim ? victim->GetName() : "nobody", firstShare, commit, limit,
+                 radius);
+    }
+    return true;
 }
 
 namespace

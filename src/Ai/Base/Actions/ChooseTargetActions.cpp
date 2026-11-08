@@ -496,6 +496,12 @@ Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
         // with no tank threat yet is opened on beyond the tank's melee
         Unit* victim = mob->GetVictim();
         bool const onOther = victim && victim != bot && victim->GetTypeId() == TYPEID_PLAYER;
+        // [kzk1] a mob another living tank holds is held, not loose: no take-back (two tanks taunted it back and
+        // forth). wb-kazzak 20261108-183632: 132 "[lead96] Rtpalaa: opens on incoming Lord Kazzak with righteous
+        // defense / hand of reckoning" right after each of Rtwaraa's swap taunts (and Rtwaraa's own "with taunt"
+        // the other way) - Mortal Wound never left the paladin and reached 10 stacks
+        if (onOther && victim->IsAlive() && PlayerbotAI::IsTank(victim->ToPlayer()))
+            continue;
         bool const untouched = mob->GetThreatMgr().GetThreat(bot) <= 0.0f && !bot->IsWithinMeleeRange(mob);
         if (takeBack ? !onOther : (onOther || !untouched))
             continue;
