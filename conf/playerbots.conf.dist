@@ -1871,6 +1871,10 @@ Playerbots.RandomBotLevelupSupplies = 1
 # 7 shaman, 8 mage, 9 warlock, 11 druid). When set, random bot accounts are created with exactly these
 # characters, 10 per account in order (account N gets entries N*10..N*10+9). Empty: upstream (one per class).
 Playerbots.RandomBotClassPlan = ""
+# RandomBotClassPlanRefill: 1 = at this start, the plan also fills the free character slots of plan accounts that
+# already hold characters (account N, k characters: entries N*10+k..N*10+9). The plan is otherwise created only once
+# and characters moved off its accounts are not replaced. Set it back to 0 after the start that created them.
+Playerbots.RandomBotClassPlanRefill = 0
 
 #
 #

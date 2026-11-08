@@ -715,7 +715,7 @@ void RandomPlayerbotFactory::CreateRandomBots()
 
     LOG_INFO("playerbots", "Creating random bot characters...");
     bool planAccountsUsed = false;
-    if (!sPlayerbotAIConfig.RandomBotClassPlan.empty())
+    if (!sPlayerbotAIConfig.RandomBotClassPlan.empty() && !sPlayerbotAIConfig.RandomBotClassPlanRefill)
         if (QueryResult used = CharacterDatabase.Query(
                 "SELECT COUNT(*) FROM characters WHERE account IN (SELECT id FROM {}.account WHERE username LIKE '{}%%')",
                 LoginDatabase.GetConnectionInfo()->database, sPlayerbotAIConfig.RandomBotAccountPrefix))

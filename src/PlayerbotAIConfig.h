@@ -415,6 +415,7 @@ public:
     bool RandomBotRandomize;
     bool RandomBotLevelupSupplies;
     std::string RandomBotClassPlan;
+    bool RandomBotClassPlanRefill;  // [gather] one start: fill the free slots of the plan accounts
     bool RandomBotGroupNearby;
     int32 EnableRandomBotTrading;
     uint32 TweakValue;  // Debugging config

@@ -10,6 +10,7 @@
 #include "GatherNodeMgr.h"
 #include "Log.h"
 #include "LootObjectStack.h"
+#include "Map.h"
 #include "NewRpgInfo.h"
 #include "ObjectDefines.h"
 #include "Player.h"
@@ -34,6 +35,27 @@ namespace
     std::unordered_map<ObjectGuid::LowType, std::unordered_set<ObjectGuid::LowType>> unreachableNodes;
     // [guild14] bot -> (zone, level) where its gather run found no node left to walk to
     std::unordered_map<ObjectGuid::LowType, std::pair<uint32, uint8>> exhausted;
+
+    // [guild15] a node under a water surface deeper than the bot's reach from the surface (the core's
+    // INTERACTION_DISTANCE): the walk there ends where the bot swims above it (b333 Irrua / Hobliir at
+    // (-4114,-12350): "near walk refused: the walk ends where the bot stands", the node 13 yd down)
+    bool UnderWaterOutOfReach(Player* bot, GatherNodeSpawn const* node)
+    {
+        if (!bot || !node || node->pos.GetMapId() != bot->GetMapId())
+            return false;
+        Map* map = bot->GetMap();
+        float const x = node->pos.GetPositionX(), y = node->pos.GetPositionY(), z = node->pos.GetPositionZ();
+        if (!map->IsGridLoaded(x, y))
+            return false;
+        LiquidData const liquid = map->GetLiquidData(bot->GetPhaseMask(), x, y, z, bot->GetCollisionHeight(), {});
+        if (liquid.Status != LIQUID_MAP_UNDER_WATER || liquid.Level - z <= INTERACTION_DISTANCE)
+            return false;
+        LOG_INFO("playerbots", "[guild20] {} skips gather node {}: {:.1f} yd under the water surface, out of reach",
+                 bot->GetName(), node->spawnId, liquid.Level - z);
+        std::lock_guard<std::mutex> guard(unreachableLock);
+        unreachableNodes[bot->GetGUID().GetCounter()].insert(node->spawnId);
+        return true;
+    }
 }
 
 // Base-rank gather spells, the same ids OpenLootAction::DoLoot casts.
@@ -187,12 +209,16 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
         }
         // [guild14] a node whose walk passes mobs of orange / red con (b303 Laaral L10 among the L15-16 mobs of
         // Bloodmyst) is not walked to: the next one
-        if (NewRpgBaseAction::TripRefused(bot, node->pos.GetPositionX(), node->pos.GetPositionY(),
-                                          node->pos.GetPositionZ(), "gather node"))
+        // [guild15] ... and the next node at once in the same tick, not one refused node per tick
+        while (node && (NewRpgBaseAction::TripRefused(bot, node->pos.GetPositionX(), node->pos.GetPositionY(),
+                                                      node->pos.GetPositionZ(), "gather node") ||
+                        UnderWaterOutOfReach(bot, node)))
         {
             data.visited.insert(node->spawnId);
-            return true;
+            node = sGatherNodeMgr.GetNextNode(bot, data.visited);
         }
+        if (!node)
+            return true;
         data.nodeSpawnId = node->spawnId;
         data.nodePos = node->pos;
         data.lastReach = 0;

@@ -702,15 +702,38 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
     }
     if (!IsWithinInteractionDist(npc))
     {
+        // the walk under way: it goes on
+        if (bot->isMoving() || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+            return true;
+        // [guild15] the last walk to the npc ended and brought it no nearer: the step ends with a logged failure,
+        // never a stand at the npc (b327-b333 Selalleas L6: "learn Alchemy at Ainethil 9 yd" in Darnassus, 225 s
+        // STUCK in every run - the walk was issued and never moved it)
+        float const gap = bot->GetExactDist(npc);
+        if (data->walkGap >= 0.0f && gap >= data->walkGap)
+        {
+            LOG_INFO("playerbots", "[guild20] {} L{} PROFESSION_FAIL cannot reach {}: its walk there ended {:.1f} yd "
+                     "off (z {:.1f}, the npc's z {:.1f}), no nearer than before; the next trainer / vendor",
+                     bot->GetName(), bot->GetLevel(), npc->GetName(), gap, bot->GetPositionZ(), npc->GetPositionZ());
+            MarkFailed(bot, data->npcEntry, id);
+            info.ChangeToIdle();
+            return true;
+        }
+        data->walkGap = gap;
         if (MoveWorldObjectTo(data->npc))
             return true;
+        std::string const refusal = LastMoveRefusal();
         if (NpcOutOfWalk(npc))  // [guild15]
         {
             MarkFailed(bot, data->npcEntry, id);
             info.ChangeToIdle();
             return true;
         }
-        return MoveRandomNear(15.0f);
+        LOG_INFO("playerbots", "[guild20] {} L{} PROFESSION_FAIL cannot walk to {} {:.1f} yd off: the walk refused "
+                 "({})",
+                 bot->GetName(), bot->GetLevel(), npc->GetName(), gap, refusal.empty() ? "no reason" : refusal);
+        MarkFailed(bot, data->npcEntry, id);
+        info.ChangeToIdle();
+        return true;
     }
 
     bot->SetFacingToObject(npc);
