@@ -463,7 +463,8 @@ private:
         uint32 questsDone{0};
         uint32 money{0};
         bool seen{false};
-        std::map<uint8, std::tuple<uint64, uint32, float, float, float, uint32>> statusEntry;  // xp, progress, pos, map
+        // xp, progress, pos, map, [econ2] work (money, profession skills, smelt casts)
+        std::map<uint8, std::tuple<uint64, uint32, float, float, float, uint32, uint64>> statusEntry;
         std::unordered_set<uint8> loopAlerted;
         // [guild50] gear through the global leader
         std::vector<GearPick> gearNow;   // per slot group: the best upgrade reachable now (bank, reward, craft, buy)
