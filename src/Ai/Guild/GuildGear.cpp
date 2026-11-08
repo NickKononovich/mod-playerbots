@@ -988,21 +988,23 @@ namespace GuildGear
 {
     std::string GainText(float gain, float score, float current)
     {
-        // a 10x jump is a slot with next to nothing in it: the weights say more than a 6-digit percentage
-        constexpr float WEIGHTS_OVER_GAIN = 10.0f;
+        // [econ1] b350 plan rows "+550 %", "+400 %", "empty slot (weight 0.0)": a percentage of a slot that held
+        // next to nothing says nothing (L10 whites: weight 2 -> 13 is "+550 %"). An empty slot is "new slot" with
+        // the weight it brings; above +100 % the real stat weight delta is shown instead of the percentage
+        constexpr float PERCENT_SHOWN_UP_TO = 1.0f;
         char buf[64];
         if (current <= 0.0f)
         {
-            if (score <= 0.0f)
-                return "пустой слот";
-            snprintf(buf, sizeof(buf), "пустой слот (вес %.1f)", score);
+            if (score < 0.05f)
+                return "new slot";
+            snprintf(buf, sizeof(buf), "new slot (+%.1f weight)", score);
             return buf;
         }
         if (gain < 0.005f)
-            return "вес равный, больше брони / ур. предмета / цела";
-        if (gain > WEIGHTS_OVER_GAIN)
+            return "equal weight, more armor / item level / intact";
+        if (gain > PERCENT_SHOWN_UP_TO)
         {
-            snprintf(buf, sizeof(buf), "вес %.1f → %.1f", current, score);
+            snprintf(buf, sizeof(buf), "+%.1f weight (%.1f -> %.1f)", score - current, current, score);
             return buf;
         }
         return "+" + std::to_string(int32(gain * 100.0f + 0.5f)) + "%";
