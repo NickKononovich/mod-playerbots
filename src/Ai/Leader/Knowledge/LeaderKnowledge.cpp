@@ -1089,7 +1089,7 @@ namespace Leader::Knowledge
             // (a lockout from an earlier segment) knows which bosses lie dead - the Chess Event's spot waits for
             // Aran's and the Curator's by entry (BossKilledFor). Slot 0 is Midnight (the fight starts on him), the
             // Opera and the Chess Event have no one creature (entry 0); no fixed order.
-            {532, -1, 0, "Midnight", 16151, -1, nullptr},
+            {532, -1, 0, "Midnight", 16151, 0, nullptr},  // [kara4] Attumen's order 0 (the dbc credits Attumen 15550)
             {532, -1, 1, "Moroes", 15687, -1, nullptr},
             {532, -1, 2, "Maiden of Virtue", 16457, -1, nullptr},
             {532, -1, 3, "Opera Event", 0, -1, nullptr},
