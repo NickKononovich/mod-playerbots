@@ -252,8 +252,10 @@ bool NewRpgBaseAction::StartVendorRun()
         return false;
 
     uint8 const bagUsed = AI_VALUE(uint8, "bag space");
+    // [coop] a co-op party is a task above the convenient ones: its sell run waits while a bag slot is free
     bool const sell = AI_VALUE(bool, "should sell") && AI_VALUE(bool, "can sell") &&
-                      (!info.vendorVisited || bagUsed > info.vendorVisitBagUsed);
+                      (!info.vendorVisited || bagUsed > info.vendorVisitBagUsed) &&
+                      (bagUsed >= 100 || !NewRpgCoop::InParty(bot->GetGUID().GetCounter()));
 
     uint32 ammoSubClass = 0;
     if (bot->getClass() == CLASS_HUNTER)
