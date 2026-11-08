@@ -124,6 +124,8 @@ public:
     GatherPlace const* Place(uint32 placeId) const;  // read-only after Load
     // the item can be gathered somewhere (any kind) and with which skill; false: craft / vendor / drop only
     bool Gatherable(uint32 itemId, uint32* skill = nullptr, int32* reqSkill = nullptr) const;
+    // [fish14] the places that yield the item (read-only after Load, any thread)
+    std::vector<GatherPlace const*> PlacesFor(uint32 itemId) const;
     // the reagent comes from a crafter's conversion of a raw material (pigment <- herb, gem <- ore): the cheapest one
     // by raw per unit; disenchant mats return raw 0 (spare items only)
     GatherConversion const* ConversionFor(uint32 itemId) const;

@@ -90,6 +90,7 @@ namespace
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
 #include "NewRpgProfession.h"  // [guild20]
+#include "NewRpgFishing.h"  // [fish14]
 #include "NewRpgDoGather.h"    // [guild14] NoSafeNodes
 #include "NewRpgStrategy.h"
 #include "Object.h"
@@ -1669,6 +1670,47 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         botAI->rpgInfo.ChangeToIdle();
         return true;
     }
+    // [fish14] an item only fishing gives: fished at the nearest water that yields it (the core's own fishing,
+    // NewRpgFishing), else the quest is postponed - no sweep of spots where nothing drops it
+    if (uint32 fishItem = 0; true)
+        if (WorldPosition water; NewRpgBaseAction::FishOnlyItem(bot, data.quest, fishItem, water))
+        {
+            std::string why;
+            if (!NewRpgBaseAction::CanFishFor(bot, fishItem) || water == WorldPosition())
+                why = water == WorldPosition() ? "no water on its map yields the item"
+                                               : "the item comes from fishing only (no Fishing at its skill or no pole)";
+            else
+            {
+                WorldPosition walkTo;
+                NewRpgFishing::Step const step = NewRpgFishing::Tick(botAI, bot, water, walkTo, why);
+                if (step == NewRpgFishing::Step::WALK)
+                {
+                    if (_fishLogged != questId)
+                    {
+                        _fishLogged = questId;
+                        LOG_INFO("playerbots", "[fish14] {} L{} q{} fishes item {} at ({:.0f},{:.0f})", bot->GetName(),
+                                 bot->GetLevel(), questId, fishItem, water.GetPositionX(), water.GetPositionY());
+                    }
+                    return MoveFarTo(walkTo);
+                }
+                if (step == NewRpgFishing::Step::BUSY)
+                    return true;
+                if (step == NewRpgFishing::Step::NONE)
+                    return false;
+                NewRpgFishing::Stop(botAI, bot);
+            }
+            LOG_INFO("playerbots", "[fish14] {} L{} POSTPONE q{} reason: {}", bot->GetName(), bot->GetLevel(), questId,
+                     why);
+            NotePostpone(bot, questId, why);
+            botAI->lowPriorityQuest.insert(questId);
+            botAI->rpgInfo.ChangeToIdle();
+            return true;
+        }
+        else if (_fishLogged == questId)
+        {
+            _fishLogged = 0;  // [fish14] its catch is in: the pole off, its weapons back
+            NewRpgFishing::Stop(botAI, bot);
+        }
     if (data.pos != WorldPosition())
     {
         /// @TODO: extract to a new function

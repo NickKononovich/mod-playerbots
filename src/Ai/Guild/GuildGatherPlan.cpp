@@ -816,6 +816,17 @@ bool GuildGatherPlan::Gatherable(uint32 itemId, uint32* skill, int32* reqSkill) 
     return true;
 }
 
+std::vector<GatherPlace const*> GuildGatherPlan::PlacesFor(uint32 itemId) const
+{
+    std::vector<GatherPlace const*> out;
+    auto const itr = placesByItem_.find(itemId);
+    if (itr != placesByItem_.end())
+        for (uint32 i : itr->second)
+            if (i < places_.size())
+                out.push_back(&places_[i]);
+    return out;
+}
+
 GatherConversion const* GuildGatherPlan::ConversionFor(uint32 itemId) const
 {
     auto const itr = conversions_.find(itemId);

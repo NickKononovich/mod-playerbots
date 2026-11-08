@@ -104,6 +104,11 @@ public:
     static bool EnderNeedsScript(uint32 questId);
     // [giver14] every giver of the quest is a creature whose script hands out the quest-giver flag (not planned)
     static bool GiverNeedsScript(uint32 questId);
+    // [fish14] an item objective still open whose item only fishing gives (no creature or object drops it, the gather
+    // plan's FISH places yield it): `itemId` and the nearest such water on the bot's map (none: an invalid position)
+    static bool FishOnlyItem(Player* bot, Quest const* quest, uint32& itemId, WorldPosition& water);
+    // [fish14] the bot can fish it: Fishing at the water's skill and a pole of its own
+    static bool CanFishFor(Player* bot, uint32 itemId);
     // [guild15] a creature / object objective whose credit comes from using the quest's own tool item (its start item,
     // with an on-use spell: a flute, a disguise kit) - the bot does not use quest items, so it is not taken
     static bool NeedsItemUseCredit(Quest const* quest, std::string* why = nullptr);

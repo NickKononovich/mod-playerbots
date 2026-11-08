@@ -54,6 +54,8 @@
 #include "ObjectDefines.h"
 #include "ObjectGuid.h"
 #include "ObjectMgr.h"
+#include "NewRpgFishing.h"  // [fish14]
+#include "GuildGatherPlan.h"  // [fish14]
 #include "OutdoorPvPMgr.h"
 #include "PathGenerator.h"
 #include "Player.h"
@@ -3054,6 +3056,12 @@ bool NewRpgBaseAction::IsQuestCapableDoing(Quest const* quest)
     if (NeedsItemUseCredit(quest) || NeedsSpellCredit(bot, quest, false))  // [flit] or a spell / script one
         return false;
 
+    // [fish14] an item only fishing gives: only for a bot that fishes it (Fishing at the water's skill, its own pole)
+    if (uint32 fishItem = 0; true)
+        if (WorldPosition water; FishOnlyItem(bot, quest, fishItem, water) &&
+                                 (!CanFishFor(bot, fishItem) || water == WorldPosition()))
+            return false;
+
     // [stuck8] a quest of a zone the other faction holds (b343 Eraelor L7 night elf sent to Durotar for q834, whose
     // giver is of the neutral Ratchet faction): no zones or hubs of the other side
     if (quest->GetZoneOrSort() > 0 && TravelRouteMgr::IsEnemyZone(bot, uint32(quest->GetZoneOrSort())))
@@ -4689,6 +4697,48 @@ bool NewRpgBaseAction::GiverNeedsScript(uint32 questId)
                  "planned", quests.size());
     });
     return quests.count(questId) > 0;
+}
+
+bool NewRpgBaseAction::FishOnlyItem(Player* bot, Quest const* quest, uint32& itemId, WorldPosition& water)
+{
+    // [fish14] b354 Nelaeleas L12 took q1141 The Family and the Fishing Pole (6 Darkshore Grouper): its sweeps found
+    // nothing that drops them ("no creature or chest holds item 12238") - the grouper is fishing loot only
+    itemId = 0;
+    water = WorldPosition();
+    if (!bot || !quest)
+        return false;
+    QuestSpawnIndex const& index = GetQuestSpawnIndex();
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+    {
+        uint32 const item = quest->RequiredItemId[i];
+        if (!item || bot->GetItemCount(item, true) >= quest->RequiredItemCount[i])
+            continue;
+        uint32 skill = 0;
+        if (index.itemCreatures.count(item) || index.itemObjects.count(item) ||
+            !sGuildGatherPlan.Gatherable(item, &skill) || skill != SKILL_FISHING)
+            continue;
+        itemId = item;
+        float best = std::numeric_limits<float>::max();
+        for (GatherPlace const* place : sGuildGatherPlan.PlacesFor(item))
+            if (place && place->kind == GatherKind::FISH && !place->instance && place->spot.GetMapId() == bot->GetMapId())
+                if (float const d = bot->GetExactDist(place->spot); d < best)
+                {
+                    best = d;
+                    water = place->spot;
+                }
+        return true;
+    }
+    return false;
+}
+
+bool NewRpgBaseAction::CanFishFor(Player* bot, uint32 itemId)
+{
+    int32 req = 0;
+    uint32 skill = 0;
+    if (!bot || !sGuildGatherPlan.Gatherable(itemId, &skill, &req) || skill != SKILL_FISHING ||
+        !bot->HasSkill(SKILL_FISHING) || !NewRpgFishing::HasPole(bot))
+        return false;
+    return int32(bot->GetSkillValue(SKILL_FISHING)) >= req;
 }
 
 bool NewRpgBaseAction::IsSpellUnlockClassQuest(Quest const* quest)

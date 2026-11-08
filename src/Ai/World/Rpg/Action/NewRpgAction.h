@@ -159,6 +159,7 @@ protected:
     // [questitems] NewRpgQuestUse.cpp: an objective credited by using a quest item or a spell on a target
     bool UseQuestTool(uint32 questId);
     bool SettleQuestUse();  // the last use's credit (logged), awaited while its cast or aura runs
+    uint32 _fishLogged{0};  // [fish14] one line per quest it fishes for
 };
 
 class NewRpgTravelFlightAction : public NewRpgBaseAction
