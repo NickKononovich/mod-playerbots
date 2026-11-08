@@ -267,8 +267,9 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
                     last = unit->GetGUID();
                 }
                 if (fresh)
-                    LOG_INFO("playerbots", "[deaths17] {} L{} party engages {} L{}: {} mobs ({} above), {:.0f} dmg over "
-                             "{:.0f} s, ehp {:.0f} ({})",
+                    LOG_INFO("playerbots",
+                             "[deaths17] {} L{} party engages {} L{}: {} mobs ({} above), {:.0f} dmg over {:.0f} s, "
+                             "ehp {:.0f} ({})",
                              bot->GetName(), bot->GetLevel(), unit->GetName(), unit->GetLevel(), verdict.mobs,
                              verdict.above, verdict.damage, verdict.fightSec, verdict.ehpNow,
                              verdict.why.empty() ? "won" : verdict.why);
