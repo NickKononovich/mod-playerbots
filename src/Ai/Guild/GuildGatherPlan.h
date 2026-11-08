@@ -69,6 +69,12 @@ struct GatherAssignment
     uint32 share{0};       // what this gatherer is expected to bring
     float ratePerHour{0.0f};  // units per hour at the place for this bot (shared supply, catch chance)
     float travelSec{0.0f};
+    // [gather] the leader's value test: the gather's copper per minute (the item's wanted value x the rate, the walk
+    // paid for over the share) against the bot's measured questing copper per minute (GuildCoordinator::QuestPace).
+    // worth = the gather pays more: an URGENT task; else a convenient one that never takes the bot off its quests
+    float valuePerMin{0.0f};
+    float questPerMin{-1.0f};  // < 0: no questing samples yet (the bot quests)
+    bool worth{false};
     std::string placeName;
     std::string why;
 };
@@ -98,9 +104,18 @@ public:
     // world thread: the shortfalls (item -> units still needed) over the gatherers online; returns one assignment per
     // gatherer that can bring any of them (others: none, they quest). `measuredPace`: skill -> units per minute of
     // gathering the leader measured (GuildCoordinator::GatherPace), < 0 unknown.
+    // `questPace`: bot low guid -> its questing copper per minute (missing: no samples); `unitValue`: item -> copper
+    // one unit is worth to the guild (GuildCoordinator::UpdateWanted: what it is wanted for)
     std::vector<GatherAssignment> Assign(std::map<uint32, uint32> const& shortfall,
                                          std::vector<Player*> const& gatherers,
-                                         std::map<uint32, float> const& measuredPace);
+                                         std::map<uint32, float> const& measuredPace,
+                                         std::map<uint32, float> const& questPace,
+                                         std::map<uint32, float> const& unitValue);
+    // map thread: the bot's walk to its place was refused by the solo judge (TripRefused) or ended no nearer than the
+    // last one (the walk gave the place up): the place is off for this bot until its next level, Assign picks again
+    void Refuse(Player* bot, uint32 placeId, std::string const& why);
+    // [gather] the continent rule (user): Outland from level 58, Northrend from 68, no other continent below 58
+    static bool ContinentAllowed(Player* bot, uint32 mapId, WorldPosition const& spot);
 
     // map thread
     bool Assigned(uint32 botLow, GatherAssignment& out) const;
@@ -149,6 +164,7 @@ private:
     std::unordered_map<uint32, std::vector<GatherConversion>> conversions_;  // reagent -> conversions, best first
     std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> convertedFrom_;
     std::unordered_set<uint32> disenchantMats_;
+    std::unordered_set<uint32> harvest_;  // items of open-world nodes, skinning and fishing (the [gather] got lines)
 
     // load-time only
     struct PoolInfo
@@ -176,6 +192,8 @@ private:
         uint32 units{0};
     };
     std::unordered_map<uint32, Session> sessions_;  // bot -> the units since its assignment began
+    std::map<std::pair<uint32, uint32>, uint8> refused_;  // (bot, place) -> the bot level it was refused at
+    std::unordered_map<uint32, std::string> idleWhy_;      // bot -> why it got no place (logged on change)
     bool loaded_{false};
 };
 

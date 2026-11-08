@@ -56,6 +56,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StatsWeightCalculator.h"
+#include "StringFormat.h"
 #include "Timer.h"
 #include "UpdateTime.h"
 #include "World.h"
@@ -982,8 +983,8 @@ void GuildCoordinator::BuildSkillPlans()
              skillPlan_.size(), steps);
 }
 
-void GuildCoordinator::SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 skill,
-                                     std::map<size_t, double>& crafts) const
+void GuildCoordinator::SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 skill, uint32 upTo,
+                                     std::map<size_t, double>& crafts, std::map<size_t, uint32>* points) const
 {
     auto const list = recipesBySkill_.find(skillLine);
     auto const plan = skillPlan_.find(skillLine);
@@ -995,7 +996,8 @@ void GuildCoordinator::SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 s
             for (size_t i : extra->second)
                 if (crafter->HasSpell(list->second[i].spellId))
                     known.push_back(i);
-    for (uint32 value = std::max<uint32>(1, skill); value < plan->second.size(); ++value)
+    uint32 const top = std::min<uint32>(upTo, uint32(plan->second.size()));
+    for (uint32 value = std::max<uint32>(1, skill); value < top; ++value)
     {
         int32 best = plan->second[value];
         double bestCost = 0, bestUnits = 0;
@@ -1017,7 +1019,11 @@ void GuildCoordinator::SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 s
             }
         }
         if (best >= 0 && bestChance > 0)
+        {
             crafts[size_t(best)] += 1000.0 / bestChance;  // a gap: that point comes from a green recipe
+            if (points)
+                ++(*points)[size_t(best)];
+        }
     }
 }
 
@@ -1047,10 +1053,10 @@ void GuildCoordinator::ExpandReagent(uint32 item, double count, std::map<uint32,
 }
 
 // [guild70] The wanted list. REQUIRED items drive the orders (GATHER, the shortfall sort): the raw reagents of every
-// planned crafter's skill-up recipes over the whole range where they still give skill (learned or not yet, offline
-// at its last seen skill), the reagents of upgrade crafts and bags, the members' quest items. Intermediates (bars,
-// bolts, potions used as reagents) stand for their raw materials and count as them when held; they are OPTIONAL
-// themselves: banked when someone holds them, never ordered.
+// planned crafter's skill-up recipes from its skill up to what its level reaches now ([gather] the trainer rank cap;
+// learned or not yet, offline at its last seen skill and cap), the reagents of upgrade crafts and bags, the members'
+// quest items. Intermediates (bars, bolts, potions used as reagents) stand for their raw materials and count as them
+// when held; they are OPTIONAL themselves: banked when someone holds them, never ordered.
 void GuildCoordinator::UpdateWanted()
 {
     enum : uint8
@@ -1070,6 +1076,25 @@ void GuildCoordinator::UpdateWanted()
     std::map<uint32, double> need;                      // raw item -> amount
     std::map<uint32, std::map<std::string, Part>> why;  // raw item -> reason -> part
     std::map<uint32, std::map<uint32, float>> via;      // raw item -> intermediate -> raw per intermediate
+    std::map<uint32, double> worth;                     // [gather] raw item -> copper it is worth to the guild
+    std::unordered_map<uint64, float> pointValue;
+    std::unordered_map<uint32, float> copperPerXp;  // member -> the core's quest XP -> money rate (RecordPace)
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        pointValue = pointValue_;
+        for (auto const& [low, st] : bots_)
+            copperPerXp[low] = st.copperPerXp;
+    }
+    // a value shared over the raw materials by their units
+    auto const shareWorth = [&](std::map<uint32, double> const& raw, double value)
+    {
+        double units = 0;
+        for (auto const& [item, amount] : raw)
+            units += amount;
+        if (units > 0 && value > 0)
+            for (auto const& [item, amount] : raw)
+                worth[item] += value * amount / units;
+    };
     std::vector<Player*> members;
     Guild* guild = nullptr;
     std::unordered_set<uint32> const craftLines(std::begin(CRAFT_LINES), std::end(CRAFT_LINES));
@@ -1118,15 +1143,29 @@ void GuildCoordinator::UpdateWanted()
                 continue;
             uint64 const key = (uint64(row.low) << 16) | line;
             uint32 skill = 0;
+            // [gather] b337: the skill-ups were summed over the whole range to 450 for every member (Linen Cloth
+            // 10423: First Aid of 75 members x 124), far past what anyone can learn now. The need runs up to the
+            // skill its level reaches now: the highest trainer rank of its level (TrainerCap), or its rank's cap
+            uint32 cap = 0;
             if (online)
             {
                 skill = p->HasSkill(line) ? p->GetPureSkillValue(line) : 0;
+                cap = std::max<uint32>(TrainerCap(line, p->GetLevel()),
+                                       p->HasSkill(line) ? p->GetPureMaxSkillValue(line) : 0);
                 lastSkill_[key] = skill;
+                lastCap_[key] = cap;
             }
-            else if (auto const seen = lastSkill_.find(key); seen != lastSkill_.end())
-                skill = seen->second;
+            else
+            {
+                if (auto const seen = lastSkill_.find(key); seen != lastSkill_.end())
+                    skill = seen->second;
+                if (auto const seen = lastCap_.find(key); seen != lastCap_.end())
+                    cap = seen->second;
+            }
             std::map<size_t, double> crafts;
-            SkillUpCrafts(online ? p : nullptr, line, skill, crafts);
+            std::map<size_t, uint32> points;
+            SkillUpCrafts(online ? p : nullptr, line, skill, cap, crafts, &points);
+            auto const pv = pointValue.find(key);
             for (auto const& [index, expected] : crafts)
             {
                 Recipe const& r = list->second[index];
@@ -1136,6 +1175,9 @@ void GuildCoordinator::UpdateWanted()
                     ExpandReagent(item, n * count, raw, &via);
                 for (auto const& [item, amount] : raw)
                     addPart(item, amount, SkillPlural(line), WHY_SKILL, row.low, r.product);
+                // [gather] the skill points this recipe gives, at the crafter's point value
+                if (pv != pointValue.end())
+                    shareWorth(raw, double(points[index]) * pv->second);
             }
         }
         if (!online)
@@ -1159,6 +1201,17 @@ void GuildCoordinator::UpdateWanted()
                     continue;
                 addPart(item, quest->RequiredItemCount[i], "квест q" + std::to_string(questId), WHY_QUEST, row.low,
                         0);
+                // [gather] the quest's value (the core's quest XP at the member's copper per XP + its money reward),
+                // shared over the units of its item objectives
+                uint32 units = 0;
+                for (uint8 j = 0; j < QUEST_ITEM_OBJECTIVES_COUNT; ++j)
+                    units += quest->RequiredItemId[j] ? quest->RequiredItemCount[j] : 0;
+                auto const rate = copperPerXp.find(row.low);
+                double const value = double(quest->XPValue(p->GetLevel())) * sWorld->getRate(RATE_XP_QUEST) *
+                                         (rate != copperPerXp.end() ? rate->second : 0.0f) +
+                                     double(std::max<int32>(0, quest->GetRewOrReqMoney(p->GetLevel())));
+                if (units)
+                    worth[item] += value * quest->RequiredItemCount[i] / units;
             }
         }
     }
@@ -1175,6 +1228,7 @@ void GuildCoordinator::UpdateWanted()
             {
                 std::map<uint32, double> raw;
                 ExpandReagent(item, g.count, raw, &via);
+                shareWorth(raw, g.value);  // [gather] the crafted item's price, this reagent's part of it
                 bool const bag = label.rfind("сумка", 0) == 0;
                 for (auto const& [id, amount] : raw)
                     for (uint32 forLow : g.forLows)
@@ -1267,6 +1321,7 @@ void GuildCoordinator::UpdateWanted()
             w.gatherReq = src->second.second;
         }
         w.forWhom = whyText(why[item]);
+        w.unitValue = w.need ? float(worth[item] / w.need) : 0.0f;
         list.push_back(w);
     }
     // OPTIONAL: the intermediates themselves, kept in the bank when held (they stand for raw materials above)
@@ -1334,6 +1389,8 @@ void GuildCoordinator::UpdateOrders()
         std::map<uint32, std::pair<uint32, uint32>> stock;
         std::vector<Player*> gatherers;
         std::map<uint32, float> pace;
+        std::map<uint32, float> questPace;  // gatherer -> its questing copper per minute (the leader's comparison)
+        std::map<uint32, float> unitValue;  // item -> copper a unit is worth to the guild (UpdateWanted)
         {
             std::lock_guard<std::mutex> guard(lock_);
             for (WantedItem const& w : wanted_)
@@ -1341,17 +1398,23 @@ void GuildCoordinator::UpdateOrders()
                 {
                     shortfall[w.itemId] = w.Short();
                     stock[w.itemId] = {w.need, w.have};
+                    unitValue[w.itemId] = w.unitValue;
                 }
             for (PlanRow const& row : plan_)
                 if (row.grp == 'B' || row.grp == 'C')
                     if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
                         p && p->IsInWorld() && !HumanControls(p))
+                    {
                         gatherers.push_back(p);
+                        float copper = 0.0f;
+                        if (auto const st = bots_.find(row.low); st != bots_.end() && QuestPace(st->second, copper))
+                            questPace[row.low] = copper;
+                    }
             for (uint32 const skill : {uint32(SKILL_HERBALISM), uint32(SKILL_MINING), uint32(SKILL_SKINNING),
                                        uint32(SKILL_FISHING)})
                 pace[skill] = GatherPace(skill);
         }
-        sGuildGatherPlan.Assign(shortfall, gatherers, pace);
+        sGuildGatherPlan.Assign(shortfall, gatherers, pace, questPace, unitValue);
         if (gatherStockCalls_++ % GATHER_STOCK_LOG_EVERY == 0)  // a log cadence, no decision
             sGuildGatherPlan.LogStock(stock);
     }
@@ -1526,8 +1589,12 @@ void GuildCoordinator::UpdateOrders()
             o.pos = a.spot;
             o.details = ItemName(a.itemId) + " ×" + std::to_string(a.share) + " @ " + a.placeName;
             o.reason = a.why;
-            o.status = "собирает (в сумках " + std::to_string(p->GetItemCount(a.itemId, false)) + ")";
-            o.executable = true;
+            // [gather] b337: every GATHER was URGENT and took 11 bots off their quests for 0.0/h chests. The leader's
+            // value test decides: a gather that pays more per minute than the bot's questing runs now (URGENT,
+            // ClassifyTask); else the task waits and the bot quests (what it picks on the way counts)
+            o.executable = a.worth;
+            o.status = a.worth ? "собирает (в сумках " + std::to_string(p->GetItemCount(a.itemId, false)) + ")"
+                               : "квестует: сбор не выгоднее квестов";
             orders.push_back(o);
         }
         // [tasks] PROFESSION: the global leader's calls (UpdateProfessions: the profession beats questing by value
@@ -1805,8 +1872,8 @@ void GuildCoordinator::ClassifyTask(GuildOrder& o)
         case GuildOrderType::SELL:
             o.place = GuildTaskPlace::VENDOR;
             break;
-        case GuildOrderType::GATHER:  // the gatherer's own work in the field
-            o.priority = GuildTaskPriority::URGENT;
+        case GuildOrderType::GATHER:  // the gatherer's own work in the field: urgent only when it beats questing
+            o.priority = o.executable ? GuildTaskPriority::URGENT : GuildTaskPriority::CONVENIENT;
             break;
         case GuildOrderType::DUNGEON:  // executable: the five called it (its walk to the entrance)
             if (o.executable)
@@ -2166,6 +2233,39 @@ void GuildCoordinator::UpdateProfessions()
                                      std::to_string(maxSkill) + ", нужно " + std::to_string(need) +
                                      " (ранг тренера на L" + std::to_string(level) + ": " + std::to_string(cap) +
                                      (needPlan ? ", план: " + std::to_string(needPlan) : "") + ")";
+            // [gather] the value of one skill point of this crafter on this line, what its wanted materials are worth
+            // (UpdateWanted): over the planned skill-up walk from its skill to what its level reaches, whatever the
+            // reagents' availability (a crafter blocked on a material is worth what that material unblocks), the
+            // products' vendor price (they are sold) plus the price of the planned crafts the walk unlocks, per point
+            {
+                uint32 const reach = std::max(cap, maxSkill);
+                auto const list = recipesBySkill_.find(line);
+                auto const skillPlan = skillPlan_.find(line);
+                double sales = 0, unlocked = 0;
+                uint32 points = 0;
+                if (list != recipesBySkill_.end() && skillPlan != skillPlan_.end())
+                    for (uint32 v = std::max<uint32>(1, skill); v < reach && v < skillPlan->second.size(); ++v)
+                    {
+                        if (skillPlan->second[v] < 0)
+                            break;
+                        Recipe const& r = list->second[size_t(skillPlan->second[v])];
+                        int32 const chance = CraftChance(v, r.gray, r.yellow);
+                        if (r.reqLevel > level || chance <= 0)
+                            break;
+                        if (ItemTemplate const* product = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr)
+                            sales += 1000.0 / chance * r.made * product->SellPrice;
+                        ++points;
+                    }
+                for (Need const* n : lineNeeds)
+                    if (n->reqSkill > skill && n->reqSkill <= skill + points)
+                        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(n->itemId))
+                            unlocked += double(proto->BuyPrice) * n->count;
+                uint64 const key = (uint64(row->low) << 16) | line;
+                if (points)
+                    pointValue_[key] = float((sales + unlocked) / points);
+                else
+                    pointValue_.erase(key);
+            }
             std::string key;
             std::string decision;
             auto const train = [&](std::string details, std::string reason)
@@ -2422,10 +2522,95 @@ void GuildCoordinator::UpdateProfessions()
                 Decision(decision);
             }
         }
+        // [gather] b337: the planned gathering lines (Herbalism, Mining, Skinning, Fishing) had no call at all - the
+        // loop above takes the craft lines only - so the gatherers never learned Fishing nor bought a pole, and the
+        // gathering plan found no fish place they could work ("fishing never started"). The trainer call: the line
+        // when the trainer of its level teaches it and it is not learned, the next rank at its cap when its level
+        // and skill allow it, the Fishing Pole when it fishes without one (NewRpgProfession's own trainer / tool
+        // errands, with their own trip judge)
+        for (auto const* list : {&row->profs, &row->secondary})
+            for (uint32 line : *list)
+            {
+                if (line != SKILL_HERBALISM && line != SKILL_MINING && line != SKILL_SKINNING && line != SKILL_FISHING)
+                    continue;
+                bool const has = p->HasSkill(line);
+                uint32 const skill = has ? p->GetPureSkillValue(line) : 0;
+                uint32 const maxSkill = has ? p->GetPureMaxSkillValue(line) : 0;
+                uint32 const cap = TrainerCap(line, level);
+                std::string const name = line == SKILL_HERBALISM ? "трав"
+                                         : line == SKILL_MINING  ? "горн"
+                                         : line == SKILL_SKINNING ? "шкуры"
+                                                                  : "рыбалка";
+                std::string const head = Who(row->low) + ": " + name + " " + std::to_string(skill) + "/" +
+                                         std::to_string(maxSkill) + " (ранг тренера на L" + std::to_string(level) +
+                                         ": " + std::to_string(cap) + ")";
+                std::string key;
+                std::string decision;
+                auto const call = [&](std::string details, std::string reason)
+                {
+                    ProfessionPick pick;
+                    pick.kind = GuildProfessionKind::TRAIN;
+                    pick.skillLine = line;
+                    pick.details = std::move(details);
+                    pick.reason = std::move(reason);
+                    picks.push_back(pick);
+                };
+                if (!has && cap)
+                {
+                    call(std::string("выучить ") + name, "в плане сборщика, тренер учит на L" + std::to_string(level));
+                    key = "learn";
+                    decision = head + " — не выучена: TRAIN у тренера";
+                }
+                else if (has && skill >= maxSkill && cap > maxSkill)
+                {
+                    TrainerRank const* rank = nullptr;
+                    if (auto const ranks = trainerRanks_.find(line); ranks != trainerRanks_.end())
+                        for (TrainerRank const& r : ranks->second)
+                            if (r.maxSkill > maxSkill && r.reqLevel <= level && (!rank || r.maxSkill < rank->maxSkill))
+                                rank = &r;
+                    if (rank && skill >= rank->reqSkill)
+                    {
+                        call("ранг до " + std::to_string(rank->maxSkill),
+                             "навык " + std::to_string(skill) + " на потолке ранга, уровень ≥ " +
+                                 std::to_string(rank->reqLevel));
+                        key = "rank";
+                        decision = head + " — потолок ранга: TRAIN ранг до " + std::to_string(rank->maxSkill);
+                    }
+                }
+                else if (has && line == SKILL_FISHING && !NewRpgFishing::HasPole(p))
+                {
+                    call("удочка (Fishing Pole)", "рыбалка выучена, удочки нет");
+                    key = "tool";
+                    decision = head + " — нет удочки: купить у торговца";
+                }
+                if (key.empty())
+                {
+                    key = "ok";
+                    decision = head + " — выучена, звонка нет";
+                }
+                if (st.profDecision[line] != key)
+                {
+                    st.profDecision[line] = key;
+                    Decision(decision);
+                }
+            }
         std::stable_sort(picks.begin(), picks.end(), [](ProfessionPick const& a, ProfessionPick const& b)
                          { return uint8(a.kind) > uint8(b.kind); });  // craft, buy, gather, then the trainer
         professions_[row->low] = std::move(picks);
     }
+}
+
+float GuildCoordinator::PlannedGain(uint32 low, uint8 group) const
+{
+    std::lock_guard<std::mutex> guard(lock_);
+    auto const itr = bots_.find(low);
+    if (itr == bots_.end())
+        return 0.0f;
+    float best = 0.0f;
+    for (GearPick const& g : itr->second.gearNow)
+        if (g.group == group)
+            best = std::max(best, g.gain);
+    return best;
 }
 
 GuildProfessionKind GuildCoordinator::ProfessionCall(Player* bot, uint32* skillLine)
@@ -3149,6 +3334,12 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
             GearNeed& g = gearWanted_[item][(job.bag ? "сумка " : "улучшение: ") + ItemName(job.itemId)];
             g.count += n;
             g.forLows.insert(job.forLow);
+            // [gather] the crafted item's price (the leader values unlocked upgrades by it), shared by reagent units
+            uint32 units = 0;
+            for (auto const& [reagent, count] : recipe->reagents)
+                units += count;
+            if (ItemTemplate const* product = sObjectMgr->GetItemTemplate(job.itemId); product && units)
+                g.value += double(product->BuyPrice) * n / units;
         }
     }
 }
@@ -3546,6 +3737,16 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                         WorldPosition to;
                         std::string why;
                         NewRpgFishing::Step const fish = NewRpgFishing::Tick(botAI, bot, place->spot, to, why);
+                        // [gather] the walk to the water passes the solo judge as every gather walk
+                        if (fish == NewRpgFishing::Step::WALK && to.GetMapId() == bot->GetMapId() &&
+                            NewRpgBaseAction::TripRefused(bot, to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(),
+                                                          "fishing water"))
+                        {
+                            sGuildGatherPlan.Refuse(bot, order.placeId, "the solo judge refused the walk to the water");
+                            order.executable = false;
+                            order.status = "место отдано лидеру: путь опасен";
+                            continue;
+                        }
                         if (fish == NewRpgFishing::Step::WALK || fish == NewRpgFishing::Step::BUSY)
                         {
                             step.kind = fish == NewRpgFishing::Step::WALK ? GuildRunStep::WALK : GuildRunStep::BUSY;
@@ -3560,18 +3761,54 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                             order.executable = false;
                             order.status = why;
                             LOG_INFO("playerbots", "[gather] {} gives the fishing task back: {}", bot->GetName(), why);
+                            sGuildGatherPlan.Refuse(bot, order.placeId, why);  // else the next update sends it again
                         }
                         continue;
                     }
                     if (place->spot.GetMapId() != bot->GetMapId() ||
                         (place->zoneId && place->zoneId != bot->GetZoneId()))
                     {
+                        // [gather] b337: no judge on the gather walk - 16 of 21 deaths walked a GATHER order (L1 bots
+                        // through L5-8 areas), and walks the core gave up (MOVE_FAR_LOOP at the Darnassus / Exodar
+                        // portals) were issued again at once. The solo judge first (TripRefused, the bot's own map);
+                        // a walk issued again from no nearer than the last one proves the last gave the place up.
+                        // Either way the place goes back to the leader for this level and the bot quests
+                        std::string refusal;
+                        float left = 0.0f;
+                        if (place->spot.GetMapId() == bot->GetMapId())
+                        {
+                            left = bot->GetExactDist(place->spot);
+                            if (NewRpgBaseAction::TripRefused(bot, place->spot.GetPositionX(),
+                                                              place->spot.GetPositionY(), place->spot.GetPositionZ(),
+                                                              "gather place"))
+                                refusal = "the solo judge refused the walk (TRIP_REFUSED)";
+                        }
+                        else
+                        {
+                            TravelRouteMgr::Leg leg;
+                            if (!sTravelRouteMgr.FindRoute(bot, place->spot, leg, left))
+                                refusal = "no route to its map";
+                        }
+                        if (refusal.empty() && st.gatherWalkPlace == order.placeId && left >= st.gatherWalkLeft)
+                            refusal = Acore::StringFormat("its last walk ended no nearer ({:.0f} -> {:.0f})",
+                                                          st.gatherWalkLeft, left);
+                        if (!refusal.empty())
+                        {
+                            sGuildGatherPlan.Refuse(bot, order.placeId, refusal);
+                            st.gatherWalkPlace = 0;
+                            order.executable = false;
+                            order.status = "место отдано лидеру: " + refusal;
+                            continue;
+                        }
+                        st.gatherWalkPlace = order.placeId;
+                        st.gatherWalkLeft = left;
                         step.kind = GuildRunStep::WALK;
                         step.pos = place->spot;
                         step.reason = "GATHER to " + order.details;
                         started(order);
                         return step;
                     }
+                    st.gatherWalkPlace = 0;  // arrived
                     if (place->kind == GatherKind::SKIN)
                     {
                         step.kind = GuildRunStep::GRIND;

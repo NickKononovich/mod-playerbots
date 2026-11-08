@@ -270,6 +270,9 @@ public:
     // [coop] map thread, read only: the bot runs or must start an URGENT task now (its first executable urgent order
     // not waiting for a town, its five, an urgent vault run); why: the task's name
     bool UrgentTask(Player* bot, std::string* why) const;
+    // [equip] the best gain the leader's gear plan has reachable now for that gear group of the member (0: none);
+    // GuildGear::ShouldBuy keeps a bot from buying a lesser vendor item meanwhile (takes lock_)
+    float PlannedGain(uint32 low, uint8 group) const;
     // [coop] world / map thread: the co-op task enters / leaves the bot's task list ([tasks] add / done, BotControl)
     void AddCoopTask(uint32 low, uint32 partnerLow, uint32 questId, bool leads, std::string const& why);
     void EndCoopTask(uint32 low, uint32 questId, std::string const& why);
@@ -295,6 +298,9 @@ public:
         bool vendor{false};
         bool optional{false};      // [guild70] OPTIONAL: banked when held, never ordered; else REQUIRED
         std::string forWhom;       // [guild70] why: "реагент: Rough Copper Bomb ×N (инженеры 6×≈200) + квест q12 #3"
+        // [gather] copper one unit is worth to the guild: the skill points, upgrade / bag crafts and quests it is
+        // wanted for, shared over their materials (the gathering plan's comparison with questing)
+        float unitValue{0.0f};
         uint32 Short() const { return need > have ? need - have : 0; }
     };
 
@@ -408,6 +414,10 @@ private:
         uint8 rpgStatus{0};       // the last New RPG status (gathering time)
         uint32 rpgStatusAt{0};
         std::map<uint32, std::string> profDecision;  // skill line -> the last [guild] decision (logged on change)
+        // [gather] the last walk NextStep issued to its gathering place: the place and how far it was (yards on the
+        // same map, else route seconds); a new walk from no nearer means the last one gave the place up
+        uint32 gatherWalkPlace{0};
+        float gatherWalkLeft{0.0f};
     };
 
     // [tasks] the global leader's profession call for one member (UpdateProfessions, lock_)
@@ -627,7 +637,9 @@ private:
     PlanRow const* Row(uint32 low) const;
     // [guild70] the expected crafts per recipe index a crafter makes from `skill` over the whole range where recipes
     // still give skill-ups (orange / yellow); crafter may be null (offline: trainer recipes only)
-    void SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 skill, std::map<size_t, double>& crafts) const;
+    // the skill-up crafts from `skill` up to `upTo` (exclusive; [gather] the skill its level can reach now)
+    void SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 skill, uint32 upTo,
+                       std::map<size_t, double>& crafts, std::map<size_t, uint32>* points = nullptr) const;
     // [guild70] an intermediate (bar, bolt, potion used as reagent…) as its raw materials; `via` gets
     // raw -> intermediate -> raw per intermediate
     void ExpandReagent(uint32 item, double count, std::map<uint32, double>& out,
@@ -656,6 +668,9 @@ private:
     std::unordered_map<uint32, std::vector<int32>> skillPlan_;
     std::unordered_map<uint32, std::vector<size_t>> extraRecipes_;  // per line: recipes learned elsewhere (drops)
     std::unordered_map<uint64, uint32> lastSkill_;  // (low << 16 | line) -> skill when last seen (offline members)
+    std::unordered_map<uint64, uint32> lastCap_;    // [gather] (low << 16 | line) -> the skill it could reach then
+    // [gather] (low << 16 | line) -> copper one skill point of that crafter is worth (UpdateProfessions, lock_)
+    std::unordered_map<uint64, float> pointValue_;
 
     mutable std::mutex lock_;
     std::unordered_map<uint32, BotState> bots_;
@@ -723,6 +738,7 @@ private:
     {
         uint32 count{0};
         std::set<uint32> forLows;
+        double value{0};  // [gather] copper: the crafted item's price (BuyPrice), shared over its reagent units
     };
     std::map<uint32, std::map<std::string, GearNeed>> gearWanted_;
     std::string bagState_;

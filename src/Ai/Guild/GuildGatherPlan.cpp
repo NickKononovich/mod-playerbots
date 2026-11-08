@@ -20,6 +20,7 @@
 #include "Log.h"
 #include "LootMgr.h"
 #include "MapMgr.h"
+#include "NewRpgFishing.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -47,6 +48,24 @@ namespace
     constexpr uint8 NO_SAFE_LEVEL = 255;
     constexpr uint8 ELITE_BIT = 0x80;
     constexpr uint8 LEVEL_MASK = 0x7F;
+    // [gather] the continent rule (user 2026-11-08): Outland from 58 (the Dark Portal's level), Northrend from 68;
+    // below 58 a gatherer stays on its own continent
+    constexpr uint8 OUTLAND_LEVEL = 58;
+    constexpr uint8 NORTHREND_LEVEL = 68;
+
+    // the continent a spot is on: a map, map 530 split into Outland and the two starting isles (Azuremyst /
+    // Bloodmyst, Eversong / Ghostlands), as TravelRouteMgr::Landmass splits it
+    uint32 ContinentOf(uint32 mapId, WorldPosition const& pos)
+    {
+        if (mapId != MAP_OUTLAND)
+            return mapId * 4;
+        return TravelRouteMgr::Landmass(
+            WorldPosition(mapId, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ()));
+    }
+
+    // the safety of an area by its own level (AreaTable area_level, the game's exploration level of the sub-area;
+    // 0 = none given): a solo bot below orange con of it
+    uint8 AreaSafeLevel(uint32 areaId);
 
     uint64 CellKey(uint32 mapId, float x, float y, float cell)
     {
@@ -107,6 +126,14 @@ namespace
                 (!elite || Acore::XP::GetGrayLevel(uint8(level)) >= elite))
                 return uint8(level);
         return NO_SAFE_LEVEL;
+    }
+
+    uint8 AreaSafeLevel(uint32 areaId)
+    {
+        AreaTableEntry const* area = areaId ? sAreaTableStore.LookupEntry(areaId) : nullptr;
+        if (!area || area->area_level <= 0)
+            return 1;
+        return MinSafeBotLevel(uint8(std::min<int32>(area->area_level, LEVEL_MASK)), 0);
     }
 
     bool HostileToAlliance(CreatureTemplate const* tmpl)
@@ -213,6 +240,7 @@ void GuildGatherPlan::Load()
     places_.clear();
     placesByItem_.clear();
     gatherSkill_.clear();
+    harvest_.clear();
     LoadPools();
     LoadHostiles();
     LoadNodesAndChests();
@@ -231,6 +259,8 @@ void GuildGatherPlan::Load()
             placesByItem_[item].push_back(uint32(i));
             if (places_[i].instance)
                 continue;
+            if (places_[i].kind != GatherKind::CHEST)
+                harvest_.insert(item);
             auto const known = gatherSkill_.find(item);
             if (known == gatherSkill_.end() || places_[i].reqSkill < known->second.second)
                 gatherSkill_[item] = {places_[i].skill, places_[i].reqSkill};
@@ -478,7 +508,9 @@ void GuildGatherPlan::LoadNodesAndChests()
         ++place.spawns;
         place.liveShare += weight;
         respawnSum[itr->second - base] += float(std::max(0, data.spawntimesecs));
-        place.spawnReq.emplace_back(DangerAt(data.mapid, data.posX, data.posY, data.posZ), req, weight);
+        // [gather] the spot's hostiles and the area's own level (b337: L1 gatherers sent into L5-10 areas)
+        place.spawnReq.emplace_back(
+            std::max(DangerAt(data.mapid, data.posX, data.posY, data.posZ), AreaSafeLevel(z.area)), req, weight);
         points[itr->second - base].emplace_back(data.mapid, data.posX, data.posY, data.posZ);
     }
     for (auto const& [key, i] : index)
@@ -548,7 +580,8 @@ void GuildGatherPlan::LoadSkinning()
         ++place.spawns;
         place.liveShare += weight;
         respawnSum[itr->second - base] += float(data.spawntimesecs);
-        place.spawnReq.emplace_back(std::max(around, self), SkinningReq(tmpl->maxlevel), weight);
+        place.spawnReq.emplace_back(std::max({around, self, AreaSafeLevel(z.area)}), SkinningReq(tmpl->maxlevel),
+                                    weight);
         points[itr->second - base].emplace_back(data.mapid, data.posX, data.posY, data.posZ);
     }
     for (auto const& [key, i] : index)
@@ -639,8 +672,9 @@ void GuildGatherPlan::LoadFishing()
         }
         GatherPlace& place = places_[itr->second];
         ++place.spawns;
-        place.spawnReq.emplace_back(DangerAt(m.pos.GetMapId(), m.pos.GetPositionX(), m.pos.GetPositionY(),
-                                             m.pos.GetPositionZ()),
+        place.spawnReq.emplace_back(std::max(DangerAt(m.pos.GetMapId(), m.pos.GetPositionX(), m.pos.GetPositionY(),
+                                                      m.pos.GetPositionZ()),
+                                             AreaSafeLevel(m.area)),
                                     place.reqSkill, 1.0f);
         points[itr->second - base].push_back(m.pos);
         if (m.poolLoot)
@@ -807,6 +841,10 @@ float GuildGatherPlan::Rate(GatherPlace const& place, uint32 itemId, Player* bot
 
     if (place.kind == GatherKind::FISH)
     {
+        // [gather] the bot's own Fishing Pole (bought at a vendor, NewRpgProfession): NewRpgFishing gives the task
+        // back without one
+        if (!NewRpgFishing::HasPole(bot))
+            return 0.0f;
         // a cast lasts until the bite (the channel minus 3, 7 or 13 s); GameObject::Use: the catch chance is
         // (skill / (zone skill + 95))^2, at least 1 %, 100 % into a pool
         bool const safe = std::any_of(place.spawnReq.begin(), place.spawnReq.end(),
@@ -861,25 +899,77 @@ float GuildGatherPlan::TravelSeconds(Player* bot, GatherPlace const& place) cons
     return seconds;
 }
 
+bool GuildGatherPlan::ContinentAllowed(Player* bot, uint32 mapId, WorldPosition const& spot)
+{
+    uint8 const level = bot->GetLevel();
+    uint32 const there = ContinentOf(mapId, spot);
+    if (there == MAP_OUTLAND * 4 && level < OUTLAND_LEVEL)
+        return false;
+    if (mapId == MAP_NORTHREND && level < NORTHREND_LEVEL)
+        return false;
+    // b337: below 58 the portals / boats to another continent sent L1 gatherers from Teldrassil and Azuremyst to the
+    // Eastern Kingdoms (MOVE_FAR_LOOP at the Darnassus and Exodar portals, deaths on the walks there)
+    return level >= OUTLAND_LEVEL || there == ContinentOf(bot->GetMapId(), WorldPosition(bot));
+}
+
+void GuildGatherPlan::Refuse(Player* bot, uint32 placeId, std::string const& why)
+{
+    if (!bot || !placeId)
+        return;
+    GatherPlace const* place = Place(placeId);
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        refused_[{bot->GetGUID().GetCounter(), placeId}] = bot->GetLevel();
+    }
+    LOG_INFO("playerbots", "[gather] refuse {} L{} place {}: {} (off until its next level)", bot->GetName(),
+             bot->GetLevel(), place ? PlaceName(*place) : std::to_string(placeId), why);
+}
+
 std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> const& shortfall,
                                                       std::vector<Player*> const& gatherers,
-                                                      std::map<uint32, float> const& measuredPace)
+                                                      std::map<uint32, float> const& measuredPace,
+                                                      std::map<uint32, float> const& questPace,
+                                                      std::map<uint32, float> const& unitValue)
 {
     std::vector<GatherAssignment> out;
     if (!loaded_)
         return out;
+
+    std::map<std::pair<uint32, uint32>, uint8> refused;
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        // a level-up (or a logout) gives every refused place another try
+        for (auto itr = refused_.begin(); itr != refused_.end();)
+        {
+            Player* bot = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(itr->first.first));
+            if (!bot || bot->GetLevel() != itr->second)
+                itr = refused_.erase(itr);
+            else
+                ++itr;
+        }
+        refused = refused_;
+    }
 
     struct Option
     {
         size_t place{0};
         float travel{0.0f};
     };
+    struct Skipped
+    {
+        uint32 continent{0};
+        uint32 refused{0};
+        uint32 unsafeOrSkill{0};
+        uint32 noRoute{0};
+    };
     // per bot and item: the places it can work (travel computed once per place)
     std::map<std::pair<size_t, uint32>, std::vector<Option>> options;
     std::map<std::pair<size_t, uint32>, float> routeCache;  // (bot, map) -> seconds (cross-map routes only)
+    std::vector<Skipped> skipped(gatherers.size());
     for (size_t b = 0; b < gatherers.size(); ++b)
     {
         Player* bot = gatherers[b];
+        uint32 const low = bot->GetGUID().GetCounter();
         for (auto const& [item, shortBy] : shortfall)
         {
             if (!shortBy)
@@ -892,9 +982,24 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                 GatherPlace const& place = places_[i];
                 if (place.instance)  // a five's run gathers these (InstancePlaces), never a solo walk
                     continue;
-                auto const pace = measuredPace.find(place.skill);
-                if (Rate(place, item, bot, 0, pace == measuredPace.end() ? -1.0f : pace->second) <= 0.0f)
+                if (!ContinentAllowed(bot, place.mapId, place.spot))
+                {
+                    ++skipped[b].continent;
                     continue;
+                }
+                if (refused.count({low, place.id}))
+                {
+                    ++skipped[b].refused;
+                    continue;
+                }
+                auto const pace = measuredPace.find(place.skill);
+                // Rate is 0 when no spawn of the place is safe for its level (the spot's hostiles, the area's own
+                // level) or its skill is short
+                if (Rate(place, item, bot, 0, pace == measuredPace.end() ? -1.0f : pace->second) <= 0.0f)
+                {
+                    ++skipped[b].unsafeOrSkill;
+                    continue;
+                }
                 float travel = 0.0f;
                 if (place.mapId == bot->GetMapId())
                     travel = TravelSeconds(bot, place);
@@ -907,87 +1012,125 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                     travel = cached->second;
                 }
                 if (travel == FLT_MAX)
+                {
+                    ++skipped[b].noRoute;
                     continue;
+                }
                 options[{b, item}].push_back({i, travel});
             }
         }
     }
 
+    // the item's value per unit for the leader's comparison with questing: what it is wanted for (the leader's
+    // wanted list: skill points, upgrade / bag crafts, quests, shared over their materials); not a vendor price
+    auto const valueOf = [&](uint32 itemId)
+    {
+        auto const v = unitValue.find(itemId);
+        return v == unitValue.end() ? 0.0f : v->second;
+    };
+    auto const questOf = [&](Player* bot)
+    {
+        auto const q = questPace.find(bot->GetGUID().GetCounter());
+        return q == questPace.end() ? -1.0f : q->second;
+    };
+
     // greedy makespan: each step adds the bot that shortens the longest remaining work the most (an item nobody
-    // gathers yet first: the longest one), at the place where it brings the most per second, travel included
+    // gathers yet first: the longest one), at the place where it brings the most per second, travel included.
+    // Phase 1 takes only the gathers that pay more per minute than the bot's questing (URGENT tasks); phase 2 gives
+    // every other bot its best place as a convenient task (questing goes on; what it picks on the way counts)
     std::map<uint32, float> remaining;
     for (auto const& [item, n] : shortfall)
         if (n)
             remaining[item] = float(n);
-    std::map<uint32, float> itemRate;      // item -> units per hour of the bots already on it
-    std::map<size_t, uint32> placeLoad;    // place -> bots already there
-    std::map<uint32, uint32> itemBots;     // item -> bots already on it
+    std::map<uint32, float> itemRate;    // item -> units per hour of the bots already on it (worth only)
+    std::map<size_t, uint32> placeLoad;  // place -> bots already there (worth only)
+    std::map<uint32, uint32> itemBots;   // item -> bots already on it (worth only)
     std::vector<bool> taken(gatherers.size(), false);
     std::vector<GatherAssignment> picks;
-    for (size_t round = 0; round < gatherers.size(); ++round)
-    {
-        float bestGain = -1.0f;
-        GatherAssignment best;
-        size_t bestBot = 0, bestPlace = 0;
-        for (auto const& [key, list] : options)
+    for (bool const worthPhase : {true, false})
+        for (size_t round = 0; round < gatherers.size(); ++round)
         {
-            auto const& [b, item] = key;
-            if (taken[b])
-                continue;
-            float const left = remaining[item];
-            if (left <= 0.0f)
-                continue;
-            Player* bot = gatherers[b];
-            float const already = itemRate[item];
-            float const share = left / float(itemBots[item] + 1);  // its part of what is left, by head count
-            for (Option const& o : list)
+            float bestGain = -1.0f;
+            GatherAssignment best;
+            size_t bestBot = 0, bestPlace = 0;
+            for (auto const& [key, list] : options)
             {
-                GatherPlace const& place = places_[o.place];
-                auto const pace = measuredPace.find(place.skill);
-                float const rate = Rate(place, item, bot, placeLoad[o.place],
-                                        pace == measuredPace.end() ? -1.0f : pace->second);
-                if (rate <= 0.0f)
+                auto const& [b, item] = key;
+                if (taken[b])
                     continue;
-                // units per hour once the walk there is paid for over the bot's share of the work
-                float const workHours = share / rate;
-                float const effective = share / (workHours + o.travel / 3600.0f);
-                float const before = already > 0.0f ? left / already : FLT_MAX;
-                float const after = left / (already + effective);
-                float const gain = before == FLT_MAX ? FLT_MAX / 2.0f + after : before - after;
-                if (gain > bestGain)
+                float const left = remaining[item];
+                if (left <= 0.0f)
+                    continue;
+                Player* bot = gatherers[b];
+                float const quest = questOf(bot);
+                float const already = itemRate[item];
+                float const share = left / float(itemBots[item] + 1);  // its part of what is left, by head count
+                for (Option const& o : list)
                 {
-                    bestGain = gain;
-                    bestBot = b;
-                    bestPlace = o.place;
-                    best.botLow = bot->GetGUID().GetCounter();
-                    best.itemId = item;
-                    best.placeId = place.id;
-                    best.kind = place.kind;
-                    best.spot = place.spot;
-                    best.need = uint32(std::ceil(left));
-                    best.ratePerHour = effective;
-                    best.travelSec = o.travel;
+                    GatherPlace const& place = places_[o.place];
+                    auto const pace = measuredPace.find(place.skill);
+                    float const rate = Rate(place, item, bot, placeLoad[o.place],
+                                            pace == measuredPace.end() ? -1.0f : pace->second);
+                    if (rate <= 0.0f)
+                        continue;
+                    // units per hour once the walk there is paid for over the bot's share of the work
+                    float const workHours = share / rate;
+                    float const effective = share / (workHours + o.travel / 3600.0f);
+                    float const value = effective * valueOf(item) / 60.0f;
+                    bool const worth = quest >= 0.0f && value > quest;
+                    if (worthPhase && !worth)
+                        continue;
+                    float const before = already > 0.0f ? left / already : FLT_MAX;
+                    float const after = left / (already + effective);
+                    float const gain = before == FLT_MAX ? FLT_MAX / 2.0f + after : before - after;
+                    if (gain > bestGain)
+                    {
+                        bestGain = gain;
+                        bestBot = b;
+                        bestPlace = o.place;
+                        best.botLow = bot->GetGUID().GetCounter();
+                        best.itemId = item;
+                        best.placeId = place.id;
+                        best.kind = place.kind;
+                        best.spot = place.spot;
+                        best.need = uint32(std::ceil(left));
+                        best.ratePerHour = effective;
+                        best.travelSec = o.travel;
+                        best.valuePerMin = value;
+                        best.questPerMin = quest;
+                        best.worth = worth;
+                    }
                 }
             }
+            if (bestGain < 0.0f)
+                break;
+            taken[bestBot] = true;
+            if (worthPhase)
+            {
+                ++placeLoad[bestPlace];
+                itemRate[best.itemId] += best.ratePerHour;
+                ++itemBots[best.itemId];
+            }
+            picks.push_back(best);
         }
-        if (bestGain < 0.0f)
-            break;
-        taken[bestBot] = true;
-        ++placeLoad[bestPlace];
-        itemRate[best.itemId] += best.ratePerHour;
-        ++itemBots[best.itemId];
-        picks.push_back(best);
-    }
 
-    // each bot's share of its item: in proportion to its rate among the bots on the item
+    // each bot's share of its item: in proportion to its rate among the worth bots on the item; a convenient task
+    // keeps the shortfall (what it picks on its quests counts toward it)
     for (GatherAssignment& a : picks)
     {
         GatherPlace const& place = places_[a.placeId - 1];
+        uint32 const shortBy = shortfall.at(a.itemId);
         float const total = itemRate[a.itemId];
-        a.share = total > 0.0f ? uint32(std::ceil(float(shortfall.at(a.itemId)) * a.ratePerHour / total)) : 0;
+        a.share = !a.worth ? shortBy : total > 0.0f ? uint32(std::ceil(float(shortBy) * a.ratePerHour / total)) : 0;
         a.placeName = PlaceName(place);
-        a.why = Acore::StringFormat("нужно {} (гильдии не хватает), здесь {:.0f}/ч, путь {:.0f} с, ботов на месте {}",
-                                    a.need, a.ratePerHour, a.travelSec, placeLoad[a.placeId - 1]);
+        std::string const pace =
+            a.questPerMin < 0.0f
+                ? Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт), квесты: нет замеров", a.valuePerMin,
+                                      valueOf(a.itemId))
+                : Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт) {} квесты {:.1f} м/мин", a.valuePerMin,
+                                      valueOf(a.itemId), a.worth ? ">" : "≤", a.questPerMin);
+        a.why = Acore::StringFormat("не хватает {}, здесь {:.1f}/ч, путь {:.0f} с, ботов на месте {}; {}", a.need,
+                                    a.ratePerHour, a.travelSec, a.worth ? placeLoad[a.placeId - 1] : 0, pace);
     }
 
     std::lock_guard<std::mutex> guard(lock_);
@@ -995,15 +1138,18 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
     for (GatherAssignment const& a : picks)
     {
         auto const old = assigned_.find(a.botLow);
-        if (old == assigned_.end() || old->second.itemId != a.itemId || old->second.placeId != a.placeId)
+        if (old == assigned_.end() || old->second.itemId != a.itemId || old->second.placeId != a.placeId ||
+            old->second.worth != a.worth)
         {
             Player* bot = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(a.botLow));
             LOG_INFO("playerbots",
-                     "[gather] plan {} item {} {} need {} share {} place {} kind {} map {} rate {:.1f}/h "
-                     "travel {:.0f}s because {}",
-                     bot ? bot->GetName() : std::to_string(a.botLow), a.itemId, ItemName(a.itemId), a.need, a.share,
-                     a.placeName, KindName(a.kind), a.spot.GetMapId(), a.ratePerHour, a.travelSec, a.why);
-            sessions_[a.botLow] = {a.itemId, getMSTime(), 0};
+                     "[gather] plan {} L{} item {} {} need {} share {} place {} kind {} map {} rate {:.1f}/h "
+                     "travel {:.0f}s {} because {}",
+                     bot ? bot->GetName() : std::to_string(a.botLow), bot ? uint32(bot->GetLevel()) : 0u, a.itemId,
+                     ItemName(a.itemId), a.need, a.share, a.placeName, KindName(a.kind), a.spot.GetMapId(),
+                     a.ratePerHour, a.travelSec, a.worth ? "URGENT" : "QUESTS_ON", a.why);
+            if (old == assigned_.end() || old->second.itemId != a.itemId)
+                sessions_[a.botLow] = {a.itemId, getMSTime(), 0};
         }
         next[a.botLow] = a;
         out.push_back(a);
@@ -1012,6 +1158,26 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
         if (!next.count(low))
             LOG_INFO("playerbots", "[gather] plan {} done item {} {} place {}", low, a.itemId, ItemName(a.itemId),
                      a.placeName);
+    // the gatherers with no place at all, and why (logged on change)
+    for (size_t b = 0; b < gatherers.size(); ++b)
+    {
+        uint32 const low = gatherers[b]->GetGUID().GetCounter();
+        if (next.count(low))
+        {
+            idleWhy_.erase(low);
+            continue;
+        }
+        Skipped const& s = skipped[b];
+        std::string const why = Acore::StringFormat(
+            "no place: other continent {}, refused {}, unsafe for L{} or skill short {}, no route {}", s.continent,
+            s.refused, uint32(gatherers[b]->GetLevel()), s.unsafeOrSkill, s.noRoute);
+        if (idleWhy_[low] != why)
+        {
+            idleWhy_[low] = why;
+            LOG_INFO("playerbots", "[gather] plan {} L{} quests: {}", gatherers[b]->GetName(),
+                     uint32(gatherers[b]->GetLevel()), why);
+        }
+    }
     assigned_ = std::move(next);
     return out;
 }
@@ -1021,10 +1187,19 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
 // ---------------------------------------------------------------------------------------------------------------------
 void GuildGatherPlan::OnGathered(Player* bot, uint32 itemId, uint32 count)
 {
-    bool const indexed = gatherSkill_.count(itemId) || disenchantMats_.count(itemId) || conversions_.count(itemId);
-    if (!bot || !count || !indexed)
+    if (!bot || !count)
         return;
     uint32 const low = bot->GetGUID().GetCounter();
+    // [gather] b337: chest loot made every drop "gathered" (Frayed Gloves, Worn Leather Boots: 339 of 376 got lines);
+    // a got line is a node / skin / fish item, a converted reagent, or the item of the bot's assignment
+    bool assignedItem = false;
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        auto const a = assigned_.find(low);
+        assignedItem = a != assigned_.end() && a->second.itemId == itemId;
+    }
+    if (!assignedItem && !harvest_.count(itemId) && !disenchantMats_.count(itemId) && !conversions_.count(itemId))
+        return;
     std::string place = AreaName(bot->GetZoneId());
     uint32 units = 0;
     float rate = -1.0f;

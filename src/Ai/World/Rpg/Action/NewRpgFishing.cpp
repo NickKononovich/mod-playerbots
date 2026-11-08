@@ -55,20 +55,26 @@ namespace
     }
 }
 
-bool NewRpgFishing::HasPole(Player* bot)
+namespace
 {
-    if (IsPole(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND)))
-        return true;
-    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-        if (IsPole(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot)))
-            return true;
-    for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
-        if (Bag* bag = bot->GetBagByPos(b))
-            for (uint32 j = 0; j < bag->GetBagSize(); ++j)
-                if (IsPole(bag->GetItemByPos(uint8(j))))
-                    return true;
-    return false;
+    // the bot's own pole: in hand, in the backpack or in a bag
+    Item* FindPole(Player* bot)
+    {
+        if (Item* hand = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND); IsPole(hand))
+            return hand;
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot); IsPole(item))
+                return item;
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            if (Bag* bag = bot->GetBagByPos(b))
+                for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                    if (Item* item = bag->GetItemByPos(uint8(j)); IsPole(item))
+                        return item;
+        return nullptr;
+    }
 }
+
+bool NewRpgFishing::HasPole(Player* bot) { return FindPole(bot) != nullptr; }
 
 bool NewRpgFishing::IsFishing(Player* bot)
 {
@@ -159,6 +165,21 @@ NewRpgFishing::Step NewRpgFishing::Tick(PlayerbotAI* botAI, Player* bot, WorldPo
                      water.GetMapId(), water.GetPositionX(), water.GetPositionY(),
                      bot->GetSkillValue(SKILL_FISHING));
         }
+    }
+
+    // [gather] the pole in hand first: FishingAction's own equip looks in the backpack only, a pole in a bag was
+    // never equipped and the cast failed without one
+    if (Item* pole = FindPole(bot); pole && !pole->IsEquipped())
+    {
+        std::string const name = pole->GetTemplate()->Name1;
+        AutoEquip(bot, pole, EQUIPMENT_SLOT_MAINHAND);
+        if (!IsPole(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND)))
+        {
+            why = "cannot equip its " + name;
+            return Step::DONE;
+        }
+        LOG_INFO("playerbots", "[gather] fish {} equips {}", bot->GetName(), name);
+        return Step::BUSY;
     }
 
     // the shore spot: MoveNearWaterAction sets the "fishing spot" value (water in cast range from here, or a land spot
