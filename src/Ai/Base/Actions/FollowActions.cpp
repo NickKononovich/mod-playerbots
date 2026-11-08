@@ -251,6 +251,44 @@ bool FollowAction::Execute(Event /*event*/)
                     return true;
                 }
         }
+    // [quest17] a guild follower hands in its complete quests where its party stands at their ender: its leader's
+    // route takes the stop ([quest16] "HAND_IN ... (for <member>)"), but a follower runs this follow, not the rpg
+    // status where [quest16] put the member's hand-in - b357: 5 such stops routed (Bierya for Arrengyl q930 / q2438),
+    // the member's hand-in never fired
+    if (!target.empty() && GuildHonest::IsHonestBot(bot) && !bot->IsInCombat() && !bot->GetMap()->Instanceable())
+        if (Unit* leader = AI_VALUE(Unit*, target); leader && leader->GetMapId() == bot->GetMapId())
+        {
+            bool complete = false;
+            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE && !complete; ++slot)
+                if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+                    complete = bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
+            if (complete)
+                for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
+                {
+                    Creature* npc = botAI->GetCreature(guid);
+                    if (!npc || !npc->IsAlive() || !npc->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ||
+                        leader->GetExactDist2d(npc) > sPlayerbotAIConfig.SightDistance)
+                        continue;
+                    uint32 ends = 0;
+                    QuestRelationBounds const bounds =
+                        sObjectMgr->GetCreatureQuestInvolvedRelationBounds(npc->GetEntry());
+                    for (auto itr = bounds.first; itr != bounds.second && !ends; ++itr)
+                        if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
+                            ends = itr->second;
+                    if (!ends)
+                        continue;
+                    if (npc->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
+                    {
+                        LOG_INFO("playerbots", "[quest17] {} L{} hands in q{} at {} with its leader {} by it",
+                                 bot->GetName(), bot->GetLevel(), ends, npc->GetName(), leader->GetName());
+                        return botAI->DoSpecificAction("talk to quest giver",
+                                                       Event("member hand-in", npc->GetGUID()), true);
+                    }
+                    if (MoveTo(npc->GetMapId(), npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), false,
+                               false, false, true))
+                        return true;
+                }
+        }
     if (!target.empty())
     {
         moved = Follow(AI_VALUE(Unit*, target));
