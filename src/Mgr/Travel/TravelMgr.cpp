@@ -4908,16 +4908,40 @@ void TravelMgr::PrepareDestinationCache()
         {
             CreatureTemplate const* creatureTemplate = sObjectMgr->GetCreatureTemplate(creatureDataList[0].id);
             uint32 level = (creatureTemplate->minlevel + creatureTemplate->maxlevel + 1) / 2;
+            // [holds9] b345: the grind spot was the 50-yd cell's corner with its z rounded to 50 yd ((-4700,-12300,0)
+            // on Azuremyst, (10250,950,1350) on Teldrassil): up to 25 yd above or under the ground, in water or rock -
+            // the walk there never arrives (MOVE_FAR_LOOP, IDLE, the same spot chosen again: Feeli, Pherua, Uraela,
+            // Ryarii). The spot is the cell's spawn nearest the mean of its spawns: a real floor where the mobs stand
+            float meanX = 0.0f, meanY = 0.0f, meanZ = 0.0f;
+            for (CreatureData const& spawn : creatureDataList)
+            {
+                meanX += spawn.posX;
+                meanY += spawn.posY;
+                meanZ += spawn.posZ;
+            }
+            float const count = float(creatureDataList.size());
+            meanX /= count;
+            meanY /= count;
+            meanZ /= count;
+            CreatureData const* centre = &creatureDataList.front();
+            float centreGap = std::numeric_limits<float>::max();
+            for (CreatureData const& spawn : creatureDataList)
+            {
+                float const dx = spawn.posX - meanX, dy = spawn.posY - meanY, dz = spawn.posZ - meanZ;
+                if (float const gap = dx * dx + dy * dy + dz * dz; gap < centreGap)
+                {
+                    centreGap = gap;
+                    centre = &spawn;
+                }
+            }
             for (int32 l = (int32)level - (int32)sPlayerbotAIConfig.RandomBotTeleLowerLevel;
                  l <= (int32)level + (int32)sPlayerbotAIConfig.RandomBotTeleHigherLevel; l++)
             {
                 if (l < 1 || l > int32(maxLevel))
                     continue;
 
-                locsPerLevelCache[(uint8)l].push_back(WorldLocation(std::get<0>(gridTuple),
-                    static_cast<float>(std::get<1>(gridTuple)) * 50.0f,
-                    static_cast<float>(std::get<2>(gridTuple)) * 50.0f,
-                    static_cast<float>(std::get<3>(gridTuple)) * 50.0f));
+                locsPerLevelCache[(uint8)l].push_back(
+                    WorldLocation(std::get<0>(gridTuple), centre->posX, centre->posY, centre->posZ));
             }
         }
     }

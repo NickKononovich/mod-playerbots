@@ -716,6 +716,18 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                             info.ChangeToGoGrind(hub);
                             return true;
                         }
+                        // [holds9] the target is a walk given up at this level (refused, or proven out of walk) and
+                        // no hub replaces it: a GO_GRIND there is refused again at once (b345 Ellosera: GRIND -> MAZE
+                        // -> IDLE, 32 HOLD / LOOP lines); the reason is logged, it rests until the choice runs again
+                        if (WalkGivenUp(bot, target.GetPositionX(), target.GetPositionY()))
+                        {
+                            LOG_INFO("playerbots", "[rpg] {} L{} STAY reason: q{} needs L{}, no grind spot of its "
+                                     "level left and its giver is a walk given up at this level",
+                                     bot->GetName(), bot->GetLevel(), questId, quest->GetMinLevel());
+                            info.ChangeToRest();
+                            bot->SetStandState(UNIT_STAND_STATE_SIT);
+                            return true;
+                        }
                     }
                     LOG_INFO("playerbots",
                              "[rpg] {} L{} GRIND reason: q{} {} needs L{}, giver {} yd, grind spot {} yd from it",
@@ -897,26 +909,50 @@ namespace
     }
 }
 
+bool NewRpgBaseAction::FarWalkStep(WorldPosition const& pos, char const* status)
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    // [holds9] b345 Emdyl, Manue: the group leader's GO_CAMP walk ran between the group waits (NewRpgWaitForGroupAction
+    // stops it each time): the walk waits with the group, its reason is the GROUP_WAIT line
+    if (info.groupWaiting)
+    {
+        info.holdNote.clear();
+        return true;
+    }
+    if (MoveFarTo(pos))
+    {
+        info.holdNote.clear();
+        return true;
+    }
+    std::string const refusal = LastMoveRefusal();
+    bool const searchFailed = info.moveFarFailed;
+    // Small nudge so the next tick's MoveFarTo starts from a
+    // slightly different position. Kept small so it doesn't look
+    // like the bot is abandoning its destination.
+    if (MoveRandomNear(10.0f))
+        return true;
+    // [holds9] b345: 27 STUCK "no route / unreachable destination" (670 s): the walk is refused, or no route and no
+    // step leads on from here, and the nudge finds no step either - nothing the bot does here changes it. The walk
+    // is given up (RefusedWalk: out of the choices until the next level, the state ends, IDLE takes the next target);
+    // a state of the moment (the last walk under way, a root, a cast) holds with its reason
+    bool const momentary = refusal.rfind("IsWaitingForLastMove", 0) == 0 ||
+                           refusal.rfind("IsDuplicateMove", 0) == 0 || refusal.rfind("IsMovingAllowed", 0) == 0;
+    if (!momentary && (!refusal.empty() || searchFailed) && !bot->IsInCombat())
+    {
+        info.holdNote.clear();
+        return RefusedWalk(pos, std::string(status) + " walk: " +
+                                    (refusal.empty() ? "the route search finds no walk from here" : refusal));
+    }
+    NoteWalkHold(bot, info, status, pos, refusal);
+    return false;
+}
+
 bool NewRpgGoGrindAction::Execute(Event /*event*/)
 {
     if (SearchQuestGiverAndAcceptOrReward())
         return true;
     if (auto* data = std::get_if<NewRpgInfo::GoGrind>(&botAI->rpgInfo.data))
-    {
-        if (MoveFarTo(data->pos))
-        {
-            botAI->rpgInfo.holdNote.clear();
-            return true;
-        }
-        std::string const refusal = LastMoveRefusal();
-        // Small nudge so the next tick's MoveFarTo starts from a
-        // slightly different position. Kept small so it doesn't look
-        // like the bot is abandoning its destination.
-        if (MoveRandomNear(10.0f))
-            return true;
-        NoteWalkHold(bot, botAI->rpgInfo, "GO_GRIND", data->pos, refusal);
-        return false;
-    }
+        return FarWalkStep(data->pos, "GO_GRIND");
 
     return false;
 }
@@ -927,18 +963,7 @@ bool NewRpgGoCampAction::Execute(Event /*event*/)
         return true;
 
     if (auto* data = std::get_if<NewRpgInfo::GoCamp>(&botAI->rpgInfo.data))
-    {
-        if (MoveFarTo(data->pos))
-        {
-            botAI->rpgInfo.holdNote.clear();
-            return true;
-        }
-        std::string const refusal = LastMoveRefusal();
-        if (MoveRandomNear(10.0f))
-            return true;
-        NoteWalkHold(bot, botAI->rpgInfo, "GO_CAMP", data->pos, refusal);
-        return false;
-    }
+        return FarWalkStep(data->pos, "GO_CAMP");
 
     return false;
 }

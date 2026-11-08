@@ -239,6 +239,10 @@ struct NewRpgInfo
     bool groupWaiting{false};
     // [stuck8] the last HOLD reason logged for a walk that gives no move (logged once per change)
     std::string holdNote;
+    // [holds9] the "last movement" clock (LastMovement::msTime) a deliberate wait set (NewRpgBaseAction::ForceToWait:
+    // the group wait, a patrol's window): a far walk honours it; any other clock with the bot standing is a walk whose
+    // spline already ended (b345: 61 HOLDs "IsWaitingForLastMove" with the bot still)
+    uint32 waitClockMs{0};
 
     using RpgData = std::variant<
         Idle,

@@ -152,6 +152,13 @@ public:
     // [deaths] the walk to `dest` is refused (`why`): its quest is postponed (the co-op seek asks for a party), its
     // gather node skipped, its state ended; true: the tick is used
     bool RefusedWalk(WorldPosition const& dest, std::string const& why);
+    // [holds9] a walk given up (refused, or proven out of walk: MOVE_FAR_LOOP, no route and no step): its spot is out
+    // of the choices (TripRefused, the grind spot choice) until the bot's next level; one GIVE_UP line per spot
+    static void NoteWalkGivenUp(Player* bot, WorldPosition const& dest, std::string const& why);
+    static bool WalkGivenUp(Player* bot, float x, float y);
+    // [holds9] a GO_GRIND / GO_CAMP tick: the far walk to `pos`, else a nudge, else the walk given up or a HOLD with
+    // its reason (NewRpgAction.cpp)
+    bool FarWalkStep(WorldPosition const& pos, char const* status);
     // [guild13] a hunter with Tame Beast and no pet tames the nearest tameable beast of its level
     bool TameFirstPet();
     // [guild13] the walk's end lies in a danger zone or among idle mobs whose pull the judge refuses (logged, the pack

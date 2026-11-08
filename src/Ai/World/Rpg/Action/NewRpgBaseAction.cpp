@@ -366,8 +366,15 @@ bool NewRpgBaseAction::TameFirstPet()
 
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 {
+    // [holds9] the refusal read after this call (LastMoveRefusal) is this call's: s_moveRefusal is thread-wide and
+    // held the last MoveTo of any bot on the thread (b345: "IsWaitingForLastMove" / "IsDuplicateMove" HOLDs of walks
+    // that never called MoveTo); every false below names its reason there
+    s_moveRefusal.clear();
     if (dest == WorldPosition())
+    {
+        s_moveRefusal = "no destination";
         return false;
+    }
 
     if (SoloSafetyStep())  // [guild13]
         return true;
@@ -399,7 +406,11 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         return true;
 
     if (dest.GetMapId() != bot->GetMapId())
+    {
+        if (s_moveRefusal.empty())
+            s_moveRefusal = "the destination lies on another map and no trip there starts";
         return false;
+    }
 
     return WalkTo(dest);
 }
@@ -407,6 +418,9 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const& why)
 {
     NewRpgStatus const status = botAI->rpgInfo.GetStatus();
+    // [holds9] b345 Ellosera: "MAZE no way to (-2050,-12000)" -> IDLE -> the same grind spot chosen again (its
+    // TripRefused look had judged it safe at this level): the refused spot is out of the choices until the next level
+    NoteWalkGivenUp(bot, dest, why);
     // a quest whose spot (its objective or its ender: b302 Kianey's q45 hand-in at Rolf's corpse among seven
     // Murlocs, re-chosen every look) lies there is postponed: the planner takes the next one
     if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
@@ -2057,10 +2071,19 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         last.msTime = 0;
     }
 
-    // performance optimization
+    // performance optimization: the last walk's clock (its distance / speed estimate) runs
+    // [holds9] b345: 61 HOLDs "IsWaitingForLastMove" with the bot standing, and this return gave no move and no
+    // reason. The clock is an estimate of the walk, not the walk: a walk under way uses the tick (true); a deliberate
+    // wait (ForceToWait: the group wait, a patrol's window, each logged) holds it (true); a clock of a walk whose
+    // spline already ended (it stopped short of the estimate: a path end nearer than asked, a fight, a stop) is over -
+    // the walk is searched again from where the bot stands
     if (!newDest && IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
     {
-        return false;
+        LastMovement& last = AI_VALUE(LastMovement&, "last movement");
+        if (bot->isMoving() || last.msTime == botAI->rpgInfo.waitClockMs)
+            return true;
+        last.lastdelayTime = 0.0f;
+        last.msTime = 0;
     }
 
     // Let previously committed movement finish before recomputing.
@@ -2140,8 +2163,12 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
                 botAI->lowPriorityQuest.insert(quest->questId);
 
+            // [holds9] b345 Ellosera, Feeli, Pherua: the give-up went back to IDLE, the choice took the same spot
+            // again (LOOP alerts) and the caller logged a HOLD with no reason: the spot is remembered as out of walk
+            // for the choices (TripRefused) until the next level, and the state change uses the tick
+            NoteWalkGivenUp(bot, dest, "no walk from here gets it closer (MOVE_FAR_LOOP)");
             botAI->rpgInfo.ChangeToIdle();
-            return false;
+            return true;
         }
 
         AreaTableEntry const* entry = sAreaTableStore.LookupEntry(bot->GetZoneId());
@@ -2162,7 +2189,10 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     // stands elsewhere (its random step, a fight, a fall) or the destination changes
     if (botAI->rpgInfo.moveFarFailed &&
         bot->GetExactDist(botAI->rpgInfo.failedFromX, botAI->rpgInfo.failedFromY, botAI->rpgInfo.failedFromZ) < 3.0f)
+    {
+        s_moveRefusal = "the route search found no walk from this spot";  // [holds9]
         return false;
+    }
     botAI->rpgInfo.moveFarFailed = false;
     float dis = bot->GetExactDist(dest);
     if (dis < pathFinderDis)
@@ -2400,6 +2430,8 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     {
         return MoveTo(bot->GetMapId(), rx, ry, rz, false, false, false, true);
     }
+    if (s_moveRefusal.empty())
+        s_moveRefusal = "no route there and no reachable step in its forward cone";  // [holds9]
     return false;
 }
 
@@ -2492,9 +2524,10 @@ bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority,
 
 bool NewRpgBaseAction::ForceToWait(uint32 duration, MovementPriority priority)
 {
-    AI_VALUE(LastMovement&, "last movement")
-        .Set(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetOrientation(),
+    LastMovement& last = AI_VALUE(LastMovement&, "last movement");
+    last.Set(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetOrientation(),
              duration, priority);
+    botAI->rpgInfo.waitClockMs = last.msTime;  // [holds9]
     return true;
 }
 
@@ -3808,8 +3841,48 @@ CreatureTemplate const* NewRpgBaseAction::TripDanger(Player* bot, float x, float
     return DangerOnWay(bot, lastX, lastY, x, y);
 }
 
+namespace
+{
+    // [holds9] bot -> spot (map, x, y) given up -> the level it was given up at
+    std::mutex givenUpLock;
+    std::unordered_map<uint32, std::map<std::tuple<uint32, int32, int32>, uint8>> givenUp;
+}
+
+void NewRpgBaseAction::NoteWalkGivenUp(Player* bot, WorldPosition const& dest, std::string const& why)
+{
+    if (!bot || dest == WorldPosition())
+        return;
+    std::tuple<uint32, int32, int32> const key{dest.GetMapId(), int32(dest.GetPositionX()), int32(dest.GetPositionY())};
+    {
+        std::lock_guard<std::mutex> guard(givenUpLock);
+        auto& spots = givenUp[bot->GetGUID().GetCounter()];
+        auto const found = spots.find(key);
+        if (found != spots.end() && found->second == bot->GetLevel())
+            return;
+        spots[key] = bot->GetLevel();
+    }
+    LOG_INFO("playerbots", "[rpg] {} L{} GIVE_UP walk to ({:.0f},{:.0f},{:.0f}) {:.0f} yd reason: {}; out of its "
+             "choices until L{}",
+             bot->GetName(), bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
+             bot->GetExactDist(dest), why, bot->GetLevel() + 1);
+}
+
+bool NewRpgBaseAction::WalkGivenUp(Player* bot, float x, float y)
+{
+    if (!bot)
+        return false;
+    std::lock_guard<std::mutex> guard(givenUpLock);
+    auto const spots = givenUp.find(bot->GetGUID().GetCounter());
+    if (spots == givenUp.end())
+        return false;
+    auto const found = spots->second.find({bot->GetMapId(), int32(x), int32(y)});
+    return found != spots->second.end() && found->second == bot->GetLevel();
+}
+
 bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::string const& what)
 {
+    if (WalkGivenUp(bot, x, y))  // [holds9]
+        return true;
     if (!bot || !SoloSafety::Applies(bot))
         return false;
     if (InDangerZone(bot, x, y))
@@ -4606,6 +4679,9 @@ WorldPosition NewRpgBaseAction::SelectRandomGrindPos(Player* bot)
             continue;
 
         if (bot->GetExactDist(loc) > 2500.0f)
+            continue;
+
+        if (WalkGivenUp(bot, loc.GetPositionX(), loc.GetPositionY()))  // [holds9]
             continue;
 
         if (!inCity && bot->GetMap()->GetZoneId(bot->GetPhaseMask(), loc.GetPositionX(), loc.GetPositionY(),
@@ -6145,7 +6221,8 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
     // IDLE), else the nearest (the caller then tries its hub)
     std::vector<std::pair<float, WorldPosition>> grinds;
     for (WorldLocation const& loc : sTravelMgr.GetLocsPerLevelCache(level))
-        if (loc.GetMapId() == bot->GetMapId() && bot->GetExactDist(loc) >= 10.0f)
+        if (loc.GetMapId() == bot->GetMapId() && bot->GetExactDist(loc) >= 10.0f &&
+            !WalkGivenUp(bot, loc.GetPositionX(), loc.GetPositionY()))  // [holds9] not even as the fallback
             grinds.emplace_back(giverPos.GetExactDist(loc), WorldPosition(loc));
     std::sort(grinds.begin(), grinds.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
     if (!grinds.empty())
