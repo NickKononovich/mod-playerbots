@@ -53,6 +53,11 @@ Result Estimate(Player* bot, Unit* target, BuffContext ctx, float fightSec = 0.0
 float EstimateDps(Player* bot, Unit* target, BuffContext ctx, float fightSec = 0.0f);
 float EstimateTps(Player* bot, Unit* target, BuffContext ctx);
 
+// [rot603] A cooldown nuke cast only where it pays (Fire Blast, Mind Blast while levelling): one cast's damage on
+// `target` (SpellPayoff::Read) at least the filler's in the cast's execute time (SpellPayoff::FillerDps). The bot's
+// "fire blast pays" / "mind blast pays" triggers and the formula read this one rule. True when no filler is known.
+bool CastPays(Player* bot, Unit* target, uint32 spellId, uint32 fillerSpellId);
+
 char const* ContextName(BuffContext ctx);
 // a solo bot outside a group: Solo; a party: Group; a raid group: Raid
 BuffContext ContextOf(Player* bot);

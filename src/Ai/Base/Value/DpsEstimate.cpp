@@ -23,6 +23,7 @@
 #include "Log.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
+#include "PetAI.h"  // [rot606] SpecialPets
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -85,15 +86,17 @@ constexpr float STEADY_SHOT_RAP = 0.1f;
 
 enum class Kind : uint8
 {
-    Dot,       // kept up: once per its duration
-    Cooldown,  // on cooldown
-    Filler,    // the rest of the time (non-rune classes: the best one only)
-    Swing,     // on the next swing (Heroic Strike, Maul): replaces a main hand swing
-    Builder,   // combo point builder
-    Finisher,  // combo point finisher at five points
-    ComboDot,  // combo point finisher kept up (Rupture, Rip)
-    Dump,      // runic power dump
-    Judgement  // the seal's judgement on cooldown
+    Dot,           // kept up: once per its duration
+    Cooldown,      // on cooldown
+    Filler,        // the rest of the time (non-rune classes: the best one only)
+    Swing,         // on the next swing (Heroic Strike, Maul): replaces a main hand swing
+    Builder,       // combo point builder
+    Finisher,      // combo point finisher at five points
+    ComboDot,      // combo point finisher kept up (Rupture, Rip)
+    Dump,          // runic power dump
+    Judgement,     // the seal's judgement on cooldown
+    PaidCooldown,  // [rot603] on cooldown where one cast beats the filler in its execute time (DpsEstimate::CastPays)
+    Opener         // [rot605] once at a solo fight's start (its fresh mob): nothing in the steady state
 };
 
 enum class Script : uint8
@@ -105,7 +108,8 @@ enum class Script : uint8
     FerociousBite,
     Rupture,
     SteadyShot,
-    Conflagrate  // Immolate's full damage x (effect 1 + effect 2) % (SpellEffects.cpp)
+    Conflagrate,  // Immolate's full damage x (effect 1 + effect 2) % (SpellEffects.cpp)
+    BestFiller    // [rot604] the stronger of the marked fillers it knows by SpellPayoff::FillerDps, as the bot picks
 };
 
 struct Ability
@@ -220,20 +224,22 @@ std::vector<SpecRotation> const& Rotations()
           {"Sinister Strike", Kind::Builder},
           {"Rupture", Kind::ComboDot, Script::Rupture},
           {"Eviscerate", Kind::Finisher, Script::Eviscerate}}},
-        // smite_priest/apls/default (Holy Fire, Shadow Word: Pain, Smite; no Mind Blast): the solo "holy dps" strategy
-        // (HolyDpsPriestStrategy: Smite, the "holy fire" trigger, "shadow debuff"); PriestHealerDpsStrategy ranks Mind
-        // Blast below Smite, so it is never cast
+        // smite_priest/apls/default (Holy Fire, Shadow Word: Pain, Smite): the solo "holy dps" strategy
+        // (HolyDpsPriestStrategy: Smite, the "holy fire" trigger, "shadow debuff"); [rot603] Mind Blast where it pays
+        // ("mind blast pays": b338 L10-19 ideal / formula 1.11 with it)
         {CLASS_PRIEST,
          0,
          true,
          {{"Shadow Word: Pain", Kind::Dot},
           {"Holy Fire", Kind::Cooldown},
+          {"Mind Blast", Kind::PaidCooldown},
           {"Smite", Kind::Filler}}},
         {CLASS_PRIEST,
          1,
          true,
          {{"Shadow Word: Pain", Kind::Dot},
           {"Holy Fire", Kind::Cooldown},
+          {"Mind Blast", Kind::PaidCooldown},
           {"Smite", Kind::Filler}}},
         // shadow_priest/apls/default
         {CLASS_PRIEST,
@@ -295,23 +301,33 @@ std::vector<SpecRotation> const& Rotations()
           {"Lava Lash", Kind::Cooldown}}},
         {CLASS_SHAMAN, 2, true, {{"Flame Shock", Kind::Dot}, {"Lightning Bolt", Kind::Filler}}},
         // mage/apls arcane / fire / frost; the bot's defaults (Arcane / Fire / FrostMageStrategy): Arcane Blast, Arcane
-        // Missiles, Frostbolt; Fireball, Frostbolt; Frostbolt, Fireball. Fire Blast only on the move (below the
-        // filler), Arcane Barrage too
+        // Missiles, Frostbolt; Fireball, Frostbolt; Frostbolt, Fireball. Arcane Barrage only on the move (below the
+        // filler). [rot604] Arcane and Frost cast Fireball over Frostbolt where it deals more ("fireball over
+        // frostbolt": Fireball rank 2 at L6-7 against Frostbolt rank 1; b338 L1-9 frost ideal / formula 1.06).
+        // [rot603] Fire Blast where it pays for Fire and Frost ("fire blast pays", user 2026-11-08)
         {CLASS_MAGE,
          0,
          true,
          {{"Arcane Blast", Kind::Filler},
           {"Arcane Missiles", Kind::Filler},
-          {"Frostbolt", Kind::Filler}}},
+          {"Fireball", Kind::Filler, Script::BestFiller},
+          {"Frostbolt", Kind::Filler, Script::BestFiller}}},
         {CLASS_MAGE,
          1,
          true,
          {{"Living Bomb", Kind::Dot},
+          {"Fire Blast", Kind::PaidCooldown},
           {"Fireball", Kind::Filler},
           {"Frostbolt", Kind::Filler}}},
-        {CLASS_MAGE, 2, true, {{"Frostbolt", Kind::Filler}, {"Fireball", Kind::Filler}}},
+        {CLASS_MAGE,
+         2,
+         true,
+         {{"Fire Blast", Kind::PaidCooldown},
+          {"Frostbolt", Kind::Filler, Script::BestFiller},
+          {"Fireball", Kind::Filler, Script::BestFiller}}},
         // warlock/apls affliction / demonology / destruction; AfflictionWarlockStrategy (+ "curse of agony"): Haunt,
-        // Unstable Affliction, Corruption, Curse of Agony, Shadow Bolt (no Immolate)
+        // Unstable Affliction, Corruption, Curse of Agony, [rot602] Immolate before Unstable Affliction ("affliction
+        // immolate"; ComputeAt drops it once Unstable Affliction is known), Shadow Bolt
         {CLASS_WARLOCK,
          0,
          true,
@@ -319,6 +335,7 @@ std::vector<SpecRotation> const& Rotations()
           {"Unstable Affliction", Kind::Dot},
           {"Corruption", Kind::Dot},
           {"Curse of Agony", Kind::Dot},
+          {"Immolate", Kind::Dot},
           {"Shadow Bolt", Kind::Filler}}},
         // DemonologyWarlockStrategy: Corruption, Immolate, Shadow Bolt before Incinerate (Molten Core only); no Curse
         // of Agony (WarlockCurseOfAgonyStrategy is Affliction's)
@@ -329,7 +346,8 @@ std::vector<SpecRotation> const& Rotations()
           {"Immolate", Kind::Dot},
           {"Shadow Bolt", Kind::Filler},
           {"Incinerate", Kind::Filler}}},
-        // DestructionWarlockStrategy [rot410]: no Corruption (the wowsims destro APL never casts it)
+        // DestructionWarlockStrategy [rot410]: no Corruption (the wowsims destro APL never casts it); [rot601] Immolate
+        // under the payoff rule against Shadow Bolt before Incinerate (the formula's DotRateOver rule)
         {CLASS_WARLOCK,
          2,
          true,
@@ -368,6 +386,31 @@ SpecRotation const& BearRotation()
                                        {"Swipe (Bear)", Kind::Filler},
                                        {"Maul", Kind::Swing}}};
     return bear;
+}
+
+// [rot605] A hunter alone without a pet (below L10, or its pet dead): the mob it shoots runs to it and stays in melee,
+// inside Auto Shot's minimum range (GenericHunterStrategy "hunter needs melee" / "hunter melee phase"). Serpent Sting
+// and one Arcane Shot open the fight from range, then its weapon and Raptor Strike on the next swing at its cooldown.
+// b338 L1-9 beast mastery: Raptor Strike 1.7, Serpent Sting 0.8, Arcane Shot 0.6 casts a 16 s fight, melee swings
+// after the opener, 0.78 of a formula that kept Auto Shot and Arcane Shot up the whole fight.
+SpecRotation const& HunterMeleeRotation()
+{
+    static SpecRotation const melee = {
+        CLASS_HUNTER,
+        255,
+        false,
+        {{"Serpent Sting", Kind::Dot}, {"Arcane Shot", Kind::Opener}, {"Raptor Strike", Kind::Swing}}};
+    return melee;
+}
+
+// the solo hunter's case above: no living pet, no group of its own
+bool PetlessSoloHunter(Player* bot)
+{
+    if (bot->getClass() != CLASS_HUNTER)
+        return false;
+    Pet* pet = bot->GetPet();
+    Group* group = bot->GetGroup();
+    return (!pet || !pet->IsAlive()) && (!group || group->GetMembersCount() <= 1);
 }
 
 // ---- buffs -------------------------------------------------------------------------------------------------
@@ -1341,13 +1384,13 @@ std::vector<SpecRotation> const& IdealRotations()
          1,
          true,
          {{"Living Bomb", Kind::Dot},
-          {"Fire Blast", Kind::Cooldown},
+          {"Fire Blast", Kind::PaidCooldown},
           {"Fireball", Kind::Filler},
           {"Frostbolt", Kind::Filler}}},
         {CLASS_MAGE,
          2,
          true,
-         {{"Frostbolt", Kind::Filler}, {"Fireball", Kind::Filler}, {"Fire Blast", Kind::Cooldown}}},
+         {{"Fire Blast", Kind::PaidCooldown}, {"Frostbolt", Kind::Filler}, {"Fireball", Kind::Filler}}},
         {CLASS_WARLOCK,
          0,
          true,
@@ -1382,6 +1425,8 @@ SpecRotation const* RotationOf(Player* bot, bool ideal = false)
 {
     uint8 const cls = bot->getClass();
     uint8 const tab = AiFactory::GetPlayerSpecTab(bot);
+    if (PetlessSoloHunter(bot))
+        return &HunterMeleeRotation();  // [rot605] the ideal too: no pet takes the mob off it
     if (ideal)
         for (SpecRotation const& rotation : IdealRotations())
             if (rotation.cls == cls && (rotation.tab == 255 || rotation.tab == tab))
@@ -1413,6 +1458,59 @@ struct Profile
     std::vector<std::pair<uint32, float>> parts;  // [dpscal] damage per second by rotation spell ([dpsparts] log)
 };
 
+// [rot606] PetAI::_canMeleeAttack: an imp or a water elemental with the mana for its bolt chases to the bolt's range
+// and never swings (b338: the formula gave the L1-12 warlocks' imps a melee swing too)
+bool BoltCaster(Pet* pet)
+{
+    switch (pet->GetEntry())
+    {
+        case ENTRY_IMP:
+        case ENTRY_WATER_ELEMENTAL:
+        case ENTRY_WATER_ELEMENTAL_PERM:
+            break;
+        default:
+            return false;
+    }
+    for (uint8 i = 0; i < pet->GetPetAutoSpellSize(); ++i)
+    {
+        uint32 const id = pet->GetPetAutoSpellOnPos(i);
+        switch (id)
+        {
+            case IMP_FIREBOLT_RANK_1:
+            case IMP_FIREBOLT_RANK_2:
+            case IMP_FIREBOLT_RANK_3:
+            case IMP_FIREBOLT_RANK_4:
+            case IMP_FIREBOLT_RANK_5:
+            case IMP_FIREBOLT_RANK_6:
+            case IMP_FIREBOLT_RANK_7:
+            case IMP_FIREBOLT_RANK_8:
+            case IMP_FIREBOLT_RANK_9:
+            case WATER_ELEMENTAL_WATERBOLT_1:
+            case WATER_ELEMENTAL_WATERBOLT_2:
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(id))
+                    if (int32(pet->GetPower(POWER_MANA)) >= info->CalcPowerCost(pet, info->GetSchoolMask()))
+                        return true;
+                break;
+            default:
+                break;
+        }
+    }
+    return false;
+}
+
+// [rot607] A solo bot's fresh mob: its melee pet runs to it first, from beside its owner at its run speed (the mob
+// standing; it comes on once hit, so this is the longest run). A bolt caster casts from where it stands: its first bolt
+// is under way with the owner's first cast, which the [dps] window's lead covers.
+float PetReachSec(Pet* pet, Unit* target)
+{
+    if (!pet || !target || BoltCaster(pet))
+        return 0.0f;
+    float const speed = pet->GetSpeed(MOVE_RUN);
+    if (speed <= 0.0f)
+        return 0.0f;
+    return std::max(0.0f, pet->GetExactDist(target) - pet->GetMeleeRange(target)) / speed;
+}
+
 // the pet's white damage and its autocast spells on cooldown (focus-limited for a hunter's)
 float PetDps(Model const& m, Pet* pet)
 {
@@ -1422,7 +1520,7 @@ float PetDps(Model const& m, Pet* pet)
     Model pm = m;
     pm.front = false;  // a pet attacks from where it stands; the mob faces its owner or the pet itself
     Swing const swing = WhiteSwing(pm, pet, BASE_ATTACK, raw, 0.0f);
-    float dps = swing.damage * swing.perSec;
+    float dps = BoltCaster(pet) ? 0.0f : swing.damage * swing.perSec;
     float time = 1.0f;
     float focus = pet->getPowerType() == POWER_FOCUS ? PET_FOCUS_REGEN : std::numeric_limits<float>::max();
     for (uint8 i = 0; i < pet->GetPetAutoSpellSize(); ++i)
@@ -1531,6 +1629,10 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     if (rotation)
         known = KnownByName(bot, *rotation);
     bool const caster = rotation && rotation->caster;
+    // [rot602] Immolate and Unstable Affliction do not stack (Rawr 2.3.23 CalculationOptionsWarlock): the warlock with
+    // Unstable Affliction keeps that one
+    if (rotation && cls == CLASS_WARLOCK && known["Unstable Affliction"])
+        known["Immolate"] = 0;
     if (rotation && cls == CLASS_WARLOCK)
         m.immolate = known["Immolate"];
 
@@ -1567,7 +1669,8 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     float const meleeWhite = mh.damage * mh.perSec + oh.damage * oh.perSec;
     float const rangedWhite = ranged.damage * ranged.perSec;
     bool const hunter = cls == CLASS_HUNTER;
-    float rotationWhite = caster ? 0.0f : (hunter ? rangedWhite : meleeWhite);
+    bool const meleeHunter = rotation == &HunterMeleeRotation();  // [rot605]
+    float rotationWhite = caster ? 0.0f : (hunter && !meleeHunter ? rangedWhite : meleeWhite);
     float whiteTps =
         rotationWhite * bot->GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_THREAT, SPELL_SCHOOL_MASK_NORMAL);
     p.white = caster ? std::max(meleeWhite, rangedWhite) : rotationWhite;
@@ -1663,17 +1766,19 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
         uint32 seal = 0;
         if (cls == CLASS_PALADIN)
             seal = known["Seal of Righteousness"];
-        // [dpscal] the filler it casts: the first one it knows in the bot's priority (the list's order)
-        // (the ideal: the strongest one it knows, SpellPayoff::FillerDps)
+        // [dpscal] the filler it casts: the first one it knows in the bot's priority (the list's order); [rot604] the
+        // stronger of the BestFiller ones it knows when it gets to them (SpellPayoff::FillerDps, the bot's rule)
+        // (the ideal: the strongest one it knows)
         uint32 fillerId = 0;
         float fillerBest = 0.0f;
         for (Ability const& ability : rotation->abilities)
             if (ability.kind == Kind::Filler && known[ability.name])
             {
                 uint32 const id = known[ability.name];
-                if (!ideal)
+                if (!ideal && ability.script != Script::BestFiller)
                 {
-                    fillerId = id;
+                    if (!fillerId)
+                        fillerId = id;
                     break;
                 }
                 float const dps = m.standIn ? 0.0f : SpellPayoff::FillerDps(bot, target, id);
@@ -1711,11 +1816,22 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
                 }
                 cast.kind = Kind::Cooldown;
             }
+            // [rot603] a cooldown nuke where it pays against the filler, as the bot casts it
+            if (cast.kind == Kind::PaidCooldown)
+            {
+                if (!m.standIn && !DpsEstimate::CastPays(bot, target, id, fillerId))
+                    continue;
+                cast.kind = Kind::Cooldown;
+            }
             // [dpscal] a mana spell over a fight of lifeSec: a DoT as the bot's payoff rule casts it, a cooldown at the
             // fight's start and then on its cooldown (the casts that land before the death)
             bool const finite = lifeSec > 0.0f && cast.power == POWER_MANA;
             switch (cast.kind)
             {
+                case Kind::Opener:  // [rot605]
+                    if (lifeSec > 0.0f && lifeSec >= cast.executeSec)
+                        spend(cast, affordable(cast, 1.0f / lifeSec));
+                    break;
                 case Kind::Dot:
                     if (finite)
                     {
@@ -1796,9 +1912,15 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             }
             else
             {
-                // [dpscal] the first it knows in the bot's priority, not the best one: the bot casts that one (the
-                // ideal: the best one)
+                // [dpscal] the first it knows in the bot's priority, not the best one: the bot casts that one
+                // ([rot604] fillerId: the stronger BestFiller one) (the ideal: the best one)
                 Cast const* pick = &fillers.front();
+                for (Cast const& filler : fillers)
+                    if (filler.id == fillerId)
+                    {
+                        pick = &filler;
+                        break;
+                    }
                 if (ideal)
                     for (Cast const& filler : fillers)
                         if (filler.damage / std::max(filler.executeSec, 0.1f) >
@@ -1813,7 +1935,9 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
         {
             Cast dump = swingCast;
             dump.cost = swingCast.cost + mh.rage;
-            float const rate = std::min(swingsLeft, affordable(dump, swingsLeft));
+            float rate = std::min(swingsLeft, affordable(dump, swingsLeft));
+            if (swingCast.periodSec > 0.0f)
+                rate = std::min(rate, 1.0f / swingCast.periodSec);  // [rot605] Raptor Strike's cooldown
             dump.damage = swingCast.damage - mh.damage;
             dump.threat = swingCast.threat - mh.damage;
             spend(dump, rate);
@@ -1839,6 +1963,9 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     }
 
     p.pet = PetDps(m, bot->GetPet());
+    // [rot607] over a solo fight: the pet's damage from its arrival (b338 warlocks' demons 4.0-6.5 of 8-13 dps)
+    if (lifeSec > 0.0f && !m.standIn && p.pet > 0.0f)
+        p.pet *= std::max(0.0f, lifeSec - PetReachSec(bot->GetPet(), target)) / lifeSec;
     p.burst = damage + p.pet;
     p.white += p.pet;
     p.tps = threat;
@@ -2016,6 +2143,18 @@ float EstimateDps(Player* bot, Unit* target, BuffContext ctx, float fightSec)
 }
 
 float EstimateTps(Player* bot, Unit* target, BuffContext ctx) { return Estimate(bot, target, ctx).tps; }
+
+bool CastPays(Player* bot, Unit* target, uint32 spellId, uint32 fillerSpellId)
+{
+    if (!bot || !target || !spellId)
+        return false;
+    if (!fillerSpellId)
+        return true;
+    SpellPayoff::Cast cast;
+    if (!SpellPayoff::Read(bot, target, spellId, cast))
+        return false;
+    return cast.Total() >= SpellPayoff::FillerDps(bot, target, fillerSpellId) * cast.executeMs / float(IN_MILLISECONDS);
+}
 
 char const* ContextName(BuffContext ctx)
 {
