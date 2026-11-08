@@ -1659,6 +1659,34 @@ namespace TestHarness
         LogEvent(party, "positions", event);
     }
 
+    // [raid4] b355 wb-kazzak: the boss's auras during his fight, for the uptime of the group's debuffs on him
+    // (Judgement of Wisdom / Light, Sunder, Faerie Fire, ...) and his own buffs. One "boss_auras" line:
+    //   boss name, e entry, g GUID low, hp %, a [[spell id, caster name ("" none / not found), stacks, ms left], ...]
+    //   (stacks = max(stacks, charges); ms left -1 = no duration)
+    void TestHarnessMgr::LogBossAuras(Party& party, Creature* boss, std::string const& name)
+    {
+        JsonArray auras;
+        for (auto const& [spellId, application] : boss->GetAppliedAuras())
+        {
+            Aura const* aura = application ? application->GetBase() : nullptr;
+            if (!aura)
+                continue;
+            Unit* caster = aura->GetCaster();
+            auras.Raw(JsonArray()
+                          .Num(spellId)
+                          .Str(caster ? caster->GetName() : std::string())
+                          .Num(std::max<int64>(aura->GetStackAmount(), aura->GetCharges()))
+                          .Num(aura->GetDuration())
+                          .Build());
+        }
+        LogEvent(party, "boss_auras", JsonObject()
+                                          .Str("boss", name)
+                                          .Num("e", boss->GetEntry())
+                                          .Num("g", int64(boss->GetGUID().GetCounter()))
+                                          .Real("hp", boss->GetHealthPct())
+                                          .Raw("a", auras.Build()));
+    }
+
     // [harness30] user 2026-11-03: stack data for every spec, not per-class traces (b221 [rot320] poison doses,
     // [rot334] Lacerate). One "aura_stacks" line per POSITIONS_MS in combat and one at a boss engage:
     //   ms   run time (ms, finer than elapsedSec), at "tick" / "boss_pull"

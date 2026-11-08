@@ -203,6 +203,7 @@ namespace TestHarness
         std::string id;  // run id, or "P<seq>" for a prepared party
         Composition const* comp = nullptr;
         ContentDef const* content = nullptr;
+        uint32 bossAuraSamples = 0;  // [raid4] positions samples of boss attempts (the boss_auras cadence)
         uint32 worldBossSpawn = 0;  // [world_boss] the boss's creature spawn id (LoadEntrances), 0: not a world boss
         uint32 worldBossWaitMs = 0;  // [b342] since when the arrived group waits for the boss to appear
         std::string worldBossPrepState;  // [b342] the last logged world_boss_prep state (logged on a change)
@@ -684,6 +685,8 @@ namespace TestHarness
         void LogPullStart(Party& party, std::vector<Player*> const& players);
         void Heartbeat(Party& party, std::vector<Player*> const& players, Player* leader);
         void LogPositions(Party& party, std::vector<Player*> const& players);
+        // [raid4] every aura on the boss now: spell, caster, stacks, ms left ("boss_auras")
+        void LogBossAuras(Party& party, Creature* boss, std::string const& name);
         // [harness30] every member's own auras and the auras it put on each mob it fights, with stacks / charges and
         // the ms left, and its threat on those mobs ("aura_stacks", at the positions cadence in combat; `at`: "tick"
         // or "boss_pull")
