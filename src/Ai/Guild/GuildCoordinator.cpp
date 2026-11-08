@@ -2247,6 +2247,10 @@ bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute
         if (q == questStatic_.end() || q->second.map != map || !q->second.ender ||
             (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE))
             continue;
+        // [flit] a log quest the bot does not work (only a tool's use or a spell credits it) is no questing value
+        if (status == QUEST_STATUS_INCOMPLETE &&
+            (NewRpgBaseAction::NeedsItemUseCredit(quest) || NewRpgBaseAction::NeedsSpellCredit(p, quest, true)))
+            continue;
         QuestStatic const& s = q->second;
         double walk = 0.0, kills = 0.0;
         if (status == QUEST_STATUS_COMPLETE)
