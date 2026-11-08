@@ -71,6 +71,7 @@
 #include "SpellInfo.h"
 #include "StringFormat.h"
 #include "Transport.h"
+#include "TravelMgr.h"  // [guild15] the boat at a stop
 #include "GameObjectModel.h"  // [guild15] deck vs pier
 #include "ModelIgnoreFlags.h"
 #include "Unit.h"
@@ -796,7 +797,17 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // [guild15] the ray down meets the boat's hull under a pier too: a bot standing on the pier (static ground
         // above the deck the ray found) is off the boat, as a client knows the surface it stands on (b327: bots at
         // the Rut'theran / Auberdine piers stayed passengers and rode back, 10+ round trips)
-        if (newTransport && newTransport->ToMotionTransport() && newTransport->m_model)
+        // (only while the boat stands at a stop: under way the ray met piers and roots it passed, b329 Bierya was
+        // dropped into the sea north of Rut'theran)
+        bool docked = false;
+        if (MotionTransport* const boat = newTransport ? newTransport->ToMotionTransport() : nullptr)
+            if (TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(boat->GetEntry()))
+                for (TravelRouteMgr::Dock const& dock : line->docks)
+                {
+                    uint32 remaining = 0;
+                    docked = docked || TravelRouteMgr::IsDocked(boat, dock, remaining);
+                }
+        if (docked && newTransport->m_model)
         {
             float const x = bot->GetPositionX(), y = bot->GetPositionY(), z = bot->GetPositionZ();
             G3D::Ray const ray(G3D::Vector3(x, y, z + 2.0f), G3D::Vector3(0.0f, 0.0f, -1.0f));

@@ -688,7 +688,11 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
     uint32 remaining = 0;
     for (uint8 d = 0; d < line->docks.size() && !exitDock; ++d)
     {
-        if (plannedLeg ? d != trip.leg.toDock : GetMSTimeDiffToNow(trip.phaseStart) < UNPLANNED_RIDE_MS)
+        // [guild15] an unplanned ride that already chose its stop keeps it: the Leave phase restarts phaseStart, and
+        // the minute of riding counted from there skipped every dock - the bot "left" and came back on the same tick,
+        // rode on and repeated it at every stop (b327/b329: Mytaeleas, Bierya 10+ round trips Rut'theran - Auberdine)
+        if (plannedLeg ? d != trip.leg.toDock
+                       : trip.phase != Phase::Leave && GetMSTimeDiffToNow(trip.phaseStart) < UNPLANNED_RIDE_MS)
             continue;
 
         if (TravelRouteMgr::IsDocked(transport, line->docks[d], remaining))
