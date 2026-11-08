@@ -30,6 +30,7 @@
 #include <vector>
 
 class Creature;
+struct CreatureTemplate;
 class Player;
 class Unit;
 
