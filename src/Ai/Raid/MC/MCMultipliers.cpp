@@ -13,6 +13,7 @@
 #include "HunterActions.h"
 #include "MCActions.h"
 #include "MCHelpers.h"
+#include "MCTriggers.h"
 #include "MovementActions.h"
 #include "PaladinActions.h"
 #include "Playerbots.h"
@@ -141,4 +142,28 @@ float GolemaggMultiplier::GetValue(Action* action)
             return 0.0f;
     }
     return 1.0f;
+}
+
+float FlameImpFireNovaMultiplier::GetValue(Action* action)
+{
+    if (PlayerbotAI::IsTank(bot) || PlayerbotAI::IsHeal(bot) || !PlayerbotAI::IsMelee(bot) || !bot->IsInCombat())
+        return 1.0f;
+
+    if (!dynamic_cast<ReachMeleeAction*>(action) && !dynamic_cast<SetBehindTargetAction*>(action) &&
+        !dynamic_cast<MeleeAction*>(action) && !dynamic_cast<CastReachTargetSpellAction*>(action))
+        return 1.0f;
+
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target)
+        return 1.0f;
+
+    // one look per tick and target: the engine asks for every queued action
+    uint32 const now = getMSTime();
+    if (now != _lookMs || target->GetGUID() != _lookTarget)
+    {
+        _lookMs = now;
+        _lookTarget = target->GetGUID();
+        _keepsOut = McFireNovaKeepsOut(botAI, McFireNovaAt(botAI, target->GetPosition()));
+    }
+    return _keepsOut ? 0.0f : 1.0f;
 }

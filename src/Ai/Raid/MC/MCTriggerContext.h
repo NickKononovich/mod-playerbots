@@ -36,6 +36,8 @@ public:
         creators["mc golemagg magma splash"] = &RaidMcTriggerContext::golemagg_magma_splash;
         creators["mc golemagg is healer"] = &RaidMcTriggerContext::golemagg_is_healer;
         creators["mc lava spawn focus"] = &RaidMcTriggerContext::lava_spawn_focus;
+        creators["mc flame imp fire nova"] = &RaidMcTriggerContext::flame_imp_fire_nova;
+        creators["mc flame imp focus"] = &RaidMcTriggerContext::flame_imp_focus;
     }
 
 private:
@@ -59,6 +61,8 @@ private:
     static Trigger* golemagg_magma_splash(PlayerbotAI* botAI) { return new McGolemaggMagmaSplashTrigger(botAI); }
     static Trigger* golemagg_is_healer(PlayerbotAI* botAI) { return new McGolemaggIsHealerTrigger(botAI); }
     static Trigger* lava_spawn_focus(PlayerbotAI* botAI) { return new McLavaSpawnFocusTrigger(botAI); }
+    static Trigger* flame_imp_fire_nova(PlayerbotAI* botAI) { return new McFlameImpFireNovaTrigger(botAI); }
+    static Trigger* flame_imp_focus(PlayerbotAI* botAI) { return new McFlameImpFocusTrigger(botAI); }
 };
 
 #endif

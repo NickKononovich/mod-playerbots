@@ -102,6 +102,10 @@ Verdict JudgeCleave(Facts const& facts, Player* member, Unit* cleaver, float exi
 // `periodic`): what mod-raid-rescale's own UnitScript hooks (ModifySpellDamageTaken / ModifyPeriodicDamageAurasTick,
 // its per-map / per-entry / per-spell factors) make of a probe amount; 1 without the rescale or outside its maps
 float InstanceDamageFactor(Unit* caster, SpellInfo const* info, bool periodic);
+
+// [mcimps] one direct hit of `caster`'s `info` on `victim` the way the core lands it (the stay-or-leave verdict's
+// hit: the spell's mean at the caster's level, both sides' spell bonuses, the instance's factor, armor / resistance)
+float LandedHit(Unit* caster, SpellInfo const* info, Player* victim);
 }  // namespace Leader::HazardVerdict
 
 #endif

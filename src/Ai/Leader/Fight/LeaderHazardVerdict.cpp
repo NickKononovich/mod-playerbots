@@ -566,4 +566,11 @@ float InstanceDamageFactor(Unit* caster, SpellInfo const* info, bool periodic)
     // the rescale's hooks do not read their target (`Unit* /*target*/`): the caster stands in for it
     return float(InstanceFactorApplied(caster, caster, PROBE_DAMAGE, info, periodic)) / float(PROBE_DAMAGE);
 }
+
+float LandedHit(Unit* caster, SpellInfo const* info, Player* victim)
+{
+    if (!info || !victim)
+        return 0.0f;
+    return DamageOf(caster, info, victim).direct;
+}
 }  // namespace Leader::HazardVerdict

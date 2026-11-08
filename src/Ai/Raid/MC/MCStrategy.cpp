@@ -95,6 +95,13 @@ void RaidMcStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(
         new TriggerNode("mc lava spawn focus",
                         { NextAction("mc lava spawn focus", ACTION_RAID) }));
+    // [mcimps] out of the Flame Imps' Fire Nova first, then the imp the dps kill first
+    triggers.push_back(
+        new TriggerNode("mc flame imp fire nova",
+                        { NextAction("mc move from flame imps", ACTION_RAID + 1) }));
+    triggers.push_back(
+        new TriggerNode("mc flame imp focus",
+                        { NextAction("mc flame imp focus", ACTION_RAID) }));
 
     // Anywhere in MC: escaping a lava pool outranks everything else.
     triggers.push_back(
@@ -107,6 +114,7 @@ void RaidMcStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
     multipliers.push_back(new GarrDisableDpsAoeMultiplier(botAI));
     multipliers.push_back(new BaronGeddonAbilityMultiplier(botAI));
     multipliers.push_back(new GolemaggMultiplier(botAI));
+    multipliers.push_back(new FlameImpFireNovaMultiplier(botAI));
 }
 
 void RaidMcStrategy::AppendTargetExclusions(GuidSet& exclusions, TargetValueExclusionType type)
