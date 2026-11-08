@@ -393,6 +393,8 @@ void GuildGatherPlan::LoadNodesAndChests()
     // (map, zone, entry) -> place index, and the spawn points of each
     std::map<std::tuple<uint32, uint32, uint32>, size_t> index;
     std::vector<std::vector<WorldPosition>> points;
+    // [guild15] crash fix: places_ is shared by every loader; points / respawnSum are this loader's, from base on
+    size_t const base = places_.size();
     std::vector<float> respawnSum;
     std::unordered_map<uint32, std::map<uint32, float>> lootCache;
 
@@ -475,15 +477,15 @@ void GuildGatherPlan::LoadNodesAndChests()
         float const weight = SpawnWeight(spawnId, true);
         ++place.spawns;
         place.liveShare += weight;
-        respawnSum[itr->second] += float(std::max(0, data.spawntimesecs));
+        respawnSum[itr->second - base] += float(std::max(0, data.spawntimesecs));
         place.spawnReq.emplace_back(DangerAt(data.mapid, data.posX, data.posY, data.posZ), req, weight);
-        points[itr->second].emplace_back(data.mapid, data.posX, data.posY, data.posZ);
+        points[itr->second - base].emplace_back(data.mapid, data.posX, data.posY, data.posZ);
     }
     for (auto const& [key, i] : index)
     {
         GatherPlace& place = places_[i];
-        place.respawnSec = place.spawns ? respawnSum[i] / float(place.spawns) : 0.0f;
-        Finish(place, points[i]);
+        place.respawnSec = place.spawns ? respawnSum[i - base] / float(place.spawns) : 0.0f;
+        Finish(place, points[i - base]);
     }
 }
 
@@ -493,6 +495,8 @@ void GuildGatherPlan::LoadSkinning()
     ReadZones("creature", zones);
     std::map<std::tuple<uint32, uint32, uint32>, size_t> index;
     std::vector<std::vector<WorldPosition>> points;
+    // [guild15] crash fix: places_ is shared by every loader; points / respawnSum are this loader's, from base on
+    size_t const base = places_.size();
     std::vector<float> respawnSum;
     std::unordered_map<uint32, std::map<uint32, float>> lootCache;
 
@@ -543,15 +547,15 @@ void GuildGatherPlan::LoadSkinning()
         uint8 const self = Elite(tmpl) ? MinSafeBotLevel(0, tmpl->maxlevel) : MinSafeBotLevel(tmpl->maxlevel, 0);
         ++place.spawns;
         place.liveShare += weight;
-        respawnSum[itr->second] += float(data.spawntimesecs);
+        respawnSum[itr->second - base] += float(data.spawntimesecs);
         place.spawnReq.emplace_back(std::max(around, self), SkinningReq(tmpl->maxlevel), weight);
-        points[itr->second].emplace_back(data.mapid, data.posX, data.posY, data.posZ);
+        points[itr->second - base].emplace_back(data.mapid, data.posX, data.posY, data.posZ);
     }
     for (auto const& [key, i] : index)
     {
         GatherPlace& place = places_[i];
-        place.respawnSec = place.spawns ? respawnSum[i] / float(place.spawns) : 0.0f;
-        Finish(place, points[i]);
+        place.respawnSec = place.spawns ? respawnSum[i - base] / float(place.spawns) : 0.0f;
+        Finish(place, points[i - base]);
     }
 }
 
@@ -598,6 +602,8 @@ void GuildGatherPlan::LoadFishing()
     // GameObject::GetFishLoot: the area's loot, else the zone's, else zone 1; the skill: the area's, else the zone's
     std::map<std::pair<uint32, uint32>, size_t> index;  // (map, loot entry) -> place
     std::vector<std::vector<WorldPosition>> points;
+    // [guild15] crash fix: places_ is shared by every loader; points / respawnSum are this loader's, from base on
+    size_t const base = places_.size();
     std::map<std::pair<size_t, uint32>, float> poolLoot;  // (place, pool loot) -> catches per pool round
     for (Marker const& m : markers)
     {
@@ -636,7 +642,7 @@ void GuildGatherPlan::LoadFishing()
         place.spawnReq.emplace_back(DangerAt(m.pos.GetMapId(), m.pos.GetPositionX(), m.pos.GetPositionY(),
                                              m.pos.GetPositionZ()),
                                     place.reqSkill, 1.0f);
-        points[itr->second].push_back(m.pos);
+        points[itr->second - base].push_back(m.pos);
         if (m.poolLoot)
             poolLoot[{itr->second, m.poolLoot}] += m.poolCatches;
     }
@@ -650,7 +656,7 @@ void GuildGatherPlan::LoadFishing()
             place.poolYield[item] += n * catches;
     }
     for (auto const& [key, i] : index)
-        Finish(places_[i], points[i]);
+        Finish(places_[i], points[i - base]);
 }
 
 void GuildGatherPlan::LoadConversions()
