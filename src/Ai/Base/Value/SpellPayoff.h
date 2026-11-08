@@ -77,8 +77,8 @@ namespace SpellPayoff
 
     // [lead1542] user-approved 2026-11-06 (rot550 D): a player's measured damage per hit of each damaging spell on a
     // dungeon creature, as the core deals it (Unit::DealDamage: after armor, resistances, absorbs; a crit as it
-    // rolled), direct hits and periodic ticks apart; Read uses the measured mean per hit in place of the spell-data
-    // estimate once the spell has landed (the estimate before)
+    // rolled), direct hits and periodic ticks apart. [rot610] Kept for logs only: no decision reads it (user
+    // 2026-11-08, no fight history in decisions)
     void NoteLanded(ObjectGuid caster, uint32 spellId, bool periodic, uint32 damage);
     bool MeasuredHit(ObjectGuid caster, uint32 spellId, bool periodic, float& mean);
 }

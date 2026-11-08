@@ -9,6 +9,7 @@
 #include "BotMoveEvents.h"
 #include "Chat.h"
 #include "Creature.h"
+#include "DpsEstimate.h"  // [rot610] DebuffPays
 #include "Event.h"
 #include "FearCounterValues.h"  // [fear_counter]
 #include "GenericBuffUtils.h"
@@ -1709,6 +1710,7 @@ bool CastDebuffSpellAction::isUseful()
     if (!target || !target->IsAlive() || !target->IsInWorld())
         return false;
 
+    // [rot610] the payoff by the formula, not a fixed lifetime
     return CastAuraSpellAction::isUseful() &&
-           (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime;
+           DpsEstimate::DebuffPays(bot, target, AI_VALUE2(uint32, "spell id", spell));
 }

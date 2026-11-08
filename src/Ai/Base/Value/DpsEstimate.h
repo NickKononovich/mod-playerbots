@@ -65,6 +65,19 @@ bool CastPays(Player* bot, Unit* target, uint32 spellId, uint32 fillerSpellId);
 // read 10-25 % weaker (ideal / formula 1.12)
 float FillerDps(Player* bot, Unit* target, uint32 spellId);
 
+// [rot610] The target's remaining life by the formula: its health over the bot's formula dps times the members on it
+// (its own included). No fight history (user 2026-11-08); max when the bot deals nothing.
+float RemainingLifeSec(Player* bot, Unit* target);
+
+// [rot610] A DoT or debuff `spellId` on `target` pays (replaces the fixed 8 s needLifeTime gate of DebuffTrigger and
+// CastDebuffSpellAction). A DoT (its periodic part above its direct one): its direct part and the ticks that land
+// within RemainingLifeSec beat what the same resource buys in its rotation - the best damage per rage / energy of its
+// other rage / energy spells (Heroic Strike, Mortal Strike, a builder-finisher cycle), or its filler in the DoT's
+// execute time for a mana spell. Any other debuff (its worth is the debuff, not its hit): the target outlives its cast.
+// b341: arms warriors never cast Rend (0 casts in every log b330-b341): Rend's rage came after the mob fell under
+// the 8 s gate.
+bool DebuffPays(Player* bot, Unit* target, uint32 spellId);
+
 char const* ContextName(BuffContext ctx);
 // a solo bot outside a group: Solo; a party: Group; a raid group: Raid
 BuffContext ContextOf(Player* bot);

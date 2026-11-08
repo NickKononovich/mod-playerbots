@@ -21,7 +21,7 @@
 #include "RoguePoisons.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
-#include "SpellPayoff.h"  // [rot561] DotPays, Read, MeasuredHit
+#include "SpellPayoff.h"  // [rot561] Read
 #include "StringFormat.h"
 
 namespace
@@ -54,40 +54,20 @@ bool RupturePays(PlayerbotAI* botAI, Player* bot, Unit* target, uint32* loggedMs
     float const lifetime = ExpectedFightLifetime(botAI, target);
     float const window = std::min(lifetime, static_cast<float>(std::max(durationMs, 0)) / IN_MILLISECONDS);
 
-    // each spell's measured mean once it has landed (lead1542, read by SpellPayoff); before that the spell's estimate
-    // plus the attack power part the core adds outside the spell data, Eviscerate after armor
-    float measured = 0.0f;
-    bool const ruptureMeasured = SpellPayoff::MeasuredHit(bot->GetGUID(), ruptureId, true, measured);
-    bool const eviscerateMeasured = SpellPayoff::MeasuredHit(bot->GetGUID(), eviscerateId, false, measured);
-    float ruptureDamage = 0.0f;
-    float eviscerateDamage = 0.0f;
-    uint32 ticks = 0;
-    if (ruptureMeasured && eviscerateMeasured)
-    {
-        SpellPayoff::DotVerdict const verdict = SpellPayoff::DotPays(bot, target, ruptureId, eviscerateId, window);
-        ruptureDamage = verdict.dot;
-        eviscerateDamage = verdict.filler;
-        ticks = verdict.ticks;
-    }
-    else
-    {
-        SpellPayoff::Cast ruptureCast;
-        SpellPayoff::Cast eviscerateCast;
-        if (!SpellPayoff::Read(bot, target, ruptureId, ruptureCast) || !ruptureCast.amplitudeMs ||
-            !SpellPayoff::Read(bot, target, eviscerateId, eviscerateCast))
-            return true;
-        float const ap = bot->GetTotalAttackPowerValue(BASE_ATTACK);
-        float const tick = ruptureCast.tick + (ruptureMeasured ? 0.0f : ap * RUPTURE_AP_PER_TICK[points]);
-        ticks = std::min(ruptureCast.ticks,
-                         static_cast<uint32>(window * IN_MILLISECONDS / static_cast<float>(ruptureCast.amplitudeMs)));
-        ruptureDamage = tick * static_cast<float>(ticks);
-        eviscerateDamage =
-            eviscerateMeasured
-                ? eviscerateCast.direct
-                : static_cast<float>(Unit::CalcArmorReducedDamage(
-                      bot, target, static_cast<uint32>(eviscerateCast.direct + ap * EVISCERATE_AP_PER_POINT * points),
-                      eviscerate));
-    }
+    // [rot610] the spell estimate plus the attack power part the core adds outside the spell data, Eviscerate after
+    // armor (no measured hit: no fight history in decisions)
+    SpellPayoff::Cast ruptureCast;
+    SpellPayoff::Cast eviscerateCast;
+    if (!SpellPayoff::Read(bot, target, ruptureId, ruptureCast) || !ruptureCast.amplitudeMs ||
+        !SpellPayoff::Read(bot, target, eviscerateId, eviscerateCast))
+        return true;
+    float const ap = bot->GetTotalAttackPowerValue(BASE_ATTACK);
+    float const tick = ruptureCast.tick + ap * RUPTURE_AP_PER_TICK[points];
+    uint32 const ticks = std::min(
+        ruptureCast.ticks, static_cast<uint32>(window * IN_MILLISECONDS / static_cast<float>(ruptureCast.amplitudeMs)));
+    float const ruptureDamage = tick * static_cast<float>(ticks);
+    float const eviscerateDamage = static_cast<float>(Unit::CalcArmorReducedDamage(
+        bot, target, static_cast<uint32>(eviscerateCast.direct + ap * EVISCERATE_AP_PER_POINT * points), eviscerate));
     if (ruptureDamage >= eviscerateDamage)
         return true;
 

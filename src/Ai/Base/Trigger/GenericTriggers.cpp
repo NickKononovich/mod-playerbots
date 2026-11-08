@@ -11,6 +11,7 @@
 #include "LeaderOrders.h"  // [lead95] Leader::Orders::IsTracked
 #include "Corpse.h"
 #include "CreatureAI.h"
+#include "DpsEstimate.h"  // [rot610] DebuffPays
 #include "EstimatedLifetimeValue.h"  // [rot70] ExpectedLifetime
 #include "GenericBuffUtils.h"
 #include "GenericSpellActions.h"
@@ -599,8 +600,8 @@ bool DebuffTrigger::IsActive()
     if (!target || !target->IsAlive() || !target->IsInWorld())
         return false;
 
-    return BuffTrigger::IsActive() &&
-           (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime &&
+    // [rot610] the payoff by the formula, not a fixed lifetime
+    return BuffTrigger::IsActive() && DpsEstimate::DebuffPays(bot, target, AI_VALUE2(uint32, "spell id", spell)) &&
            (DotFiller().empty() || DotPaysOff(target));
 }
 

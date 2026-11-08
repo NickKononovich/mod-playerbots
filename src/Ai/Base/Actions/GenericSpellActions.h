@@ -69,12 +69,11 @@ public:
 class CastDebuffSpellAction : public CastAuraSpellAction
 {
 public:
-    CastDebuffSpellAction(PlayerbotAI* botAI, std::string const spell, bool isOwner = false, float needLifeTime = 8.0f)
-        : CastAuraSpellAction(botAI, spell, isOwner), needLifeTime(needLifeTime) {}
+    // [rot610] the lifetime argument is no longer read: DpsEstimate::DebuffPays weighs the debuff by the formula
+    CastDebuffSpellAction(PlayerbotAI* botAI, std::string const spell, bool isOwner = false,
+                          float /*needLifeTime*/ = 8.0f)
+        : CastAuraSpellAction(botAI, spell, isOwner) {}
     bool isUseful() override;
-
-private:
-    float needLifeTime;
 };
 
 class CastMeleeDebuffSpellAction : public CastDebuffSpellAction

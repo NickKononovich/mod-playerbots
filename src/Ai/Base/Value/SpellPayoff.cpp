@@ -5,6 +5,7 @@
  */
 
 #include "SpellPayoff.h"
+#include "DpsEstimate.h"
 #include "Player.h"
 #include "SharedDefines.h"
 #include "SpellInfo.h"
@@ -77,9 +78,7 @@ namespace
 
     float DirectDamage(Player* bot, Unit* target, SpellInfo const* info)
     {
-        // [lead1542] the measured mean of its direct hits once it has landed
-        if (float mean = 0.0f; SpellPayoff::MeasuredHit(bot->GetGUID(), info->Id, false, mean))
-            return mean;
+        // [rot610] the spell data through the core only: no measured hit is read by a decision (user 2026-11-08)
         float damage = 0.0f;
         for (SpellEffectInfo const& effect : info->GetEffects())
         {
@@ -117,14 +116,10 @@ namespace SpellPayoff
             if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE || effect.ApplyAuraName == SPELL_AURA_PERIODIC_LEECH)
             {
                 int32 const base = std::max(effect.CalcValue(bot), 0);
-                // [lead1542] the measured mean of its ticks once one has landed
-                if (float mean = 0.0f; MeasuredHit(bot->GetGUID(), info->Id, true, mean))
-                    tick = mean;
-                else
-                    tick = WithCrit(bot, target, info,
-                                    static_cast<float>(bot->SpellDamageBonusDone(
-                                        target, info, static_cast<uint32>(base), DOT, effect.EffectIndex)),
-                                    true);
+                tick = WithCrit(bot, target, info,
+                                static_cast<float>(bot->SpellDamageBonusDone(target, info, static_cast<uint32>(base),
+                                                                             DOT, effect.EffectIndex)),
+                                true);
             }
             // Blizzard, Rain of Fire, Mind Sear: the channel triggers a damage spell every amplitude
             else if (effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL && effect.TriggerSpell)
@@ -139,14 +134,11 @@ namespace SpellPayoff
                 if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
                 {
                     int32 const base = std::max(effect.CalcValue(bot), 0);
-                    if (float mean = 0.0f; MeasuredHit(bot->GetGUID(), triggered->Id, false, mean))  // [lead1542]
-                        tick = mean;
-                    else
-                        tick = WithCrit(bot, target, triggered,
-                                        static_cast<float>(bot->SpellDamageBonusDone(
-                                            target, triggered, static_cast<uint32>(base), SPELL_DIRECT_DAMAGE,
-                                            EFFECT_0)),
-                                        false);
+                    tick = WithCrit(bot, target, triggered,
+                                    static_cast<float>(bot->SpellDamageBonusDone(target, triggered,
+                                                                                 static_cast<uint32>(base),
+                                                                                 SPELL_DIRECT_DAMAGE, EFFECT_0)),
+                                    false);
                 }
             }
             if (tick <= 0.0f)
@@ -178,14 +170,11 @@ namespace SpellPayoff
         return out.executeMs > 0.0f;
     }
 
+    // [rot610] the formula's filler read (DpsEstimate::FillerDps): every payoff rule weighs against the same filler
+    // damage the dps formula counts
     float FillerDps(Player* bot, Unit* target, uint32 fillerSpellId)
     {
-        Cast filler;
-        if (!Read(bot, target, fillerSpellId, filler))
-            return 0.0f;
-        // a channel's ticks land within it; a cast's own DoT part (Fireball) is not what the next filler repeats
-        float const damage = filler.channel ? filler.Total() : filler.direct;
-        return damage * static_cast<float>(IN_MILLISECONDS) / filler.executeMs;
+        return DpsEstimate::FillerDps(bot, target, fillerSpellId);
     }
 
     DotVerdict DotPays(Player* bot, Unit* target, uint32 dotSpellId, uint32 fillerSpellId, float lifetimeSec,

@@ -632,7 +632,7 @@ protected:
     // [rot400] the filler's spell name; empty: no payoff check (a class with a spec-dependent filler overrides it)
     virtual std::string const DotFiller() { return dotFiller; }
 
-    float needLifeTime;
+    float needLifeTime;  // [rot610] no longer read: DpsEstimate::DebuffPays decides
     std::string dotFiller;
 
 private:

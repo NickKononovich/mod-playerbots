@@ -966,6 +966,12 @@ struct Cast
     uint32 category = 0;
     bool mainHand = false;  // a main hand weapon strike (a seal procs on it)
     float landed = 1.0f;
+    // [rot610] its parts after the land chance: the direct hits, the periodic damage of its full duration
+    float direct = 0.0f;
+    float periodic = 0.0f;
+    float tickMs = 0.0f;      // between its ticks (0: no periodic part)
+    float durationMs = 0.0f;  // its periodic part's duration
+    float castMs = 0.0f;      // till it lands (its cast time with pushback; 0 for an instant)
 };
 
 float ThreatOf(Player* bot, SpellInfo const* info, float damage, float hits)
@@ -1079,7 +1085,8 @@ float ChannelMs(Player* modOwner, Unit* caster, SpellInfo const* info, float spe
     return ms;
 }
 
-float PeriodicTotal(Model const& m, Unit* caster, SpellInfo const* info, float& durationMs, float apTick);
+float PeriodicTotal(Model const& m, Unit* caster, SpellInfo const* info, float& durationMs, float apTick,
+                    float* tickMs = nullptr);
 
 // one cast of `id` by `caster` against the target: its damage and its costs
 bool ReadCast(Model const& m, Unit* caster, uint32 id, Ability const& ability, Cast& out, uint8 depth = 0)
@@ -1211,17 +1218,22 @@ bool ReadCast(Model const& m, Unit* caster, uint32 id, Ability const& ability, C
     }
 
     float const apTick = ability.script == Script::Rupture ? ap * RUPTURE_AP_PER_TICK[cp] : 0.0f;
-    periodic = PeriodicTotal(m, caster, info, durationMs, apTick);
+    float tickMs = 0.0f;
+    periodic = PeriodicTotal(m, caster, info, durationMs, apTick, &tickMs);
     // Icy Touch / Plague Strike: the disease is a triggered spell
     if (periodic <= 0.0f)
         for (SpellEffectInfo const& effect : info->GetEffects())
             if (effect.Effect == SPELL_EFFECT_TRIGGER_SPELL && effect.TriggerSpell)
                 if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
-                    periodic += PeriodicTotal(m, caster, triggered, durationMs, 0.0f);
+                    periodic += PeriodicTotal(m, caster, triggered, durationMs, 0.0f, &tickMs);
 
     float const land = LandChance(m, caster, info, att);
     out.landed = land;
     out.damage = (direct + periodic) * land;
+    out.direct = direct * land;
+    out.periodic = periodic * land;
+    out.tickMs = tickMs;
+    out.durationMs = durationMs;
     if (player)
         out.threat = ThreatOf(player, info, out.damage, hits * land);
     // Mutilate, Stormstrike: the strikes are triggered spells (one level deep)
@@ -1259,6 +1271,7 @@ bool ReadCast(Model const& m, Unit* caster, uint32 id, Ability const& ability, C
             castMs += hits * delayMs;
         }
     }
+    out.castMs = castMs;
     float const channelMs = channel ? ChannelMs(modOwner, caster, info, spellHaste) : 0.0f;
     float const gcdMs = GlobalCooldownMs(modOwner, caster, info, spellHaste);
     out.executeSec = std::max({castMs, channelMs, gcdMs}) / float(IN_MILLISECONDS);
@@ -1306,7 +1319,8 @@ bool ReadCast(Model const& m, Unit* caster, uint32 id, Ability const& ability, C
 }
 
 // a spell's periodic damage over its full duration (its own ticks, or a channel's triggered hits)
-float PeriodicTotal(Model const& m, Unit* caster, SpellInfo const* info, float& durationMs, float apTick)
+float PeriodicTotal(Model const& m, Unit* caster, SpellInfo const* info, float& durationMs, float apTick,
+                    float* tickMs)
 {
     Player* modOwner = caster->GetSpellModOwner();
     float const spellHaste = caster == m.bot ? m.bonus.spellHaste : 0.0f;
@@ -1363,6 +1377,8 @@ float PeriodicTotal(Model const& m, Unit* caster, SpellInfo const* info, float& 
         if (duration <= 0.0f || amplitude <= 0.0f)
             continue;
         durationMs = std::max(durationMs, duration);
+        if (tickMs)
+            *tickMs = *tickMs > 0.0f ? std::min(*tickMs, amplitude) : amplitude;
         total += tick * std::floor(duration / amplitude);
     }
     return total;
@@ -1500,7 +1516,11 @@ struct Profile
     float cycleSec = 0.0f;
     uint8 spells = 0;
     float lifeSec = 0.0f;                          // [dpscal] the fight it was computed for (0: the steady state)
+    uint32 fillerId = 0;                           // [rot610] the filler it casts
+    float altPerRage = 0.0f;    // [rot610] the best damage per core rage unit of its rotation's other rage spells
+    float altPerEnergy = 0.0f;  // [rot610] ... energy spells (a builder-finisher cycle per its energy)
     std::vector<std::pair<uint32, float>> parts;  // [dpscal] damage per second by rotation spell ([dpsparts] log)
+    float replacedWhite = 0.0f;  // [rot611] the swings a next-swing strike replaces (in `white`, logged in its part)
 };
 
 // [rot606] PetAI::_canMeleeAttack: an imp or a water elemental with the mana for its bolt chases to the bolt's range
@@ -1629,6 +1649,13 @@ float DotRateOver(Player* bot, Unit* target, Cast& cast, uint32 fillerId, float 
 // target attacks it (solo, a fresh mob comes at the one that pulls it; a pet or a tank holding it: none). Its attack
 // speed and its miss / dodge / parry against the bot (Unit::RollMeleeOutcomeAgainst); over a fight of `lifeSec` from
 // the time it has run into melee at its run speed.
+// [rot611] the time a mob that comes at the bot takes to reach its melee range, at its run speed (0: there)
+float MeleeArrivalSec(Unit* mob, Unit* bot)
+{
+    float const speed = mob->GetSpeed(MOVE_RUN);
+    return speed > 0.0f ? std::max(0.0f, mob->GetExactDist(bot) - mob->GetMeleeRange(bot)) / speed : 0.0f;
+}
+
 float PushbackHitsPerSec(Player* bot, Unit* target, BuffContext ctx, float lifeSec)
 {
     if (!target || target == bot || !target->CanHaveThreatList())
@@ -1645,12 +1672,7 @@ float PushbackHitsPerSec(Player* bot, Unit* target, BuffContext ctx, float lifeS
     float const avoid = std::clamp(miss + bot->GetUnitDodgeChance() + bot->GetUnitParryChance(), 0.0f, 100.0f);
     float rate = (1.0f - avoid / 100.0f) * float(IN_MILLISECONDS) / float(attackMs);
     if (lifeSec > 0.0f)
-    {
-        float const speed = target->GetSpeed(MOVE_RUN);
-        float const runSec =
-            speed > 0.0f ? std::max(0.0f, target->GetExactDist(bot) - target->GetMeleeRange(bot)) / speed : 0.0f;
-        rate *= std::max(0.0f, lifeSec - runSec) / lifeSec;
-    }
+        rate *= std::max(0.0f, lifeSec - MeleeArrivalSec(target, bot)) / lifeSec;
     return rate;
 }
 
@@ -1747,6 +1769,14 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     bool const hunter = cls == CLASS_HUNTER;
     bool const meleeHunter = rotation == &HunterMeleeRotation();  // [rot605]
     float rotationWhite = caster ? 0.0f : (hunter && !meleeHunter ? rangedWhite : meleeWhite);
+    // [rot611] the petless hunter's fresh mob runs at it: Auto Shot until it arrives, its weapon from then (b341
+    // Dekorhan L8: 4.3-5.8 s of each 16-24 s fight at range, the formula had its melee swings the whole fight)
+    float meleeShare = 1.0f;
+    if (meleeHunter && lifeSec > 0.0f && !m.standIn)
+    {
+        meleeShare = std::max(0.0f, lifeSec - MeleeArrivalSec(target, bot)) / lifeSec;
+        rotationWhite = rangedWhite * (1.0f - meleeShare) + meleeWhite * meleeShare;
+    }
     float whiteTps =
         rotationWhite * bot->GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_THREAT, SPELL_SCHOOL_MASK_NORMAL);
     p.white = caster ? std::max(meleeWhite, rangedWhite) : rotationWhite;
@@ -1780,7 +1810,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     float threat = whiteTps;
     float mana = 0.0f;
     float cycle = 0.0f;
-    float const swingsLeft = mh.perSec;
+    float const swingsLeft = mh.perSec * meleeShare;
     float strikes = 0.0f;  // landed main hand weapon strikes per second
 
     auto const affordable = [&](Cast const& cast, float rate) -> float
@@ -1809,6 +1839,13 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     };
     auto const spend = [&](Cast const& cast, float rate)
     {
+        if (cast.cost > 0.0f && cast.kind != Kind::Dot && cast.kind != Kind::ComboDot)
+        {
+            if (cast.power == POWER_RAGE)
+                p.altPerRage = std::max(p.altPerRage, cast.damage / cast.cost);
+            else if (cast.power == POWER_ENERGY)
+                p.altPerEnergy = std::max(p.altPerEnergy, cast.damage / cast.cost);
+        }
         if (rate <= 0.0f)
             return;
         if (cast.kind != Kind::Swing)
@@ -1869,6 +1906,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
                     fillerBest = dps;
                 }
             }
+        p.fillerId = fillerId;
         bool judged = false;
         for (Ability const& ability : rotation->abilities)
         {
@@ -2011,7 +2049,18 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
                         if (filler.damage / std::max(filler.executeSec, 0.1f) >
                             pick->damage / std::max(pick->executeSec, 0.1f))
                             pick = &filler;
-                spend(*pick, affordable(*pick, std::numeric_limits<float>::max()));
+                float rate = affordable(*pick, std::numeric_limits<float>::max());
+                // [rot610] over a fight of lifeSec: the mob dies at an even chance anywhere in the filler cast under
+                // way when another part of its damage (swings, ticks, cooldowns, its pet) kills it; that cast is lost,
+                // half a cast on average, the kill falling to the parts by their share of the damage
+                if (lifeSec > 0.0f && rate > 0.0f && pick->executeSec > 0.0f)
+                {
+                    float const others = damage + PetDps(m, bot->GetPet());
+                    float const own = rate * pick->damage;
+                    float const otherShare = others / (others + own);
+                    rate = std::max(0.0f, rate - otherShare * 0.5f / lifeSec);
+                }
+                spend(*pick, rate);
             }
         }
 
@@ -2026,6 +2075,14 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             dump.damage = swingCast.damage - mh.damage;
             dump.threat = swingCast.threat - mh.damage;
             spend(dump, rate);
+            // [rot611] the log's parts as the [dps] measure splits them: the strike in full under its name, the
+            // white part without the swings it replaced (b341 Dekorhan: white 2.2 measured in melee against a formula
+            // white that still had its Raptor Strike swings)
+            if (rate > 0.0f && !p.parts.empty())
+            {
+                p.parts.back().second += rate * mh.damage;
+                p.replacedWhite = rate * mh.damage;
+            }
         }
 
         // Seal of Righteousness on every landed main hand hit (white and weapon strikes)
@@ -2229,33 +2286,98 @@ float EstimateDps(Player* bot, Unit* target, BuffContext ctx, float fightSec)
 
 float EstimateTps(Player* bot, Unit* target, BuffContext ctx) { return Estimate(bot, target, ctx).tps; }
 
-bool CastPays(Player* bot, Unit* target, uint32 spellId, uint32 fillerSpellId)
+namespace
 {
-    if (!bot || !target || !spellId)
-        return false;
-    if (!fillerSpellId)
-        return true;
-    SpellPayoff::Cast cast;
-    if (!SpellPayoff::Read(bot, target, spellId, cast))
-        return false;
-    return cast.Total() >= SpellPayoff::FillerDps(bot, target, fillerSpellId) * cast.executeMs / float(IN_MILLISECONDS);
-}
-
-float FillerDps(Player* bot, Unit* target, uint32 spellId)
+// the bot's state now against `target` (no planned buffs): what its decisions weigh
+Model NowModel(Player* bot, Unit* target)
 {
-    if (!bot || !target || !spellId || !bot->IsInWorld() || !target->IsInWorld())
-        return 0.0f;
     BuffContext const ctx = ContextOf(bot);
     Model m;
     m.bot = bot;
     m.target = target;
     m.front = ctx == BuffContext::Solo || PlayerbotAI::IsTank(bot);
     m.pushHitsPerSec = PushbackHitsPerSec(bot, target, ctx, 0.0f);
+    return m;
+}
+}  // namespace
+
+bool CastPays(Player* bot, Unit* target, uint32 spellId, uint32 fillerSpellId)
+{
+    if (!bot || !target || !spellId || !bot->IsInWorld() || !target->IsInWorld())
+        return false;
+    if (!fillerSpellId)
+        return true;
+    // [rot610] the formula's cast read (was SpellPayoff's, a measured mean per hit once one landed)
+    Cast cast;
+    Ability const ability{"", Kind::Cooldown};
+    if (!ReadCast(NowModel(bot, target), bot, spellId, ability, cast))
+        return false;
+    return cast.damage >= FillerDps(bot, target, fillerSpellId) * cast.executeSec;
+}
+
+float FillerDps(Player* bot, Unit* target, uint32 spellId)
+{
+    if (!bot || !target || !spellId || !bot->IsInWorld() || !target->IsInWorld())
+        return 0.0f;
     Cast cast;
     Ability const ability{"", Kind::Filler};
-    if (!ReadCast(m, bot, spellId, ability, cast))
+    if (!ReadCast(NowModel(bot, target), bot, spellId, ability, cast))
         return 0.0f;
     return cast.damage / std::max(cast.executeSec, 0.1f);
+}
+
+float RemainingLifeSec(Player* bot, Unit* target)
+{
+    if (!bot || !target || !target->IsAlive())
+        return 0.0f;
+    BuffContext const ctx = ContextOf(bot);
+    float const own = ProfileOf(bot, target, ctx).burst;
+    if (own <= 0.0f)
+        return std::numeric_limits<float>::max();
+    uint32 on = 1;
+    if (Group* group = bot->GetGroup())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource())
+                if (member != bot && member->IsAlive() && member->GetMapId() == bot->GetMapId() &&
+                    (member->GetVictim() == target || member->GetTarget() == target->GetGUID()))
+                    ++on;
+    return float(target->GetHealth()) / (own * float(on));
+}
+
+bool DebuffPays(Player* bot, Unit* target, uint32 spellId)
+{
+    if (!bot || !target || !bot->IsInWorld() || !target->IsInWorld() || !target->IsAlive())
+        return false;
+    SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    if (!info)
+        return true;  // nothing to weigh (a talent's aura name): the cast's own checks decide
+    float const lifeSec = RemainingLifeSec(bot, target);
+    Cast dot;
+    Ability const ability{"", Kind::Dot};
+    // a debuff whose worth is not its own damage (a curse, a mark, Sunder Armor, Thunder Clap, Scorch, a snare or
+    // crowd control with a hit): the target outlives the cast that puts it up
+    if (!ReadCast(NowModel(bot, target), bot, spellId, ability, dot) || dot.periodic <= dot.direct)
+    {
+        float const ms = std::max(float(info->CalcCastTime(bot)), GlobalCooldownMs(bot, bot, info, 0.0f));
+        return lifeSec * float(IN_MILLISECONDS) > ms;
+    }
+    // what lands before the death: the direct part once the cast lands, the ticks after it
+    float const afterLandMs = lifeSec * float(IN_MILLISECONDS) - dot.castMs;
+    if (afterLandMs < 0.0f)
+        return false;
+    float landed = dot.direct;
+    if (dot.periodic > 0.0f && dot.tickMs > 0.0f && dot.durationMs > 0.0f)
+        landed += dot.periodic * std::min(1.0f, std::floor(afterLandMs / dot.tickMs) * dot.tickMs / dot.durationMs);
+    // against its rotation's alternative for the same rage / energy, or its filler in the same execute time
+    Profile const p = ProfileOf(bot, target, ContextOf(bot));
+    float alternative = 0.0f;
+    if (dot.cost > 0.0f && dot.power == POWER_RAGE)
+        alternative = p.altPerRage * dot.cost;
+    else if (dot.cost > 0.0f && dot.power == POWER_ENERGY)
+        alternative = p.altPerEnergy * dot.cost;
+    else if (p.fillerId && p.fillerId != spellId)
+        alternative = FillerDps(bot, target, p.fillerId) * dot.executeSec;
+    return landed > 0.0f && landed >= alternative;
 }
 
 char const* ContextName(BuffContext ctx)
@@ -2375,7 +2497,8 @@ void RecordFight(Player* bot, FightSample const& sample)
                  "| casts: {} | ideal {:.1f}: {}",
                  bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), AiFactory::GetPlayerSpecName(bot),
                  sample.formulaDps, f.formula.lifeSec, plan, plan.empty() ? "" : ", ",
-                 f.formula.white - f.formula.pet, f.formula.pet, f.petOut ? "out" : "none", f.raw, f.spell, f.dot,
+                 f.formula.white - f.formula.pet - f.formula.replacedWhite, f.formula.pet, f.petOut ? "out" : "none",
+                 f.raw, f.spell, f.dot,
                  f.white, f.pet, actual, active, leadSec, cappedActual, casts.empty() ? "-" : casts, idealDps,
                  idealPlan.empty() ? "-" : idealPlan);
     }

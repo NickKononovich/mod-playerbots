@@ -367,7 +367,7 @@ bool ImprovedScorchTrigger::IsActive()
         return true;
     }
 
-    return (target->GetHealth() / AI_VALUE(float, "estimated group dps")) >= needLifeTime;
+    return DpsEstimate::DebuffPays(bot, target, AI_VALUE2(uint32, "spell id", "scorch"));  // [rot610]
 }
 
 const std::unordered_set<uint32> BlizzardChannelCheckTrigger::BLIZZARD_SPELL_IDS = {
