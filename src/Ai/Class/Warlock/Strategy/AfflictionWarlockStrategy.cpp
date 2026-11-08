@@ -60,6 +60,9 @@ void AfflictionWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers
         )
     );
 
+    // [rot602] Immolate below the curse while it has no Unstable Affliction, where it pays (AfflictionImmolateTrigger)
+    triggers.push_back(new TriggerNode("affliction immolate", { NextAction("immolate", 18.0f) }));
+
     // Multi-dotting other attackers ranks below the main target and its curse
     triggers.push_back(
         new TriggerNode(

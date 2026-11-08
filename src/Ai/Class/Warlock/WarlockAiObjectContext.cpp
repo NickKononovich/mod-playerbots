@@ -167,6 +167,7 @@ public:
         creators["corruption on attacker"] = &WarlockTriggerFactoryInternal::corruption_on_attacker;
         creators["immolate"] = &WarlockTriggerFactoryInternal::immolate;
         creators["immolate on attacker"] = &WarlockTriggerFactoryInternal::immolate_on_attacker;
+        creators["affliction immolate"] = &WarlockTriggerFactoryInternal::affliction_immolate;  // [rot602]
         creators["unstable affliction"] = &WarlockTriggerFactoryInternal::unstable_affliction;
         creators["unstable affliction on attacker"] = &WarlockTriggerFactoryInternal::unstable_affliction_on_attacker;
         creators["haunt"] = &WarlockTriggerFactoryInternal::haunt;
@@ -198,6 +199,7 @@ public:
         creators["assigned curse of agony"] = &WarlockTriggerFactoryInternal::assigned_curse_of_agony;
         creators["pull imminent life tap"] = &WarlockTriggerFactoryInternal::pull_imminent_life_tap;
         creators["wrong pet"] = &WarlockTriggerFactoryInternal::wrong_pet;
+        creators["warlock pet assist"] = &WarlockTriggerFactoryInternal::warlock_pet_assist;  // [rot600]
         creators["rain of fire channel check"] = &WarlockTriggerFactoryInternal::rain_of_fire_channel_check;
         creators["shadowfury pays"] = &WarlockTriggerFactoryInternal::shadowfury_pays;  // [rot401]
         creators["shadowflame pays"] = &WarlockTriggerFactoryInternal::shadowflame_pays;
@@ -237,6 +239,7 @@ private:
     static Trigger* backlash(PlayerbotAI* botAI) { return new BacklashTrigger(botAI); }
     static Trigger* immolate(PlayerbotAI* botAI) { return new ImmolateTrigger(botAI); }
     static Trigger* immolate_on_attacker(PlayerbotAI* botAI) { return new ImmolateOnAttackerTrigger(botAI); }
+    static Trigger* affliction_immolate(PlayerbotAI* botAI) { return new AfflictionImmolateTrigger(botAI); }
     static Trigger* unstable_affliction(PlayerbotAI* botAI) { return new UnstableAfflictionTrigger(botAI); }
     static Trigger* unstable_affliction_on_attacker(PlayerbotAI* botAI) { return new UnstableAfflictionOnAttackerTrigger(botAI); }
     static Trigger* haunt(PlayerbotAI* botAI) { return new HauntTrigger(botAI); }
@@ -271,6 +274,7 @@ private:
     static Trigger* assigned_curse_of_agony(PlayerbotAI* botAI) { return new AssignedCurseOfAgonyTrigger(botAI); }
     static Trigger* pull_imminent_life_tap(PlayerbotAI* botAI) { return new PullImminentLifeTapTrigger(botAI); }
     static Trigger* wrong_pet(PlayerbotAI* botAI) { return new WrongPetTrigger(botAI); }
+    static Trigger* warlock_pet_assist(PlayerbotAI* botAI) { return new WarlockPetAssistTrigger(botAI); }
     static Trigger* rain_of_fire_channel_check(PlayerbotAI* botAI) { return new RainOfFireChannelCheckTrigger(botAI); }
     static Trigger* shadowfury_pays(PlayerbotAI* botAI) { return new WarlockAoePaysTrigger(botAI, "shadowfury"); }
     static Trigger* shadowflame_pays(PlayerbotAI* botAI)

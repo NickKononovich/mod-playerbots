@@ -15,8 +15,8 @@ DestructionWarlockStrategy::DestructionWarlockStrategy(PlayerbotAI* botAI) : Gen
 // ===== Default Actions =====
 std::vector<NextAction> DestructionWarlockStrategy::getDefaultActions()
 {
+    // [rot601] no default Immolate: it bypassed the "immolate" trigger's payoff rule (as Demonology's [b31_deep])
     return {
-       NextAction("immolate", 5.9f),
        NextAction("conflagrate", 5.8f),
        NextAction("chaos bolt", 5.7f),
        NextAction("incinerate", 5.6f),

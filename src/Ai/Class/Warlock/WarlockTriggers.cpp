@@ -21,6 +21,7 @@
 #include "LeaderOrders.h"  // [lead955] Leader::ExecutorMember
 #include "Map.h"
 #include "ObjectMgr.h"  // [rot461] GetDungeonEncounterList
+#include "Pet.h"  // [rot600]
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -267,12 +268,31 @@ bool IsCurseAllowed(PlayerbotAI* botAI, AssignedCurse curse)
 }
 }
 
-// [b31_deep] Agony never replaces the bot's own Curse of Doom (one curse per warlock per target).
 std::string const ai::warlock::DotFiller(Player* bot)
 {
-    return AiFactory::GetPlayerSpecTab(bot) == WARLOCK_TAB_DESTRUCTION ? "incinerate" : "shadow bolt";
+    if (AiFactory::GetPlayerSpecTab(bot) != WARLOCK_TAB_DESTRUCTION)
+        return "shadow bolt";
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    bool const incinerate =
+        botAI && botAI->GetAiObjectContext()->GetValue<uint32>("spell id", "incinerate")->Get();  // [rot601]
+    return incinerate ? "incinerate" : "shadow bolt";
 }
 
+bool WarlockPetAssistTrigger::IsActive()
+{
+    Pet* pet = bot->GetPet();
+    if (!pet || !pet->IsAlive() || pet->HasReactState(REACT_PASSIVE) || !pet->GetCharmInfo() || !pet->AI())
+        return false;
+    if (Unit* victim = pet->GetVictim())
+        if (victim->IsAlive())
+            return false;
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive() || !bot->IsValidAttackTarget(target))
+        return false;
+    return !bot->GetGroup() || target->IsInCombat();
+}
+
+// [b31_deep] Agony never replaces the bot's own Curse of Doom (one curse per warlock per target).
 bool CurseOfAgonyTrigger::IsActive()
 {
     return ai::warlock::IsCurseAllowed(botAI, ai::raidutil::AssignedCurse::AGONY) && DebuffTrigger::IsActive() &&

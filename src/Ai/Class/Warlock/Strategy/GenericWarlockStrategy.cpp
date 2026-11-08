@@ -85,6 +85,9 @@ void GenericWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
         )
     );
 
+    // [rot600] the demon on the warlock's target from its start, not from its first cast's end (no global cooldown)
+    triggers.push_back(new TriggerNode("warlock pet assist", { NextAction("pet attack", ACTION_HIGH + 9.8f) }));
+
     // Raid utility coordinator: the curse assigned to this warlock (the spec curse strategy yields to it).
     triggers.push_back(
         new TriggerNode("assigned curse of the elements", { NextAction("curse of the elements", 29.0f) }));

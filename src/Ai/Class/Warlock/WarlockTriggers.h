@@ -27,7 +27,8 @@ namespace ai::warlock
     // False when the coordinator gave this warlock a different curse (one curse per warlock per target).
     bool IsCurseAllowed(PlayerbotAI* botAI, ai::raidutil::AssignedCurse curse);
     // [rot400] The filler a DoT is weighed against (DebuffTrigger::DotPaysOff): Incinerate for Destruction (wowsims
-    // warlock__destro), Shadow Bolt for Affliction / Demonology (warlock__affliction / warlock__demo)
+    // warlock__destro), Shadow Bolt for Affliction / Demonology (warlock__affliction / warlock__demo). [rot601] Shadow
+    // Bolt for a Destruction warlock that has no Incinerate yet (below L64): with an unknown filler every DoT "pays"
     std::string const DotFiller(Player* bot);
 }
 
@@ -161,6 +162,18 @@ public:
     bool IsActive() override;
 };
 
+// [rot600] The demon joins the warlock's target when the warlock starts on it. The core sends it only when the
+// warlock's first harmful cast goes off (Spell::_cast -> PetAI::OwnerAttacked; Unit::Attack tells pets of melee only):
+// b338 solo warlocks, the demon dealt 4.0-6.5 of the 8-13 dps the formula gives it in 7-11 s fights, a whole Shadow
+// Bolt cast late and then its own Firebolt cast or run. Same rules as OwnerAttacked: not a passive demon, not off a
+// living victim; in a group only on a mob already in combat (the tank's pull first).
+class WarlockPetAssistTrigger : public Trigger
+{
+public:
+    WarlockPetAssistTrigger(PlayerbotAI* botAI) : Trigger(botAI, "warlock pet assist") {}
+    bool IsActive() override;
+};
+
 // CC and Pet Triggers
 
 class BanishTrigger : public RtiCcTrigger
@@ -224,12 +237,29 @@ class ImmolateTrigger : public DebuffTrigger
 public:
     ImmolateTrigger(PlayerbotAI* botAI)
         : DebuffTrigger(botAI, "immolate", 1, true, IMMOLATE_MIN_TARGET_LIFETIME, IMMOLATE_REFRESH_MS) {}
+    // [rot601] under the payoff rule like Corruption: b338 the L10 destruction warlock cast Immolate 1.2 times a
+    // 11 s fight (its direct hit and one or two ticks for a 2 s cast) where Shadow Bolt dealt more
+    std::string const DotFiller() override { return ai::warlock::DotFiller(bot); }
 
     // [rot453] the refresh at the hasted cast time (ImmolateRefreshMs)
     bool IsActive() override
     {
         beforeDuration = ImmolateRefreshMs(botAI, bot);
         return DebuffTrigger::IsActive();
+    }
+};
+
+// [rot602] Affliction's Immolate before it has Unstable Affliction: the two do not stack (Rawr 2.3.23
+// CalculationOptionsWarlock "Unstable Affliction and Immolate don't mix"), the ideal keeps it below the curse where it
+// pays against Shadow Bolt (b338 L10-19 ideal / formula 1.02)
+class AfflictionImmolateTrigger : public ImmolateTrigger
+{
+public:
+    AfflictionImmolateTrigger(PlayerbotAI* botAI) : ImmolateTrigger(botAI) {}
+    std::string const getName() override { return "affliction immolate"; }
+    bool IsActive() override
+    {
+        return !AI_VALUE2(uint32, "spell id", "unstable affliction") && ImmolateTrigger::IsActive();
     }
 };
 
