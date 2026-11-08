@@ -16,6 +16,10 @@
 #include "ServerFacade.h"
 #include "SharedDefines.h"
 
+#include <algorithm>
+#include <cmath>
+#include <limits>
+
 Unit* GrindTargetValue::Calculate()
 {
     uint32 memberCount = 1;
@@ -165,8 +169,12 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         // [guild90] questing, a mob no quest needs is fought only when it is in the way: hostile and within its own
         // aggro reach of the bot or of the walk ahead to the quest spot (it comes anyway). No detour to it (b317
         // Eraelor L6 on q487, Gnarlpine Ambushers, pulled a Strigid Screecher L8 off the road and died).
-        if (botAI->rpgInfo.GetStatus() == RPG_DO_QUEST && unit->ToCreature() && !neededForQuest() &&
-            !OnQuestWay(unit))
+        // [onpath11] user 2026-11-08 ("why does it fight mobs that don't block its way?", project rule pull only on
+        // path): a solo bot on any walk (to a grind spot, a camp, a vendor, a node), not only questing, pulls only
+        // a mob on that walk; before, a mob within its aggro reach + 10 yd of the bot was pulled off the walk's side
+        bool const walks = botAI->rpgInfo.GetStatus() != RPG_IDLE && botAI->rpgInfo.GetStatus() != RPG_WANDER_RANDOM;
+        if ((botAI->rpgInfo.GetStatus() == RPG_DO_QUEST || (solo && walks)) && unit->ToCreature() &&
+            !neededForQuest() && !OnQuestWay(unit))
             continue;
 
         float unitDistance = -1.0f;
@@ -250,10 +258,45 @@ bool GrindTargetValue::OnQuestWay(Unit* unit)
     float const aggro = unit->ToCreature()->GetAggroRange(bot);
     if (bot->GetDistance(unit) <= aggro)
         return true;
-    auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
-    if (!quest)
+    float const sight = sPlayerbotAIConfig.SightDistance;
+    // [onpath11] the route the bot walks: its far route from the point nearest the bot on, a sight ahead - the mob's
+    // aggro circle crosses one of its stretches (a route round a camp passes no camp mob)
+    std::vector<G3D::Vector3> const& route = botAI->rpgInfo.farRoute;
+    if (route.size() >= 2)
+    {
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        size_t nearest = 0;
+        float best = std::numeric_limits<float>::max();
+        for (size_t i = 0; i < route.size(); ++i)
+            if (float const d = (route[i] - here).squaredLength(); d < best)
+            {
+                best = d;
+                nearest = i;
+            }
+        G3D::Vector3 const at(unit->GetPositionX(), unit->GetPositionY(), unit->GetPositionZ());
+        float walked = 0.0f;
+        G3D::Vector3 from = here;
+        for (size_t i = nearest; i < route.size() && walked < sight; ++i)
+        {
+            G3D::Vector3 const to = route[i];
+            G3D::Vector3 const ab = to - from;
+            float const len2 = ab.x * ab.x + ab.y * ab.y;
+            float const t =
+                len2 > 0.01f ? std::clamp(((at.x - from.x) * ab.x + (at.y - from.y) * ab.y) / len2, 0.0f, 1.0f) : 0.0f;
+            if (std::hypot(from.x + ab.x * t - at.x, from.y + ab.y * t - at.y) <= aggro)
+                return true;
+            walked += std::sqrt(len2);
+            from = to;
+        }
         return false;
-    WorldPosition const dest = quest->pos != WorldPosition() ? quest->pos : quest->giverPos;
+    }
+    WorldPosition dest;
+    if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
+        dest = quest->pos != WorldPosition() ? quest->pos : quest->giverPos;
+    else if (auto const* grind = std::get_if<NewRpgInfo::GoGrind>(&botAI->rpgInfo.data))
+        dest = grind->pos;
+    else if (auto const* camp = std::get_if<NewRpgInfo::GoCamp>(&botAI->rpgInfo.data))
+        dest = camp->pos;
     if (dest == WorldPosition() || dest.GetMapId() != bot->GetMapId())
         return false;
     // the walk's next stretch (sight range): the mob's aggro circle touches it ahead of the bot
@@ -265,7 +308,7 @@ bool GrindTargetValue::OnQuestWay(Unit* unit)
     dx /= length;
     dy /= length;
     float const along = (unit->GetPositionX() - fromX) * dx + (unit->GetPositionY() - fromY) * dy;
-    if (along <= 0.0f || along > std::min(length, sPlayerbotAIConfig.SightDistance))
+    if (along <= 0.0f || along > std::min(length, sight))
         return false;
     float const across = std::fabs((unit->GetPositionX() - fromX) * dy - (unit->GetPositionY() - fromY) * dx);
     return across <= aggro;
