@@ -175,6 +175,12 @@ namespace
         std::unordered_map<uint64, bool> routeMobs;
         std::vector<RouteWall> routeWalls;  // [pull9]
         std::string runPastLogged;          // [runpast11] the last run-past line (one line per change)
+        // [runpast11] the run-past set of the last route search from where the bot stood (mob -> its chase damage) and
+        // the committed leg's: its set, its points, the mobs its RUN_PAST lines named
+        std::unordered_map<uint64, float> pendingRunPast;
+        std::unordered_map<uint64, float> legRunPast;
+        std::vector<G3D::Vector3> legPoints;
+        std::unordered_set<uint64> legNamed;
         bool routeComplete = false;
         bool routeThroughRefused = false;
         // [deaths] the engage's pull spot (Verdict::pullSpot) and the reaches its walk goes round
@@ -2300,6 +2306,102 @@ namespace SoloSafety
         return damage < float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, mana, true);
     }
 
+    void CommitRunPast(Player* bot, std::vector<G3D::Vector3> const& points)
+    {
+        if (!bot)
+            return;
+        std::lock_guard<std::mutex> guard(lock);
+        SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        state.legRunPast = state.pendingRunPast;
+        state.legPoints = state.legRunPast.empty() ? std::vector<G3D::Vector3>() : points;
+        state.legNamed.clear();
+    }
+
+    bool RunPastStep(Player* bot, std::vector<G3D::Vector3>& rest, std::string& line)
+    {
+        rest.clear();
+        line.clear();
+        if (!bot || !bot->IsAlive() || !bot->IsInCombat() || !Applies(bot) || Disengaging(bot))
+            return false;
+        std::unordered_map<uint64, float> set;
+        std::vector<G3D::Vector3> points;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end() || found->second.legRunPast.empty() || found->second.legPoints.size() < 2)
+                return false;
+            set = found->second.legRunPast;
+            points = found->second.legPoints;
+        }
+        // still on the leg: its nearest point within the far walk's own tolerance (MoveFarToDirect's farRoute, 8 yd);
+        // at its end or off it the leg is over
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        constexpr float ON_LEG = 8.0f;  // the farRoute tolerance (NewRpgBaseAction::MoveFarToDirect)
+        size_t nearest = points.size();
+        float best = ON_LEG * ON_LEG;
+        for (size_t i = 0; i < points.size(); ++i)
+            if (float const d = (points[i] - here).squaredLength(); d < best)
+            {
+                best = d;
+                nearest = i;
+            }
+        // between two points the nearest corner may be far: the segment's own distance counts too
+        for (size_t i = 1; nearest == points.size() && i < points.size(); ++i)
+        {
+            G3D::Vector3 const ab = points[i] - points[i - 1];
+            float const len2 = std::max(ab.squaredLength(), 0.01f);
+            float const t = std::clamp((here - points[i - 1]).dot(ab) / len2, 0.0f, 1.0f);
+            if ((points[i - 1] + ab * t - here).squaredLength() < ON_LEG * ON_LEG)
+                nearest = i;
+        }
+        bool const legOver = nearest == points.size() || (points.back() - here).length() <= ON_LEG;
+        if (legOver)
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            SoloBotState& state = states[bot->GetGUID().GetCounter()];
+            state.legRunPast.clear();
+            state.legPoints.clear();
+            state.legNamed.clear();
+            return false;
+        }
+        // every attacker one the leg priced; their chases still to come survived
+        std::vector<Creature*> chasers;
+        RunPast left;
+        for (Unit* attacker : bot->getAttackers())
+        {
+            if (!attacker || !attacker->IsAlive())
+                continue;
+            Creature* mob = attacker->ToCreature();
+            if (!mob || !set.count(mob->GetGUID().GetRawValue()))
+                return false;  // a mob it did not price: the fight as before
+            RunPast const chase = RunPastChase(bot, mob);
+            left.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage : left.damage + chase.damage;
+            left.seconds = std::max(left.seconds, chase.seconds);
+            chasers.push_back(mob);
+        }
+        if (chasers.empty() || !SurvivesRunPast(bot, left.damage, left.seconds))
+            return false;  // nothing chases, or the kit's turn (it does not live through the chase now)
+        // one attacker the judge beats here for less damage than its chase: the fight is the cheaper way
+        if (chasers.size() == 1)
+        {
+            Verdict const verdict = Judge(bot, chasers.front());
+            if (verdict.kind == Verdict::Kind::Win && verdict.damage < left.damage)
+                return false;
+        }
+        rest.push_back(here);
+        rest.insert(rest.end(), points.begin() + std::min(nearest + 1, points.size() - 1), points.end());
+        float const hp =
+            float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, left.seconds, float(bot->GetPower(POWER_MANA)), true);
+        std::lock_guard<std::mutex> guard(lock);
+        SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        for (Creature* mob : chasers)
+            if (state.legNamed.insert(mob->GetGUID().GetRawValue()).second)
+                line += Acore::StringFormat("{}{} keeps walking past {} L{} (chase priced {:.0f}, hp {:.0f})",
+                                            line.empty() ? "" : "; ", bot->GetName(), mob->GetName(), mob->GetLevel(),
+                                            set[mob->GetGUID().GetRawValue()], hp);
+        return true;
+    }
+
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,
                     std::vector<Leader::Travel::RoutePenalty>& penalties)
     {
@@ -2364,10 +2466,11 @@ namespace SoloSafety
         // judge ("pack above its level", "loses at full") never was (b349: 1337 of the maze's wall tails, no run past
         // ever priced). `price` / `hp`: the chase and the bot's health with its kit (logged on the wall)
         std::vector<std::string> ranPastNames;
+        std::unordered_map<uint64, float> chaseOf;  // [runpast11] each mob run past: its chase (the executor's set)
         auto const tryRunPast = [&](Creature* mob, PullModel const& model, float& price, float& hp)
         {
             RunPast with = runPast;
-            std::vector<uint64> added;
+            std::vector<std::pair<uint64, float>> added;
             for (PullModel::Member const& m : model.pack)
             {
                 uint64 const key = m.mob->GetGUID().GetRawValue();
@@ -2377,7 +2480,7 @@ namespace SoloSafety
                 with.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage
                                                                                  : with.damage + chase.damage;
                 with.seconds = std::max(with.seconds, chase.seconds);
-                added.push_back(key);
+                added.push_back({key, chase.damage});
             }
             price = with.damage;
             hp = float(bot->GetHealth()) +
@@ -2385,7 +2488,11 @@ namespace SoloSafety
             if (!SurvivesRunPast(bot, with.damage, with.seconds))
                 return false;
             runPast = with;
-            chasing.insert(added.begin(), added.end());
+            for (auto const& [key, damage] : added)
+            {
+                chasing.insert(key);
+                chaseOf[key] = damage;
+            }
             ranPastNames.push_back(Acore::StringFormat("{} L{} pack {}", mob->GetName(), mob->GetLevel(),
                                                        model.pack.size()));
             return true;
@@ -2547,6 +2654,9 @@ namespace SoloSafety
         if (!runPastLine.empty() && state.runPastLogged != runPastLine)
             LOG_INFO("playerbots", "[solo] {} L{} {}", bot->GetName(), bot->GetLevel(), runPastLine);
         state.runPastLogged = runPastLine;
+        // [runpast11] a search from where the bot stands: its run-past set waits for the leg's commit
+        if (bot->GetExactDist(from.x, from.y, from.z) <= bot->GetCombatReach())
+            state.pendingRunPast = std::move(chaseOf);
         state.routeMs = getMSTime();
         state.routeMobs = std::move(seen);
         state.routeWalls = std::move(walls);

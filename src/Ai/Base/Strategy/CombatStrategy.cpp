@@ -69,6 +69,16 @@ void CombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [runpast11] a leg priced as a run past is walked on past the mobs of its set that aggro (SoloRunPastAction):
+    // below the kit, above every attack
+    triggers.push_back(
+        new TriggerNode(
+            "solo run past",
+            {
+                NextAction("solo run past", ACTION_EMERGENCY + 2)
+            }
+        )
+    );
     // The pet-attack trigger is commented out because it was forcing the bot's pet to attack, overriding stay and follow commands.
     // Pets will automatically attack the bot's enemy if they are in "defensive" or "aggressive"
     // stance, or if the master issues an attack command.

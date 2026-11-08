@@ -5,6 +5,7 @@
  */
 
 #include "SurvivalKit.h"
+#include "BotPath.h"  // [runpast11] WalkBotPoints
 
 #include "CellImpl.h"
 #include "Creature.h"
@@ -1787,4 +1788,39 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
         }
     }
     return cast;
+}
+
+bool SoloRunPastTrigger::IsActive()
+{
+    std::vector<G3D::Vector3> rest;
+    std::string line;
+    return SoloSafety::RunPastStep(bot, rest, line);
+}
+
+bool SoloRunPastAction::Execute(Event /*event*/)
+{
+    std::vector<G3D::Vector3> rest;
+    std::string line;
+    if (!SoloSafety::RunPastStep(bot, rest, line))
+        return false;
+    if (!line.empty())
+        LOG_INFO("playerbots", "[solo] RUN_PAST {}", line);
+    // every damage off, as the kit's run: no swing, no auto shot, no cast, the pet at heel
+    if (bot->GetVictim() || bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        bot->AttackStop();
+    bot->InterruptSpell(CURRENT_AUTOREPEAT_SPELL);
+    if (bot->IsNonMeleeSpellCast(false))
+        bot->InterruptNonMeleeSpells(false);
+    context->GetValue<Unit*>("current target")->Set(nullptr);
+    bot->SetTarget(ObjectGuid::Empty);
+    if (Pet* pet = bot->GetPet())
+        if (pet->GetVictim())
+            botAI->PetFollow();
+    if (bot->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_CONTROLLED))
+        return true;
+    // the leg's walk goes on: a walk already under way is kept (no new spline every tick)
+    if (bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        return true;
+    Movement::PointsArray points(rest.begin(), rest.end());
+    return WalkBotPoints(bot, points);
 }

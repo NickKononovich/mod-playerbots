@@ -536,6 +536,26 @@ namespace
     }
 }
 
+// [runpast11] the leg walked: `points` from the bot on as far as `end` (the leg's end in sight), committed with the
+// route search's run-past set for the executor (SoloSafety::RunPastStep)
+static void CommitLeg(Player* bot, Movement::PointsArray const& points, G3D::Vector3 const& end)
+{
+    std::vector<G3D::Vector3> leg;
+    for (G3D::Vector3 const& at : points)
+    {
+        leg.push_back(at);
+        if ((at - end).length() < 0.5f)
+            break;
+        if (leg.size() >= 2 && (end - leg[leg.size() - 2]).length() <= (at - leg[leg.size() - 2]).length() &&
+            (end - at).length() <= (at - leg[leg.size() - 2]).length())
+        {
+            leg.back() = end;  // `end` lies on this stretch
+            break;
+        }
+    }
+    SoloSafety::CommitRunPast(bot, leg);
+}
+
 bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path, float disToDest, bool deadEnd)
 {
     float const sight = sPlayerbotAIConfig.SightDistance;
@@ -568,6 +588,7 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
         G3D::Vector3 const end = leg.length > sight ? Leader::Travel::PointOnPath(leg.points, sight) : leg.actualEnd;
         if (!MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
             return false;
+        CommitLeg(bot, leg.points, end);  // [runpast11]
         {
             std::lock_guard<std::mutex> guard(walkAroundLock);
             WalkAroundState& state = walkAround[low];
@@ -2361,7 +2382,10 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                                              ? Leader::Travel::PointOnPath(leg.points, sPlayerbotAIConfig.SightDistance)
                                              : leg.actualEnd;
                 if (MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
+                {
+                    CommitLeg(bot, leg.points, end);  // [runpast11]
                     return true;
+                }
             }
             std::lock_guard<std::mutex> guard(walkAroundLock);
             walkAround[bot->GetGUID().GetCounter()].hasVia = false;  // reached, or no clean walk to it from here
@@ -2400,7 +2424,10 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                                            ? Leader::Travel::PointOnPath(local.points, sPlayerbotAIConfig.SightDistance)
                                            : local.actualEnd;
                     if (MoveTo(bot->GetMapId(), leg.x, leg.y, leg.z, false, false, false, true))
+                    {
+                        CommitLeg(bot, local.points, leg);  // [runpast11]
                         return true;
+                    }
                 }
             }
         }
@@ -2466,7 +2493,10 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                     return false;
                 }
                 if (MoveTo(bot->GetMapId(), leg.x, leg.y, leg.z, false, false, false, true))
+                {
+                    CommitLeg(bot, path.points, leg);  // [runpast11]
                     return true;
+                }
                 NoteWalkFailure(dest, Acore::StringFormat("route {} ({:.0f} yd, ends {:.0f} yd short), the walk "
                                                           "refused: {}",
                                                           type == PATHFIND_NORMAL ? "complete" : "partial", path.length,

@@ -61,4 +61,24 @@ public:
     bool isUseful() override;
 };
 
+// [runpast11] the run-past executor: a solo bot walking a leg the route search priced as a run past, chased only by
+// mobs of that priced set, keeps walking the leg at full speed with every damage off (no attack, auto shot off, its
+// pet at heel); the mobs leash by the core's rule. Not while the kit runs, when the chase no longer leaves it alive,
+// or when the judge wins the one attacker for less damage than its chase (SoloSafety::RunPastStep)
+class SoloRunPastTrigger : public Trigger
+{
+public:
+    SoloRunPastTrigger(PlayerbotAI* botAI) : Trigger(botAI, "solo run past") {}
+
+    bool IsActive() override;
+};
+
+class SoloRunPastAction : public MovementAction
+{
+public:
+    SoloRunPastAction(PlayerbotAI* botAI) : MovementAction(botAI, "solo run past") {}
+
+    bool Execute(Event event) override;
+};
+
 #endif

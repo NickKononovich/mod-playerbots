@@ -160,6 +160,15 @@ namespace SoloSafety
     RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl);
     // the bot lives through `damage` over `seconds` from its health now with its heal kit (the flee's test)
     bool SurvivesRunPast(Player* bot, float damage, float seconds);
+    // [runpast11] the run-past executor. The route search of a walk from where the bot stands keeps the mobs it priced
+    // as run past (their chase each); CommitRunPast makes that set the walked leg's (`points`: the leg from the bot on).
+    // RunPastStep, in a fight: every attacker is one of the leg's set, the bot is still on the leg, the kit does not
+    // run (Disengaging), the chases still to come leave it alive (SurvivesRunPast over RunPastChase now) and no single
+    // attacker is a fight the judge wins for less damage than its chase -> true with the rest of the leg (`rest`, from
+    // the bot on) and the RUN_PAST line for a mob not named yet this leg (`line`, empty when none). False: it fights as
+    // before. The leg ends at its end, off it, or at the next commit
+    void CommitRunPast(Player* bot, std::vector<G3D::Vector3> const& points);
+    bool RunPastStep(Player* bot, std::vector<G3D::Vector3>& rest, std::string& line);
 
     // [dps1] the bot's damage per second: DpsEstimate's formula over its state now (its buff context: solo / party /
     // raid), against `target` or a mob of its level; no fight history
