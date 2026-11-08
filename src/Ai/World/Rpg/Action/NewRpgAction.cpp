@@ -8,8 +8,14 @@
 #include "BotPath.h"  // [guild12]
 #include "QuestStats.h"  // [guild90]
 #include "SmartScriptMgr.h"  // [guild15] talk-to objectives
+#include "CellImpl.h"           // [skin12]
+#include "Formulas.h"           // [skin12]
+#include "GridNotifiers.h"      // [skin12]
+#include "GridNotifiersImpl.h"  // [skin12]
+#include <limits>
 #include <set>
 #include <mutex>
+#include <tuple>
 #include <unordered_map>
 
 namespace
@@ -231,6 +237,51 @@ namespace
     constexpr uint32 VENDOR_LOW_AMMO = 100;
 }
 
+void NewRpgBaseAction::BuyAmmoDirect(Creature* vendor, uint32 subClass, uint32 have)
+{
+    VendorItemData const* items = vendor->GetVendorItems();
+    if (!items)
+        return;
+    int32 bestSlot = -1;
+    uint32 bestPrice = 0;
+    ItemTemplate const* best = nullptr;
+    for (size_t i = 0; i < items->m_items.size(); ++i)
+    {
+        VendorItem const* item = items->m_items[i];
+        ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
+        if (!proto || proto->Class != ITEM_CLASS_PROJECTILE || proto->SubClass != subClass ||
+            proto->RequiredLevel > bot->GetLevel() || item->ExtendedCost || bot->CanUseItem(proto) != EQUIP_ERR_OK)
+            continue;
+        uint32 const price = std::max<uint32>(1, proto->BuyPrice);
+        if (!best || price < bestPrice)
+        {
+            best = proto;
+            bestPrice = price;
+            bestSlot = int32(i);
+        }
+    }
+    std::string why;
+    uint32 bought = 0;
+    if (!best)
+        why = "the vendor sells no ammo it can use";
+    else
+    {
+        uint32 const stack = std::max<uint32>(1, best->BuyCount);
+        while (have + bought < VENDOR_LOW_AMMO && bot->GetMoney() >= bestPrice)
+        {
+            if (!bot->BuyItemFromVendorSlot(vendor->GetGUID(), uint32(bestSlot), best->ItemId, uint8(1), NULL_BAG,
+                                            NULL_SLOT))
+            {
+                why = "the core refused the purchase (bags / money / stock)";
+                break;
+            }
+            bought += stack;
+        }
+    }
+    LOG_INFO("playerbots", "[vendor12] {} L{} ammo at {}: had {}, bought {} of {}{}", bot->GetName(), bot->GetLevel(),
+             vendor->GetName(), have, bought, best ? best->Name1 : std::string("-"), why.empty() ? "" : " - " + why);
+}
+
 float NewRpgBaseAction::DeathDurabilityLoss(Player* bot)
 {
     return (sWorld->getRate(RATE_DURABILITY_LOSS_ON_DEATH) +
@@ -263,6 +314,57 @@ WorldPosition NewRpgBaseAction::NearestRepairSpawn(Player* bot)
         }
     }
     return best ? WorldPosition(best->mapId, best->x, best->y, best->z) : WorldPosition();
+}
+
+bool NewRpgBaseAction::TownTaskHere()
+{
+    // a party member's town stop it stands at (its leader's route takes its stops): the global leader's step for it
+    // runs here (NextStep acts on a convenient town task only in its town: BUSY); any other step waits for its party
+    std::vector<std::pair<WorldPosition, std::string>> towns;
+    sGuildCoordinator.TownStops(bot, towns);
+    for (auto const& [pos, what] : towns)
+    {
+        // the town stop's reach (GO_CAMP's, NewRpgQuestRoute TOWN_STOP_REACHED)
+        if (bot->IsInCombat() || bot->GetDistance2d(pos.GetPositionX(), pos.GetPositionY()) > 10.0f)
+            continue;
+        GuildRunStep const step = sGuildCoordinator.NextStep(bot, botAI);
+        if (step.kind == GuildRunStep::BUSY)
+        {
+            LOG_INFO("playerbots", "[town12] {} L{} runs its town task {} with its party", bot->GetName(),
+                     bot->GetLevel(), what);
+            return true;
+        }
+        return false;
+    }
+    return false;
+}
+
+bool NewRpgBaseAction::GuildStepGivenUp(GuildRunStep const& step)
+{
+    if (step.pos == WorldPosition() || step.pos.GetMapId() != bot->GetMapId() ||
+        !WalkGivenUp(bot, step.pos.GetPositionX(), step.pos.GetPositionY()))
+        return false;
+    // one line per bot, spot and level
+    static std::mutex lock;
+    static std::unordered_map<uint32, std::tuple<uint8, int32, int32>> last;
+    std::tuple<uint8, int32, int32> const key{bot->GetLevel(), int32(step.pos.GetPositionX()),
+                                              int32(step.pos.GetPositionY())};
+    bool fresh = false;
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        auto& previous = last[bot->GetGUID().GetCounter()];
+        fresh = previous != key;
+        previous = key;
+    }
+    if (fresh)
+    {
+        LOG_INFO("playerbots", "[rpg] {} L{} GUILD_STEP_GIVEN_UP ({:.0f},{:.0f}) {:.0f} yd: {} - its walk there was "
+                 "given up at L{}; it quests on",
+                 bot->GetName(), bot->GetLevel(), step.pos.GetPositionX(), step.pos.GetPositionY(),
+                 bot->GetExactDist2d(step.pos.GetPositionX(), step.pos.GetPositionY()), step.reason, bot->GetLevel());
+        sGuildCoordinator.SetOrderStatus(bot, "no safe walk there (given up): quests on");
+    }
+    return true;
 }
 
 bool NewRpgBaseAction::HearthOut(std::string const& why)
@@ -638,7 +740,34 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // [guild90] questing counters (yards walked, the active quest's progress) for tools/guild_stats.py
     {
         auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data);
-        QuestStats::OnRpgTick(bot, quest ? quest->questId : 0);
+        // [budget12] the bucket its time since the last tick goes to (metric only, no decision reads it)
+        char const* bucket = "IDLE";
+        bool const skin = (std::holds_alternative<NewRpgInfo::GoGrind>(info.data) &&
+                           std::get<NewRpgInfo::GoGrind>(info.data).forSkin) ||
+                          (std::holds_alternative<NewRpgInfo::WanderRandom>(info.data) &&
+                           std::get<NewRpgInfo::WanderRandom>(info.data).forSkin);
+        if (info.groupWaiting)
+            bucket = "GROUP_WAIT";
+        else if (skin)
+            bucket = "SKIN";
+        else if (info.vendorRunEntry)
+            bucket = "VENDOR";
+        else
+            switch (status)
+            {
+                case RPG_GO_GRIND: bucket = "GO_GRIND"; break;
+                case RPG_GO_CAMP: bucket = "GO_CAMP"; break;
+                case RPG_WANDER_RANDOM: bucket = "GRIND"; break;
+                case RPG_WANDER_NPC: bucket = "NPC"; break;
+                case RPG_DO_QUEST: bucket = "QUEST"; break;
+                case RPG_TRAVEL_FLIGHT: bucket = "FLIGHT"; break;
+                case RPG_REST: bucket = "REST"; break;
+                case RPG_OUTDOOR_PVP: bucket = "PVP"; break;
+                case RPG_DO_GATHER: bucket = "GATHER"; break;
+                case RPG_DO_PROFESSION: bucket = "PROFESSION"; break;
+                default: break;
+            }
+        QuestStats::OnRpgTick(bot, quest ? quest->questId : 0, bucket);
     }
 
     // [guild7] one line per status change for the guild stats (tools/guild_stats.py "activity")
@@ -683,6 +812,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         NewRpgCoop::Order const coop = NewRpgCoop::Tick(botAI, bot);
         if (coop.kind == NewRpgCoop::Order::Kind::Follow)
         {
+            if (TownTaskHere())  // [town12] the leader's route brought it to its own town stop
+                return true;
             NewRpgStatus const before = info.GetStatus();
             if (coop.farWalk ? MoveFarTo(coop.pos) : Follow(coop.leader))
                 return true;
@@ -696,7 +827,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return false;
         }
         if (coop.kind == NewRpgCoop::Order::Kind::Stay)
-            return false;
+            return TownTaskHere();  // [town12] its own town task where the party stands
     }
 
     // [guild3] full bags or low ammo: to a vendor first, as a player does (not out of a flight, rest or pvp)
@@ -718,23 +849,63 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 LogDungeonCandidates();  // [guild11] hook for the dungeon step, once per level
             }
 
+            // [help12] the requester of a camp help party grinds the camp until it is cleared (its party judges)
+            if (WorldPosition camp;
+                NewRpgCoop::HelpCampOf(bot, camp) && !WalkGivenUp(bot, camp.GetPositionX(), camp.GetPositionY()))
+            {
+                LOG_INFO("playerbots", "[help] camp {} L{} grinds the camp at ({:.0f},{:.0f}) with its helpers",
+                         bot->GetName(), bot->GetLevel(), camp.GetPositionX(), camp.GetPositionY());
+                info.ChangeToGoGrind(camp);
+                return true;
+            }
+            // [help12] the requester of a quest help party back from a pause (a sell run, a rest): its help quest
+            {
+                uint32 helpQuest = 0;
+                int32 helpIdx = 0;
+                WorldPosition helpAt;
+                Quest const* quest = nullptr;
+                if (NewRpgCoop::HelpQuestOf(bot, helpQuest, helpIdx, helpAt) &&
+                    (quest = sObjectMgr->GetQuestTemplate(helpQuest)) != nullptr &&
+                    bot->GetQuestStatus(helpQuest) == QUEST_STATUS_INCOMPLETE &&
+                    (helpAt == WorldPosition() || !WalkGivenUp(bot, helpAt.GetPositionX(), helpAt.GetPositionY())))
+                {
+                    LOG_INFO("playerbots", "[help] resume {} L{} q{}: its helpers wait at the camp", bot->GetName(),
+                             bot->GetLevel(), helpQuest);
+                    botAI->lowPriorityQuest.erase(helpQuest);
+                    info.ChangeToDoQuest(helpQuest, quest);
+                    if (auto* data = std::get_if<NewRpgInfo::DoQuest>(&info.data); data && helpAt != WorldPosition())
+                    {
+                        data->pos = helpAt;
+                        data->objectiveIdx = helpIdx;
+                        data->lastReachPOI = 0;
+                    }
+                    return true;
+                }
+            }
             // [guild30] an order of the guild coordinator first; QUEST (the default) = the choice below
             {
                 GuildRunStep const step = sGuildCoordinator.NextStep(bot, botAI);
                 if (step.kind == GuildRunStep::BUSY)
                     return true;
-                if (step.kind == GuildRunStep::WALK)
+                // [stuck12] a walk the bot gave up at this level (RefusedWalk, MOVE_FAR_LOOP) is not walked again for
+                // the leader's order: it quests on and the order's status says why (b350 Baridrol L10 / Blahadrin L13:
+                // the same refused walk taken again on every IDLE look, 51 / 148 STUCK alerts)
+                bool const givenUp = (step.kind == GuildRunStep::WALK || step.kind == GuildRunStep::GRIND) &&
+                                     GuildStepGivenUp(step);
+                if (step.kind == GuildRunStep::WALK && !givenUp)
                 {
                     LOG_INFO("playerbots", "[rpg] {} L{} GUILD reason: {}", bot->GetName(), bot->GetLevel(),
                              step.reason);
                     info.ChangeToGoCamp(step.pos);
                     return true;
                 }
-                if (step.kind == GuildRunStep::GRIND)  // [gather] a skinning place: its mobs, killed and skinned
+                if (step.kind == GuildRunStep::GRIND && !givenUp)  // [gather] a skinning place: killed and skinned
                 {
                     LOG_INFO("playerbots", "[rpg] {} L{} GUILD GRIND reason: {}", bot->GetName(), bot->GetLevel(),
                              step.reason);
                     info.ChangeToGoGrind(step.pos);
+                    // [skin12] the grind is for the skins: a gray mob of the place counts (GrindTargetValue)
+                    std::get<NewRpgInfo::GoGrind>(info.data).forSkin = true;
                     return true;
                 }
                 if (step.kind == GuildRunStep::GATHER)
@@ -747,7 +918,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                         info.ChangeToDoGather();
                         return true;
                     }
-                    sGuildCoordinator.SetOrderStatus(bot, "нет узлов для навыка в этой зоне - квестует");
+                    sGuildCoordinator.SetOrderStatus(bot, "no nodes for its skill in this zone - quests on");
                 }
             }
             // [guild10] a purposeful target only, never an aimless walk: a quest (hand in, objective, then a
@@ -886,7 +1057,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             {
                 LOG_INFO("playerbots", "[rpg] {} L{} WANDER reason: grind spot reached", bot->GetName(),
                          bot->GetLevel());
+                bool const forSkin = data.forSkin;
                 info.ChangeToWanderRandom();
+                std::get<NewRpgInfo::WanderRandom>(info.data).forSkin = forSkin;  // [skin12]
                 return true;
             }
             break;
@@ -951,7 +1124,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 GuildRunStep const step = sGuildCoordinator.NextStep(bot, botAI);
                 if (step.kind == GuildRunStep::BUSY)
                     return true;
-                if (step.kind == GuildRunStep::WALK)
+                if (step.kind == GuildRunStep::WALK && !GuildStepGivenUp(step))  // [stuck12]
                 {
                     LOG_INFO("playerbots", "[rpg] {} L{} GUILD on the way (q{} waits) reason: {}", bot->GetName(),
                              bot->GetLevel(), data.questId, step.reason);
@@ -1100,6 +1273,38 @@ bool NewRpgGoCampAction::Execute(Event /*event*/)
     return false;
 }
 
+Creature* NewRpgWanderRandomAction::NextSkinMob()
+{
+    if (!bot->HasSkill(SKILL_SKINNING))
+        return nullptr;
+    // the map's view of the bot (Map::GetVisibilityRange): the mobs the core shows it, a fact of where it stands
+    float const range = bot->GetMap()->GetVisibilityRange();
+    std::list<Unit*> units;
+    Acore::AnyUnitInObjectRangeCheck check(bot, range);
+    Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+    Cell::VisitObjects(bot, searcher, range);
+    Creature* best = nullptr;
+    float bestDist = std::numeric_limits<float>::max();
+    for (Unit* unit : units)
+    {
+        Creature* mob = unit->ToCreature();
+        if (!mob || !mob->IsAlive() || mob->IsInCombat() || mob->GetCharmerOrOwnerGUID() ||
+            mob->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE) || !bot->IsValidAttackTarget(mob))
+            continue;
+        CreatureTemplate const* tmpl = mob->GetCreatureTemplate();
+        if (!tmpl || !tmpl->SkinLootId || tmpl->rank > CREATURE_ELITE_NORMAL ||
+            Acore::XP::GetColorCode(bot->GetLevel(), mob->GetLevel()) <= XP_ORANGE)
+            continue;
+        float const d = bot->GetExactDist(mob);
+        if (d >= bestDist || InDangerZone(bot, mob->GetPositionX(), mob->GetPositionY()) ||
+            WalkGivenUp(bot, mob->GetPositionX(), mob->GetPositionY()))
+            continue;
+        bestDist = d;
+        best = mob;
+    }
+    return best;
+}
+
 bool NewRpgWanderRandomAction::Execute(Event /*event*/)
 {
     if (SearchQuestGiverAndAcceptOrReward())
@@ -1110,6 +1315,20 @@ bool NewRpgWanderRandomAction::Execute(Event /*event*/)
     if (AI_VALUE(Unit*, "grind target"))
         return false;
 
+    // [skin12] a skinning place's mobs spread over more than its sight (b350 the Grizzled Den: 40 Wendigo spawns
+    // over 290 yd, Keenonk / Ainne at the one spot: 47 STUCK + 56 LOOP alerts, "grind spot cleared" 130 times while
+    // the den's far end stood alive): the nearest live skinnable mob it may fight within the map's view of it
+    if (auto const* wander = std::get_if<NewRpgInfo::WanderRandom>(&botAI->rpgInfo.data); wander && wander->forSkin)
+        if (Creature* next = NextSkinMob())
+        {
+            LOG_INFO("playerbots", "[skin12] {} L{} skin grind: no mob in reach here, the nearest live {} L{} {:.0f} "
+                     "yd off at ({:.0f},{:.0f})",
+                     bot->GetName(), bot->GetLevel(), next->GetName(), next->GetLevel(), bot->GetExactDist(next),
+                     next->GetPositionX(), next->GetPositionY());
+            botAI->rpgInfo.ChangeToGoGrind(WorldPosition(next));
+            std::get<NewRpgInfo::GoGrind>(botAI->rpgInfo.data).forSkin = true;
+            return true;
+        }
     LOG_INFO("playerbots", "[rpg] {} L{} grind spot cleared: no mob of its level in reach", bot->GetName(),
              bot->GetLevel());
     botAI->rpgInfo.ChangeToIdle();
@@ -1183,6 +1402,19 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                     if (bot->GetMoney() >= MIN_VENDOR_BALANCE || vendorRun)
                         botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
 
+                    // [vendor12] a run for ammo that the generic buy left at the same count (its item-usage /
+                    // weight look found no use for it: b350 Sehdrurmund L6, four runs to Adlin Pridedrift, ammo
+                    // 0 -> 0 each time): the cheapest usable stack of the ammo its ranged weapon fires, as a player
+                    // buys it, until its count passes the low-ammo line that sent it (VENDOR_LOW_AMMO), within its
+                    // money and bags
+                    if (vendorRun)
+                        if (uint32 const sub = RequiredAmmoSubClass(bot))
+                        {
+                            botAI->GetAiObjectContext()->GetValue<uint32>("item count", "ammo")->Reset();
+                            uint32 const after = AI_VALUE2(uint32, "item count", "ammo");
+                            if (after <= ammoBefore && after < VENDOR_LOW_AMMO)
+                                BuyAmmoDirect(creature, sub, after);
+                        }
                     if (vendorRun)
                     {
                         botAI->GetAiObjectContext()->GetValue<uint32>("item count", "ammo")->Reset();

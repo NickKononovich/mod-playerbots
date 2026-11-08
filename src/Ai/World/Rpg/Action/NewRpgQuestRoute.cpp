@@ -7,6 +7,8 @@
 #include "NewRpgQuestRoute.h"
 
 #include "GuildCoordinator.h"
+#include "Group.h"  // [town12]
+#include "Playerbots.h"  // [town12] GET_PLAYERBOT_AI
 #include "Log.h"
 #include "NewRpgBaseAction.h"
 #include "ObjectMgr.h"
@@ -21,6 +23,8 @@
 #include <ctime>
 #include <limits>
 #include <mutex>
+#include <set>
+#include <tuple>
 #include <unordered_map>
 
 using QuestRoute::Stop;
@@ -655,12 +659,31 @@ namespace
                  actual, handed, late, why.empty() ? "" : " why=" + why);
     }
 
+    // [stuck12] bot -> the town stops it left for a given-up walk (one line per stop and level)
+    std::mutex townGivenUpLock;
+    std::unordered_map<uint32, std::set<std::tuple<uint8, int32, int32>>> townGivenUp;
+
     bool TownListed(std::vector<std::pair<WorldPosition, std::string>> const& towns, float x, float y)
     {
         uint64 const key = QuestRoute::SpotKey(x, y);
         return std::any_of(towns.begin(), towns.end(), [&](auto const& t)
                            { return QuestRoute::SpotKey(t.first.GetPositionX(), t.first.GetPositionY()) == key; });
     }
+}
+
+void NewRpgBaseAction::NoteTownGivenUp(WorldPosition const& pos, std::string const& what)
+{
+    {
+        std::lock_guard<std::mutex> guard(townGivenUpLock);
+        if (!townGivenUp[bot->GetGUID().GetCounter()]
+                 .insert({bot->GetLevel(), int32(pos.GetPositionX()), int32(pos.GetPositionY())})
+                 .second)
+            return;
+    }
+    LOG_INFO("playerbots", "{} town stop {} at ({:.0f},{:.0f}) {:.0f} yd left out: its walk there was given up at L{} "
+             "(the global leader's task stays; another vendor / town is the leader's choice)",
+             RouteHead(bot, "town-given-up"), what, pos.GetPositionX(), pos.GetPositionY(),
+             bot->GetExactDist2d(pos.GetPositionX(), pos.GetPositionY()), bot->GetLevel());
 }
 
 // the stop it was on: done (logged with its planned and actual seconds), left (postponed, gone), or still open
@@ -827,6 +850,34 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
     QuestRoute::BotRoute& r = QuestRoute::Of(bot->GetGUID().GetCounter());
     std::vector<std::pair<WorldPosition, std::string>> towns;
     sGuildCoordinator.TownStops(bot, towns);
+    // [town12] the leader of a group walks its members' town stops too (econ b350: the mail pickups and smelts of
+    // group followers - Lanbuzz, Manue - never ran: a member's own route is not run while it follows); the member runs
+    // its task there itself (NewRpgStatusUpdateAction, TownTaskHere)
+    if (Group* group = bot->GetGroup(); group && group->GetLeaderGUID() == bot->GetGUID())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || member->GetMapId() != bot->GetMapId() || !GET_PLAYERBOT_AI(member))
+                continue;
+            std::vector<std::pair<WorldPosition, std::string>> theirs;
+            sGuildCoordinator.TownStops(member, theirs);
+            for (auto& [pos, what] : theirs)
+                if (!TownListed(towns, pos.GetPositionX(), pos.GetPositionY()))
+                    towns.emplace_back(pos, what + " (for " + member->GetName() + ")");
+        }
+    // [stuck12] a town stop whose walk the bot gave up at this level (MOVE_FAR_LOOP, the maze search: every way there
+    // passes mobs it does not pull) is no stop of its route: TrimRoute drops it as a task gone. Before, the stop stayed
+    // first in the route and IDLE walked to it again on every look (b350 Baridrol L10: BUY at Ratchet 3567 yd off
+    // through Ashenvale's L23-26 bears, 161 TOWN -> GIVE_UP rounds, 51 STUCK alerts; Blahadrin L13 BUY Stormwind 447)
+    towns.erase(std::remove_if(towns.begin(), towns.end(),
+                               [this](auto const& t)
+                               {
+                                   if (!WalkGivenUp(bot, t.first.GetPositionX(), t.first.GetPositionY()))
+                                       return false;
+                                   NoteTownGivenUp(t.first, t.second);
+                                   return true;
+                               }),
+                towns.end());
     uint64 townKey = 0;
     for (auto const& [pos, what] : towns)
         townKey = Mix(townKey, QuestRoute::SpotKey(pos.GetPositionX(), pos.GetPositionY()));

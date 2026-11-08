@@ -32,6 +32,7 @@
 #include "LeaderOrders.h"
 #include "Log.h"
 #include "LootMgr.h"
+#include "NewRpgBaseAction.h"  // [help12] ForgetWalkGivenUp
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -191,6 +192,11 @@ struct Party
     uint32 haveAtAssign = 0;     // the requester's units then (a whole quest: their sum)
     WorldPosition campAt{};      // the camp the judge sized the party for
     std::unordered_set<uint32> invited;  // a human requester: the helpers whose invite went out
+    // [help12] a camp request (no quest objective): the camp's mobs; the party is done when none is alive. `retry`: the
+    // requester's refused destination, walked again once the camp is cleared
+    bool campOnly = false;
+    std::vector<ObjectGuid> campMobs;
+    WorldPosition retry{};
 };
 
 std::mutex lock;
@@ -246,8 +252,8 @@ void AddTask(std::string const& name, uint32 low, std::string const& partner, ui
         hooks.addTask(low, partnerLow, questId, leads, why);
         return;
     }
-    LOG_INFO("playerbots", "[tasks] {} add COOP [помощь, поле, from global]: {} q{} с {} — {}", name,
-             leads ? "ведёт кооп" : "помогает", questId, partner, why);
+    LOG_INFO("playerbots", "[tasks] {} add COOP [help, field, from global]: {} q{} with {} - {}", name,
+             leads ? "leads the co-op" : "helps", questId, partner, why);
 }
 
 void EndTask(std::string const& name, uint32 low, uint32 questId, std::string const& why)
@@ -2016,6 +2022,10 @@ struct HelpRequest
     uint32 askedAt = 0;
     uint32 party = 0;          // the help party serving it (0: open)
     std::string lastRefusal;   // one refuse line per change of reason
+    bool campOnly = false;     // [help12] a camp in the way (no quest objective): its mobs, the refused destination
+    std::vector<ObjectGuid> campMobs;
+    WorldPosition retry{};
+    uint8 level = 0;           // [help12] the requester's level at the request
 };
 
 std::map<uint32, HelpRequest> helpRequests;  // behind the board's lock
@@ -2040,9 +2050,27 @@ bool HelpUnits(Player* p, uint32 questId, int32 index, bool whole, uint32& units
     return open;
 }
 
+// [help12] a camp request's mobs: alive ones on the bot's map (open) and the killed count (its units)
+bool CampOpen(Player* p, std::vector<ObjectGuid> const& mobs, uint32& killed)
+{
+    killed = 0;
+    bool open = false;
+    for (ObjectGuid const& guid : mobs)
+    {
+        Creature* mob = p ? ObjectAccessor::GetCreature(*p, guid) : nullptr;
+        if (mob && mob->IsAlive())
+            open = true;
+        else
+            ++killed;
+    }
+    return open;
+}
+
 bool HelpOpen(Player* p, Party const& party)
 {
     uint32 units = 0;
+    if (party.campOnly)
+        return p && CampOpen(p, party.campMobs, units);
     return p && HelpUnits(p, party.helpObj.questId, party.helpObj.index, party.wholeQuest, units);
 }
 
@@ -2221,7 +2249,7 @@ public:
             }
             else
             {
-                helper->Whisper("Я на месте. Пригласи меня в группу: /invite " + helper->GetName(), LANG_UNIVERSAL,
+                helper->Whisper("I am here. Invite me to your group: /invite " + helper->GetName(), LANG_UNIVERSAL,
                                 human);
                 how = "asked the human for an invite (he leads his group)";
             }
@@ -2256,7 +2284,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     if (!req || !req->IsInWorld())
         return false;
     Quest const* quest = sObjectMgr->GetQuestTemplate(r.obj.questId);
-    std::string const title = quest ? quest->GetTitle() : "q" + std::to_string(r.obj.questId);
+    std::string const title = r.campOnly ? std::string("camp")  // [help12]
+                              : quest ? quest->GetTitle() : "q" + std::to_string(r.obj.questId);
 
     struct Candidate
     {
@@ -2292,11 +2321,10 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             ++skipped[busy.rfind("an urgent task", 0) == 0 ? "an urgent task" : busy];
             continue;
         }
-        if (r.topLevel && Acore::XP::GetColorCode(p->GetLevel(), r.topLevel) <= XP_ORANGE)
-        {
-            ++skipped["the camp is orange / red for it"];
-            continue;
-        }
+        // [help12] user 2026-11-08: a helper is judged by the party's combined capacity against the camp
+        // (JudgeHelp below), not alone - "the camp is orange / red for it" refused every low helper (b350 Kylanor
+        // q412: 3 of the 5 left on its continent). A mob orange / red for the helper still never is the helper's own
+        // pull: the requester leads and judges the party's pulls (NewRpgCoop::JudgePull)
         float const walk = Leader::WalkYd(p, req->GetPosition());
         pool.push_back({p, walk / std::max(p->GetSpeed(MOVE_RUN), 1.0f), walk});
     }
@@ -2354,7 +2382,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             r.lastRefusal = why;
             out.logs.push_back(Acore::StringFormat("[help] refuse {} quest=q{} request={}{} reason={}", r.name,
                                                    r.obj.questId, r.id, HelpStamp(), why));
-            reply = "«" + title + "»: пока некому помочь — " + why + ". Жду, когда кто-то освободится.";
+            reply = "'" + title + "': nobody can help yet - " + why + ". Waiting for someone to be free.";
         }
         return false;
     }
@@ -2374,7 +2402,13 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     party_.requestId = r.id;
     party_.assignedAt = now;
     party_.campAt = r.at;
-    HelpUnits(req, r.obj.questId, r.obj.index, r.wholeQuest, party_.haveAtAssign);
+    party_.campOnly = r.campOnly;  // [help12]
+    party_.campMobs = r.campMobs;
+    party_.retry = r.retry;
+    if (r.campOnly)
+        CampOpen(req, r.campMobs, party_.haveAtAssign);
+    else
+        HelpUnits(req, r.obj.questId, r.obj.index, r.wholeQuest, party_.haveAtAssign);
     party_.formed = r.human;  // a bot requester: once its group is made (HelpFormOperation)
     for (Player* m : party)
         if (m == v.taker || PlayerbotAI::IsHeal(m))
@@ -2415,10 +2449,10 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             aloneWins ? "the human asked; alone wins by the judge, one helper anyway"
                       : "the smallest party the judge says wins the camp"));
         coming += (coming.empty() ? "" : ", ") +
-                  Acore::StringFormat("{} ({} L{}, ~{:.0f} с)", c.p->GetName(), RoleName(c.p), c.p->GetLevel(), c.eta);
+                  Acore::StringFormat("{} ({} L{}, ~{:.0f} s)", c.p->GetName(), RoleName(c.p), c.p->GetLevel(), c.eta);
         out.after.push_back([name = c.p->GetName(), low, reqName = r.name, reqLow = r.requester.GetCounter(),
                              q = r.obj.questId]()
-                            { AddTask(name, low, reqName, reqLow, q, false, "помощь гильдии: " + reqName); });
+                            { AddTask(name, low, reqName, reqLow, q, false, "guild help: " + reqName); });
     }
     if (!r.human)
     {
@@ -2427,8 +2461,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         post.partyObj = r.obj;
         out.ops.push_back(std::make_unique<HelpFormOperation>(id, req->GetGUID()));
     }
-    reply = Acore::StringFormat("«{}»: идут {} — пати из {} выигрывает лагерь по расчёту ({:.0f} урона при запасе "
-                                "{:.0f}). Приглашение придёт от первого, кто дойдёт.",
+    reply = Acore::StringFormat("'{}': coming {} - a party of {} wins the camp by the judge ({:.0f} damage against "
+                                "{:.0f} effective health). The invite comes from the first to arrive.",
                                 title, coming, party.size(), v.damage, v.ehp);
     return true;
 }
@@ -2439,6 +2473,7 @@ bool HelpFormOperation::Execute()
     std::vector<ObjectGuid> helpers;
     Objective obj;
     WorldPosition campAt;
+    bool campOnly = false;
     {
         std::lock_guard<std::mutex> guard(lock);
         auto const party = parties.find(_party);
@@ -2449,6 +2484,7 @@ bool HelpFormOperation::Execute()
                 helpers.push_back(guid);
         obj = party->second.helpObj;
         campAt = party->second.campAt;
+        campOnly = party->second.campOnly;  // [help12]
     }
     std::string refuse;
     if (!req || !req->IsInWorld() || !req->IsAlive())
@@ -2550,12 +2586,19 @@ bool HelpFormOperation::Execute()
             if (auto const rp = postings.find(_requester.GetCounter()); rp != postings.end())
                 rp->second.joinedAt = now;
             out.after.push_back([name = req->GetName(), low = _requester.GetCounter(), with, q = obj.questId]()
-                                { AddTask(name, low, with, 0, q, true, "помощь гильдии идёт к нему: " + with); });
+                                { AddTask(name, low, with, 0, q, true, "guild help on its way: " + with); });
         }
     }
     out.Flush();
     if (!refuse.empty() || joined.empty())
         return false;
+    // [help12] a camp request: the requester leads the party to the camp and grinds it (its party's judge pulls)
+    if (campOnly)
+    {
+        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(req); ai && campAt != WorldPosition())
+            ai->rpgInfo.ChangeToGoGrind(campAt);
+        return true;
+    }
     // the requester works its objective at the camp again (its postponed quest comes back)
     if (PlayerbotAI* ai = GET_PLAYERBOT_AI(req))
         if (Quest const* quest = sObjectMgr->GetQuestTemplate(obj.questId))
@@ -2598,7 +2641,7 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
         exit = "the requester is gone (offline or another map)";
     else if (!HelpOpen(req, party))
     {
-        exit = "the requester's objective closed";
+        exit = party.campOnly ? "camp cleared" : "the requester's objective closed";
         done = true;
     }
     else if (bot->GetMap()->Instanceable())
@@ -2609,7 +2652,16 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
         auto const* quest = ai ? std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data) : nullptr;
         if (!group || group->GetGUID() != party.group)
             exit = "its group is gone";
-        else if (!quest || quest->questId != party.helpObj.questId)
+        // [help12] a camp party: the requester grinds the camp (IDLE sends it back there, HelpCampOf) until it is
+        // cleared; its quest plan does not end it. A quest party: a vendor run (full bags) or a rest is a pause, IDLE
+        // takes the help quest up again (HelpQuestOf) - b350: 31 of 39 help parties ended "its own plan moved on",
+        // Shalaeth's on her sell run 123 s after Relara arrived
+        else if (party.campOnly && party.campAt != WorldPosition() &&
+                 NewRpgBaseAction::WalkGivenUp(bot, party.campAt.GetPositionX(), party.campAt.GetPositionY()))
+            exit = "the requester's walk to the camp is given up";
+        else if (!party.campOnly && (!quest || quest->questId != party.helpObj.questId) &&
+                 !(ai && (ai->rpgInfo.vendorRunEntry || ai->rpgInfo.GetStatus() == RPG_REST ||
+                          ai->rpgInfo.GetStatus() == RPG_IDLE)))
             exit = "its own plan moved on";
     }
     else if (!party.group.IsEmpty() && (!group || group->GetGUID() != party.group))
@@ -2674,7 +2726,20 @@ void HelpEndLocked(Party& party, uint32 who, std::string const& reason, bool don
     float const seconds = float(getMSTimeDiff(party.assignedAt, now)) / IN_MILLISECONDS;
     uint32 unitsNow = party.haveAtAssign;
     if (Player* req = ObjectAccessor::FindPlayer(party.requester))
-        HelpUnits(req, party.helpObj.questId, party.helpObj.index, party.wholeQuest, unitsNow);
+    {
+        if (party.campOnly)  // [help12] the camp's mobs killed
+            CampOpen(req, party.campMobs, unitsNow);
+        else
+            HelpUnits(req, party.helpObj.questId, party.helpObj.index, party.wholeQuest, unitsNow);
+    }
+    // [help12] the camp cleared: the requester's refused walk is its choice again
+    if (done && party.campOnly && party.retry != WorldPosition())
+        out.after.push_back(
+            [low = party.requester.GetCounter(), retry = party.retry]()
+            {
+                if (Player* req = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low)))
+                    NewRpgBaseAction::ForgetWalkGivenUp(req, retry);
+            });
     uint32 const units = unitsNow > party.haveAtAssign ? unitsNow - party.haveAtAssign : 0;
     auto const leave = [&](ObjectGuid const& guid, std::string const& why)
     {
@@ -2714,9 +2779,9 @@ void HelpEndLocked(Party& party, uint32 who, std::string const& reason, bool don
         leave(guid, guid.GetCounter() == who || all ? reason : "the last helper left: " + reason);
     // the requester's own line: its objective closed with help (units since the assignment) or the party ended
     out.logs.push_back(Acore::StringFormat(
-        "[help] {} {} group={} request={} quest=q{} helpers={} after={:.0f} units={} human={}{} reason={}",
-        done ? "done" : "leave", party.requesterName, id, party.requestId, party.helpObj.questId, helpers.size(),
-        seconds, units, party.human ? 1 : 0, HelpStamp(), reason));
+        "[help] {} {} group={} request={} quest=q{}{} helpers={} after={:.0f} units={} human={}{} reason={}",
+        done ? "done" : "leave", party.requesterName, id, party.requestId, party.helpObj.questId,
+        party.campOnly ? " kind=camp" : "", helpers.size(), seconds, units, party.human ? 1 : 0, HelpStamp(), reason));
     if (!party.human)
     {
         uint32 const low = party.requester.GetCounter();
@@ -2783,7 +2848,7 @@ uint32 ParseQuest(Player* human, std::string const& raw, std::string const& rest
     std::wstring const wanted = Lower(text);
     if (wanted.empty())
     {
-        why = "назови квест: «помогите <название / ссылка / id>»";
+        why = "name the quest: 'help <name / link / id>'";
         return 0;
     }
     std::vector<uint32> exact, part;
@@ -2815,13 +2880,13 @@ uint32 ParseQuest(Player* human, std::string const& raw, std::string const& rest
     if (found.size() == 1)
         return found.front();
     if (found.empty())
-        why = "в твоём журнале нет невыполненного квеста «" + text + "»";
+        why = "your quest log has no open quest '" + text + "'";
     else
     {
-        why = "подходят несколько квестов:";
+        why = "several quests match:";
         for (uint32 q : found)
             why += " q" + std::to_string(q);
-        why += " — укажи id";
+        why += " - give the id";
     }
     return 0;
 }
@@ -2850,7 +2915,7 @@ void Answer(Player* human, Player* via, std::string const& text)
     if (via && via->IsInWorld())
         via->Whisper(text, LANG_UNIVERSAL, human);
     else
-        ChatHandler(human->GetSession()).SendSysMessage("[Гильдия] " + text);
+        ChatHandler(human->GetSession()).SendSysMessage("[Guild] " + text);
 }
 
 // the helpers of the human's party whisper him who is coming (each its own line)
@@ -2872,7 +2937,7 @@ void HelperWhispers(Player* human, uint32 partyId)
     }
     for (auto const& [guid, eta] : helpers)
         if (Player* h = ObjectAccessor::FindPlayer(guid))
-            h->Whisper(Acore::StringFormat("Иду помочь с «{}» ({}), буду через ~{:.0f} с.", title, RoleName(h), eta),
+            h->Whisper(Acore::StringFormat("Coming to help with '{}' ({}), there in ~{:.0f} s.", title, RoleName(h), eta),
                        LANG_UNIVERSAL, human);
 }
 }  // namespace
@@ -2945,28 +3010,12 @@ void NoWalk(Player* bot, std::string const& why)
     out.Flush();
 }
 
-void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& dest)
+// the camp: the idle mob whose reach covers the spot nearest to it (as DestinationRefused looks); when none does
+// (the refusal was a danger zone it remembers or a pack on the way there), the idle mob nearest to the spot that its
+// solo judge refuses - the pack that stands between the bot and its spot. `looked`: the idle mobs looked at
+Creature* RefusedCampMob(PlayerbotAI* botAI, Player* bot, WorldPosition const& dest, GuidVector const& targets,
+                         SoloSafety::Verdict& v, size_t& looked)
 {
-    if (!bot || !botAI || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()))
-        return;
-    // every postponed spot ends in a seek or in one line that says why not (quest_metrics "groups")
-    auto const noSeek = [&](std::string const& why)
-    {
-        LOG_INFO("playerbots", "[coop] no-seek {} quests=q{}{} reason={}", bot->GetName(), questId, Stamp(), why);
-    };
-    if (bot->GetGroup())
-        return noSeek("in a group");
-    if (dest.GetMapId() != bot->GetMapId())
-        return noSeek("its spot is on another map");
-    Objective obj;
-    if (!ReadObjective(bot, questId, objectiveIdx, obj))
-        return noSeek("no kill / loot objective open (a hand-in spot, a game object, the quest done)");
-    if (!obj.Left())
-        return noSeek("its counter is closed");
-    // the camp: the idle mob whose reach covers the spot nearest to it (as DestinationRefused looks); when none does
-    // (the refusal was a danger zone it remembers or a pack on the way there), the idle mob nearest to the spot that
-    // its solo judge refuses - the pack that stands between the bot and its objective
-    GuidVector const targets = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get();
     Creature* nearest = nullptr;
     float nearestGap = std::numeric_limits<float>::max();
     std::vector<std::pair<float, Creature*>> idle;
@@ -2991,26 +3040,50 @@ void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 object
             nearest = mob;
         }
     }
-    SoloSafety::Verdict v;
+    looked = idle.size();
     if (nearest)
-        v = SoloSafety::Judge(bot, nearest);
-    else
     {
-        std::sort(idle.begin(), idle.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
-        for (auto const& [gap, mob] : idle)
+        v = SoloSafety::Judge(bot, nearest);
+        return nearest;
+    }
+    std::sort(idle.begin(), idle.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+    for (auto const& [gap, mob] : idle)
+    {
+        SoloSafety::Verdict const judged = SoloSafety::Judge(bot, mob);
+        if (judged.kind == SoloSafety::Verdict::Kind::Refuse)
         {
-            SoloSafety::Verdict const judged = SoloSafety::Judge(bot, mob);
-            if (judged.kind == SoloSafety::Verdict::Kind::Refuse)
-            {
-                nearest = mob;
-                v = judged;
-                break;
-            }
+            v = judged;
+            return mob;
         }
     }
+    return nullptr;
+}
+
+void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& dest)
+{
+    if (!bot || !botAI || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()))
+        return;
+    // every postponed spot ends in a seek or in one line that says why not (quest_metrics "groups")
+    auto const noSeek = [&](std::string const& why)
+    {
+        LOG_INFO("playerbots", "[coop] no-seek {} quests=q{}{} reason={}", bot->GetName(), questId, Stamp(), why);
+    };
+    if (bot->GetGroup())
+        return noSeek("in a group");
+    if (dest.GetMapId() != bot->GetMapId())
+        return noSeek("its spot is on another map");
+    Objective obj;
+    if (!ReadObjective(bot, questId, objectiveIdx, obj))
+        return noSeek("no kill / loot objective open (a hand-in spot, a game object, the quest done)");
+    if (!obj.Left())
+        return noSeek("its counter is closed");
+    GuidVector const targets = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get();
+    SoloSafety::Verdict v;
+    size_t looked = 0;
+    Creature* nearest = RefusedCampMob(botAI, bot, dest, targets, v, looked);
     if (!nearest)
         return noSeek(Acore::StringFormat("no idle mob in sight that its solo judge refuses ({} idle mobs looked at)",
-                                          idle.size()));
+                                          looked));
     if (v.fightSec <= 0.0f)
         return noSeek("its judge gives no fight time for " + nearest->GetName());
     Seek seek;
@@ -3099,6 +3172,112 @@ void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 object
         LOG_INFO("playerbots", "{}", helpLine);
 }
 
+// [help12] user 2026-11-08: a walk (not a quest spot) refused for a camp it cannot pass - a town stop, a gather node,
+// a grind or profession spot behind a pack its judge refuses, no run past that it survives: the bot asks the global
+// leader for help as for a quest camp ("[help] request ... kind=camp reason=camp: <why>"). The helpers come, the
+// group clears the camp (the requester leads, the party's judge pulls), "[help] done ... reason=camp cleared", the
+// requester's walk there is its choice again
+void OnCampRefused(PlayerbotAI* botAI, Player* bot, WorldPosition const& dest, std::string const& why)
+{
+    if (!bot || !botAI || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) || bot->GetGroup() ||
+        dest.GetMapId() != bot->GetMapId() || bot->GetMap()->Instanceable())
+        return;
+    GuidVector const targets = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get();
+    SoloSafety::Verdict v;
+    size_t looked = 0;
+    Creature* nearest = RefusedCampMob(botAI, bot, dest, targets, v, looked);
+    if (!nearest || v.kind != SoloSafety::Verdict::Kind::Refuse || v.fightSec <= 0.0f)
+    {
+        LOG_INFO("playerbots", "[help] no-camp {}{} reason={}", bot->GetName(), Stamp(),
+                 !nearest ? Acore::StringFormat("no idle mob in sight that its solo judge refuses ({} looked at)",
+                                                looked)
+                          : std::string("its judge does not refuse ") + nearest->GetName() + " here");
+        return;
+    }
+    std::string line;
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        if (auto const post = postings.find(bot->GetGUID().GetCounter()); post != postings.end() && post->second.party)
+            return;  // in a party already
+        for (auto const& [id, r] : helpRequests)
+            if (r.requester == bot->GetGUID())
+                return;  // one open request per bot
+        HelpRequest r;
+        r.id = nextHelp++;
+        r.requester = bot->GetGUID();
+        r.name = bot->GetName();
+        r.campOnly = true;
+        r.level = bot->GetLevel();
+        r.retry = dest;
+        r.askedAt = getMSTime();
+        r.measured = true;
+        r.topLevel = std::max<uint8>(v.topLevel, nearest->GetLevel());
+        r.at = WorldPosition(bot->GetMapId(), v.at.GetPositionX(), v.at.GetPositionY(), v.at.GetPositionZ());
+        // the camp's mobs: the idle hostile mobs within the judged pack's reach round its centre
+        float const radius = std::max(v.radius, nearest->GetAggroRange(bot));
+        for (ObjectGuid const& guid : targets)
+            if (Creature* mob = botAI->GetCreature(guid))
+                if (mob->IsAlive() && !mob->IsInCombat() && mob->IsHostileTo(bot) &&
+                    mob->GetExactDist2d(&v.at) <= radius)
+                    r.campMobs.push_back(mob->GetGUID());
+        if (std::find(r.campMobs.begin(), r.campMobs.end(), nearest->GetGUID()) == r.campMobs.end())
+            r.campMobs.push_back(nearest->GetGUID());
+        float const solo = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
+        r.mobs.push_back({v.fightSec * std::max(solo, 1.0f), v.damage / v.fightSec});
+        r.camp = Acore::StringFormat("{} x{} top L{}, {:.0f} dmg over {:.0f} s alone", nearest->GetName(), v.mobs,
+                                     r.topLevel, v.damage, v.fightSec);
+        line = Acore::StringFormat("[help] request {} quest=q0 request={} human=0 kind=camp mobs={} at=({:.0f},{:.0f}) "
+                                   "to=({:.0f},{:.0f}) camp=\"{}\"{} reason=camp: {}; its judge: {}",
+                                   r.name, r.id, r.campMobs.size(), r.at.GetPositionX(), r.at.GetPositionY(),
+                                   dest.GetPositionX(), dest.GetPositionY(), r.camp, Stamp(), why, v.why);
+        helpRequests[r.id] = std::move(r);
+    }
+    LOG_INFO("playerbots", "{}", line);
+}
+
+bool HelpQuestOf(Player* bot, uint32& questId, int32& objectiveIdx, WorldPosition& pos)
+{
+    if (!bot)
+        return false;
+    std::lock_guard<std::mutex> guard(lock);
+    auto const post = postings.find(bot->GetGUID().GetCounter());
+    if (post == postings.end() || !post->second.party)
+        return false;
+    auto const party = parties.find(post->second.party);
+    if (party == parties.end() || !party->second.help || party->second.campOnly || !party->second.formed ||
+        party->second.requester != bot->GetGUID() || !party->second.helpObj.questId)
+        return false;
+    questId = party->second.helpObj.questId;
+    objectiveIdx = party->second.helpObj.index;
+    pos = party->second.campAt;
+    return true;
+}
+
+bool HelpCampOf(Player* bot, WorldPosition& pos)
+{
+    if (!bot)
+        return false;
+    std::lock_guard<std::mutex> guard(lock);
+    auto const post = postings.find(bot->GetGUID().GetCounter());
+    if (post == postings.end() || !post->second.party)
+        return false;
+    auto const party = parties.find(post->second.party);
+    if (party == parties.end() || !party->second.help || !party->second.campOnly || !party->second.formed ||
+        party->second.requester != bot->GetGUID())
+        return false;
+    // the camp mob nearest to the requester that is alive, else the camp's centre
+    float best = std::numeric_limits<float>::max();
+    pos = party->second.campAt;
+    for (ObjectGuid const& guid : party->second.campMobs)
+        if (Creature* mob = ObjectAccessor::GetCreature(*bot, guid); mob && mob->IsAlive())
+            if (float const d = bot->GetExactDist(mob); d < best)
+            {
+                best = d;
+                pos = WorldPosition(mob);
+            }
+    return pos != WorldPosition();
+}
+
 bool IsMember(Player* bot)
 {
     if (!bot)
@@ -3111,16 +3290,44 @@ bool IsMember(Player* bot)
     return party != parties.end() && party->second.formed && party->second.leader != bot->GetGUID();
 }
 
+// [deaths12] the leader of an open-world group that is no co-op / help party (a user pack's group, Eraelor with
+// Lyleria at Ban'ethil Hollow): with a living member within the core's group reward distance the solo judge does not
+// apply (SoloSafety::SoloPlayerBot) and before nothing judged its pulls - b350 Lyleria L9 died in the Gnarlpine camp
+// after six pulls in a row, "no judged pull". The party judge judges them for the group's members
+bool OpenWorldGroupLeader(Player* bot, std::vector<ObjectGuid>* members)
+{
+    Group* group = bot ? bot->GetGroup() : nullptr;
+    PlayerbotAI* ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!group || !ai || group->GetLeaderGUID() != bot->GetGUID() || bot->GetMap()->Instanceable() ||
+        group->isRaidGroup() || !ai->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+        return false;
+    bool withMember = false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* m = ref->GetSource();
+        if (!m || m->GetMapId() != bot->GetMapId())
+            continue;
+        if (members)
+            members->push_back(m->GetGUID());
+        withMember = withMember || (m != bot && m->IsAlive() && m->IsAtGroupRewardDistance(bot));
+    }
+    return withMember;
+}
+
 bool JudgesPulls(Player* bot)
 {
     if (!bot)
         return false;
-    std::lock_guard<std::mutex> guard(lock);
-    auto const me = postings.find(bot->GetGUID().GetCounter());
-    if (me == postings.end() || !me->second.party)
-        return false;
-    auto const party = parties.find(me->second.party);
-    return party != parties.end() && party->second.formed && party->second.leader == bot->GetGUID();
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        auto const me = postings.find(bot->GetGUID().GetCounter());
+        if (me != postings.end() && me->second.party)
+        {
+            auto const party = parties.find(me->second.party);
+            return party != parties.end() && party->second.formed && party->second.leader == bot->GetGUID();
+        }
+    }
+    return OpenWorldGroupLeader(bot, nullptr);  // [deaths12]
 }
 
 void SetCoordinatorHooks(CoordinatorHooks const& coordinatorHooks) { hooks = coordinatorHooks; }
@@ -3137,7 +3344,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
     if (!InScope(sender, receiver))
     {
         if (receiver)
-            Answer(sender, receiver, "Я помогаю только своей гильдии.");
+            Answer(sender, receiver, "I help my own guild only.");
         return receiver != nullptr;
     }
     std::string rest;
@@ -3169,7 +3376,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
                 else
                     helpRequests.erase(itr);
             }
-            reply = ended ? "Помощь отменена." : "У тебя нет открытой просьбы о помощи.";
+            reply = ended ? "Help cancelled." : "You have no open help request.";
         }
         out.Flush();
         Answer(sender, nullptr, reply);
@@ -3179,9 +3386,9 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
     uint32 const questId = ParseQuest(sender, msg, rest, why);
     Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
     if (questId && !quest)
-        why = "нет квеста q" + std::to_string(questId);
+        why = "no quest q" + std::to_string(questId);
     else if (quest && sender->GetQuestStatus(questId) != QUEST_STATUS_INCOMPLETE)
-        why = "«" + quest->GetTitle() + "» не в журнале или уже выполнен";
+        why = "'" + quest->GetTitle() + "' is not in your log or is done";
     Objective obj;
     if (why.empty() && quest)
     {
@@ -3189,7 +3396,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
         for (int32 i = 0; i < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT && !found; ++i)
             found = ReadObjective(sender, questId, i, obj) && obj.Left();
         if (!found)
-            why = "у «" + quest->GetTitle() + "» нет открытой цели «убить / добыть»";
+            why = "'" + quest->GetTitle() + "' has no open kill / loot objective";
     }
     HelpRequest request;
     if (why.empty() && quest)
@@ -3202,7 +3409,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
         request.askedAt = getMSTime();
         std::string campWhy;
         if (!StaticCamp(sender, obj, request, campWhy))
-            why = "не нахожу, где добывается цель: " + campWhy;
+            why = "I cannot find where the objective drops: " + campWhy;
     }
     LOG_INFO("playerbots", "[help] chat {} via={} quest=q{}{} text={}{}", sender->GetName(),
              receiver ? receiver->GetName() : std::string("guild"), questId, Stamp(), msg,
@@ -3219,7 +3426,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
             if (r.requester == sender->GetGUID() && r.obj.questId == questId)
                 open = &r;
         if (open && open->party)
-            reply = "«" + quest->GetTitle() + "»: помощь уже идёт.";
+            reply = "'" + quest->GetTitle() + "': help is on its way.";
         else
         {
             if (!open)
@@ -3268,7 +3475,7 @@ void UpdateHelp()
             else if (!HelpOpen(human, party))
             {
                 replies.emplace_back(party.requester,
-                                     "Квест закрыт — спасибо помощникам, они возвращаются к своим делам.");
+                                     "Quest done - thanks to the helpers, they go back to their own tasks.");
                 HelpEndLocked(party, party.requester.GetCounter(), "the requester's objective closed", true, now, out);
             }
             else if (!party.group.IsEmpty() && (!human->GetGroup() || human->GetGroup()->GetGUID() != party.group))
@@ -3288,17 +3495,21 @@ void UpdateHelp()
             std::string drop;
             if (!req || !req->IsInWorld())
                 drop = "the requester is offline";
-            else if (!HelpUnits(req, r.obj.questId, r.obj.index, r.wholeQuest, units))
-                drop = "its objective closed";
+            else if (r.campOnly ? !CampOpen(req, r.campMobs, units)
+                                : !HelpUnits(req, r.obj.questId, r.obj.index, r.wholeQuest, units))
+                drop = r.campOnly ? "the camp is gone (its mobs dead)" : "its objective closed";
             else if (!r.human)
             {
                 auto const post = postings.find(r.requester.GetCounter());
                 if (req->GetGroup() || (post != postings.end() && post->second.party))
                     drop = "it is in a party already (co-op)";
-                else if (post == postings.end() ||
-                         std::none_of(post->second.seeks.begin(), post->second.seeks.end(),
-                                      [&](Seek const& s) { return s.obj.Same(r.obj); }))
+                else if (!r.campOnly &&
+                         (post == postings.end() ||
+                          std::none_of(post->second.seeks.begin(), post->second.seeks.end(),
+                                       [&](Seek const& s) { return s.obj.Same(r.obj); })))
                     drop = "its seek is gone (a level, the quest given up)";
+                else if (r.campOnly && req->GetLevel() != r.level)  // [help12] its walks are judged again
+                    drop = "its level changed (its given-up walks are its choices again)";
             }
             if (!drop.empty())
             {
@@ -3337,14 +3548,22 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         return verdict;
     std::vector<ObjectGuid> members;
     std::unordered_map<uint32, float> healRate;
+    bool openGroup = false;  // [deaths12] an open-world group, no co-op party: its heals from the kit below
     {
         std::lock_guard<std::mutex> guard(lock);
         auto const me = postings.find(leader->GetGUID().GetCounter());
         auto const party = me != postings.end() ? parties.find(me->second.party) : parties.end();
-        if (party == parties.end())
+        if (party != parties.end())
+        {
+            members = party->second.members;
+            healRate = party->second.healRate;
+        }
+    }
+    if (members.empty())
+    {
+        if (!OpenWorldGroupLeader(leader, &members))
             return verdict;
-        members = party->second.members;
-        healRate = party->second.healRate;
+        openGroup = true;
     }
 
     // the party's damage: its members in sight of the leader (each the formula's, [dps1]); its heals: the
@@ -3411,6 +3630,20 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
             ++verdict.above;
         verdict.topLevel = std::max<uint8>(verdict.topLevel, mob.unit->GetLevel());
     }
+    // [deaths12] an open-world group: the leader's and its healers' own heals over this fight
+    // (SurvivalKit::HealPoints: the casts its seconds hold, the mana now / full)
+    if (openGroup)
+        for (ObjectGuid const& guid : members)
+        {
+            Player* m = SameMapPlayer(leader, guid);
+            if (!m || !m->IsAlive() || (m != leader && !PlayerbotAI::IsHeal(m)) ||
+                leader->GetExactDist(m) > sPlayerbotAIConfig.SightDistance)
+                continue;
+            healNow += SurvivalKit::HealPoints(m, seconds, float(m->GetPower(POWER_MANA)), m == leader) /
+                       std::max(seconds, 1.0f);
+            healFull += SurvivalKit::HealPoints(m, seconds, float(m->GetMaxPower(POWER_MANA)), m == leader) /
+                        std::max(seconds, 1.0f);
+        }
     verdict.mobs = pack.size();
     verdict.damage = damage;
     verdict.fightSec = seconds;
@@ -3442,10 +3675,11 @@ void RestParty(Player* leader, std::string const& why)
         std::lock_guard<std::mutex> guard(lock);
         auto const me = postings.find(leader->GetGUID().GetCounter());
         auto const party = me != postings.end() ? parties.find(me->second.party) : parties.end();
-        if (party == parties.end())
-            return;
-        members = party->second.members;
+        if (party != parties.end())
+            members = party->second.members;
     }
+    if (members.empty() && !OpenWorldGroupLeader(leader, &members))  // [deaths12] an open-world group
+        return;
     for (ObjectGuid const& guid : members)
         if (Player* m = SameMapPlayer(leader, guid))
             if (m->GetHealth() < m->GetMaxHealth() ||

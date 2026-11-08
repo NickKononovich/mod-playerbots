@@ -447,6 +447,11 @@ bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const&
         gather->lastReach = 0;
         return true;
     }
+    // [help12] a walk that is no quest spot, refused for mobs it does not pull (the maze search, a spot among them):
+    // the camp is its help request to the global leader (NewRpgCoop::OnCampRefused; a quest spot asks above)
+    if (status != RPG_DO_QUEST && SoloSafety::Applies(bot) &&
+        (why.find("mobs it does not pull") != std::string::npos || why.find("among mobs") != std::string::npos))
+        NewRpgCoop::OnCampRefused(botAI, bot, dest, why);
     // [guild14] a gather node / profession npc there: the state ends, its action marks the target failed and
     // takes the next one (b303 Gilduck, Gnetlibozz: DO_GATHER failed on a refused node every tick, STUCK)
     if (status == RPG_DO_QUEST || status == RPG_GO_CAMP || status == RPG_GO_GRIND || status == RPG_DO_GATHER ||
@@ -2084,6 +2089,10 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     if (ways.empty())
     {
         logged("off the navmesh, no polygon in sight");
+        // [stuck12] no polygon round it within its sight that it can step or fall to: no walk from here at all -
+        // the caller takes its Hearthstone out (b350 Blahadrin L13 at (-9463,-350,60), 2.5 yd under the Elwynn
+        // navmesh with no line of sight to it: 148 STUCK alerts, every walk "no route (type 0x11)" for the whole run)
+        noteIsland();
         return false;
     }
     // [runpast11] off the navmesh: a landing whose walk leads on to the destination first (b349 Thyllyn L12 jumped
@@ -2532,6 +2541,12 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             // [guild14] the bot stands off the navmesh (PathGenerator's shortcut, NOT_USING_PATH: b303 Manue L7 on a
             // ledge over Elwynn, 20 STUCK alerts): the same ways off the island
             if (WalkOffIsland(dest, disToDest))
+                return true;
+            // [stuck12] no way off the spot it stands on: its Hearthstone out, as on an island (above)
+            if (onIsland &&
+                HearthOut(Acore::StringFormat("off the navmesh at ({:.0f},{:.0f},{:.0f}): no polygon it can step or "
+                                              "fall to in sight",
+                                              bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ())))
                 return true;
         }
     }
@@ -4028,6 +4043,23 @@ void NewRpgBaseAction::NoteWalkGivenUp(Player* bot, WorldPosition const& dest, s
              "choices until L{}",
              bot->GetName(), bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
              bot->GetExactDist(dest), why, bot->GetLevel() + 1);
+}
+
+void NewRpgBaseAction::ForgetWalkGivenUp(Player* bot, WorldPosition const& dest)
+{
+    if (!bot || dest == WorldPosition())
+        return;
+    bool erased = false;
+    {
+        std::lock_guard<std::mutex> guard(givenUpLock);
+        auto const spots = givenUp.find(bot->GetGUID().GetCounter());
+        if (spots != givenUp.end())
+            erased = spots->second.erase(
+                         {dest.GetMapId(), int32(dest.GetPositionX()), int32(dest.GetPositionY())}) != 0;
+    }
+    if (erased)
+        LOG_INFO("playerbots", "[rpg] {} L{} WALK_RETRY ({:.0f},{:.0f}): the camp that walled it is cleared (help)",
+                 bot->GetName(), bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY());
 }
 
 bool NewRpgBaseAction::WalkGivenUp(Player* bot, float x, float y)

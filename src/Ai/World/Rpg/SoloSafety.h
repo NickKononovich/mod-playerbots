@@ -42,6 +42,8 @@ namespace Leader::Travel
 namespace SoloSafety
 {
     bool Applies(Player* bot);
+    // [deaths12] the largest wander distance of the map's spawns (a wanderer's reach is its home's plus it)
+    float MapWanderReach(uint32 mapId);
 
     // DeathRecorder's DealDamage hook (map thread): the bot's dealt and taken damage, per fight and per attacker
     void NoteDamage(Unit* attacker, Unit* victim, uint32 damage);

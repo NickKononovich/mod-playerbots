@@ -220,7 +220,18 @@ namespace
             if (Bag* bag = bot->GetBagByPos(b))
                 for (uint32 j = 0; j < bag->GetBagSize(); ++j)
                     add(bag->GetItemByPos(uint8(j)));
-        return skills ^ (items * 1000003) ^ (uint64(bot->GetMoney()) << 20) ^ bot->GetZoneId();
+        // [craft12] the craft foci in reach (anvil, forge, cooking fire...): a "nothing" looked at away from a forge
+        // is no answer at the forge (econ b350: after the walk to the forge the cached "nothing" stood)
+        uint64 foci = 0;
+        uint32 bit = 0;
+        for (auto const& [focusId, spawns] : index.foci)
+        {
+            if (bit < 64 && NewRpgCraft::FocusNear(bot, focusId))
+                foci |= uint64(1) << bit;
+            ++bit;
+        }
+        return skills ^ (items * 1000003) ^ (uint64(bot->GetMoney()) << 20) ^ bot->GetZoneId() ^
+               (foci * 0x9E3779B97F4A7C15ull);
     }
 
     std::mutex lookLock;
@@ -608,7 +619,7 @@ namespace NewRpgCraft
             {
                 ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
                 sGuildCoordinator.RequestWithdraw(bot, item,
-                                                  "реагент для " + RecipeName(banked.recipe->spellId) + " (" +
+                                                  "reagent for " + RecipeName(banked.recipe->spellId) + " (" +
                                                       (proto ? proto->Name1 : std::to_string(item)) + ")");
                 LOG_INFO("playerbots", "[guild70] {} L{} asks the guild bank for {} for {} (skill {})",
                          bot->GetName(), bot->GetLevel(), proto ? proto->Name1 : std::to_string(item),

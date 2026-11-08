@@ -89,6 +89,7 @@ namespace
         float radius = 0.0f;
         float durationSec = 0.0f;
         float castSec = 0.0f;      // its cast (channel for bandages) or the global cooldown, the longer
+        bool instant = false;      // [deaths12] no cast time (castable on the move: a run past, a flee)
         float cooldownSec = 0.0f;  // its own recovery: shorter cooldowns go first
         float cost = 0.0f;         // mana
         bool needsWindow = false;  // a bandage: channelled, broken by damage
@@ -176,6 +177,7 @@ namespace
         base.spell = castId;
         base.durationSec = Sec(info->GetDuration());
         base.castSec = CastSec(bot, info);
+        base.instant = info->CalcCastTime(bot) <= 0 && !info->IsChanneled();  // [deaths12]
         base.cooldownSec = Sec(int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime)));
         base.cost = info->PowerType == POWER_MANA ? float(info->CalcPowerCost(bot, info->GetSchoolMask())) : 0.0f;
         bool selfStun = false;
@@ -615,16 +617,27 @@ namespace
         for (Unit* attacker : bot->getAttackers())
             if (attacker && attacker->IsAlive())
                 chasers.push_back(attacker);
+        // [deaths12] a wanderer whose home lies beyond the run's reach walks its wander area onto it all the same
+        // (its blocker is its home with that area, below): the search looks that much farther, at most as far as the
+        // map shows the bot units. b350 Sycina L11: the flee was planned clear, a Thistle Bear L12 wanderer from
+        // beyond the search cut its way back ("flee stops"), 6 s lost under the bear and dead
+        float const search =
+            std::min(range + SoloSafety::MapWanderReach(bot->GetMapId()), bot->GetMap()->GetVisibilityRange());
         std::list<Unit*> units;
-        Acore::AnyUnitInObjectRangeCheck check(bot, range);
+        Acore::AnyUnitInObjectRangeCheck check(bot, std::max(search, range));
         Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
-        Cell::VisitObjects(bot, searcher, range);
+        Cell::VisitObjects(bot, searcher, std::max(search, range));
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
             if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
                 !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() ||
                 mob->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE))
+                continue;
+            // beyond `range` only a wanderer whose area comes within it counts
+            if (bot->GetExactDist2d(mob) > range &&
+                (mob->GetDefaultMovementType() != RANDOM_MOTION_TYPE ||
+                 mob->GetHomePosition().GetExactDist2d(bot) - mob->GetWanderDistance() > range))
                 continue;
             Blocker blocker;
             blocker.mob = mob;
@@ -1181,7 +1194,7 @@ namespace
 
 namespace SurvivalKit
 {
-    float HealPoints(Player* bot, float fightSec, float spareMana, bool items)
+    float HealPoints(Player* bot, float fightSec, float spareMana, bool items, bool onTheMove)
     {
         if (!bot)
             return 0.0f;
@@ -1198,6 +1211,10 @@ namespace SurvivalKit
         for (Piece const& piece : pieces)
         {
             if (piece.kind != Kind::Heal || piece.needsWindow || piece.amount <= 0.0f)
+                continue;
+            // [deaths12] on the move (a run past, a chase) a spell with a cast time is no heal: the game cancels a
+            // cast when its caster moves (Spell::update, SPELL_INTERRUPT_FLAG_MOVEMENT); an item's on-use is instant
+            if (onTheMove && !piece.item && !piece.instant)
                 continue;
             if (piece.item)
             {
@@ -1227,7 +1244,20 @@ namespace SurvivalKit
             float casts = std::floor(spareMana / manaHeal->cost);
             if (manaHeal->cooldownSec > 0.0f)
                 casts = std::min(casts, 1.0f + std::floor(std::max(fightSec, 0.0f) / manaHeal->cooldownSec));
-            total += manaHeal->amount * casts;
+            // [deaths12] the casts the fight's time holds: one per cast time (the global cooldown at least, CastSec);
+            // a heal over time once per its duration, its points as far as the fight lasts. Before, the mana alone
+            // set the count: b350 Enyssia L6 (139 hp) had "hp 874" for a 12 s chase - 15 Healing Touches - and ran
+            // past a Gnarlpine camp into her death; Peny L12 pulled 5 Rockjaws judged 438 dmg at hp 256
+            float const span = std::max(fightSec, 0.0f);
+            float amount = manaHeal->amount;
+            if (manaHeal->durationSec > 0.0f)
+            {
+                casts = std::min(casts, std::max(1.0f, std::ceil(span / manaHeal->durationSec)));
+                amount *= std::min(1.0f, span / manaHeal->durationSec);
+            }
+            else
+                casts = std::min(casts, std::max(1.0f, std::floor(span / std::max(manaHeal->castSec, 0.1f))));
+            total += amount * casts;
         }
         return total;
     }

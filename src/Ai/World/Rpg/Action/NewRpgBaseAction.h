@@ -23,6 +23,7 @@
 class Creature;
 class GameObject;
 struct BotPath;
+struct GuildRunStep;  // [stuck12]
 struct CreatureTemplate;
 class MotionTransport;
 class WorldPacket;
@@ -173,6 +174,8 @@ public:
     // of the choices (TripRefused, the grind spot choice) until the bot's next level; one GIVE_UP line per spot
     static void NoteWalkGivenUp(Player* bot, WorldPosition const& dest, std::string const& why);
     static bool WalkGivenUp(Player* bot, float x, float y);
+    // [help12] the camp that walled the walk is cleared: the spot is its choice again
+    static void ForgetWalkGivenUp(Player* bot, WorldPosition const& dest);
     // [holds9] a GO_GRIND / GO_CAMP tick: the far walk to `pos`, else a nudge, else the walk given up or a HOLD with
     // its reason (NewRpgAction.cpp)
     bool FarWalkStep(WorldPosition const& pos, char const* status);
@@ -189,6 +192,12 @@ protected:
     // mechanic), its cooldown waited out where it stands (logged with the ETA); false when it cannot (no stone, the
     // bind point here)
     bool HearthOut(std::string const& why);
+    // [vendor12] the cheapest usable stack of its ammo bought straight from the vendor's list
+    void BuyAmmoDirect(Creature* vendor, uint32 subClass, uint32 have);
+    // [stuck12] the guild's WALK / GRIND step goes to a spot whose walk the bot gave up at this level
+    bool GuildStepGivenUp(GuildRunStep const& step);
+    // [town12] a party member at one of its own town stops runs the task there (the leader's route takes them)
+    bool TownTaskHere();
     // [regress10] an innkeeper within reach whose inn is not its bind point: it binds there (the innkeeper's own
     // "make this inn your home"), so the Hearthstone takes it back to the town it quests from
     bool BindAtInnHere();
@@ -266,6 +275,7 @@ protected:
     uint32 ChooseQuestByRate(WorldPosition& giverPos);
     // [questroute] the route's first stop is a town task: its spot (IDLE walks there, the guild's NextStep runs it)
     bool RouteTownStop(WorldPosition& pos, std::string& what);
+    void NoteTownGivenUp(WorldPosition const& pos, std::string const& what);  // [stuck12] its [route] line
     // [questroute] the quest's ender is the route's next stop (or off the route): the walk to hand it in starts now
     bool RouteHandsInNow(uint32 questId);
     QuestRoute::BotRoute& CurrentRoute();

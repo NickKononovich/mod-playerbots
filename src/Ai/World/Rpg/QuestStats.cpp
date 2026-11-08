@@ -22,6 +22,7 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <map>
 #include <mutex>
 #include <unordered_map>
 
@@ -48,6 +49,13 @@ namespace
         uint64 lastQuestXp = 0;
         bool hasLog = false;
         std::unordered_map<uint32, Snapshot> log;  // the quest log at the last rpg tick
+        // [budget12] the time budget: milliseconds per bucket since login, the last tick's bucket and time
+        std::map<std::string, uint64> budget;
+        std::string lastBucket;
+        uint32 lastTickMs = 0;
+        uint32 combatMs = 0;  // [budget12] the combat time noted since the last tick (QuestStats::NoteCombat)
+        uint32 deadMs = 0;
+        uint32 diedAtMs = 0;  // [budget12] its death's time while it is dead
     };
 
     std::mutex lock;
@@ -57,10 +65,14 @@ namespace
 
     void LogCounters(Player* bot, Counters const& c, char const* why)
     {
+        std::string budget;
+        for (auto const& [bucket, ms] : c.budget)
+            budget += (budget.empty() ? "" : ",") + bucket + ":" + std::to_string(ms / IN_MILLISECONDS);
         LOG_INFO("playerbots",
-                 "[qstat] {} L{} {} xp_quest={} xp_kill={} xp_other={} kills={} useful={} walked={} turnins={}",
+                 "[qstat] {} L{} {} xp_quest={} xp_kill={} xp_other={} kills={} useful={} walked={} turnins={} "
+                 "budget={}",
                  bot->GetName(), bot->GetLevel(), why, c.xpQuest, c.xpKill, c.xpOther, c.kills, c.useful,
-                 uint64(c.walked), c.turnIns);
+                 uint64(c.walked), c.turnIns, budget.empty() ? "-" : budget);
     }
 
     // the kill served a quest: its entry (or kill credit) is an objective of a quest in the log not yet past its
@@ -99,8 +111,29 @@ namespace
         QuestStatsPlayerScript()
             : PlayerScript("QuestStatsPlayerScript",
                            {PLAYERHOOK_ON_GIVE_EXP, PLAYERHOOK_ON_CREATURE_KILL_CREDIT,
-                            PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST, PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_LOGOUT})
+                            PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST, PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_LOGOUT,
+                            PLAYERHOOK_ON_PLAYER_JUST_DIED, PLAYERHOOK_ON_PLAYER_RESURRECT})
         {
+        }
+
+        // [budget12] the time dead: from the death to the rise (Player::KillPlayer / ResurrectPlayer)
+        void OnPlayerJustDied(Player* player) override
+        {
+            if (!Tracked(player))
+                return;
+            std::lock_guard<std::mutex> guard(lock);
+            counters[player->GetGUID().GetCounter()].diedAtMs = getMSTime();
+        }
+
+        void OnPlayerResurrect(Player* player, float /*restorePercent*/, bool& /*applySickness*/) override
+        {
+            if (!Tracked(player))
+                return;
+            std::lock_guard<std::mutex> guard(lock);
+            Counters& c = counters[player->GetGUID().GetCounter()];
+            if (c.diedAtMs)
+                c.deadMs += getMSTimeDiff(c.diedAtMs, getMSTime());
+            c.diedAtMs = 0;
         }
 
         void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 xpSource) override
@@ -188,7 +221,16 @@ void QuestStats::LogEvent(Player* bot, char const* event, uint32 questId, std::s
              extra);
 }
 
-void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/)
+void QuestStats::NoteCombat(Player* bot, uint32 combatMs, bool died)
+{
+    if (!Tracked(bot))
+        return;
+    std::lock_guard<std::mutex> guard(lock);
+    Counters& c = counters[bot->GetGUID().GetCounter()];
+    (died ? c.deadMs : c.combatMs) += combatMs;
+}
+
+void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* bucket)
 {
     // the quest log against the one of the last tick: accepted, progressed (per objective), completed, abandoned
     std::unordered_map<uint32, Snapshot> now;
@@ -255,6 +297,27 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/)
         c.hasLog = true;
 
         uint32 const ms = getMSTime();
+        // [budget12] the gap since the last tick: its fights and its time dead as noted, the rest the last bucket's
+        if (!c.diedAtMs && !bot->IsAlive())  // logged in dead: its time dead from here
+            c.diedAtMs = ms;
+        if (c.diedAtMs)  // still dead (a ghost's tick): its time so far
+        {
+            c.deadMs += getMSTimeDiff(c.diedAtMs, ms);
+            c.diedAtMs = ms;
+        }
+        if (c.lastTickMs)
+        {
+            uint32 const gap = getMSTimeDiff(c.lastTickMs, ms);
+            uint32 const fight = std::min(gap, c.combatMs);
+            uint32 const dead = std::min(gap - fight, c.deadMs);
+            c.budget["COMBAT"] += fight;
+            c.budget["DEAD"] += dead;
+            c.budget[c.lastBucket.empty() ? std::string("IDLE") : c.lastBucket] += gap - fight - dead;
+        }
+        c.combatMs = 0;
+        c.deadMs = 0;
+        c.lastTickMs = ms;
+        c.lastBucket = bucket ? bucket : "IDLE";
         if (!c.lastLog || getMSTimeDiff(c.lastLog, ms) >= QSTAT_LOG_MS)
         {
             c.lastLog = ms;

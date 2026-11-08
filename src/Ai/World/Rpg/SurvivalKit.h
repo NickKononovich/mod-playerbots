@@ -46,7 +46,9 @@ namespace SurvivalKit
     // history): each heal item once per shared cooldown (with `items`), a heal without mana as often as its cooldown
     // allows, its best heal per mana as far as `spareMana` (the mana its rotation leaves) pays; bandages need a window
     // and are not counted
-    float HealPoints(Player* bot, float fightSec, float spareMana, bool items);
+    // [deaths12] ... as many casts as the fight's seconds hold (cast time / global cooldown, a heal over time once per
+    // its duration); `onTheMove`: only the instant ones (a run past, a chase: a cast time breaks on the move)
+    float HealPoints(Player* bot, float fightSec, float spareMana, bool items, bool onTheMove = false);
 }
 
 class SoloSurvivalTrigger : public Trigger
