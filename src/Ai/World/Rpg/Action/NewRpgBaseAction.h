@@ -11,6 +11,7 @@
 #include "LastMovementValue.h"
 #include "MovementActions.h"
 #include "NewRpgInfo.h"
+#include "NewRpgQuestRoute.h"  // [questroute]
 #include "NewRpgStrategy.h"
 #include "Object.h"
 #include "ObjectDefines.h"
@@ -111,6 +112,10 @@ public:
     static std::string QuestChoiceNote(Player* bot);
     // [guild90] the share (0..1) of the quest's objective counts still to do
     static float RemainingShare(Player* bot, Quest const* quest);
+    // [questroute] the bot's route is built again on its next pick: its stop for the quest proved impossible
+    static void InvalidateRoute(Player* bot, uint32 questId, std::string const& why);
+    // [questroute] the route's pick: the active quest (claims, the QUEST line's note), a switch away from it logged
+    static void NoteRouteChoice(Player* bot, uint32 chosen, std::string const& why);
     // [guild90] the camp a bot works for a quest (questId 0: none); other bots skip it as taken
     static void ClaimSpot(Player* bot, uint32 questId, WorldPosition const& pos);
     // [flit] the quest a bot leaves for another while its camps respawn: ChooseBestQuest takes it up again
@@ -221,7 +226,21 @@ protected:
     static WorldPosition SelectRandomCampPos(Player* bot);
     bool SelectRandomFlightTaxiNode(uint32& flightMasterEntry, WorldPosition& flightMasterPos, std::vector<uint32>& path);
     bool RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus);
+    // [questroute] the next stop of the bot's route over all its quests (NewRpgQuestRoute.cpp); no stop on its
+    // landmass: ChooseQuestByRate (the zone change, a quest of another landmass)
     uint32 ChooseBestQuest(WorldPosition& giverPos);
+    uint32 ChooseQuestByRate(WorldPosition& giverPos);
+    // [questroute] the route's first stop is a town task: its spot (IDLE walks there, the guild's NextStep runs it)
+    bool RouteTownStop(WorldPosition& pos, std::string& what);
+    // [questroute] the quest's ender is the route's next stop (or off the route): the walk to hand it in starts now
+    bool RouteHandsInNow(uint32 questId);
+    QuestRoute::BotRoute& CurrentRoute();
+    bool CloseRouteStop(QuestRoute::BotRoute& route,
+                        std::vector<std::pair<WorldPosition, std::string>> const& towns);
+    uint64 RouteKey(uint64 townKey);
+    // [questroute] the route's stops from the log, the givers of its landmass and the town tasks (at a rebuild only)
+    void CollectRouteStops(QuestRoute::Input& in, std::vector<std::pair<WorldPosition, std::string>> const& towns,
+                           std::set<uint64> const& visitedTown);
     // [guild11] the quest the bot is closest to being allowed: lowest min level above its own, nearest giver;
     // grindPos = the grind spot of its level nearest that giver
     uint32 ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot = true);

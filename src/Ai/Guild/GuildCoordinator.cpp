@@ -2932,6 +2932,74 @@ bool GuildCoordinator::UrgentTask(Player* bot, std::string* why) const
     return false;
 }
 
+void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPosition, std::string>>& out) const
+{
+    out.clear();
+    if (!bot)
+        return;
+    std::lock_guard<std::mutex> guard(lock_);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end() || itr->second.fiveId)
+        return;
+    for (GuildOrder const& o : itr->second.orders)
+        if (o.executable && o.waitsTown && o.priority == GuildTaskPriority::CONVENIENT &&
+            o.pos != WorldPosition() && o.pos.GetMapId() == bot->GetMapId())
+            out.emplace_back(o.pos, std::string(OrderName(o.type)) + (o.townName.empty() ? "" : " " + o.townName));
+}
+
+bool GuildCoordinator::QuestWorkOf(Player* bot, uint32 questId, float dps, QuestWork& out) const
+{
+    out = QuestWork();
+    auto const q = questStatic_.find(questId);
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!bot || !quest || q == questStatic_.end())
+        return false;
+    QuestStatic const& s = q->second;
+    auto const data = bot->getQuestStatusMap().find(questId);
+    QuestStatusData const* status = data == bot->getQuestStatusMap().end() ? nullptr : &data->second;
+    uint32 left = 0, total = 0;
+    double seconds = 0.0;
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+    {
+        uint32 const need = quest->RequiredNpcOrGoCount[i];
+        if (!need || !quest->RequiredNpcOrGo[i])
+            continue;
+        uint32 const done = status ? std::min<uint32>(status->CreatureOrGOCount[i], need) : 0;
+        total += need;
+        left += need - done;
+        if (s.npcHp[i] > 0.0f && need > done)
+        {
+            if (dps <= 0.0f)
+                return false;
+            seconds += double(need - done) * s.npcHp[i] / dps;
+        }
+    }
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+    {
+        uint32 const need = quest->RequiredItemCount[i];
+        if (!need || !quest->RequiredItemId[i])
+            continue;
+        uint32 const done = status ? std::min<uint32>(status->ItemCount[i], need) : 0;
+        total += need;
+        left += need - done;
+        if (s.itemHp[i] > 0.0f && need > done)
+        {
+            if (dps <= 0.0f)
+                return false;
+            seconds += double(need - done) * s.itemHp[i] / dps;
+        }
+    }
+    out.map = s.map;
+    out.killSeconds = float(seconds);
+    out.tourYd = s.tourYd * (total ? float(left) / float(total) : 1.0f);
+    out.areaX = s.areaX;
+    out.areaY = s.areaY;
+    out.ender = s.ender;
+    out.enderX = s.enderX;
+    out.enderY = s.enderY;
+    return true;
+}
+
 void GuildCoordinator::AddCoopTask(uint32 low, uint32 partnerLow, uint32 questId, bool leads, std::string const& why)
 {
     GuildOrder o;

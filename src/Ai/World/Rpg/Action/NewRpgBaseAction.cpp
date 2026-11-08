@@ -5038,10 +5038,304 @@ std::string NewRpgBaseAction::QuestChoiceNote(Player* bot)
     return found == choiceNotes.end() ? std::string() : found->second;
 }
 
+void NewRpgBaseAction::NoteRouteChoice(Player* bot, uint32 chosen, std::string const& why)
+{
+    uint32 const counter = bot->GetGUID().GetCounter();
+    uint32 committed = 0;
+    {
+        std::lock_guard<std::mutex> guard(questNoteLock);
+        choiceNotes[counter] = why;
+        auto const found = committedQuest.find(counter);
+        if (found != committedQuest.end())
+            committed = found->second;
+        if (bot->GetQuestStatus(chosen) == QUEST_STATUS_INCOMPLETE)
+            committedQuest[counter] = chosen;
+        else
+            committedQuest.erase(counter);
+        if (committed && committed != chosen)
+        {
+            auto const old = claimOf.find(counter);
+            if (old != claimOf.end() && old->second == committed)
+            {
+                claims[committed].erase(counter);
+                claimOf.erase(old);
+            }
+        }
+    }
+    if (committed && committed != chosen && bot->GetQuestStatus(committed) == QUEST_STATUS_INCOMPLETE)
+        QuestStats::LogEvent(bot, "target-switch", chosen, "from=q" + std::to_string(committed) + " reason=" + why);
+}
+
+// [questroute] the route's stops. The log: each open quest's objective area (the middle of its unspent camps, the
+// work by the formula), each done or open quest's ender merged into hubs (enders within GROUP_ENDER_RADIUS are one
+// visit); the givers of its landmass with quests it may take (each take's area and ender from the quest table); the
+// town tasks waiting for their town. The same filters and log clean-ups as the per-quest choice.
+void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
+                                         std::vector<std::pair<WorldPosition, std::string>> const& towns,
+                                         std::set<uint64> const& visitedTown)
+{
+    using QuestRoute::Stop;
+    using QuestRoute::StopKind;
+    uint8 const level = bot->GetLevel();
+    bool const rested = bot->GetRestBonus() > 0.0f;
+    uint32 const counter = bot->GetGUID().GetCounter();
+    in.x = bot->GetPositionX();
+    in.y = bot->GetPositionY();
+    in.speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    in.hubRadius = GROUP_ENDER_RADIUS;
+    float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
+    uint32 const landmass = TravelRouteMgr::Landmass(WorldPosition(bot));
+    auto const onLandmass = [&](float x, float y, float z)
+    {
+        return TravelRouteMgr::Landmass(
+                   WorldPosition(bot->GetMapId(), x, y, z == INVALID_HEIGHT ? bot->GetPositionZ() : z)) == landmass;
+    };
+    {
+        std::lock_guard<std::mutex> guard(questNoteLock);
+        auto const found = committedQuest.find(counter);
+        if (found != committedQuest.end())
+            in.pinnedQuest = found->second;
+    }
+    if (in.pinnedQuest && (bot->GetQuestStatus(in.pinnedQuest) != QUEST_STATUS_INCOMPLETE ||
+                           botAI->lowPriorityQuest.count(in.pinnedQuest)))
+        in.pinnedQuest = 0;
+    auto const addToHub = [&](float x, float y, float z, uint32 questId)
+    {
+        for (Stop& s : in.stops)
+            if (s.kind == StopKind::Ender && std::hypot(s.x - x, s.y - y) <= in.hubRadius)
+            {
+                s.quests.push_back(questId);
+                return;
+            }
+        Stop hub;
+        hub.kind = StopKind::Ender;
+        hub.x = x;
+        hub.y = y;
+        hub.z = z;
+        hub.quests.push_back(questId);
+        in.stops.push_back(hub);
+    };
+    // the formula's work at an area: the kills left and the walk between its spawns; unpriced: the planner's old
+    // objective time for the share left
+    auto const workOf = [&](Quest const* quest, GuildCoordinator::QuestWork* out) -> float
+    {
+        GuildCoordinator::QuestWork work;
+        if (sGuildCoordinator.QuestWorkOf(bot, quest->GetQuestId(), dps, work) && work.map == bot->GetMapId())
+        {
+            if (out)
+                *out = work;
+            return work.killSeconds + work.tourYd / in.speed;
+        }
+        if (out)
+            *out = GuildCoordinator::QuestWork();
+        return QUEST_OBJECTIVE_TIME * RemainingShare(bot, quest);
+    };
+    uint32 const now = uint32(time(nullptr));
+
+    uint32 inLog = 0;
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const questId = bot->GetQuestSlotQuestId(slot);
+        if (!questId)
+            continue;
+        ++inLog;
+        if (bot->GetQuestStatus(questId) == QUEST_STATUS_FAILED)
+        {
+            AbandonFailedQuest(questId);
+            --inLog;
+            continue;
+        }
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest || botAI->lowPriorityQuest.count(questId))
+            continue;
+        if (IsSpellUnlockClassQuest(quest))
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} ABANDON q{} {} reason: class quest for a spell (granted)",
+                     bot->GetName(), bot->GetLevel(), questId, quest->GetTitle());
+            bot->RemoveActiveQuest(questId, false);
+            --inLog;
+            continue;
+        }
+        QuestStatus const status = bot->GetQuestStatus(questId);
+        if (std::string why; status == QUEST_STATUS_INCOMPLETE &&
+                             (NeedsItemUseCredit(quest, &why) || NeedsSpellCredit(bot, quest, true, &why)))
+        {
+            NotePostpone(bot, questId, "unsupported: " + why);
+            continue;
+        }
+        if (EnderNeedsScript(questId))
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} ABANDON q{} {} reason: its ender is an object a script spawns",
+                     bot->GetName(), bot->GetLevel(), questId, quest->GetTitle());
+            bot->RemoveActiveQuest(questId, false);
+            --inLog;
+            continue;
+        }
+        if (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE)
+            continue;
+        float const xp = GetQuestWeight(quest, rested) * quest->XPValue(level);
+        std::vector<POIInfo> poiInfo;
+        bool const spots = GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
+        WorldPosition ender;
+        bool const hasEnder = NearestEnderSpot(bot, questId, ender);
+        if (status == QUEST_STATUS_COMPLETE)
+        {
+            if (!spots)  // DoCompletedQuest needs the same spot
+            {
+                ++in.leftOut;
+                continue;
+            }
+            float const ex = hasEnder ? ender.GetPositionX() : poiInfo[0].pos.x;
+            float const ey = hasEnder ? ender.GetPositionY() : poiInfo[0].pos.y;
+            float const ez = hasEnder ? ender.GetPositionZ() : poiInfo[0].z;
+            if (!onLandmass(ex, ey, ez))
+            {
+                ++in.leftOut;
+                continue;
+            }
+            addToHub(ex, ey, ez, questId);
+            in.logXp += xp;
+            continue;
+        }
+        WorldPosition dalaranTarget;
+        if (!spots && GetDalaranQuestTarget(questId, dalaranTarget) && dalaranTarget.GetMapId() == bot->GetMapId())
+        {
+            poiInfo.push_back({{dalaranTarget.GetPositionX(), dalaranTarget.GetPositionY()}, 0,
+                               dalaranTarget.GetPositionZ()});
+        }
+        else if (!spots)
+        {
+            // every camp spent (back at their respawn: the route is built again then), taken or behind a danger
+            if (uint32 const wait = EarliestRespawn(bot, questId))
+                in.respawnDue = in.respawnDue ? std::min(in.respawnDue, now + wait) : now + wait;
+            ++in.leftOut;
+            continue;
+        }
+        // the area's middle: the unspent camp nearest all the others
+        POIInfo const* middle = &poiInfo[0];
+        float bestSum = std::numeric_limits<float>::max();
+        for (POIInfo const& a : poiInfo)
+        {
+            float sum = 0.0f;
+            for (POIInfo const& b : poiInfo)
+                sum += std::hypot(a.pos.x - b.pos.x, a.pos.y - b.pos.y);
+            if (sum < bestSum)
+            {
+                bestSum = sum;
+                middle = &a;
+            }
+        }
+        if (!onLandmass(middle->pos.x, middle->pos.y, middle->z))
+        {
+            ++in.leftOut;
+            continue;
+        }
+        Stop objective;
+        objective.kind = StopKind::Objective;
+        objective.x = middle->pos.x;
+        objective.y = middle->pos.y;
+        objective.z = middle->z;
+        objective.quests.push_back(questId);
+        objective.work = workOf(quest, nullptr);
+        in.stops.push_back(objective);
+        if (hasEnder && onLandmass(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ()))
+            addToHub(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ(), questId);
+        in.logXp += xp;
+    }
+    in.freeSlots = inLog < MAX_QUEST_LOG_SIZE ? MAX_QUEST_LOG_SIZE - inLog : 0;
+
+    for (auto const& [pos, what] : towns)
+    {
+        if (visitedTown.count(QuestRoute::SpotKey(pos.GetPositionX(), pos.GetPositionY())) ||
+            !onLandmass(pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ()))
+            continue;
+        Stop town;
+        town.kind = StopKind::Town;
+        town.x = pos.GetPositionX();
+        town.y = pos.GetPositionY();
+        town.z = pos.GetPositionZ();
+        town.what = what;
+        in.stops.push_back(town);
+    }
+
+    if (!in.freeSlots || bot->GetMap()->Instanceable())
+        return;
+    // the givers of its landmass: the quests it may take now (the filters of the per-quest choice), one offer per
+    // giver spawn
+    FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
+    std::map<uint64, size_t> offerAt;
+    std::set<uint32> offered;
+    for (QuestStartPoint const& start : GetQuestStartPoints())
+    {
+        if (start.mapId != bot->GetMapId() || !EventSpawnPresent(start.event) || offered.count(start.questId))
+            continue;
+        Quest const* quest = sObjectMgr->GetQuestTemplate(start.questId);
+        if (!quest || quest->GetMinLevel() > level)
+            continue;
+        int32 const questLevel = quest->GetQuestLevel() > 0 ? quest->GetQuestLevel() : level;
+        if (questLevel > level + 2 || questLevel <= Acore::XP::GetGrayLevel(level))
+            continue;
+        if (bot->GetQuestStatus(start.questId) != QUEST_STATUS_NONE || botAI->lowPriorityQuest.count(start.questId))
+            continue;
+        if (start.creatureFaction && botFaction)
+        {
+            FactionTemplateEntry const* giverFaction = sFactionTemplateStore.LookupEntry(start.creatureFaction);
+            if (giverFaction && giverFaction->IsHostileTo(*botFaction))
+                continue;
+        }
+        if (!onLandmass(start.x, start.y, start.z))
+            continue;
+        if (!IsQuestWorthDoing(quest) || !IsQuestCapableDoing(quest) || !bot->CanTakeQuest(quest, false))
+            continue;
+        offered.insert(start.questId);
+
+        QuestRoute::Offer::Take take;
+        take.questId = start.questId;
+        take.xp = GetQuestWeight(quest, rested) * quest->XPValue(level);
+        GuildCoordinator::QuestWork work;
+        take.objective.kind = StopKind::Objective;
+        take.objective.quests.push_back(start.questId);
+        take.objective.work = workOf(quest, &work);
+        take.objective.x = start.x;
+        take.objective.y = start.y;
+        take.objective.z = INVALID_HEIGHT;
+        if (work.map == bot->GetMapId() && (work.areaX || work.areaY))
+        {
+            take.objective.x = work.areaX;
+            take.objective.y = work.areaY;
+        }
+        if (work.map == bot->GetMapId() && work.ender)
+        {
+            take.hasEnder = true;
+            take.ender.kind = StopKind::Ender;
+            take.ender.x = work.enderX;
+            take.ender.y = work.enderY;
+            take.ender.z = INVALID_HEIGHT;
+            take.ender.quests.push_back(start.questId);
+        }
+        uint64 const key = QuestRoute::SpotKey(start.x, start.y);
+        auto const at = offerAt.find(key);
+        if (at == offerAt.end())
+        {
+            QuestRoute::Offer offer;
+            offer.giver.kind = StopKind::Giver;
+            offer.giver.x = start.x;
+            offer.giver.y = start.y;
+            offer.giver.z = start.z;
+            offer.takes.push_back(take);
+            offerAt.emplace(key, in.offers.size());
+            in.offers.push_back(std::move(offer));
+        }
+        else
+            in.offers[at->second].takes.push_back(take);
+    }
+}
+
 // The bot knows every quest in the world and picks the one that gives the most experience per second of
 // travel and work: quests already in the log and quests it could still pick up, near or far.
 // giverPos is set when the winner still has to be picked up.
-uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
+// [questroute] the fallback of the route (nothing to route on its landmass): a zone change, a far log quest
+uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
 {
     uint8 const level = bot->GetLevel();
     float bestRate = 0.0f;

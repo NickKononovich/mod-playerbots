@@ -629,6 +629,16 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // [guild10] a purposeful target only, never an aimless walk: a quest (hand in, objective, then a
             // starter of its level - ChooseBestQuest keeps that order), else mobs of its level, else stay put.
             {
+                // [questroute] a town task the route passes: walk there, the guild's NextStep runs it on arrival
+                WorldPosition townPos;
+                std::string townTask;
+                if (RouteTownStop(townPos, townTask))
+                {
+                    LOG_INFO("playerbots", "[rpg] {} L{} TOWN reason: route stop {} ({} yd)", bot->GetName(),
+                             bot->GetLevel(), townTask, uint32(bot->GetExactDist2d(townPos)));
+                    info.ChangeToGoCamp(townPos);
+                    return true;
+                }
                 WorldPosition giverPos;
                 uint32 const questId = ChooseBestQuest(giverPos);
                 Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
@@ -1061,6 +1071,13 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
         botAI->rpgInfo.ChangeToIdle();
         return true;
     }
+    // [questroute] the pickup is done (the giver search took its quests): the route, built again with them, says
+    // which stop comes next - not this quest's objective by default
+    if (data.giverPos != WorldPosition() && questStatus != QUEST_STATUS_NONE)
+    {
+        botAI->rpgInfo.ChangeToIdle();
+        return true;
+    }
 
     // The level 74 Dalaran chain: up to the city, the crystal down and back, Archmage Celindra.
     WorldPosition dalaranTarget;
@@ -1173,6 +1190,8 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                 NoteResume(bot, questId);  // [flit] back to it at its respawn or once the other is done
             }
             // can't find a poi pos to go, stop doing quest for now
+            // [questroute] the route leaves it out until its camps' respawn (or the next change of the log)
+            InvalidateRoute(bot, questId, "no unspent objective spot");
             botAI->rpgInfo.ChangeToIdle();
             return true;
         }
@@ -1394,6 +1413,13 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
 
     if (data.objectiveIdx != -1)
     {
+        // [questroute] done with its objectives: the walk to the ender only when the route hands it in next (its hub
+        // batches the turn-ins of the quests done on the way); else the route's next stop
+        if (!RouteHandsInNow(questId))
+        {
+            botAI->rpgInfo.ChangeToIdle();
+            return true;
+        }
         // if quest is completed, back to poi with -1 idx to reward
         BroadcastHelper::BroadcastQuestUpdateComplete(botAI, bot, quest);
         botAI->RecordQuestCompleted(questId);
@@ -1401,6 +1427,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         if (!GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
         {
             // can't find a poi pos to reward, stop doing quest for now
+            InvalidateRoute(bot, questId, "no hand-in spot");
             botAI->rpgInfo.ChangeToIdle();
             return false;
         }

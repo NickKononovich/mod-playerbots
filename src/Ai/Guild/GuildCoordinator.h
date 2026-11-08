@@ -271,6 +271,22 @@ public:
     // [coop] map thread, read only: the bot runs or must start an URGENT task now (its first executable urgent order
     // not waiting for a town, its five, an urgent vault run); why: the task's name
     bool UrgentTask(Player* bot, std::string* why) const;
+    // [questroute] map thread, read only: the bot's convenient town tasks that wait for their town (executable, a
+    // spot on its map) - the spot and the task's name; the quest route visits them on its way
+    void TownStops(Player* bot, std::vector<std::pair<WorldPosition, std::string>>& out) const;
+    // [questroute] map thread, read only (the table is built at startup): a quest's work by the formula for `bot` at
+    // `dps` - the kill seconds of its units left (all of them for a quest not taken: health of the cheapest source,
+    // an item's over its drop chance), the yards of its objective-spawn tour still to walk, its area and ender;
+    // false: no row, or kills it cannot price
+    struct QuestWork
+    {
+        uint16 map{0};
+        float killSeconds{0.0f}, tourYd{0.0f};
+        float areaX{0.0f}, areaY{0.0f};
+        bool ender{false};
+        float enderX{0.0f}, enderY{0.0f};
+    };
+    bool QuestWorkOf(Player* bot, uint32 questId, float dps, QuestWork& out) const;
     // [equip] the best gain the leader's gear plan has reachable now for that gear group of the member (0: none);
     // GuildGear::ShouldBuy keeps a bot from buying a lesser vendor item meanwhile (takes lock_)
     float PlannedGain(uint32 low, uint8 group) const;
