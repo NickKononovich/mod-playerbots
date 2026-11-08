@@ -27,6 +27,7 @@
 // - else everything it has, the biggest piece first.
 // Logged "[solo] survival <spell> <reason>" / "[solo] survival flee leash=Ns dist=... ".
 
+#include "Define.h"  // [guild15] first: _USE_MATH_DEFINES before G3D pulls in <cmath> (Position.h needs M_PI)
 #include "G3D/Vector3.h"
 #include "MovementActions.h"
 #include "Trigger.h"
