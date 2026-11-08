@@ -29,6 +29,7 @@
 #include "Log.h"
 #include "MapMgr.h"
 #include "NewRpgBaseAction.h"
+#include "NewRpgCoop.h"  // [coop] a co-op party member is free for a five
 #include "NewRpgInfo.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -446,7 +447,8 @@ bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) cons
         return refuse("в бою");
     if (p->GetMap()->Instanceable())
         return refuse("в подземелье");
-    if (p->GetGroup())
+    // [coop] a co-op party is no group for the five: the five's ChangeToIdle takes the member out of it
+    if (p->GetGroup() && !NewRpgCoop::InParty(low))
         return refuse("в группе");
     auto const st = bots_.find(low);
     if (st != bots_.end())
@@ -485,7 +487,7 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
     std::vector<FiveCandidate> out;
     for (PlanRow const& row : plan_)
     {
-        if (row.grp != 'A' && row.grp != 'B')
+        if (row.grp < 'A' || row.grp > 'C')
             continue;
         Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
         if (!p || IsHuman(p) || !FreeForFive(row.low, p))

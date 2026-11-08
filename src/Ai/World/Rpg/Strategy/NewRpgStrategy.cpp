@@ -6,6 +6,7 @@
 
 #include "NewRpgStrategy.h"
 #include "NewRpgMultipliers.h"
+#include "NewRpgCoop.h"  // [coop]
 
 NewRpgStrategy::NewRpgStrategy(PlayerbotAI* botAI) : Strategy(botAI) {}
 
@@ -131,4 +132,5 @@ void NewRpgStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
 void NewRpgStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
 {
     multipliers.push_back(new NewRpgQuestGiverMultiplier(botAI));
+    multipliers.push_back(new NewRpgCoopMultiplier(botAI));  // [coop] a party member's own plan waits
 }

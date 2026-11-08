@@ -8,6 +8,7 @@
 #include "NewRpgBaseAction.h"  // [guild12]
 #include "Formulas.h"  // [guild12]
 #include "SoloSafety.h"  // [guild13]
+#include "NewRpgCoop.h"  // [coop]
 #include "NewRpgInfo.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
@@ -56,7 +57,9 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
 
     float distance = 0;
     Unit* result = nullptr;
-    bool const solo = SoloSafety::Applies(bot);  // [guild13]
+    // [guild13] a solo bot judges its pulls; [coop] a co-op party's leader judges them for its party
+    bool const coop = NewRpgCoop::JudgesPulls(bot);
+    bool const solo = SoloSafety::Applies(bot) || coop;
     std::vector<std::pair<float, Unit*>> candidates;
     std::unordered_map<uint32, bool> needForQuestMap;
     // [guild12] a needed quest object in reach comes before mobs the quest does not need (the loot of objects)
@@ -198,19 +201,25 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
               [](auto const& a, auto const& b) { return a.first < b.first; });
     for (auto const& [unitDistance, unit] : candidates)
     {
-        if (NewRpgBaseAction::InDangerZone(bot, unit->GetPositionX(), unit->GetPositionY()))
+        // [coop] a danger mark is the bot's solo judgement; the party judges the pack itself
+        if (!coop && NewRpgBaseAction::InDangerZone(bot, unit->GetPositionX(), unit->GetPositionY()))
             continue;
         if (!_reachability.IsReachable(bot, unit))
             continue;
-        SoloSafety::Verdict const verdict = SoloSafety::Judge(bot, unit);
+        SoloSafety::Verdict const verdict = coop ? NewRpgCoop::JudgePull(bot, unit) : SoloSafety::Judge(bot, unit);
         if (verdict.kind == SoloSafety::Verdict::Kind::Win)
         {
-            SoloSafety::NoteEngage(bot, unit, verdict);
+            if (!coop)
+                SoloSafety::NoteEngage(bot, unit, verdict);
             return unit;
         }
         if (verdict.kind == SoloSafety::Verdict::Kind::RestFirst)
         {
-            SoloSafety::RequestRest(bot, std::string("to pull ") + unit->GetName() + ": " + verdict.why);
+            std::string const why = std::string("to pull ") + unit->GetName() + ": " + verdict.why;
+            if (coop)
+                NewRpgCoop::RestParty(bot, why);
+            else
+                SoloSafety::RequestRest(bot, why);
             return nullptr;
         }
         NewRpgBaseAction::RememberDanger(bot, verdict.at.GetPositionX(), verdict.at.GetPositionY(), verdict.radius,
