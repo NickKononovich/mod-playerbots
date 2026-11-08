@@ -485,6 +485,9 @@ bool NewRpgBaseAction::TravelTrip(WorldPosition const& dest)
         return false;
 
     // Off the transport after the ride: the leg is done, the rest is planned from the pier next tick.
+    // [guild15] ... once the step off to the pier is walked (the Leave phase keeps the boat from boarding it again)
+    if (trip.phase == Phase::Leave && bot->isMoving())
+        return true;
     if (trip.phase == Phase::Ride || trip.phase == Phase::Leave)
     {
         info.ClearTrip();
@@ -749,10 +752,17 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
                  remaining, bot->IsWalking() ? "yes" : "no", bot->GetSpeed(bot->IsWalking() ? MOVE_WALK : MOVE_RUN));
     }
 
-    // [guild15] a walk off that stopped (or never started: a last move still timed) is sent again at once
-    if (!bot->isMoving() || !IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
-        MovePointDirect(exitDock->pier.GetPositionX(), exitDock->pier.GetPositionY(), exitDock->pier.GetPositionZ());
-
+    // [guild15] it steps off as a player does: off the boat at the stop, then a straight walk to the pier in the
+    // world's frame (a passenger's walk stalled at the deck's edge: b331 Eraelor, "moving no", 11 yd from the pier,
+    // until the boat left); the transport check does not board it again in this phase
+    if (bot->GetTransport() == transport)
+    {
+        transport->RemovePassenger(bot, true);
+        bot->StopMovingOnCurrentPos();
+        LOG_INFO("playerbots", "[rpg] {} L{} steps off {} at the stop, {:.0f} yd to the pier", bot->GetName(),
+                 bot->GetLevel(), line->entry, bot->GetExactDist(exitDock->pier));
+    }
+    MovePointDirect(exitDock->pier.GetPositionX(), exitDock->pier.GetPositionY(), exitDock->pier.GetPositionZ());
     return true;
 }
 

@@ -827,6 +827,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         // action boards and leaves (Mechanar wave 33).
         Transport* const current = bot->GetTransport();
         bool const onElevator = current && current->GetGoType() == GAMEOBJECT_TYPE_TRANSPORT && !newTransport;
+        // [guild15] stepping off at a stop (the RPG trip's Leave phase): the boat under its feet is not boarded again
+        // on the way to the pier - each re-board stopped the walk (b331 Eraelor stood at the Auberdine deck's edge,
+        // 11 yd from the pier, until the boat left)
+        if (newTransport && !bot->GetTransport() && rpgInfo.trip.phase == NewRpgInfo::TripPhase::Leave)
+            newTransport = nullptr;
         if (!onElevator && newTransport != bot->GetTransport())
         {
             LOG_DEBUG("playerbots", "Bot {} is on a transport", bot->GetName());
