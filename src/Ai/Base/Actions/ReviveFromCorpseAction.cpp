@@ -396,7 +396,11 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // Should we ressurect? If so, return false.
     if (corpseDist < reclaimDist)
     {
-        if (moveToLeader)  // We are near group leader.
+        // [ghost12] next to a living leader it rises only where "revive from corpse" rises (RisesHere): that action
+        // refuses a spot in a hostile's reach, and this one stood still for it - b350 Febineysh L7 stood the whole
+        // run as a ghost on its corpse in Loch Modan, its leader Orton alive 27 yd off (GROUP_WAIT "Febineysh dead"
+        // for the run). Not safe: the spot / healer choices below, as for a ghost alone
+        if (moveToLeader && safeHere)  // We are near group leader.
         {
             if (botPos.fDist(leaderPos) < sPlayerbotAIConfig.SpellDistance)
                 return false;
@@ -413,7 +417,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
     if (corpseDist < sPlayerbotAIConfig.ReactDistance)
     {
         G3D::Vector3 spot;
-        if (moveToLeader)
+        if (moveToLeader && safeHere)  // [ghost12] as above
             moveToPos = leaderPos;
         else if (SafeSpot(corpse, hostiles, reclaimDist, spot))
             moveToPos = WorldPosition(corpsePos.GetMapId(), spot.x, spot.y, spot.z, 0.0f);
@@ -782,6 +786,9 @@ bool SpiritHealerAction::Execute(Event /*event*/)
     else
         moved = MoveTo(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z, false, false);
 
+    if (moved)  // [ghost12] one line per graveyard walk (b350: four ghosts went silent after "to the spirit healer")
+        LogGhost(bot, Acore::StringFormat("walks to graveyard {} ({:.0f},{:.0f})", ClosestGrave->ID, ClosestGrave->x,
+                                          ClosestGrave->y));
     if (moved || WalkStillOn())
         return true;
     LogGhost(bot, Acore::StringFormat("no spirit healer in sight, the walk to graveyard {} ({:.0f},{:.0f}) {:.0f} yd "
