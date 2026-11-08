@@ -488,6 +488,12 @@ namespace Leader
         std::vector<G3D::Vector4> refuse;
         std::vector<Travel::RoutePenalty> penalties;
         SoloSafety::RouteCosts(walker, from, to, refuse, penalties);
+        // [guild15] a refused reach the walker stands in already lies behind the walk: it walks out of it
+        refuse.erase(std::remove_if(refuse.begin(), refuse.end(),
+                                    [&from](G3D::Vector4 const& c)
+                                    { return (c.x - from.x) * (c.x - from.x) + (c.y - from.y) * (c.y - from.y) <=
+                                             c.w * c.w; }),
+                     refuse.end());
         auto const search = [&](std::vector<G3D::Vector4> const* refused,
                                 std::vector<Travel::RoutePenalty> const* priced)
         {
@@ -512,6 +518,7 @@ namespace Leader
         };
         if (!refuse.empty())
             search(&refuse, &penalties);
+        bool const roundRefused = refuse.empty() || result.complete;
         if (!result.complete && !penalties.empty())
         {
             result.found = false;
@@ -524,6 +531,7 @@ namespace Leader
         }
         if (!result.found)
             return result;
+        result.throughRefused = !roundRefused;
         if (corners.size() == 1)
         {
             corners.insert(corners.begin(), from);

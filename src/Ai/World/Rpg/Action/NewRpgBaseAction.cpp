@@ -228,16 +228,32 @@ bool NewRpgBaseAction::DestinationRefused(WorldPosition const& dest)
     // the idle mob whose reach (aggro radius, its wander area) covers the destination nearest to it: its pull as the
     // judge sees it (the pack it brings); one look per destination
     // (a refusal leaves a danger zone there: the check above answers it from then on)
+    static std::mutex lookLock;
+    // bot -> (destination, level) of its last look, and whether the walk there passes a refused reach
+    static std::unordered_map<uint32, std::pair<std::tuple<int32, int32, uint8>, bool>> looked;
+    std::tuple<int32, int32, uint8> const key{int32(dest.GetPositionX()), int32(dest.GetPositionY()),
+                                              bot->GetLevel()};
     {
-        static std::mutex lock;
-        static std::unordered_map<uint32, std::tuple<int32, int32, uint8>> looked;
-        std::tuple<int32, int32, uint8> const key{int32(dest.GetPositionX()), int32(dest.GetPositionY()),
-                                                  bot->GetLevel()};
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::mutex> guard(lookLock);
         auto& last = looked[bot->GetGUID().GetCounter()];
-        if (last == key)
-            return false;
-        last = key;
+        if (last.first == key)
+            return last.second;
+        last = {key, false};
+    }
+    // [guild15] the walk itself: a destination inside a camp it must not fight has no walk round the camp (b323:
+    // Baridrol L8 to Oben Rageclaw in Ban'ethil Barrow Den, Orton / Cassand L8 to Rolf's corpse at Stone Cairn
+    // Lake, Ravelandy to Jerod's Landing: attacked by 2-6, dead)
+    {
+        Leader::RouteResult const route = Leader::Route(bot, dest);
+        if (route.found && route.throughRefused)
+        {
+            LOG_INFO("playerbots", "[solo] {} L{} walk to ({:.0f},{:.0f}) refused: its way passes a pack it does not "
+                     "fight and no walk goes round it", bot->GetName(), bot->GetLevel(), dest.GetPositionX(),
+                     dest.GetPositionY());
+            std::lock_guard<std::mutex> guard(lookLock);
+            looked[bot->GetGUID().GetCounter()].second = true;
+            return true;
+        }
     }
     Creature* nearest = nullptr;
     float nearestGap = std::numeric_limits<float>::max();

@@ -512,6 +512,9 @@ namespace Leader
         float length = 0.0f;
         bool found = false;
         bool complete = false;
+        // [guild15] a solo walker's route that passes the reach of a mob (pack) it must not fight: no complete walk
+        // round it exists (the destination lies inside the camp)
+        bool throughRefused = false;
         std::string source;
         std::string Describe() const;  // "long route, complete" / "long route, partial" / "long route, none"
     };
