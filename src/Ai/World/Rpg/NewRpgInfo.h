@@ -105,6 +105,7 @@ struct NewRpgInfo
         uint32 castSpell{0};    // [guild70] kind 4: the craft cast in progress
         uint32 skillBefore{0};  // [guild70] its skill value before the cast
         uint32 crafted{0};      // [guild70] crafts done in this visit
+        float walkGap{-1.0f};   // [guild15] its distance to the npc when its last walk there was issued
     };
     struct Idle
     {
@@ -112,6 +113,7 @@ struct NewRpgInfo
 
     uint32 startT{0};  // start timestamp of the current status
     uint8 lastQuestLevel{0};  // level when the abandoned-quest list was last cleared
+    uint32 townCheckArea{0};  // [tasks] the area DO_QUEST last asked the global leader's town tasks in
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};
@@ -129,6 +131,42 @@ struct NewRpgInfo
     // two sights ahead (the danger penalties are of the mobs in sight, so a local search sees the same mobs)
     std::vector<G3D::Vector3> farRoute;
     // END MOVE_FAR
+
+    // [guild15] the way it came: the spots it walked out of combat, one per leash radius of walk (the survival run's
+    // stretch), newest last; the survival run goes back along it first (it passed there, b333 Colian's run tried five
+    // straight stretches only and found none clear). Cleared on another map.
+    // Capacity, from the core's chase end (Creature::CanCreatureAttack: past CreatureLeashRadius R of its reset spot,
+    // plus its wander distance W, and its last leash extension older than Creature::GetLeashTimer = 11 + minlevel / 10
+    // - 2 s, at least 11 s: 17 s at minlevel 80-83). The worst run: the bot's run speed with its fastest flee piece
+    // (7 yd/s x 1.7, Sprint / Dash) x (17 s + the threat list's 1 s update) + R + W = 214 + R + W yd. One spot per R
+    // of walk: 16 spots = 16 R = 480 yd at R = 30, enough for W up to 236 yd. A plan that needs more logs it
+    // (SurvivalKit PlanFlee "the way back kept ... is shorter").
+    static constexpr size_t TRAIL_SPOTS = 16;
+    std::array<G3D::Vector3, TRAIL_SPOTS> trail{};
+    uint8 trailCount{0};
+    uint8 trailHead{0};  // the next slot to write
+    uint32 trailMap{0};
+    void NoteTrail(uint32 mapId, G3D::Vector3 const& at, float spacing)
+    {
+        if (trailMap != mapId)
+        {
+            trailCount = 0;
+            trailHead = 0;
+            trailMap = mapId;
+        }
+        if (trailCount)
+        {
+            G3D::Vector3 const& last = trail[(trailHead + TRAIL_SPOTS - 1) % TRAIL_SPOTS];
+            if ((last - at).squaredLength() < spacing * spacing)
+                return;
+        }
+        trail[trailHead] = at;
+        trailHead = uint8((trailHead + 1) % TRAIL_SPOTS);
+        if (trailCount < TRAIL_SPOTS)
+            ++trailCount;
+    }
+    // the n-th spot back (0 = the newest)
+    G3D::Vector3 const& TrailBack(uint8 n) const { return trail[(trailHead + TRAIL_SPOTS - 1 - n) % TRAIL_SPOTS]; }
 
     // Boat, zeppelin or portal leg of a far move. It spans statuses: a new destination plans it again.
     enum class TripPhase : uint8
