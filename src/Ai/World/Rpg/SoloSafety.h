@@ -123,6 +123,8 @@ namespace SoloSafety
     Projection Project(Player* bot);
     // [guild80] the survival kit chose to run until the mobs leash (the fight closes as DISENGAGED, rest after)
     void BeginFlee(Player* bot, std::string const& why);
+    // [guild15] the run found no way out and stopped: the fight goes on as a fight (its close is won / lost, measured)
+    void EndFlee(Player* bot);
     // [guild80] it rests to full once the fight is over (a reset by Vanish / Feign Death / Shadowmeld)
     void RequestRestAfter(Player* bot, std::string const& why);
 

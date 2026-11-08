@@ -115,6 +115,10 @@ namespace
         bool window = false;
         // a reset cast: nothing until the fight is over
         bool reset = false;
+        // [guild15] a run found no way out clear of other mobs: no run again this fight (the ground is the same; b321
+        // Lanbuzz L8 started and stopped 17 runs on a Frostmane Headhunter L9, each one dropped its attack and pet,
+        // and died having fought none of it)
+        bool noRun = false;
     };
 
     std::mutex lock;
@@ -923,7 +927,11 @@ namespace SurvivalKit
         }
 
         // 3. the run, when the leash leaves it alive
-        FleePlan const flee = PlanFlee(botAI, bot, p, pieces);
+        FleePlan flee;
+        if (state.noRun)
+            flee.why = "no way out clear of other mobs";
+        else
+            flee = PlanFlee(botAI, bot, p, pieces);
         if (flee.ok)
         {
             Piece run;
@@ -1073,7 +1081,10 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
             KitState& state = states[bot->GetGUID().GetCounter()];
             state.fleeing = false;
             state.active = false;
+            state.noRun = true;
+            RestorePet(bot, state);  // [guild15] it fights on: the pet with it
         }
+        SoloSafety::EndFlee(bot);
         LOG_INFO("playerbots", "[solo] {} L{} survival flee stops: no way on clear of other mobs", bot->GetName(),
                  bot->GetLevel());
         return false;

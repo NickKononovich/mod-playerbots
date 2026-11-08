@@ -15,6 +15,7 @@
 #include "GameObject.h"
 #include "GameObjectData.h"
 #include "GameObjectModel.h"
+#include "GameEventMgr.h"  // [guild15] event spawns in the danger index
 #include "DatabaseEnv.h"
 #include "Formulas.h"
 #include "Group.h"
@@ -1163,7 +1164,7 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         float walked = 0.0f;
         for (size_t i = 1; i < points.size(); ++i)
         {
-            if (DangerOnWay(bot, points[i - 1].x, points[i - 1].y, points[i].x, points[i].y))
+            if (DangerOnWay(bot, points[i - 1].x, points[i - 1].y, points[i].x, points[i].y, points[i - 1].z, points[i].z))
                 return false;
             walked += (points[i] - points[i - 1]).length();
             if (walked >= sPlayerbotAIConfig.SightDistance)
@@ -2391,9 +2392,54 @@ namespace
 
     struct MobSpawn  // [guild12]
     {
-        float x, y;
+        float x, y, z;  // [guild15] z: the core's aggro check is a 3D distance (Sewer Beast under Stormwind's bridges)
         CreatureTemplate const* tmpl;
+        int16 event;  // [guild15] game_event_creature: > 0 spawned only while that event runs, < 0 only while it does not
     };
+
+    // [guild15] spawn guid -> its game event (GameEventMgr's own lists: index = events + event - 1; > 0 spawned only
+    // while that event runs, < 0 only while it does not), creatures and objects; built once at startup
+    struct SpawnEventIndex
+    {
+        std::unordered_map<ObjectGuid::LowType, int16> creatures;
+        std::unordered_map<ObjectGuid::LowType, int16> objects;
+    };
+    SpawnEventIndex const& SpawnEvents()
+    {
+        static SpawnEventIndex index;
+        static std::once_flag built;
+        std::call_once(built, []()
+        {
+            int32 const events = int32(sGameEventMgr->GetEventMap().size());
+            auto const read = [events](auto const& lists, std::unordered_map<ObjectGuid::LowType, int16>& out)
+            {
+                for (size_t i = 0; i < lists.size(); ++i)
+                    for (ObjectGuid::LowType const guid : lists[i])
+                        out[guid] = int16(int32(i) - events + 1);
+            };
+            read(sGameEventMgr->GameEventCreatureGuids, index.creatures);
+            read(sGameEventMgr->GameEventGameobjectGuids, index.objects);
+        });
+        return index;
+    }
+    int16 SpawnEvent(bool creature, ObjectGuid::LowType guid)
+    {
+        auto const& map = creature ? SpawnEvents().creatures : SpawnEvents().objects;
+        auto const found = map.find(guid);
+        return found == map.end() ? int16(0) : found->second;
+    }
+    // [guild15] a spawn of that event stands in the world now (map threads read the active set while the world
+    // thread's event update does not run: events start and stop in World::Update, not during the map updates)
+    bool EventSpawnPresent(int16 event)
+    {
+        if (!event)
+            return true;
+        bool const active = sGameEventMgr->IsActiveEvent(uint16(std::abs(int32(event))));
+        return event > 0 ? active : !active;
+    }
+    // b321: the Scourge Invasion's Herald of the Lich King L80, event 17 not running, refused 21 trips and postponed
+    // quests
+    bool SpawnPresent(MobSpawn const& spawn) { return EventSpawnPresent(spawn.event); }
 
     // [guild12] the danger bins: map + cell of MAX_AGGRO_RADIUS (no aggro reaches past one cell)
     uint64 MobCellKey(uint32 mapId, float x, float y)
@@ -2512,7 +2558,8 @@ namespace
                 if (!tmpl || tmpl->type == CREATURE_TYPE_CRITTER ||
                     (tmpl->unit_flags & (UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE)))
                     continue;
-                index.mobCells[MobCellKey(data.mapid, data.posX, data.posY)].push_back({data.posX, data.posY, tmpl});
+                index.mobCells[MobCellKey(data.mapid, data.posX, data.posY)].push_back(
+                    {data.posX, data.posY, data.posZ, tmpl, SpawnEvent(true, spawnId)});
             }
         });
         return index;
@@ -2749,7 +2796,8 @@ namespace
     std::unordered_map<uint32, std::unordered_set<uint32>> failedQuests;
 }
 
-CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, float fromY, float toX, float toY)
+CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, float fromY, float toX, float toY,
+                                                      float fromZ, float toZ)
 {
     QuestSpawnIndex const& index = GetQuestSpawnIndex();
     FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
@@ -2757,6 +2805,25 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
         return nullptr;
     uint8 const level = bot->GetLevel();
     uint32 const mapId = bot->GetMapId();
+    float const dx = toX - fromX;
+    float const dy = toY - fromY;
+    float const length = std::sqrt(dx * dx + dy * dy);
+    bool const heights = fromZ != NO_WAY_HEIGHT && toZ != NO_WAY_HEIGHT;
+    // [guild15] the walk's point nearest to (px, py): its share t along the walk; t == 0 = the start
+    auto const nearestShare = [&](float px, float py)
+    {
+        float const t = length > 0.0f ? ((px - fromX) * dx + (py - fromY) * dy) / (length * length) : 0.0f;
+        return std::clamp(t, 0.0f, 1.0f);
+    };
+    auto const gapSq = [&](float px, float py, float pz, float t)
+    {
+        float const ex = fromX + dx * t - px;
+        float const ey = fromY + dy * t - py;
+        float ez = 0.0f;
+        if (heights && pz != NO_WAY_HEIGHT)
+            ez = fromZ + (toZ - fromZ) * t - pz;
+        return ex * ex + ey * ey + ez * ez;
+    };
 
     // where it died, until it outlevels the killer
     {
@@ -2773,18 +2840,18 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
                 if (zone.mapId != mapId)
                     continue;
                 float const radiusSq = zone.radius * zone.radius;
-                if (SegmentDistSq(zone.killerX, zone.killerY, fromX, fromY, toX, toY) <= radiusSq ||
-                    SegmentDistSq(zone.deathX, zone.deathY, fromX, fromY, toX, toY) <= radiusSq)
-                    if (CreatureTemplate const* killer = sObjectMgr->GetCreatureTemplate(zone.entry))
-                        return killer;
+                for (auto const& [px, py] : {std::pair{zone.killerX, zone.killerY}, std::pair{zone.deathX, zone.deathY}})
+                {
+                    float const t = nearestShare(px, py);
+                    if (t > 0.0f && gapSq(px, py, NO_WAY_HEIGHT, t) <= radiusSq)
+                        if (CreatureTemplate const* killer = sObjectMgr->GetCreatureTemplate(zone.entry))
+                            return killer;
+                }
             }
         }
     }
 
     // the cells along the walk and their neighbours
-    float const dx = toX - fromX;
-    float const dy = toY - fromY;
-    float const length = std::sqrt(dx * dx + dy * dy);
     uint32 const steps = uint32(std::ceil(length / MAX_AGGRO_RADIUS));
     std::unordered_set<uint64> cells;
     for (uint32 step = 0; step <= steps; ++step)
@@ -2807,18 +2874,16 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
             XPColorChar const color = Acore::XP::GetColorCode(level, tmpl->maxlevel);
             if (color != XP_RED && color != XP_ORANGE)
                 continue;
+            if (!SpawnPresent(spawn))
+                continue;
             FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(tmpl->faction);
             if (!faction || !faction->IsHostileTo(*botFaction))
                 continue;
             // Creature::GetAggroRange: the detection range grows a yard per level the mob is above the player
             float const aggro = std::clamp(tmpl->detection_range + float(int32(tmpl->maxlevel) - int32(level)),
                                            5.0f, MAX_AGGRO_RADIUS);
-            // distance from the spawn to the walk
-            float t = length > 0.0f ? ((spawn.x - fromX) * dx + (spawn.y - fromY) * dy) / (length * length) : 0.0f;
-            t = std::clamp(t, 0.0f, 1.0f);
-            float const ex = fromX + dx * t - spawn.x;
-            float const ey = fromY + dy * t - spawn.y;
-            if (ex * ex + ey * ey <= aggro * aggro)
+            float const t = nearestShare(spawn.x, spawn.y);
+            if (t > 0.0f && gapSq(spawn.x, spawn.y, spawn.z, t) <= aggro * aggro)
                 return tmpl;
         }
     }
@@ -2841,7 +2906,8 @@ CreatureTemplate const* NewRpgBaseAction::TripDanger(Player* bot, float x, float
     {
         for (size_t i = 1; i < route.points.size(); ++i)
             if (CreatureTemplate const* danger = DangerOnWay(bot, route.points[i - 1].x, route.points[i - 1].y,
-                                                             route.points[i].x, route.points[i].y))
+                                                             route.points[i].x, route.points[i].y,
+                                                             route.points[i - 1].z, route.points[i].z))
                 return danger;
         if (route.complete)
             return nullptr;
@@ -3419,8 +3485,14 @@ bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector
     if (poiInfo.empty() && blocker)
         HoldPostponed(bot, quest,
                       "objective among " + blocker->Name + " L" + std::to_string(blocker->maxlevel) +
-                          (Acore::XP::GetColorCode(bot->GetLevel(), blocker->maxlevel) == XP_RED ? " (red)"
-                                                                                                  : " (orange)"));
+                          [&]()
+                          {
+                              // [guild15] a mob of lower con blocks only by its remembered death / refused-pull zone
+                              XPColorChar const con = Acore::XP::GetColorCode(bot->GetLevel(), blocker->maxlevel);
+                              return std::string(con == XP_RED      ? " (red)"
+                                                 : con == XP_ORANGE ? " (orange)"
+                                                                    : " (refused pull / death zone)");
+                          }());
     else if (poiInfo.empty() && spentObjectives)
         NotePostpone(bot, questId, "every camp of its objectives seen empty (back at their respawn)");
 
@@ -3556,6 +3628,8 @@ namespace
         uint16 mapId;
         float x, y, z;
         uint32 creatureFaction;  // 0 for game objects
+        int16 event = 0;         // [guild15] the giver spawn's game event (b321: Day of the Dead givers, event 51 not
+                                 // running, drew bots 1-17 km to an empty spot: q13952, q14167-14173)
     };
 
     std::vector<QuestStartPoint> const& GetQuestStartPoints()
@@ -3564,9 +3638,15 @@ namespace
         static std::once_flag built;
         std::call_once(built, []()
         {
-            std::unordered_map<uint32, CreatureData const*> creatureSpawn;
+            // [guild15] one spawn per entry, a permanent one before an event's
+            std::unordered_map<uint32, std::pair<CreatureData const*, int16>> creatureSpawn;
             for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
-                creatureSpawn.emplace(data.id, &data);
+            {
+                int16 const event = SpawnEvent(true, spawnId);
+                auto const [it, added] = creatureSpawn.emplace(data.id, std::make_pair(&data, event));
+                if (!added && it->second.second && !event)
+                    it->second = {&data, event};
+            }
 
             for (auto const& [entry, questId] : *sObjectMgr->GetCreatureQuestRelationMap())
             {
@@ -3575,13 +3655,19 @@ namespace
                 if (spawn == creatureSpawn.end() || !creatureTemplate)
                     continue;
 
-                CreatureData const* data = spawn->second;
-                points.push_back({questId, data->mapid, data->posX, data->posY, data->posZ, creatureTemplate->faction});
+                CreatureData const* data = spawn->second.first;
+                points.push_back({questId, data->mapid, data->posX, data->posY, data->posZ, creatureTemplate->faction,
+                                  spawn->second.second});
             }
 
-            std::unordered_map<uint32, GameObjectData const*> objectSpawn;
+            std::unordered_map<uint32, std::pair<GameObjectData const*, int16>> objectSpawn;
             for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
-                objectSpawn.emplace(data.id, &data);
+            {
+                int16 const event = SpawnEvent(false, spawnId);
+                auto const [it, added] = objectSpawn.emplace(data.id, std::make_pair(&data, event));
+                if (!added && it->second.second && !event)
+                    it->second = {&data, event};
+            }
 
             for (auto const& [entry, questId] : *sObjectMgr->GetGOQuestRelationMap())
             {
@@ -3589,8 +3675,8 @@ namespace
                 if (spawn == objectSpawn.end())
                     continue;
 
-                GameObjectData const* data = spawn->second;
-                points.push_back({questId, data->mapid, data->posX, data->posY, data->posZ, 0});
+                GameObjectData const* data = spawn->second.first;
+                points.push_back({questId, data->mapid, data->posX, data->posY, data->posZ, 0, spawn->second.second});
             }
         });
         return points;
@@ -4048,6 +4134,8 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
     for (QuestStartPoint const& start : GetQuestStartPoints())
     {
+        if (!EventSpawnPresent(start.event))  // [guild15]
+            continue;
         float travelSeconds = 0.0f;
         if (start.mapId == bot->GetMapId())
         {
@@ -4142,7 +4230,7 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
     FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
     for (QuestStartPoint const& start : GetQuestStartPoints())
     {
-        if (start.mapId != bot->GetMapId())
+        if (start.mapId != bot->GetMapId() || !EventSpawnPresent(start.event))  // [guild15]
             continue;
 
         Quest const* quest = sObjectMgr->GetQuestTemplate(start.questId);

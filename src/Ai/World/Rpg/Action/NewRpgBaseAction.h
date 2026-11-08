@@ -48,7 +48,13 @@ public:
     // [guild12] a hostile creature spawn of orange or red con for the bot (core Acore::XP::GetColorCode) whose aggro
     // radius (core Creature::GetAggroRange: detection_range plus the level gap) covers the straight walk from -> to
     // on the bot's map; nullptr none
-    static CreatureTemplate const* DangerOnWay(Player* bot, float fromX, float fromY, float toX, float toY);
+    // [guild15] with both heights known the core's 3D aggro distance is used (a mob under a bridge, on a ledge); a
+    // danger the walk is nearest to at its very start is behind the walker (it stands there now, or the previous
+    // leg counted it): the walk leaves it, it is not on the way (b321: a refused pack beside the bot blocked every
+    // quest of the log, 100+ postpones "objective among <the same mob>")
+    static CreatureTemplate const* DangerOnWay(Player* bot, float fromX, float fromY, float toX, float toY,
+                                               float fromZ = NO_WAY_HEIGHT, float toZ = NO_WAY_HEIGHT);
+    static constexpr float NO_WAY_HEIGHT = -200000.0f;
     // [guild14] a solo bot's trip (trainer, tool vendor, vendor, gather node, guild vault) to (x, y, z): the first
     // mob of orange / red con whose aggro reaches the walk it would take (its route, else the straight line; the
     // world's spawns, not only the mobs in sight) or the danger zone the trip ends in; nullptr: the trip is safe

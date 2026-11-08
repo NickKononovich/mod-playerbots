@@ -118,6 +118,11 @@ namespace
         std::set<std::pair<uint32, int32>> lostTo;
         // [guild14] the open fight turned lost: it disengages until the fight ends
         bool fleeing = false;
+        // [guild15] when the run / reset began, and what it had dealt by then: its damage is measured over the part
+        // it fought (b321 Colian / Farret L11: runs that began at the first hit measured 0 dps on Nightstalkers and
+        // Root Threshers, the judge then counted 1.0 dps and refused / ran from every L8 mob, the next run 0 again)
+        uint32 fleeMs = 0;
+        uint64 dealtAtFlee = 0;
         // [guild15] per creature entry, against this bot: what the entry dealt it per second, and what it dealt that
         // entry in fights with that one attacker (damage, seconds)
         std::unordered_map<uint32, std::pair<double, double>> ownTaken;
@@ -165,9 +170,24 @@ namespace
         state.open = false;
         float const seconds =
             float(getMSTimeDiff(state.firstMs, state.lastMs)) / float(IN_MILLISECONDS) + SwingSec(bot);
-        state.dealtSum += double(state.dealt);
+        // [guild15] its damage over the part it fought: up to the run / reset; a run before two of its swings
+        // measured nothing of its damage (it never fought), so the fight adds no damage measurement at all
+        float fought = seconds;
+        uint64 foughtDealt = state.dealt;
+        if (state.fleeing && state.fleeMs)
+        {
+            fought = float(getMSTimeDiff(state.firstMs, state.fleeMs)) / float(IN_MILLISECONDS);
+            foughtDealt = state.dealtAtFlee;
+        }
+        bool const measured = !state.fleeing || fought >= 2.0f * SwingSec(bot);
+        if (state.fleeing)
+            fought += SwingSec(bot);
+        if (measured)
+        {
+            state.dealtSum += double(foughtDealt);
+            state.fightSecSum += fought;
+        }
         state.healedSum += double(state.healed);
-        state.fightSecSum += seconds;
         uint32 const mana = bot->GetPower(POWER_MANA);
         if (state.manaAtOpen > mana)
             state.manaSum += double(state.manaAtOpen - mana);
@@ -187,11 +207,11 @@ namespace
             own.first += double(track.damage);
             own.second += trackSec;
         }
-        if (state.attackers.size() == 1)
+        if (state.attackers.size() == 1 && measured)
         {
             auto& own = state.ownDealt[state.attackers.begin()->second.entry];
-            own.first += double(state.dealt);
-            own.second += seconds;
+            own.first += double(foughtDealt);
+            own.second += fought;
         }
         std::string came;
         for (auto const& [guid, track] : state.attackers)
@@ -218,11 +238,11 @@ namespace
             int32 gap = std::numeric_limits<int32>::min();
             for (auto const& [guid, track] : state.attackers)
                 gap = std::max(gap, int32(track.level) - int32(bot->GetLevel()));
-            if (gap != std::numeric_limits<int32>::min())
+            if (gap != std::numeric_limits<int32>::min() && measured)
             {
                 auto& at = state.gapDealt[gap];
-                at.first += double(state.dealt);
-                at.second += seconds;
+                at.first += double(foughtDealt);
+                at.second += fought;
             }
             if (died || state.fleeing)
                 for (auto const& [guid, track] : state.attackers)
@@ -242,6 +262,8 @@ namespace
             state.restWhy = "after a survival run";
         }
         state.fleeing = false;
+        state.fleeMs = 0;
+        state.dealtAtFlee = 0;
         state.attackers.clear();
         state.engaged = false;
         state.dealt = 0;
@@ -1070,7 +1092,9 @@ namespace SoloSafety
             botDps = std::max(botDps, float(state.dealt) / (elapsed + SwingSec(bot)));
         // [guild80] ... and this fight's alone once it covers two of its swings: b319 Rumanatol L11 dealt 5.0 dps to a
         // Blue Flutterer (10.2 measured at that gap), Rollothan L8 5.7 (8.5): the fight showed lost only at hp 43 / 4
-        if (elapsed >= 2.0f * SwingSec(bot))
+        // [guild15] once it has dealt damage: a bot hit on its walk before it turned on the mob had dealt 0 after two
+        // swings, the projection read 1.0 dps and it ran from L8 mobs it kills in 10 s (b321 Colian L11, Nightstalkers)
+        if (elapsed >= 2.0f * SwingSec(bot) && state.dealt)
             botDps = float(state.dealt) / (elapsed + SwingSec(bot));
         out.botDps = std::max(botDps, 1.0f);
         // the rest of the fight as the judge counts it: its current target first, then the most damage per health
@@ -1103,9 +1127,27 @@ namespace SoloSafety
         auto const found = states.find(bot->GetGUID().GetCounter());
         if (found == states.end() || !found->second.open)
             return;
+        if (!found->second.fleeing)
+        {
+            found->second.fleeMs = getMSTime();
+            found->second.dealtAtFlee = found->second.dealt;
+        }
         found->second.fleeing = true;
         found->second.rest = true;
         found->second.restWhy = why;
+    }
+
+    void EndFlee(Player* bot)
+    {
+        if (!bot)
+            return;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        if (found == states.end() || !found->second.open)
+            return;
+        found->second.fleeing = false;
+        found->second.fleeMs = 0;
+        found->second.dealtAtFlee = 0;
     }
 
     void RequestRestAfter(Player* bot, std::string const& why)
