@@ -1163,6 +1163,57 @@ namespace
 
 namespace SurvivalKit
 {
+    float HealPoints(Player* bot, float fightSec, float spareMana, bool items)
+    {
+        if (!bot)
+            return 0.0f;
+        std::vector<Piece> pieces;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            pieces = KitOf(bot).pieces;
+            if (items)
+                ItemPieces(bot, pieces);
+        }
+        float total = 0.0f;
+        std::unordered_map<uint32, float> itemByCategory;  // one heal item per shared cooldown (potions, healthstones)
+        Piece const* manaHeal = nullptr;                   // the most healing per mana
+        for (Piece const& piece : pieces)
+        {
+            if (piece.kind != Kind::Heal || piece.needsWindow || piece.amount <= 0.0f)
+                continue;
+            if (piece.item)
+            {
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(piece.spell);
+                uint32 const category = info && info->GetCategory() ? info->GetCategory() : piece.spell;
+                float& best = itemByCategory[category];
+                best = std::max(best, piece.amount);
+                continue;
+            }
+            if (bot->HasSpellCooldown(piece.spell))
+                continue;
+            if (piece.cost <= 0.0f)
+            {
+                // a heal without mana (Gift of the Naaru, Lay on Hands' cost aside): as often as its cooldown allows
+                float const uses =
+                    piece.cooldownSec > 0.0f ? 1.0f + std::floor(std::max(fightSec, 0.0f) / piece.cooldownSec) : 1.0f;
+                total += piece.amount * uses;
+                continue;
+            }
+            if (!manaHeal || piece.amount / piece.cost > manaHeal->amount / manaHeal->cost)
+                manaHeal = &piece;
+        }
+        for (auto const& [category, amount] : itemByCategory)
+            total += amount;
+        if (manaHeal && spareMana > 0.0f)
+        {
+            float casts = std::floor(spareMana / manaHeal->cost);
+            if (manaHeal->cooldownSec > 0.0f)
+                casts = std::min(casts, 1.0f + std::floor(std::max(fightSec, 0.0f) / manaHeal->cooldownSec));
+            total += manaHeal->amount * casts;
+        }
+        return total;
+    }
+
     bool Evaluate(Player* bot)
     {
         if (!bot || !bot->IsInCombat() || !SoloSafety::Applies(bot))

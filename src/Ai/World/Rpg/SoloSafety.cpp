@@ -17,6 +17,7 @@
 #include "Item.h"
 #include "CreatureGroups.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"  // [deaths3] spawn wander distances
 #include "World.h"
 #include "EstimatedLifetimeValue.h"
 #include "Formulas.h"
@@ -26,6 +27,7 @@
 #include "LeaderFightChecks.h"
 #include "LeaderPlannerShared.h"  // [deaths] PullPlanning::PatrolForecast
 #include "NewRpgBaseAction.h"
+#include "NewRpgCoop.h"  // [deaths3] a co-op party's walk
 #include "Log.h"
 #include "Map.h"
 #include "ModelIgnoreFlags.h"  // [deaths] the pull spot's sight of its target
@@ -36,6 +38,7 @@
 #include "Playerbots.h"
 #include "RouteSearch.h"
 #include "SpellInfo.h"
+#include "SurvivalKit.h"  // [deaths3] its heals now
 #include "SpellMgr.h"
 #include "SmartScriptMgr.h"  // [guild14] creature casts
 #include "StringFormat.h"
@@ -177,8 +180,20 @@ namespace
             return false;
         if (bot->GetMap() && bot->GetMap()->Instanceable())
             return false;
+        // [deaths3] b341: 10 of 12 deaths were grouped bots questing away from every member (the user pack's fives
+        // 120-1000 yd apart, offline members): no judge, no walk round the camps, no survival kit. A bot fights alone
+        // when no living member stands within the core's group reward distance (Player::IsAtGroupRewardDistance)
         Group* group = bot->GetGroup();
-        return !group || group->GetMembersCount() <= 1;
+        if (!group || group->GetMembersCount() <= 1)
+            return true;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (member && member != bot && member->IsInWorld() && member->IsAlive() &&
+                member->IsAtGroupRewardDistance(bot))
+                return false;
+        }
+        return true;
     }
 
     float SwingSec(Unit* unit, WeaponAttackType type = BASE_ATTACK)
@@ -607,15 +622,60 @@ namespace
         return healed;
     }
 
-    // [guild14] what a mob deals the bot per second: its melee (Leader::Fight::AttackerDps, its crits counted: the
-    // core's Unit::GetUnitCriticalChance, a crit doubling the hit), its spells (the cast it is on, its SmartAI casts:
-    // the higher), or what its entry was measured to deal solo bots - the highest
+    // [deaths3] a mob's melee on the bot through the core's attack table (Unit::RollMeleeOutcomeAgainst): its hit after
+    // the bot's armor, one roll per swing - miss (Unit::MeleeSpellMissChance), dodge / parry / block less 0.04 % per
+    // weapon skill point of the mob over the bot's level (none while the victim casts: a caster bot fights casting),
+    // crit (the core's chance, double damage), crushing blow (a mob 4+ levels above whose skill is 15+ over the bot's
+    // defense: 2 % a point less 15 %, 150 % damage), the rest plain hits; a block takes off its block value
+    float MeleeDps(Unit* unit, Player* bot)
+    {
+        float const raw = std::max(
+            0.0f, (unit->GetFloatValue(UNIT_FIELD_MINDAMAGE) + unit->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f);
+        float const hit =
+            float(Unit::CalcArmorReducedDamage(unit, bot, uint32(raw), nullptr, unit->GetLevel(), BASE_ATTACK));
+        int32 const skillDiff =
+            int32(unit->GetWeaponSkillValue(BASE_ATTACK, bot)) - int32(bot->GetMaxSkillValueForLevel(unit));
+        float const skillBonus = 0.04f * float(skillDiff);
+        float left = 100.0f;
+        auto const take = [&left](float chance)
+        {
+            chance = std::clamp(chance, 0.0f, left);
+            left -= chance;
+            return chance;
+        };
+        take(unit->MeleeSpellMissChance(bot, BASE_ATTACK, skillDiff, 0));
+        float block = 0.0f;
+        if (!PlayerbotAI::IsCaster(bot))
+        {
+            take(bot->GetUnitDodgeChance() - skillBonus);
+            take(bot->GetUnitParryChance() - skillBonus);
+            block = take(bot->GetUnitBlockChance() - skillBonus);
+        }
+        float const crit = take(unit->GetUnitCriticalChance(BASE_ATTACK, bot));
+        float crush = 0.0f;
+        Creature* creature = unit->ToCreature();
+        if (unit->getLevelForTarget(bot) >= bot->getLevelForTarget(unit) + 4 && !unit->IsControlledByPlayer() &&
+            !(creature && creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_CRUSHING_BLOWS)))
+        {
+            int32 const defense =
+                std::min<int32>(int32(bot->GetDefenseSkillValue(unit)), int32(bot->GetMaxSkillValueForLevel(unit)));
+            int32 const lack = int32(unit->GetMaxSkillValueForLevel(bot)) - defense;
+            if (lack >= 15)
+                crush = take(float(lack) * 2.0f - 15.0f);
+        }
+        float const blocked = std::min(hit, float(bot->GetShieldBlockValue()));
+        float const perSwing =
+            (hit * (left + block) - blocked * block + 2.0f * hit * crit + 1.5f * hit * crush) / 100.0f;
+        return std::max(perSwing, 0.0f) / SwingSec(unit);
+    }
+
+    // [guild14] what a mob deals the bot per second: its melee (the core's attack table, [deaths3]) and its spells (the
+    // cast it is on, its SmartAI casts: the higher)
     float MobDps(Unit* unit, Player* bot)
     {
         float spell = 0.0f;
-        float const total = Leader::Fight::AttackerDps(unit, bot, spell);
-        float const crit = std::clamp(unit->GetUnitCriticalChance(BASE_ATTACK, bot) / 100.0f, 0.0f, 1.0f);
-        float dps = (total - spell) * (1.0f + crit);
+        Leader::Fight::AttackerDps(unit, bot, spell);  // the cast it is on
+        float dps = MeleeDps(unit, bot);
         if (Creature* creature = unit->ToCreature())
             dps += std::max(spell, SpellDpsOf(creature));
         else
@@ -655,6 +715,39 @@ namespace
         std::lock_guard<std::mutex> guard(cacheLock);
         cache[entry] = help;
         return help;
+    }
+
+    // [deaths3] the largest wander distance of a map's spawns (creature.wander_distance of RANDOM_MOTION_TYPE spawns),
+    // from the spawn data once: a wanderer's reach is its home's, so the route search looks that much farther
+    float MaxWanderDistance(uint32 mapId)
+    {
+        static std::once_flag built;
+        static std::unordered_map<uint32, float> byMap;
+        std::call_once(built,
+                       []
+                       {
+                           for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+                               if (data.movementType == RANDOM_MOTION_TYPE)
+                                   byMap[data.mapid] = std::max(byMap[data.mapid], data.wander_distance);
+                       });
+        auto const found = byMap.find(mapId);
+        return found == byMap.end() ? 0.0f : found->second;
+    }
+
+    // [deaths3] a pet that holds a mob on itself: it knows a taunt (SPELL_EFFECT_ATTACK_ME or SPELL_AURA_MOD_TAUNT)
+    bool PetTaunts(Pet* pet)
+    {
+        for (auto const& [spellId, spell] : pet->m_spells)
+        {
+            if (spell.state == PETSPELL_REMOVED)
+                continue;
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+                for (SpellEffectInfo const& effect : info->GetEffects())
+                    if (effect.Effect == SPELL_EFFECT_ATTACK_ME ||
+                        (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_MOD_TAUNT))
+                        return true;
+        }
+        return false;
     }
 
     char const* KindName(SoloSafety::Verdict::Kind kind)
@@ -970,13 +1063,20 @@ namespace SoloSafety
                     for (auto const& [mate, info] : formation->GetMembers())
                         if (mate && mate->IsAlive() && !inPack(mate))
                             pack.push_back(mate);
+                // [deaths3] the core's assistance (Creature::CallAssistance): the target calls once as it engages,
+                // where it stands; its assistants do not call then (SetNoCallAssistance), and from then on every
+                // engaged mob calls again each CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD from where it fights - the
+                // fight spot. Before, the call chained from every assistant's home through the whole camp (b341
+                // Thyllyn L12: "6 mobs (4 above)" for one Greymist Coastrunner, every quest there postponed)
                 for (Creature* mob : idle)
                 {
-                    if (inPack(mob))
+                    if (inPack(mob) || assist <= 0.0f || mob->GetFaction() != member->GetFaction() ||
+                        !mob->CanAssistTo(member, bot))
                         continue;
-                    bool const assists = assist > 0.0f && mob->GetFaction() == member->GetFaction() &&
-                                         mob->IsWithinDistInMap(member, assist) && mob->CanAssistTo(member, bot);
-                    if (assists)
+                    bool const atEngage = member == targetMob && mob->IsWithinDistInMap(member, assist);
+                    bool const atFight =
+                        mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <= assist;
+                    if (atEngage || atFight)
                         pack.push_back(mob);
                 }
                 // [guild15] the help its script calls: all in the call's radius, the nearest one it flees to
@@ -1068,23 +1168,24 @@ namespace SoloSafety
                   [](Mob const& a, Mob const& b)
                   { return a.dps / std::max(a.hp, 1.0f) > b.dps / std::max(b.hp, 1.0f); });
 
+        // [deaths3] its pet's health takes hits only as far as the pet holds a mob: a pet with a taunt (Growl,
+        // Torment: SPELL_EFFECT_ATTACK_ME / SPELL_AURA_MOD_TAUNT) holds its target, the first of the kill order; the
+        // rest hit the bot (b341 Blahadrin L12: a Voidwalker's 390 health in the judge's ehp, "3 mobs, 497 dmg" engaged
+        // at hp 126 - every mob hit the warlock, it died)
         float petHealth = 0.0f;
         if (Pet* pet = bot->GetPet())
-            if (pet->IsAlive())
+            if (pet->IsAlive() && PetTaunts(pet))
                 petHealth = float(pet->GetHealth());
         // [guild15] its damage lasts as long as its mana: the rotation's mana per second (the formula's spend less its
         // in-combat regeneration) runs its spells, its weapon's white damage (and its pet's) is what is left when the
         // mana is gone (b307/b308: priests pulled at 7-25 % mana judged on their full-mana damage and died)
         float const manaPerSec = own.manaPerSec;
         float const whiteDps = std::clamp(own.whiteDps, 1.0f, botDps);
-        // health + pet + what it heals itself per fight second, measured (its own heals on itself over its fights),
-        // as far as its mana lasts: b298 Peny L8 took 4 Murlocs on a spell model of its heals and healed 24 in 50 s
-        float const healRate =
-            snapshot.fightSecSum > 0.0 ? float(snapshot.healedSum / snapshot.fightSecSum) : 0.0f;
         struct Projection
         {
             float seconds = 0.0f;
             float damage = 0.0f;
+            float targetDamage = 0.0f;  // the target's part (a taunting pet's to take)
         };
         auto const project = [&](float mana) -> Projection
         {
@@ -1111,6 +1212,8 @@ namespace SoloSafety
                 }
                 out.seconds += hp / whiteDps;
                 out.damage += mob.dps * out.seconds;
+                if (&mob == &mobs.front())
+                    out.targetDamage = mob.dps * out.seconds;
             }
             return out;
         };
@@ -1120,12 +1223,16 @@ namespace SoloSafety
         float const damage = now.damage;
         verdict.damage = damage;
         verdict.fightSec = seconds;
+        // [deaths3] user 2026-11-08 (no fight history in decisions): its heals are what its kit holds now - each heal
+        // item once, its spell heals as far as the mana its rotation leaves pays for them (SurvivalKit::HealPoints),
+        // not the heals measured over its past fights (b341 Ravelandy L9: past potions read as 1.4 hp/s)
         auto const effective = [&](Projection const& fight, float health, float mana, bool& wins) -> float
         {
-            float heals = healRate * fight.seconds;
-            if (uint32 const maxMana = bot->GetMaxPower(POWER_MANA))
-                heals *= std::min(1.0f, mana / float(maxMana));
-            float const ehp = health + petHealth + heals;
+            float spare = mana;
+            if (bot->GetMaxPower(POWER_MANA) && manaPerSec > 0.0f)
+                spare = std::max(0.0f, mana - manaPerSec * fight.seconds);
+            float const heals = SurvivalKit::HealPoints(bot, fight.seconds, spare, true);
+            float const ehp = health + std::min(petHealth, fight.targetDamage) + heals;
             wins = fight.damage < ehp;
             return ehp;
         };
@@ -1505,9 +1612,9 @@ namespace SoloSafety
             out.seconds += foe.hp / out.botDps;
             out.damage += foe.dps * out.seconds;
         }
-        out.heals = state.fightSecSum > 0.0 ? float(state.healedSum / state.fightSecSum) * out.seconds : 0.0f;
-        if (uint32 const maxMana = bot->GetMaxPower(POWER_MANA))
-            out.heals *= std::min(1.0f, float(bot->GetPower(POWER_MANA)) / float(maxMana));
+        // [deaths3] no measured heal rate (no fight history): the projection is the fight without its kit; the kit's
+        // heals are the pieces that turn it won
+        out.heals = 0.0f;
         out.health = float(bot->GetHealth());
         out.lost = out.damage >= out.health + out.heals;
         return out;
@@ -1636,12 +1743,24 @@ namespace SoloSafety
     {
         PMON_SCOPE(costScope, PERF_MON_VALUE, "solo route costs");  // [guild15]
         Player* bot = walker ? walker->ToPlayer() : nullptr;
-        if (!bot || bot->IsInCombat() || !bot->IsAlive() || !Applies(bot))
+        if (!bot || bot->IsInCombat() || !bot->IsAlive())
+            return;
+        // [deaths3] a co-op party's walk keeps the con rule too (b341 Ryarii L1 and Salleas L1: their walk to the boar
+        // spawns went through Nightsabers, Webwood Lurkers and Shadow Sprites L5-6, five fights off the objective, a
+        // Lurker L6 killed Ryarii): orange / red, elite and danger-zone reaches are refused; the pack it loses alone is
+        // the party's judgement (NewRpgCoop::JudgePull), not refused here
+        bool const alone = Applies(bot);
+        if (!alone && !(NewRpgCoop::InParty(bot->GetGUID().GetCounter()) && !bot->GetMap()->Instanceable() &&
+                        GET_PLAYERBOT_AI(bot) && GET_PLAYERBOT_AI(bot)->HasStrategy("new rpg", BOT_STATE_NON_COMBAT)))
             return;
         // the walk's first leg as far as the bot sees: the rest is planned again from there. [deaths] The leg ends up
         // to SightDistance from the bot, so a mob whose aggro reach (Creature::GetAggroRange, at most the core's
         // MAX_AGGRO_RADIUS) covers its end stands up to that much farther: those are seen too
-        float const range = sPlayerbotAIConfig.SightDistance + MAX_AGGRO_RADIUS;
+        // [deaths3] ... and a wanderer's reach is its home's with its wander area (b338 Keenonk L11: a Black Slime L20
+        // "unseen" by the search, its home in reach of the walk): the search looks that much farther, at most as far
+        // as the map shows the bot units (Map::GetVisibilityRange)
+        float const wander = std::min(MaxWanderDistance(bot->GetMapId()), bot->GetMap()->GetVisibilityRange());
+        float const range = sPlayerbotAIConfig.SightDistance + MAX_AGGRO_RADIUS + wander;
         std::unordered_map<uint64, bool> seen;  // [deaths] mob -> refused (DeathContext)
         std::list<Unit*> units;
         Acore::AnyUnitInObjectRangeCheck check(bot, range);
@@ -1669,6 +1788,10 @@ namespace SoloSafety
                 centre = mob->GetHomePosition();
                 radius += mob->GetWanderDistance();
             }
+            // the leg ends within sight of the bot: a reach beyond it is priced when the bot gets there
+            if (bot->GetExactDist2d(centre.GetPositionX(), centre.GetPositionY()) >
+                sPlayerbotAIConfig.SightDistance + radius)
+                continue;
             // never walked through: orange / red con, an elite, a mob in a remembered danger zone (where it died, a
             // pack its pull judge refused)
             bool never = IsElite(mob) || Acore::XP::GetColorCode(level, mob->GetLevel()) <= XP_ORANGE ||
@@ -1681,7 +1804,7 @@ namespace SoloSafety
             // an engaged mob calls again every CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD, so the call spreads one more
             // hop per period of the fight), killed one by one, the most damage per health first (b321: 7 of 9 deaths
             // were bots attacked on their way through camps, 2-4 mobs came; b322 Cassand L8 by 3 Prowlers L9-10)
-            if (!never)
+            if (!never && alone)
             {
                 std::vector<Creature*> pack{mob};
                 auto const inPack = [&pack](Creature* c) { return std::find(pack.begin(), pack.end(), c) != pack.end(); };

@@ -18,7 +18,8 @@
 // - its walks go round the idle mobs (a route search penalty: the reach of each costs the fight it starts; a mob
 //   it must never fight is refused while a complete walk round exists);
 // - after a death it rests to full and goes to its quest hub before it plans again.
-// Applies to player bots under the New RPG that play alone (no group with others), outside instances.
+// Applies to player bots under the New RPG that play alone (no living group member within the group reward
+// distance), outside instances.
 
 #include "Define.h"
 #include "G3D/Vector3.h"
