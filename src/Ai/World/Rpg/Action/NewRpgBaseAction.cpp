@@ -46,6 +46,7 @@
 #include "DetourNavMeshQuery.h"  // [guild14] the nearest polygon
 #include "MapDefines.h"         // [guild14] NAV_* flags
 #include <map>
+#include <memory>
 #include <tuple>
 #include "Object.h"
 #include "ObjectAccessor.h"
@@ -4765,6 +4766,9 @@ namespace
 
     constexpr float QUEST_TRAVEL_SPEED = 7.0f;           // yards per second on foot
     constexpr float QUEST_OBJECTIVE_TIME = 180.0f;       // seconds to clear one quest objectives
+    // [routeplan] the corridor searches one route build may run for legs no bot measured yet (the rest estimated by
+    // the measured ones): a cost cap per tick, not a behaviour rule
+    constexpr uint32 ROUTE_NEW_LEGS_PER_BUILD = 8;
     constexpr float QUEST_UNKNOWN_DISTANCE = 150.0f;     // assumed giver-to-objective distance without POI data
     constexpr float QUEST_MAX_GIVER_DISTANCE = 3000.0f;  // farther givers are left for a later trip
     constexpr float QUEST_IN_LOG_BONUS = 1.25f;          // accepted quests cost nothing to start
@@ -5085,10 +5089,17 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
     uint32 const counter = bot->GetGUID().GetCounter();
     in.x = bot->GetPositionX();
     in.y = bot->GetPositionY();
+    in.z = bot->GetPositionZ();
     in.speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
     in.hubRadius = GROUP_ENDER_RADIUS;
     float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
     uint32 const landmass = TravelRouteMgr::Landmass(WorldPosition(bot));
+    // [routeplan] the legs: the real walk and the fights on it, priced at this dps
+    Player* const walker = bot;
+    auto budget = std::make_shared<uint32>(ROUTE_NEW_LEGS_PER_BUILD);
+    in.measure = [walker, dps, budget](QuestRoute::Point const& from, QuestRoute::Point const& to, float& walkYd,
+                                       float& fightSec)
+    { return MeasureLeg(walker, from, to, dps, walkYd, fightSec, budget.get()); };
     auto const onLandmass = [&](float x, float y, float z)
     {
         return TravelRouteMgr::Landmass(
@@ -5135,6 +5146,13 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         return QUEST_OBJECTIVE_TIME * RemainingShare(bot, quest);
     };
     uint32 const now = uint32(time(nullptr));
+    // [routeplan] a log quest the route does not hold, with its status: the route is built again only when it moves
+    auto const leaveOut = [&](uint32 questId, bool count)
+    {
+        in.leftOutQuests[questId] = uint8(bot->GetQuestStatus(questId));
+        if (count)
+            ++in.leftOut;
+    };
 
     uint32 inLog = 0;
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
@@ -5151,7 +5169,11 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         }
         Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
         if (!quest || botAI->lowPriorityQuest.count(questId))
+        {
+            if (!quest)
+                leaveOut(questId, false);
             continue;
+        }
         if (IsSpellUnlockClassQuest(quest))
         {
             LOG_INFO("playerbots", "[rpg] {} L{} ABANDON q{} {} reason: class quest for a spell (granted)",
@@ -5165,6 +5187,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
                              (NeedsItemUseCredit(quest, &why) || NeedsSpellCredit(bot, quest, true, &why)))
         {
             NotePostpone(bot, questId, "unsupported: " + why);
+            leaveOut(questId, false);
             continue;
         }
         if (EnderNeedsScript(questId))
@@ -5186,7 +5209,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         {
             if (!spots)  // DoCompletedQuest needs the same spot
             {
-                ++in.leftOut;
+                leaveOut(questId, true);
                 continue;
             }
             float const ex = hasEnder ? ender.GetPositionX() : poiInfo[0].pos.x;
@@ -5194,7 +5217,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
             float const ez = hasEnder ? ender.GetPositionZ() : poiInfo[0].z;
             if (!onLandmass(ex, ey, ez))
             {
-                ++in.leftOut;
+                leaveOut(questId, true);
                 continue;
             }
             addToHub(ex, ey, ez, questId);
@@ -5212,7 +5235,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
             // every camp spent (back at their respawn: the route is built again then), taken or behind a danger
             if (uint32 const wait = EarliestRespawn(bot, questId))
                 in.respawnDue = in.respawnDue ? std::min(in.respawnDue, now + wait) : now + wait;
-            ++in.leftOut;
+            leaveOut(questId, true);
             continue;
         }
         // the area's middle: the unspent camp nearest all the others
@@ -5231,7 +5254,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         }
         if (!onLandmass(middle->pos.x, middle->pos.y, middle->z))
         {
-            ++in.leftOut;
+            leaveOut(questId, true);
             continue;
         }
         Stop objective;
@@ -5250,6 +5273,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
 
     for (auto const& [pos, what] : towns)
     {
+        in.townsSeen.insert(QuestRoute::SpotKey(pos.GetPositionX(), pos.GetPositionY()));
         if (visitedTown.count(QuestRoute::SpotKey(pos.GetPositionX(), pos.GetPositionY())) ||
             !onLandmass(pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ()))
             continue;
@@ -5333,6 +5357,181 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         else
             in.offers[at->second].takes.push_back(take);
     }
+}
+
+// [routeplan] the route's legs (QuestRoute::LegTable): the corridor of the long route search between two spots and
+// the attackable spawns within the core's largest aggro reach of it, kept per spot pair for every bot (the corridor
+// and the spawns do not depend on the bot; their price does)
+namespace
+{
+    struct LegNear
+    {
+        MobSpawn const* spawn;
+        float gap;  // its 3D distance from the corridor
+    };
+    struct LegGeometry
+    {
+        bool corridor{false};  // the navmesh gave one (else the straight line)
+        float walkYd{0.0f};
+        std::vector<LegNear> near;
+    };
+    constexpr float LEG_CACHE_GRAIN = 5.0f;    // spots this close share a corridor (the key's grid, yards)
+    constexpr size_t LEG_CACHE_MAX = 200000;   // memory bound of the cache (entries), cleared past it
+    std::mutex legCacheLock;
+    std::unordered_map<uint64, std::shared_ptr<LegGeometry const>> legCache;
+
+    uint64 LegKey(uint32 mapId, QuestRoute::Point const& a, QuestRoute::Point const& b)
+    {
+        auto const cell = [](float v) { return uint64(uint32(int32(std::floor(v / LEG_CACHE_GRAIN)))); };
+        uint64 h = mapId;
+        for (uint64 const v : {cell(a.x), cell(a.y), cell(b.x), cell(b.y)})
+            h = h ^ (v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2));
+        return h;
+    }
+
+    float SegmentGap(G3D::Vector3 const& a, G3D::Vector3 const& b, G3D::Vector3 const& p)
+    {
+        G3D::Vector3 const ab = b - a;
+        float const lengthSq = ab.squaredLength();
+        float const t = lengthSq > 0.0f ? std::clamp((p - a).dot(ab) / lengthSq, 0.0f, 1.0f) : 0.0f;
+        return (a + ab * t - p).length();
+    }
+
+    std::shared_ptr<LegGeometry const> BuildLeg(Player* bot, QuestRoute::Point const& from,
+                                                QuestRoute::Point const& to)
+    {
+        PMON_SCOPE(legScope, PERF_MON_VALUE, "quest route leg");
+        auto const ground = [bot](QuestRoute::Point const& p)
+        {
+            float z = p.z;
+            if (z <= INVALID_HEIGHT + 1.0f)
+                z = bot->GetMap()->GetHeight(p.x, p.y, MAX_HEIGHT);
+            if (z <= INVALID_HEIGHT + 1.0f)
+                z = bot->GetPositionZ();
+            return G3D::Vector3(p.x, p.y, z);
+        };
+        G3D::Vector3 const start = ground(from);
+        G3D::Vector3 const dest = ground(to);
+        auto leg = std::make_shared<LegGeometry>();
+        Movement::PointsArray path;
+        bool complete = false;
+        if (Leader::Travel::LongRoute(bot, start, dest, false, path, complete) && !path.empty())
+        {
+            leg->corridor = true;
+            if ((path.front() - start).length() > 1.0f)
+                path.insert(path.begin(), start);
+            if (!complete)  // the corridor's end, then the straight rest
+                path.push_back(dest);
+        }
+        else
+            path = {start, dest};
+        for (size_t i = 1; i < path.size(); ++i)
+            leg->walkYd += (path[i] - path[i - 1]).length();
+
+        QuestSpawnIndex const& index = GetQuestSpawnIndex();
+        uint32 const mapId = bot->GetMapId();
+        std::unordered_map<MobSpawn const*, float> gaps;
+        for (size_t i = 1; i < path.size(); ++i)
+        {
+            G3D::Vector3 const& a = path[i - 1];
+            G3D::Vector3 const& b = path[i];
+            float const length = (b - a).length();
+            uint32 const steps = uint32(std::ceil(length / MAX_AGGRO_RADIUS));
+            std::unordered_set<uint64> cells;
+            for (uint32 step = 0; step <= steps; ++step)
+            {
+                float const t = steps ? float(step) / steps : 0.0f;
+                for (int32 ox = -1; ox <= 1; ++ox)
+                    for (int32 oy = -1; oy <= 1; ++oy)
+                        cells.insert(MobCellKey(mapId, a.x + (b.x - a.x) * t + ox * MAX_AGGRO_RADIUS,
+                                                a.y + (b.y - a.y) * t + oy * MAX_AGGRO_RADIUS));
+            }
+            for (uint64 const cell : cells)
+            {
+                auto const spawns = index.mobCells.find(cell);
+                if (spawns == index.mobCells.end())
+                    continue;
+                for (MobSpawn const& spawn : spawns->second)
+                {
+                    float const gap = SegmentGap(a, b, G3D::Vector3(spawn.x, spawn.y, spawn.z));
+                    if (gap > MAX_AGGRO_RADIUS)
+                        continue;
+                    auto const [at, fresh] = gaps.emplace(&spawn, gap);
+                    if (!fresh)
+                        at->second = std::min(at->second, gap);
+                }
+            }
+        }
+        leg->near.reserve(gaps.size());
+        for (auto const& [spawn, gap] : gaps)
+            leg->near.push_back({spawn, gap});
+        return leg;
+    }
+}
+
+bool NewRpgBaseAction::MeasureLeg(Player* bot, QuestRoute::Point const& from, QuestRoute::Point const& to,
+                                  float dps, float& walkYd, float& fightSec, uint32* newLegs)
+{
+    walkYd = 0.0f;
+    fightSec = 0.0f;
+    if (!bot || !bot->IsInWorld())
+        return false;
+    uint64 const key = LegKey(bot->GetMapId(), from, to);
+    std::shared_ptr<LegGeometry const> leg;
+    {
+        std::lock_guard<std::mutex> guard(legCacheLock);
+        auto const found = legCache.find(key);
+        if (found != legCache.end())
+            leg = found->second;
+    }
+    if (!leg)
+    {
+        if (newLegs && !*newLegs)
+            return false;  // the build's budget of new corridor searches is spent: the leg is estimated
+        if (newLegs)
+            --*newLegs;
+        leg = BuildLeg(bot, from, to);  // outside the lock: the corridor search runs on the bot's map thread
+        std::lock_guard<std::mutex> guard(legCacheLock);
+        if (legCache.size() >= LEG_CACHE_MAX)
+            legCache.clear();
+        legCache.emplace(key, leg);
+    }
+    walkYd = leg->walkYd;
+
+    // the fights on it: each hostile spawn whose aggro reach (Creature::GetAggroRange) the corridor crosses costs the
+    // cheaper of its fight (its health at the bot's dps) and the walk round its reach (the arc over the chord the
+    // corridor cuts) - the choice the solo route search makes with its penalty (SoloSafety::RouteCosts); one it never
+    // fights (elite, orange / red, a remembered danger zone) costs the walk round
+    FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
+    if (!botFaction)
+        return leg->corridor;
+    uint8 const level = bot->GetLevel();
+    float const speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    for (LegNear const& near : leg->near)
+    {
+        CreatureTemplate const* tmpl = near.spawn->tmpl;
+        if (!SpawnPresent(*near.spawn) || (tmpl->flags_extra & CREATURE_FLAG_EXTRA_CIVILIAN))
+            continue;
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(tmpl->faction);
+        if (!faction || !faction->IsHostileTo(*botFaction))
+            continue;
+        uint8 const mobLevel = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
+        float const aggro = std::clamp(tmpl->detection_range + float(int32(mobLevel) - int32(level)), 5.0f,
+                                       MAX_AGGRO_RADIUS);
+        if (near.gap >= aggro)
+            continue;
+        float const half = std::sqrt(aggro * aggro - near.gap * near.gap);
+        float const roundSec = (aggro * 2.0f * std::asin(std::min(1.0f, half / aggro)) - 2.0f * half) / speed;
+        bool const never = tmpl->rank != CREATURE_ELITE_NORMAL ||
+                           Acore::XP::GetColorCode(level, mobLevel) <= XP_ORANGE ||
+                           InDangerZone(bot, near.spawn->x, near.spawn->y);
+        float seconds = roundSec;
+        if (!never && dps > 0.0f)
+            if (CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(mobLevel, tmpl->unit_class))
+                seconds = std::min(roundSec, float(stats->GenerateHealth(tmpl)) / dps);
+        fightSec += seconds;
+    }
+    return leg->corridor;
 }
 
 // The bot knows every quest in the world and picks the one that gives the most experience per second of

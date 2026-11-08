@@ -8,6 +8,7 @@
 
 #include "Creature.h"
 #include "Log.h"
+#include "NewRpgQuestRoute.h"  // [routeplan] the route stop's event time
 #include "LootMgr.h"
 #include "ObjectMgr.h"
 #include "Player.h"
@@ -150,6 +151,7 @@ namespace
                 c.log.erase(quest->GetQuestId());
             }
             QuestStats::LogEvent(player, "turnin", quest->GetQuestId(), "xp=" + std::to_string(xp));
+            QuestRoute::NoteQuestEvent(player, quest->GetQuestId());  // [routeplan] metric only: the stop's end
         }
 
         void OnPlayerLevelChanged(Player* player, uint8 /*oldlevel*/) override
@@ -260,7 +262,10 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/)
         }
     }
     for (auto const& [event, data] : events)
+    {
         LogEvent(bot, event, data.first, data.second);
+        QuestRoute::NoteQuestEvent(bot, data.first);  // [routeplan] metric only: the route stop's end
+    }
 }
 
 void AddQuestStatsScripts() { new QuestStatsPlayerScript(); }

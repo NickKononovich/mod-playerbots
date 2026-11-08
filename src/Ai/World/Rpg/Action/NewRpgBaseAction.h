@@ -237,7 +237,19 @@ protected:
     QuestRoute::BotRoute& CurrentRoute();
     bool CloseRouteStop(QuestRoute::BotRoute& route,
                         std::vector<std::pair<WorldPosition, std::string>> const& towns);
-    uint64 RouteKey(uint64 townKey);
+    uint64 RouteKey();
+    // [routeplan] the stops done, postponed or dropped are cut out of the order (no new build); a hand-in that opens
+    // a follow-up the bot may take: its why (the route is built again)
+    std::string TrimRoute(QuestRoute::BotRoute& route, std::vector<std::pair<WorldPosition, std::string>> const& towns);
+    // [routeplan] a log quest or town task the route has no stop for: its why (the route is built again), else empty
+    std::string RouteMissingStop(QuestRoute::BotRoute const& route,
+                                 std::vector<std::pair<WorldPosition, std::string>> const& towns);
+    // [routeplan] the route's leg from `from` to `to` for the bot: the navmesh corridor's yards and the seconds of the
+    // fights on it (each hostile spawn whose aggro reach the corridor crosses: its fight at `dps`, or the walk round
+    // its reach when cheaper or never fought); the corridor and its spawns cached per spot pair for every bot.
+    // newLegs (optional): the corridor searches it may still run (a leg not cached past it: false, estimated)
+    static bool MeasureLeg(Player* bot, QuestRoute::Point const& from, QuestRoute::Point const& to, float dps,
+                           float& walkYd, float& fightSec, uint32* newLegs = nullptr);
     // [questroute] the route's stops from the log, the givers of its landmass and the town tasks (at a rebuild only)
     void CollectRouteStops(QuestRoute::Input& in, std::vector<std::pair<WorldPosition, std::string>> const& towns,
                            std::set<uint64> const& visitedTown);
