@@ -3602,8 +3602,17 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         openGroup = true;
     }
 
+    // [deaths16] the pack's damage lands on the member that holds it: the party's tank in sight of the leader (it
+    // takes the threat at the pull), else the leader that pulls. b355 Geron L11 (paladin tank) died twice under
+    // Manue's group pulls judged "681 dmg on Manue ... ehp 687" - the damage and the health were Manue's
+    Player* holder = leader;
+    for (ObjectGuid const& guid : members)
+        if (Player* m = SameMapPlayer(leader, guid);
+            m && m != leader && m->IsAlive() && PlayerbotAI::IsTank(m) && !PlayerbotAI::IsTank(holder) &&
+            leader->GetExactDist(m) <= sPlayerbotAIConfig.SightDistance)
+            holder = m;
     // the party's damage: its members in sight of the leader (each the formula's, [dps1]); its heals: the
-    // leader's own and the healers', per fight second, as far as their mana lasts
+    // holder's own and the healers', per fight second, as far as their mana lasts
     float sumDps = 0.0f;
     float healNow = 0.0f;
     float healFull = 0.0f;
@@ -3613,7 +3622,7 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         if (!m || !m->IsAlive() || leader->GetExactDist(m) > sPlayerbotAIConfig.SightDistance)
             continue;
         sumDps += DpsEstimate::EstimateDps(m, target, DpsEstimate::BuffContext::Group);  // [dps1] the formula
-        if (m != leader && !PlayerbotAI::IsHeal(m))
+        if (m != holder && !PlayerbotAI::IsHeal(m))  // [deaths16] the holder's own heals and the healers'
             continue;
         auto const rate = healRate.find(guid.GetCounter());
         if (rate == healRate.end())
@@ -3635,7 +3644,7 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
     };
     std::vector<Mob> pack;
     float spell = 0.0f;
-    pack.push_back({target, float(target->GetHealth()), Leader::Fight::AttackerDps(target, leader, spell)});
+    pack.push_back({target, float(target->GetHealth()), Leader::Fight::AttackerDps(target, holder, spell)});
     float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
     GuidVector const targets = botAI->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get();
     verdict.radius = 0.0f;
@@ -3651,7 +3660,7 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
                                      (gap <= assist && mob->IsFriendlyTo(target));
         if (!joins)
             continue;
-        pack.push_back({mob, float(mob->GetHealth()), Leader::Fight::AttackerDps(mob, leader, spell)});
+        pack.push_back({mob, float(mob->GetHealth()), Leader::Fight::AttackerDps(mob, holder, spell)});
         verdict.radius = std::max(verdict.radius, gap);
     }
     std::sort(pack.begin() + 1, pack.end(),
@@ -3672,20 +3681,20 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         for (ObjectGuid const& guid : members)
         {
             Player* m = SameMapPlayer(leader, guid);
-            if (!m || !m->IsAlive() || (m != leader && !PlayerbotAI::IsHeal(m)) ||
+            if (!m || !m->IsAlive() || (m != holder && !PlayerbotAI::IsHeal(m)) ||
                 leader->GetExactDist(m) > sPlayerbotAIConfig.SightDistance)
                 continue;
-            healNow += SurvivalKit::HealPoints(m, seconds, float(m->GetPower(POWER_MANA)), m == leader) /
+            healNow += SurvivalKit::HealPoints(m, seconds, float(m->GetPower(POWER_MANA)), m == holder) /
                        std::max(seconds, 1.0f);
-            healFull += SurvivalKit::HealPoints(m, seconds, float(m->GetMaxPower(POWER_MANA)), m == leader) /
+            healFull += SurvivalKit::HealPoints(m, seconds, float(m->GetMaxPower(POWER_MANA)), m == holder) /
                         std::max(seconds, 1.0f);
         }
     verdict.mobs = pack.size();
     verdict.damage = damage;
     verdict.fightSec = seconds;
     verdict.at = target->GetPosition();
-    verdict.ehpNow = float(leader->GetHealth()) + PetHealth(leader, false) + healNow * seconds;
-    verdict.ehpFull = float(leader->GetMaxHealth()) + PetHealth(leader, true) + healFull * seconds;
+    verdict.ehpNow = float(holder->GetHealth()) + PetHealth(holder, false) + healNow * seconds;
+    verdict.ehpFull = float(holder->GetMaxHealth()) + PetHealth(holder, true) + healFull * seconds;
     if (damage < verdict.ehpNow)
         verdict.kind = SoloSafety::Verdict::Kind::Win;
     else if (damage < verdict.ehpFull)
@@ -3698,7 +3707,8 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
     verdict.why += Acore::StringFormat(
         "{} mobs, {:.0f} dmg on {} over {:.0f} s at {:.1f} party dps, ehp {:.0f} now / "
         "{:.0f} full",
-        verdict.mobs, damage, leader->GetName(), seconds, sumDps, verdict.ehpNow, verdict.ehpFull);
+        verdict.mobs, damage, holder->GetName(), seconds, sumDps, verdict.ehpNow, verdict.ehpFull);
+
     return verdict;
 }
 
