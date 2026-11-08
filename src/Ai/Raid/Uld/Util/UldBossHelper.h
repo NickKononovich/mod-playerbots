@@ -215,6 +215,11 @@ extern const Position ULDUAR_YOGG_SARON_PHASE_3_RANGED_SPOT;
 Unit* FindMimironGroundHazard(PlayerbotAI* botAI, Player* bot);
 // Nearest dead Saronite Vapors still carrying its mana-returning cloud (63323, 30 s) within range, or nullptr.
 Creature* FindSaroniteVaporsCloud(Player* bot, float range);
+// [uld10h] Raid size of the bot's Ulduar instance: true for 25N / 25H, false for 10N / 10H.
+// Size and heroic are separate axes; Ulduar's in-fight hard modes are not the difficulty.
+bool IsUlduar25Man(Player* bot);
+// [uld10h] Descend Into Madness portals Yogg-Saron opens per wave: 4 in 10, 10 in 25 (core RAID_MODE(4, 10)).
+uint32 GetYoggSaronBrainPortalCount(Player* bot);
 
 class RazorscaleBossHelper : public AiObject
 {

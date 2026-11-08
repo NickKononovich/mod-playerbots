@@ -5,8 +5,10 @@
  */
 
 #include "UldBossHelper.h"
+#include "DBCEnums.h"
 #include "GameObject.h"
 #include "Group.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -292,6 +294,17 @@ Unit* FindMimironGroundHazard(PlayerbotAI* botAI, Player* bot)
 
     return nearest;
 }
+
+bool IsUlduar25Man(Player* bot)
+{
+    // The instance's spawn mode decides; the bot's raid difficulty setting only covers the moment before entry.
+    if (Map* map = bot->GetMap(); map && map->IsRaid())
+        return map->Is25ManRaid();
+
+    return (bot->GetRaidDifficulty() & RAID_DIFFICULTY_MASK_25MAN) != 0;
+}
+
+uint32 GetYoggSaronBrainPortalCount(Player* bot) { return IsUlduar25Man(bot) ? 10 : 4; }
 
 Creature* FindSaroniteVaporsCloud(Player* bot, float range)
 {

@@ -912,25 +912,14 @@ bool ThorimGauntletPositioningTrigger::IsActive()
     if (bot->GetDistance(ULDUAR_THORIM_NEAR_ARENA_CENTER) > 110.0f)
         return false;
 
-    Difficulty raidDifficulty = bot->GetRaidDifficulty();
-
     Group* group = bot->GetGroup();
     if (!group)
         return false;
     uint32 requiredAssistTankQuantity = 1;
-    uint32 requiredHealerQuantity = 0;
-    uint32 requiredDpsQuantity = 0;
-
-    if (raidDifficulty == Difficulty::RAID_DIFFICULTY_10MAN_NORMAL)
-    {
-        requiredDpsQuantity = 3;
-        requiredHealerQuantity = 1;
-    }
-    else if (raidDifficulty == Difficulty::RAID_DIFFICULTY_25MAN_NORMAL)
-    {
-        requiredDpsQuantity = 7;
-        requiredHealerQuantity = 2;
-    }
+    // [uld10h] Gauntlet team by raid size (10N / 10H: 3 dps + 1 healer, 25N / 25H: 7 + 2).
+    bool const is25Man = IsUlduar25Man(bot);
+    uint32 requiredHealerQuantity = is25Man ? 2 : 1;
+    uint32 requiredDpsQuantity = is25Man ? 7 : 3;
 
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
@@ -1036,25 +1025,14 @@ bool ThorimArenaPositioningTrigger::IsActive()
     if (boss->GetPositionZ() < ULDUAR_THORIM_AXIS_Z_FLOOR_THRESHOLD)
         return false;
 
-    Difficulty raidDifficulty = bot->GetRaidDifficulty();
-
     Group* group = bot->GetGroup();
     if (!group)
         return false;
     uint32 requiredAssistTankQuantity = 1;
-    uint32 requiredHealerQuantity = 0;
-    uint32 requiredDpsQuantity = 0;
-
-    if (raidDifficulty == Difficulty::RAID_DIFFICULTY_10MAN_NORMAL)
-    {
-        requiredDpsQuantity = 3;
-        requiredHealerQuantity = 1;
-    }
-    else if (raidDifficulty == Difficulty::RAID_DIFFICULTY_25MAN_NORMAL)
-    {
-        requiredDpsQuantity = 7;
-        requiredHealerQuantity = 2;
-    }
+    // [uld10h] Gauntlet team by raid size (10N / 10H: 3 dps + 1 healer, 25N / 25H: 7 + 2).
+    bool const is25Man = IsUlduar25Man(bot);
+    uint32 requiredHealerQuantity = is25Man ? 2 : 1;
+    uint32 requiredDpsQuantity = is25Man ? 7 : 3;
 
     for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
     {
@@ -1956,9 +1934,8 @@ bool YoggSaronMoveToEnterPortalTrigger::IsActive()
     if (!group)
         return false;
 
-    int brainRoomTeamCount = 10;
-    if (bot->GetRaidDifficulty() == Difficulty::RAID_DIFFICULTY_10MAN_NORMAL)
-        brainRoomTeamCount = 4;
+    // [uld10h] One bot per Descend Into Madness portal: 4 in 10N / 10H, 10 in 25N / 25H.
+    int brainRoomTeamCount = static_cast<int>(GetYoggSaronBrainPortalCount(bot));
 
     Player* humanMaster = RaidBotDuty::GetHumanMaster(botAI);
     if (IsMasterIsInIllusionGroup())

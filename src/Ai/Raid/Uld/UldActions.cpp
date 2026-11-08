@@ -438,8 +438,8 @@ bool FlameLeviathanEnterVehicleAction::AllMainVehiclesOnUse()
         else if (vehicleBase->GetEntry() == NPC_SALVAGED_SIEGE_ENGINE)
             ++siege;
     }
-    Difficulty diff = bot->GetRaidDifficulty();
-    int maxC = (diff == RAID_DIFFICULTY_10MAN_NORMAL || diff == RAID_DIFFICULTY_10MAN_HEROIC) ? 2 : 5;
+    // [uld10h] Vehicle crews by raid size: 2 + 2 in 10N / 10H, 5 + 5 in 25N / 25H.
+    int maxC = IsUlduar25Man(bot) ? 5 : 2;
     return demolisher >= maxC && siege >= maxC;
 }
 
@@ -2710,9 +2710,8 @@ bool YoggSaronMoveToEnterPortalAction::Execute(Event /*event*/)
 
     bool isInBrainRoomTeam = false;
     int portalNumber = 0;
-    int brainRoomTeamCount = 10;
-    if (bot->GetRaidDifficulty() == Difficulty::RAID_DIFFICULTY_10MAN_NORMAL)
-        brainRoomTeamCount = 4;
+    // [uld10h] One bot per Descend Into Madness portal: 4 in 10N / 10H, 10 in 25N / 25H.
+    int brainRoomTeamCount = static_cast<int>(GetYoggSaronBrainPortalCount(bot));
 
     // Only a human master reserves a portal for themselves; a SelfBot is assigned like any bot.
     Player* master = RaidBotDuty::GetHumanMaster(botAI);
