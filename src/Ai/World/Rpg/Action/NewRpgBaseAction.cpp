@@ -705,7 +705,16 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
     {
         std::string walledWhy;
         if (WalledIn(dest, walledWhy))
-            HearthOut(walledWhy);
+        {
+            // [help14] its help request is the way out while the global leader serves it or has not judged it yet
+            // (b354 Sycina L11: help asked for the q1580 camp, then hearthed 3814 yd to Darnassus at once; its helper
+            // came to an empty spot and it waited 1074 s for him there); a refused request leaves the Hearthstone
+            if (NewRpgCoop::HelpAsked(bot))
+                LOG_INFO("playerbots", "[help14] {} L{} stays for its help request ({}): no hearth", bot->GetName(),
+                         bot->GetLevel(), walledWhy);
+            else
+                HearthOut(walledWhy);
+        }
     }
     return true;
 }
@@ -4552,6 +4561,81 @@ bool NewRpgBaseAction::EnderNeedsScript(uint32 questId)
     return quests.count(questId) > 0;
 }
 
+bool NewRpgBaseAction::GiverNeedsScript(uint32 questId)
+{
+    // [giver14] quest id -> every giver is a creature whose SmartAI takes its quest-giver flag off (SET_NPC_FLAG without
+    // UNIT_NPC_FLAG_QUESTGIVER, REMOVE_NPC_FLAG with it) and gives it back only on its script's event - b354 q9612 A
+    // Hearty Thanks!: the Draenei Youngling talks only after a Gift of the Naaru on it, then drops the flag again out
+    // of combat; 8 bots (Zharet, Almored, Feeli, Nurlian, Orenem, Pherua, Uraela, Dekorhan) walked their route stop to
+    // it (Zharet 272 s) and left it "postponed". No game object or item starts it
+    static std::unordered_set<uint32> quests;
+    static std::once_flag built;
+    std::call_once(built, []()
+    {
+        std::unordered_map<uint32, bool> scriptedEntry;  // creature entry -> its SmartAI drops the giver flag
+        auto const scripted = [&scriptedEntry](uint32 entry)
+        {
+            auto const found = scriptedEntry.find(entry);
+            if (found != scriptedEntry.end())
+                return found->second;
+            bool drops = false;
+            CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+            if (tmpl && tmpl->AIName == "SmartAI")
+            {
+                SmartAIEventList const& events = sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE);
+                // the idle state's events: out of combat, respawn, reset (after a fight, at spawn), creation - and
+                // the events linked from them. An escort's flag drop on its quest's accept is no idle state
+                auto const idleEvent = [](uint32 type)
+                {
+                    return type == SMART_EVENT_UPDATE_OOC || type == SMART_EVENT_RESPAWN || type == SMART_EVENT_RESET ||
+                           type == SMART_EVENT_JUST_CREATED;
+                };
+                auto const idle = [&](SmartScriptHolder const& holder)
+                {
+                    if (idleEvent(holder.GetEventType()))
+                        return true;
+                    if (holder.GetEventType() != SMART_EVENT_LINK)
+                        return false;
+                    return std::any_of(events.begin(), events.end(), [&](SmartScriptHolder const& from)
+                                       { return from.link == holder.event_id && idleEvent(from.GetEventType()); });
+                };
+                if (!(tmpl->npcflag & UNIT_NPC_FLAG_QUESTGIVER))
+                    drops = true;  // the template has no giver flag: only its script hands it out
+                for (SmartScriptHolder const& holder : events)
+                    if (((holder.GetActionType() == SMART_ACTION_SET_NPC_FLAG &&
+                          !(holder.action.flag.flag & UNIT_NPC_FLAG_QUESTGIVER)) ||
+                         (holder.GetActionType() == SMART_ACTION_REMOVE_NPC_FLAG &&
+                          (holder.action.flag.flag & UNIT_NPC_FLAG_QUESTGIVER))) &&
+                        idle(holder))
+                        drops = true;
+            }
+            scriptedEntry[entry] = drops;
+            return drops;
+        };
+        std::unordered_map<uint32, bool> allScripted;  // quest -> every starter so far a scripted creature
+        for (auto const& [entry, questId] : *sObjectMgr->GetCreatureQuestRelationMap())
+        {
+            bool const s = scripted(entry);
+            auto const found = allScripted.find(questId);
+            if (found == allScripted.end())
+                allScripted[questId] = s;
+            else
+                found->second = found->second && s;
+        }
+        for (auto const& [entry, questId] : *sObjectMgr->GetGOQuestRelationMap())
+            allScripted[questId] = false;
+        for (auto const& [itemId, tmpl] : *sObjectMgr->GetItemTemplateStore())
+            if (tmpl.StartQuest)
+                allScripted[tmpl.StartQuest] = false;
+        for (auto const& [questId, s] : allScripted)
+            if (s)
+                quests.insert(questId);
+        LOG_INFO("playerbots", "[giver14] {} quests start only at creatures whose script gives the giver flag: not "
+                 "planned", quests.size());
+    });
+    return quests.count(questId) > 0;
+}
+
 bool NewRpgBaseAction::IsSpellUnlockClassQuest(Quest const* quest)
 {
     if (!quest || !quest->GetRequiredClasses())
@@ -5821,6 +5905,8 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
             continue;
         if (!IsQuestWorthDoing(quest) || !IsQuestCapableDoing(quest) || !bot->CanTakeQuest(quest, false))
             continue;
+        if (GiverNeedsScript(start.questId))  // [giver14]
+            continue;
         offered.insert(start.questId);
 
         QuestRoute::Offer::Take take;
@@ -6731,7 +6817,8 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
             continue;
         // [flit] no grind toward a quest it will not take at that level either (b341 Maronic L1 on the tram ground
         // toward q6661, whose rats only its flute credits)
-        if (IsSpellUnlockClassQuest(quest) || EnderNeedsScript(start.questId) || NeedsItemUseCredit(quest) ||
+        if (IsSpellUnlockClassQuest(quest) || EnderNeedsScript(start.questId) || GiverNeedsScript(start.questId) ||
+            NeedsItemUseCredit(quest) ||
             NeedsSpellCredit(bot, quest, false))
             continue;
         // [stuck8] nor toward one in the other faction's zone
@@ -7003,5 +7090,6 @@ void NewRpgBaseAction::BuildQuestIndexes()
     GetQuestSpawnIndex();
     GetQuestStartPoints();
     EnderNeedsScript(0);  // [guild14]
+    GiverNeedsScript(0);  // [giver14]
     NewRpgQuestUse::Build();  // [questitems]
 }

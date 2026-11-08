@@ -842,6 +842,17 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
                     LOG_INFO("playerbots", "[prof13] {} L{} sells its gray items to {} for a slot for {}: room now {}",
                              bot->GetName(), bot->GetLevel(), npc->GetName(), data->itemId,
                              RoomFor(bot, data->itemId));
+                    // [prof14] no gray left to free it: what the global leader marked for sale goes too (its SELL
+                    // decision: nobody in the guild needs it). b354 Septimon L8: bags full of meat and cloth, no gray,
+                    // 14 refused buys of Rhapsody Malt for q384 at Innkeeper Belm, 33 STUCK and 6 LOOP alerts
+                    if (!RoomFor(bot, data->itemId))
+                    {
+                        sGuildCoordinator.SellMarked(botAI);
+                        LOG_INFO("playerbots", "[prof14] {} L{} sells the leader's marked items to {} for a slot for {}: "
+                                 "room now {}",
+                                 bot->GetName(), bot->GetLevel(), npc->GetName(), data->itemId,
+                                 RoomFor(bot, data->itemId));
+                    }
                 }
                 bot->BuyItemFromVendorSlot(npc->GetGUID(), slot, data->itemId, 1, NULL_BAG, NULL_SLOT);
                 bought = bot->GetItemCount(data->itemId, false) > before;
@@ -852,8 +863,15 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
                  bot->GetLevel(), bought ? "bought" : "could not buy", proto ? proto->Name1 : "?",
                  SkillName(data->skill), npc->GetName(), moneyBefore - bot->GetMoney(), bot->GetMoney());
         // [prof13] a buy the bags refused is no fault of this vendor (the tool waits for a slot, ToolCandidate)
-        if (!bought && RoomFor(bot, data->itemId))
+        // [prof14] ... a quest item's buy (no skill: BuyQuestVendorItem) has no such wait: refused for its bags it is
+        // marked failed too, so its quest is postponed ("the buy ... failed before") instead of the same buy again
+        if (!bought && (RoomFor(bot, data->itemId) || !data->skill))
+        {
+            if (!data->skill && !RoomFor(bot, data->itemId))
+                LOG_INFO("playerbots", "[prof14] {} L{} no bag slot for {} at {}: its quest waits for a free slot",
+                         bot->GetName(), bot->GetLevel(), proto ? proto->Name1 : "?", npc->GetName());
             MarkFailed(bot, data->npcEntry, id);
+        }
     }
     info.ChangeToIdle();
     return true;

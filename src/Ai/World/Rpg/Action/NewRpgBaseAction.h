@@ -102,6 +102,8 @@ public:
     static bool IsSpellUnlockClassQuest(Quest const* quest);
     // [guild14] every ender of the quest is an object the world keeps despawned until a script spawns it
     static bool EnderNeedsScript(uint32 questId);
+    // [giver14] every giver of the quest is a creature whose script hands out the quest-giver flag (not planned)
+    static bool GiverNeedsScript(uint32 questId);
     // [guild15] a creature / object objective whose credit comes from using the quest's own tool item (its start item,
     // with an on-use spell: a flute, a disguise kit) - the bot does not use quest items, so it is not taken
     static bool NeedsItemUseCredit(Quest const* quest, std::string* why = nullptr);

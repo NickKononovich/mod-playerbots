@@ -17,6 +17,7 @@
 #include <mutex>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace
 {
@@ -71,6 +72,7 @@ namespace
     }
 }
 #include "SoloSafety.h"  // [guild13]
+#include "SpellAuras.h"  // [deaths14] Resurrection Sickness
 #include "TerrainHazard.h"  // [guild15] SafeFloorZ
 #include "NewRpgCoop.h"  // [coop]
 #include "AreaDefines.h"
@@ -839,6 +841,40 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         StartVendorRun())
         return true;
 
+    // [deaths14] Resurrection Sickness (spell 15007, Player::SpiritHealer... ResurrectPlayer: all stats and the damage it
+    // deals at a quarter for (level - CONFIG_DEATH_SICKNESS_LEVEL + 1) minutes, ten from the tenth level above it): the
+    // judge's numbers hold only for the bot without it - a wanderer or a camp it walks past meets a quarter of the bot.
+    // b354: Laaral L14 (3 deaths, 83-151 s after its rise) and Rumanatol L13 (87 s) rose at the Blood Watch spirit
+    // healer, walked out at 139 max health and 2.7 dps and died to single Elder Brown Bears L15-16. The bot stays where
+    // it rose (the spirit healer's graveyard) until the aura is gone - a game mechanic's end, not a clock of its own
+    if (!bot->IsInCombat() && !NewRpgCoop::IsMember(bot) && !bot->IsInFlight() && !bot->GetTransport())
+    {
+        constexpr uint32 SPELL_RESURRECTION_SICKNESS = 15007;
+        static std::mutex sickLock;
+        static std::unordered_set<uint32> sickLogged;
+        uint32 const low = bot->GetGUID().GetCounter();
+        if (Aura* sickness = bot->GetAura(SPELL_RESURRECTION_SICKNESS))
+        {
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(sickLock);
+                fresh = sickLogged.insert(low).second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[deaths14] {} L{} waits out Resurrection Sickness at ({:.0f},{:.0f}): {} s left, "
+                         "max health {} - no field work until it ends",
+                         bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(),
+                         std::max(0, sickness->GetDuration()) / IN_MILLISECONDS, bot->GetMaxHealth());
+            if (status != RPG_IDLE)
+                info.ChangeToIdle();
+            if (bot->isMoving())
+                bot->StopMoving();
+            return true;
+        }
+        std::lock_guard<std::mutex> guard(sickLock);
+        sickLogged.erase(low);
+    }
+
     switch (status)
     {
         case RPG_IDLE:
@@ -1509,6 +1545,21 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                          "(z {:+.1f})",
                          bot->GetName(), bot->GetLevel(), object->GetName(), bot->GetExactDist(object),
                          object->GetPositionZ() - bot->GetPositionZ());
+            // [vendor14] the walk goes to the walk's own end, not a random spot round the npc: b354 Sylaenas L2 walked
+            // 7677 yd round vendor Keina in Aldrassil for 1204 s - each MoveWorldObjectTo picked a new spot within
+            // reach of Keina's position (another floor of the tree, collision-clipped), the bot stood there, the walk
+            // from there ended elsewhere, so it never stood at its walk's end and [vendor13] never fired
+            else if (!(path.type & PATHFIND_NOPATH) && path.points.size() >= 2 && !IsWithinInteractionDist(object))
+            {
+                LOG_INFO("playerbots", "[vendor14] {} L{} walks to the end of its walk to npc {} ({:.1f} yd from it, "
+                         "{:.1f} yd off)",
+                         bot->GetName(), bot->GetLevel(), object->GetName(),
+                         object->GetExactDist(path.actualEnd.x, path.actualEnd.y, path.actualEnd.z),
+                         bot->GetExactDist(path.actualEnd.x, path.actualEnd.y, path.actualEnd.z));
+                if (MoveTo(bot->GetMapId(), path.actualEnd.x, path.actualEnd.y, path.actualEnd.z, false, false, false,
+                           true))
+                    return true;
+            }
         }
         if (!atWalkEnd && MoveWorldObjectTo(data.npcOrGo))
             return true;
@@ -2247,6 +2298,29 @@ void NewRpgTravelFlightAction::ContinueCrossMapTaxi()
 
 bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
 {
+    // [wait14] a member beyond the group reward distance that comes to the leader (its follow, no plan of its own):
+    // the leader walks to meet it on its own routed walk (MoveFarTo: the route search round the mobs it does not
+    // pull), the two close the gap from both ends. b354: Orton L11 stood 928 s in Elwynn for Febineysh L7 4551 yd
+    // away in Loch Modan - its follow stalled at the graveyard ("stuck watchdog: follow again"), it stood among the
+    // Elder Black Bears L11 and died 3 times; Sycina L11 stood 1074 s for Nelaeleas 3849 yd off
+    NewRpgInfo& info = botAI->rpgInfo;
+    if (Player* member = info.groupWaitBehind ? ObjectAccessor::FindPlayer(info.groupWaitBehind) : nullptr;
+        member && member->IsAlive() && member->IsInWorld() && member->GetMapId() == bot->GetMapId() &&
+        !bot->IsInCombat())
+    {
+        WorldPosition const meet(member);
+        if (_meetLogged != member->GetGUID())
+        {
+            _meetLogged = member->GetGUID();
+            LOG_INFO("playerbots", "[wait14] {} L{} walks to meet {} L{} {:.0f} yd behind (its follow does not bring it "
+                     "within the group reward distance)",
+                     bot->GetName(), bot->GetLevel(), member->GetName(), member->GetLevel(), bot->GetExactDist(member));
+        }
+        if (MoveFarTo(meet))
+            return true;
+    }
+    else
+        _meetLogged.Clear();
     if (bot->isMoving())
         bot->StopMoving();
 

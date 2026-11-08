@@ -30,6 +30,7 @@
 #include "NewRpgBaseAction.h"
 #include "NewRpgCoop.h"  // [help]
 #include "SoloSafety.h"  // [guild13]
+#include "ThreatManager.h"  // [deaths14]
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
 #include "PlayerScript.h"
@@ -156,10 +157,20 @@ public:
         if (!killer || !killed)
             return;
         AreaTableEntry const* area = sAreaTableStore.LookupEntry(killed->GetAreaId());
-        LOG_INFO("playerbots", "[death] {} L{} killed by {} (entry {}, L{}, {}% hp) at map {} ({:.1f},{:.1f}) {} | {}",
+        // [deaths14] the killer's own threat list at the kill: whom it fought besides the bot (a party member's fight,
+        // a pull of another bot). b354 Geron L10 died to a Tunnel Rat Kobold L12 that was in none of its tracked
+        // attackers ("hit by 2: Tunnel Rat Vermin x2"): the triage had no cause; the kobold was Manue's
+        std::string threat;
+        if (killer->CanHaveThreatList())
+            for (ThreatReference const* ref : killer->GetThreatMgr().GetSortedThreatList())
+                if (Unit* victim = ref ? ref->GetVictim() : nullptr)
+                    threat += Acore::StringFormat("{}{} {:.0f}", threat.empty() ? "" : ", ", victim->GetName(),
+                                                  ref->GetThreat());
+        LOG_INFO("playerbots", "[death] {} L{} killed by {} (entry {}, L{}, {}% hp) at map {} ({:.1f},{:.1f}) {} | {}{}",
                  killed->GetName(), killed->GetLevel(), killer->GetName(), killer->GetEntry(), killer->GetLevel(),
                  uint32(killer->GetHealthPct()), killed->GetMapId(), killed->GetPositionX(), killed->GetPositionY(),
-                 area ? area->area_name[0] : "?", SoloSafety::DeathContext(killed));  // [guild13] its fight
+                 area ? area->area_name[0] : "?", SoloSafety::DeathContext(killed),  // [guild13] its fight
+                 threat.empty() ? std::string() : "; [deaths14] the killer's threat list: " + threat);
         SelfBotControl::RecordGuildDeath(killed, killer);  // [live1]
         NewRpgBaseAction::RecordDeath(killed, killer);       // [guild12]
     }

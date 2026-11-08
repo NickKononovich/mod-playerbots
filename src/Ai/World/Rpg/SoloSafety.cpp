@@ -759,6 +759,10 @@ namespace
     {
         float callRadius = 0.0f;
         bool flees = false;
+        // [deaths14] a caster that stands to cast (SMART_ACTION_CAST on its victim with SMARTCAST_COMBAT_MOVE: "prevents
+        // combat movement if cast successful"): it stops at that spell's range from the bot, not at the fight spot -
+        // its periodic assistance calls (Creature::Update -> CallAssistance) are made from there
+        float standRange = 0.0f;
     };
     ScriptHelp ScriptHelpOf(Creature* creature)
     {
@@ -779,6 +783,10 @@ namespace
                     help.callRadius = std::max(help.callRadius, float(holder.action.callHelp.range));
                 else if (holder.action.type == SMART_ACTION_FLEE_FOR_ASSIST)
                     help.flees = true;
+                else if (holder.action.type == SMART_ACTION_CAST && holder.target.type == SMART_TARGET_VICTIM &&
+                         (holder.action.cast.castFlags & SMARTCAST_COMBAT_MOVE))
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell))
+                        help.standRange = std::max(help.standRange, info->GetMaxRange(false));
             }
         std::lock_guard<std::mutex> guard(cacheLock);
         cache[entry] = help;
@@ -1015,14 +1023,55 @@ namespace
                 if (!fight)
                     break;
                 std::vector<float> callRadius;
+                // [deaths14] where each standing caster of the pack casts from: on its way to the fight, at its spell's
+                // range from the bot's fight spot (its own spot when nearer). b354 Kylantino L11 / Lanbuzz L9 (Frostmane
+                // Seer), Thelengyl L10 (Greymist Seer), Baridrol L10 (Gnarlpine Augur): judged 1, came 3-4 - the seer
+                // stood by its camp casting Lightning Bolt and its calls brought the camp; a melee bot closes in to it
+                std::vector<std::pair<Creature*, G3D::Vector3>> stands;
                 for (Member const& m : pack)
-                    callRadius.push_back(ScriptHelpOf(m.mob).callRadius);
+                {
+                    ScriptHelp const help = ScriptHelpOf(m.mob);
+                    callRadius.push_back(help.callRadius);
+                    if (help.standRange <= 0.0f)
+                        continue;
+                    G3D::Vector3 const at(m.mob->GetPositionX(), m.mob->GetPositionY(), m.mob->GetPositionZ());
+                    float const gap = (at - *fight).length();
+                    stands.push_back(
+                        {m.mob, gap <= help.standRange ? at : *fight + (at - *fight) * (help.standRange / gap)});
+                }
+                bool const closesIn = !PlayerbotAI::IsRanged(bot);
                 for (Creature* c : idle)
                 {
                     if (Has(c))
                         continue;
                     bool joins = Reaches(c, *fight);
                     bool calls = true;
+                    for (size_t k = 0; !joins && k < stands.size(); ++k)
+                    {
+                        G3D::Vector3 const& stand = stands[k].second;
+                        if ((assist > 0.0f && c->GetExactDist(stand.x, stand.y, stand.z) <= assist &&
+                             c->CanAssistTo(stands[k].first, bot) && Sees(stand, c)) ||
+                            (closesIn && Reaches(c, stand)))
+                        {
+                            joins = true;
+                            calls = !(assist > 0.0f && c->GetExactDist(stand.x, stand.y, stand.z) <= assist);
+                            static std::mutex standLogLock;
+                            static std::unordered_set<uint64> standLogged;
+                            bool fresh = false;
+                            {
+                                std::lock_guard<std::mutex> guard(standLogLock);
+                                if (standLogged.size() > 65536)
+                                    standLogged.clear();
+                                fresh = standLogged.insert(c->GetGUID().GetCounter() * 1000003ull +
+                                                           bot->GetGUID().GetCounter()).second;
+                            }
+                            if (fresh)
+                                LOG_INFO("playerbots", "[deaths14] {} L{} judge: {} L{} joins from the spot a caster of "
+                                         "the pack casts from ({:.0f},{:.0f}), {:.0f} yd from the fight",
+                                         bot->GetName(), bot->GetLevel(), c->GetName(), c->GetLevel(), stand.x,
+                                         stand.y, (stand - *fight).length());
+                        }
+                    }
                     float const gap = c->GetExactDist(fight->x, fight->y, fight->z);
                     // [regress10] the engaged members call every CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD while they
                     // fight: a wanderer anywhere in its wander area or a patrol anywhere on its beat may be within the
@@ -2615,6 +2664,39 @@ namespace SoloSafety
                 if (chasing.count(key))
                     continue;
                 RunPast const chase = RunPastChase(bot, chaser);
+                // [deaths14] a run past is a walk on while the chase lasts: the leash lets the chaser go only while the
+                // bot keeps walking. A walk that ends inside the chase (its stop - the objective, the town stop - lies
+                // nearer than the chase's seconds at the bot's run speed from where the chaser meets the walk) stops
+                // with the chaser on it: a fight it never judged. b354 Thelengyl L10 "keeps walking past" a Rabid
+                // Thistle Bear L13, stopped at its objective 26 yd from the bear's home, fought it there and died
+                if (chase.damage != std::numeric_limits<float>::max())
+                {
+                    float const meets = std::clamp(((chaser->GetPositionX() - from.x) * leg.x +
+                                                    (chaser->GetPositionY() - from.y) * leg.y) /
+                                                       legLen,
+                                                   0.0f, legLen);
+                    if (meets + chase.seconds * speed > legLen)
+                    {
+                        price = std::numeric_limits<float>::max();
+                        hp = float(bot->GetHealth());
+                        static std::mutex stopLogLock;
+                        static std::unordered_set<uint64> stopLogged;
+                        bool fresh = false;
+                        {
+                            std::lock_guard<std::mutex> guard(stopLogLock);
+                            if (stopLogged.size() > 65536)
+                                stopLogged.clear();
+                            fresh = stopLogged.insert(chaser->GetGUID().GetCounter() * 1000003ull +
+                                                      bot->GetGUID().GetCounter()).second;
+                        }
+                        if (fresh)
+                            LOG_INFO("playerbots", "[deaths14] {} L{} no run past {} L{}: the walk ends {:.0f} yd past "
+                                     "where it meets the walk, the chase runs {:.0f} s ({:.0f} yd) - a wall",
+                                     bot->GetName(), bot->GetLevel(), chaser->GetName(), chaser->GetLevel(),
+                                     legLen - meets, chase.seconds, chase.seconds * speed);
+                        return false;
+                    }
+                }
                 with.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage
                                                                                  : with.damage + chase.damage;
                 with.seconds = std::max(with.seconds, chase.seconds);

@@ -87,6 +87,9 @@ void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 object
 void OnCampRefused(PlayerbotAI* botAI, Player* bot, WorldPosition const& dest, std::string const& why);
 // [help12] the requester of a formed camp party: where it grinds now (the nearest live camp mob, else the camp)
 bool HelpCampOf(Player* bot, WorldPosition& pos);
+// [help14] the bot has a help request the global leader has not refused yet (open, not judged) or has served with a
+// party: its way out of the camp is that party, not its Hearthstone
+bool HelpAsked(Player* bot);
 // [help12] the requester of a formed quest help party: the quest, its objective and the camp it asked help for
 bool HelpQuestOf(Player* bot, uint32& questId, int32& objectiveIdx, WorldPosition& pos);
 

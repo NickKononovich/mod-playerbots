@@ -72,6 +72,9 @@ class NewRpgWaitForGroupAction : public NewRpgBaseAction
 public:
     NewRpgWaitForGroupAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg wait for group") {}
     bool Execute(Event event) override;
+
+private:
+    ObjectGuid _meetLogged;  // [wait14] one line per member it walks to meet
 };
 
 // Out to the nearest inn and sit there while the selfbot leader is away (rested experience).

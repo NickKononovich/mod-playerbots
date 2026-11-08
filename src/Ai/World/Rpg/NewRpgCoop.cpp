@@ -2340,7 +2340,13 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         // (JudgeHelp below), not alone - "the camp is orange / red for it" refused every low helper (b350 Kylanor
         // q412: 3 of the 5 left on its continent). A mob orange / red for the helper still never is the helper's own
         // pull: the requester leads and judges the party's pulls (NewRpgCoop::JudgePull)
-        float const walk = Leader::WalkYd(p, req->GetPosition());
+        // [help14] the helper's walk is to the camp it helps at (the requester walks there too): b354 Nelaeleas L12
+        // was assigned to Sycina's q1580 camp at "eta 25 s, walk 175 yd" - the yards to Sycina standing next to it in
+        // Darkshore; Sycina hearthed to Darnassus, the camp lay on Teldrassil, the helper walked 3849 yd and a boat
+        Position const campAt = r.at != WorldPosition() && r.at.GetMapId() == p->GetMapId()
+                                    ? Position(r.at.GetPositionX(), r.at.GetPositionY(), r.at.GetPositionZ())
+                                    : req->GetPosition();
+        float const walk = Leader::WalkYd(p, campAt);
         pool.push_back({p, walk / std::max(p->GetSpeed(MOVE_RUN), 1.0f), walk});
     }
     std::sort(pool.begin(), pool.end(), [](Candidate const& a, Candidate const& b) { return a.eta < b.eta; });
@@ -3269,6 +3275,17 @@ bool HelpQuestOf(Player* bot, uint32& questId, int32& objectiveIdx, WorldPositio
     objectiveIdx = party->second.helpObj.index;
     pos = party->second.campAt;
     return true;
+}
+
+bool HelpAsked(Player* bot)
+{
+    if (!bot)
+        return false;
+    std::lock_guard<std::mutex> guard(lock);
+    for (auto const& [id, r] : helpRequests)
+        if (r.requester == bot->GetGUID() && (r.party || r.lastRefusal.empty()))
+            return true;
+    return false;
 }
 
 bool HelpCampOf(Player* bot, WorldPosition& pos)

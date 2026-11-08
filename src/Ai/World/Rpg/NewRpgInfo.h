@@ -247,6 +247,9 @@ struct NewRpgInfo
     uint8 loggedStatus{255};  // [guild7] the status last written to the log ([rpg] line)
     // [stuck8] a group leader waits for a member that is not ready (NewRpgGroupNotReadyTrigger, its GROUP_WAIT line)
     bool groupWaiting{false};
+    // [wait14] the member the leader waits for beyond the group reward distance (its follow does not bring it: the
+    // leader walks to meet it, NewRpgWaitForGroupAction)
+    ObjectGuid groupWaitBehind;
     // [stuck8] the last HOLD reason logged for a walk that gives no move (logged once per change)
     std::string holdNote;
     // [holds9] the "last movement" clock (LastMovement::msTime) a deliberate wait set (NewRpgBaseAction::ForceToWait:

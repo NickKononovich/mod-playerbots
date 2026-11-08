@@ -57,6 +57,7 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
     // [stuck8] the leader's wait is a hold with a reason: the global leader's STUCK check reads it (b343 Lanbuzz,
     // Emdyl, Alnia: "reason=none" while each waited for a member thousands of yards behind, GROUP_WAIT logged once)
     botAI->rpgInfo.groupWaiting = false;
+    botAI->rpgInfo.groupWaitBehind.Clear();  // [wait14]
     // The user's pack (Playerbots.UserPack) leads its group without him: it waits for its members like a SelfBot.
     if (bot->IsInCombat() || bot->IsInFlight())
         return false;
@@ -104,6 +105,8 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
         {
             reason = member->GetName() + " " + why;
             key = member->GetName() + (why.find(" yd behind") != std::string::npos ? std::string(" behind") : why);
+            if (why.find(" yd behind") != std::string::npos)
+                botAI->rpgInfo.groupWaitBehind = member->GetGUID();  // [wait14]
         }
     }
 
