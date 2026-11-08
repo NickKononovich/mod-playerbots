@@ -938,8 +938,25 @@ std::string NewRpgBaseAction::TrimRoute(QuestRoute::BotRoute& r,
                 bot->CanTakeQuest(quest, false))
                 return "q" + std::to_string(q) + " handed in opens q" + std::to_string(next);
         }
+    // [quest17] a quest complete since the build whose hub still waits for an open quest's objective: the route is
+    // built again (the complete one gets its ready hub, HandInsEarlier weighs it). b357 Hobliir L13: q9641 complete
+    // at +112 s in hub "E9641+9694", the hub waited for O9694 (399 s more) - 1092 s not handed in; Galiver q88 1153 s
+    for (Stop const& s : r.plan.stops)
+        if (s.kind == StopKind::Ender && !s.ready && s.quests.size() > 1)
+        {
+            uint32 done = 0;
+            bool open = false;
+            for (uint32 q : s.quests)
+                if (bot->GetQuestStatus(q) == QUEST_STATUS_COMPLETE)
+                    done = q;
+                else
+                    open = true;
+            if (done && open)
+                return "q" + std::to_string(done) + " complete, its hub waits for an open quest";
+        }
     return "";
 }
+
 
 QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
 {
