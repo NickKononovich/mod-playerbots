@@ -155,6 +155,13 @@ public:
     }
     // [guild14] no way out from where the bot stands: the core path, the reverse route, the nearest polygon in sight
     bool WalkOffIsland(WorldPosition const& dest, float disToDest);
+    // [runpast11] the last WalkOffIsland found the bot on a navmesh island (its region within its sight, no step or
+    // fall off it leading on): no walk from here reaches anything, a postpone of the target is no answer
+    bool onIsland = false;
+    // [runpast11] the walk to `refused` is walled (every way passes mobs it does not pull and does not live through
+    // running past): the walk out to its bind point, else its hub, on this landmass is walled too - it stands walled
+    // in, not the target. `why`: that walk's verdict
+    bool WalledIn(WorldPosition const& refused, std::string& why);
     // [deaths] user 2026-11-08: the maze search of a solo bot's far walk whose route (`path`) passes a pack it does
     // not fight, ends in a dead end (`deadEnd`) or is longer than the search completes: its stages over the travel
     // nodes, another way round, a refused patrol's window, else the walk given up (RefusedWalk). true: handled

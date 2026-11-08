@@ -108,6 +108,10 @@ namespace
         Why why = Why::None;
         uint32 pack = 1;
         float yards = 0.0f;
+        // [runpast11] the run past it priced (the leash chases of its pack with the ones the leg takes already) and
+        // the bot's health with its heal kit over that chase: a wall because damage >= hp; 0 / 0 when not priced
+        float runPastDamage = 0.0f;
+        float runPastHp = 0.0f;
     };
 
     struct SoloBotState
@@ -170,6 +174,7 @@ namespace
         uint32 routeMs = 0;
         std::unordered_map<uint64, bool> routeMobs;
         std::vector<RouteWall> routeWalls;  // [pull9]
+        std::string runPastLogged;          // [runpast11] the last run-past line (one line per change)
         bool routeComplete = false;
         bool routeThroughRefused = false;
         // [deaths] the engage's pull spot (Verdict::pullSpot) and the reaches its walk goes round
@@ -2335,6 +2340,56 @@ namespace SoloSafety
         // [regress10] the run-past chases this leg already takes (orange / red / elite mobs it walks past): their sum
         RunPast runPast;
         std::unordered_set<uint64> chasing;  // the mobs counted in it
+        // [runpast11] the leg's chases are summed nearest first: the mobs the walk meets first are the ones it runs
+        // past first (Cell::VisitObjects gives them in grid order: a far orange mob's chase could use up the sum and
+        // wall the camp next to the bot)
+        units.sort([bot](Unit const* a, Unit const* b) { return bot->GetExactDist2d(a) < bot->GetExactDist2d(b); });
+        auto const buildAround = [&]()
+        {
+            if (aroundBuilt)
+                return;
+            aroundBuilt = true;
+            for (Unit* other : units)
+                if (Creature* c = other->ToCreature())
+                    if (c->IsAlive() && !c->IsInCombat() && c->IsHostileTo(bot) && c->HasReactState(REACT_AGGRESSIVE))
+                        around.push_back(c);
+            own = OwnDamage(bot, nullptr);
+            if (Pet* pet = bot->GetPet())
+                if (pet->IsAlive() && PetTaunts(pet))
+                    petHealth = float(pet->GetHealth());
+        };
+        // [runpast11] the run past a pack it does not fight (cycle 10, user 2026-11-08 "you can just run past"): its
+        // linked pack's leash chases added to the ones the leg takes already, survived from its health now with its
+        // heal kit -> no wall. Before, only an orange / red or elite mob was priced so: a pack walled by the fight
+        // judge ("pack above its level", "loses at full") never was (b349: 1337 of the maze's wall tails, no run past
+        // ever priced). `price` / `hp`: the chase and the bot's health with its kit (logged on the wall)
+        std::vector<std::string> ranPastNames;
+        auto const tryRunPast = [&](Creature* mob, PullModel const& model, float& price, float& hp)
+        {
+            RunPast with = runPast;
+            std::vector<uint64> added;
+            for (PullModel::Member const& m : model.pack)
+            {
+                uint64 const key = m.mob->GetGUID().GetRawValue();
+                if (chasing.count(key))
+                    continue;
+                RunPast const chase = RunPastChase(bot, m.mob);
+                with.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage
+                                                                                 : with.damage + chase.damage;
+                with.seconds = std::max(with.seconds, chase.seconds);
+                added.push_back(key);
+            }
+            price = with.damage;
+            hp = float(bot->GetHealth()) +
+                 SurvivalKit::HealPoints(bot, with.seconds, float(bot->GetPower(POWER_MANA)), true);
+            if (!SurvivesRunPast(bot, with.damage, with.seconds))
+                return false;
+            runPast = with;
+            chasing.insert(added.begin(), added.end());
+            ranPastNames.push_back(Acore::StringFormat("{} L{} pack {}", mob->GetName(), mob->GetLevel(),
+                                                       model.pack.size()));
+            return true;
+        };
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
@@ -2381,41 +2436,17 @@ namespace SoloSafety
             // that chase (added to the others it takes) while the bot lives through it from its health now with its
             // heal kit, else it stays a wall. Priced as a mob it must never fight: a complete way round is walked
             bool ranPast = false;
-            if ((why == RouteWall::Why::Elite || why == RouteWall::Why::Con) && alone &&
-                !NewRpgBaseAction::InDeathZone(bot, mob->GetPositionX(), mob->GetPositionY()))
+            float runPastDamage = 0.0f;
+            float runPastHp = 0.0f;
+            bool const mayRunPast =
+                alone && !NewRpgBaseAction::InDeathZone(bot, mob->GetPositionX(), mob->GetPositionY());
+            if ((why == RouteWall::Why::Elite || why == RouteWall::Why::Con) && mayRunPast)
             {
-                if (!aroundBuilt)
-                {
-                    aroundBuilt = true;
-                    for (Unit* other : units)
-                        if (Creature* c = other->ToCreature())
-                            if (c->IsAlive() && !c->IsInCombat() && c->IsHostileTo(bot) &&
-                                c->HasReactState(REACT_AGGRESSIVE))
-                                around.push_back(c);
-                    own = OwnDamage(bot, nullptr);
-                    if (Pet* pet = bot->GetPet())
-                        if (pet->IsAlive() && PetTaunts(pet))
-                            petHealth = float(pet->GetHealth());
-                }
+                buildAround();
                 PullModel model(bot, mob, around);
                 model.Links();
-                RunPast with = runPast;
-                std::vector<uint64> added;
-                for (PullModel::Member const& m : model.pack)
+                if (tryRunPast(mob, model, runPastDamage, runPastHp))
                 {
-                    uint64 const key = m.mob->GetGUID().GetRawValue();
-                    if (chasing.count(key))
-                        continue;
-                    RunPast const chase = RunPastChase(bot, m.mob);
-                    with.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage
-                                                                                     : with.damage + chase.damage;
-                    with.seconds = std::max(with.seconds, chase.seconds);
-                    added.push_back(key);
-                }
-                if (SurvivesRunPast(bot, with.damage, with.seconds))
-                {
-                    runPast = with;
-                    chasing.insert(added.begin(), added.end());
                     ranPast = true;
                     why = RouteWall::Why::None;
                 }
@@ -2433,19 +2464,7 @@ namespace SoloSafety
             // postpones)
             if (why == RouteWall::Why::None && alone && !ranPast)
             {
-                if (!aroundBuilt)
-                {
-                    aroundBuilt = true;
-                    for (Unit* other : units)
-                        if (Creature* c = other->ToCreature())
-                            if (c->IsAlive() && !c->IsInCombat() && c->IsHostileTo(bot) &&
-                                c->HasReactState(REACT_AGGRESSIVE))
-                                around.push_back(c);
-                    own = OwnDamage(bot, nullptr);
-                    if (Pet* pet = bot->GetPet())
-                        if (pet->IsAlive() && PetTaunts(pet))
-                            petHealth = float(pet->GetHealth());
-                }
+                buildAround();
                 PullModel model(bot, mob, around);
                 model.Links();
                 std::vector<RouteFoe> foes;
@@ -2463,11 +2482,19 @@ namespace SoloSafety
                 else if (LosesAtFull(bot, own, foes, petHealth))
                     why = RouteWall::Why::Loses;
                 wallPack = uint32(foes.size());
+                // [runpast11] a pack it does not fight is run past when it lives through the chase, as an orange
+                // one is: the same leash model and the same sum
+                if (why != RouteWall::Why::None && mayRunPast && tryRunPast(mob, model, runPastDamage, runPastHp))
+                {
+                    ranPast = true;
+                    why = RouteWall::Why::None;
+                }
             }
             bool const never = why != RouteWall::Why::None;
             if (never)
                 walls.push_back({mob->GetEntry(), mob->GetLevel(), why, wallPack,
-                                 bot->GetExactDist2d(centre.GetPositionX(), centre.GetPositionY())});
+                                 bot->GetExactDist2d(centre.GetPositionX(), centre.GetPositionY()), runPastDamage,
+                                 runPastHp});
             if (never)
                 refuse.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
             // [deaths] a patrol it must never fight is refused along its beat (its waypoint forecast), not only where
@@ -2504,8 +2531,22 @@ namespace SoloSafety
         // sight now (b338 Keenonk L11 died twice at the same Black Slime L20 and twice among the same Dragonmaw Scouts:
         // "unseen" in the route search before each death)
         NewRpgBaseAction::DangerDiscs(bot, bot->GetPositionX(), bot->GetPositionY(), range, refuse);
+        // [runpast11] the packs this leg runs past, one line per change of them
+        std::string runPastLine;
+        if (!ranPastNames.empty())
+        {
+            float const kit = float(bot->GetHealth()) +
+                              SurvivalKit::HealPoints(bot, runPast.seconds, float(bot->GetPower(POWER_MANA)), true);
+            runPastLine = Acore::StringFormat("run-past priced {:.0f} hp vs hp {:.0f} ({:.0f} s of chase): ",
+                                              runPast.damage, kit, runPast.seconds);
+            for (size_t i = 0; i < ranPastNames.size(); ++i)
+                runPastLine += (i ? ", " : "") + ranPastNames[i];
+        }
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        if (!runPastLine.empty() && state.runPastLogged != runPastLine)
+            LOG_INFO("playerbots", "[solo] {} L{} {}", bot->GetName(), bot->GetLevel(), runPastLine);
+        state.runPastLogged = runPastLine;
         state.routeMs = getMSTime();
         state.routeMobs = std::move(seen);
         state.routeWalls = std::move(walls);
@@ -2537,8 +2578,15 @@ namespace SoloSafety
                               : w.why == RouteWall::Why::Zone  ? "danger zone"
                               : w.why == RouteWall::Why::Above ? "pack above its level"
                                                                : "loses at full";
-            out += Acore::StringFormat("{}{} L{} {:.0f} yd ({}, pack {})", out.empty() ? "" : ", ",
+            out += Acore::StringFormat("{}{} L{} {:.0f} yd ({}, pack {}", out.empty() ? "" : ", ",
                                        tmpl ? tmpl->Name : std::to_string(w.entry), w.level, w.yards, why, w.pack);
+            // [runpast11] the run past it priced and refused: its chase against the bot's health with its kit
+            if (w.runPastHp > 0.0f)
+                out += w.runPastDamage == std::numeric_limits<float>::max()
+                           ? std::string("; no run past: a boss or no leash")
+                           : Acore::StringFormat("; run-past priced {:.0f} hp vs hp {:.0f}", w.runPastDamage,
+                                                 w.runPastHp);
+            out += ")";
         }
         if (walls.size() > LOGGED_WALLS)
             out += Acore::StringFormat(" +{} more", walls.size() - LOGGED_WALLS);

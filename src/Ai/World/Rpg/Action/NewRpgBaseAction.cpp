@@ -671,6 +671,59 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
     LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {}{}{}", bot->GetName(), bot->GetLevel(),
              goal.x, goal.y, why, walls.empty() ? "" : "; walls: ", walls);
     RefusedWalk(dest, why);
+    // [runpast11] the walls stand round the bot, not the target: its walk out (to its bind point, else its hub) is
+    // walled too - its Hearthstone out (b349 Hobliir L12 among the Blacksilt murlocs, Lyleria L9 among the Ashenvale
+    // bears, Enyssia L5 in the Gnarlpine camp: 921 s, 1136 s, 325 s STUCK, every quest postponed in turn)
+    if (path.throughRefused)
+    {
+        std::string walledWhy;
+        if (WalledIn(dest, walledWhy))
+            HearthOut(walledWhy);
+    }
+    return true;
+}
+
+bool NewRpgBaseAction::WalledIn(WorldPosition const& refused, std::string& why)
+{
+    if (!SoloSafety::Applies(bot) || bot->IsInCombat())
+        return false;
+    float const sight = sPlayerbotAIConfig.SightDistance;
+    uint32 const landmass = TravelRouteMgr::Landmass(WorldPosition(bot));
+    // a spot beyond its sight on its own landmass, not the refused target itself
+    auto const usable = [&](WorldPosition const& at)
+    {
+        return at != WorldPosition() && at.GetMapId() == bot->GetMapId() && bot->GetExactDist(at) > sight &&
+               refused.GetExactDist(at) > sight && TravelRouteMgr::Landmass(at) == landmass;
+    };
+    WorldPosition const bind(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ);
+    WorldPosition out;
+    char const* what = "";
+    if (usable(bind))
+    {
+        out = bind;
+        what = "bind point";
+    }
+    else if (WorldPosition const hub = NearestHub(bot); usable(hub))
+    {
+        out = hub;
+        what = "hub";
+    }
+    if (out == WorldPosition())
+        return false;  // no walk out to judge: no fact that it is walled in
+    BotPath const walk = FindBotPath(bot, out.GetPositionX(), out.GetPositionY(), out.GetPositionZ());
+    G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    // a walk out: complete round every wall, or partial (the search's length) but leading on past the walls it sees
+    // (RouteCosts prices the mobs within its sight and their reach)
+    bool const walksOut = walk.points.size() >= 2 && !walk.throughRefused &&
+                          (walk.type == PATHFIND_NORMAL ||
+                           (walk.type == PATHFIND_INCOMPLETE && (walk.actualEnd - here).length() > 2.0f * sight));
+    if (walksOut)
+        return false;
+    why = Acore::StringFormat("walled in: its walk to ({:.0f},{:.0f}) and the walk out to its {} ({:.0f},{:.0f}) {:.0f} "
+                              "yd both pass mobs it does not pull{}",
+                              refused.GetPositionX(), refused.GetPositionY(), what, out.GetPositionX(),
+                              out.GetPositionY(), bot->GetExactDist(out),
+                              walk.throughRefused ? "" : " (no walk out found)");
     return true;
 }
 
@@ -1685,6 +1738,7 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         return true;
     };
     G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    onIsland = false;  // [runpast11]
     // every leg the bot sees of it (the walk is planned again from there)
     auto const firstLegCarried = [&](Movement::PointsArray const& points)
     {
@@ -1840,18 +1894,28 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         onPolygon = dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref &&
                     (G3D::Vector3(nearest[2], nearest[0], nearest[1]) - here).length() < bot->GetCombatReach();
     }
-    {
-        // one search per spot: a spot with no way off is not searched again until the bot has moved
-        static std::mutex lock;
-        static std::unordered_map<uint32, std::tuple<uint32, int32, int32, int32>> searched;
-        std::tuple<uint32, int32, int32, int32> const key{bot->GetMapId(), int32(here.x), int32(here.y),
+    // one search per spot: a spot with no way off is not searched again until the bot has moved. [runpast11] its
+    // verdict (an island or not) is kept with it: the caller reads it on every walk from the spot
+    static std::mutex islandLock;
+    static std::unordered_map<uint32, std::pair<std::tuple<uint32, int32, int32, int32>, bool>> searched;
+    std::tuple<uint32, int32, int32, int32> const spotKey{bot->GetMapId(), int32(here.x), int32(here.y),
                                                           int32(here.z)};
-        std::lock_guard<std::mutex> guard(lock);
+    {
+        std::lock_guard<std::mutex> guard(islandLock);
         auto& last = searched[bot->GetGUID().GetCounter()];
-        if (last == key)
+        if (last.first == spotKey)
+        {
+            onIsland = last.second;
             return false;
-        last = key;
+        }
+        last = {spotKey, false};
     }
+    auto const noteIsland = [&]()
+    {
+        onIsland = true;
+        std::lock_guard<std::mutex> guard(islandLock);
+        searched[bot->GetGUID().GetCounter()] = {spotKey, true};
+    };
     // [deaths] the reach of every idle mob the bot must never fight (SoloSafety::RouteCosts: orange / red, elite,
     // a danger zone, a pack it loses): no landing in it (b337 Salleas L1 and Ryarii L1 jumped 12 yd down off the
     // Dolanaar ledge onto a polygon between two Webwood Lurkers L5-L6 and died there)
@@ -1860,6 +1924,15 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         std::vector<Leader::Travel::RoutePenalty> priced;
         SoloSafety::RouteCosts(bot, here, G3D::Vector3(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()),
                                refusedReach, priced);
+        // [runpast11] a refused reach the bot stands in lies behind it, as the route search drops it (Leader::Route):
+        // b349 Geron L10 / Namwe L7 on the 34-polygon island at Frostmane Hold (-5542,568), its rim 6.7 yd from the
+        // main region - every landing round it lay in the reach of the trolls it stood among, "1 polygons in sight",
+        // 1161 s and 117 s STUCK
+        refusedReach.erase(std::remove_if(refusedReach.begin(), refusedReach.end(),
+                                          [&here](G3D::Vector4 const& c)
+                                          { return (c.x - here.x) * (c.x - here.x) + (c.y - here.y) * (c.y - here.y) <=
+                                                   c.w * c.w; }),
+                           refusedReach.end());
     }
     auto const probe = [&](float x, float y, float reach)
     {
@@ -1982,6 +2055,7 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
             }
             logged(Acore::StringFormat("on a navmesh island: {} polygons in sight, no step or survivable fall leads on",
                                        ways.size()));
+            noteIsland();  // [runpast11]
             return false;
         }
         ways = kept;
@@ -1990,6 +2064,24 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     {
         logged("off the navmesh, no polygon in sight");
         return false;
+    }
+    // [runpast11] off the navmesh: a landing whose walk leads on to the destination first (b349 Thyllyn L12 jumped
+    // off a Darnassus ledge onto the nearest polygon at (10091,2581) - a 16-polygon island, 971 s STUCK); none leads
+    // on: the nearest landing still puts it on the navmesh, as before
+    if (!onPolygon)
+    {
+        std::vector<Way> leading;
+        std::vector<Way const*> order;
+        for (Way const& way : ways)
+            if (way.carried || (way.drop > 0.0f && way.damage < float(bot->GetHealth())))
+                order.push_back(&way);
+        std::sort(order.begin(), order.end(), [](Way const* a, Way const* b) { return a->gap < b->gap; });
+        constexpr size_t PATH_TRIES = 16;  // search cost bound, not a behaviour rule
+        for (size_t i = 0; i < order.size() && i < PATH_TRIES && leading.empty(); ++i)
+            if (leadsOn(*order[i]))
+                leading.push_back(*order[i]);
+        if (!leading.empty())
+            ways = leading;
     }
     // a step the ground carries, the nearest; else a jump down the bot survives, the least fall damage
     Way const* best = nullptr;
@@ -2391,6 +2483,13 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             NoteWalkFailure(dest, Acore::StringFormat("route {} ends {:.0f} yd short, no nearer than the bot",
                                                       type == PATHFIND_NORMAL ? "complete" : "partial",
                                                       endDistToDest));
+            // [runpast11] on a navmesh island no walk from here reaches anything: the target is not the dead end, the
+            // spot is - its Hearthstone out (b349: all 31 "dead end" postpones were Geron, Namwe and Thyllyn on
+            // islands; 135 + 22 + 21 maze give-ups, every quest of their logs postponed in turn)
+            if (onIsland &&
+                HearthOut(Acore::StringFormat("on a navmesh island at ({:.0f},{:.0f},{:.0f}): no walk off it",
+                                              bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ())))
+                return true;
             // [deaths] user 2026-11-08: no walking into a dead end - the maze search (another way, else another task)
             if (SoloSafety::Applies(bot) && path.leaderRoute && WalkAround(dest, path, disToDest, true))
                 return true;
