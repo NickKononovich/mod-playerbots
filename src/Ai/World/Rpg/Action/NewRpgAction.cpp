@@ -265,6 +265,72 @@ WorldPosition NewRpgBaseAction::NearestRepairSpawn(Player* bot)
     return best ? WorldPosition(best->mapId, best->x, best->y, best->z) : WorldPosition();
 }
 
+bool NewRpgBaseAction::HearthOut(std::string const& why)
+{
+    constexpr uint32 ITEM_HEARTHSTONE = 6948;
+    constexpr uint32 SPELL_HEARTHSTONE = 8690;
+    if (bot->IsInCombat() || !bot->IsAlive() || bot->IsInFlight() || bot->GetTransport())
+        return false;
+    WorldPosition const bind(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ);
+    NewRpgInfo& info = botAI->rpgInfo;
+    std::string note;
+    if (!bot->HasItemCount(ITEM_HEARTHSTONE, 1))
+        note = "no Hearthstone in its bags";
+    else if (bind.GetMapId() == bot->GetMapId() && bot->GetExactDist(bind) <= sPlayerbotAIConfig.SightDistance)
+        note = "its bind point is here";
+    if (!note.empty())
+    {
+        if (info.hearthNote != note)
+        {
+            info.hearthNote = note;
+            LOG_INFO("playerbots", "[rpg] {} L{} HEARTH reason: {}; not used: {}", bot->GetName(), bot->GetLevel(),
+                     why, note);
+        }
+        return false;
+    }
+    if (bot->HasSpellCooldown(SPELL_HEARTHSTONE))
+    {
+        // the stone's cooldown is the game's: it waits it out where it stands (out of combat, nothing on it)
+        uint32 const left = bot->GetSpellCooldownDelay(SPELL_HEARTHSTONE) / IN_MILLISECONDS;
+        note = "cooldown";
+        if (info.hearthNote != note)
+        {
+            info.hearthNote = note;
+            LOG_INFO("playerbots", "[rpg] {} L{} HEARTH reason: {}; its Hearthstone is ready in {} s: waits here",
+                     bot->GetName(), bot->GetLevel(), why, left);
+        }
+        info.ChangeToRest();
+        bot->SetStandState(UNIT_STAND_STATE_SIT);
+        return true;
+    }
+    info.hearthNote.clear();
+    LOG_INFO("playerbots", "[rpg] {} L{} HEARTH reason: {}; to its bind point ({:.0f},{:.0f}) map {}, {:.0f} yd",
+             bot->GetName(), bot->GetLevel(), why, bind.GetPositionX(), bind.GetPositionY(), bind.GetMapId(),
+             bind.GetMapId() == bot->GetMapId() ? bot->GetExactDist(bind) : 0.0f);
+    return botAI->DoSpecificAction("hearthstone", Event("new rpg hearth"), true);
+}
+
+bool NewRpgBaseAction::BindAtInnHere()
+{
+    if (bot->IsInCombat() || !SoloSafety::Applies(bot))
+        return false;
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
+    {
+        Creature* innkeeper = bot->GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_INNKEEPER);
+        if (!innkeeper)
+            continue;
+        if (bot->m_homebindMapId == innkeeper->GetMapId() &&
+            innkeeper->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ) <=
+                sPlayerbotAIConfig.SightDistance)
+            return false;  // bound at this inn already
+        LOG_INFO("playerbots", "[rpg] {} L{} BIND at {}'s inn (was map {} ({:.0f},{:.0f}))", bot->GetName(),
+                 bot->GetLevel(), innkeeper->GetName(), bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY);
+        bot->GetSession()->SendBindPoint(innkeeper);
+        return true;
+    }
+    return false;
+}
+
 bool NewRpgBaseAction::StartVendorRun()
 {
     NewRpgInfo& info = botAI->rpgInfo;
@@ -597,6 +663,16 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                  status < RPG_STATUS_END ? names[status] : "?", detail);
     }
 
+    // [regress10] the first look after its login: a login spot inside idle mobs' reach is left first (b347 Sehdrurmund
+    // L6, Ganna L10 at Iceflow Lake and Gilduck L10 on Shimmer Ridge logged in where b345 had left them and died to
+    // packs of 3-5 within seconds)
+    if (!info.loginChecked)
+    {
+        info.loginChecked = true;
+        if (LoginEscape())
+            return true;
+    }
+
     // [regress10] the recovery after a death comes first: before, only a far walk's MoveFarTo took it, so a quest spot
     // in reach of the corpse was fought at once (b345 Guinudrond L11 at the Silver Stream Mine)
     if (!bot->IsInCombat() && SoloSafety::HoldsPulls(bot) && SoloSafetyStep())
@@ -633,6 +709,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     {
         case RPG_IDLE:
         {
+            BindAtInnHere();  // [regress10] its home is the town it quests from
             // A level-up makes quests that were given up on worth another try.
             if (info.lastQuestLevel != bot->GetLevel())
             {
@@ -763,6 +840,14 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                             info.ChangeToGoGrind(hub);
                             return true;
                         }
+                        // [regress10] no quest it may do here, its grind spot and its hub both walks it refuses
+                        // (every way passes mobs it does not live through, the run-past chases counted): its
+                        // Hearthstone out (b347 Lyleria L9 / Mytaeleas L11 among the Ashenvale bears L16-18: 1025 s
+                        // and 710 s STUCK, every quest postponed)
+                        if (HearthOut(Acore::StringFormat("q{} needs L{}, its grind spot and its hub are walks it "
+                                                          "refuses",
+                                                          questId, quest->GetMinLevel())))
+                            return true;
                         // [holds9] the target is a walk given up at this level (refused, or proven out of walk) and
                         // no hub replaces it: a GO_GRIND there is refused again at once (b345 Ellosera: GRIND -> MAZE
                         // -> IDLE, 32 HOLD / LOOP lines); the reason is logged, it rests until the choice runs again

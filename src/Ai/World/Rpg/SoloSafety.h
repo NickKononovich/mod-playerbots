@@ -119,6 +119,10 @@ namespace SoloSafety
     bool TakeRecovery(Player* bot);
     // [regress10] alive with that recovery not taken yet, or a rest asked for and not full yet: no new pull
     bool HoldsPulls(Player* bot);
+    // [regress10] the idle mobs whose aggro reach (wander area, patrol beat) covers where the bot stands (`who`: their
+    // names) and the spots that leave every idle reach round it, nearest first (out of the covering reaches by its
+    // combat reach, all round; else at its sight); false when none covers it
+    bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots);
     // the death line's context: attackers now, the fight's start
     std::string DeathContext(Player* bot);
 
@@ -141,6 +145,20 @@ namespace SoloSafety
     // cast once per repeat (at least its cast time and the global cooldown) from the run's start, one that does not
     // repeat (SMART_EVENT_FLAG_NOT_REPEATABLE) once
     float ChaseSpellDamage(Creature* mob, float seconds);
+    // [regress10] user 2026-11-08 "you can just run past": a mob the bot walks past without fighting chases it until
+    // the core's leash lets it go (Creature::CanCreatureAttack: past CONFIG_CREATURE_LEASH_RADIUS from its reset spot
+    // and its leash timer since the engage), hitting all the way when it is faster (daze from behind); the damage of
+    // that chase and how long it lasts - the flee's chase model. RunPastTemplate prices a spawn not loaded (its
+    // template at its top level: the core's base stats)
+    struct RunPast
+    {
+        float damage = 0.0f;
+        float seconds = 0.0f;
+    };
+    RunPast RunPastChase(Player* bot, Creature* mob);
+    RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl);
+    // the bot lives through `damage` over `seconds` from its health now with its heal kit (the flee's test)
+    bool SurvivesRunPast(Player* bot, float damage, float seconds);
 
     // [dps1] the bot's damage per second: DpsEstimate's formula over its state now (its buff context: solo / party /
     // raid), against `target` or a mob of its level; no fight history

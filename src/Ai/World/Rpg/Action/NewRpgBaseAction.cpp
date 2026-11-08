@@ -3711,6 +3711,7 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
         }
     }
 
+    SoloSafety::RunPast runPast;  // [regress10] the chases of the orange / red spawns it walks past
     // the cells along the walk and their neighbours
     uint32 const steps = uint32(std::ceil(length / MAX_AGGRO_RADIUS));
     std::unordered_set<uint64> cells;
@@ -3771,10 +3772,17 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
                 if (!reaches)
                     continue;
             }
-            return tmpl;
+            // [regress10] user 2026-11-08 "you can just run past": the walk takes the chase of every such spawn on it
+            // (SoloSafety::RunPastTemplate, the core's leash) while the bot lives through their sum
+            SoloSafety::RunPast const chase = SoloSafety::RunPastTemplate(bot, tmpl);
+            runPast.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage
+                                                                                 : runPast.damage + chase.damage;
+            runPast.seconds = std::max(runPast.seconds, chase.seconds);
+            if (!SoloSafety::SurvivesRunPast(bot, runPast.damage, runPast.seconds))
+                return tmpl;
         }
     }
-    return nullptr;
+    return nullptr;  // none, or every one it passes is a chase it lives through
 }
 
 CreatureTemplate const* NewRpgBaseAction::TripDanger(Player* bot, float x, float y, float z)
@@ -4086,6 +4094,32 @@ CreatureTemplate const* NewRpgBaseAction::InDangerZone(Player* bot, float x, flo
             return sObjectMgr->GetCreatureTemplate(zone.entry);
     }
     return nullptr;
+}
+
+bool NewRpgBaseAction::LoginEscape()
+{
+    if (bot->IsInCombat() || !SoloSafety::Applies(bot))
+        return false;  // in a fight already: the survival kit judges it (fight on or flee)
+    std::string who;
+    std::vector<G3D::Vector3> spots;
+    if (!SoloSafety::StandsInReach(bot, who, spots))
+        return false;
+    for (G3D::Vector3 const& at : spots)
+    {
+        Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+        if (!route.found || !route.complete || route.throughRefused)
+            continue;
+        if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+            continue;
+        LOG_INFO("playerbots", "[rpg] {} L{} LOGIN_ESCAPE reason: logged in within the reach of {}: steps to "
+                 "({:.0f},{:.0f}), {:.0f} yd walk",
+                 bot->GetName(), bot->GetLevel(), who, at.x, at.y, route.length);
+        return true;
+    }
+    LOG_INFO("playerbots", "[rpg] {} L{} LOGIN_ESCAPE reason: logged in within the reach of {}: no step out on a "
+             "walk it takes ({} spots looked at) - stays, the survival kit judges what comes",
+             bot->GetName(), bot->GetLevel(), who, spots.size());
+    return false;
 }
 
 bool NewRpgBaseAction::InDeathZone(Player* bot, float x, float y)

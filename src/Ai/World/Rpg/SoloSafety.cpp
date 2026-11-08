@@ -53,6 +53,7 @@
 #include <map>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace
 {
@@ -991,10 +992,23 @@ namespace
                     bool joins = Reaches(c, *fight);
                     bool calls = true;
                     float const gap = c->GetExactDist(fight->x, fight->y, fight->z);
+                    // [regress10] the engaged members call every CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD while they
+                    // fight: a wanderer anywhere in its wander area or a patrol anywhere on its beat may be within the
+                    // assistance radius at one of those calls (b347 Idunk L10 x2: judged 1 Tunnel Rat, came 3-4 with
+                    // the wanderers "assists a chaser"); the nearest it comes to the fight
+                    float reachGap = gap;
+                    if (c->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+                        reachGap = std::min(reachGap,
+                                            std::max(0.0f, c->GetHomePosition().GetExactDist(fight->x, fight->y,
+                                                                                            fight->z) -
+                                                               c->GetWanderDistance()));
+                    for (G3D::Vector3 const& step : Beat(c))
+                        reachGap = std::min(reachGap, (step - *fight).length());
+                    bool const roams = reachGap < gap;  // its sight from there is not known now: counted
                     for (size_t i = 0; !joins && i < callRadius.size(); ++i)
                     {
                         Creature* m = pack[i].mob;
-                        if (assist > 0.0f && gap <= assist && c->CanAssistTo(m, bot) && Sees(*fight, c))
+                        if (assist > 0.0f && reachGap <= assist && c->CanAssistTo(m, bot) && (roams || Sees(*fight, c)))
                         {
                             joins = true;
                             calls = false;
@@ -1313,7 +1327,14 @@ namespace SoloSafety
                         uint32 count = 0;
                         for (Answer const& a : answers)
                         {
-                            float const gap2d = a.mob->GetExactDist2d(at.x, at.y);
+                            // [regress10] the nearest its wander area / beat brings it during the fight's calls
+                            float gap2d = a.mob->GetExactDist2d(at.x, at.y);
+                            if (a.mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+                                gap2d = std::min(gap2d, std::max(0.0f, a.mob->GetHomePosition().GetExactDist2d(
+                                                                           at.x, at.y) -
+                                                                           a.mob->GetWanderDistance()));
+                            for (G3D::Vector3 const& step : model.Beat(a.mob))
+                                gap2d = std::min(gap2d, std::hypot(step.x - at.x, step.y - at.y));
                             if ((a.linked && (gap2d <= model.assist || gap2d <= a.script)) ||
                                 (early && a.target && a.mob->GetExactDist2d(call.x, call.y) <= model.assist))
                                 ++count;
@@ -2069,6 +2090,51 @@ namespace SoloSafety
         return true;
     }
 
+    bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots)
+    {
+        who.clear();
+        spots.clear();
+        if (!bot || !bot->IsAlive())
+            return false;
+        float const sight = sPlayerbotAIConfig.SightDistance;
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(bot, sight);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitObjects(bot, searcher, sight);
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        std::vector<G3D::Vector4> discs;
+        float out = 0.0f;  // the yards out of the covering reaches
+        for (Unit* unit : units)
+        {
+            Creature* mob = unit->ToCreature();
+            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                continue;
+            G3D::Vector4 const disc = AggroDisc(mob, bot);
+            discs.push_back(disc);
+            if (!InDisc(disc, here))
+                continue;
+            out = std::max(out, disc.w - std::hypot(disc.x - here.x, disc.y - here.y));
+            who += Acore::StringFormat("{}{} L{}", who.empty() ? "" : ", ", mob->GetName(), mob->GetLevel());
+        }
+        if (who.empty())
+            return false;
+        constexpr uint32 DIRECTIONS = 8;  // the direction search's eighths all round (as the flee's maze search)
+        for (float const ring : {out + bot->GetCombatReach(), sight})
+            for (uint32 i = 0; i < DIRECTIONS; ++i)
+            {
+                float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                float x = here.x + std::cos(angle) * ring;
+                float y = here.y + std::sin(angle) * ring;
+                float z = here.z;
+                bot->UpdateAllowedPositionZ(x, y, z);
+                G3D::Vector3 const at(x, y, z);
+                if (std::none_of(discs.begin(), discs.end(), [&at](G3D::Vector4 const& d) { return InDisc(d, at); }))
+                    spots.push_back(at);
+            }
+        return true;
+    }
+
     bool HoldsPulls(Player* bot)
     {
         if (!bot || !bot->IsAlive() || bot->IsInCombat())
@@ -2137,6 +2203,98 @@ namespace SoloSafety
         return out;
     }
 
+    namespace
+    {
+        // the share of its speed a daze (spell 1604, Unit::AttackerStateUpdate from behind) takes off, by its data
+        float DazedShare()
+        {
+            float dazed = 0.0f;
+            if (sWorld->getBoolConfig(CONFIG_ENABLE_DAZE))
+                if (SpellInfo const* daze = sSpellMgr->GetSpellInfo(1604))
+                    for (SpellEffectInfo const& effect : daze->GetEffects())
+                        if (effect.ApplyAuraName == SPELL_AURA_MOD_DECREASE_SPEED)
+                            dazed = std::min(dazed, float(effect.CalcValue()) / 100.0f);
+            return dazed;
+        }
+
+        // a hit from behind is never dodged or parried (Unit::RollMeleeOutcomeAgainst): the melee lands that much more
+        float BehindFactor(Player* bot)
+        {
+            float const avoided =
+                (bot->GetFloatValue(PLAYER_DODGE_PERCENTAGE) + bot->GetFloatValue(PLAYER_PARRY_PERCENTAGE)) / 100.0f;
+            return avoided > 0.0f && avoided < 1.0f ? 1.0f / (1.0f - avoided) : 1.0f;
+        }
+
+        // the chase of a mob of run speed `vm`, leash timer `leashSec`, melee dps `melee` (its melee reach `reach`):
+        // how long it lasts and how long its melee lands
+        void ChaseTimes(Player* bot, float vm, float leashSec, float melee, float reach, float& until, float& exposure)
+        {
+            float const leashRadius = sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS);
+            float const vb = bot->GetSpeed(bot->IsInWater() ? MOVE_SWIM : MOVE_RUN);
+            float const dazed = DazedShare();
+            bool const canDaze = melee > 0.0f && vm > vb && vb * (1.0f + dazed) <= vm;
+            float const follow = std::max(std::min(vm, canDaze ? vb * (1.0f + dazed) : vb), 0.1f);
+            until = std::max(leashSec, leashRadius / follow) + 1.0f;  // + ThreatManager's 1 s, as the flee
+            exposure = until;
+            if (vm < vb && !canDaze)
+                exposure = std::min(until, reach / (vb - vm));
+        }
+    }
+
+    RunPast RunPastChase(Player* bot, Creature* mob)
+    {
+        RunPast out;
+        if (!bot || !mob || sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS) <= 0.0f || mob->isWorldBoss())
+        {
+            out.damage = std::numeric_limits<float>::max();
+            return out;
+        }
+        float const melee = MeleeDps(mob, bot);
+        float exposure = 0.0f;
+        ChaseTimes(bot, mob->GetSpeed(MOVE_RUN), float(mob->GetLeashTimer()), melee, mob->GetMeleeRange(bot),
+                   out.seconds, exposure);
+        float const casts = ChaseSpellDamage(mob, out.seconds);
+        out.damage = melee * BehindFactor(bot) * exposure + (casts > 0.0f ? casts : SpellDpsOf(mob) * out.seconds);
+        return out;
+    }
+
+    RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl)
+    {
+        RunPast out;
+        CreatureBaseStats const* stats =
+            tmpl ? sObjectMgr->GetCreatureBaseStats(tmpl->maxlevel, tmpl->unit_class) : nullptr;
+        if (!bot || !stats || sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS) <= 0.0f ||
+            (tmpl->type_flags & CREATURE_TYPE_FLAG_BOSS_MOB))
+        {
+            out.damage = std::numeric_limits<float>::max();
+            return out;
+        }
+        // Creature::UpdateEntry / the stat system: weapon damage base .. 1.5 x base, plus attack power / 14 per second
+        // of swing, times the template's damage modifier
+        float const swing = std::max(float(tmpl->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
+        float const base = stats->GenerateBaseDamage(tmpl);
+        float const hit =
+            ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier;
+        float const melee = hit / swing;
+        // Creature::GetLeashTimer of a mob of this template (the core's own numbers)
+        constexpr int32 LEASH_TIMER_OFFSET = 11;
+        float const leashSec =
+            float(std::max<int32>(LEASH_TIMER_OFFSET, LEASH_TIMER_OFFSET + int32(tmpl->minlevel / 10) - 2));
+        float exposure = 0.0f;
+        ChaseTimes(bot, tmpl->speed_run * baseMoveSpeed[MOVE_RUN], leashSec, melee, NOMINAL_MELEE_RANGE, out.seconds,
+                   exposure);
+        out.damage = melee * BehindFactor(bot) * exposure;
+        return out;
+    }
+
+    bool SurvivesRunPast(Player* bot, float damage, float seconds)
+    {
+        if (!bot || damage == std::numeric_limits<float>::max())
+            return false;
+        float const mana = float(bot->GetPower(POWER_MANA));
+        return damage < float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, mana, true);
+    }
+
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,
                     std::vector<Leader::Travel::RoutePenalty>& penalties)
     {
@@ -2174,6 +2332,9 @@ namespace SoloSafety
         DpsEstimate::Result own;  // [pull9] its damage and the pet's hold, read with `around`
         float petHealth = 0.0f;
         std::vector<RouteWall> walls;  // [pull9] the mobs refused, for the MAZE / refused-walk lines
+        // [regress10] the run-past chases this leg already takes (orange / red / elite mobs it walks past): their sum
+        RunPast runPast;
+        std::unordered_set<uint64> chasing;  // the mobs counted in it
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
@@ -2215,6 +2376,51 @@ namespace SoloSafety
                                                   mob->GetPositionY()))
                 why = RouteWall::Why::Zone;
             uint32 wallPack = 1;
+            // [regress10] user 2026-11-08 "you can just run past": an orange / red or elite mob is no wall by itself -
+            // walked past, it and its linked pack chase the bot until the core's leash lets them go; the leg takes
+            // that chase (added to the others it takes) while the bot lives through it from its health now with its
+            // heal kit, else it stays a wall. Priced as a mob it must never fight: a complete way round is walked
+            bool ranPast = false;
+            if ((why == RouteWall::Why::Elite || why == RouteWall::Why::Con) && alone &&
+                !NewRpgBaseAction::InDeathZone(bot, mob->GetPositionX(), mob->GetPositionY()))
+            {
+                if (!aroundBuilt)
+                {
+                    aroundBuilt = true;
+                    for (Unit* other : units)
+                        if (Creature* c = other->ToCreature())
+                            if (c->IsAlive() && !c->IsInCombat() && c->IsHostileTo(bot) &&
+                                c->HasReactState(REACT_AGGRESSIVE))
+                                around.push_back(c);
+                    own = OwnDamage(bot, nullptr);
+                    if (Pet* pet = bot->GetPet())
+                        if (pet->IsAlive() && PetTaunts(pet))
+                            petHealth = float(pet->GetHealth());
+                }
+                PullModel model(bot, mob, around);
+                model.Links();
+                RunPast with = runPast;
+                std::vector<uint64> added;
+                for (PullModel::Member const& m : model.pack)
+                {
+                    uint64 const key = m.mob->GetGUID().GetRawValue();
+                    if (chasing.count(key))
+                        continue;
+                    RunPast const chase = RunPastChase(bot, m.mob);
+                    with.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage
+                                                                                     : with.damage + chase.damage;
+                    with.seconds = std::max(with.seconds, chase.seconds);
+                    added.push_back(key);
+                }
+                if (SurvivesRunPast(bot, with.damage, with.seconds))
+                {
+                    runPast = with;
+                    chasing.insert(added.begin(), added.end());
+                    ranPast = true;
+                    why = RouteWall::Why::None;
+                }
+                wallPack = uint32(model.pack.size());
+            }
             // [pullplan] user 2026-11-08: a mob on the way is cleared one at a time as a player clears a path (the
             // grind target's on-the-way pull from its pull spot, SoloSafety::Judge): it is priced by its kill time, a
             // wall only when the bot loses even that one fight - the mob with what comes wherever it is fought, its
@@ -2225,7 +2431,7 @@ namespace SoloSafety
             // mana; where it wins only at full the walk rests first, RestBeforeWalk), two above its level at once
             // never. Before, its health now was the test: after a fight the mobs round it were walls (b345: 66 maze
             // postpones)
-            if (why == RouteWall::Why::None && alone)
+            if (why == RouteWall::Why::None && alone && !ranPast)
             {
                 if (!aroundBuilt)
                 {
@@ -2289,7 +2495,7 @@ namespace SoloSafety
             penalty.cost = float(mob->GetHealth()) / dps * speed;
             // a mob it must never fight, when no walk round it is complete: any detour up to the whole trip again is
             // the better walk (b301: Thokhen L3 walked 4 times through the same L9 Nightstalkers on a 1943 yd walk)
-            if (never)
+            if (never || ranPast)
                 penalty.cost = std::max(penalty.cost, (to - from).length() + 2.0f * radius);
             penalties.push_back(penalty);
             seen[mob->GetGUID().GetRawValue()] = never;

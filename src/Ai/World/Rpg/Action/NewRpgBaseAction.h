@@ -178,6 +178,16 @@ public:
 protected:
     // [guild3] full bags or low ammo: GO_CAMP to the nearest friendly vendor; true when the walk starts
     bool StartVendorRun();
+    // [regress10] no walk out of where it stands that it survives: its Hearthstone to its bind point (a game item and
+    // mechanic), its cooldown waited out where it stands (logged with the ETA); false when it cannot (no stone, the
+    // bind point here)
+    bool HearthOut(std::string const& why);
+    // [regress10] an innkeeper within reach whose inn is not its bind point: it binds there (the innkeeper's own
+    // "make this inn your home"), so the Hearthstone takes it back to the town it quests from
+    bool BindAtInnHere();
+    // [regress10] the bot's first New RPG tick after its login: when idle mobs' reach covers its login spot, a step
+    // out of every reach on a walk the route search judges (its walls round the camp); true when it walks
+    bool LoginEscape();
 
     /* MOVEMENT RELATED */
     bool MoveFarTo(WorldPosition dest);
