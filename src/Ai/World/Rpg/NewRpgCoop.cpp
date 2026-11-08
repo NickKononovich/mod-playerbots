@@ -64,31 +64,10 @@ struct Objective
     bool Same(Objective const& o) const { return questId == o.questId && index == o.index; }
 };
 
-// the camp its objective lies in, judged when its walk there was refused (SoloSafety::Judge, the bot solo)
-struct Camp
-{
-    bool known = false;
-    WorldPosition at{};
-    ObjectGuid mob{};
-    uint32 entry = 0;
-    uint8 topLevel = 0;
-    uint32 mobs = 0;
-    uint32 units = 1;     // objective units one clear of the pack gives
-    float damage = 0.0f;  // on the bot over fightSec at its damage
-    float fightSec = 0.0f;
-    float dps = 0.0f;  // its damage per second then
-};
-
-struct Seek
-{
-    Objective obj;
-    uint64 bucket = 0;
-    Camp camp;
-};
-
 // the formula's pace of one objective for one bot (no measured history): the source creature it would farm (the
-// objective's creature or kill credit, for an item the creature that drops it with its loot chance), its health at
-// the core's base stats, the walk between the spawns it works and from the bot to the first of them
+// objective's creature or kill credit, for an item the creature that drops it with its loot chance, or the chest
+// that holds it: no fight, its walk only), its health at the core's base stats, the walk between the spawns it works
+// and from the bot to the first of them
 struct Pace
 {
     bool known = false;
@@ -103,6 +82,42 @@ struct Pace
     float respawnSec = 0.0f; // their mean respawn
     WorldPosition at{};      // where the bot works the objective (its New RPG spot)
     uint32 left = 0;         // the counter it was computed for
+    bool chest = false;      // the source is a chest game object (no fight, no kill XP)
+    Position first{};        // the nearest spawn it works (the offer's route to it)
+};
+
+// the camp its objective lies in, judged when its walk there was refused (SoloSafety::Judge, the bot solo)
+struct Camp
+{
+    bool known = false;
+    WorldPosition at{};
+    ObjectGuid mob{};
+    uint32 entry = 0;
+    uint8 topLevel = 0;
+    uint32 mobs = 0;
+    uint32 units = 1;     // objective units one clear of the pack gives
+    float damage = 0.0f;  // on the bot over fightSec at its damage
+    float fightSec = 0.0f;
+    float dps = 0.0f;  // its damage per second then
+    // the pack's own mobs serve the objective (its kill credit, a drop of its item); else the pack only stands on the
+    // way and the objective is worked after the clear at `pace` (its sources nearest the spot)
+    bool serves = false;
+    Pace pace;
+};
+
+struct Seek
+{
+    Objective obj;
+    uint64 bucket = 0;
+    Camp camp;
+};
+
+// one open objective of its quest log (the board knows every guild bot's log, as the global leader does): a bot that
+// looks for a party for a camp finds the members that hold the same objective, not only the one working it now
+struct Hold
+{
+    uint64 bucket = 0;
+    Objective obj;
 };
 
 struct Posting
@@ -117,6 +132,11 @@ struct Posting
     Pace pace;  // the formula's pace of `cur` (recomputed when its counter, its spot or its level changes)
     uint8 paceLevel = 0;
     std::vector<Seek> seeks;
+    std::vector<Hold> holds;  // every open kill / loot objective of its log in this zone
+    uint64 logSign = 0;       // the log (quests, counters), map and zone the holds were read for
+    std::unordered_set<uint64> on;  // the buckets it stands on: cur, seeks, holds
+    float questRate = 1.0f;         // the core's quest XP rate for it (Player::GetQuestRate)
+    float questRateDf = 1.0f;       // the same for a Dungeon Finder quest
     std::unordered_map<uint64, uint32> seen;  // bucket -> the board version it last looked at
     // in a party
     uint32 party = 0;
@@ -150,6 +170,8 @@ struct Party
     std::unordered_map<uint32, float> healRate;  // member -> heals per fight second (its solo judge)
     Camp camp;                                   // the camp it was formed for (a seeker's objective)
     ObjectGuid campFor{};                        // the seeker whose camp it is
+    WorldPosition spot{};                        // a holder leads: the nearest spawn of the objective it held
+    bool spotSet = false;
 };
 
 std::mutex lock;
@@ -253,6 +275,34 @@ void Bump(uint64 key)
         ++itr->second.version;
 }
 
+// the bot stands on the buckets of its current objective, of the objectives it looks for a party for and of every open
+// objective of its log (lock held): the board's lists follow that set (a bucket's version moves when a bot comes or
+// goes)
+void SyncBuckets(Posting& me, uint32 low)
+{
+    std::unordered_set<uint64> want;
+    if (me.bucket)
+        want.insert(me.bucket);
+    for (Seek const& seek : me.seeks)
+        want.insert(seek.bucket);
+    for (Hold const& hold : me.holds)
+        want.insert(hold.bucket);
+    for (uint64 key : me.on)
+        if (!want.count(key))
+            RemoveFrom(key, low);
+    for (uint64 key : want)
+        if (!me.on.count(key))
+            AddTo(key, low);
+    me.on = std::move(want);
+}
+
+// the bot works this bucket's objective now or looks for a party for it (not only holds it in its log)
+bool WorksOn(Posting const& p, uint64 key)
+{
+    return p.bucket == key ||
+           std::any_of(p.seeks.begin(), p.seeks.end(), [key](Seek const& s) { return s.bucket == key; });
+}
+
 // the objective's counter from the quest log; false: not a killing / looting objective of an incomplete quest
 bool ReadObjective(Player* bot, uint32 questId, int32 index, Objective& out)
 {
@@ -294,15 +344,44 @@ bool CurrentObjective(PlayerbotAI* botAI, Player* bot, Objective& out)
     return ReadObjective(bot, quest->questId, quest->objectiveIdx, out);
 }
 
-// a kill of `killed` counts for the objective (its entry or its kill credit; a quest drop it may loot)
-bool Serves(Player* member, Objective const& o, Creature* killed)
+// the open kill / loot objectives of its whole log in its zone (lock held), read again only when its log, its map or
+// its zone changed (a quest taken, a counter, a hand-in): true when they were read again
+bool ReadHolds(Player* bot, Posting& me)
 {
-    CreatureTemplate const* tmpl = killed->GetCreatureTemplate();
-    if (!tmpl)
+    uint64 sign = (uint64(bot->GetMapId()) << 32) ^ uint64(bot->GetZoneId()) ^ 0x9E3779B97F4A7C15ull;
+    for (auto const& [questId, data] : bot->getQuestStatusMap())
+    {
+        if (data.Status != QUEST_STATUS_INCOMPLETE)
+            continue;
+        uint64 h = questId;
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            h = h * 1000003ull + data.CreatureOrGOCount[i];
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            h = h * 1000003ull + data.ItemCount[i];
+        sign += h * 0xBF58476D1CE4E5B9ull;  // the map's order does not matter
+    }
+    if (sign == me.logSign)
         return false;
-    if (!o.item)
-        return o.key == tmpl->Entry || o.key == tmpl->KillCredit[0] || o.key == tmpl->KillCredit[1];
-    return tmpl->lootid && LootTemplates_Creature.HaveQuestLootForPlayer(tmpl->lootid, member);
+    me.logSign = sign;
+    me.holds.clear();
+    if (bot->GetMap()->Instanceable())
+        return true;
+    for (auto const& [questId, data] : bot->getQuestStatusMap())
+    {
+        if (data.Status != QUEST_STATUS_INCOMPLETE)
+            continue;
+        for (int32 index = 0; index < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT; ++index)
+        {
+            Objective o;
+            if (!ReadObjective(bot, questId, index, o) || !o.Left())
+                continue;
+            Hold hold;
+            hold.obj = o;
+            hold.bucket = BucketKey(bot->GetMapId(), bot->GetZoneId(), o);
+            me.holds.push_back(hold);
+        }
+    }
+    return true;
 }
 
 // the static world data the pace formula reads, indexed once (the world thread's startup, else the first look):
@@ -311,18 +390,20 @@ bool Serves(Player* member, Objective const& o, Creature* killed)
 struct DropSource
 {
     uint32 entry;
-    float chance;  // 0..1
+    float chance;        // 0..1
+    bool chest = false;  // a chest game object (gameobject_loot_template), else a creature
 };
 struct SpawnPoint
 {
     uint16 map;
-    float x, y;
+    float x, y, z;
     uint32 respawnSec;
 };
 std::once_flag indexOnce;
 std::unordered_map<uint32, std::vector<DropSource>> itemSources;
 std::unordered_map<uint32, std::vector<uint32>> creditSources;
 std::unordered_map<uint32, std::vector<SpawnPoint>> spawnsOf;
+std::unordered_map<uint32, std::vector<SpawnPoint>> chestSpawnsOf;  // chest game objects that hold a quest item
 
 void BuildIndex()
 {
@@ -364,6 +445,34 @@ void BuildIndex()
                 sources.insert(entry);
             }
     }
+    // the chests (a quest item one opens, no fight): their loot tables and their spawns
+    std::unordered_set<uint32> chests;
+    if (GameObjectTemplateContainer const* gos = sObjectMgr->GetGameObjectTemplates())
+        for (auto const& [entry, tmpl] : *gos)
+        {
+            if (tmpl.type != GAMEOBJECT_TYPE_CHEST || !tmpl.chest.lootId)
+                continue;
+            LootTemplate const* loot = LootTemplates_Gameobject.GetLootFor(tmpl.chest.lootId);
+            if (!loot)
+                continue;
+            std::unordered_map<uint32, float> best;
+            loot->VisitEntries(
+                [&](LootStoreItem const& item, float chance)
+                {
+                    if (!item.reference && items.count(item.itemid))
+                        best[item.itemid] = std::max(best[item.itemid], std::abs(chance) / 100.0f);
+                });
+            for (auto const& [item, chance] : best)
+                if (chance > 0.0f)
+                {
+                    itemSources[item].push_back({entry, std::min(chance, 1.0f), true});
+                    chests.insert(entry);
+                }
+        }
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
+        if (chests.count(data.id))
+            chestSpawnsOf[data.id].push_back(
+                {data.mapid, data.posX, data.posY, data.posZ, uint32(std::abs(data.spawntimesecs))});
     for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
     {
         uint32 const ids[] = {data.id, data.id2, data.id3};
@@ -372,14 +481,33 @@ void BuildIndex()
             uint32 const entry = ids[i];
             if (!entry || !sources.count(entry) || (i > 0 && entry == ids[0]) || (i == 2 && entry == ids[1]))
                 continue;
-            spawnsOf[entry].push_back({data.mapid, data.posX, data.posY, data.spawntimesecs});
+            spawnsOf[entry].push_back({data.mapid, data.posX, data.posY, data.posZ, data.spawntimesecs});
         }
     }
-    LOG_INFO("playerbots", "[coop] index: {} quest items from {} creatures, {} kill objectives, {} sources spawned",
-             itemSources.size(), sources.size(), creditSources.size(), spawnsOf.size());
+    LOG_INFO("playerbots",
+             "[coop] index: {} quest items from {} creatures and {} chests, {} kill objectives, {} sources spawned, {} "
+             "chests spawned",
+             itemSources.size(), sources.size(), chests.size(), creditSources.size(), spawnsOf.size(),
+             chestSpawnsOf.size());
 }
 
 void EnsureIndex() { std::call_once(indexOnce, BuildIndex); }
+
+// a kill of `killed` counts for the objective: its entry or its kill credit; for an item, the creature drops that very
+// item (the index of the loot tables), not any quest item of the member's log
+bool Serves(Objective const& o, Creature* killed)
+{
+    CreatureTemplate const* tmpl = killed->GetCreatureTemplate();
+    if (!tmpl)
+        return false;
+    if (!o.item)
+        return o.key == tmpl->Entry || o.key == tmpl->KillCredit[0] || o.key == tmpl->KillCredit[1];
+    EnsureIndex();
+    auto const itr = itemSources.find(o.key);
+    return itr != itemSources.end() &&
+           std::any_of(itr->second.begin(), itr->second.end(),
+                       [tmpl](DropSource const& d) { return !d.chest && d.entry == tmpl->Entry; });
+}
 
 // the creature's health at its middle level (the core's base stats)
 float TemplateHealth(uint32 entry, uint8& level)
@@ -484,6 +612,7 @@ struct Plan
     float walkYd = 0.0f;
     float walkSec = 0.0f;  // P's walk to L at its run speed
     float xphSoloL = 0.0f, xphGroupL = 0.0f, xphSoloP = 0.0f, xphGroupP = 0.0f;
+    float leadWalkYd = 0.0f;  // L's walk to the spot the party works first
     std::unordered_map<uint32, float> healRate;
     Camp camp;
     ObjectGuid campFor{};
@@ -495,6 +624,19 @@ struct Side
     Posting const* post = nullptr;
     Objective obj;
     Camp const* camp = nullptr;  // a seeker: the camp it cannot solo
+    bool hold = false;           // it holds the objective in its log but works another one now
+    Pace const* pace = nullptr;  // a holder: the pace of this objective from where it stands (else its posting's)
+};
+
+Pace const* PaceOf(Side const& s) { return s.pace ? s.pace : (s.post ? &s.post->pace : nullptr); }
+
+// the offer's walks by route (the leader route search; < 0: not looked at, the straight line): P to L, L to the spot
+// the party works first (its camp, its nearest spawn), P to its own nearest spawn (its time alone)
+struct Walks
+{
+    float pToL = -1.0f;
+    float lToSpot = -1.0f;
+    float pToSpot = -1.0f;
 };
 
 // the seconds `units` objective units take at the pace (the formula, no history): per kill the source's health at
@@ -532,7 +674,7 @@ Pace ComputePace(Player* bot, Objective const& o, WorldPosition const& at)
             candidates.push_back({entry, 1.0f});
     if (candidates.empty())
     {
-        best.why = o.item ? "no creature drops item " + std::to_string(o.key)
+        best.why = o.item ? "no creature or chest holds item " + std::to_string(o.key)
                           : "no creature gives the kill credit " + std::to_string(o.key);
         return best;
     }
@@ -542,8 +684,9 @@ Pace ComputePace(Player* bot, Objective const& o, WorldPosition const& at)
     best.why = "no spawn of its sources on this map";
     for (DropSource const& source : candidates)
     {
-        auto const spawns = spawnsOf.find(source.entry);
-        if (spawns == spawnsOf.end())
+        auto const& index = source.chest ? chestSpawnsOf : spawnsOf;
+        auto const spawns = index.find(source.entry);
+        if (spawns == index.end())
             continue;
         std::vector<std::pair<float, SpawnPoint const*>> around;
         for (SpawnPoint const& s : spawns->second)
@@ -555,8 +698,10 @@ Pace ComputePace(Player* bot, Objective const& o, WorldPosition const& at)
         pace.known = true;
         pace.entry = source.entry;
         pace.chance = source.chance;
-        pace.hp = TemplateHealth(source.entry, pace.level);
-        if (pace.hp <= 0.0f)
+        pace.chest = source.chest;
+        // a chest is opened, not fought: no health, no kill XP (level 0), its walk only
+        pace.hp = source.chest ? 0.0f : TemplateHealth(source.entry, pace.level);
+        if (!source.chest && pace.hp <= 0.0f)
             continue;
         pace.at = at;
         pace.left = best.left;
@@ -572,7 +717,12 @@ Pace ComputePace(Player* bot, Objective const& o, WorldPosition const& at)
         for (size_t i = 0; i < worked; ++i)
         {
             SpawnPoint const& s = *around[i].second;
-            reach = std::min(reach, bot->GetExactDist2d(s.x, s.y));
+            float const gapBot = bot->GetExactDist2d(s.x, s.y);
+            if (gapBot < reach)
+            {
+                reach = gapBot;
+                pace.first.Relocate(s.x, s.y, s.z);
+            }
             respawn += float(s.respawnSec);
             float gap = NO_TIME;
             for (size_t j = 0; j < worked; ++j)
@@ -604,7 +754,8 @@ bool EachGetsIt(Objective const& o)
     return proto && proto->HasFlag(ITEM_FLAG_MULTI_DROP);
 }
 
-// the core's XP for one kill of `entry` at `mobLevel` (Acore::XP::Gain: elite x2, ModExperience; KillRewarder::_InitXP:
+// the core's XP for one kill of `entry` at `mobLevel` (Acore::XP::Gain: elite x2, ModExperience, the realm's rate;
+// KillRewarder::_InitXP:
 // x ModHealth at 0.75 or less) for `m` alone (`party` of one) or with the alive `party` at the reward distance
 // (KillRewarder: the base of its highest member the mob is not gray for x the group rate x its level share; half when
 // the mob is gray for one of them; none for a member above that level)
@@ -621,6 +772,8 @@ float KillXp(Player* m, uint32 entry, uint8 mobLevel, std::vector<Player*> const
         if (tmpl->ModHealth <= 0.75f && tmpl->ModHealth >= 0.0f)
             mod *= tmpl->ModHealth;
     }
+    // the realm's kill XP rate (Acore::XP::Gain: Rate.XP.Kill outside a battleground)
+    mod *= sWorld->getRate(RATE_XP_KILL);
     ContentLevels const content = GetContentLevelsForMapAndZone(m->GetMapId(), m->GetZoneId());
     if (party.size() < 2)
         return float(Acore::XP::BaseGain(m->GetLevel(), mobLevel, content)) * mod;
@@ -673,26 +826,40 @@ std::vector<Outcome> PartyRun(std::vector<Member> const& ms, Camp const* camp, f
     if (!n)
         return out;
     Member const& lead = ms.front();
-    Pace const* pace = lead.side.post ? &lead.side.post->pace : nullptr;
+    Pace const* pace = PaceOf(lead.side);
     float const partyWorkers = std::max(workers - float(n - 1), 1.0f);
+    // PaceSeconds on whole units: interpolated between them
+    auto const paceSec = [&](Pace const& at, float units, float dps)
+    {
+        if (!at.known || units <= 0.0f)
+            return 0.0f;
+        uint32 const whole = uint32(units);
+        float const lo = PaceSeconds(at, whole, dps, lead.speed, partyWorkers);
+        float const hi = PaceSeconds(at, whole + 1, dps, lead.speed, partyWorkers);
+        return lo + (hi - lo) * (units - float(whole));
+    };
+    // a camp that only stands on the way: one clear of it, then the objective's sources past it
+    bool const pastCamp = camp && !camp->serves && camp->pace.known;
     // the seconds the party needs for `units` of its yield at `dps` (the camp's fight, else the leader's spawns)
     auto const yieldSec = [&](float units, float dps)
     {
-        if (camp)
-            return units * camp->fightSec * camp->dps / std::max(dps, 1.0f) / float(std::max<uint32>(camp->units, 1));
-        if (!pace || !pace->known || units <= 0.0f)
+        if (units <= 0.0f)
             return 0.0f;
-        // PaceSeconds on whole units: interpolated between them
-        uint32 const whole = uint32(units);
-        float const lo = PaceSeconds(*pace, whole, dps, lead.speed, partyWorkers);
-        float const hi = PaceSeconds(*pace, whole + 1, dps, lead.speed, partyWorkers);
-        return lo + (hi - lo) * (units - float(whole));
+        float const clear = camp ? camp->fightSec * camp->dps / std::max(dps, 1.0f) : 0.0f;
+        if (pastCamp)
+            return clear + paceSec(camp->pace, units, dps);
+        if (camp)
+            return units * clear / float(std::max<uint32>(camp->units, 1));
+        return pace ? paceSec(*pace, units, dps) : 0.0f;
     };
-    float const killsPerUnit =
-        camp ? float(std::max<uint32>(camp->mobs, 1)) / float(std::max<uint32>(camp->units, 1))
-             : 1.0f / std::max(pace && pace->known ? pace->chance : 1.0f, 0.0001f);
-    uint32 const entry = camp ? camp->entry : (pace ? pace->entry : 0);
-    uint8 const mobLevel = camp ? camp->topLevel : (pace ? pace->level : 0);
+    Pace const* workPace = pastCamp ? &camp->pace : (camp ? nullptr : pace);
+    float const killsPerUnit = workPace && workPace->known
+                                   ? 1.0f / std::max(workPace->chance, 0.0001f)
+                                   : (camp ? float(std::max<uint32>(camp->mobs, 1)) /
+                                                 float(std::max<uint32>(camp->units, 1))
+                                           : 1.0f);
+    uint32 const entry = workPace ? workPace->entry : (camp ? camp->entry : 0);
+    uint8 const mobLevel = workPace ? workPace->level : (camp ? camp->topLevel : 0);  // a chest: 0, no kill XP
 
     std::vector<size_t> order(n);
     for (size_t i = 0; i < n; ++i)
@@ -706,6 +873,7 @@ std::vector<Outcome> PartyRun(std::vector<Member> const& ms, Camp const* camp, f
     for (Member const& m : ms)
         dps += m.dpsGroup;
     size_t next = 0;
+    bool first = true;
     while (active.size() >= 2)
     {
         uint32 const target = ms[order[next]].left;
@@ -715,7 +883,12 @@ std::vector<Outcome> PartyRun(std::vector<Member> const& ms, Camp const* camp, f
         for (size_t i : active)
             players.push_back(ms[i].side.p);
         for (size_t i : active)
+        {
             out[i].xp += yield * killsPerUnit * KillXp(ms[i].side.p, entry, mobLevel, players);
+            if (first && pastCamp)  // the clear's own kills
+                out[i].xp += float(camp->mobs) * KillXp(ms[i].side.p, camp->entry, camp->topLevel, players);
+        }
+        first = false;
         t += dt;
         cum += yield;
         prevLeft = target;
@@ -734,7 +907,8 @@ std::vector<Outcome> PartyRun(std::vector<Member> const& ms, Camp const* camp, f
     size_t const i = active.front();
     Member const& m = ms[i];
     uint32 const rest = m.left - prevLeft;
-    Pace const* own = m.side.post && m.side.post->pace.known ? &m.side.post->pace : pace;
+    Pace const* mine = PaceOf(m.side);
+    Pace const* own = mine && mine->known ? mine : workPace;
     if (m.side.camp || !own || !own->known)
     {
         out[i].seconds = t;
@@ -753,22 +927,25 @@ float XpPerHour(Player* m, Objective const& o, uint32 units, float killXp, float
     if (seconds <= 0.0f || seconds >= NO_TIME)
         return 0.0f;
     Quest const* quest = sObjectMgr->GetQuestTemplate(o.questId);
-    float const questXp = quest && o.need ? float(quest->XPValue(m->GetLevel())) * units / o.need : 0.0f;
+    // the reward as the core gives it (Player::RewardQuest: XPValue x the quest rate)
+    float const questXp = quest && o.need ? float(quest->XPValue(m->GetLevel())) * m->GetQuestRate(quest->IsDFQuest()) *
+                                                units / o.need
+                                          : 0.0f;
     return (questXp + killXp) / seconds * HOUR;
 }
 
 // L leads (it stays on its work), P walks to it; `others`: the members of the party L leads already (none: a new
-// party). `workers`: the bots on this board (they share its spawns); `walkYd` >= 0: the length of P's route to L (else
-// the straight line). Every member must gain: L and P against alone, the members already in L's party against that
-// party without P
-Plan Forecast(Side const& l, std::vector<Side> const& others, Side const& pr, float workers, float walkYd = -1.0f)
+// party). `workers`: the bots working this board (they share its spawns); `walks`: the routes the offer looked at (P to
+// L, L to its spot, P to its own spawns; else the straight lines). Every member must gain: L and P against alone, the
+// members already in L's party against that party without P
+Plan Forecast(Side const& l, std::vector<Side> const& others, Side const& pr, float workers, Walks const& walks = {})
 {
     Plan plan;
     Player* const lp = l.p;
     Player* const pp = pr.p;
     float const speedL = std::max(lp->GetSpeed(MOVE_RUN), 1.0f);
     float const speedP = std::max(pp->GetSpeed(MOVE_RUN), 1.0f);
-    plan.walkYd = walkYd >= 0.0f ? walkYd : lp->GetExactDist2d(pp);
+    plan.walkYd = walks.pToL >= 0.0f ? walks.pToL : lp->GetExactDist2d(pp);
     plan.walkSec = plan.walkYd / speedP;
     uint32 const rL = l.obj.Left();
     uint32 const rP = pr.obj.Left();
@@ -781,8 +958,8 @@ Plan Forecast(Side const& l, std::vector<Side> const& others, Side const& pr, fl
     // each side's pace by the formula (its objective's source creature at the core's base health over its damage,
     // the walk between the spawns it works, the drop chance, the respawn of spawns shared with the board): no
     // measured history
-    Pace const* paceL = l.camp ? nullptr : &l.post->pace;
-    Pace const* paceP = pr.camp ? nullptr : &pr.post->pace;
+    Pace const* paceL = l.camp ? nullptr : PaceOf(l);
+    Pace const* paceP = pr.camp ? nullptr : PaceOf(pr);
     for (auto const& [who, pace] : {std::make_pair(lp, paceL), std::make_pair(pp, paceP)})
         if (pace && !pace->known)
         {
@@ -823,6 +1000,14 @@ Plan Forecast(Side const& l, std::vector<Side> const& others, Side const& pr, fl
     // the leader (no orange / red mob is pulled)
     if (camp)
     {
+        // a pack that only stands on the way: the party still has to work the objective past it, at the pace of its
+        // sources there (no pace, no forecast)
+        if (l.camp && !l.camp->serves && !l.camp->pace.known)
+        {
+            plan.why = "calc: the camp's mobs do not serve the objective and its sources past the camp have no pace: " +
+                       (l.camp->pace.why.empty() ? std::string("not computed") : l.camp->pace.why);
+            return plan;
+        }
         if (Acore::XP::GetColorCode(lp->GetLevel(), camp->topLevel) <= XP_ORANGE)
         {
             plan.why = Acore::StringFormat("calc: the camp's L{} is orange / red for {} L{}", camp->topLevel,
@@ -862,24 +1047,32 @@ Plan Forecast(Side const& l, std::vector<Side> const& others, Side const& pr, fl
     // the party's spots: the camp of its leader, else the leader's own spawns
     Camp const* workCamp = l.camp;
 
-    // alone: its walk to its first spawn, then its own pace, its kill XP alone
+    // alone: its walk to its first spawn (its route when the offer looked at it), then its own pace, its kill XP alone
     auto const solo = [&](Member const& m, float& xph)
     {
-        Pace const* pace = m.side.camp ? nullptr : &m.side.post->pace;
+        Pace const* pace = m.side.camp ? nullptr : PaceOf(m.side);
         if (!pace || !pace->known)
         {
             xph = 0.0f;
             return NO_TIME;
         }
-        float const seconds = pace->reachYd / m.speed + PaceSeconds(*pace, m.left, m.dpsSolo, m.speed, workers);
+        float const routed = m.side.p == lp ? walks.lToSpot : (m.side.p == pp ? walks.pToSpot : -1.0f);
+        float const reach = routed >= 0.0f ? routed : pace->reachYd;
+        float const seconds = reach / m.speed + PaceSeconds(*pace, m.left, m.dpsSolo, m.speed, workers);
         float const kills = float(m.left) / std::max(pace->chance, 0.0001f);
         xph = XpPerHour(m.side.p, m.side.obj, m.left,
                         kills * KillXp(m.side.p, pace->entry, pace->level, {m.side.p}), seconds);
         return seconds;
     };
 
-    // together: P's walk to L first (the leader's GROUP_WAIT holds the party for it), the leader's walk to its spot
-    float const reachL = paceL ? paceL->reachYd / speedL : 0.0f;
+    // together: P's walk to L first (the leader's GROUP_WAIT holds the party for it), the leader's walk to its spot:
+    // its camp, else its nearest spawn (its route when the offer looked at it, else the straight line)
+    float const reachYdL = walks.lToSpot >= 0.0f ? walks.lToSpot
+                           : l.camp              ? lp->GetExactDist(&l.camp->at)
+                           : paceL               ? paceL->reachYd
+                                                 : 0.0f;
+    float const reachL = reachYdL / speedL;
+    plan.leadWalkYd = reachYdL;
     std::vector<Outcome> const runWith = PartyRun(with, workCamp, plan.walkSec + reachL, each, workers);
     std::vector<Outcome> runBefore;
     if (before.size() >= 2)
@@ -1017,12 +1210,15 @@ void LeaveLocked(Posting& me, std::string const& reason, uint32 now, Out& out)
         // its counter as its own party tick last read it (no read of another map thread's player)
         uint32 const units = p.partyObj.have > p.haveAtJoin ? p.partyObj.have - p.haveAtJoin : 0;
         Quest const* quest = sObjectMgr->GetQuestTemplate(p.partyObj.questId);
-        float const questXp =
-            quest && p.partyObj.need ? float(quest->XPValue(p.level)) * units / p.partyObj.need : 0.0f;
+        float const questXp = quest && p.partyObj.need ? float(quest->XPValue(p.level)) *
+                                                             (quest->IsDFQuest() ? p.questRateDf : p.questRate) *
+                                                             units / p.partyObj.need
+                                                       : 0.0f;
         float const got = seconds > 0.0f ? (float(p.xp) + questXp) / seconds * HOUR : 0.0f;
         out.logs.push_back(Acore::StringFormat("[coop] exit {} group={} after={:.0f} units={} kills={}{} reason={}",
                                                p.name, party.id, seconds, units, p.sharedKills, Stamp(), why));
-        // got: its XP per hour in the party (kill XP + the quest's share of the units closed); forecast: the offer's
+        // got: its XP per hour in the party (kill XP as the core gave it + the quest's share of the units closed at
+        // the core's quest rate, the forecast's units); forecast: the offer's
         // XP per hour together, solo: alone (never: it cannot close it alone - no ratio); s: the seconds it was in the
         // party (to weigh the rates by); share: each (every kill credits each) or pooled (one drop per corpse)
         out.logs.push_back(Acore::StringFormat(
@@ -1070,6 +1266,42 @@ void LeaveLocked(Posting& me, std::string const& reason, uint32 now, Out& out)
         out.ops.push_back(std::make_unique<CoopLeaveOperation>(party.group, me.guid, newLeader));
 }
 
+// a route's yards to `to`: its walk, a partial one plus the straight rest
+float RouteYd(Leader::RouteResult const& route, Position const& to)
+{
+    if (route.complete || route.points.empty())
+        return route.length;
+    G3D::Vector3 const& last = route.points.back();
+    return route.length + to.GetExactDist(last.x, last.y, last.z);
+}
+
+// the bot's side on the bucket `key` (lock held): the objective it works there, one it looks for a party for (its
+// camp), or one it holds in its log (read again from its log; the caller computes its pace from where it stands)
+bool ResolveSide(Posting const& post, Player* p, uint64 key, Side& side)
+{
+    if (post.bucket == key)
+    {
+        side.obj = post.cur;
+        return true;
+    }
+    auto const seek =
+        std::find_if(post.seeks.begin(), post.seeks.end(), [key](Seek const& s) { return s.bucket == key; });
+    if (seek != post.seeks.end())
+    {
+        side.obj = seek->obj;
+        side.camp = &seek->camp;
+        return true;
+    }
+    auto const hold =
+        std::find_if(post.holds.begin(), post.holds.end(), [key](Hold const& h) { return h.bucket == key; });
+    if (hold == post.holds.end())
+        return false;
+    if (!ReadObjective(p, hold->obj.questId, hold->obj.index, side.obj) || !side.obj.Left())
+        return false;
+    side.hold = true;
+    return true;
+}
+
 // the leader's board look at one bucket (lock held): the best partner it leads; the offer
 void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key, Out& out)
 {
@@ -1078,20 +1310,27 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
         return;
     me.seen[key] = bucket->second.version;
 
-    // my side on this board: the objective it works, or one it looks for a party for
+    // my side on this board: the objective it works, one it looks for a party for, or one it only holds in its log
+    // (then only a seeker on the board is worth a look: a party for a camp one cannot solo)
     Side mine;
     mine.p = bot;
     mine.post = &me;
-    if (me.bucket == key)
-        mine.obj = me.cur;
-    else
+    Pace minePace;
+    if (!ResolveSide(me, bot, key, mine))
+        return;
+    if (mine.hold)
     {
-        auto const seek =
-            std::find_if(me.seeks.begin(), me.seeks.end(), [key](Seek const& s) { return s.bucket == key; });
-        if (seek == me.seeks.end())
+        if (me.party || std::none_of(bucket->second.lows.begin(), bucket->second.lows.end(),
+                                     [key](uint32 low)
+                                     {
+                                         auto const po = postings.find(low);
+                                         return po != postings.end() && !po->second.party &&
+                                                std::any_of(po->second.seeks.begin(), po->second.seeks.end(),
+                                                            [key](Seek const& s) { return s.bucket == key; });
+                                     }))
             return;
-        mine.obj = seek->obj;
-        mine.camp = &seek->camp;
+        minePace = ComputePace(bot, mine.obj, WorldPosition(bot));
+        mine.pace = &minePace;
     }
 
     // a party it leads takes more members, up to the core's party size
@@ -1126,8 +1365,16 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
             others.push_back(side);
         }
 
-    // the bots on this board share its spawns (their respawns bound the pace of each)
-    float const workers = float(bucket->second.lows.size());
+    // the bots on this board that work it share its spawns (their respawns bound the pace of each); a holder works
+    // another objective now
+    float const workers = std::max(1.0f, float(std::count_if(bucket->second.lows.begin(), bucket->second.lows.end(),
+                                                             [key](uint32 low)
+                                                             {
+                                                                 auto const po = postings.find(low);
+                                                                 return po != postings.end() &&
+                                                                        WorksOn(po->second, key);
+                                                             })));
+    std::unordered_map<uint32, Pace> holdPaces;  // the holders' paces of this objective (the lows' entries)
     Plan best;
     Player* bestPartner = nullptr;
     Side bestSide;
@@ -1148,24 +1395,25 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
         Side other;
         other.p = p;
         other.post = &po->second;
-        if (po->second.bucket == key)
-            other.obj = po->second.cur;
-        else
-        {
-            auto const seek = std::find_if(po->second.seeks.begin(), po->second.seeks.end(),
-                                           [key](Seek const& s) { return s.bucket == key; });
-            if (seek == po->second.seeks.end())
-                continue;
-            other.obj = seek->obj;
-            other.camp = &seek->camp;
-        }
-        if (led && mine.camp)
+        if (!ResolveSide(po->second, p, key, other))
+            continue;
+        if (led && (mine.camp || other.hold))
             continue;  // a party already formed works where it works
+        // a holder pairs only with a seeker (a camp one cannot solo): the board's pairs of the same work stay as
+        // they were
+        if ((mine.hold || other.hold) && !(mine.camp || other.camp))
+            continue;
         std::string const busy = Busy(p);
         if (!busy.empty())
         {
             NoteRefusal(out, bot, p, "busy: " + busy);
             continue;
+        }
+        if (other.hold)
+        {
+            Pace& paceP = holdPaces[low];
+            paceP = ComputePace(p, other.obj, WorldPosition(p));
+            other.pace = &paceP;
         }
         Plan plan = Forecast(mine, others, other, workers);
         if (!plan.ok)
@@ -1199,14 +1447,38 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
                   " passes a pack it does not fight and no walk goes round it";
         else
         {
-            float const length =
-                route.complete || route.points.empty()
-                    ? route.length
-                    : route.length + bot->GetExactDist(route.points.back().x, route.points.back().y,
-                                                       route.points.back().z);
-            best = Forecast(mine, others, bestSide, workers, length);
-            if (!best.ok)
-                why = best.why + " (route " + std::to_string(uint32(length)) + " yd)";
+            Walks walks;
+            walks.pToL = RouteYd(route, *bot);
+            // a new party: the leader's own walk to the spot the party works first (its camp, its nearest spawn) by
+            // route, checked like the partner's (the camp's own pack is the party's fight, not a refusal); the
+            // partner's walk to its own nearest spawn prices its time alone
+            if (!led)
+            {
+                Pace const* paceL = mine.camp ? nullptr : PaceOf(mine);
+                bool const spotKnown = mine.camp || (paceL && paceL->known);
+                Position const spot = mine.camp ? Position(mine.camp->at) : (paceL ? paceL->first : Position());
+                if (spotKnown)
+                {
+                    Leader::RouteResult const lead = Leader::Route(bot, spot);
+                    if (!lead.found)
+                        why = "calc: no walk from " + bot->GetName() + " to the spot it works (" + lead.Describe() +
+                              ")";
+                    else if (lead.throughRefused && !mine.camp)
+                        why = "calc: " + bot->GetName() +
+                              "'s way to the spot it works passes a pack it does not fight and no walk goes round it";
+                    else
+                        walks.lToSpot = RouteYd(lead, spot);
+                }
+                Pace const* paceP = bestSide.camp ? nullptr : PaceOf(bestSide);
+                if (why.empty() && paceP && paceP->known)
+                    walks.pToSpot = Leader::WalkYd(bestPartner, paceP->first);
+            }
+            if (why.empty())
+            {
+                best = Forecast(mine, others, bestSide, workers, walks);
+                if (!best.ok)
+                    why = best.why + " (route " + std::to_string(uint32(walks.pToL)) + " yd)";
+            }
         }
         if (!why.empty())
         {
@@ -1224,6 +1496,14 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
         party.members = {bot->GetGUID()};
         party.camp = best.camp;
         party.campFor = best.campFor;
+        // a leader that held the objective but worked another one: the party's spot is its nearest spawn
+        if (mine.hold && !mine.camp)
+            if (Pace const* paceL = PaceOf(mine); paceL && paceL->known)
+            {
+                party.spot = WorldPosition(bot->GetMapId(), paceL->first.GetPositionX(), paceL->first.GetPositionY(),
+                                           paceL->first.GetPositionZ());
+                party.spotSet = true;
+            }
         me.party = id;
         me.partyObj = mine.obj;
     }
@@ -1259,12 +1539,12 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
     auto const secs = [](float t) { return t >= NO_TIME ? std::string("never") : std::to_string(uint32(t)); };
     out.logs.push_back(Acore::StringFormat(
         "[coop] offer {} to={} group={} quests={} gain={:.0f} solo={} t_solo={} t_group={:.0f} p_solo={} "
-        "p_group={:.0f} walk={:.0f} eta={:.0f} prog={}/{} partner={}/{}{} reason={}{}",
+        "p_group={:.0f} walk={:.0f} eta={:.0f} lead_walk={:.0f} prog={}/{} partner={}/{} holder={}{} reason={}{}",
         bot->GetName(), bestPartner->GetName(), id, QuestList(mine.obj, bestObj), best.xphGroupL + best.xphGroupP,
         never ? std::string("never") : std::to_string(uint32(best.xphSoloL + best.xphSoloP)), secs(best.tSoloL),
-        best.tGroupL, secs(best.tSoloP), best.tGroupP, best.walkYd, best.walkSec, mine.obj.have, mine.obj.need,
-        bestObj.have, bestObj.need, Stamp(), best.camp.known ? "a camp one cannot solo; " : "same objective; ",
-        best.why));
+        best.tGroupL, secs(best.tSoloP), best.tGroupP, best.walkYd, best.walkSec, best.leadWalkYd, mine.obj.have,
+        mine.obj.need, bestObj.have, bestObj.need,
+        mine.hold ? bot->GetName() : (bestSide.hold ? bestPartner->GetName() : std::string("-")), Stamp(), best.camp.known ? "a camp one cannot solo; " : "same objective; ", best.why));
     out.ops.push_back(std::make_unique<CoopFormOperation>(id, bot->GetGUID(), bestPartner->GetGUID()));
 }
 
@@ -1280,10 +1560,10 @@ void UpdatePostingLocked(PlayerbotAI* botAI, Player* bot, Posting& me)
     // a level gained: the solo judge looks at its camps again (the postponed quests come back with the level)
     if (me.level != bot->GetLevel())
     {
-        for (Seek const& seek : me.seeks)
-            RemoveFrom(seek.bucket, low);
         me.seeks.clear();
         me.level = bot->GetLevel();
+        me.questRate = bot->GetQuestRate(false);
+        me.questRateDf = bot->GetQuestRate(true);
     }
     me.map = bot->GetMapId();
     me.zone = bot->GetZoneId();
@@ -1292,23 +1572,22 @@ void UpdatePostingLocked(PlayerbotAI* botAI, Player* bot, Posting& me)
     {
         Objective o;
         if (!ReadObjective(bot, itr->obj.questId, itr->obj.index, o) || !o.Left())
-        {
-            RemoveFrom(itr->bucket, low);
             itr = me.seeks.erase(itr);
-        }
         else
             ++itr;
     }
+    // the open objectives of its log: a seeker of one of them finds it on that board
+    ReadHolds(bot, me);
 
     Objective obj;
     bool const has = !bot->GetMap()->Instanceable() && CurrentObjective(botAI, bot, obj) && obj.Left();
     if (!has)
     {
-        if (me.bucket &&
-            !std::any_of(me.seeks.begin(), me.seeks.end(), [&me](Seek const& s) { return s.bucket == me.bucket; }))
-            RemoveFrom(me.bucket, low);
+        if (me.bucket)
+            Bump(me.bucket);  // it no longer works it: the board's forecasts change
         me.bucket = 0;
         me.cur = Objective();
+        SyncBuckets(me, low);
         return;
     }
     uint64 const key = BucketKey(me.map, me.zone, obj);
@@ -1316,15 +1595,16 @@ void UpdatePostingLocked(PlayerbotAI* botAI, Player* bot, Posting& me)
     WorldPosition const at = quest ? quest->pos : WorldPosition(bot);
     if (key != me.bucket || !obj.Same(me.cur))
     {
-        if (me.bucket &&
-            !std::any_of(me.seeks.begin(), me.seeks.end(), [&me](Seek const& s) { return s.bucket == me.bucket; }))
-            RemoveFrom(me.bucket, low);
-        AddTo(key, low);
+        if (me.bucket)
+            Bump(me.bucket);
         me.bucket = key;
         me.cur = obj;
         me.pace = ComputePace(bot, obj, at);
+        SyncBuckets(me, low);
+        Bump(key);  // it works it now (it may have stood on it as a holder before)
         return;
     }
+    SyncBuckets(me, low);
     // the formula's pace follows its counter, its spot and its level (its damage); nothing measured
     bool const counter = obj.have != me.cur.have || obj.need != me.cur.need;
     if (counter || me.pace.at != at || me.pace.left != obj.Left() || me.paceLevel != bot->GetLevel())
@@ -1417,6 +1697,8 @@ bool CoopFormOperation::Execute()
     Objective leaderObj, memberObj;
     Camp camp;
     ObjectGuid campFor;
+    WorldPosition spot;
+    bool spotSet = false;
     {
         std::lock_guard<std::mutex> guard(lock);
         auto const party = parties.find(_party);
@@ -1428,6 +1710,8 @@ bool CoopFormOperation::Execute()
         memberObj = mp->second.partyObj;
         camp = party->second.camp;
         campFor = party->second.campFor;
+        spot = party->second.spot;
+        spotSet = party->second.spotSet;
     }
     if (!leader || !member || !leader->IsInWorld() || !member->IsInWorld())
         refuse = "offline";
@@ -1580,10 +1864,13 @@ bool CoopFormOperation::Execute()
         auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data);
         if (!doing || doing->questId != obj.questId)
             ai->rpgInfo.ChangeToDoQuest(obj.questId, quest);
-        if (player == leader && camp.known && campFor == leader->GetGUID())
+        // the leader works the party's objective at the party's spot: the seeker's camp, or (a holder that worked
+        // another objective) the nearest spawn of the one it held
+        bool const atCamp = camp.known && campFor == leader->GetGUID();
+        if (player == leader && (atCamp || spotSet))
             if (auto* data = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data))
             {
-                data->pos = camp.at;
+                data->pos = atCamp ? camp.at : spot;
                 data->objectiveIdx = obj.index;
                 data->lastReachPOI = 0;
             }
@@ -1622,7 +1909,7 @@ public:
                 Player* m = guid == player->GetGUID() ? player : SameMapPlayer(player, guid);
                 auto const post = postings.find(guid.GetCounter());
                 if (!m || post == postings.end() || !m->IsAtGroupRewardDistance(killed) ||
-                    !EachGetsIt(post->second.partyObj) || !Serves(m, post->second.partyObj, killed))
+                    !EachGetsIt(post->second.partyObj) || !Serves(post->second.partyObj, killed))
                     continue;
                 quests += (quests.empty() ? "q" : ",q") + std::to_string(post->second.partyObj.questId);
                 ++post->second.sharedKills;
@@ -1666,10 +1953,10 @@ private:
                 LeaveLocked(me->second, reason, getMSTime(), out);
             if (forget)
             {
-                if (me->second.bucket)
-                    RemoveFrom(me->second.bucket, low);
-                for (Seek const& seek : me->second.seeks)
-                    RemoveFrom(seek.bucket, low);
+                me->second.bucket = 0;
+                me->second.seeks.clear();
+                me->second.holds.clear();
+                SyncBuckets(me->second, low);
                 postings.erase(me);
             }
         }
@@ -1705,6 +1992,10 @@ Order Tick(PlayerbotAI* botAI, Player* bot)
                 keys.push_back(me.bucket);
             for (Seek const& seek : me.seeks)
                 keys.push_back(seek.bucket);
+            // the objectives it holds: a seeker there may want it (it leads when it outranks the seeker)
+            for (Hold const& hold : me.holds)
+                if (hold.bucket != me.bucket)
+                    keys.push_back(hold.bucket);
             for (uint64 key : keys)
             {
                 auto const bucket = buckets.find(key);
@@ -1822,9 +2113,14 @@ void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 object
     float const radius = std::max(v.radius, nearest->GetAggroRange(bot));
     for (ObjectGuid const& guid : targets)
         if (Creature* mob = botAI->GetCreature(guid))
-            if (mob->IsAlive() && mob->GetExactDist2d(&v.at) <= radius && Serves(bot, obj, mob))
+            if (mob->IsAlive() && mob->GetExactDist2d(&v.at) <= radius && Serves(obj, mob))
                 ++units;
     seek.camp.units = std::max<uint32>(units, 1);
+    // a pack that only stands on the way (none of its mobs serves the objective): the party works the objective past
+    // it at the pace of its sources nearest the spot
+    seek.camp.serves = units > 0;
+    if (!seek.camp.serves)
+        seek.camp.pace = ComputePace(bot, obj, dest);
     std::string line;
     {
         std::lock_guard<std::mutex> guard(lock);
@@ -1834,25 +2130,25 @@ void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 object
             me.guid = bot->GetGUID();
             me.name = bot->GetName();
             me.level = bot->GetLevel();
+            me.questRate = bot->GetQuestRate(false);
+            me.questRateDf = bot->GetQuestRate(true);
         }
         seek.bucket = BucketKey(bot->GetMapId(), bot->GetZoneId(), obj);
-        for (auto itr = me.seeks.begin(); itr != me.seeks.end();)
-        {
-            if (itr->obj.Same(obj))
-            {
-                if (itr->bucket != me.bucket)
-                    RemoveFrom(itr->bucket, bot->GetGUID().GetCounter());
-                itr = me.seeks.erase(itr);
-            }
-            else
-                ++itr;
-        }
+        me.seeks.erase(std::remove_if(me.seeks.begin(), me.seeks.end(),
+                                      [&obj](Seek const& s) { return s.obj.Same(obj); }),
+                       me.seeks.end());
         me.seeks.push_back(seek);
-        AddTo(seek.bucket, bot->GetGUID().GetCounter());
+        SyncBuckets(me, bot->GetGUID().GetCounter());
+        Bump(seek.bucket);  // a seeker came: the holders on this board look again
         line = Acore::StringFormat(
-            "[coop] seek {} quests=q{} camp={} mobs={} units={}{} reason=looks for a party: "
-            "{}",
-            bot->GetName(), questId, nearest->GetName(), v.mobs, seek.camp.units, Stamp(), v.why);
+            "[coop] seek {} quests=q{} camp={} mobs={} units={} serves={}{} reason=looks for a party: "
+            "{}{}",
+            bot->GetName(), questId, nearest->GetName(), v.mobs, units, seek.camp.serves ? 1 : 0, Stamp(), v.why,
+            seek.camp.serves ? std::string()
+            : seek.camp.pace.known
+                ? Acore::StringFormat("; past the camp: {} {} ({} spawns)", seek.camp.pace.chest ? "chest" : "creature",
+                                      seek.camp.pace.entry, uint32(seek.camp.pace.spawns))
+                : "; past the camp: no pace (" + seek.camp.pace.why + ")");
     }
     LOG_INFO("playerbots", "{}", line);
 }

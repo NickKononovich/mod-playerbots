@@ -22,14 +22,25 @@
 //   order of the global leader that moves the bot off that quest (a five's call: its status changes) ends its co-op.
 // - No timers: the offer is looked at when the board of its objective changes (a counter, a bot coming or going).
 // - No history: the times alone and together come from the formula only (the objective's source creature at the
-//   core's base health over DpsEstimate's damage, the walk between its spawns, the loot chance, the respawns of
-//   spawns shared with the board), the partner's walk from its route to the leader (checked before the offer).
+//   core's base health over DpsEstimate's damage, or the chest that holds the item: its walk only; the walk between
+//   its spawns, the loot chance, the respawns of spawns shared with the board), the walks by route: the partner's to
+//   the leader, the leader's to the spot the party works first (its camp, its nearest spawn; both checked before the
+//   offer), the partner's to its own spawns (its time alone). XP as the core gives it: Rate.XP.Kill on the kills,
+//   the quest rate on the quest's share (the forecast and «got» alike).
+// - A camp whose mobs do not serve the objective (a pack on the way) is one clear; the objective is then worked past
+//   it at the pace of its sources there.
+// - The board knows every planned bot's quest log (as the global leader does): a bot stands on the board of every
+//   open kill / loot objective of its log in its zone, so a seeker (a camp it cannot solo) finds the members that hold
+//   the same objective, not only one working it now. A holder pairs only with a seeker; it leads when it outranks it
+//   and then works the objective from its nearest spawn.
 // - A party that takes one more member forecasts every member: each already in it must gain against the party without
 //   the newcomer, not only the leader.
 // - A party's member does not break the party for a sell run while its bags still hold a free slot (the party is a
 //   task above the convenient ones); a repair or ammo run goes at once.
 // Log: [coop] offer|accept|refuse|join|wait|shared-kill|exit|gain|seek|no-seek <bot> k=v ... t=<unix ms>
-// [reason=<text>]; gain / solo in XP per hour, solo=never when one side cannot close it alone (no ratio)
+// [reason=<text>]; gain / solo in XP per hour, solo=never when one side cannot close it alone (no ratio); offer:
+// lead_walk = the leader's route to its spot, holder = the side that only held the objective; seek: serves = the
+// pack's own mobs serve the objective
 // (C:/WoW/tools/quest_metrics.py "groups").
 
 #include <functional>
