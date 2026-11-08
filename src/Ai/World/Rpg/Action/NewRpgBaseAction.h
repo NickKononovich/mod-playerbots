@@ -83,6 +83,8 @@ public:
     static void ForgetRefusals(Player* bot);
     // [guild13] the spot lies in one of the bot's remembered danger zones (a death or a refused pack): its creature
     static CreatureTemplate const* InDangerZone(Player* bot, float x, float y);
+    // [pull9] one of its danger zones covers both spots (the bot standing in the zone of that mob)
+    static bool SameDangerZone(Player* bot, float ax, float ay, float bx, float by);
     // [deaths] the bot's danger zones on its map within `range` of (x, y): the killer's and the death spot as discs
     // (x, y, z = the bot's height, radius) - refused by its route search whether or not it sees their mobs
     static void DangerDiscs(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& out);

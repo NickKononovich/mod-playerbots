@@ -90,6 +90,25 @@ namespace
         float castSec = 0.0f;
     };
 
+    // [pull9] a mob the last route search refused, and why (logged with a refused walk)
+    struct RouteWall
+    {
+        enum class Why : uint8
+        {
+            None,
+            Elite,
+            Con,    // orange / red
+            Zone,   // in a remembered danger zone (a death, a refused pull) the bot does not stand in
+            Above,  // its linked pack holds two or more above the bot's level
+            Loses   // it loses its linked pack one by one even at full
+        };
+        uint32 entry = 0;
+        uint8 level = 0;
+        Why why = Why::None;
+        uint32 pack = 1;
+        float yards = 0.0f;
+    };
+
     struct SoloBotState
     {
         // the open fight
@@ -149,6 +168,7 @@ namespace
         // and what the search gave (DeathContext: how a killer met on a walk had been seen)
         uint32 routeMs = 0;
         std::unordered_map<uint64, bool> routeMobs;
+        std::vector<RouteWall> routeWalls;  // [pull9]
         bool routeComplete = false;
         bool routeThroughRefused = false;
         // [deaths] the engage's pull spot (Verdict::pullSpot) and the reaches its walk goes round
@@ -763,6 +783,48 @@ namespace
                         return true;
         }
         return false;
+    }
+
+    // [pull9] the judge's "loses even at full" for a pack it beats one at a time (its kill order: `foes` sorted, the
+    // first held by a taunting pet): its rotation while its full mana lasts then its white damage, against its full
+    // health, the pet's hold and its heals (Judge's projection at full; the route search's wall test)
+    struct RouteFoe
+    {
+        Creature* mob;
+        float dps, hp;
+    };
+    bool LosesAtFull(Player* bot, DpsEstimate::Result const& own, std::vector<RouteFoe> const& foes, float petHealth)
+    {
+        float const botDps = std::max(own.burstDps, 1.0f);
+        float const whiteDps = std::clamp(own.whiteDps, 1.0f, botDps);
+        float const maxMana = float(bot->GetMaxPower(POWER_MANA));
+        bool const spends = maxMana > 0.0f && own.manaPerSec > 0.0f;
+        float const spellSec = spends ? maxMana / own.manaPerSec : std::numeric_limits<float>::max();
+        float seconds = 0.0f;
+        float damage = 0.0f;
+        float targetDamage = 0.0f;
+        for (RouteFoe const& foe : foes)
+        {
+            float hp = foe.hp + HealToCome(foe.mob, foe.hp / botDps);
+            if (seconds < spellSec)
+            {
+                float const spellPart = (spellSec - seconds) * botDps;
+                float const part = std::min(hp, spellPart);
+                seconds += part / botDps;
+                hp -= part;
+            }
+            seconds += hp / whiteDps;
+            damage += foe.dps * seconds;
+            if (&foe == &foes.front())
+                targetDamage = foe.dps * seconds;
+        }
+        float const health = float(bot->GetMaxHealth());
+        if (damage < health)
+            return false;  // no heal needed (the heal kit is read only for a close call)
+        float const spare = spends ? std::max(0.0f, maxMana - own.manaPerSec * seconds) : maxMana;
+        float const heals = SurvivalKit::HealPoints(bot, seconds, spare, true);
+        float const ehp = health + std::min(petHealth, targetDamage) + heals;
+        return damage >= ehp;
     }
 
     char const* KindName(SoloSafety::Verdict::Kind kind)
@@ -2094,6 +2156,9 @@ namespace SoloSafety
         uint8 const level = bot->GetLevel();
         std::vector<Creature*> around;  // [pullplan] the idle mobs round the walk (built at the first priced mob)
         bool aroundBuilt = false;
+        DpsEstimate::Result own;  // [pull9] its damage and the pet's hold, read with `around`
+        float petHealth = 0.0f;
+        std::vector<RouteWall> walls;  // [pull9] the mobs refused, for the MAZE / refused-walk lines
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
@@ -2117,16 +2182,30 @@ namespace SoloSafety
                 sPlayerbotAIConfig.SightDistance + radius)
                 continue;
             // never walked through: orange / red con, an elite, a mob in a remembered danger zone (where it died, a
-            // pack its pull judge refused)
-            bool never = IsElite(mob) || Acore::XP::GetColorCode(level, mob->GetLevel()) <= XP_ORANGE ||
-                         NewRpgBaseAction::InDangerZone(bot, mob->GetPositionX(), mob->GetPositionY());
+            // pack its pull judge refused). [pull9] A zone the bot stands in lies behind it, as a refused reach it
+            // stands in does (Leader::Route): its mobs are judged one by one below (b345 Almored L5 in the Venture Co.
+            // camp it had refused: every walk out walled by that zone's mobs, LOOP alerts until logout)
+            XPColorChar const con = Acore::XP::GetColorCode(level, mob->GetLevel());
+            RouteWall::Why why = IsElite(mob) ? RouteWall::Why::Elite
+                                 : con <= XP_ORANGE ? RouteWall::Why::Con
+                                                    : RouteWall::Why::None;
+            if (why == RouteWall::Why::None &&
+                NewRpgBaseAction::InDangerZone(bot, mob->GetPositionX(), mob->GetPositionY()) &&
+                !NewRpgBaseAction::SameDangerZone(bot, bot->GetPositionX(), bot->GetPositionY(), mob->GetPositionX(),
+                                                  mob->GetPositionY()))
+                why = RouteWall::Why::Zone;
+            uint32 wallPack = 1;
             // [pullplan] user 2026-11-08: a mob on the way is cleared one at a time as a player clears a path (the
             // grind target's on-the-way pull from its pull spot, SoloSafety::Judge): it is priced by its kill time, a
             // wall only when the bot loses even that one fight - the mob with what comes wherever it is fought, its
             // formation and the engage calls (PullModel's linked pack, killed one by one, the most damage per
             // health first). Before, the call chained hop after hop from every assistant's home through the whole camp,
             // which the core never does (b343: 68 quests postponed for "every way there passes mobs it does not pull")
-            if (!never && alone)
+            // [pull9] ... judged as the judge judges it: "loses even at full" (full health, the pet's hold, heals and
+            // mana; where it wins only at full the walk rests first, RestBeforeWalk), two above its level at once
+            // never. Before, its health now was the test: after a fight the mobs round it were walls (b345: 66 maze
+            // postpones)
+            if (why == RouteWall::Why::None && alone)
             {
                 if (!aroundBuilt)
                 {
@@ -2136,29 +2215,33 @@ namespace SoloSafety
                             if (c->IsAlive() && !c->IsInCombat() && c->IsHostileTo(bot) &&
                                 c->HasReactState(REACT_AGGRESSIVE))
                                 around.push_back(c);
+                    own = OwnDamage(bot, nullptr);
+                    if (Pet* pet = bot->GetPet())
+                        if (pet->IsAlive() && PetTaunts(pet))
+                            petHealth = float(pet->GetHealth());
                 }
                 PullModel model(bot, mob, around);
                 model.Links();
-                struct Foe
-                {
-                    float dps, hp;
-                };
-                std::vector<Foe> foes;
+                std::vector<RouteFoe> foes;
+                uint32 above = 0;
                 for (PullModel::Member const& m : model.pack)
-                    foes.push_back({MobDps(m.mob, bot), float(m.mob->GetHealth())});  // [dps1] no measurement
-                std::sort(foes.begin(), foes.end(), [](Foe const& x, Foe const& y)
-                          { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
-                float incoming = 0.0f;
-                for (Foe const& foe : foes)
-                    incoming += foe.dps;
-                float damage = 0.0f;
-                for (Foe const& foe : foes)
                 {
-                    damage += incoming * foe.hp / dps;
-                    incoming -= foe.dps;
+                    foes.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});  // [dps1] no measurement
+                    above += m.mob->GetLevel() > level ? 1 : 0;
                 }
-                never = damage >= float(bot->GetHealth());
+                // the judge's kill order: the mob met first, then the most damage per health
+                std::sort(foes.begin() + 1, foes.end(), [](RouteFoe const& x, RouteFoe const& y)
+                          { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
+                if (above >= 2)
+                    why = RouteWall::Why::Above;
+                else if (LosesAtFull(bot, own, foes, petHealth))
+                    why = RouteWall::Why::Loses;
+                wallPack = uint32(foes.size());
             }
+            bool const never = why != RouteWall::Why::None;
+            if (never)
+                walls.push_back({mob->GetEntry(), mob->GetLevel(), why, wallPack,
+                                 bot->GetExactDist2d(centre.GetPositionX(), centre.GetPositionY())});
             if (never)
                 refuse.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
             // [deaths] a patrol it must never fight is refused along its beat (its waypoint forecast), not only where
@@ -2199,8 +2282,41 @@ namespace SoloSafety
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
         state.routeMs = getMSTime();
         state.routeMobs = std::move(seen);
+        state.routeWalls = std::move(walls);
         state.routeComplete = false;
         state.routeThroughRefused = false;
+    }
+
+    std::string RouteWalls(Player* bot)
+    {
+        if (!bot)
+            return std::string();
+        std::vector<RouteWall> walls;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end())
+                return std::string();
+            walls = found->second.routeWalls;
+        }
+        std::sort(walls.begin(), walls.end(), [](RouteWall const& a, RouteWall const& b) { return a.yards < b.yards; });
+        constexpr size_t LOGGED_WALLS = 5;  // the nearest few: a log line's length, no decision
+        std::string out;
+        for (size_t i = 0; i < walls.size() && i < LOGGED_WALLS; ++i)
+        {
+            RouteWall const& w = walls[i];
+            CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(w.entry);
+            char const* why = w.why == RouteWall::Why::Elite   ? "elite"
+                              : w.why == RouteWall::Why::Con   ? "orange / red"
+                              : w.why == RouteWall::Why::Zone  ? "danger zone"
+                              : w.why == RouteWall::Why::Above ? "pack above its level"
+                                                               : "loses at full";
+            out += Acore::StringFormat("{}{} L{} {:.0f} yd ({}, pack {})", out.empty() ? "" : ", ",
+                                       tmpl ? tmpl->Name : std::to_string(w.entry), w.level, w.yards, why, w.pack);
+        }
+        if (walls.size() > LOGGED_WALLS)
+            out += Acore::StringFormat(" +{} more", walls.size() - LOGGED_WALLS);
+        return out.empty() ? std::string("no mob wall (a danger zone's disc or the pull spot's walk)") : out;
     }
 
     bool PatrolWait(Player* bot, std::vector<G3D::Vector3> const& points, float& waitSec, std::string& who)

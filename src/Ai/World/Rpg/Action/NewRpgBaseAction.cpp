@@ -278,8 +278,8 @@ bool NewRpgBaseAction::DestinationRefused(WorldPosition const& dest)
         if (route.found && route.throughRefused)
         {
             LOG_INFO("playerbots", "[solo] {} L{} walk to ({:.0f},{:.0f}) refused: its way passes a pack it does not "
-                     "fight and no walk goes round it", bot->GetName(), bot->GetLevel(), dest.GetPositionX(),
-                     dest.GetPositionY());
+                     "fight and no walk goes round it; walls: {}", bot->GetName(), bot->GetLevel(),
+                     dest.GetPositionX(), dest.GetPositionY(), SoloSafety::RouteWalls(bot));
             remember();
             return true;
         }
@@ -540,6 +540,8 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
 {
     float const sight = sPlayerbotAIConfig.SightDistance;
     float const searchReach = 2.0f * sight;  // a far walk's leg is searched two sights ahead (the farRoute legs)
+    // [pull9] the walls of the walk's own search (the via searches below search again)
+    std::string const walls = path.throughRefused ? SoloSafety::RouteWalls(bot) : std::string();
     G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
     G3D::Vector3 const goal(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
     uint32 const low = bot->GetGUID().GetCounter();
@@ -647,7 +649,10 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
             {
                 LOG_INFO("playerbots", "[solo] {} L{} MAZE waits {:.0f} s for {} to pass its walk to ({:.0f},{:.0f})",
                          bot->GetName(), bot->GetLevel(), waitSec, who, goal.x, goal.y);
-                return ForceToWait(uint32(waitSec * float(IN_MILLISECONDS)), MovementPriority::MOVEMENT_NORMAL);
+                if (ForceToWait(uint32(waitSec * float(IN_MILLISECONDS)), MovementPriority::MOVEMENT_NORMAL))
+                    return true;
+                s_moveRefusal = Acore::StringFormat("its maze wait of {:.0f} s for {} did not start", waitSec, who);
+                return false;  // [pull9] the reason read by MoveFarTo's caller
             }
             if (path.points.size() >= 2)
             {
@@ -663,8 +668,8 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
     // 4. every way blocked: another task (the quest postponed with the co-op seek for help, the next gather node)
     std::string const why = path.throughRefused ? "every way there passes mobs it does not pull (maze search)"
                                                 : "its walk there ends in a dead end (maze search)";
-    LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {}", bot->GetName(), bot->GetLevel(), goal.x,
-             goal.y, why);
+    LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {}{}{}", bot->GetName(), bot->GetLevel(),
+             goal.x, goal.y, why, walls.empty() ? "" : "; walls: ", walls);
     RefusedWalk(dest, why);
     return true;
 }
@@ -2319,7 +2324,12 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             if (WalkAround(dest, path, disToDest, false))
                 return true;
             if (path.throughRefused)
+            {
+                if (s_moveRefusal.empty())  // [pull9] the maze search's own reason when it set one
+                    s_moveRefusal = "every way there passes mobs it does not pull and the maze search's wait for the "
+                                    "patrol did not start";
                 return false;
+            }
         }
         PathType type = path.type;
         bool canReach = !(type & (~typeOk));
@@ -2567,7 +2577,7 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
 
         QuestStatus status = bot->GetQuestStatus(questId);
         if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
-            IsQuestWorthDoing(quest) && IsQuestCapableDoing(quest))
+            IsQuestWorthDoing(quest) && IsQuestCapableDoing(quest) && !QuestTooHighToTake(bot, quest))
         {
             AcceptQuest(quest, guid);
             // Quests that are complete on acceptance and end here (auto-complete "turn-in" quests, #2495) are handed
@@ -3520,28 +3530,17 @@ namespace
         size_t const first = poiInfo.size();
         size_t spent = 0;
         bool blocked = false;
-        for (auto const& [distance, spot] : onMap)
+        // [pull9] the camps other bots work, nearest first: offered when no other camp is left - a player shares the
+        // camp (its mobs respawn, a quest object is looted by each). Before, they counted as "seen empty" and the
+        // quest was left for as long as the other bot held its claim, stuck or not (b345: 38 of 43 "every camp seen
+        // empty" with no camp seen; q9506 left by 4 bots while Almored looped in its camp)
+        std::vector<std::pair<float, QuestSpot const*>> taken;
+        auto const offer = [&](float distance, QuestSpot const* spot) -> bool
         {
-            ++resolveStats.spawns;
-            if (NewRpgBaseAction::IsSpentSpot(bot, questId, spot->x, spot->y))
-            {
-                ++spent;
-                ++resolveStats.spent;
-                continue;
-            }
-            // [guild90] another bot works that camp for the quest: taken, like a player sees it
-            if (TakenByOther(bot, questId, spot->x, spot->y))
-            {
-                ++spent;
-                ++resolveStats.taken;
-                continue;
-            }
             // a spawn next to a spot already taken adds nothing (one camp)
-            bool sameCamp = false;
-            for (size_t i = first; i < poiInfo.size() && !sameCamp; ++i)
-                sameCamp = std::hypot(poiInfo[i].pos.x - spot->x, poiInfo[i].pos.y - spot->y) < SPENT_RADIUS;
-            if (sameCamp)
-                continue;
+            for (size_t i = first; i < poiInfo.size(); ++i)
+                if (std::hypot(poiInfo[i].pos.x - spot->x, poiInfo[i].pos.y - spot->y) < SPENT_RADIUS)
+                    return false;
             // [guild15] the objective's own camp: the last aggro reach of the approach to the spot. The walk there is
             // the route search's (it goes round a mob it must not fight, RouteCosts); the straight line from the bot
             // met mobs nowhere near the objective (b333 Januel L11 in Stormwind: q62 / q2206 "objective among Sewer
@@ -3554,13 +3553,35 @@ namespace
             {
                 blocker = danger;
                 blocked = true;
-                continue;
+                return false;
             }
             poiInfo.push_back({{spot->x, spot->y}, objectiveIdx, spot->z != 0.0f ? spot->z : INVALID_HEIGHT});
             ++resolveStats.offered;
-            if (poiInfo.size() - first >= MAX_SPOT_CANDIDATES)
+            return poiInfo.size() - first >= MAX_SPOT_CANDIDATES;
+        };
+        for (auto const& [distance, spot] : onMap)
+        {
+            ++resolveStats.spawns;
+            if (NewRpgBaseAction::IsSpentSpot(bot, questId, spot->x, spot->y))
+            {
+                ++spent;
+                ++resolveStats.spent;
+                continue;
+            }
+            // [guild90] another bot works that camp for the quest: taken, like a player sees it
+            if (TakenByOther(bot, questId, spot->x, spot->y))
+            {
+                ++resolveStats.taken;
+                taken.push_back({distance, spot});
+                continue;
+            }
+            if (offer(distance, spot))
                 break;
         }
+        if (poiInfo.size() == first)
+            for (auto const& [distance, spot] : taken)
+                if (offer(distance, spot))
+                    break;
         if (poiInfo.size() > first)
             return 1;
         return blocked || !spent ? 2 : 3;
@@ -4056,6 +4077,31 @@ CreatureTemplate const* NewRpgBaseAction::InDangerZone(Player* bot, float x, flo
             return sObjectMgr->GetCreatureTemplate(zone.entry);
     }
     return nullptr;
+}
+
+bool NewRpgBaseAction::SameDangerZone(Player* bot, float ax, float ay, float bx, float by)
+{
+    if (!bot)
+        return false;
+    uint8 const level = bot->GetLevel();
+    std::lock_guard<std::mutex> guard(deathZonesLock);
+    auto const zones = deathZones.find(bot->GetGUID().GetCounter());
+    if (zones == deathZones.end())
+        return false;
+    for (DeathZone const& zone : zones->second)
+    {
+        if (zone.mapId != bot->GetMapId() || level > zone.level)
+            continue;
+        float const radiusSq = zone.radius * zone.radius;
+        auto const covers = [&](float x, float y)
+        {
+            return SegmentDistSq(zone.killerX, zone.killerY, x, y, x, y) <= radiusSq ||
+                   SegmentDistSq(zone.deathX, zone.deathY, x, y, x, y) <= radiusSq;
+        };
+        if (covers(ax, ay) && covers(bx, by))
+            return true;
+    }
+    return false;
 }
 
 void NewRpgBaseAction::DangerDiscs(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& out)

@@ -123,6 +123,8 @@ namespace SoloSafety
     // Leader::Route for a solo bot: the idle mobs round the walk, refused (`refuse`: x, y, z, radius) or priced
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,
                     std::vector<Leader::Travel::RoutePenalty>& penalties);
+    // [pull9] the mobs its last route search refused, nearest first, and why (for the refused-walk lines)
+    std::string RouteWalls(Player* bot);
     // [deaths] what that route search gave (complete; through a refused reach): kept for the death line
     void NoteRoute(Unit* walker, bool complete, bool throughRefused);
     // [deaths] user 2026-11-08: the walk `points` (from the bot on) passes the reach of mobs its last route search

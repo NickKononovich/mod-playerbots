@@ -127,7 +127,7 @@ bool HasQuestToAcceptOrReward(Player* bot, WorldObject* object)
 
         QuestStatus const& status = bot->GetQuestStatus(item.QuestId);
         if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
-            IsQuestWorthDoing(bot, quest) && IsQuestCapableDoing(bot, quest))
+            IsQuestWorthDoing(bot, quest) && IsQuestCapableDoing(bot, quest) && !QuestTooHighToTake(bot, quest))
         {
             return true;
         }
