@@ -911,6 +911,7 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
         QuestRoute::Input in;
         CollectRouteStops(in, towns, r.visitedTown);
         r.plan = QuestRoute::Solve(in);
+        PlaceGreyHandIns(r.plan, in);  // [quest14]
         r.key = RouteKey();
         r.built = true;
         r.invalid = false;
@@ -972,6 +973,82 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
     r.currentPlanned = next.leg + next.work;
     return r;
 }
+// [quest14] user rule 2026-11-08: a complete grey quest nobody needs is handed in only where the bot passes its
+// ender anyway. The detour of its ender at its cheapest place in the solved order (the straight legs at the plan's
+// measured walk ratio): within one hand-in visit (the hub radius, enders that close are one visit) it joins the plan
+// (the hub there, else its own stop), else it leaves the log. Its XP counts toward no rate
+void NewRpgBaseAction::PlaceGreyHandIns(QuestRoute::Plan& plan, QuestRoute::Input const& in)
+{
+    for (Stop const& hand : in.greyHandIns)
+    {
+        if (hand.quests.empty())
+            continue;
+        uint32 const questId = hand.quests.front();
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        if (!quest || bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+            continue;
+        auto const dist = [](float ax, float ay, float bx, float by) { return std::hypot(ax - bx, ay - by); };
+        float best = std::numeric_limits<float>::max();
+        size_t at = 0;
+        for (size_t i = 0; i <= plan.stops.size(); ++i)
+        {
+            float const ax = i ? plan.stops[i - 1].x : in.x;
+            float const ay = i ? plan.stops[i - 1].y : in.y;
+            float detour = dist(ax, ay, hand.x, hand.y);
+            if (i < plan.stops.size())
+                detour += dist(hand.x, hand.y, plan.stops[i].x, plan.stops[i].y) -
+                          dist(ax, ay, plan.stops[i].x, plan.stops[i].y);
+            if (detour < best)
+            {
+                best = detour;
+                at = i;
+            }
+        }
+        float const detourYd = std::max(0.0f, best) * plan.walkRatio;
+        if (detourYd > in.hubRadius)
+        {
+            uint8 const slot = uint8(bot->FindQuestSlot(questId));
+            if (slot < MAX_QUEST_LOG_SIZE)
+                AbandonGreyQuest(slot, quest,
+                                 Acore::StringFormat("complete, not needed, the route's detour to its ender {:.0f} "
+                                                     "yd > {:.0f} yd (one hand-in visit)",
+                                                     detourYd, in.hubRadius));
+            continue;
+        }
+        GuildCoordinator::LogGrey(bot, "keeps", quest,
+                                  Acore::StringFormat("complete, the route passes its ender (detour {:.0f} yd <= "
+                                                      "{:.0f} yd, one hand-in visit)",
+                                                      detourYd, in.hubRadius));
+        auto const hub = std::find_if(plan.stops.begin(), plan.stops.end(),
+                                      [&](Stop const& s) {
+                                          return s.kind == StopKind::Ender &&
+                                                 dist(s.x, s.y, hand.x, hand.y) <= in.hubRadius;
+                                      });
+        if (hub != plan.stops.end())
+        {
+            hub->quests.push_back(questId);
+            continue;
+        }
+        Stop stop = hand;
+        float const ax = at ? plan.stops[at - 1].x : in.x;
+        float const ay = at ? plan.stops[at - 1].y : in.y;
+        stop.leg = QuestRoute::EstimateLeg(plan, ax, ay, stop.x, stop.y, &stop.legYd);
+        float added = stop.leg, addedYd = stop.legYd;
+        if (at < plan.stops.size())
+        {
+            Stop& after = plan.stops[at];
+            added -= after.leg;
+            addedYd -= after.legYd;
+            after.leg = QuestRoute::EstimateLeg(plan, stop.x, stop.y, after.x, after.y, &after.legYd);
+            added += after.leg;
+            addedYd += after.legYd;
+        }
+        plan.eta += std::max(0.0f, added);
+        plan.walkYd += std::max(0.0f, addedYd);
+        plan.stops.insert(plan.stops.begin() + at, stop);
+    }
+}
+
 uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
 {
     giverPos = WorldPosition();

@@ -303,6 +303,20 @@ public:
     // [econ2] map thread: the item is a reagent of the bot's own called skill-ups (UpdateWanted, the lines the leader
     // calls it to) or an objective item of a quest in its log: the vendor sale keeps it
     bool NeedsForOwnCalls(Player* bot, uint32 itemId) const;
+    // [quest14] user rule 2026-11-08: a grey quest is not done unless it is needed. Grey = the core's: the quest
+    // level (Player::GetQuestLevel) at or below the bot's grey level (Acore::XP::GetGrayLevel), the level the core
+    // gives reduced or no quest XP at
+    static bool IsGreyQuest(Player* bot, Quest const* quest);
+    // [quest14] map thread, never with lock_ held: why the grey quest is needed ("" = not needed) -
+    // (a) a step of a chain (PrevQuestId / NextQuestId / RewardNextQuest / ExclusiveGroup / breadcrumb) to a quest the
+    //     bot would do that is not grey, or that is needed by (b) / (c);
+    // (b) a reward that is an upgrade for the bot (GuildGear::Evaluate) or in a member's gear plan (the leader's);
+    // (c) a reward recipe of the bot's own profession it does not know, a profession rank or recipe spell it learns,
+    //     an attunement (dungeon_access_requirements quest or item) or a key (a key item, a Lock.dbc item key) it
+    //     lacks, an item on the leader's wanted list (IsWanted) or one of its own calls (NeedsForOwnCalls)
+    std::string GreyQuestNeed(Player* bot, Quest const* quest) const;
+    // [quest14] "[quest14] <bot> skips|abandons|keeps grey q<id> <name>: <reason>", once per bot, quest and decision
+    static void LogGrey(Player* bot, char const* decision, Quest const* quest, std::string const& reason);
     // [coop] map thread, read only: the bot runs or must start an URGENT task now (its first executable urgent order
     // not waiting for a town, its five, an urgent vault run); why: the task's name
     bool UrgentTask(Player* bot, std::string* why) const;
@@ -744,7 +758,8 @@ private:
     // [econ1] questing by XP per minute (xpPerMinute); copperPerMinute = that XP at the bot's quest money per XP
     bool QuestPace(BotState& st, Player* p, float& copperPerMinute, std::string* why = nullptr,
                    float* xpPerMinute = nullptr) const;
-    // [questvalue] its green / grey log quests valued against the route's rate; the ones not worth it abandoned
+    // [questvalue] its green log quests valued against the route's rate; the ones not worth it abandoned ([quest14]
+    // greys: the route's grey rule, GreyQuestNeed)
     void RevalueQuests(BotState& st, Player* p);
     float GatherPace(uint32 skill) const;                              // units per minute of gathering, < 0: no data
     uint32 TrainerCap(uint32 skillLine, uint8 level) const;            // the highest rank's max skill by level

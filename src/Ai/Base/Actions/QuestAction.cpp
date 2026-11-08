@@ -11,6 +11,7 @@
 #include "Event.h"
 #include "ItemTemplate.h"
 #include "ObjectGuid.h"
+#include "GuildCoordinator.h"  // [quest14] the grey rule
 #include "ObjectMgr.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
@@ -127,11 +128,18 @@ bool QuestAction::CanAcceptQuest(Player* bot, Quest const* quest)
     if (!bot->CanTakeQuest(quest, false))
         return false;
 
-    // Never accept grey quests (well below the bot's level), same band as QuestValues.cpp.
-    // Player::GetQuestLevel falls back to the bot's own level for level-less quests
-    // (QuestLevel <= 0), so those are never treated as grey — like the core's dialog status.
-    if ((int32)bot->GetLevel() > bot->GetQuestLevel(quest) + GREY_QUEST_LEVEL_BAND)
-        return false;
+    // [quest14] user rule 2026-11-08: a grey quest (the core's grey level, Acore::XP::GetGrayLevel) only when it is
+    // needed (GuildCoordinator::GreyQuestNeed). Player::GetQuestLevel falls back to the bot's own level for
+    // level-less quests (QuestLevel <= 0), so those are never grey - like the core's dialog status.
+    if (GuildCoordinator::IsGreyQuest(bot, quest) && !GuildCoordinator::HumanCharacter(bot))
+    {
+        std::string const need = sGuildCoordinator.GreyQuestNeed(bot, quest);
+        GuildCoordinator::LogGrey(bot, need.empty() ? "skips" : "keeps", quest,
+                                  need.empty() ? std::string("not needed (no chain step, upgrade, recipe, skill, "
+                                                             "attunement, key or wanted item)")
+                                               : need);
+        return !need.empty();
+    }
 
     return true;
 }

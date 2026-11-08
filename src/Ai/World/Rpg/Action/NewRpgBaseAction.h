@@ -303,6 +303,11 @@ protected:
     // [questroute] the route's stops from the log, the givers of its landmass and the town tasks (at a rebuild only)
     void CollectRouteStops(QuestRoute::Input& in, std::vector<std::pair<WorldPosition, std::string>> const& towns,
                            std::set<uint64> const& visitedTown);
+    // [quest14] the complete grey quests nobody needs (in.greyHandIns): each ender the solved route passes at a
+    // detour within one hand-in visit (in.hubRadius) joins the plan, the others leave the log
+    void PlaceGreyHandIns(QuestRoute::Plan& plan, QuestRoute::Input const& in);
+    // [quest14] a grey quest leaves the log (the core's CMSG_QUESTLOG_REMOVE_QUEST), logged once
+    void AbandonGreyQuest(uint8 slot, Quest const* quest, std::string const& reason);
     // [guild11] the quest the bot is closest to being allowed: lowest min level above its own, nearest giver;
     // grindPos = the grind spot of its level nearest that giver
     uint32 ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot = true);

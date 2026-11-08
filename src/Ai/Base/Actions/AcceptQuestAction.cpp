@@ -7,11 +7,24 @@
 #include "AcceptQuestAction.h"
 #include "ObjectAccessor.h"
 #include "Event.h"
+#include "GuildCoordinator.h"  // [quest14] the grey rule
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 
 bool AcceptAllQuestsAction::ProcessQuest(Quest const* quest, Object* questGiver)
 {
+    // [quest14] user rule 2026-11-08: no grey quest unless it is needed
+    if (bot->GetQuestStatus(quest->GetQuestId()) == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) &&
+        GuildCoordinator::IsGreyQuest(bot, quest) && !GuildCoordinator::HumanCharacter(bot))
+    {
+        std::string const need = sGuildCoordinator.GreyQuestNeed(bot, quest);
+        GuildCoordinator::LogGrey(bot, need.empty() ? "skips" : "keeps", quest,
+                                  need.empty() ? std::string("not needed (no chain step, upgrade, recipe, skill, "
+                                                             "attunement, key or wanted item)")
+                                               : need);
+        if (need.empty())
+            return false;
+    }
     if (!AcceptQuest(quest, questGiver->GetGUID())) return false;
 
     auto text_quest = ChatHelper::FormatQuest(quest);
