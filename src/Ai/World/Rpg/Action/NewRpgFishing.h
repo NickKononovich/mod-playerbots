@@ -37,6 +37,8 @@ namespace NewRpgFishing
     bool IsFishing(Player* bot);
     // the bot owns a fishing pole (equipped or in its bags)
     bool HasPole(Player* bot);
+    // [fish14] out of a fishing task with the pole in hand: its best main-hand weapon from the bags back (true: done)
+    bool PutPoleAway(Player* bot);
 }
 
 #endif

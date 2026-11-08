@@ -842,6 +842,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         StartVendorRun())
         return true;
 
+    // [fish14] the Fishing Pole left in hand by a fishing task that ended without its Stop: the weapon back first
+    if (NewRpgFishing::PutPoleAway(bot))
+        return true;
+
     // [deaths14] Resurrection Sickness (spell 15007, Player::SpiritHealer... ResurrectPlayer: all stats and the damage it
     // deals at a quarter for (level - CONFIG_DEATH_SICKNESS_LEVEL + 1) minutes, ten from the tenth level above it): the
     // judge's numbers hold only for the bot without it - a wanderer or a camp it walks past meets a quarter of the bot.

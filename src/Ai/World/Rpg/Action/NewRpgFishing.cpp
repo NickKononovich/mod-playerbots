@@ -76,6 +76,48 @@ namespace
 
 bool NewRpgFishing::HasPole(Player* bot) { return FindPole(bot) != nullptr; }
 
+bool NewRpgFishing::PutPoleAway(Player* bot)
+{
+    // [fish14] b354 Sycina L11 (rogue) fought the whole run with its Fishing Pole in its main hand (DB: slot 15 Fishing
+    // Pole, a Stiletto and a Pruning Knife in its bags), ~4.5 dps: a fishing task of an earlier session ended without
+    // Stop (the logout, a task taken away), so nothing put its weapons back. Out of a fishing task the pole is put
+    // away for the best main-hand weapon in its bags (by its damage per second), as Stop would have
+    if (!bot || !bot->IsAlive() || bot->IsInCombat() || IsFishing(bot) ||
+        !IsPole(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND)))
+        return false;
+    Item* best = nullptr;
+    float bestDps = 0.0f;
+    auto const consider = [&](Item* item)
+    {
+        if (!item || IsPole(item))
+            return;
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!proto || proto->Class != ITEM_CLASS_WEAPON)
+            return;
+        uint16 dest = 0;
+        if (bot->CanEquipItem(EQUIPMENT_SLOT_MAINHAND, dest, item, true) != EQUIP_ERR_OK ||
+            dest != ((INVENTORY_SLOT_BAG_0 << 8) | EQUIPMENT_SLOT_MAINHAND))
+            return;
+        if (float const dps = proto->getDPS(); !best || dps > bestDps)
+        {
+            best = item;
+            bestDps = dps;
+        }
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+        if (Bag* bag = bot->GetBagByPos(b))
+            for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                consider(bag->GetItemByPos(uint8(j)));
+    if (!best)
+        return false;
+    LOG_INFO("playerbots", "[fish14] {} L{} puts its Fishing Pole away: {} ({:.1f} dps) back in its main hand",
+             bot->GetName(), bot->GetLevel(), best->GetTemplate()->Name1, bestDps);
+    AutoEquip(bot, best, EQUIPMENT_SLOT_MAINHAND);
+    return true;
+}
+
 bool NewRpgFishing::IsFishing(Player* bot)
 {
     std::lock_guard<std::mutex> guard(fishLock);
