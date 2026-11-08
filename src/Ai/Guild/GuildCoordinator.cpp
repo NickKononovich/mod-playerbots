@@ -22,8 +22,10 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
+#include "DpsEstimate.h"  // [questrate] the kill time of the questing formula
 #include "Engine.h"
 #include "Formulas.h"
+#include "GameObject.h"  // [questrate] chest places
 #include "GameTime.h"
 #include "Group.h"
 #include "Guild.h"
@@ -33,6 +35,8 @@
 #include "Item.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
+#include "LootMgr.h"          // [questrate] the quest items' creature sources
+#include "LootObjectStack.h"  // [questrate] chest places
 #include "MapMgr.h"
 #include "MotionMaster.h"
 #include "NewRpgBaseAction.h"  // [guild14] TripRefused
@@ -47,6 +51,7 @@
 #include "Player.h"
 #include "PlayerScript.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"  // [questrate] sight / loot distance
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "QuestDef.h"
@@ -425,6 +430,7 @@ void GuildCoordinator::Load()
     GuildHonest::LogStartup(planIndex_.size());  // [honest] the handouts the guild-plan bots never get
     LoadRecipes();
     LoadGatherSources();
+    LoadQuestValue();  // [questrate] the questing value formula's static part
     sGuildGatherPlan.Load();  // [gather] the gathering places of the wanted items
     GuildGear::Load(std::vector<uint32>(std::begin(CRAFT_LINES), std::end(CRAFT_LINES)));  // [guild50]
     GuildBankRun::LoadVaults();
@@ -1383,14 +1389,15 @@ void GuildCoordinator::RequestWithdraw(Player* bot, uint32 itemId, std::string c
 void GuildCoordinator::UpdateOrders()
 {
     // [gather] the gathering plan first, without lock_ (Assign takes its own lock): the required gatherable shortfall
-    // of the wanted list over the online gatherers (groups B, C), at the measured gathering pace per skill
+    // of the wanted list over the online gatherers (groups B, C); [questrate] gathering and questing both by formula
     {
         std::map<uint32, uint32> shortfall;
         std::map<uint32, std::pair<uint32, uint32>> stock;
         std::vector<Player*> gatherers;
-        std::map<uint32, float> pace;
         std::map<uint32, float> questPace;  // gatherer -> its questing copper per minute (the leader's comparison)
         std::map<uint32, float> unitValue;  // item -> copper a unit is worth to the guild (UpdateWanted)
+        // [questrate] gatherer -> the questing formula's numbers (the plan's log line)
+        std::map<uint32, std::string> questWhy;
         {
             std::lock_guard<std::mutex> guard(lock_);
             for (WantedItem const& w : wanted_)
@@ -1406,15 +1413,18 @@ void GuildCoordinator::UpdateOrders()
                         p && p->IsInWorld() && !HumanControls(p))
                     {
                         gatherers.push_back(p);
+                        // [questrate] its questing by formula (QuestPace), not by measured history
                         float copper = 0.0f;
-                        if (auto const st = bots_.find(row.low); st != bots_.end() && QuestPace(st->second, copper))
+                        std::string why;
+                        if (auto const st = bots_.find(row.low);
+                            st != bots_.end() && QuestPace(st->second, p, copper, &why))
+                        {
                             questPace[row.low] = copper;
+                            questWhy[row.low] = why;
+                        }
                     }
-            for (uint32 const skill : {uint32(SKILL_HERBALISM), uint32(SKILL_MINING), uint32(SKILL_SKINNING),
-                                       uint32(SKILL_FISHING)})
-                pace[skill] = GatherPace(skill);
         }
-        sGuildGatherPlan.Assign(shortfall, gatherers, pace, questPace, unitValue);
+        sGuildGatherPlan.Assign(shortfall, gatherers, questPace, unitValue, questWhy);
         if (gatherStockCalls_++ % GATHER_STOCK_LOG_EVERY == 0)  // a log cadence, no decision
             sGuildGatherPlan.LogStock(stock);
     }
@@ -2009,10 +2019,10 @@ uint32 GuildCoordinator::PlannedFor(uint32 itemId) const
 // The leader walks the skill-up plan up from the skill: reagents from its bags and the guild bank, vendor reagents for
 // copper, its own gathering at the measured gathering pace; it stops where a reagent only comes from others. Value of
 // the reached part (copper): the products' vendor price + the unlocked items' price - the vendor reagents; time: the
-// casts + the gathering. Questing value: the member's measured money + XP (the core's quest XP -> money rate at max
-// level) per minute while it quested. The higher one is what the member does.
+// casts + the gathering. Questing value: [questrate] the formula over its quests (QuestPace). The higher one is what
+// the member does.
 // ---------------------------------------------------------------------------------------------------------------------
-void GuildCoordinator::RecordPace(BotState& st, Player* p, uint32 now) const
+void GuildCoordinator::RecordPace(BotState& st, Player* p) const
 {
     double money = 0.0, xp = 0.0;
     for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
@@ -2025,31 +2035,290 @@ void GuildCoordinator::RecordPace(BotState& st, Player* p, uint32 now) const
     float const rate = sWorld->getRate(RATE_XP_QUEST);
     if (xp > 0.0 && rate > 0.0f)
         st.copperPerXp = float(money / (xp * rate));
-    bool questing = true;
-    for (GuildOrder const& o : st.orders)
-        if (o.type == GuildOrderType::PROFESSION && o.executable && !o.waitsTown)
-            questing = false;
-    st.pace.emplace_back(now, st.xpTotal, st.money, questing);
-    while (!st.pace.empty() && now - std::get<0>(st.pace.front()) > HOUR)
-        st.pace.pop_front();
 }
 
-bool GuildCoordinator::QuestPace(BotState const& st, float& copperPerMinute) const
+// [questrate] world thread, startup: the static quest table (C:/WoW/tools/quest_audit.py writes it; the SQL update
+// 2026_11_08_02 applies it) and, per quest objective, the health per unit of its cheapest source creature (the core's
+// base health at the creature's middle level; an item drop over its chance in creature_loot_template)
+void GuildCoordinator::LoadQuestValue()
 {
-    double copper = 0.0;
-    uint32 seconds = 0;
-    for (size_t i = 1; i < st.pace.size(); ++i)
+    questStatic_.clear();
+    questsByMap_.clear();
+    QueryResult result = PlayerbotsDatabase.Query(
+        "SELECT quest, doable, map, area_x, area_y, giver_x, giver_y, ender_x, ender_y, tour_yd, ideal_yd, flags "
+        "FROM playerbots_quest_value_static");
+    if (!result)
     {
-        auto const& [at0, xp0, money0, quest0] = st.pace[i - 1];
-        auto const& [at1, xp1, money1, quest1] = st.pace[i];
-        if (!quest0 || !quest1 || at1 <= at0)
-            continue;
-        seconds += at1 - at0;
-        copper += double(int64(money1) - int64(money0)) + double(xp1 > xp0 ? xp1 - xp0 : 0) * st.copperPerXp;
+        LOG_ERROR("playerbots", "[questrate] playerbots_quest_value_static is empty or missing: questing has no value "
+                                "formula, the leader keeps every member on its quests");
+        return;
     }
-    if (!seconds)
+    std::vector<std::pair<uint32, uint32>> byLevel;  // (min level, quest) of the takeable ones
+    do
+    {
+        Field* f = result->Fetch();
+        uint32 const questId = f[0].Get<uint32>();
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        int16 const map = f[2].Get<int16>();
+        if (!quest || map < 0)  // no spawn of its giver, objective or ender anywhere
+            continue;
+        std::string const doable = f[1].IsNull() ? std::string() : f[1].Get<std::string>();
+        std::string const flags = f[11].IsNull() ? std::string() : f[11].Get<std::string>();
+        QuestStatic q;
+        q.map = uint16(map);
+        q.areaX = float(f[3].Get<int32>());
+        q.areaY = float(f[4].Get<int32>());
+        q.giver = !f[5].IsNull() && !f[6].IsNull();
+        q.ender = !f[7].IsNull() && !f[8].IsNull();
+        if (q.giver)
+        {
+            q.giverX = float(f[5].Get<int32>());
+            q.giverY = float(f[6].Get<int32>());
+        }
+        if (q.ender)
+        {
+            q.enderX = float(f[7].Get<int32>());
+            q.enderY = float(f[8].Get<int32>());
+        }
+        q.tourYd = float(f[9].Get<uint32>());
+        q.idealYd = float(f[10].Get<uint32>());
+        // a quest it may pick up: the audit found the data to do it alone (class / profession quests: the core's
+        // CanTakeQuest checks the class and the skill), no world event, a giver and an ender
+        bool const flagged = flags.find("event") != std::string::npos ||
+                             flags.find("seasonal") != std::string::npos ||
+                             flags.find("no_giver") != std::string::npos ||
+                             flags.find("no_ender") != std::string::npos;
+        q.takeable = (doable == "yes" || doable == "class" || doable == "profession") && !flagged && q.giver && q.ender;
+        questStatic_[questId] = q;
+        if (q.takeable)
+            byLevel.emplace_back(quest->GetMinLevel(), questId);
+    } while (result->NextRow());
+    std::sort(byLevel.begin(), byLevel.end());
+    for (auto const& [minLevel, questId] : byLevel)
+        questsByMap_[questStatic_[questId].map].push_back(questId);
+
+    // the objectives' sources: kill credit -> creatures, quest item -> creatures that drop it (with the chance)
+    std::unordered_map<uint32, float> creditHp;  // credit entry -> the lowest health of a creature crediting it
+    std::unordered_map<uint32, float> itemHp;    // quest item -> the lowest health / chance of a creature dropping it
+    for (auto const& [questId, q] : questStatic_)
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+        {
+            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+                if (quest->RequiredNpcOrGo[i] > 0)
+                    creditHp.emplace(uint32(quest->RequiredNpcOrGo[i]), 0.0f);
+            for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                if (quest->RequiredItemId[i])
+                    itemHp.emplace(quest->RequiredItemId[i], 0.0f);
+        }
+    auto const lower = [](float& slot, float value)
+    {
+        if (value > 0.0f && (slot <= 0.0f || value < slot))
+            slot = value;
+    };
+    for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
+    {
+        uint8 const level = uint8((uint32(tmpl.minlevel) + uint32(tmpl.maxlevel)) / 2);
+        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, tmpl.unit_class);
+        float const hp = stats ? float(stats->GenerateHealth(&tmpl)) : 0.0f;
+        if (hp <= 0.0f)
+            continue;
+        for (uint32 const credit : {tmpl.Entry, tmpl.KillCredit[0], tmpl.KillCredit[1]})
+            if (auto const c = credit ? creditHp.find(credit) : creditHp.end(); c != creditHp.end())
+                lower(c->second, hp);
+        LootTemplate const* loot = tmpl.lootid ? LootTemplates_Creature.GetLootFor(tmpl.lootid) : nullptr;
+        if (!loot)
+            continue;
+        loot->VisitEntries(
+            [&](LootStoreItem const& item, float chance)
+            {
+                auto const i = item.reference ? itemHp.end() : itemHp.find(item.itemid);
+                float const p = std::min(std::abs(chance) / 100.0f, 1.0f);
+                if (i != itemHp.end() && p > 0.0f)
+                    lower(i->second, hp / p);
+            });
+    }
+    for (auto& [questId, q] : questStatic_)
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+        {
+            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+                if (quest->RequiredNpcOrGo[i] > 0)
+                    q.npcHp[i] = creditHp[uint32(quest->RequiredNpcOrGo[i])];
+            for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                if (quest->RequiredItemId[i])
+                    q.itemHp[i] = itemHp[quest->RequiredItemId[i]];
+        }
+    LOG_INFO("playerbots",
+             "[questrate] quest value: {} quests ({} takeable on {} maps), {} kill credits, {} quest items with a "
+             "creature source",
+             questStatic_.size(), byLevel.size(), questsByMap_.size(),
+             std::count_if(creditHp.begin(), creditHp.end(), [](auto const& c) { return c.second > 0.0f; }),
+             std::count_if(itemHp.begin(), itemHp.end(), [](auto const& c) { return c.second > 0.0f; }));
+}
+
+// [questrate] the questing value by formula (user 2026-11-08: no measurements). Per quest:
+//   value (copper) = Quest::XPValue(level) x Rate.XP.Quest x its copper per XP (the core's max-level quest money,
+//                    RecordPace) + GetRewOrReqMoney(level) + the reward items' sell price (+ the best choice's)
+//   time (s)       = the walk / its run speed + the kills left x the source's health / its EstimateDps (solo)
+//   walk           = in its log, incomplete: to the objective area + the tour's part still to do + area -> ender;
+//                    complete: to the ender; one it may take: to the giver + giver -> tour -> ender (ideal_yd)
+// Its log quests together (the work it is on: their value over their time); an empty or unpriced log: the best quest
+// it may take now on its map.
+bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute, std::string* why) const
+{
+    if (!p || questStatic_.empty())
         return false;
-    copperPerMinute = float(copper * MINUTE / seconds);
+    uint8 const level = p->GetLevel();
+    float const rate = sWorld->getRate(RATE_XP_QUEST);
+    float const speed = std::max(p->GetSpeed(MOVE_RUN), 1.0f);
+    float const dps = DpsEstimate::EstimateDps(p, nullptr, DpsEstimate::BuffContext::Solo);
+    uint32 const map = p->GetMapId();
+    float const x = p->GetPositionX(), y = p->GetPositionY();
+    auto const dist = [](float ax, float ay, float bx, float by) { return double(std::hypot(ax - bx, ay - by)); };
+    auto const worth = [&](Quest const* quest)
+    {
+        double const xp = double(quest->XPValue(level)) * rate;
+        double perXp = st.copperPerXp;
+        if (perXp <= 0.0 && xp > 0.0)  // nothing in its log yet: this quest's own max-level money for its XP
+            perXp = double(quest->GetRewMoneyMaxLevel()) / xp;
+        double copper = xp * perXp + double(std::max<int32>(0, quest->GetRewOrReqMoney(level)));
+        for (uint8 i = 0; i < QUEST_REWARDS_COUNT; ++i)
+            if (ItemTemplate const* proto =
+                    quest->RewardItemId[i] ? sObjectMgr->GetItemTemplate(quest->RewardItemId[i]) : nullptr)
+                copper += double(proto->SellPrice) * quest->RewardItemIdCount[i];
+        double choice = 0.0;
+        for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT; ++i)
+            if (ItemTemplate const* proto =
+                    quest->RewardChoiceItemId[i] ? sObjectMgr->GetItemTemplate(quest->RewardChoiceItemId[i]) : nullptr)
+                choice = std::max(choice, double(proto->SellPrice) * quest->RewardChoiceItemCount[i]);
+        return copper + choice;
+    };
+    // the kill seconds of the units left (all of them for a quest it has not taken) and the units left / in all;
+    // false: kills it cannot price (no damage)
+    auto const killSeconds = [&](Quest const* quest, QuestStatic const& q, QuestStatusData const* status,
+                                 double& seconds, uint32& left, uint32& total)
+    {
+        seconds = 0.0;
+        left = total = 0;
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        {
+            uint32 const need = quest->RequiredNpcOrGoCount[i];
+            if (!need || !quest->RequiredNpcOrGo[i])
+                continue;
+            uint32 const done = status ? std::min<uint32>(status->CreatureOrGOCount[i], need) : 0;
+            total += need;
+            left += need - done;
+            if (q.npcHp[i] > 0.0f && need > done)
+            {
+                if (dps <= 0.0f)
+                    return false;
+                seconds += double(need - done) * q.npcHp[i] / dps;
+            }
+        }
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+        {
+            uint32 const need = quest->RequiredItemCount[i];
+            if (!need || !quest->RequiredItemId[i])
+                continue;
+            uint32 const done = status ? std::min<uint32>(status->ItemCount[i], need) : 0;
+            total += need;
+            left += need - done;
+            if (q.itemHp[i] > 0.0f && need > done)
+            {
+                if (dps <= 0.0f)
+                    return false;
+                seconds += double(need - done) * q.itemHp[i] / dps;
+            }
+        }
+        return true;
+    };
+
+    // its log
+    double logCopper = 0.0, logSeconds = 0.0;
+    uint32 logQuests = 0, inLog = 0;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const questId = p->GetQuestSlotQuestId(slot);
+        Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+        if (!quest)
+            continue;
+        ++inLog;
+        QuestStatus const status = p->GetQuestStatus(questId);
+        auto const q = questStatic_.find(questId);
+        if (q == questStatic_.end() || q->second.map != map || !q->second.ender ||
+            (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE))
+            continue;
+        QuestStatic const& s = q->second;
+        double walk = 0.0, kills = 0.0;
+        if (status == QUEST_STATUS_COMPLETE)
+            walk = dist(x, y, s.enderX, s.enderY);
+        else
+        {
+            auto const data = p->getQuestStatusMap().find(questId);
+            uint32 left = 0, total = 0;
+            if (!killSeconds(quest, s, data == p->getQuestStatusMap().end() ? nullptr : &data->second, kills, left,
+                             total))
+                continue;
+            double const part = total ? double(left) / double(total) : 1.0;
+            walk = dist(x, y, s.areaX, s.areaY) + s.tourYd * part + dist(s.areaX, s.areaY, s.enderX, s.enderY);
+        }
+        logCopper += worth(quest);
+        logSeconds += walk / speed + kills;
+        ++logQuests;
+    }
+    if (logQuests)
+    {
+        copperPerMinute = float(logCopper * MINUTE / std::max(logSeconds, 1.0));  // 1 s: a hand-in where it stands
+        if (why)
+            *why = Acore::StringFormat("формула: {} кв. в журнале, {:.0f} м за {:.0f} с", logQuests, logCopper,
+                                       logSeconds);
+        return true;
+    }
+
+    // the quests of its map it may take now (CanTakeQuest, kept until its level, map or quest counts change)
+    uint64 const key = (uint64(level) << 56) | (uint64(map & 0xFFFF) << 40) |
+                       (uint64(p->getRewardedQuests().size() & 0xFFFFFF) << 16) | uint64(inLog & 0xFFFF);
+    if (st.questAvailKey != key)
+    {
+        st.questAvailKey = key;
+        st.questAvail.clear();
+        if (auto const list = questsByMap_.find(map); list != questsByMap_.end())
+            for (uint32 const questId : list->second)
+            {
+                Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+                if (!quest || quest->GetMinLevel() > level)
+                    break;  // sorted by min level
+                if (p->GetQuestStatus(questId) == QUEST_STATUS_NONE && p->CanTakeQuest(quest, false))
+                    st.questAvail.push_back(questId);
+            }
+    }
+    float best = -1.0f;
+    uint32 bestQuest = 0;
+    double bestCopper = 0.0, bestSeconds = 0.0;
+    for (uint32 const questId : st.questAvail)
+    {
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        auto const q = questStatic_.find(questId);
+        double kills = 0.0;
+        uint32 left = 0, total = 0;
+        if (!quest || q == questStatic_.end() || !killSeconds(quest, q->second, nullptr, kills, left, total))
+            continue;
+        double const seconds = (dist(x, y, q->second.giverX, q->second.giverY) + q->second.idealYd) / speed + kills;
+        double const copper = worth(quest);
+        float const perMinute = float(copper * MINUTE / std::max(seconds, 1.0));
+        if (perMinute > best)
+        {
+            best = perMinute;
+            bestQuest = questId;
+            bestCopper = copper;
+            bestSeconds = seconds;
+        }
+    }
+    if (!bestQuest)
+        return false;
+    copperPerMinute = best;
+    if (why)
+        *why = Acore::StringFormat("формула: лучший доступный q{}, {:.0f} м за {:.0f} с", bestQuest, bestCopper,
+                                   bestSeconds);
     return true;
 }
 
@@ -2453,16 +2722,18 @@ void GuildCoordinator::UpdateProfessions()
                     double const value = sales + unlocked - vendorCost;
                     double const minutes = craftMin + gatherMin;
                     float questPace = 0.0f;
+                    std::string questWhy;
                     char numbers[200];
                     std::snprintf(numbers, sizeof(numbers), "до %u за %.1f мин (крафт %.1f, сбор %.1f), ценность %s",
                                   reach, minutes, craftMin, gatherMin, Gsc(uint64(std::max(0.0, value))).c_str());
                     std::string const reached = std::string(numbers) +
                                                 (unlockedText.empty() ? "" : "; открывает " + unlockedText) +
                                                 (block.empty() ? "" : "; дальше: " + block);
-                    if (!QuestPace(st, questPace))
+                    if (!QuestPace(st, p, questPace, &questWhy))
                     {
                         key = "noquestpace";
-                        decision = head + lag + " — нет замеров темпа квестов: квестует (" + reached + ")";
+                        decision = head + lag + " — квесты без цены (нет квеста с данными на карте): квестует (" +
+                                   reached + ")";
                     }
                     else if (value > 0 && value > double(questPace) * minutes)
                     {
@@ -2504,7 +2775,8 @@ void GuildCoordinator::UpdateProfessions()
                             kinds += kinds.empty() ? "gather" : "+gather";
                         }
                         key = "profession:" + kinds;
-                        decision = head + lag + " — " + pace + " → PROFESSION " + kinds + " (" + reached + ")";
+                        decision = head + lag + " — " + pace + " (" + questWhy + ") → PROFESSION " + kinds + " (" +
+                                   reached + ")";
                     }
                     else
                     {
@@ -2512,7 +2784,7 @@ void GuildCoordinator::UpdateProfessions()
                         std::snprintf(pace, sizeof(pace), "квесты %.0f м/мин ≥ профессия %.0f м/мин", questPace,
                                       minutes > 0 ? value / minutes : value);
                         key = "quest";
-                        decision = head + lag + " — " + pace + ": квестует (" + reached + ")";
+                        decision = head + lag + " — " + pace + " (" + questWhy + "): квестует (" + reached + ")";
                     }
                 }
             }
@@ -3765,8 +4037,14 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                         }
                         continue;
                     }
-                    if (place->spot.GetMapId() != bot->GetMapId() ||
-                        (place->zoneId && place->zoneId != bot->GetZoneId()))
+                    // [questrate] b338: a chest place in the bot's own zone ran as DO_GATHER, which works herb / ore
+                    // nodes only (chests: 0 of 6402 Linen Cloth, Ryarii's Fel Rock chest): it walks to the chest
+                    // place's spot as to another zone's place, and opens the chests in sight there (below)
+                    bool const otherZone = place->spot.GetMapId() != bot->GetMapId() ||
+                                           (place->zoneId && place->zoneId != bot->GetZoneId());
+                    bool const chestAway = place->kind == GatherKind::CHEST && !otherZone &&
+                                           bot->GetExactDist(place->spot) > sPlayerbotAIConfig.SightDistance;
+                    if (otherZone || chestAway)
                     {
                         // [gather] b337: no judge on the gather walk - 16 of 21 deaths walked a GATHER order (L1 bots
                         // through L5-8 areas), and walks the core gave up (MOVE_FAR_LOOP at the Darnassus / Exodar
@@ -3808,12 +4086,83 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                         started(order);
                         return step;
                     }
-                    st.gatherWalkPlace = 0;  // arrived
+                    if (place->kind != GatherKind::CHEST)
+                        st.gatherWalkPlace = 0;  // arrived (a chest place: its walks to the chests are checked below)
                     if (place->kind == GatherKind::SKIN)
                     {
+                        // [questrate] b338 Ainne: the skinning place of its own zone lay in its danger zone of Large
+                        // Crag Boar; GO_GRIND refused the walk and the order sent it again (455 s, 36 alerts). The
+                        // solo judge first, as for a place in another zone: refused -> back to the leader
+                        if (NewRpgBaseAction::TripRefused(bot, place->spot.GetPositionX(), place->spot.GetPositionY(),
+                                                          place->spot.GetPositionZ(), "skinning place"))
+                        {
+                            sGuildGatherPlan.Refuse(bot, order.placeId,
+                                                    "the solo judge refused the walk (TRIP_REFUSED)");
+                            order.executable = false;
+                            order.status = "место отдано лидеру: путь опасен";
+                            continue;
+                        }
                         step.kind = GuildRunStep::GRIND;
                         step.pos = place->spot;
                         step.reason = "GATHER skin " + order.details;
+                        started(order);
+                        return step;
+                    }
+                    if (place->kind == GatherKind::CHEST)
+                    {
+                        // [questrate] at the chest place: the nearest spawned chest of it in sight that it can open;
+                        // walk to it, then hold while the loot strategy opens it. None left: the place goes back to
+                        // the leader (Assign picks again)
+                        GameObject* chest = nullptr;
+                        float const sight = sPlayerbotAIConfig.SightDistance;
+                        for (uint32 const entry : place->entries)
+                        {
+                            GameObject* go = bot->FindNearestGameObject(entry, sight, true);
+                            if (!go || go->getLootState() != GO_READY ||
+                                (chest && bot->GetExactDist(go) >= bot->GetExactDist(chest)))
+                                continue;
+                            if (LootObject loot(bot, go->GetGUID()); !loot.IsEmpty() && loot.IsLootPossible(bot))
+                                chest = go;
+                        }
+                        if (!chest)
+                        {
+                            sGuildGatherPlan.Refuse(bot, order.placeId, "no chest of the place to open in sight");
+                            order.executable = false;
+                            order.status = "место отдано лидеру: сундуков нет";
+                            continue;
+                        }
+                        float const left = bot->GetExactDist(chest);
+                        if (left > sPlayerbotAIConfig.LootDistance)
+                        {
+                            // the same checks as the walk to the place: the solo judge, and a walk issued again from
+                            // no nearer proves the last one gave the chest up (under water, no path)
+                            std::string refusal;
+                            if (NewRpgBaseAction::TripRefused(bot, chest->GetPositionX(), chest->GetPositionY(),
+                                                              chest->GetPositionZ(), "chest"))
+                                refusal = "the solo judge refused the walk to its chest (TRIP_REFUSED)";
+                            else if (st.gatherWalkPlace == order.placeId && left >= st.gatherWalkLeft)
+                                refusal = Acore::StringFormat(
+                                    "its last walk to a chest ended no nearer ({:.0f} -> {:.0f})", st.gatherWalkLeft,
+                                    left);
+                            if (!refusal.empty())
+                            {
+                                sGuildGatherPlan.Refuse(bot, order.placeId, refusal);
+                                st.gatherWalkPlace = 0;
+                                order.executable = false;
+                                order.status = "место отдано лидеру: " + refusal;
+                                continue;
+                            }
+                            st.gatherWalkPlace = order.placeId;
+                            st.gatherWalkLeft = left;
+                            step.kind = GuildRunStep::WALK;
+                            step.pos = WorldPosition(chest);
+                            step.reason = "GATHER chest " + order.details;
+                            started(order);
+                            return step;
+                        }
+                        st.gatherWalkPlace = 0;
+                        step.kind = GuildRunStep::BUSY;  // the loot strategy opens it (AddAllLoot: nearest objects)
+                        step.reason = "GATHER chest " + order.details;
                         started(order);
                         return step;
                     }
@@ -4245,6 +4594,11 @@ void GuildCoordinator::UpdateHealth()
         uint64 const xp = XpTotal(p);
         uint32 const quests = uint32(p->getRewardedQuests().size());
         uint32 const money = p->GetMoney();
+        // [questrate] b338: Dandolar / Brelir / Lyleria bought 4-5 vendor upgrades in a row at one vendor (each BUY
+        // order its own DO_PROFESSION trip, the next one issued when the last was equipped), standing still with no
+        // XP: 20 STUCK alerts under BUY. Money changing hands (bought, sold, mailed, traded) is progress, as a skill
+        // that rose is for a crafter
+        bool const moneyMoved = st.seen && money != st.money;
         if (st.seen)
         {
             sample.xp += xp > st.xpTotal ? xp - st.xpTotal : 0;
@@ -4255,7 +4609,7 @@ void GuildCoordinator::UpdateHealth()
         st.xpTotal = xp;
         st.questsDone = quests;
         st.money = money;
-        RecordPace(st, p, now);  // [tasks] the questing pace the profession call compares with
+        RecordPace(st, p);  // [questrate] its copper per quest XP (the questing formula, UpdateWanted)
 
         if (p->IsAlive())
             st.deathOpen = false;
@@ -4275,7 +4629,7 @@ void GuildCoordinator::UpdateHealth()
         st.skillSum = skillSum;
         // stuck: out of combat, alive, not moved beyond its combat reach for 60 s, no legitimate wait
         float const reach = std::max(p->GetCombatReach(), 1.5f);
-        if (p->IsInCombat() || !st.anchorAt || st.mapId != p->GetMapId() || skillRose ||
+        if (p->IsInCombat() || !st.anchorAt || st.mapId != p->GetMapId() || skillRose || moneyMoved ||
             p->GetExactDist(st.ax, st.ay, st.az) > reach)
         {
             st.mapId = p->GetMapId();

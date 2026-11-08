@@ -56,6 +56,7 @@ struct GatherPlace
     // its pool weight); sorted
     std::vector<std::tuple<uint8, int32, float>> spawnReq;
     uint8 levelMin{0}, levelMax{0};  // SKIN: the mob's levels (display)
+    float areaYd2{0.0f};             // [questrate] the box its spawns spread over (square yards)
 };
 
 struct GatherAssignment
@@ -70,10 +71,11 @@ struct GatherAssignment
     float ratePerHour{0.0f};  // units per hour at the place for this bot (shared supply, catch chance)
     float travelSec{0.0f};
     // [gather] the leader's value test: the gather's copper per minute (the item's wanted value x the rate, the walk
-    // paid for over the share) against the bot's measured questing copper per minute (GuildCoordinator::QuestPace).
-    // worth = the gather pays more: an URGENT task; else a convenient one that never takes the bot off its quests
+    // paid for over the share) against the bot's questing copper per minute by formula ([questrate]
+    // GuildCoordinator::QuestPace). worth = the gather pays more: an URGENT task; else a convenient one that never
+    // takes the bot off its quests
     float valuePerMin{0.0f};
-    float questPerMin{-1.0f};  // < 0: no questing samples yet (the bot quests)
+    float questPerMin{-1.0f};  // < 0: no quest it can price (the bot quests)
     bool worth{false};
     std::string placeName;
     std::string why;
@@ -102,15 +104,15 @@ public:
     void Load();
 
     // world thread: the shortfalls (item -> units still needed) over the gatherers online; returns one assignment per
-    // gatherer that can bring any of them (others: none, they quest). `measuredPace`: skill -> units per minute of
-    // gathering the leader measured (GuildCoordinator::GatherPace), < 0 unknown.
-    // `questPace`: bot low guid -> its questing copper per minute (missing: no samples); `unitValue`: item -> copper
+    // gatherer that can bring any of them (others: none, they quest); the rates by formula (Rate), no measurements.
+    // `questPace`: bot low guid -> its questing copper per minute by formula (GuildCoordinator::QuestPace; missing:
+    // no quest it can price - it quests); `questWhy`: the formula's numbers for the log; `unitValue`: item -> copper
     // one unit is worth to the guild (GuildCoordinator::UpdateWanted: what it is wanted for)
     std::vector<GatherAssignment> Assign(std::map<uint32, uint32> const& shortfall,
                                          std::vector<Player*> const& gatherers,
-                                         std::map<uint32, float> const& measuredPace,
                                          std::map<uint32, float> const& questPace,
-                                         std::map<uint32, float> const& unitValue);
+                                         std::map<uint32, float> const& unitValue,
+                                         std::map<uint32, std::string> const& questWhy);
     // map thread: the bot's walk to its place was refused by the solo judge (TripRefused) or ended no nearer than the
     // last one (the walk gave the place up): the place is off for this bot until its next level, Assign picks again
     void Refuse(Player* bot, uint32 placeId, std::string const& why);
@@ -154,8 +156,13 @@ private:
     uint8 DangerAt(uint32 mapId, float x, float y, float z) const;
     float SpawnWeight(uint32 spawnId, bool gameObject) const;
     std::string PlaceName(GatherPlace const& place) const;
-    // units per hour this bot gets at the place (shared with `others` already sent there); 0 = cannot work there
-    float Rate(GatherPlace const& place, uint32 itemId, Player* bot, uint32 others, float pace) const;
+    // units per hour this bot gets at the place (shared with `others` already sent there); 0 = cannot work there:
+    // the supply (live spawns over their respawn) capped by its own work (walk, kill, cast) - a formula
+    float Rate(GatherPlace const& place, uint32 itemId, Player* bot, uint32 others) const;
+    // the base-rank gather casts (OpenLootAction / LootAction use the same ids)
+    static constexpr uint32 SPELL_HERB_GATHERING_BASE = 2366;
+    static constexpr uint32 SPELL_MINING_BASE = 2575;
+    static constexpr uint32 SPELL_SKINNING_BASE = 8613;
     float TravelSeconds(Player* bot, GatherPlace const& place) const;
 
     std::vector<GatherPlace> places_;

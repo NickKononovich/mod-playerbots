@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "Define.h"
+#include "QuestDef.h"  // [questrate] QUEST_OBJECTIVES_COUNT
 #include "TravelMgr.h"
 
 class Creature;
@@ -408,9 +409,11 @@ private:
         std::set<std::string> ranTasks;  // keys of tasks the bot started (an ended one is "done", else "dropped")
         uint32 visitTown{0};             // the town of the town tasks it runs on this visit
         uint32 visitTasks{0};
-        // [tasks] the pace samples of the health update: (game time, xp total, money, no PROFESSION task)
-        std::deque<std::tuple<uint32, uint64, uint32, bool>> pace;
         float copperPerXp{0.0f};  // the core's quest XP -> money at max level over its quest log (last seen)
+        // [questrate] the quests of its map it may take now (Player::CanTakeQuest over the static quest table), kept
+        // while its level, map, rewarded and logged quest counts stay the same (questAvailKey)
+        uint64 questAvailKey{0};
+        std::vector<uint32> questAvail;
         uint8 rpgStatus{0};       // the last New RPG status (gathering time)
         uint32 rpgStatusAt{0};
         std::map<uint32, std::string> profDecision;  // skill line -> the last [guild] decision (logged on change)
@@ -614,10 +617,15 @@ private:
     std::string TasksText(BotState const& st) const;
     // [tasks] profession vs questing, decided by the global leader only (world thread)
     void UpdateProfessions();
-    bool QuestPace(BotState const& st, float& copperPerMinute) const;  // false: no questing samples yet
+    // [questrate] the member's questing value by formula (no measurements): per quest the core's quest XP at its
+    // copper per XP + the money + the reward items' price over the time it takes now (the walk to the objective area
+    // and the ender, or to the giver for a quest it may take; the kills by the source's health at its EstimateDps,
+    // the drop chance). false: no quest it can price (no static row on its map); `why`: the numbers
+    bool QuestPace(BotState& st, Player* p, float& copperPerMinute, std::string* why = nullptr) const;
     float GatherPace(uint32 skill) const;                              // units per minute of gathering, < 0: no data
     uint32 TrainerCap(uint32 skillLine, uint8 level) const;            // the highest rank's max skill by level
-    void RecordPace(BotState& st, Player* p, uint32 now) const;        // UpdateHealth
+    void RecordPace(BotState& st, Player* p) const;                    // UpdateHealth: its copper per quest XP
+    void LoadQuestValue();  // [questrate] playerbots_quest_value_static + the objectives' kill cost, startup
     void UpdateGear();  // [guild50] one member's upgrade plan per call
     void PlanGear(Player* m, std::vector<GearPick>& now, std::vector<GearPick>& plan,
                   std::map<uint32, RewardPick>& rewards, std::vector<Player*> const& bots,
@@ -671,6 +679,22 @@ private:
     std::unordered_map<uint64, uint32> lastCap_;    // [gather] (low << 16 | line) -> the skill it could reach then
     // [gather] (low << 16 | line) -> copper one skill point of that crafter is worth (UpdateProfessions, lock_)
     std::unordered_map<uint64, float> pointValue_;
+    // [questrate] the static part of a quest's value (quest_audit.py -> playerbots_quest_value_static) and the
+    // health per objective unit of its cheapest source creature (kill credit, or the drop over its chance; 0: no
+    // creature, an object or an event); read-only after Load
+    struct QuestStatic
+    {
+        uint16 map{0};
+        bool takeable{false};  // doable yes / class / profession, no event, a giver and an ender
+        bool giver{false}, ender{false};
+        float areaX{0}, areaY{0}, giverX{0}, giverY{0}, enderX{0}, enderY{0};
+        float tourYd{0};   // the tour over the objective spawns
+        float idealYd{0};  // giver -> tour -> ender
+        float npcHp[QUEST_OBJECTIVES_COUNT]{};
+        float itemHp[QUEST_ITEM_OBJECTIVES_COUNT]{};
+    };
+    std::unordered_map<uint32, QuestStatic> questStatic_;
+    std::unordered_map<uint32, std::vector<uint32>> questsByMap_;  // map -> takeable quests, by min level
 
     mutable std::mutex lock_;
     std::unordered_map<uint32, BotState> bots_;

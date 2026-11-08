@@ -13,6 +13,7 @@
 #include <iterator>
 
 #include "Creature.h"
+#include "DpsEstimate.h"  // [questrate] the kill time of a skinning place
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "Formulas.h"
@@ -414,6 +415,16 @@ void GuildGatherPlan::Finish(GatherPlace& place, std::vector<WorldPosition> cons
             place.spot = p;
         }
     std::sort(place.spawnReq.begin(), place.spawnReq.end());
+    // [questrate] the box its spawns spread over (the walk between the live ones, Rate)
+    float minX = FLT_MAX, maxX = -FLT_MAX, minY = FLT_MAX, maxY = -FLT_MAX;
+    for (WorldPosition const& p : points)
+    {
+        minX = std::min(minX, p.GetPositionX());
+        maxX = std::max(maxX, p.GetPositionX());
+        minY = std::min(minY, p.GetPositionY());
+        maxY = std::max(maxY, p.GetPositionY());
+    }
+    place.areaYd2 = (maxX - minX) * (maxY - minY);
 }
 
 void GuildGatherPlan::LoadNodesAndChests()
@@ -826,7 +837,7 @@ bool GuildGatherPlan::Assigned(uint32 botLow, GatherAssignment& out) const
 // ---------------------------------------------------------------------------------------------------------------------
 // the assignment (world thread)
 // ---------------------------------------------------------------------------------------------------------------------
-float GuildGatherPlan::Rate(GatherPlace const& place, uint32 itemId, Player* bot, uint32 others, float pace) const
+float GuildGatherPlan::Rate(GatherPlace const& place, uint32 itemId, Player* bot, uint32 others) const
 {
     auto const y = place.yield.find(itemId);
     auto const py = place.poolYield.find(itemId);
@@ -875,16 +886,43 @@ float GuildGatherPlan::Rate(GatherPlace const& place, uint32 itemId, Player* bot
             live += weight;
     if (live <= 0.0f || place.respawnSec <= 0.0f)
         return 0.0f;
-    float rate = live * 3600.0f / place.respawnSec * perUnit / float(others + 1);
-    if (pace >= 0.0f)
+    float const rate = live * 3600.0f / place.respawnSec * perUnit / float(others + 1);
+    // [questrate] what the bot itself works per hour, by formula (b338: the supply alone - every live spawn of a whole
+    // zone, capped only by a measured gathering pace - gave one L8 657 Light Leather / h at Elder Crag Boars): per
+    // spawn the walk to the next live one of its share (spread over the spawns' box: the 2D mean nearest distance
+    // 0.5 sqrt(area / live)), the kill of a skinned mob (its base health over the bot's EstimateDps), the gather cast
+    float const mine = live / float(others + 1);
+    float const step = place.areaYd2 > 0.0f ? 0.5f * std::sqrt(place.areaYd2 / mine) : 0.0f;
+    float work = step / std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    uint32 castSpell = 0;
+    if (place.kind == GatherKind::SKIN)
+        castSpell = SPELL_SKINNING_BASE;
+    else if (place.skill == SKILL_HERBALISM)
+        castSpell = SPELL_HERB_GATHERING_BASE;
+    else if (place.skill == SKILL_MINING)
+        castSpell = SPELL_MINING_BASE;
+    if (SpellInfo const* cast = castSpell ? sSpellMgr->GetSpellInfo(castSpell) : nullptr)
+        work += float(cast->CalcCastTime()) / 1000.0f;
+    if (place.kind == GatherKind::SKIN)
     {
-        float total = 0.0f;
-        for (auto const& [item, n] : place.yield)
-            total += n;
-        if (total > 0.0f)
-            rate = std::min(rate, pace * 60.0f * perUnit / total);
+        float hp = 0.0f;
+        uint32 mobs = 0;
+        for (uint32 const entry : place.entries)
+            if (CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry))
+            {
+                uint8 const mobLevel = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
+                if (CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(mobLevel, tmpl->unit_class))
+                {
+                    hp += float(stats->GenerateHealth(tmpl));
+                    ++mobs;
+                }
+            }
+        float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
+        if (!mobs || dps <= 0.0f)
+            return 0.0f;
+        work += hp / float(mobs) / dps;
     }
-    return rate;
+    return work > 0.0f ? std::min(rate, 3600.0f / work * perUnit) : rate;
 }
 
 float GuildGatherPlan::TravelSeconds(Player* bot, GatherPlace const& place) const
@@ -927,9 +965,9 @@ void GuildGatherPlan::Refuse(Player* bot, uint32 placeId, std::string const& why
 
 std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> const& shortfall,
                                                       std::vector<Player*> const& gatherers,
-                                                      std::map<uint32, float> const& measuredPace,
                                                       std::map<uint32, float> const& questPace,
-                                                      std::map<uint32, float> const& unitValue)
+                                                      std::map<uint32, float> const& unitValue,
+                                                      std::map<uint32, std::string> const& questWhy)
 {
     std::vector<GatherAssignment> out;
     if (!loaded_)
@@ -992,10 +1030,9 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                     ++skipped[b].refused;
                     continue;
                 }
-                auto const pace = measuredPace.find(place.skill);
                 // Rate is 0 when no spawn of the place is safe for its level (the spot's hostiles, the area's own
                 // level) or its skill is short
-                if (Rate(place, item, bot, 0, pace == measuredPace.end() ? -1.0f : pace->second) <= 0.0f)
+                if (Rate(place, item, bot, 0) <= 0.0f)
                 {
                     ++skipped[b].unsafeOrSkill;
                     continue;
@@ -1068,9 +1105,7 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                 for (Option const& o : list)
                 {
                     GatherPlace const& place = places_[o.place];
-                    auto const pace = measuredPace.find(place.skill);
-                    float const rate = Rate(place, item, bot, placeLoad[o.place],
-                                            pace == measuredPace.end() ? -1.0f : pace->second);
+                    float const rate = Rate(place, item, bot, placeLoad[o.place]);
                     if (rate <= 0.0f)
                         continue;
                     // units per hour once the walk there is paid for over the bot's share of the work
@@ -1123,12 +1158,14 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
         float const total = itemRate[a.itemId];
         a.share = !a.worth ? shortBy : total > 0.0f ? uint32(std::ceil(float(shortBy) * a.ratePerHour / total)) : 0;
         a.placeName = PlaceName(place);
+        auto const qw = questWhy.find(a.botLow);
         std::string const pace =
             a.questPerMin < 0.0f
-                ? Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт), квесты: нет замеров", a.valuePerMin,
-                                      valueOf(a.itemId))
-                : Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт) {} квесты {:.1f} м/мин", a.valuePerMin,
-                                      valueOf(a.itemId), a.worth ? ">" : "≤", a.questPerMin);
+                ? Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт), квесты без цены (нет квеста с данными)",
+                                      a.valuePerMin, valueOf(a.itemId))
+                : Acore::StringFormat("сбор {:.1f} м/мин ({:.1f} м/шт) {} квесты {:.1f} м/мин ({})", a.valuePerMin,
+                                      valueOf(a.itemId), a.worth ? ">" : "≤", a.questPerMin,
+                                      qw == questWhy.end() ? std::string("формула") : qw->second);
         a.why = Acore::StringFormat("не хватает {}, здесь {:.1f}/ч, путь {:.0f} с, ботов на месте {}; {}", a.need,
                                     a.ratePerHour, a.travelSec, a.worth ? placeLoad[a.placeId - 1] : 0, pace);
     }
