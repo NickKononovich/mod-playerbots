@@ -26,9 +26,13 @@
 #include "ThreatManager.h"
 #include "ThreatValues.h"
 #include "Timer.h"
-#include "WorldBossTactics.h"  // [kzk1] AreaMayTake
+#include "EstimatedLifetimeValue.h"  // [aoe1] ExpectedFightLifetime
+#include "HealthTriggers.h"         // [aoe1] RestState::OwnManaLine
+#include "StringFormat.h"
 
 #include <algorithm>
+#include <functional>
+#include <numeric>
 #include <cstring>
 #include <set>
 #include <unordered_map>
@@ -36,15 +40,14 @@
 
 namespace
 {
-    // Share of the tank's threat (percent) at which a dps stops a threat-generating action.
-    constexpr uint8 AOE_THREAT_LIMIT = 50;
+    // Share of the tank's threat (percent) at which a dps stops a threat-generating action. [aoe1] The area spells
+    // take the game's line per mob instead (AreaHolds).
     constexpr uint8 SINGLE_THREAT_LIMIT = 80;
     // A melee bot pulls aggro only at 110 % of the victim's threat. 80 % held a Ret idle on 14 % of the Gruul
     // ticks (DPS audit 2026-10-24); 95 % keeps a 15-point margin under the melee pull point. Ranged keep 80 %.
     constexpr uint8 MELEE_SINGLE_THREAT_LIMIT = 95;
     // A tank soft for the content or outgeared by its dps (party strength): keep a wider margin, and hold AoE
     // until the tank has a solid lead on every mob of the pack.
-    constexpr uint8 CAREFUL_AOE_THREAT_LIMIT = 30;
     constexpr uint8 CAREFUL_SINGLE_THREAT_LIMIT = 70;
     constexpr uint8 CAREFUL_MELEE_SINGLE_THREAT_LIMIT = 85;
 
@@ -424,13 +427,14 @@ float ThreatMultiplier::GetValue(Action* action)
     {
         if (spellAction)
         {
-            if (AreaHolds(spellAction, spellInfo, careful))
+            if (AreaHolds(spellAction, spellInfo))
                 return 0.0f;
         }
         else
         {
+            // [aoe1] an area action without spell data: the game's melee line on the area's highest share
             uint8 threat = AI_VALUE2(uint8, "threat", "aoe");
-            if (threat >= (careful ? CAREFUL_AOE_THREAT_LIMIT : AOE_THREAT_LIMIT))
+            if (threat >= uint8(ThreatLead::MELEE_PULL_OVER * 100.0f))
                 return 0.0f;
         }
     }
@@ -647,12 +651,149 @@ bool ThreatMultiplier::CrowdControlHolds(CastSpellAction* action, Unit* target)
     return true;
 }
 
+namespace
+{
+    // [aoe1] the taunts a tank takes mobs back with, and how many one cast takes: the single taunts one, Righteous
+    // Defense three (the attackers of the friend it is cast on), Challenging Shout / Roar every mob in reach
+    struct AreaTaunt
+    {
+        char const* name;
+        uint8 takes;
+    };
+
+    std::vector<AreaTaunt> const& AreaTaunts(Player* tank)
+    {
+        static std::vector<AreaTaunt> const warrior = {{"taunt", 1}, {"mocking blow", 1}, {"challenging shout", 255}};
+        static std::vector<AreaTaunt> const paladin = {{"hand of reckoning", 1}, {"righteous defense", 3}};
+        static std::vector<AreaTaunt> const knight = {{"dark command", 1}, {"death grip", 1}};
+        static std::vector<AreaTaunt> const druid = {{"growl", 1}, {"challenging roar", 255}};
+        static std::vector<AreaTaunt> const none;
+        switch (tank->getClass())
+        {
+            case CLASS_WARRIOR:
+                return warrior;
+            case CLASS_PALADIN:
+                return paladin;
+            case CLASS_DEATH_KNIGHT:
+                return knight;
+            case CLASS_DRUID:
+                return druid;
+            default:
+                return none;
+        }
+    }
+
+    constexpr float AREA_GCD_SEC = 1.5f;  // the game's global cooldown: one taunt per step
+
+    // [aoe1] user 2026-11-03 (aggro-loss-if-survives) for an area that takes mobs over the game's line: the caster
+    // survives them until a tank of the group has them back (its ready taunts in reach and sight, one per global
+    // cooldown, the hardest hitter first) or they die (their expected fight lifetime), with the mobs already on it,
+    // and a healer reaches it. The same terms as the leader's lead985 / lead1010 survivesSet, for every bot
+    bool SurvivesTaking(Player* bot, PlayerbotAI* botAI, std::vector<Unit*> const& mobs, std::string& why)
+    {
+        Group* group = bot->GetGroup();
+        if (!group || mobs.empty())
+        {
+            why = "no group";
+            return false;
+        }
+        Player* healer = nullptr;
+        Player* taker = nullptr;
+        std::vector<uint8> steps;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsAlive() || member->GetMap() != bot->GetMap())
+                continue;
+            if (!healer && PlayerbotAI::IsHeal(member) && member->IsWithinCombatRange(bot, 40.0f) &&
+                member->IsWithinLOSInMap(bot) &&
+                (!member->GetMaxPower(POWER_MANA) || member->GetPowerPct(POWER_MANA) >= RestState::OwnManaLine(member)))
+                healer = member;
+            if (!PlayerbotAI::IsTank(member))
+                continue;
+            PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+            if (!memberAI)
+                continue;
+            std::vector<uint8> ready;
+            for (AreaTaunt const& taunt : AreaTaunts(member))
+            {
+                uint32 const id = memberAI->GetAiObjectContext()->GetValue<uint32>("spell id", taunt.name)->Get();
+                SpellInfo const* info = id ? sSpellMgr->GetSpellInfo(id) : nullptr;
+                if (!info || member->HasSpellCooldown(id))
+                    continue;
+                float const range = std::max(info->GetMaxRange(false), NOMINAL_MELEE_RANGE);
+                bool const reaches = std::all_of(mobs.begin(), mobs.end(), [&](Unit* mob)
+                    { return member->IsWithinCombatRange(mob, range) && member->IsWithinLOSInMap(mob); });
+                if (reaches)
+                    ready.push_back(taunt.takes);
+            }
+            uint32 const total = std::accumulate(ready.begin(), ready.end(), 0u);
+            if (total > std::accumulate(steps.begin(), steps.end(), 0u))
+            {
+                taker = member;
+                steps = ready;
+            }
+        }
+        if (!healer)
+        {
+            why = "no healer reaches it";
+            return false;
+        }
+        std::sort(steps.begin(), steps.end(), std::greater<uint8>());
+
+        std::vector<std::pair<float, Unit*>> hits;
+        for (Unit* mob : mobs)
+        {
+            float part = 0.0f;
+            hits.emplace_back(Leader::Fight::AttackerDps(mob, bot, part), mob);
+        }
+        std::sort(hits.begin(), hits.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
+        float damage = 0.0f;
+        float longest = 0.0f;
+        size_t next = 0;
+        for (size_t step = 0; step < hits.size(); ++step)
+        {
+            // the taunt steps first, then the mobs no taunt is left for live out their lifetime on the caster
+            float const back = step < steps.size() ? AREA_GCD_SEC * float(step + 1) : -1.0f;
+            uint8 const takes = step < steps.size() ? steps[step] : uint8(1);
+            for (uint8 n = 0; n < takes && next < hits.size(); ++n, ++next)
+            {
+                float const life = ExpectedFightLifetime(botAI, hits[next].second);
+                float const until = back < 0.0f ? life : std::min(back, life);
+                damage += hits[next].first * until;
+                longest = std::max(longest, until);
+            }
+            if (next >= hits.size())
+                break;
+        }
+        for (Unit* attacker : bot->getAttackers())
+            if (attacker && attacker->IsAlive() &&
+                std::none_of(mobs.begin(), mobs.end(), [attacker](Unit* m) { return m == attacker; }))
+            {
+                float part = 0.0f;
+                damage += Leader::Fight::AttackerDps(attacker, bot, part) * longest;
+            }
+        float const health = float(bot->GetHealth()) + float(bot->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
+        bool const survives = damage < health;
+        why = Acore::StringFormat("{:.0f} damage until {} ({:.1f} s) vs {:.0f} health, healer {}",
+                                  damage, taker ? "a tank has them back" : "they die", longest, health,
+                                  healer->GetName());
+        return survives;
+    }
+}  // namespace
+
 // [rot1] An area spell hits every mob in its radius, not only the bot's target: the old gate read the "aoe" value
 // (the "attackers" within 12 yd of the bot or its target) and Starfall, a Single spell, only its target. strat-h pull
 // 10 (8 of the druid's 16 aggro losses): Starfall and Hurricane on adds of the boss pack the tank had no lead on yet.
 // Every mob the group fights (on a member's threat list) inside the spell's area is read; the current target is left
-// to the single-target hold below (the tank's focus is on it), every other mob takes the area limit.
-bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info, bool careful)
+// to the single-target hold below (the tank's focus is on it).
+// [aoe1] One computed rule for every content (dungeon, raid, world boss, open world): each mob the area reaches is
+// compared with ITS holder at the game's line (ThreatLead::PullOverPoint: 110 % in its melee range, 130 % beyond),
+// not with a fixed share of the tank's threat. The old 50 % (30 % "careful") limit held 36824 logged casts in the
+// kept logs (b185-b351), 15290 of them under the game's line (41 %), and the leader-less fights (raids, world bosses,
+// the open world) had no survival rule at all. Over the line the aggro-loss-if-survives rule decides (SurvivesTaking);
+// a mob on nobody or not yet pulled is never taken by an area the leader did not plan.
+bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info)
 {
     Group* group = bot->GetGroup();
     if (!group)
@@ -668,7 +809,6 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
         return false;
 
     float const radius = AreaRadius(bot, info, spell);
-    uint8 const limit = careful ? CAREFUL_AOE_THREAT_LIMIT : AOE_THREAT_LIMIT;
 
     // [rot47] The threat the spell adds to each mob it hits: the single-target projection's "next cast threat" over
     // the time the spell keeps hitting - a lasting area (Death and Decay, Consecration, Rain of Fire: a persistent
@@ -694,9 +834,8 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
 
     // [lead1010] the leader's threat verdict is final (lead282 for the single target): the mobs its Attack names for
     // this member - the target, the mobs it has headroom on, the mobs without headroom it survives taking all at once
-    // (lead985's survival math for an area) - are not held here again; b229 rfc-h: "[aoe-threat]" held Flamestrike /
-    // Fan of Knives / Death and Decay / Seed of Corruption / Chain Lightning ~800 times (one line per 10 s) on pack
-    // mates the tank held. The leader's spared mobs are held by LeaderCommandMultiplier
+    // (lead985's survival math for an area, the same rule as below with the leader's measured threat rates) - are not
+    // held here again. The leader's spared mobs are held by LeaderCommandMultiplier
     std::vector<ObjectGuid> leaderNamed;
     if (Leader::ExecutorMember(bot))
     {
@@ -705,11 +844,16 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
             events.intensity != Leader::Intensity::Stop && events.aoe != Leader::AoeRule::Forbidden)
             leaderNamed = events.killOrder;
     }
+    auto const named = [&leaderNamed](Unit* mob)
+    { return std::find(leaderNamed.begin(), leaderNamed.end(), mob->GetGUID()) != leaderNamed.end(); };
 
+    uint32 reached = 0;     // the mobs the area reaches (the line's N)
+    Unit* worst = nullptr;  // the highest share of its holder among them
+    float worstShare = 0.0f;
+    std::vector<Unit*> over;  // the mobs the area takes off their holder (over the game's line)
+    std::string held;         // a reason no survival can lift: a loose mob or an idle one
     std::vector<ObjectGuid> seen;
-    std::vector<Creature*> over;  // [kzk1] the mobs the area takes off their holder
-    uint8 firstShare = 0;
-    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    for (GroupReference* ref = group->GetFirstMember(); ref && held.empty(); ref = ref->next())
     {
         Player* member = ref->GetSource();
         if (!member || !member->IsAlive() || !member->IsInWorld() || member->GetMap() != bot->GetMap())
@@ -724,7 +868,7 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
             if (std::find(seen.begin(), seen.end(), mob->GetGUID()) != seen.end())
                 continue;
             seen.push_back(mob->GetGUID());
-            if (std::find(leaderNamed.begin(), leaderNamed.end(), mob->GetGUID()) != leaderNamed.end())
+            if (named(mob))
                 continue;  // [lead1010]
 
             if (mob->IsControlledByPlayer() || mob->IsInEvadeMode() || mob->GetVictim() == bot ||
@@ -735,14 +879,22 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
             bool const inArea = center->IsWithinDist(mob, radius, false);
             if (!inArea && !(lasting && mobVictim && center->IsWithinDist(mobVictim, radius, false)))
                 continue;
+            ++reached;
 
-            // [rot47] the share after the spell's own threat (TankShare's rules when nobody holds the mob)
             // [rot47b] the holder's threat over the same seconds: the bot's side was projected over the spell's whole
             // duration (Death and Decay 10 s) against the holder's threat of now - the tank's own threat over those
             // 10 s at the rate measured on that mob (its threat since this bot first read it) is in the comparison
             // too. A holder whose threat fell (a taunt, a threat drop, another holder) starts its measure again
             float holder = ThreatLead::HolderThreat(bot, mob);
-            if (holder > 0.0f && holder < ThreatLead::HOLD_UNBOUNDED)
+            if (holder <= 0.0f)
+            {
+                // [aoe1] a mob on nobody of the group yet: the area would be its first threat
+                held = Acore::StringFormat("{} is on nobody", mob->GetName());
+                worst = mob;
+                break;
+            }
+            if (holder >= ThreatLead::HOLD_UNBOUNDED)
+                continue;  // a friendly NPC keeps it whatever the bot does
             {
                 struct Seen
                 {
@@ -761,41 +913,60 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
                 if (sinceMs >= IN_MILLISECONDS)
                     holder += (holder - it->second.threat) * commit * IN_MILLISECONDS / float(sinceMs);
             }
-            float const after = mob->GetThreatMgr().GetThreat(bot) + added;
-            uint8 const share = holder > 0.0f ? static_cast<uint8>(std::min(after * 100.0f / holder, 255.0f))
-                                              : ThreatLead::TankShare(bot, mob);
-            if (share < limit)
-                continue;
-
-            if (over.empty())
-                firstShare = share;
-            over.push_back(mob);
+            float const share = (mob->GetThreatMgr().GetThreat(bot) + added) / holder;
+            if (!worst || share > worstShare)
+            {
+                worst = mob;
+                worstShare = share;
+            }
+            if (share >= ThreatLead::PullOverPoint(bot, mob))
+                over.push_back(mob);
         }
     }
 
-    if (over.empty())
+    // [aoe1] a mob not pulled yet inside the area: the area pulls it (the leader's own AoE rule spares those it did
+    // not plan: LeaderAoeRule "is not pulled")
+    if (held.empty())
+        for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest hostile npcs"))
+        {
+            Unit* unit = botAI->GetUnit(guid);
+            if (!unit || !unit->IsAlive() || unit->IsInCombat() || unit == mainTarget ||
+                !bot->IsValidAttackTarget(unit) || !center->IsWithinDist(unit, radius, false) || named(unit))
+                continue;
+            held = Acore::StringFormat("{} is not pulled", unit->GetName());
+            worst = unit;
+            break;
+        }
+
+    if (!reached && held.empty())
         return false;
 
-    // [kzk1] user 2026-11-03 (aggro-loss-if-survives) where no leader leads (an open-world boss fight): the adds the
-    // area takes off their tank at once are allowed when this member survives them until a tank has them back
-    // (WorldBoss::AreaMayTake: their damage on it over the tank's taunts, a healer in reach); wb-kazzak 20261108-183632
-    // held Death and Decay / Seed of Corruption / Volley / Hurricane on the Doomguard Commanders next to Kazzak
-    if (WorldBoss::AreaMayTake(bot, botAI, over, spell))
-        return false;
-
-    Creature* mob = over.front();
-    uint32 const now = getMSTime();
-    if (!_aoeLoggedMs || getMSTimeDiff(_aoeLoggedMs, now) >= HOLD_LOG_MS)
+    bool casts = held.empty();
+    std::string reason;
+    if (casts && !over.empty())
     {
-        _aoeLoggedMs = now ? now : 1;
-        Unit* victim = mob->GetVictim();
-        LOG_INFO("playerbots", "[rot1] [aoe-threat] {} holds {}: {} {} ({:.1f} yd from the {} centre, on {}) "
-                 "at {} % of the tank's threat after {:.1f} s of the spell [rot47], limit {} % in {:.0f} yd",
-                 bot->GetName(), spell, mob->GetName(), mob->GetEntry(), center->GetExactDist2d(mob),
-                 selfCentred ? "own" : "target", victim ? victim->GetName() : "nobody", firstShare, commit, limit,
-                 radius);
+        std::string why;
+        casts = SurvivesTaking(bot, botAI, over, why);
+        reason = Acore::StringFormat("{} over the line, {}", over.size(), why);
     }
-    return true;
+    else if (!casts)
+        reason = held;
+
+    // one line per decision kind and spell (a change of the verdict, no time throttle)
+    std::string const kind = casts         ? (over.empty() ? "casts" : "casts survives")
+                             : held.empty() ? "held survival"
+                                            : "held " + held;
+    std::string& last = _aoeVerdicts[spell];
+    if (last != kind)
+    {
+        last = kind;
+        Unit* victim = worst ? worst->GetVictim() : nullptr;
+        LOG_INFO("playerbots", "[aoe] {} {}: {} mobs, worst {} at {:.0f} % of its holder {} after the cast -> {}{}{}{}",
+                 bot->GetName(), spell, reached, worst ? worst->GetName() : std::string("-"), worstShare * 100.0f,
+                 victim ? victim->GetName() : std::string("nobody"), casts ? "casts" : "held",
+                 reason.empty() ? "" : " (", reason, reason.empty() ? "" : ")");
+    }
+    return !casts;
 }
 
 namespace

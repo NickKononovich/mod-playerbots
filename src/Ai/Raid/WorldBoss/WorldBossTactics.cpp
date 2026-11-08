@@ -594,6 +594,17 @@ bool SpellHitsBoss(Player* bot, PlayerbotAI* botAI, Action* action, Unit* boss, 
     return AreaReaches(bot, info, center, boss);
 }
 
+// [kzk1] the boss's threat reference on `unit`: online / suppressed / offline / none
+char const* RefState(Unit* boss, Unit* unit)
+{
+    if (!unit)
+        return "none";
+    for (ThreatReference const* ref : boss->GetThreatMgr().GetUnsortedThreatList())
+        if (ref->GetVictim() == unit)
+            return ref->IsOnline() ? "online" : ref->IsSuppressed() ? "suppressed" : "offline";
+    return "not on his list";
+}
+
 // [kzk1] each world boss's victim as last seen (one line per change, by the first bot that sees it) and each tank's
 // swap stacks as last seen (one line when they drop to 0); under gStateLock
 std::unordered_map<ObjectGuid, ObjectGuid> gBossVictims;
@@ -630,10 +641,17 @@ void NoteFightChanges(Player* bot, Unit* boss)
     if (changed && !was.IsEmpty() && victim)
     {
         Unit* old = ObjectAccessor::GetUnit(*boss, was);
-        LOG_INFO("playerbots", "[world_boss] {} victim: {} ({} stacks, threat {:.0f}) -> {} ({} stacks, threat {:.0f})",
+        // [kzk1] b351: 45 changes, some to a Greater Fire Elemental (threat 1903): the old victim's threat reference
+        // state says why (offline: CanCreatureAttack refused it; suppressed: immune / crowd controlled) and a pet's
+        // owner is named
+        Unit* owner = victim->GetCharmerOrOwner();
+        LOG_INFO("playerbots",
+                 "[world_boss] {} victim: {} ({} stacks, threat {:.0f}, {}{}) -> {}{} ({} stacks, threat {:.0f}, {})",
                  boss->GetName(), old ? old->GetName() : std::string("?"), Stacks(old, t->swapAura),
-                 old ? boss->GetThreatMgr().GetThreat(old) : 0.0f, victim->GetName(), Stacks(victim, t->swapAura),
-                 boss->GetThreatMgr().GetThreat(victim));
+                 old ? boss->GetThreatMgr().GetThreat(old) : 0.0f, RefState(boss, old),
+                 old && !old->IsAlive() ? ", dead" : "", victim->GetName(),
+                 owner ? " (pet of " + owner->GetName() + ")" : std::string(), Stacks(victim, t->swapAura),
+                 boss->GetThreatMgr().GetThreat(victim), RefState(boss, victim));
     }
     if (tank && ownWas && !own)
         LOG_INFO("playerbots", "[world_boss] {}: {} expired (was {} stacks), may take {} back; holder {}",
@@ -666,107 +684,45 @@ void NoteTankMana(Player* bot, PlayerbotAI* botAI, Unit* boss)
 }
 }  // namespace
 
-bool AreaMayTake(Player* bot, PlayerbotAI* botAI, std::vector<Creature*> const& mobs, std::string const& spell)
+void AppendTargetExclusions(PlayerbotAI* botAI, GuidSet& exclusions, TargetValueExclusionType type)
 {
-    if (mobs.empty() || !bot->GetMap() || bot->GetMap()->Instanceable() || PlayerbotAI::IsTank(bot) ||
-        PlayerbotAI::IsHeal(bot))
-        return false;
+    if (type == TargetValueExclusionType::TankTarget || !botAI)
+        return;
+    Player* bot = botAI->GetBot();
+    if (!bot || !bot->IsInCombat() || !bot->GetMap() || bot->GetMap()->Instanceable())
+        return;
     Unit* boss = FightBoss(bot, botAI);
-    if (!boss)
-        return false;
-    for (Creature* mob : mobs)
-        if (!mob || !mob->IsAlive() || !IsBossAdd(mob))
-            return false;
-    Group* group = bot->GetGroup();
-    if (!group)
-        return false;
-    Snapshot const& s = Picture(bot, botAI);
-
-    auto const verdict = [&](bool ok, std::string const& why)
+    if (!boss || boss->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE))
+        return;
+    for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get())
     {
-        Note(bot, ok ? "aoe" : "aoe_held",
-             Acore::StringFormat("aoe {} on {} adds near {} ({} first): {}", spell, mobs.size(), boss->GetName(),
-                                 mobs.front()->GetName(), why));
-        return ok;
-    };
-    // one taunt for one loose mob: none while an add already hits a non-tank
-    if (!s.looseAdd.IsEmpty())
-        return verdict(false, "an add is loose already, the tanks' taunts are for it");
-
-    // the tank that takes them back: a living tank of the group, not the boss's holder, in taunt reach and sight of
-    // the first mob; its ready taunts by how many mobs one cast takes
-    Player* taker = nullptr;
-    std::vector<uint8> capacity;  // per ready taunt: mobs it takes back in one global cooldown
-    Player* healer = nullptr;
-    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-    {
-        Player* member = ref->GetSource();
-        if (!member || member == bot || !member->IsAlive() || member->GetMap() != bot->GetMap())
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || unit == boss || !unit->IsAlive())
             continue;
-        if (!healer && PlayerbotAI::IsHeal(member) && member->IsWithinCombatRange(bot, SPELL_REACH) &&
-            member->IsWithinLOSInMap(bot))
-            healer = member;
-        if (taker || !PlayerbotAI::IsTank(member) || member == boss->GetVictim() ||
-            !member->IsWithinCombatRange(mobs.front(), TAUNT_RANGE) || !member->IsWithinLOSInMap(mobs.front()))
-            continue;
-        PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
-        if (!memberAI)
-            continue;
-        std::vector<uint8> ready;
-        for (TauntDef const& def : ClassTaunts(member))
-            if (uint32 const id = SpellIdOf(memberAI, def.name); id && !member->HasSpellCooldown(id))
-            {
-                std::string const name = def.name;
-                ready.push_back(name == "challenging shout" || name == "challenging roar" ? uint8(255)
-                                : name == "righteous defense"                             ? uint8(3)
-                                                                                           : uint8(1));
-            }
-        if (ready.empty())
-            continue;
-        taker = member;
-        capacity = ready;
-    }
-    if (!taker)
-        return verdict(false, "no other tank with a ready taunt in reach");
-    if (!healer)
-        return verdict(false, "no healer reaches it");
-
-    // the mobs back in global-cooldown steps, the biggest taunt first, the hardest hitter first
-    std::sort(capacity.begin(), capacity.end(), std::greater<uint8>());
-    std::vector<std::pair<float, Creature*>> hits;
-    for (Creature* mob : mobs)
-    {
-        float part = 0.0f;
-        hits.emplace_back(Leader::Fight::AttackerDps(mob, bot, part), mob);
-    }
-    std::sort(hits.begin(), hits.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
-    float const gcdSec = SWAP_LEAD_MS / 1000.0f;
-    float damage = 0.0f;
-    float longest = 0.0f;
-    size_t next = 0;
-    for (size_t step = 0; step < capacity.size() && next < hits.size(); ++step)
-    {
-        float const back = gcdSec * float(step + 1);
-        for (uint8 n = 0; n < capacity[step] && next < hits.size(); ++n, ++next)
-            damage += hits[next].first * back;
-        longest = back;
-    }
-    if (next < hits.size())
-        return verdict(false, Acore::StringFormat("{} ready taunts of {} take {} of {} back", capacity.size(),
-                                                  taker->GetName(), next, hits.size()));
-    for (Unit* attacker : bot->getAttackers())
-        if (attacker && attacker->IsAlive() &&
-            std::none_of(mobs.begin(), mobs.end(), [attacker](Creature* m) { return m == attacker; }))
+        if (!IsBossAdd(unit) && unit->GetEntry() != NPC_SPIRIT_SHADE)
         {
-            float part = 0.0f;
-            damage += Leader::Fight::AttackerDps(attacker, bot, part) * longest;
+            // [kzk1] b351 984 s: the main tank, back from its corpse run, fought a Felguard Elite 320 yd off; the
+            // raid's "dps target" followed the tank's pack there and Kazzak killed the lone off-tank, then evaded
+            // with 9 players on his list, all ~300 yd off (CanCreatureAttack: out of his sight)
+            float const dist = unit->GetExactDist2d(boss);
+            if (dist <= FIGHT_RANGE)
+                continue;
+            exclusions.insert(guid);
+            if (type == TargetValueExclusionType::DpsTarget)
+                Note(bot, "far_mob",
+                     Acore::StringFormat("leaves {} ({:.0f} yd from {}): outside his fight", unit->GetName(), dist,
+                                         boss->GetName()));
+            continue;
         }
-    float const health = float(bot->GetHealth()) + float(bot->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
-    bool const survives = damage < health;
-    return verdict(survives, Acore::StringFormat("{:.0f} damage until {} has them back ({:.1f} s) vs {:.0f} health, "
-                                                 "healer {}: {}",
-                                                 damage, taker->GetName(), longest, health, healer->GetName(),
-                                                 survives ? "casts" : "held"));
+        // the single target is the boss; a brute add a tank holds is the area spells' (healer adds and Spirit Shades
+        // stay the priority adds)
+        if (type != TargetValueExclusionType::DpsTarget || IsHealerAdd(unit) || unit->GetEntry() == NPC_SPIRIT_SHADE)
+            continue;
+        Unit* victim = unit->GetVictim();
+        Player* holder = victim ? victim->ToPlayer() : nullptr;
+        if (holder && PlayerbotAI::IsTank(holder))
+            exclusions.insert(guid);
+    }
 }
 }  // namespace WorldBoss
 
@@ -861,7 +817,16 @@ bool WorldBossPriorityAddTrigger::IsActive()
     if (!PlayerbotAI::IsDps(bot) || PlayerbotAI::IsTank(bot))
         return false;
     Unit* boss = FightBoss(bot, botAI);
-    Unit* add = boss ? PriorityAdd(bot, botAI, boss) : nullptr;
+    if (!boss)
+        return false;
+    // [kzk1] a priority add it already hits is its commitment (b351: "world boss attack priority add" executed in
+    // 1534 intents - Rtwarab on a Dreadlord, every tick back to the other one)
+    if (Unit* victim = bot->GetVictim(); victim && StillPriority(bot, victim))
+    {
+        SetCommitted(bot, victim->GetGUID());
+        return false;
+    }
+    Unit* add = PriorityAdd(bot, botAI, boss);
     if (!add || bot->GetVictim() == add)
         return false;
     // Spirit Shades are the ranged damage dealers' (AoE, slows); the healer adds everybody's
@@ -1004,7 +969,13 @@ bool WorldBossStepOffAction::Execute(Event /*event*/)
         done = done || moved;
     }
     if (!done)
+    {
+        // [kzk1] b351: 7 "Execute returned false" with no line - the walk out was refused (MoveTo)
+        Note(bot, "step_off_stuck",
+             Acore::StringFormat("off {} with {} stacks: {:.1f} yd, inside his reach {:.1f} yd, cannot walk out",
+                                 boss->GetName(), Stacks(bot, t->swapAura), dist, off));
         return false;
+    }
     // the proof: the holder keeps him while the own threat stays under the game's switch share of the holder's
     Unit* holder = boss->GetVictim();
     float const own = boss->GetThreatMgr().GetThreat(bot);

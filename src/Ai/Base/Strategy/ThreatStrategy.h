@@ -39,12 +39,12 @@ private:
     bool HoldsForFreshAdd(Unit* target);
     // [rot1] the crowd-control gate (ThreatStrategy.cpp)
     bool CrowdControlHolds(CastSpellAction* action, Unit* target);
-    // [rot1] the area gate: every mob of the fight inside the spell's area
-    bool AreaHolds(CastSpellAction* action, SpellInfo const* info, bool careful);
+    // [rot1] the area gate: every mob of the fight inside the spell's area; [aoe1] the game's line per mob + survival
+    bool AreaHolds(CastSpellAction* action, SpellInfo const* info);
 
     uint32 _loggedMs = 0;
     uint32 _ccLoggedMs = 0;   // [rot1]
-    uint32 _aoeLoggedMs = 0;  // [rot1]
+    std::unordered_map<std::string, std::string> _aoeVerdicts;  // [aoe1] spell -> the last logged decision kind
     std::unordered_map<ObjectGuid, uint32> _freshSeen;  // mob, when this bot first wanted to hit it in the fight
     ObjectGuid _freshLogged;
 };

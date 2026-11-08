@@ -13,6 +13,7 @@
 #include "AttackAction.h"
 #include "MovementActions.h"
 #include "Multiplier.h"
+#include "Strategy.h"
 #include "Trigger.h"
 
 class Creature;
@@ -82,11 +83,10 @@ bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target);
 bool CastClassTaunt(Player* bot, PlayerbotAI* botAI, Unit* target, std::string& why);
 // [world_boss] a decision line in Playerbots.log, at most one per bot and kind every 5 s; true: written
 bool Note(Player* bot, char const* key, std::string const& text);
-// [kzk1] an area spell of this member may take these adds off their tank (user rule aggro-loss-if-survives, no leader
-// in an open-world fight): it survives their hits until a tank of the group has them back with its ready taunts (one
-// per global cooldown; Challenging Shout / Roar all, Righteous Defense three) and a healer reaches it. Logs
-// "[world_boss] ...: aoe ...". False outside a world boss fight or for any mob that is no add of the boss
-bool AreaMayTake(Player* bot, PlayerbotAI* botAI, std::vector<Creature*> const& mobs, std::string const& spell);
+// [kzk1] the world-boss strategy's target exclusions: mobs outside the boss's fight (no add of his, over FIGHT_RANGE
+// from him) for every target kind but the tank's; for the single target (dps target) also the brute adds a tank holds
+// (the single target is the boss, the adds the area spells': KillOrder::BossFocusTarget, b33_hadronox)
+void AppendTargetExclusions(PlayerbotAI* botAI, GuidSet& exclusions, TargetValueExclusionType type);
 }  // namespace WorldBoss
 
 // --- triggers ---------------------------------------------------------------------------------------------------
