@@ -5580,8 +5580,17 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
         return;
     uint64 const xp = XpTotal(bot);
     uint32 const progress = QuestProgress(bot);
+    // [econ2] world2 b353: money changing hands (a vendor sale, a BUY, a letter) and profession work (a skill-up of
+    // any profession, gathering ones included, a smelt cast) are progress, as UpdateHealth counts them
+    uint64 work = uint64(bot->GetMoney());
+    for (uint32 const line : CRAFT_LINES)
+        work += bot->HasSkill(line) ? uint64(bot->GetPureSkillValue(line)) << 32 : 0;
+    for (uint32 const line : {uint32(SKILL_MINING), uint32(SKILL_HERBALISM), uint32(SKILL_SKINNING),
+                              uint32(SKILL_FISHING)})
+        work += bot->HasSkill(line) ? uint64(bot->GetPureSkillValue(line)) << 32 : 0;
     std::lock_guard<std::mutex> guard(lock_);
     BotState& st = bots_[bot->GetGUID().GetCounter()];
+    work += uint64(st.casts) << 48;
     // [tasks] the gathering pace: seconds spent in DO_GATHER, per gathering skill the bot has
     uint32 const now = Now();
     if (st.rpgStatus == RPG_DO_GATHER && st.rpgStatusAt && now > st.rpgStatusAt)
@@ -5599,8 +5608,8 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
     bool noProgress = false;
     if (itr != st.statusEntry.end())
     {
-        auto const& [oldXp, oldProgress, x, y, z, map] = itr->second;
-        noProgress = oldXp == xp && oldProgress == progress && map == bot->GetMapId() &&
+        auto const& [oldXp, oldProgress, x, y, z, map, oldWork] = itr->second;
+        noProgress = oldXp == xp && oldProgress == progress && oldWork == work && map == bot->GetMapId() &&
                      bot->GetExactDist(x, y, z) <= std::max(bot->GetCombatReach(), 1.5f);
     }
     if (noProgress && !st.loopAlerted.count(status))
@@ -5618,7 +5627,7 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
     else if (!noProgress)
         st.loopAlerted.erase(status);
     st.statusEntry[status] = {xp, progress, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
-                              bot->GetMapId()};
+                              bot->GetMapId(), work};
 }
 
 void GuildCoordinator::UpdateHealth()
@@ -5706,13 +5715,19 @@ void GuildCoordinator::UpdateHealth()
         uint32 skillSum = 0;
         for (uint32 const line : CRAFT_LINES)
             skillSum += p->HasSkill(line) ? p->GetPureSkillValue(line) : 0;
+        // [econ2] the gathering skills too (a smelt or a node raises Mining, a catch Fishing)
+        for (uint32 const line : {uint32(SKILL_MINING), uint32(SKILL_HERBALISM), uint32(SKILL_SKINNING),
+                                  uint32(SKILL_FISHING)})
+            skillSum += p->HasSkill(line) ? p->GetPureSkillValue(line) : 0;
         bool const skillRose = st.skillSum && skillSum > st.skillSum;
         st.skillSum = skillSum;
         // [econ2] b353: 8 of the 15 profession STUCK alerts were miners smelting at a town forge (Galiver, Brelir,
         // Peny, Pherua, Gnetlibozz, Keenonk, Namwe: IDLE, order PROFESSION, a cast every few seconds) - Mining is no
         // craft line and a green smelt raises the skill one cast in several. A smelt cast since the last sample is
         // progress
-        bool const casted = st.casts != st.castsSeen;
+        // [econ2] world2: a fishing bot's cast (the bobber channel) is progress as a smelt cast is
+        bool const casted = st.casts != st.castsSeen ||
+                            (NewRpgFishing::IsFishing(p) && p->GetCurrentSpell(CURRENT_CHANNELED_SPELL));
         st.castsSeen = st.casts;
         // stuck: out of combat, alive, not moved beyond its combat reach for 60 s, no legitimate wait
         float const reach = std::max(p->GetCombatReach(), 1.5f);
