@@ -2312,9 +2312,19 @@ namespace SoloSafety
             return false;
         std::string who;
         std::vector<G3D::Vector3> spots;
-        if (!StandsInReach(bot, who, spots) || !spots.empty())
+        if (!StandsInReach(bot, who, spots))
+            return false;
+        // [deaths17] a spot out of every reach counts only where the bot can fight from it: within its pull reach of
+        // where it stands (its ranged pull, else none). Before, any such spot within its sight cleared the camp - the
+        // bot fights at its objective, not at that spot: b357 Gnetlibozz L11 (Silver Stream Mine, 5 attackers), Namwe
+        // L9 (Gol'Bolar Quarry, 7), Kianey L12 (Stonesplinter Valley, 4) died among the roamers, the line never fired
+        float const pullReach = PullReach(bot);
+        G3D::Vector3 const at(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        if (std::any_of(spots.begin(), spots.end(),
+                        [&](G3D::Vector3 const& s) { return (s - at).length() <= pullReach; }))
             return false;
         // the roamers among the mobs whose reach covers the bot
+
         float const sight = sPlayerbotAIConfig.SightDistance;
         std::list<Unit*> units;
         Acore::AnyUnitInObjectRangeCheck check(bot, sight + MAX_AGGRO_RADIUS);
