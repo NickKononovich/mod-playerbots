@@ -340,6 +340,26 @@ namespace
         LOG_INFO("playerbots", "[ghost] {} L{} at ({:.1f},{:.1f},{:.1f}): {}", bot->GetName(), bot->GetLevel(),
                  bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), what);
     }
+
+    // [ghost13] the corpse whose ghost chose the spirit healer (bot -> corpse): the choice holds for that corpse. b353
+    // Laaral, Rumanatol, Febineysh, Januel (logged in as ghosts at their corpses): "no spot clear: to the spirit
+    // healer", the walk to the graveyard 470-600 yd off started, and once the ghost was a reaction distance from the
+    // corpse "find corpse" walked it back to the corpse - 9-14 rounds each, the whole run, never risen
+    std::mutex healerChoiceLock;
+    std::unordered_map<uint32, ObjectGuid> healerChoice;
+
+    void ChooseHealer(Player* bot, Corpse* corpse)
+    {
+        std::lock_guard<std::mutex> guard(healerChoiceLock);
+        healerChoice[bot->GetGUID().GetCounter()] = corpse ? corpse->GetGUID() : ObjectGuid::Empty;
+    }
+
+    bool HealerChosen(Player* bot, Corpse* corpse)
+    {
+        std::lock_guard<std::mutex> guard(healerChoiceLock);
+        auto const found = healerChoice.find(bot->GetGUID().GetCounter());
+        return found != healerChoice.end() && corpse && found->second == corpse->GetGUID();
+    }
 }
 
 bool FindCorpseAction::Execute(Event /*event*/)
@@ -413,6 +433,13 @@ bool FindCorpseAction::Execute(Event /*event*/)
     if (bot->isMoving())
         return true;
 
+    // [ghost13] the spirit healer chosen at this corpse: the ghost keeps to that walk (no walk back to the corpse)
+    if (!inDungeon && HealerChosen(bot, corpse) && HealerLeft(bot))
+    {
+        LogGhost(bot, "[ghost13] keeps to the spirit healer it chose at its corpse");
+        return botAI->DoSpecificAction("spirit healer", Event(), true);
+    }
+
     // If we are getting close move to a save ressurrection spot instead of just the corpse.
     if (corpseDist < sPlayerbotAIConfig.ReactDistance)
     {
@@ -426,6 +453,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
         else if (!safeHere && !inDungeon && HealerLeft(bot))
         {
             LogGhost(bot, "no spot of its corpse's radius clear of the mobs there: to the spirit healer");
+            ChooseHealer(bot, corpse);  // [ghost13]
             return botAI->DoSpecificAction("spirit healer", Event(), true);
         }
         // [deaths3] no healer left: a spot no mob that stays reaches - it rises there once the wanderers / patrols
