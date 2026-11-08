@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS `playerbots_gear_history` (
     `new_entry` INT UNSIGNED NOT NULL DEFAULT 0,
     `new_ilvl` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
     `source` VARCHAR(16) NOT NULL DEFAULT 'other' COMMENT 'quest reward / loot / vendor buy / guild transfer / craft / bank / other / baseline',
-    `decider` VARCHAR(8) NOT NULL DEFAULT 'bot' COMMENT 'bot / leader',
+    `decider` VARCHAR(8) NOT NULL DEFAULT 'none' COMMENT 'leader / none (no leader decision: [alert] DOUBLE_DECISION) / baseline',
     `reason` VARCHAR(255) NOT NULL DEFAULT '',
     `e0` INT UNSIGNED NOT NULL DEFAULT 0,
     `e1` INT UNSIGNED NOT NULL DEFAULT 0,

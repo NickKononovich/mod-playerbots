@@ -864,7 +864,7 @@ namespace GuildGear
         if (!PlayerbotsDatabase.Query("SELECT 1 FROM playerbots_gear_history WHERE guid = {} LIMIT 1",
                                       bot->GetGUID().GetCounter()))
         {
-            WriteRow(bot, 255, 0, 0, "baseline", "bot", "baseline");
+            WriteRow(bot, 255, 0, 0, "baseline", "baseline", "baseline");
             LOG_INFO("playerbots", "[gear] {} L{} baseline snapshot", bot->GetName(), bot->GetLevel());
         }
     }
@@ -902,7 +902,7 @@ namespace GuildGear
         uint32 const entry = item->GetEntry();
         uint32 old = 0;
         char const* source = "other";
-        std::string decider = "bot";
+        std::string decider = "none";
         std::string reason;
         {
             std::lock_guard<std::mutex> guard(historyLock);
@@ -930,8 +930,14 @@ namespace GuildGear
         // a crafted item carries its maker
         if (!strcmp(source, "other") && item->GetGuidValue(ITEM_FIELD_CREATOR))
             source = "craft";
-        if (reason.empty())
-            reason = old ? "the bot's own upgrade pick" : "an empty slot filled";
+        // user 2026-11-08: the global leader is the single decider for gear; an equip without its decision is a
+        // second decider still at work (auto-equip, its own quest reward pick, AutoUpgradeEquip...)
+        if (decider == "none")
+        {
+            reason = "no leader decision";
+            LOG_INFO("playerbots", "[alert] DOUBLE_DECISION {} slot {} item {} ({}) source {}", bot->GetName(), slot,
+                     entry, item->GetTemplate()->Name1, source);
+        }
         ItemTemplate const* oldProto = old ? sObjectMgr->GetItemTemplate(old) : nullptr;
         LOG_INFO("playerbots", "[gear] {} L{} slot {}: {} (ilvl {}) -> {} (ilvl {}), from {}, {}: {}", bot->GetName(),
                  bot->GetLevel(), slot, oldProto ? oldProto->Name1 : std::string("empty"), ItemLevelOf(old),
