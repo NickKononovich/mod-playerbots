@@ -2317,6 +2317,15 @@ namespace SoloSafety
         state.legNamed.clear();
     }
 
+    bool HasRunPastLeg(Player* bot)
+    {
+        if (!bot)
+            return false;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        return found != states.end() && !found->second.legRunPast.empty();
+    }
+
     bool RunPastStep(Player* bot, std::vector<G3D::Vector3>& rest, std::string& line)
     {
         rest.clear();
@@ -2390,8 +2399,8 @@ namespace SoloSafety
         }
         rest.push_back(here);
         rest.insert(rest.end(), points.begin() + std::min(nearest + 1, points.size() - 1), points.end());
-        float const hp =
-            float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, left.seconds, float(bot->GetPower(POWER_MANA)), true);
+        float const mana = float(bot->GetPower(POWER_MANA));
+        float const hp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, left.seconds, mana, true);
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
         for (Creature* mob : chasers)

@@ -1790,18 +1790,13 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
     return cast;
 }
 
-bool SoloRunPastTrigger::IsActive()
-{
-    std::vector<G3D::Vector3> rest;
-    std::string line;
-    return SoloSafety::RunPastStep(bot, rest, line);
-}
+bool SoloRunPastTrigger::IsActive() { return bot->IsInCombat() && SoloSafety::HasRunPastLeg(bot); }
+
+bool SoloRunPastAction::isUseful() { return SoloSafety::RunPastStep(bot, rest, line); }
 
 bool SoloRunPastAction::Execute(Event /*event*/)
 {
-    std::vector<G3D::Vector3> rest;
-    std::string line;
-    if (!SoloSafety::RunPastStep(bot, rest, line))
+    if (rest.size() < 2)
         return false;
     if (!line.empty())
         LOG_INFO("playerbots", "[solo] RUN_PAST {}", line);

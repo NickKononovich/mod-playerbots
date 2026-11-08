@@ -27,8 +27,12 @@
 // - else everything it has, the biggest piece first.
 // Logged "[solo] survival <spell> <reason>" / "[solo] survival flee leash=Ns dist=... ".
 
+#include "G3D/Vector3.h"
 #include "MovementActions.h"
 #include "Trigger.h"
+
+#include <string>
+#include <vector>
 
 class Player;
 class PlayerbotAI;
@@ -79,6 +83,11 @@ public:
     SoloRunPastAction(PlayerbotAI* botAI) : MovementAction(botAI, "solo run past") {}
 
     bool Execute(Event event) override;
+    bool isUseful() override;  // the full RunPastStep (attackers, chases, the judge); Execute walks its answer
+
+private:
+    std::vector<G3D::Vector3> rest;
+    std::string line;
 };
 
 #endif
