@@ -288,9 +288,10 @@ public:
 // the target and the mage's attackers.
 constexpr float FIRE_FIGHT_END_SCORCH_SEC = 4.0f;
 
-// [rot604] Fireball deals more per second than Frostbolt (SpellPayoff::FillerDps, the core's numbers with talents and
-// gear): Fireball rank 2 at L6-7 against Frostbolt rank 1 (b338 L1-9 frost ideal / formula 1.06). Arcane before Arcane
-// Blast and Frost cast the stronger of the two; DpsEstimate picks its filler by the same rule (Script::BestFiller).
+// [rot604] Fireball deals more per second than Frostbolt ([rot609] DpsEstimate::FillerDps, the core's numbers with
+// talents and gear): Fireball rank 2 at L6-7 against Frostbolt rank 1 (b338 L1-9 frost ideal / formula 1.06). Arcane
+// before Arcane Blast and Frost cast the stronger of the two; DpsEstimate picks its filler by the same rule
+// (Script::BestFiller).
 class FireballOverFrostboltTrigger : public Trigger
 {
 public:

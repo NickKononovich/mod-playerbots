@@ -459,7 +459,7 @@ uint32 MageFillerId(PlayerbotAI* botAI, Player* bot, Unit* target)
         return fireball ? fireball : frostbolt;
     if (!fireball)
         return frostbolt;
-    return SpellPayoff::FillerDps(bot, target, fireball) > SpellPayoff::FillerDps(bot, target, frostbolt) ? fireball
+    return DpsEstimate::FillerDps(bot, target, fireball) > DpsEstimate::FillerDps(bot, target, frostbolt) ? fireball
                                                                                                            : frostbolt;
 }
 }  // namespace
@@ -472,7 +472,7 @@ bool FireballOverFrostboltTrigger::IsActive()
     uint32 const fireball = AI_VALUE2(uint32, "spell id", "fireball");
     uint32 const frostbolt = AI_VALUE2(uint32, "spell id", "frostbolt");
     return fireball && frostbolt &&
-           SpellPayoff::FillerDps(bot, target, fireball) > SpellPayoff::FillerDps(bot, target, frostbolt);
+           DpsEstimate::FillerDps(bot, target, fireball) > DpsEstimate::FillerDps(bot, target, frostbolt);
 }
 
 bool FireBlastPaysTrigger::IsActive()

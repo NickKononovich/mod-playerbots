@@ -30,6 +30,7 @@
 #include "PlayerbotsDatabase.h"
 #include "SharedDefines.h"
 #include "SpellAuraEffects.h"
+#include "SpellDefines.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "SpellPayoff.h"
@@ -83,6 +84,9 @@ constexpr uint32 SPELL_SEAL_OF_RIGHTEOUSNESS_DAMAGE = 25742;
 constexpr uint32 SPELL_JUDGEMENT_OF_RIGHTEOUSNESS = 20187;
 // SpellEffects.cpp Steady Shot: + 0.1 x ranged AP on the normalized weapon and ammo damage
 constexpr float STEADY_SHOT_RAP = 0.1f;
+// Spell::Delayed: a landed hit pushes a cast back 500 ms (less its pushback reduction), at most twice a cast
+constexpr float PUSHBACK_MS = 500.0f;
+constexpr float PUSHBACK_MAX = 2.0f;
 
 enum class Kind : uint8
 {
@@ -109,7 +113,7 @@ enum class Script : uint8
     Rupture,
     SteadyShot,
     Conflagrate,  // Immolate's full damage x (effect 1 + effect 2) % (SpellEffects.cpp)
-    BestFiller    // [rot604] the stronger of the marked fillers it knows by SpellPayoff::FillerDps, as the bot picks
+    BestFiller    // [rot604] the stronger of the marked fillers it knows by DpsEstimate::FillerDps, as the bot picks
 };
 
 struct Ability
@@ -150,13 +154,15 @@ std::vector<SpecRotation> const& Rotations()
           {"Whirlwind", Kind::Cooldown},
           {"Rend", Kind::Dot},
           {"Heroic Strike", Kind::Swing}}},
-        // protection_warrior/apls/default: Shield Slam, Revenge, Thunder Clap, Devastate, Heroic Strike
+        // protection_warrior/apls/default: Shield Slam, Revenge, Thunder Clap, Devastate, Heroic Strike; [rot609]
+        // Thunder Clap only to keep its debuff up (the APL's auraShouldRefresh, the bot's "thunder clap and rage"; b341
+        // L10-19: 0.2 casts a fight against a formula that cast it on its 6 s cooldown, 0.81 of it)
         {CLASS_WARRIOR,
          2,
          false,
          {{"Shield Slam", Kind::Cooldown},
           {"Revenge", Kind::Cooldown},
-          {"Thunder Clap", Kind::Cooldown},
+          {"Thunder Clap", Kind::Dot},
           {"Rend", Kind::Dot},
           {"Devastate", Kind::Filler},
           {"Sunder Armor", Kind::Filler},
@@ -778,6 +784,7 @@ struct Model
     // bot is passed as the victim only where the victim's own numbers are not read
     bool standIn = false;
     float standInArmor = 0.0f;
+    float pushHitsPerSec = 0.0f;  // [rot609] the target's landed melee hits on the bot per second (cast pushback)
 };
 
 // Unit::GetUnitMissChance: a creature's 5 %; Unit::MeleeSpellMissChance: + 19 % for a dual wielder's white swing
@@ -1234,16 +1241,54 @@ bool ReadCast(Model const& m, Unit* caster, uint32 id, Ability const& ability, C
 
     // timing
     bool const channel = info->IsChanneled();
-    float const castMs = channel ? 0.0f : float(info->CalcCastTime(caster)) / (1.0f + spellHaste / 100.0f);
+    float castMs = channel ? 0.0f : float(info->CalcCastTime(caster)) / (1.0f + spellHaste / 100.0f);
+    // [rot609] Unit::DealDamage -> Spell::Delayed: every landed hit on the caster while it casts a push-back spell
+    // delays it (b341 solo casters hit in melee: Wrath every 2.5 s for a 1.7 s cast, frost mages and demonology
+    // warlocks at 0.5-0.6 of the formula when hit, at 1.0 when not)
+    if (castMs > 0.0f && caster == m.bot && player && m.pushHitsPerSec > 0.0f &&
+        (info->InterruptFlags & SPELL_INTERRUPT_FLAG_PUSH_BACK) && !info->HasAttribute(SPELL_ATTR6_NO_PUSHBACK))
+    {
+        int32 reduce = 100;
+        player->ApplySpellMod(info->Id, SPELLMOD_NOT_LOSE_CASTING_TIME, reduce);
+        reduce += player->GetTotalAuraModifier(SPELL_AURA_REDUCE_PUSHBACK) - 100;
+        if (reduce < 100)
+        {
+            float const delayMs = PUSHBACK_MS * float(100 - reduce) / 100.0f;
+            float hits = std::min(PUSHBACK_MAX, m.pushHitsPerSec * castMs / float(IN_MILLISECONDS));
+            hits = std::min(PUSHBACK_MAX, m.pushHitsPerSec * (castMs + hits * delayMs) / float(IN_MILLISECONDS));
+            castMs += hits * delayMs;
+        }
+    }
     float const channelMs = channel ? ChannelMs(modOwner, caster, info, spellHaste) : 0.0f;
     float const gcdMs = GlobalCooldownMs(modOwner, caster, info, spellHaste);
     out.executeSec = std::max({castMs, channelMs, gcdMs}) / float(IN_MILLISECONDS);
+    // [rot609] a filler cast back to back refreshes its own DoT (Fireball): one execute time of its ticks per cast
+    if (ability.kind == Kind::Filler && periodic > 0.0f && durationMs > out.executeSec * float(IN_MILLISECONDS))
+    {
+        float const lost = periodic * land * (1.0f - out.executeSec * float(IN_MILLISECONDS) / durationMs);
+        out.threat *= (out.damage - lost) / out.damage;
+        out.damage -= lost;
+    }
     int32 cooldown = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
     if (modOwner)
         modOwner->ApplySpellMod(info->Id, SPELLMOD_COOLDOWN, cooldown);
     out.category = info->CategoryRecoveryTime ? info->GetCategory() : 0;
     if (ability.kind == Kind::Dot || ability.kind == Kind::ComboDot)
-        out.periodSec = std::max(durationMs, float(cooldown)) / float(IN_MILLISECONDS);
+    {
+        // [rot609] a debuff kept up (Thunder Clap: wowsims protection_warrior auraShouldRefresh) once per its aura's
+        // duration, not on its cooldown
+        float auraMs = 0.0f;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+            if (effect.IsAura())
+            {
+                int32 ms = info->GetMaxDuration();
+                if (modOwner && ms > 0)
+                    modOwner->ApplySpellMod(info->Id, SPELLMOD_DURATION, ms);
+                auraMs = std::max(auraMs, float(ms));
+                break;
+            }
+        out.periodSec = std::max({durationMs, auraMs, float(cooldown)}) / float(IN_MILLISECONDS);
+    }
     else
         out.periodSec = float(std::max(cooldown, 0)) / float(IN_MILLISECONDS);
 
@@ -1580,6 +1625,35 @@ float DotRateOver(Player* bot, Unit* target, Cast& cast, uint32 fillerId, float 
     return applications / lifeSec;
 }
 
+// [rot609] The target's melee hits that land on the bot per second, for the pushback of its casts (ReadCast): when the
+// target attacks it (solo, a fresh mob comes at the one that pulls it; a pet or a tank holding it: none). Its attack
+// speed and its miss / dodge / parry against the bot (Unit::RollMeleeOutcomeAgainst); over a fight of `lifeSec` from
+// the time it has run into melee at its run speed.
+float PushbackHitsPerSec(Player* bot, Unit* target, BuffContext ctx, float lifeSec)
+{
+    if (!target || target == bot || !target->CanHaveThreatList())
+        return 0.0f;
+    Unit* victim = target->GetVictim();
+    if (victim ? victim != bot : ctx != BuffContext::Solo)
+        return 0.0f;
+    uint32 const attackMs = target->GetAttackTime(BASE_ATTACK);
+    if (!attackMs)
+        return 0.0f;
+    int32 const skillDiff =
+        int32(target->GetWeaponSkillValue(BASE_ATTACK, bot)) - int32(bot->GetMaxSkillValueForLevel(target));
+    float const miss = std::clamp(target->MeleeSpellMissChance(bot, BASE_ATTACK, skillDiff, 0), 0.0f, MISS_MAX_PCT);
+    float const avoid = std::clamp(miss + bot->GetUnitDodgeChance() + bot->GetUnitParryChance(), 0.0f, 100.0f);
+    float rate = (1.0f - avoid / 100.0f) * float(IN_MILLISECONDS) / float(attackMs);
+    if (lifeSec > 0.0f)
+    {
+        float const speed = target->GetSpeed(MOVE_RUN);
+        float const runSec =
+            speed > 0.0f ? std::max(0.0f, target->GetExactDist(bot) - target->GetMeleeRange(bot)) / speed : 0.0f;
+        rate *= std::max(0.0f, lifeSec - runSec) / lifeSec;
+    }
+    return rate;
+}
+
 // `lifeSec` > 0: the fight's length (a solo bot on a fresh mob); 0: the steady state
 Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, bool ideal)
 {
@@ -1597,6 +1671,8 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             m.standInArmor = stats->BaseArmor;
     }
     m.target = target;
+    if (!m.standIn)
+        m.pushHitsPerSec = PushbackHitsPerSec(bot, target, ctx, lifeSec);
 
     // the planned buffs' stats into attack power, spell power and crit (Player::UpdateAttackPowerAndDamage)
     uint8 const cls = bot->getClass();
@@ -1681,6 +1757,11 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     float energy =
         (ENERGY_BASE_REGEN + bot->GetFloatValue(uint16(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER) + uint16(POWER_ENERGY))) *
         sWorld->getRate(RATE_POWER_ENERGY);
+    // [rot609] a fresh solo mob: it comes to the fight with full energy (Player::Regenerate fills it out of combat),
+    // spent on top of the regeneration over the fight (b341 L10-19 assassination: 188 energy cast a ~10 s fight
+    // against the formula's 100, 1.13 of it)
+    if (lifeSec > 0.0f && bot->getPowerType() == POWER_ENERGY)
+        energy += float(bot->GetMaxPower(POWER_ENERGY)) / lifeSec;
     float runes[RUNE_TYPES] = {};
     if (cls == CLASS_DEATH_KNIGHT)
         for (uint8 i = 0; i < RUNE_SLOTS; ++i)
@@ -1767,7 +1848,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
         if (cls == CLASS_PALADIN)
             seal = known["Seal of Righteousness"];
         // [dpscal] the filler it casts: the first one it knows in the bot's priority (the list's order); [rot604] the
-        // stronger of the BestFiller ones it knows when it gets to them (SpellPayoff::FillerDps, the bot's rule)
+        // stronger of the BestFiller ones it knows when it gets to them (DpsEstimate::FillerDps, the bot's rule)
         // (the ideal: the strongest one it knows)
         uint32 fillerId = 0;
         float fillerBest = 0.0f;
@@ -1781,13 +1862,14 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
                         fillerId = id;
                     break;
                 }
-                float const dps = m.standIn ? 0.0f : SpellPayoff::FillerDps(bot, target, id);
+                float const dps = m.standIn ? 0.0f : DpsEstimate::FillerDps(bot, target, id);
                 if (!fillerId || dps > fillerBest)
                 {
                     fillerId = id;
                     fillerBest = dps;
                 }
             }
+        bool judged = false;
         for (Ability const& ability : rotation->abilities)
         {
             uint32 const id = known[ability.name];
@@ -1797,7 +1879,9 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             uint32 readId = id;
             if (ability.kind == Kind::Judgement)
             {
-                if (!seal)
+                // [rot609] Judgement of Light / Wisdom / Justice share one cooldown: one judgement (b341 L10-19
+                // protection: Judgement of Wisdom 2.0 casts a fight against a formula that judged twice, 0.76 of it)
+                if (!seal || judged)
                     continue;
                 readId = SPELL_JUDGEMENT_OF_RIGHTEOUSNESS;  // the judgement of the seal it keeps
             }
@@ -1805,6 +1889,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
                 continue;
             if (ability.kind == Kind::Judgement)
             {
+                judged = true;
                 // the judgement's own cooldown and cost
                 if (SpellInfo const* judge = sSpellMgr->GetSpellInfo(id))
                 {
@@ -2156,6 +2241,23 @@ bool CastPays(Player* bot, Unit* target, uint32 spellId, uint32 fillerSpellId)
     return cast.Total() >= SpellPayoff::FillerDps(bot, target, fillerSpellId) * cast.executeMs / float(IN_MILLISECONDS);
 }
 
+float FillerDps(Player* bot, Unit* target, uint32 spellId)
+{
+    if (!bot || !target || !spellId || !bot->IsInWorld() || !target->IsInWorld())
+        return 0.0f;
+    BuffContext const ctx = ContextOf(bot);
+    Model m;
+    m.bot = bot;
+    m.target = target;
+    m.front = ctx == BuffContext::Solo || PlayerbotAI::IsTank(bot);
+    m.pushHitsPerSec = PushbackHitsPerSec(bot, target, ctx, 0.0f);
+    Cast cast;
+    Ability const ability{"", Kind::Filler};
+    if (!ReadCast(m, bot, spellId, ability, cast))
+        return 0.0f;
+    return cast.damage / std::max(cast.executeSec, 0.1f);
+}
+
 char const* ContextName(BuffContext ctx)
 {
     switch (ctx)
@@ -2202,10 +2304,12 @@ void RecordFight(Player* bot, FightSample const& sample)
     //   execute time of its casts for a caster, its ranged speed for a hunter, its swing else (SoloSafety adds one
     //   swing: a mage's 2.9 s staff for a 1.5-1.8 s Frostbolt), or from the first hit it took when that came first;
     // - less the time SoloSafety found it not attacking (fight_s - active_s).
-    // A run keeps SoloSafety's numbers (they stop at the run).
+    // [rot609] A run too: SoloSafety's numbers stop at the run's start (its damage to then over a mage's 2.9 s staff
+    // swing on top) while a bot that disengages can cast on (b341 Gilduck L9 frost: 94 dealt, 30 of them before the
+    // disengage, logged 3.7-4.7 dps against 18.9); its hits after the run are in the window.
     float leadSec = 0.0f;
     bool const fled = !strcmp(sample.outcome, "fled");
-    if (f.firstDealtMs && f.raw && !fled)
+    if (f.firstDealtMs && f.raw)
     {
         SpecRotation const* rotation = RotationOf(bot);
         leadSec = std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
@@ -2220,7 +2324,7 @@ void RecordFight(Player* bot, FightSample const& sample)
             if (takenBefore < getMSTimeDiff(f.firstDealtMs, f.firstTakenMs))
                 before = std::max(before, float(takenBefore) / float(IN_MILLISECONDS));
         }
-        float const idle = std::max(0.0f, sample.fightSec - sample.activeSec);
+        float const idle = fled ? 0.0f : std::max(0.0f, sample.fightSec - sample.activeSec);
         float const window =
             float(getMSTimeDiff(f.firstDealtMs, f.lastDealtMs)) / float(IN_MILLISECONDS) + before - idle;
         if (window > 0.0f)

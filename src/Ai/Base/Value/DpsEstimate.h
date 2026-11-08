@@ -58,6 +58,13 @@ float EstimateTps(Player* bot, Unit* target, BuffContext ctx);
 // "fire blast pays" / "mind blast pays" triggers and the formula read this one rule. True when no filler is known.
 bool CastPays(Player* bot, Unit* target, uint32 spellId, uint32 fillerSpellId);
 
+// [rot609] One filler's damage per second on `target` from the bot's state now, as the formula reads it (the core's
+// numbers: its land chance, crit, armor, its own DoT refreshed cast after cast, the pushback of the target's hits on
+// it). The bot picks the stronger of two fillers by it (Fireball over Frostbolt) and the formula by the same rule.
+// b341 frost mages: SpellPayoff::FillerDps (direct hits only, a measured mean per hit) picked the filler the formula
+// read 10-25 % weaker (ideal / formula 1.12)
+float FillerDps(Player* bot, Unit* target, uint32 spellId);
+
 char const* ContextName(BuffContext ctx);
 // a solo bot outside a group: Solo; a party: Group; a raid group: Raid
 BuffContext ContextOf(Player* bot);
