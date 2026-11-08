@@ -3290,16 +3290,44 @@ bool IsMember(Player* bot)
     return party != parties.end() && party->second.formed && party->second.leader != bot->GetGUID();
 }
 
+// [deaths12] the leader of an open-world group that is no co-op / help party (a user pack's group, Eraelor with
+// Lyleria at Ban'ethil Hollow): with a living member within the core's group reward distance the solo judge does not
+// apply (SoloSafety::SoloPlayerBot) and before nothing judged its pulls - b350 Lyleria L9 died in the Gnarlpine camp
+// after six pulls in a row, "no judged pull". The party judge judges them for the group's members
+bool OpenWorldGroupLeader(Player* bot, std::vector<ObjectGuid>* members)
+{
+    Group* group = bot ? bot->GetGroup() : nullptr;
+    PlayerbotAI* ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    if (!group || !ai || group->GetLeaderGUID() != bot->GetGUID() || bot->GetMap()->Instanceable() ||
+        group->isRaidGroup() || !ai->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+        return false;
+    bool withMember = false;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* m = ref->GetSource();
+        if (!m || m->GetMapId() != bot->GetMapId())
+            continue;
+        if (members)
+            members->push_back(m->GetGUID());
+        withMember = withMember || (m != bot && m->IsAlive() && m->IsAtGroupRewardDistance(bot));
+    }
+    return withMember;
+}
+
 bool JudgesPulls(Player* bot)
 {
     if (!bot)
         return false;
-    std::lock_guard<std::mutex> guard(lock);
-    auto const me = postings.find(bot->GetGUID().GetCounter());
-    if (me == postings.end() || !me->second.party)
-        return false;
-    auto const party = parties.find(me->second.party);
-    return party != parties.end() && party->second.formed && party->second.leader == bot->GetGUID();
+    {
+        std::lock_guard<std::mutex> guard(lock);
+        auto const me = postings.find(bot->GetGUID().GetCounter());
+        if (me != postings.end() && me->second.party)
+        {
+            auto const party = parties.find(me->second.party);
+            return party != parties.end() && party->second.formed && party->second.leader == bot->GetGUID();
+        }
+    }
+    return OpenWorldGroupLeader(bot, nullptr);  // [deaths12]
 }
 
 void SetCoordinatorHooks(CoordinatorHooks const& coordinatorHooks) { hooks = coordinatorHooks; }
@@ -3520,14 +3548,22 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         return verdict;
     std::vector<ObjectGuid> members;
     std::unordered_map<uint32, float> healRate;
+    bool openGroup = false;  // [deaths12] an open-world group, no co-op party: its heals from the kit below
     {
         std::lock_guard<std::mutex> guard(lock);
         auto const me = postings.find(leader->GetGUID().GetCounter());
         auto const party = me != postings.end() ? parties.find(me->second.party) : parties.end();
-        if (party == parties.end())
+        if (party != parties.end())
+        {
+            members = party->second.members;
+            healRate = party->second.healRate;
+        }
+    }
+    if (members.empty())
+    {
+        if (!OpenWorldGroupLeader(leader, &members))
             return verdict;
-        members = party->second.members;
-        healRate = party->second.healRate;
+        openGroup = true;
     }
 
     // the party's damage: its members in sight of the leader (each the formula's, [dps1]); its heals: the
@@ -3594,6 +3630,20 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
             ++verdict.above;
         verdict.topLevel = std::max<uint8>(verdict.topLevel, mob.unit->GetLevel());
     }
+    // [deaths12] an open-world group: the leader's and its healers' own heals over this fight
+    // (SurvivalKit::HealPoints: the casts its seconds hold, the mana now / full)
+    if (openGroup)
+        for (ObjectGuid const& guid : members)
+        {
+            Player* m = SameMapPlayer(leader, guid);
+            if (!m || !m->IsAlive() || (m != leader && !PlayerbotAI::IsHeal(m)) ||
+                leader->GetExactDist(m) > sPlayerbotAIConfig.SightDistance)
+                continue;
+            healNow += SurvivalKit::HealPoints(m, seconds, float(m->GetPower(POWER_MANA)), m == leader) /
+                       std::max(seconds, 1.0f);
+            healFull += SurvivalKit::HealPoints(m, seconds, float(m->GetMaxPower(POWER_MANA)), m == leader) /
+                        std::max(seconds, 1.0f);
+        }
     verdict.mobs = pack.size();
     verdict.damage = damage;
     verdict.fightSec = seconds;
@@ -3625,10 +3675,11 @@ void RestParty(Player* leader, std::string const& why)
         std::lock_guard<std::mutex> guard(lock);
         auto const me = postings.find(leader->GetGUID().GetCounter());
         auto const party = me != postings.end() ? parties.find(me->second.party) : parties.end();
-        if (party == parties.end())
-            return;
-        members = party->second.members;
+        if (party != parties.end())
+            members = party->second.members;
     }
+    if (members.empty() && !OpenWorldGroupLeader(leader, &members))  // [deaths12] an open-world group
+        return;
     for (ObjectGuid const& guid : members)
         if (Player* m = SameMapPlayer(leader, guid))
             if (m->GetHealth() < m->GetMaxHealth() ||
