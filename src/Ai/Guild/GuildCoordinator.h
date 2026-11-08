@@ -290,7 +290,13 @@ public:
     int32 RewardChoice(Player* bot, Quest const* quest);
     // [tasks] map thread: the PROFESSION task the global leader gave the bot (NONE: questing); the profession
     // executors (NewRpgProfession::StartTask, NewRpgCraft::StartCraft) should run only for a kind returned here
+    // [econ2] ... and only once the call can run where the bot stands: TRAIN in the town of the trainer the leader
+    // planned for it (its next visit there), CRAFT / BUY in a town (rest area); NONE while it only waits
     GuildProfessionKind ProfessionCall(Player* bot, uint32* skillLine = nullptr);
+    // [econ2] map thread, for the profession executors' errands (NewRpgProfession train / tool / recipe trips): the
+    // global leader called this errand for this skill line (TRAIN, a tool = TRAIN "tool"), the npc stands in the town
+    // the bot is in now, and a bought tool has a free bag slot. The executors pick only errands this allows
+    bool ProfessionErrand(Player* bot, uint32 skillLine, bool tool, WorldPosition const& npc);
     // [coop] map thread, read only: the bot runs or must start an URGENT task now (its first executable urgent order
     // not waiting for a town, its five, an urgent vault run); why: the task's name
     bool UrgentTask(Player* bot, std::string* why) const;
@@ -448,6 +454,9 @@ private:
         std::string stuckKey;
         std::string waitReason;
         uint32 skillSum{0};         // [guild15] its profession skills at the last health sample (crafting = progress)
+        uint32 casts{0};            // [econ2] its smelt casts (NextStep): a cast is progress, a skill-up or not
+        uint32 castsSeen{0};        // [econ2] casts at the last health sample
+        std::string profGate;       // [econ2] the last logged state of its profession call (ready / waits)
         std::deque<uint32> deaths;  // game time
         bool deathOpen{false};      // dead since the last DEATH alert
         uint64 xpTotal{0};
@@ -501,7 +510,8 @@ private:
         uint32 skillLine{0};
         uint32 itemId{0};  // GATHER / BUY: the reagent
         uint32 count{0};
-        WorldPosition pos{};  // [econ1] CRAFT smelt: the town forge it smelts at on its next visit there
+        WorldPosition pos{};  // [econ1] CRAFT smelt: the town forge it smelts at on its next visit there;
+                              // [econ2] TRAIN: the trainer (the pole vendor) it learns at on its next visit there
         std::string details;
         std::string reason;
     };
@@ -670,6 +680,20 @@ private:
     void TransferPlanRows(std::vector<std::vector<std::string>>& rows) const;
     std::vector<Mailbox> mailboxes_;        // read-only after Load
     std::vector<Mailbox> forges_;
+    // [econ2] the profession trainers by skill line and the Fishing Pole vendors (creature spawns on the continents,
+    // their town as a mailbox's): the TRAIN call's town, read-only after Load
+    struct NpcSpot
+    {
+        uint32 entry{0};
+        Mailbox spot;
+    };
+    std::unordered_map<uint32, std::vector<NpcSpot>> trainerSpots_;
+    std::vector<NpcSpot> poleVendors_;
+    // the nearest friendly spot of the list on the bot's map whose walk its trip judge did not refuse (lock_ held)
+    NpcSpot const* NearestSpot(Player* p, uint32 low, std::vector<NpcSpot> const& list) const;
+    // [econ2] member -> raw item -> its own skill-up need on the lines the global leader calls it to (UpdateWanted):
+    // what full bags keep of a material (lock_)
+    std::map<uint32, std::map<uint32, uint32>> crafterNeed_;
     // [econ1] UpdateWanted: member -> raw item -> what its own skill-ups to its held rank cap still lack (lock_)
     std::map<uint32, std::map<uint32, uint32>> crafterLack_;
     std::string wantedTop_;  // [econ1] the last logged top of the wanted list (world thread)           // [econ1]

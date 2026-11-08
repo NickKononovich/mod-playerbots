@@ -1196,9 +1196,14 @@ void GuildCoordinator::UpdateWanted()
     std::map<uint32, double> worth;                     // [gather] raw item -> copper it is worth to the guild
     std::unordered_map<uint64, float> pointValue;
     std::unordered_map<uint32, float> copperPerXp;  // member -> the core's quest XP -> money rate (RecordPace)
+    std::set<std::pair<uint32, uint32>> called;     // [econ2] (member, line) the leader calls to craft / gather / buy
     {
         std::lock_guard<std::mutex> guard(lock_);
         pointValue = pointValue_;
+        for (auto const& [low, picks] : professions_)
+            for (ProfessionPick const& pick : picks)
+                if (pick.kind != GuildProfessionKind::NONE && pick.kind != GuildProfessionKind::TRAIN)
+                    called.insert({low, pick.skillLine});
         for (auto const& [low, st] : bots_)
             copperPerXp[low] = st.copperPerXp;
     }
@@ -1257,6 +1262,13 @@ void GuildCoordinator::UpdateWanted()
         {
             auto const list = recipesBySkill_.find(line);
             if (list == recipesBySkill_.end())
+                continue;
+            // [econ2] b353 wanted Linen Cloth 9392 (have 1377): the skill-ups of every member's every line to its
+            // rank cap, First Aid of 72 members first - the cloth was held "until the guild bank" in full bags and
+            // mailed one by one for skill-ups nobody was called to make. A skill-up is wanted only on a line the
+            // leader calls this member to (its value beat questing: UpdateProfessions); the upgrade / bag crafts and
+            // the quests below stay wanted
+            if (!called.count({row.low, line}))
                 continue;
             uint64 const key = (uint64(row.low) << 16) | line;
             uint32 skill = 0;
@@ -1517,9 +1529,15 @@ void GuildCoordinator::UpdateWanted()
         }
     }
 
+    std::map<uint32, std::map<uint32, uint32>> crafterNeedUnits;
+    for (auto const& [low, items] : crafterNeed)
+        for (auto const& [item, amount] : items)
+            crafterNeedUnits[low][item] = uint32(std::ceil(amount - 0.001));
+
     std::lock_guard<std::mutex> guard(lock_);
     wanted_ = std::move(list);
     crafterLack_ = std::move(crafterLack);
+    crafterNeed_ = std::move(crafterNeedUnits);  // [econ2]
     guildState_ = guild ? "guild «" + guild->GetName() + "», bank tabs " + std::to_string(guild->GetPurchasedTabsSize())
                         : "no guild: the bank sleeps";
 }
@@ -1830,6 +1848,7 @@ void GuildCoordinator::UpdateOrders()
                 o.count = pick.count;
                 o.details = pick.details;
                 o.reason = pick.reason;
+                o.pos = pick.pos;  // [econ2] TRAIN: its trainer's town (ClassifyTask), the call waits for the visit
                 // GATHER runs as DO_GATHER here; TRAIN / BUY / CRAFT through the profession executor in town
                 o.executable = pick.kind == GuildProfessionKind::GATHER;
                 o.status = pick.kind == GuildProfessionKind::GATHER ? "gathers itself"
@@ -2040,11 +2059,83 @@ void GuildCoordinator::UpdateOrders()
             // it. [econ1] b350: a wanted reagent stayed in full bags (Thamesh 100 % -> 100 % at the vendor) because
             // the guild was short of it somewhere; now the transfers' bag relief sends it to a crafter whose own
             // skill-ups lack it and who has room, and only what nobody can take is sold
+            // [econ2] b353: 18 vendor visits at >= 90 % bags, 13 still full after it (Blahadrin 10 visits at 92-95 %,
+            // Septimon / Maronic 100 % -> 100 %). The leader decided only for the loot it saw (OnLoot): the bags held
+            // what came before or by other ways - raw meat (262 slots over 74 members), cloth, ore kept as "needed
+            // for its skill" by the vendor sale (ItemUsageValue), gear it neither wears nor plans (Maronic: three
+            // Frayed Robes, two Ragged Leather Vests with its chest slot empty: BAD_EQUIP, never sold). At full bags
+            // with no bank tab the leader takes every bag item over: a material beyond its own called skill-ups and
+            // its quests goes to the bank list (the bag relief to a crafter with room, else the vendor, next pass),
+            // gear no member's plan wants and it could wear now is sold. Food, potions, ammo, tools, quest and class
+            // items stay
+            std::set<uint32> adopted;
+            if (cls == 0 && noBank && !HumanCharacter(p))
+            {
+                std::map<uint32, uint32> keep;  // item -> units its own work still uses
+                if (auto const own = crafterNeed_.find(row.low); own != crafterNeed_.end())
+                    keep = own->second;
+                for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+                    if (Quest const* quest = sObjectMgr->GetQuestTemplate(p->GetQuestSlotQuestId(slot)))
+                        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                            if (quest->RequiredItemId[i])
+                                keep[quest->RequiredItemId[i]] += quest->RequiredItemCount[i];
+                std::set<uint32> known;
+                for (HeldItem const& h : st.held)
+                    known.insert(h.itemGuidLow);
+                for (uint32 guid : st.sell)
+                    known.insert(guid);
+                std::vector<Item*> items;
+                for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                    if (Item* i = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                        items.push_back(i);
+                for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+                    if (Bag* bag = p->GetBagByPos(b))
+                        for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                            if (Item* i = bag->GetItemByPos(uint8(j)))
+                                items.push_back(i);
+                std::map<uint32, uint32> kept;  // item -> units kept so far
+                for (Item* i : items)
+                {
+                    ItemTemplate const* proto = i->GetTemplate();
+                    uint32 const guid = i->GetGUID().GetCounter();
+                    if (!proto || !proto->SellPrice || known.count(guid) || TransferHolds(guid) ||
+                        proto->Class == ITEM_CLASS_QUEST || proto->Bonding == BIND_QUEST_ITEM ||
+                        std::any_of(recipeLearn_.begin(), recipeLearn_.end(),
+                                    [&](auto const& r) { return r.second == guid; }))
+                        continue;
+                    bool const material = proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_GEM;
+                    bool const gear = (proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON) &&
+                                      !proto->TotemCategory && proto->SubClass != ITEM_SUBCLASS_WEAPON_MISC &&
+                                      proto->SubClass != ITEM_SUBCLASS_WEAPON_FISHING_POLE &&
+                                      proto->InventoryType != INVTYPE_AMMO && proto->InventoryType != INVTYPE_QUIVER;
+                    if (material)
+                    {
+                        uint32& n = kept[proto->ItemId];
+                        auto const want = keep.find(proto->ItemId);
+                        if (want != keep.end() && n < want->second)
+                        {
+                            n += i->GetCount();
+                            continue;  // its own called skill-ups / quest use it
+                        }
+                        st.held.push_back({guid, proto->ItemId, i->GetCount(), 0, "bag material"});
+                        adopted.insert(guid);
+                        LOG_INFO("playerbots", "[econ2] {} full bags: {} ×{} goes to the guild's list (relief or "
+                                 "sale): not for its own called skill-ups or quests", Who(row.low),
+                                 ItemName(proto->ItemId), i->GetCount());
+                    }
+                    else if (gear && proto->RequiredLevel <= p->GetLevel() && !PlannedFor(proto->ItemId))
+                    {
+                        st.sell.push_back(guid);
+                        LOG_INFO("playerbots", "[econ2] {} full bags: {} sold at the next vendor: not worn, no "
+                                 "member's gear plan wants it", Who(row.low), ItemName(proto->ItemId));
+                    }
+                }
+            }
             if (cls == 0 && noBank && !HumanCharacter(p))
                 for (auto it = st.held.begin(); it != st.held.end();)
                 {
                     if (it->forLow || it->purpose == "pending" || TransferHolds(it->itemGuidLow) ||
-                        PlannedFor(it->itemId))
+                        PlannedFor(it->itemId) || adopted.count(it->itemGuidLow))
                     {
                         ++it;
                         continue;
@@ -3036,6 +3127,10 @@ void GuildCoordinator::UpdateProfessions()
                 ProfessionPick pick;
                 pick.kind = GuildProfessionKind::TRAIN;
                 pick.skillLine = line;
+                // [econ2] its nearest trainer's town: learned on its next visit there (ProfessionCall)
+                if (auto const spots = trainerSpots_.find(line); spots != trainerSpots_.end())
+                    if (NpcSpot const* n = NearestSpot(p, row->low, spots->second))
+                        pick.pos = n->spot.pos;
                 pick.details = std::move(details);
                 pick.reason = std::move(reason);
                 picks.push_back(pick);
@@ -3214,12 +3309,20 @@ void GuildCoordinator::UpdateProfessions()
                                 unlockedText +=
                                     (unlockedText.empty() ? "" : ", ") + ItemName(n->itemId) + " (" + n->label + ")";
                         }
-                    double const value = sales + unlocked - vendorCost;
+                    // [econ2] user rule 2026-11-08 (econ1 applied it to gathering): a profession is worth the
+                    // upgrades and skill-ups it unlocks for the guild, not the vendor price of its skill-up
+                    // products. b353: First Aid 320 c/min "beat" questing from Linen Bandage sales alone (bandages
+                    // stay with the crafter, NewRpgCraft::OnCreateItem) - 108 of the run's 189 craft points went to
+                    // bandages, 56 to Roasted Boar Meat, and the call opened the profession errands (trainers, tool
+                    // vendors 1000-3400 yd away): PROFESSION 13 % of all bot time. The sales stay out of the value
+                    (void)sales;
+                    double const value = unlocked - vendorCost;
                     double const minutes = craftMin + gatherMin;
                     float questPace = 0.0f;
                     std::string questWhy;
                     char numbers[200];
-                    std::snprintf(numbers, sizeof(numbers), "to %u in %.1f min (craft %.1f, gather %.1f), value %s",
+                    std::snprintf(numbers, sizeof(numbers),
+                                  "to %u in %.1f min (craft %.1f, gather %.1f), value %s (unlocks) [econ2]",
                                   reach, minutes, craftMin, gatherMin, Gsc(uint64(std::max(0.0, value))).c_str());
                     std::string const reached = std::string(numbers) +
                                                 (unlockedText.empty() ? "" : "; unlocks " + unlockedText) +
@@ -3356,11 +3459,19 @@ void GuildCoordinator::UpdateProfessions()
                 }
                 std::string key;
                 std::string decision;
-                auto const call = [&](std::string details, std::string reason)
+                auto const call = [&](std::string details, std::string reason, bool pole = false)
                 {
                     ProfessionPick pick;
                     pick.kind = GuildProfessionKind::TRAIN;
                     pick.skillLine = line;
+                    // [econ2] the town of its nearest trainer (of the nearest pole vendor): its next visit there
+                    static std::vector<NpcSpot> const noSpots;
+                    auto const spots = trainerSpots_.find(line);
+                    if (NpcSpot const* n = NearestSpot(p, row->low,
+                                                       pole                          ? poleVendors_
+                                                       : spots != trainerSpots_.end() ? spots->second
+                                                                                      : noSpots))
+                        pick.pos = n->spot.pos;
                     pick.details = std::move(details);
                     pick.reason = std::move(reason);
                     picks.push_back(pick);
@@ -3390,7 +3501,7 @@ void GuildCoordinator::UpdateProfessions()
                 }
                 else if (has && line == SKILL_FISHING && !NewRpgFishing::HasPole(p))
                 {
-                    call("Fishing Pole", "fishing learned, no pole");
+                    call("Fishing Pole", "fishing learned, no pole", true);
                     key = "tool";
                     decision = head + " — no pole: buy at a vendor";
                 }
@@ -3424,17 +3535,99 @@ float GuildCoordinator::PlannedGain(uint32 low, uint8 group) const
     return best;
 }
 
+GuildCoordinator::NpcSpot const* GuildCoordinator::NearestSpot(Player* p, uint32 low,
+                                                              std::vector<NpcSpot> const& list) const
+{
+    NpcSpot const* best = nullptr;
+    float bestDist = 0.0f;
+    for (NpcSpot const& n : list)
+    {
+        Mailbox const& s = n.spot;
+        if (s.pos.GetMapId() != p->GetMapId() || !FriendlyNpc(p, n.entry) ||
+            (s.areaTeam == AREATEAM_ALLY && p->GetTeamId() != TEAM_ALLIANCE) ||
+            (s.areaTeam == AREATEAM_HORDE && p->GetTeamId() != TEAM_HORDE) || TownRefused(low, s.pos))
+            continue;
+        float const d = p->GetExactDist(s.pos.GetPositionX(), s.pos.GetPositionY(), s.pos.GetPositionZ());
+        if (!best || d < bestDist)
+        {
+            best = &n;
+            bestDist = d;
+        }
+    }
+    return best;
+}
+
+// [econ2] b353: any profession call of the leader (most of them First Aid crafts "from what it has") opened the
+// profession executor wherever the bot stood, and the executor ran its own errands: Ryarii L7 3378 yd + a boat to
+// learn Mining, Shalaeth L5 2755 yd for a Mining Pick, Mutil 2257-2969 yd for Smelt Tin - 61 % of the 10326 s of
+// PROFESSION time were such trips. A call is due only where it runs: a TRAIN call in the town of its trainer (its
+// next visit there, TownReady), a CRAFT / BUY call in a town (the craft executor works in a rest area); the smelt
+// runs through NextStep and gathering through its own task, neither opens the executor
 GuildProfessionKind GuildCoordinator::ProfessionCall(Player* bot, uint32* skillLine)
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
         return GuildProfessionKind::NONE;
     std::lock_guard<std::mutex> guard(lock_);
-    auto const itr = professions_.find(bot->GetGUID().GetCounter());
-    if (itr == professions_.end() || itr->second.empty())
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end())
+        return GuildProfessionKind::NONE;
+    BotState& st = itr->second;
+    GuildOrder const* due = nullptr;
+    GuildOrder const* waiting = nullptr;
+    for (GuildOrder const& o : st.orders)
+    {
+        if (o.type != GuildOrderType::PROFESSION || o.profession == GuildProfessionKind::NONE ||
+            o.profession == GuildProfessionKind::GATHER ||
+            (o.profession == GuildProfessionKind::CRAFT && o.skillLine == SKILL_MINING && o.pos != WorldPosition()))
+            continue;
+        bool const ready = o.profession == GuildProfessionKind::TRAIN ? o.townArea && TownReady(bot, o)
+                                                                      : NewRpgCraft::InSafePlace(bot);
+        if (ready)
+        {
+            due = &o;
+            break;
+        }
+        if (!waiting)
+            waiting = &o;
+    }
+    std::string const gate = due ? std::string("due: ") + ProfessionKindName(due->profession) + " " + due->details
+                             : waiting ? std::string("waits: ") + ProfessionKindName(waiting->profession) + " " +
+                                             waiting->details +
+                                             (waiting->townName.empty() ? " (a town)" : " (" + waiting->townName + ")")
+                                       : std::string();
+    if (gate != st.profGate)
+    {
+        st.profGate = gate;
+        if (!gate.empty())
+            LOG_INFO("playerbots", "[econ2] {} L{} profession call {}", bot->GetName(), bot->GetLevel(), gate);
+    }
+    if (!due)
         return GuildProfessionKind::NONE;
     if (skillLine)
-        *skillLine = itr->second.front().skillLine;
-    return itr->second.front().kind;
+        *skillLine = due->skillLine;
+    return due->profession;
+}
+
+bool GuildCoordinator::ProfessionErrand(Player* bot, uint32 skillLine, bool tool, WorldPosition const& npc)
+{
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+        return true;  // a bot outside the guild plan leads itself
+    if (tool && !FreeBagSlots(bot))
+        return false;  // the core refuses a buy into full bags (b353: Ryarii / Shalaeth 4 vendors each, 0 bought)
+    uint32 const npcArea = sMapMgr->GetAreaId(PHASEMASK_NORMAL, npc.GetMapId(), npc.GetPositionX(),
+                                              npc.GetPositionY(), npc.GetPositionZ());
+    std::lock_guard<std::mutex> guard(lock_);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end())
+        return false;
+    for (GuildOrder const& o : itr->second.orders)
+        if (o.type == GuildOrderType::PROFESSION && o.profession == GuildProfessionKind::TRAIN &&
+            o.skillLine == skillLine && o.townArea && TownReady(bot, o) &&
+            (o.townCapital ? sMapMgr->GetZoneId(PHASEMASK_NORMAL, npc.GetMapId(), npc.GetPositionX(),
+                                                npc.GetPositionY(), npc.GetPositionZ()) == o.townZone
+                           : SameTown(npcArea, o.townArea)))
+            return true;
+    return false;
 }
 
 GuildCoordinator::RepairCall GuildCoordinator::Repair(Player* bot) const
@@ -4785,6 +4978,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                             LOG_INFO("playerbots", "[econ1] smelt {} L{} casts {} at the forge (mining {}/{})",
                                      bot->GetName(), bot->GetLevel(), NewRpgCraft::RecipeName(smelt), before,
                                      bot->GetPureMaxSkillValue(SKILL_MINING));
+                            ++st.casts;  // [econ2] progress for the stuck watch, a skill-up or not
                             step.kind = GuildRunStep::BUSY;
                             step.reason = "smelt " + NewRpgCraft::RecipeName(smelt);
                             started(order);
@@ -5514,9 +5708,15 @@ void GuildCoordinator::UpdateHealth()
             skillSum += p->HasSkill(line) ? p->GetPureSkillValue(line) : 0;
         bool const skillRose = st.skillSum && skillSum > st.skillSum;
         st.skillSum = skillSum;
+        // [econ2] b353: 8 of the 15 profession STUCK alerts were miners smelting at a town forge (Galiver, Brelir,
+        // Peny, Pherua, Gnetlibozz, Keenonk, Namwe: IDLE, order PROFESSION, a cast every few seconds) - Mining is no
+        // craft line and a green smelt raises the skill one cast in several. A smelt cast since the last sample is
+        // progress
+        bool const casted = st.casts != st.castsSeen;
+        st.castsSeen = st.casts;
         // stuck: out of combat, alive, not moved beyond its combat reach for 60 s, no legitimate wait
         float const reach = std::max(p->GetCombatReach(), 1.5f);
-        if (p->IsInCombat() || !st.anchorAt || st.mapId != p->GetMapId() || skillRose || moneyMoved ||
+        if (p->IsInCombat() || !st.anchorAt || st.mapId != p->GetMapId() || skillRose || casted || moneyMoved ||
             p->GetExactDist(st.ax, st.ay, st.az) > reach)
         {
             st.mapId = p->GetMapId();
