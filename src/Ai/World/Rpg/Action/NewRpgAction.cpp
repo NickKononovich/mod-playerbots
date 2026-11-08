@@ -913,6 +913,20 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
     {
         if (MoveWorldObjectTo(data.npcOrGo))
             return true;
+        // [guild15] b319 GO_CAMP "sell junk" STUCK (Kylantino, Gnetlibozz, Rumanatol): no walk reaches the npc from
+        // here - the visit ends (a vendor run counts as visited, as when the vendor is gone)
+        if (object && NpcOutOfWalk(object))
+        {
+            if (info.vendorRunEntry)
+            {
+                info.vendorRunEntry = 0;
+                info.vendorVisited = true;
+                info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
+                info.vendorVisitMoney = bot->GetMoney();
+            }
+            info.ChangeToIdle();
+            return true;
+        }
         // NPC pathing failed (random offset in a wall, mmap hiccup, etc).
         // Take a small random step so the next tick retries from a
         // different spot instead of staring at the NPC from afar.
