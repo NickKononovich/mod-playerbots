@@ -1159,6 +1159,9 @@ public:
 public:
     // [guild15] which landmass a spot is on (walks join only spots on the same one)
     static uint32 Landmass(WorldPosition const& pos);
+    // [stuck8] a zone (or a sub-area of one) the other faction holds: AreaTable team of its top zone is the other
+    // side's (Durotar, the Barrens, Mulgore for an Alliance bot); contested zones (team 0) are open to both
+    static bool IsEnemyZone(Player* bot, uint32 areaOrZoneId);
 
 private:
     TravelRouteMgr() = default;

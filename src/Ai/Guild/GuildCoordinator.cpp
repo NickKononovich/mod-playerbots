@@ -822,6 +822,8 @@ std::string GuildCoordinator::WaitReason(Player* bot, PlayerbotAI* botAI, BotSta
         return "resting";
     if (status == RPG_WANDER_NPC && info.vendorRunEntry)
         return "at vendor";
+    if (info.groupWaiting)  // [stuck8]
+        return "group leader waits for a member (its GROUP_WAIT line)";
     if (info.trip.phase == NewRpgInfo::TripPhase::Wait || info.trip.phase == NewRpgInfo::TripPhase::Ride ||
         info.trip.phase == NewRpgInfo::TripPhase::Board)
         return "waiting for boat / zeppelin";

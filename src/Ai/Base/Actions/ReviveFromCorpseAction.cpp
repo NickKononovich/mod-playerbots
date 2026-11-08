@@ -317,6 +317,15 @@ namespace
 {
     // [guild15] b303-b308: six ghosts (Alnia, Arrengyl, Baridrol, Eraelor, Sycina, Thelengyl) stood at the Shadowglen
     // graveyard 17 yd from its Spirit Healer for five runs without a line in the log: one line per bot and outcome
+    // [stuck8] MoveTo's false while the walk it asked for is still under way ("the same walk is on", "the last walk is
+    // not done"): no failure (b343 Guinudrond: 15 "the walk to graveyard 1472 ... failed" lines while it walked
+    // 354 -> 21 yd and revived there)
+    bool WalkStillOn()
+    {
+        std::string const& refusal = LastMoveRefusal();
+        return refusal.rfind("IsDuplicateMove", 0) == 0 || refusal.rfind("IsWaitingForLastMove", 0) == 0;
+    }
+
     void LogGhost(Player* bot, std::string const& what)
     {
         static std::mutex lock;
@@ -701,7 +710,7 @@ bool SpiritHealerAction::Execute(Event /*event*/)
 
             if (bot->GetDistance(unit) > INTERACTION_DISTANCE)
             {
-                bool const moving = MoveNear(unit, INTERACTION_DISTANCE - 1.0f);
+                bool const moving = MoveNear(unit, INTERACTION_DISTANCE - 1.0f) || WalkStillOn();
                 LogGhost(bot, Acore::StringFormat("walks to the spirit healer {:.1f} yd off: {} (can move {}, rooted {})",
                                                   bot->GetDistance(unit), moving ? "moving" : "the move failed",
                                                   botAI->CanMove(), bot->IsRooted()));
@@ -773,7 +782,7 @@ bool SpiritHealerAction::Execute(Event /*event*/)
     else
         moved = MoveTo(ClosestGrave->Map, ClosestGrave->x, ClosestGrave->y, ClosestGrave->z, false, false);
 
-    if (moved)
+    if (moved || WalkStillOn())
         return true;
     LogGhost(bot, Acore::StringFormat("no spirit healer in sight, the walk to graveyard {} ({:.0f},{:.0f}) {:.0f} yd "
                                       "off failed (can move {}, rooted {})",

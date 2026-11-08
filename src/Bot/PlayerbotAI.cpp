@@ -322,7 +322,16 @@ bool PlayerbotAI::HasGroundSupport(WorldObject const* object, float x, float y, 
 {
     // Liquid counts: a bot swims or water-walks on it. Includes gameobject floors (dynamic tree).
     float const level = object->GetMapWaterOrGroundLevel(x, y, z);
-    return level > INVALID_HEIGHT && z - level <= GROUND_SUPPORT_DROP;
+    if (level > INVALID_HEIGHT && z - level <= GROUND_SUPPORT_DROP)
+        return true;
+    // [stuck8] Map::GetWaterOrGroundLevel looks the liquid up at the floor's height; over a deep sea floor that
+    // lookup can miss the water (GridTerrainData: a z under the grid's ground is "no water") and returns the floor
+    // tens of yards down. The liquid at the point itself: b341/b343 Shalaeth, Relara L1 in the sea off Auberdine,
+    // (6664,662,-1.9), every 100 yd swim to the pier "refused a straight move over open air", 1184 s STUCK
+    LiquidData const liquid =
+        object->GetMap()->GetLiquidData(object->GetPhaseMask(), x, y, z, object->GetCollisionHeight(), {});
+    return liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > INVALID_HEIGHT &&
+           z - liquid.Level <= GROUND_SUPPORT_DROP;
 }
 
 bool PlayerbotAI::IsSubjectToGravity() const
@@ -407,9 +416,11 @@ void PlayerbotAI::GuardAirborneSpline()
         if (!lastAirborneLogMs || getMSTimeDiff(lastAirborneLogMs, now) > AIRBORNE_LOG_INTERVAL_MS)
         {
             lastAirborneLogMs = now;
+            // [stuck8] and the sample without support, with the level found under it (the cause in the log)
             LOG_INFO("playerbots", "{} refused a straight move over open air on map {} from ({:.1f}, {:.1f}, {:.1f}) "
-                     "to ({:.1f}, {:.1f}, {:.1f})", bot->GetName(), bot->GetMapId(), start.x, start.y, start.z,
-                     end.x, end.y, end.z);
+                     "to ({:.1f}, {:.1f}, {:.1f}): no ground at ({:.1f}, {:.1f}, {:.1f}), water or ground level {:.1f}",
+                     bot->GetName(), bot->GetMapId(), start.x, start.y, start.z, end.x, end.y, end.z, point.x,
+                     point.y, point.z, bot->GetMapWaterOrGroundLevel(point.x, point.y, point.z));
         }
 
         // Walk as far as the ground goes, onto the ground, like a player stopping at the edge.

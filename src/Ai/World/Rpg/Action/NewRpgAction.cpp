@@ -682,6 +682,19 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 WorldPosition grindPos;
                 uint32 const questId = ChooseNextLevelQuest(giverPos, grindPos);
                 Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+                // [stuck8] no grind spot of its level on this map and the giver under its feet: a GO_GRIND there
+                // reaches it at once and WANDER_RANDOM finds no mob (b343 Orton on the Deeprun Tram, 160 alerts of
+                // IDLE / GO_GRIND / WANDER_RANDOM); the reason is logged, it rests until the choice runs again
+                if (quest && grindPos == WorldPosition() && giverPos.GetMapId() == bot->GetMapId() &&
+                    bot->GetExactDist(giverPos) < 10.0f)
+                {
+                    LOG_INFO("playerbots", "[rpg] {} L{} STAY reason: q{} needs L{}, no grind spot of its level on "
+                             "map {} and no quest it may take now", bot->GetName(), bot->GetLevel(), questId,
+                             quest->GetMinLevel(), bot->GetMapId());
+                    info.ChangeToRest();
+                    bot->SetStandState(UNIT_STAND_STATE_SIT);
+                    return true;
+                }
                 if (quest)
                 {
                     WorldPosition target = grindPos != WorldPosition() ? grindPos : giverPos;
@@ -858,6 +871,32 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     return false;
 }
 
+namespace
+{
+    // [stuck8] a GO_GRIND / GO_CAMP walk that gives no move while the bot stands out of combat: one HOLD line per
+    // change of its cause (b343: Ryarii, Febineysh, Aevmae stood 60 s in GO_CAMP to a vendor with no line, "reason=none")
+    void NoteWalkHold(Player* bot, NewRpgInfo& info, char const* status, WorldPosition const& pos,
+                      std::string const& refusal)
+    {
+        if (bot->isMoving() || bot->IsInCombat())
+        {
+            info.holdNote.clear();
+            return;
+        }
+        std::string const cause = !refusal.empty()     ? refusal
+                                  : info.moveFarFailed ? std::string("the route search finds no walk from here")
+                                                       : std::string("MoveFarTo gave no step and no refusal");
+        std::string const key = std::string(status) + "|" + cause;
+        if (key == info.holdNote)
+            return;
+        info.holdNote = key;
+        LOG_INFO("playerbots",
+                 "[rpg] {} L{} HOLD reason: {} walk to ({:.0f},{:.0f},{:.0f}) {:.0f} yd gives no move: {}",
+                 bot->GetName(), bot->GetLevel(), status, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
+                 bot->GetExactDist(pos), cause);
+    }
+}
+
 bool NewRpgGoGrindAction::Execute(Event /*event*/)
 {
     if (SearchQuestGiverAndAcceptOrReward())
@@ -865,11 +904,18 @@ bool NewRpgGoGrindAction::Execute(Event /*event*/)
     if (auto* data = std::get_if<NewRpgInfo::GoGrind>(&botAI->rpgInfo.data))
     {
         if (MoveFarTo(data->pos))
+        {
+            botAI->rpgInfo.holdNote.clear();
             return true;
+        }
+        std::string const refusal = LastMoveRefusal();
         // Small nudge so the next tick's MoveFarTo starts from a
         // slightly different position. Kept small so it doesn't look
         // like the bot is abandoning its destination.
-        return MoveRandomNear(10.0f);
+        if (MoveRandomNear(10.0f))
+            return true;
+        NoteWalkHold(bot, botAI->rpgInfo, "GO_GRIND", data->pos, refusal);
+        return false;
     }
 
     return false;
@@ -883,8 +929,15 @@ bool NewRpgGoCampAction::Execute(Event /*event*/)
     if (auto* data = std::get_if<NewRpgInfo::GoCamp>(&botAI->rpgInfo.data))
     {
         if (MoveFarTo(data->pos))
+        {
+            botAI->rpgInfo.holdNote.clear();
             return true;
-        return MoveRandomNear(10.0f);
+        }
+        std::string const refusal = LastMoveRefusal();
+        if (MoveRandomNear(10.0f))
+            return true;
+        NoteWalkHold(bot, botAI->rpgInfo, "GO_CAMP", data->pos, refusal);
+        return false;
     }
 
     return false;

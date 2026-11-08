@@ -235,6 +235,10 @@ struct NewRpgInfo
     uint32 vendorVisitMoney{0};
     bool vendorVisited{false};
     uint8 loggedStatus{255};  // [guild7] the status last written to the log ([rpg] line)
+    // [stuck8] a group leader waits for a member that is not ready (NewRpgGroupNotReadyTrigger, its GROUP_WAIT line)
+    bool groupWaiting{false};
+    // [stuck8] the last HOLD reason logged for a walk that gives no move (logged once per change)
+    std::string holdNote;
 
     using RpgData = std::variant<
         Idle,

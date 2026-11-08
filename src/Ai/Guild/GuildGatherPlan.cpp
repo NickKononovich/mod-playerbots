@@ -137,6 +137,32 @@ namespace
         return MinSafeBotLevel(uint8(std::min<int32>(area->area_level, LEVEL_MASK)), 0);
     }
 
+    // [stuck8] a zone's own floor: the lowest exploration level among its sub-areas (a zone's row has none; Darkshore
+    // 11, Teldrassil 5); a bot walks into another zone only at a level that floor is safe for. b338 Shalaeth L1 was
+    // sent from Teldrassil to Darkshore's Mist's Edge (area level 0) for Tangy Clam Meat, rode the boat to Auberdine
+    // and was left in the sea there for three runs
+    uint8 ZoneSafeLevel(uint32 zoneId)
+    {
+        static std::unordered_map<uint32, int32> floor;
+        static std::once_flag built;
+        std::call_once(built, []()
+        {
+            for (uint32 i = 0; i < sAreaTableStore.GetNumRows(); ++i)
+            {
+                AreaTableEntry const* area = sAreaTableStore.LookupEntry(i);
+                if (!area || !area->zone || area->area_level <= 0)
+                    continue;
+                auto const [itr, added] = floor.emplace(area->zone, area->area_level);
+                if (!added)
+                    itr->second = std::min(itr->second, area->area_level);
+            }
+        });
+        auto const itr = floor.find(zoneId);
+        if (itr == floor.end())
+            return 1;
+        return MinSafeBotLevel(uint8(std::min<int32>(itr->second, LEVEL_MASK)), 0);
+    }
+
     bool HostileToAlliance(CreatureTemplate const* tmpl)
     {
         FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(tmpl->faction);
@@ -1023,6 +1049,18 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                 if (!ContinentAllowed(bot, place.mapId, place.spot))
                 {
                     ++skipped[b].continent;
+                    continue;
+                }
+                // [stuck8] no place in the other faction's zone (b343 Shalaeth planned to a Battered Chest in
+                // Mulgore), none in another zone whose floor is above its level
+                if (TravelRouteMgr::IsEnemyZone(bot, place.zoneId))
+                {
+                    ++skipped[b].continent;
+                    continue;
+                }
+                if (place.zoneId != bot->GetZoneId() && ZoneSafeLevel(place.zoneId) > bot->GetLevel())
+                {
+                    ++skipped[b].unsafeOrSkill;
                     continue;
                 }
                 if (refused.count({low, place.id}))

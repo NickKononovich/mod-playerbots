@@ -703,8 +703,26 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
     if (!IsWithinInteractionDist(npc))
     {
         // the walk under way: it goes on
-        if (bot->isMoving() || IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+        if (bot->isMoving())
+        {
+            info.holdNote.clear();
             return true;
+        }
+        if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
+        {
+            // [stuck8] standing with its last walk's wait open: a HOLD line with the cause, once (b343 Thokhen L9 at
+            // Mahri 0 yd from her spawn, DO_PROFESSION BUY, 60 s with no line, "reason=none")
+            std::string const key = "DO_PROFESSION|last walk";
+            if (info.holdNote != key)
+            {
+                info.holdNote = key;
+                LOG_INFO("playerbots", "[rpg] {} L{} HOLD reason: DO_PROFESSION at {} {:.1f} yd (interaction {:.1f} "
+                         "yd): stands, the wait of its last walk is open",
+                         bot->GetName(), bot->GetLevel(), npc->GetName(), bot->GetExactDist(npc),
+                         INTERACTION_DISTANCE);
+            }
+            return true;
+        }
         // [guild15] the last walk to the npc ended and brought it no nearer: the step ends with a logged failure,
         // never a stand at the npc (b327-b333 Selalleas L6: "learn Alchemy at Ainethil 9 yd" in Darnassus, 225 s
         // STUCK in every run - the walk was issued and never moved it)

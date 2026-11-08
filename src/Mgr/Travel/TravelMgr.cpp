@@ -5440,6 +5440,23 @@ uint32 TravelRouteMgr::Landmass(WorldPosition const& pos)
     return MAP_EXPANSION_ONE * 4;  // Outland
 }
 
+bool TravelRouteMgr::IsEnemyZone(Player* bot, uint32 areaOrZoneId)
+{
+    // [stuck8] b343 Eraelor L7 (night elf), Teldrassil done: "Teldrassil -> Durotar ... first q834" (Winds in the
+    // Desert, AllowableRaces 0, its giver Rezlak of the neutral Ratchet faction 69, so no giver check refused it),
+    // 1688 s through the Horde's land. The team sits on the top zone's row (Razor Hill, Mist's Edge: team 0)
+    AreaTableEntry const* area = areaOrZoneId ? sAreaTableStore.LookupEntry(areaOrZoneId) : nullptr;
+    for (uint8 depth = 0; area && area->zone && depth < 4; ++depth)
+        if (AreaTableEntry const* parent = sAreaTableStore.LookupEntry(area->zone))
+            area = parent;
+        else
+            break;
+    if (!area || !bot)
+        return false;
+    uint32 const own = bot->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
+    return (area->team == AREATEAM_ALLY || area->team == AREATEAM_HORDE) && area->team != own;
+}
+
 bool TravelRouteMgr::IsInDalaran(WorldPosition const& pos)
 {
     if (pos.GetMapId() != DalaranTravel::MAP_ID || pos.GetPositionZ() < DalaranTravel::MIN_Z)

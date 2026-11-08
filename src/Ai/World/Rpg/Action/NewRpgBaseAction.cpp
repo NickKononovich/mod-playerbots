@@ -2766,6 +2766,11 @@ bool NewRpgBaseAction::IsQuestCapableDoing(Quest const* quest)
     if (NeedsItemUseCredit(quest) || NeedsSpellCredit(bot, quest, false))  // [flit] or a spell / script one
         return false;
 
+    // [stuck8] a quest of a zone the other faction holds (b343 Eraelor L7 night elf sent to Durotar for q834, whose
+    // giver is of the neutral Ratchet faction): no zones or hubs of the other side
+    if (quest->GetZoneOrSort() > 0 && TravelRouteMgr::IsEnemyZone(bot, uint32(quest->GetZoneOrSort())))
+        return false;
+
     // [guild12] a quest it failed once (timed, escort) is not taken again
     if (HasFailedQuest(bot, quest->GetQuestId()))
         return false;
@@ -3536,7 +3541,6 @@ namespace
             pointers.push_back(&spot);
         return NearestSafeSpot(bot, questId, pointers, objectiveIdx, poiInfo, blocker);
     }
-
 
     // [guild12] one log line per bot, quest and level for a postponed quest
     void LogPostponed(Player* bot, Quest const* quest, std::string const& reason)
@@ -5796,7 +5800,10 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     {
         WorldPosition nextGiver;
         WorldPosition nextGrind;
-        uint32 const nextQuest = ChooseNextLevelQuest(nextGiver, nextGrind, false);
+        // [stuck8] with its grind spot: the grind needs mobs of the bot's level where it stands (b343 Orton L9 on the
+        // Deeprun Tram, map 369: "stays ... by grinding" toward q6661, no mob of its level on the map, IDLE / GO_GRIND
+        // / WANDER_RANDOM 160 alerts in a loop). No grind spot on this map: no grind; else its walk counts too
+        uint32 const nextQuest = ChooseNextLevelQuest(nextGiver, nextGrind, true);
         Quest const* next = nextQuest ? sObjectMgr->GetQuestTemplate(nextQuest) : nullptr;
         ContentLevels const content = GetContentLevelsForMapAndZone(bot->GetMapId(), hereZone);
         CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, CLASS_WARRIOR);
@@ -5811,7 +5818,10 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
             missing = missing > have ? missing - have : 0;
             float const killXp = float(Acore::XP::BaseGain(level, level, content)) * sWorld->getRate(RATE_XP_KILL);
             float const killSeconds = float(stats->BaseHealth[std::min<uint32>(content, MAX_EXPANSIONS - 1)]) / dps;
-            float const grindSeconds = killXp > 0.0f ? float(missing) / killXp * killSeconds : -1.0f;
+            float const grindSeconds =
+                killXp > 0.0f && nextGrind != WorldPosition() && nextGrind.GetMapId() == bot->GetMapId()
+                    ? float(missing) / killXp * killSeconds + bot->GetExactDist(nextGrind) / QUEST_TRAVEL_SPEED
+                    : -1.0f;
             if (grindSeconds >= 0.0f && grindSeconds < best->travel)
             {
                 bool fresh = false;
@@ -5913,6 +5923,9 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
         // toward q6661, whose rats only its flute credits)
         if (IsSpellUnlockClassQuest(quest) || EnderNeedsScript(start.questId) || NeedsItemUseCredit(quest) ||
             NeedsSpellCredit(bot, quest, false))
+            continue;
+        // [stuck8] nor toward one in the other faction's zone
+        if (quest->GetZoneOrSort() > 0 && TravelRouteMgr::IsEnemyZone(bot, uint32(quest->GetZoneOrSort())))
             continue;
 
         float const distance = bot->GetDistance2d(start.x, start.y);
