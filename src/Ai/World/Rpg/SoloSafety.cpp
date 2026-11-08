@@ -1343,10 +1343,19 @@ namespace SoloSafety
         // Before, only the mobs in sight were in the model: b350 Ganna L11 (judged 2 Tunnel Rats, came 4), Ginde L6
         // (judged 1 Kobold Geomancer, came 2 with a Kobold Miner), Thamesh L10 (judged 2 Rockjaws, came 5) died to
         // wanderers "assists a chaser"
+        // [deaths16] ... and round the target: a camp judged from afar has members beyond the bot's sight that stand
+        // by the target (its aggro reach, its friends' assistance calls, its script's call for help), fought there all
+        // the same. b355 Emdyl L10 judged a Stonesplinter Trogg from 97 yd ("judged 1 mobs"), the troggs and the
+        // scout 14-25 yd from it stood 105-115 yd from Emdyl - came 2; Kianey L12 the same trogg, came 4, both died
         {
             float const sight = sPlayerbotAIConfig.SightDistance;
             float const wander = std::min(MaxWanderDistance(bot->GetMapId()), bot->GetMap()->GetVisibilityRange());
-            float const range = std::min(sight + wander, bot->GetMap()->GetVisibilityRange());
+            Creature* const targetCreature = target->ToCreature();
+            float const around =
+                std::max(MAX_AGGRO_RADIUS, targetCreature ? ScriptHelpOf(targetCreature).callRadius : 0.0f) +
+                std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS)) + wander;
+            float const range =
+                std::min(std::max(sight + wander, gap + around), bot->GetMap()->GetVisibilityRange());
             if (range > sight)
             {
                 std::list<Unit*> units;
@@ -1356,18 +1365,23 @@ namespace SoloSafety
                 for (Unit* unit : units)
                 {
                     Creature* mob = unit->ToCreature();
-                    if (!mob || mob == target || mob->GetDefaultMovementType() != RANDOM_MOTION_TYPE ||
-                        bot->GetExactDist2d(mob) <= sight || !mob->IsAlive() || mob->IsInCombat() ||
-                        !mob->IsHostileTo(bot) || !mob->HasReactState(REACT_AGGRESSIVE) ||
+                    if (!mob || mob == target || bot->GetExactDist2d(mob) <= sight || !mob->IsAlive() ||
+                        mob->IsInCombat() || !mob->IsHostileTo(bot) || !mob->HasReactState(REACT_AGGRESSIVE) ||
                         mob->GetCharmerOrOwnerGUID() ||
                         std::find(idle.begin(), idle.end(), mob) != idle.end())
                         continue;
-                    // its wander area comes within the bot's sight (the fight is fought within it)
-                    if (mob->GetHomePosition().GetExactDist2d(bot) - mob->GetWanderDistance() <= sight)
+                    bool const wanders = mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE;
+                    Position const& home = wanders ? mob->GetHomePosition() : mob->GetPosition();
+                    float const roam = wanders ? mob->GetWanderDistance() : 0.0f;
+                    // its wander area comes within the bot's sight (the fight is fought within it), or it stands
+                    // within the target's surroundings
+                    if ((wanders && home.GetExactDist2d(bot) - roam <= sight) ||
+                        home.GetExactDist2d(target) - roam <= around)
                         idle.push_back(mob);
                 }
             }
         }
+
 
         // [pullplan] user 2026-11-08: a player pulls the target away from its camp - from range (its spells, Throw /
         // Shoot) or with its body at the edge of the target's aggro reach - and fights where it stands. The fight
