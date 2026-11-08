@@ -75,6 +75,9 @@ public:
     static void InitTalentsBySpecNo(Player* bot, int specNo, bool reset);
     static void InitTalentsByParsedSpecLink(Player* bot, std::vector<std::vector<uint32>> parsedSpecLink, bool reset);
     void InitAvailableSpells();
+    // [guild15] the guild bots' class spells: every spell its own class trainers teach at its level (rank chains
+    // included), no profession, weapon-master or pet trainers; the learned spells' names go to `learned`
+    uint32 InitClassTrainerSpells(std::vector<std::string>* learned = nullptr);
     static bool IsTrainerSpellAllowedForBot(Player* bot, Trainer::Trainer const* trainer,
                                              Trainer::Spell const* trainerSpell);
     void InitClassSpells();

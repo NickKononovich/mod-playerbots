@@ -20,6 +20,9 @@
 #include "AllMapScript.h"
 #include "GatherNodeMgr.h"
 #include "GuildCoordinator.h"
+#include "GuildGear.h"
+#include "GuildScript.h"
+#include "Item.h"
 #include "NewRpgBaseAction.h"
 #include "SoloSafety.h"  // [guild13]
 #include "GlobalScript.h"
@@ -160,6 +163,99 @@ public:
     {
         CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}", guid.GetCounter());
         return false;
+    }
+};
+
+// [guild15] a guild bot's gear history (GuildGear::History*) and its measured damage reset when its gear, class
+// spells or talents change (SoloSafety::OnPowerChanged)
+class PlayerbotsGearScript : public PlayerScript
+{
+public:
+    PlayerbotsGearScript()
+        : PlayerScript("PlayerbotsGearScript",
+                       {PLAYERHOOK_ON_EQUIP, PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_CREATE_ITEM,
+                        PLAYERHOOK_ON_QUEST_REWARD_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM,
+                        PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM, PLAYERHOOK_ON_AFTER_TAKE_ITEM_FROM_MAIL,
+                        PLAYERHOOK_ON_LEARN_SPELL, PLAYERHOOK_ON_FREE_TALENT_POINTS_CHANGED, PLAYERHOOK_ON_TALENTS_RESET})
+    {
+    }
+
+    void OnPlayerEquip(Player* player, Item* item, uint8 bag, uint8 slot, bool /*update*/) override
+    {
+        if (!player || !player->IsInWorld() || bag != INVENTORY_SLOT_BAG_0 || slot >= EQUIPMENT_SLOT_END)
+            return;
+        if (GuildGear::HistoryOnEquip(player, item, slot))
+            PowerChanged(player, "another item equipped");
+    }
+
+    static void PowerChanged(Player* player, char const* why)
+    {
+        if (!player || !player->IsInWorld() || !GET_PLAYERBOT_AI(player))
+            return;
+        SoloSafety::OnPowerChanged(player, why);
+        NewRpgBaseAction::ForgetRefusedZones(player);
+    }
+
+    void OnPlayerLootItem(Player* player, Item* item, uint32 /*count*/, ObjectGuid /*lootguid*/) override
+    {
+        GuildGear::HistoryNoteSource(player, item, "loot");
+    }
+
+    void OnPlayerGroupRollRewardItem(Player* player, Item* item, uint32 /*count*/, RollVote /*voteType*/,
+                                     Roll* /*roll*/) override
+    {
+        GuildGear::HistoryNoteSource(player, item, "loot");
+    }
+
+    void OnPlayerCreateItem(Player* player, Item* item, uint32 /*count*/) override
+    {
+        GuildGear::HistoryNoteSource(player, item, "craft");
+    }
+
+    void OnPlayerQuestRewardItem(Player* player, Item* item, uint32 /*count*/) override
+    {
+        GuildGear::HistoryNoteSource(player, item, "quest reward");
+    }
+
+    void OnPlayerAfterStoreOrEquipNewItem(Player* player, uint32 /*vendorslot*/, Item* item, uint8 /*count*/,
+                                          uint8 /*bag*/, uint8 /*slot*/, ItemTemplate const* /*pProto*/,
+                                          Creature* /*pVendor*/, VendorItem const* /*crItem*/, bool /*bStore*/) override
+    {
+        GuildGear::HistoryNoteSource(player, item, "vendor buy");
+    }
+
+    void OnPlayerAfterTakeItemFromMail(Player* player, Item* item, uint32 /*count*/) override
+    {
+        GuildGear::HistoryNoteSource(player, item, "guild transfer");
+    }
+
+    void OnPlayerLearnSpell(Player* player, uint32 spellID) override
+    {
+        if (player && player->IsInWorld() && SoloSafety::PowerSpell(spellID))
+            PowerChanged(player, "a spell learned");
+    }
+
+    void OnPlayerFreeTalentPointsChanged(Player* player, uint32 /*points*/) override
+    {
+        PowerChanged(player, "talent points changed");
+    }
+
+    void OnPlayerTalentsReset(Player* player, bool /*noCost*/) override
+    {
+        PowerChanged(player, "talents reset");
+    }
+};
+
+class PlayerbotsGuildBankScript : public GuildScript
+{
+public:
+    PlayerbotsGuildBankScript() : GuildScript("PlayerbotsGuildBankScript", {GUILDHOOK_ON_ITEM_MOVE}) {}
+
+    void OnItemMove(Guild* /*guild*/, Player* player, Item* pItem, bool isSrcBank, uint8 /*srcContainer*/,
+                    uint8 /*srcSlotId*/, bool isDestBank, uint8 /*destContainer*/, uint8 /*destSlotId*/) override
+    {
+        if (isSrcBank && !isDestBank)
+            GuildGear::HistoryNoteSource(player, pItem, "bank");
     }
 };
 
@@ -704,6 +800,8 @@ void AddPlayerbotsScripts()
     new PlayerbotsBattlefieldScript();
     new PlayerbotsDatabaseScript();
     new PlayerbotsPlayerScript();
+    new PlayerbotsGearScript();       // [guild15]
+    new PlayerbotsGuildBankScript();  // [guild15]
     new PlayerbotsDeathAndOnlineScript();  // [guild5]
     new PlayerbotsMiscScript();
     new PlayerbotsServerScript();

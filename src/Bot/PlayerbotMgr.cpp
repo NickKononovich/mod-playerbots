@@ -6,6 +6,7 @@
 
 #include "PlayerbotMgr.h"
 #include "PlayerbotsDatabase.h"
+#include "AutoMaintenanceOnLevelupAction.h"
 #include "BroadcastHelper.h"
 #include "ChannelMgr.h"
 #include "CharacterCache.h"
@@ -15,6 +16,7 @@
 #include "DatabaseEnv.h"
 #include "Define.h"
 #include "Group.h"
+#include "GuildGear.h"
 #include "GuildMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectGuid.h"
@@ -630,6 +632,15 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         botAI->ResetStrategies(!sRandomPlayerbotMgr.IsRandomBot(bot));
     }
     PlayerbotRepository::instance().Load(botAI);
+
+    // [guild15] the guild bots' class spells for the levels they gained before the level-up path learned them
+    // (AutoLearnTrainerSpells; the random bots learn theirs at level up)
+    if (sPlayerbotAIConfig.AutoLearnTrainerSpells && !sRandomPlayerbotMgr.IsRandomBot(bot) &&
+        !botAI->HasGameClientMaster())
+        AutoMaintenanceOnLevelupAction::LearnGuildClassSpells(bot, "login");
+    // [guild15] its gear history starts from what it wears now
+    if (!botAI->HasGameClientMaster())
+        GuildGear::HistoryInit(bot);
 
     // The loaded strategies were saved at the bot's last strategy change and can include another
     // instance's strategy, so apply the current map's again.

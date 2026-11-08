@@ -64,6 +64,8 @@ public:
     static bool TripRefused(Player* bot, float x, float y, float z, std::string const& what);
     // [guild15] at login: its death zones of the last session ("dz" in playerbots_db_store)
     static void LoadDeathZones(Player* bot, std::string const& value);
+    // [guild15] its refused-pull zones were judged with its old power: judged again (deaths stay until outlevelled)
+    static void ForgetRefusedZones(Player* bot);
     // [guild12] a quest the bot failed (timed, escort) is not taken again
     static bool HasFailedQuest(Player* bot, uint32 questId);
     // [guild12] builds the shared quest spawn / starter indexes (world DB reads) once at server startup, never on a

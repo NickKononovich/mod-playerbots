@@ -324,6 +324,9 @@ void GuildCoordinator::LoadMailboxes()
         // the town's side: its area (Crossroads in the Barrens), else its zone
         uint32 const areaId = sMapMgr->GetAreaId(PHASEMASK_NORMAL, data.mapid, data.posX, data.posY, data.posZ);
         box.areaId = areaId;
+        box.zoneId = sMapMgr->GetZoneId(PHASEMASK_NORMAL, data.mapid, data.posX, data.posY, data.posZ);
+        if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(box.zoneId))
+            box.capital = zone->flags & AREA_FLAG_CAPITAL;
         if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(areaId))
         {
             box.areaTeam = area->team;
@@ -381,11 +384,21 @@ void GuildCoordinator::UpdateTransfers()
         if (Valid(target))
             townAhead = sMapMgr->GetAreaId(PHASEMASK_NORMAL, target.GetMapId(), target.GetPositionX(),
                                            target.GetPositionY(), target.GetPositionZ());
+        // [guild15] user 2026-11-08: in a capital (Stormwind, Ironforge, Darnassus, the Exodar) the bot stops at the
+        // city's mailbox nearest its way as soon as it is inside the city's zone - not every mailbox of the area it
+        // goes to (b326-b333: 270-850 yd inside Ironforge / the Exodar)
+        uint32 const zoneNow = p->GetZoneId();
         for (Mailbox const& box : mailboxes_)
         {
             if (box.pos.GetMapId() != p->GetMapId())
                 continue;
-            if (Dist(Pos(p), box.pos) > CAMP_REACH && (!box.areaId || (box.areaId != townNow && box.areaId != townAhead)))
+            bool const passing = Dist(Pos(p), box.pos) <= CAMP_REACH;
+            if (box.capital)
+            {
+                if (!passing && box.zoneId != zoneNow)
+                    continue;  // a city's mailbox: once inside the city
+            }
+            else if (!passing && (!box.areaId || (box.areaId != townNow && box.areaId != townAhead)))
                 continue;  // not on its way
             if ((box.areaTeam == AREATEAM_ALLY && p->GetTeamId() != TEAM_ALLIANCE) ||
                 (box.areaTeam == AREATEAM_HORDE && p->GetTeamId() != TEAM_HORDE))

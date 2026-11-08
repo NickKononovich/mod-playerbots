@@ -16,6 +16,7 @@
 #include "PlayerbotFactory.h"
 #include "RandomItemMgr.h"
 #include "SharedDefines.h"
+#include "SoloSafety.h"
 #include "SpellAuraDefines.h"
 #include "SpellAuraEffects.h"
 #include "SpellInfo.h"
@@ -984,6 +985,15 @@ void StatsWeightCalculator::GenerateAdditionalWeights(Player* player)
     // int tab = AiFactory::GetPlayerSpecTab(player);
     if (cls == CLASS_HUNTER)
     {
+        // [guild15] user 2026-11-08: a hunter without its pet takes the mob in melee (b326: 56-88 % of its fight time
+        // on the Worn Battleaxe, 2.6-4.4 dps); its melee weapon's damage counts by its measured melee share of the
+        // fight time, at the weight of its ranged weapon's damage
+        if (!player->GetPet())
+        {
+            float const share = SoloSafety::MeleeShare(player);
+            if (share > 0.0f)
+                stats_weights_[STATS_TYPE_MELEE_DPS] += share * stats_weights_[STATS_TYPE_RANGED_DPS];
+        }
         if (player->HasAura(SPELL_CAREFUL_AIM))
             stats_weights_[STATS_TYPE_INTELLECT] += 1.1f;
         if (player->HasAura(SPELL_HUNTER_VS_WILD))

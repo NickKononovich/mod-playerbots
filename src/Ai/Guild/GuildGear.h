@@ -12,6 +12,7 @@
 
 #include "Define.h"
 
+class Item;
 class Player;
 class StatsWeightCalculator;
 struct ItemTemplate;
@@ -126,6 +127,18 @@ namespace GuildGear
 
     // Counts, memory and build time of the index, for the startup log and the checks.
     std::string Stats();
+
+    // [guild15] gear history (acore_playerbots.playerbots_gear_history, user 2026-11-08): every time a guild bot
+    // equips a different item into a slot, a row (old / new entry and item level, where the new one came from, its
+    // level) and a [gear] line. Map thread; the row is written by the async database queue.
+    // the bot's equipment as it logged in (the "old" side of its first change)
+    void HistoryInit(Player* bot);
+    // where an item came from, noted when it reaches the bot's bags: quest reward / loot / vendor buy / guild transfer
+    // / craft / bank
+    void HistoryNoteSource(Player* bot, Item* item, char const* source);
+    // the core equipped `item` into equipment slot `slot`: true when the slot holds a different item than before
+    bool HistoryOnEquip(Player* bot, Item* item, uint8 slot);
+    void HistoryForget(Player* bot);
 }
 
 #endif

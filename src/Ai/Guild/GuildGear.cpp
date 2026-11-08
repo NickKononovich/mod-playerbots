@@ -9,12 +9,18 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <array>
 #include <map>
+#include <mutex>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "DBCStores.h"
+#include "DatabaseEnv.h"
+#include "Item.h"
+#include "PlayerbotsDatabase.h"
 #include "GameObject.h"
 #include "Log.h"
 #include "LootMgr.h"
@@ -758,5 +764,93 @@ namespace GuildGear
             }
         }
         return false;
+    }
+}
+
+// [guild15] gear history
+namespace GuildGear
+{
+    namespace
+    {
+        std::mutex historyLock;
+        // bot guid -> the entry it wore in each equipment slot
+        std::unordered_map<uint32, std::array<uint32, EQUIPMENT_SLOT_END>> worn;
+        // item guid -> where the bot got it
+        std::unordered_map<uint32, char const*> itemSource;
+
+        uint32 ItemLevelOf(uint32 entry)
+        {
+            ItemTemplate const* proto = entry ? sObjectMgr->GetItemTemplate(entry) : nullptr;
+            return proto ? proto->ItemLevel : 0;
+        }
+    }
+
+    void HistoryInit(Player* bot)
+    {
+        if (!bot)
+            return;
+        std::array<uint32, EQUIPMENT_SLOT_END> now{};
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                now[slot] = item->GetEntry();
+        std::lock_guard<std::mutex> guard(historyLock);
+        worn[bot->GetGUID().GetCounter()] = now;
+    }
+
+    void HistoryForget(Player* bot)
+    {
+        if (!bot)
+            return;
+        std::lock_guard<std::mutex> guard(historyLock);
+        worn.erase(bot->GetGUID().GetCounter());
+    }
+
+    void HistoryNoteSource(Player* bot, Item* item, char const* source)
+    {
+        if (!bot || !item || !source)
+            return;
+        std::lock_guard<std::mutex> guard(historyLock);
+        if (worn.find(bot->GetGUID().GetCounter()) == worn.end())
+            return;  // not a tracked bot
+        itemSource[item->GetGUID().GetCounter()] = source;
+    }
+
+    bool HistoryOnEquip(Player* bot, Item* item, uint8 slot)
+    {
+        if (!bot || !item || slot >= EQUIPMENT_SLOT_END)
+            return false;
+        uint32 const entry = item->GetEntry();
+        uint32 old = 0;
+        char const* source = "other";
+        {
+            std::lock_guard<std::mutex> guard(historyLock);
+            auto found = worn.find(bot->GetGUID().GetCounter());
+            if (found == worn.end())
+                return false;
+            old = found->second[slot];
+            if (old == entry)
+                return false;
+            found->second[slot] = entry;
+            auto const src = itemSource.find(item->GetGUID().GetCounter());
+            if (src != itemSource.end())
+            {
+                source = src->second;
+                itemSource.erase(src);
+            }
+        }
+        // a crafted item carries its maker
+        if (!strcmp(source, "other") && item->GetGuidValue(ITEM_FIELD_CREATOR))
+            source = "craft";
+        uint32 const oldLevel = ItemLevelOf(old);
+        uint32 const newLevel = ItemLevelOf(entry);
+        ItemTemplate const* oldProto = old ? sObjectMgr->GetItemTemplate(old) : nullptr;
+        LOG_INFO("playerbots", "[gear] {} L{} slot {}: {} (ilvl {}) -> {} (ilvl {}), from {}", bot->GetName(),
+                 bot->GetLevel(), slot, oldProto ? oldProto->Name1 : std::string("empty"), oldLevel,
+                 item->GetTemplate()->Name1, newLevel, source);
+        PlayerbotsDatabase.Execute(
+            "INSERT INTO playerbots_gear_history (guid, name, slot, old_entry, old_ilvl, new_entry, new_ilvl, source, "
+            "level) VALUES ({}, '{}', {}, {}, {}, {}, {}, '{}', {})",
+            bot->GetGUID().GetCounter(), bot->GetName(), slot, old, oldLevel, entry, newLevel, source, bot->GetLevel());
+        return true;
     }
 }

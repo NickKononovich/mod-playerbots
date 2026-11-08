@@ -2811,8 +2811,15 @@ namespace
                 sameCamp = std::hypot(poiInfo[i].pos.x - spot->x, poiInfo[i].pos.y - spot->y) < SPENT_RADIUS;
             if (sameCamp)
                 continue;
-            if (CreatureTemplate const* danger =
-                    NewRpgBaseAction::DangerOnWay(bot, bot->GetPositionX(), bot->GetPositionY(), spot->x, spot->y))
+            // [guild15] the objective's own camp: the last aggro reach of the approach to the spot. The walk there is
+            // the route search's (it goes round a mob it must not fight, RouteCosts); the straight line from the bot
+            // met mobs nowhere near the objective (b333 Januel L11 in Stormwind: q62 / q2206 "objective among Sewer
+            // Beast L50", the canals between him and Elwynn; q6 among a Greater Lava Spider L49)
+            float const toBot = std::max(distance, 0.1f);
+            float const back = std::min(MAX_AGGRO_RADIUS, toBot) / toBot;
+            float const fromX = spot->x + (bot->GetPositionX() - spot->x) * back;
+            float const fromY = spot->y + (bot->GetPositionY() - spot->y) * back;
+            if (CreatureTemplate const* danger = NewRpgBaseAction::DangerOnWay(bot, fromX, fromY, spot->x, spot->y))
             {
                 blocker = danger;
                 blocked = true;
@@ -3185,6 +3192,27 @@ void NewRpgBaseAction::LoadDeathZones(Player* bot, std::string const& value)
     list.insert(list.end(), loaded.begin(), loaded.end());
     LOG_INFO("playerbots", "[rpg] {} L{} DANGER remembered from its last session: {} death zone(s)", bot->GetName(),
              bot->GetLevel(), loaded.size());
+}
+
+void NewRpgBaseAction::ForgetRefusedZones(Player* bot)
+{
+    if (!bot)
+        return;
+    size_t dropped = 0;
+    {
+        std::lock_guard<std::mutex> guard(deathZonesLock);
+        auto const zones = deathZones.find(bot->GetGUID().GetCounter());
+        if (zones == deathZones.end())
+            return;
+        auto& list = zones->second;
+        size_t const before = list.size();
+        list.erase(std::remove_if(list.begin(), list.end(), [](DeathZone const& zone) { return zone.refused; }),
+                   list.end());
+        dropped = before - list.size();
+    }
+    if (dropped)
+        LOG_INFO("playerbots", "[rpg] {} L{} {} refused-pull zone(s) judged again (its gear, spells or talents changed)",
+                 bot->GetName(), bot->GetLevel(), dropped);
 }
 
 void NewRpgBaseAction::RememberDanger(Player* bot, float x, float y, float radius, uint32 entry, uint8 level)
@@ -3914,6 +3942,56 @@ namespace
     constexpr float ZONE_OUTLEVELED = 0.8f;
     constexpr uint8 NORTHREND_ENTRY_LEVEL = 68;
     constexpr uint32 NORTHREND_MAP_ID = 571;
+    // [guild15] user 2026-11-08: Outland proper (Hellfire Peninsula and on) from 58, as Blizzard's Dark Portal
+    // quests open it; the draenei isles and the blood elf lands are map 530 too but belong to Kalimdor / the Eastern
+    // Kingdoms (TravelRouteMgr::Landmass)
+    constexpr uint8 OUTLAND_ENTRY_LEVEL = 58;
+    enum class Continent : uint8
+    {
+        EasternKingdoms,
+        Kalimdor,
+        Outland,
+        Northrend,
+        Other
+    };
+    Continent ContinentOf(WorldPosition const& pos)
+    {
+        switch (pos.GetMapId())
+        {
+            case 0:
+                return Continent::EasternKingdoms;
+            case 1:
+                return Continent::Kalimdor;
+            case 530:
+            {
+                uint32 const landmass = TravelRouteMgr::Landmass(pos);
+                if (landmass == 530 * 4 + 1)
+                    return Continent::Kalimdor;  // Azuremyst, Bloodmyst, the Exodar
+                if (landmass == 530 * 4 + 2)
+                    return Continent::EasternKingdoms;  // Eversong, Ghostlands, Silvermoon, Quel'Danas
+                return Continent::Outland;
+            }
+            case NORTHREND_MAP_ID:
+                return Continent::Northrend;
+            default:
+                return Continent::Other;
+        }
+    }
+    // a starter on `giver`'s continent is priced for the bot (user 2026-11-08: no cross-continent zone change at low
+    // level; it levels on its own continent - its starting zones and capitals included - until the level that needs
+    // another: Outland at 58, Northrend at 68)
+    bool ContinentOpen(Continent botContinent, Continent giver, uint8 level)
+    {
+        if (giver == botContinent)
+            return true;
+        if (giver == Continent::Northrend)
+            return level >= NORTHREND_ENTRY_LEVEL;
+        if (giver == Continent::Outland)
+            return level >= OUTLAND_ENTRY_LEVEL;
+        if (giver == Continent::Other)
+            return false;
+        return level >= OUTLAND_ENTRY_LEVEL;  // the old world's other continent: once it may leave for Outland
+    }
 
     // Northrend levelling order (both factions, from their own docks): Borean Tundra or Howling Fjord,
     // Dragonblight, Grizzly Hills, Zul'Drak, Sholazar Basin, then the Storm Peaks and Icecrown.
@@ -4381,11 +4459,15 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     };
     std::vector<StartCandidate> starts;
     FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
+    Continent const botContinent = ContinentOf(WorldPosition(bot));
     for (QuestStartPoint const& start : GetQuestStartPoints())
     {
         if (!EventSpawnPresent(start.event))  // [guild15]
             continue;
         if (start.mapId != bot->GetMapId() && !continent(start.mapId))
+            continue;
+        // [guild15] its own continent until the level that needs another
+        if (!ContinentOpen(botContinent, ContinentOf(WorldPosition(start.mapId, start.x, start.y, start.z)), level))
             continue;
 
         Quest const* quest = sObjectMgr->GetQuestTemplate(start.questId);

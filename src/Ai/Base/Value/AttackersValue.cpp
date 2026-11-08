@@ -596,7 +596,16 @@ bool AttackersValue::IsValidTarget(Unit* attacker, Player* bot)
 
 bool AttackersValue::IsFoughtOutOfSight(Unit* attacker, Player* bot)
 {
-    return attacker && (IsFoughtBossOutOfSight(attacker, bot) || IsGroupFightOutOfSight(attacker, bot));
+    if (!attacker)
+        return false;
+    if (IsFoughtBossOutOfSight(attacker, bot) || IsGroupFightOutOfSight(attacker, bot))
+        return true;
+    // [guild15] a mob hitting the bot in melee is in its reach whatever the sight ray says: the core's melee needs no
+    // line of sight, and the ray from the bot's eyes to a small mob on a slope meets the ground (b332 / b333 Colian L12
+    // warrior: a Bloodmyst Hatchling L10 at The Lost Fold hit him for 40 s, "melee 38.1 s dealt 0", no attacker in the
+    // list, no target after the survival run stopped; he died twice to it at its full health)
+    Unit* victim = attacker->GetVictim();
+    return victim == bot && attacker->IsWithinMeleeRange(bot) && bot->IsWithinMeleeRange(attacker);
 }
 
 namespace

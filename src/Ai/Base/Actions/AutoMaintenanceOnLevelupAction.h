@@ -21,6 +21,10 @@ public:
 
     bool Execute(Event event);
 
+    // [guild15] a guild bot (not random, no client master) learns its class trainers' spells for its level; at level
+    // up and once at login (the levels it gained before this rule). Returns the spells learned.
+    static uint32 LearnGuildClassSpells(Player* bot, char const* why);
+
 protected:
     void AutoTeleportForLevel();
     void AutoPickTalents();

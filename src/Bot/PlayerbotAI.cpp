@@ -526,6 +526,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
          bot->HasAuraType(SPELL_AURA_MOD_POSSESS)))
         return;
 
+    // [guild15] the way it came, for a survival run (one squared distance per tick)
+    if (!bot->IsInCombat() && bot->IsAlive() && !bot->GetTransport() && !bot->IsInFlight())
+        rpgInfo.NoteTrail(bot->GetMapId(), G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()),
+                          sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS));
+
     // No health/mana/power refills: bots regenerate like players (user decision 2026-10-23, no cheats).
 
     AllowActivity();

@@ -72,6 +72,10 @@ void AutoMaintenanceOnLevelupAction::LearnSpells(std::ostringstream* out)
     BroadcastHelper::BroadcastLevelup(botAI, bot);
     if (sPlayerbotAIConfig.AutoLearnTrainerSpells && sRandomPlayerbotMgr.IsRandomBot(bot))
         LearnTrainerSpells(out);
+    // [guild15] the guild project bots (not random, no client master): their class trainers' spells, no professions
+    // (learned at a trainer), no weapon skills, no free pet (it tames its own)
+    else if (sPlayerbotAIConfig.AutoLearnTrainerSpells && !botAI->HasGameClientMaster())
+        LearnGuildClassSpells(bot, "level up");
 
     // [guild13] the guild project bots (not random, no client master) skip the spell-unlock class quests: their
     // spells come here too (the hunter's Tame Beast / Call Pet at 10)
@@ -87,6 +91,25 @@ void AutoMaintenanceOnLevelupAction::LearnTrainerSpells(std::ostringstream* /*ou
     factory.InitClassSpells();
     factory.InitAvailableSpells();
     factory.InitPet();
+}
+
+uint32 AutoMaintenanceOnLevelupAction::LearnGuildClassSpells(Player* bot, char const* why)
+{
+    if (!bot)
+        return 0;
+    PlayerbotFactory factory(bot, bot->GetLevel());
+    factory.InitClassSpells();
+    std::vector<std::string> learned;
+    uint32 const count = factory.InitClassTrainerSpells(&learned);
+    if (count)
+    {
+        std::string names;
+        for (std::string const& name : learned)
+            names += (names.empty() ? "" : ", ") + name;
+        LOG_INFO("playerbots", "[guild15] {} L{} learned {} class trainer spells ({}): {}", bot->GetName(),
+                 bot->GetLevel(), count, why, names);
+    }
+    return count;
 }
 
 void AutoMaintenanceOnLevelupAction::LearnQuestSpells(std::ostringstream* out)

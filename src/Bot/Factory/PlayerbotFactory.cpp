@@ -3880,6 +3880,67 @@ void PlayerbotFactory::InitAvailableSpells()
     }
 }
 
+uint32 PlayerbotFactory::InitClassTrainerSpells(std::vector<std::string>* learned)
+{
+    // [guild15] user 2026-11-08: class spells are learned automatically (AutoLearnTrainerSpells = 1), professions
+    // honestly at their trainers. The level-up path learned trainer spells only for random bots: the guild bots that
+    // are not random bots kept their creation spells (b333 Colian L12 warrior: 8 spells, no Charge / Rend / Thunder
+    // Clap; hunters L7-8 with 4). Only class trainers of the bot's own class (requirement = its class): weapon masters
+    // (class type, no requirement) sell weapon skills and stay a trainer visit.
+    std::vector<Trainer::Trainer*> trainers;
+    CreatureTemplateContainer const* templates = sObjectMgr->GetCreatureTemplates();
+    for (auto const& [entry, creatureTemplate] : *templates)
+    {
+        Trainer::Trainer* trainer = sObjectMgr->GetTrainer(entry);
+        if (!trainer || trainer->GetTrainerType() != Trainer::Type::Class ||
+            trainer->GetTrainerRequirement() != bot->getClass())
+            continue;
+        trainers.push_back(trainer);
+    }
+
+    uint32 total = 0;
+    // a rank needs the rank below it (ReqAbility): passes until nothing more is learnable
+    while (true)
+    {
+        uint32 now = 0;
+        for (Trainer::Trainer* trainer : trainers)
+            for (auto const& spell : trainer->GetSpells())
+            {
+                Trainer::Spell const* trainerSpell = trainer->GetSpell(spell.SpellId);
+                if (!trainerSpell || !trainer->CanTeachSpell(bot, trainerSpell))
+                    continue;
+                // the spell it ends up knowing: a castable trainer spell teaches its LEARN_SPELL effect's spell
+                uint32 taught = trainerSpell->SpellId;
+                if (trainerSpell->IsCastable())
+                    if (SpellInfo const* teach = sSpellMgr->GetSpellInfo(trainerSpell->SpellId))
+                        for (uint8 eff = 0; eff < MAX_SPELL_EFFECTS; ++eff)
+                            if (teach->Effects[eff].Effect == SPELL_EFFECT_LEARN_SPELL &&
+                                teach->Effects[eff].TriggerSpell)
+                            {
+                                taught = teach->Effects[eff].TriggerSpell;
+                                break;
+                            }
+                if (bot->HasSpell(taught))
+                    continue;
+                if (trainerSpell->IsCastable())
+                    bot->CastSpell(bot, trainerSpell->SpellId, true);
+                else
+                    bot->learnSpell(trainerSpell->SpellId, false);
+                if (!bot->HasSpell(taught))
+                    continue;
+                ++now;
+                if (learned)
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(taught))
+                        learned->push_back(std::string(info->SpellName[0]) +
+                                           (info->Rank[0] && *info->Rank[0] ? std::string(" ") + info->Rank[0] : ""));
+            }
+        total += now;
+        if (!now)
+            break;
+    }
+    return total;
+}
+
 void PlayerbotFactory::InitClassSpells()
 {
     int32_t level = bot->GetLevel();
