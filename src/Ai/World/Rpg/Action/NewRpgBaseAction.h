@@ -102,8 +102,6 @@ public:
     static bool IsSpellUnlockClassQuest(Quest const* quest);
     // [guild14] every ender of the quest is an object the world keeps despawned until a script spawns it
     static bool EnderNeedsScript(uint32 questId);
-    // [giver14] every giver of the quest is a creature whose script hands out the quest-giver flag (not planned)
-    static bool GiverNeedsScript(uint32 questId);
     // [fish14] an item objective still open whose item only fishing gives (no creature or object drops it, the gather
     // plan's FISH places yield it): `itemId` and the nearest such water on the bot's map (none: an invalid position)
     static bool FishOnlyItem(Player* bot, Quest const* quest, uint32& itemId, WorldPosition& water);
