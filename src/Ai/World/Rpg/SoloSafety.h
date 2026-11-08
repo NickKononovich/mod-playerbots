@@ -117,6 +117,8 @@ namespace SoloSafety
     void OnDeath(Player* bot);
     // once after the revive: true and the hub to walk to
     bool TakeRecovery(Player* bot);
+    // [regress10] alive with that recovery not taken yet, or a rest asked for and not full yet: no new pull
+    bool HoldsPulls(Player* bot);
     // the death line's context: attackers now, the fight's start
     std::string DeathContext(Player* bot);
 

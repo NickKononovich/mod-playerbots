@@ -677,6 +677,11 @@ public:
 
     // Ground or liquid within GROUND_SUPPORT_DROP below the point: what a client's gravity would stand on.
     static bool HasGroundSupport(WorldObject const* object, float x, float y, float z);
+    // [regress10] every sample GuardAirborneSpline takes on the straight line has that support (a move it lets run)
+    static bool StraightLineSupported(WorldObject const* object, float fromX, float fromY, float fromZ, float toX,
+                                      float toY, float toZ);
+    // the spacing of those samples (yd)
+    static float GroundSampleStep();
     // Gravity applies to the bot: alive, outside any vehicle, transport or taxi, and without a way to fly.
     bool IsSubjectToGravity() const;
     // Next tick, a bot that lost its mount or seat in the air falls and takes the damage where it lands.

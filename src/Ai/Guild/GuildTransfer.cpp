@@ -1017,6 +1017,42 @@ void GuildCoordinator::UpdateTransfers()
     }
     for (Want& w : donations)
         wants.push_back(std::move(w));
+
+    // e. [regress10] gold for a repair the member cannot pay (its REPAIR task's shortfall, the core's repair cost):
+    // from the member whose free money covers it at the cheapest channel
+    for (auto const& [low, st] : bots_)
+    {
+        if (!st.repairShort || !IsPlanned(low))
+            continue;
+        Player* r = Online(low);
+        if (!r || !GET_PLAYERBOT_AI(r) || HumanControls(r))
+            continue;
+        Want best;
+        float bestCost = NONE;
+        for (PlanRow const& row : plan_)
+        {
+            Player* s = row.low == low ? nullptr : Online(row.low);
+            if (!s || !GET_PLAYERBOT_AI(s) || HumanControls(s) || !canWalk(s) ||
+                FoundingFreeMoney(s) < st.repairShort + MAIL_POSTAGE)
+                continue;
+            Want w;
+            w.key = "p" + std::to_string(low);
+            w.gold = true;
+            w.from = row.low;
+            w.to = low;
+            w.money = st.repairShort;
+            w.purpose = "ремонт";
+            w.why = "не хватает на ремонт " + Gold(st.repairShort);
+            Choice const c = choose(w, nullptr);
+            if (c.cost < bestCost)
+            {
+                bestCost = c.cost;
+                best = w;
+            }
+        }
+        if (bestCost < NONE)
+            wants.push_back(best);
+    }
     if (donation != donationState_)
     {
         donationState_ = donation;

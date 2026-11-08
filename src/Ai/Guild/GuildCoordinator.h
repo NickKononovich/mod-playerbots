@@ -60,7 +60,8 @@ enum class GuildOrderType : uint8
     MAIL_TO,      // mail an item / gold at a mailbox (core postage, core delivery time); the receiver takes it
     DONATE_GOLD,  // free surplus gold to the guild master for the first bank tab (by trade or mail)
     SELL,         // [tasks] items the global leader gave up: sold at the next vendor visit (SellMarked)
-    COOP          // [coop] help a member with a quest in a co-op party (New RPG co-op runs it, never NextStep)
+    COOP,         // [coop] help a member with a quest in a co-op party (New RPG co-op runs it, never NextStep)
+    REPAIR        // [regress10] repair its gear at a repairer (New RPG's vendor run runs it, StartVendorRun)
 };
 
 // [tasks] a bot's task list: every order is a task with its urgency, place, origin and creation time
@@ -127,6 +128,7 @@ struct GuildOrder
     uint32 spellId{0};
     uint32 transferId{0};  // [guild81] TRADE_TO / MAIL_TO / DONATE_GOLD: the transfer (0: take the delivered mail)
     uint32 placeId{0};     // [gather] GATHER: the GuildGatherPlan place
+    bool repairUrgent{false};  // [regress10] REPAIR: a weapon broken or at one death's loss, or a broken armour piece
 };
 
 // What New RPG does for the order (map thread).
@@ -290,6 +292,21 @@ public:
     // [equip] the best gain the leader's gear plan has reachable now for that gear group of the member (0: none);
     // GuildGear::ShouldBuy keeps a bot from buying a lesser vendor item meanwhile (takes lock_)
     float PlannedGain(uint32 low, uint8 group) const;
+    // [regress10] map thread: the global leader's REPAIR call for the bot (its own small lock, never lock_): need =
+    // the task exists; ready = a repairer on its map and the money for `cost`; inTown = in the repairer's town at the
+    // leader's last look; weaponBroken = its main weapon (a hunter's ranged one too) is broken: no new pulls while the
+    // repair is ready
+    struct RepairCall
+    {
+        bool need{false};
+        bool ready{false};
+        bool urgent{false};
+        bool inTown{false};
+        bool weaponBroken{false};
+        uint32 cost{0};
+        WorldPosition at{};  // the nearest repairer spawn
+    };
+    RepairCall Repair(Player* bot) const;
     // [coop] world / map thread: the co-op task enters / leaves the bot's task list ([tasks] add / done, BotControl)
     void AddCoopTask(uint32 low, uint32 partnerLow, uint32 questId, bool leads, std::string const& why);
     void EndCoopTask(uint32 low, uint32 questId, std::string const& why);
@@ -437,6 +454,10 @@ private:
         // same map, else route seconds); a new walk from no nearer means the last one gave the place up
         uint32 gatherWalkPlace{0};
         float gatherWalkLeft{0.0f};
+        // [regress10] REPAIR: the copper its money lacks for the repair (the leader's gold transfer), the items in need
+        // as last logged ([gear] durability line on change)
+        uint32 repairShort{0};
+        std::string durabilityKey;
     };
 
     // [tasks] the global leader's profession call for one member (UpdateProfessions, lock_)
@@ -713,6 +734,9 @@ private:
     std::unordered_map<uint32, std::vector<uint32>> questsByMap_;  // map -> takeable quests, by min level
 
     mutable std::mutex lock_;
+    // [regress10] the REPAIR calls the map threads read (Repair), written by UpdateOrders
+    mutable std::mutex repairLock_;
+    std::unordered_map<uint32, RepairCall> repairCalls_;
     std::unordered_map<uint32, BotState> bots_;
     std::map<uint32, GuildFive> fives_;
     uint32 nextFiveId_{1};

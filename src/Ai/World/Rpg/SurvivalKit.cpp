@@ -702,6 +702,20 @@ namespace
                                    blocker.assists ? ", assists a chaser" : "");
     }
 
+    // [regress10] every stretch of a run's walk keeps ground (or water) under it as the airborne guard samples it: a
+    // stretch over a drop is a fall (b345 Januel L11 in Loch Modan: "no stretch clear, on round the other mobs (3
+    // corners, 35 yd)", then "falls from (-5526.6,-2722.3,365.2)" and died under the Stonesplinter Scouts)
+    bool WayKeepsGround(Player* bot, G3D::Vector3 from, std::vector<G3D::Vector3> const& corners)
+    {
+        for (G3D::Vector3 const& corner : corners)
+        {
+            if (!PlayerbotAI::StraightLineSupported(bot, from.x, from.y, from.z, corner.x, corner.y, corner.z))
+                return false;
+            from = corner;
+        }
+        return true;
+    }
+
     // [deaths] user 2026-11-08: "no way out clear of other mobs" means a maze search - the navmesh walk round every
     // blocker's reach (Leader::Travel::LongRoute with the reaches refused: a patrol's at every spot of its forecast
     // walk, a reach the bot stands in lies behind it) to the spots `dist` away all round the bot (an eighth of the
@@ -747,10 +761,13 @@ namespace
         for (G3D::Vector3 const& goal : goals)
         {
             Movement::PointsArray corners;
+            Movement::PointsArray surface;  // [regress10] the walk on the navmesh's height, for the drop check
             bool complete = false;
-            if (!Leader::Travel::LongRoute(bot, here, goal, false, corners, complete, nullptr, &discs, 0.0f, nullptr,
-                                           &edges) ||
+            if (!Leader::Travel::LongRoute(bot, here, goal, false, corners, complete, nullptr, &discs,
+                                           PlayerbotAI::GroundSampleStep(), &surface, &edges) ||
                 !complete || corners.empty())
+                continue;
+            if (!WayKeepsGround(bot, here, std::vector<G3D::Vector3>(surface.begin(), surface.end())))
                 continue;
             std::vector<G3D::Vector3> way;
             for (G3D::Vector3 const& corner : corners)
@@ -1640,6 +1657,11 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
             path.CalculatePath(x, y, z, false);
             if (path.GetPathType() != PATHFIND_NORMAL)
                 continue;
+            {
+                Movement::PointsArray const& points = path.GetPath();
+                if (!WayKeepsGround(bot, here, std::vector<G3D::Vector3>(points.begin(), points.end())))
+                    continue;  // [regress10] a drop on it
+            }
             bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
             {
                 std::lock_guard<std::mutex> guard(lock);

@@ -334,6 +334,25 @@ bool PlayerbotAI::HasGroundSupport(WorldObject const* object, float x, float y, 
            z - liquid.Level <= GROUND_SUPPORT_DROP;
 }
 
+bool PlayerbotAI::StraightLineSupported(WorldObject const* object, float fromX, float fromY, float fromZ, float toX,
+                                        float toY, float toZ)
+{
+    G3D::Vector3 const start(fromX, fromY, fromZ);
+    G3D::Vector3 const end(toX, toY, toZ);
+    float const length = (end - start).length();
+    uint32 const samples =
+        std::min(GROUND_MAX_SAMPLES, std::max<uint32>(1, static_cast<uint32>(std::ceil(length / GROUND_SAMPLE_STEP))));
+    for (uint32 i = 1; i <= samples; ++i)
+    {
+        G3D::Vector3 const point = start + (end - start) * (static_cast<float>(i) / static_cast<float>(samples));
+        if (!HasGroundSupport(object, point.x, point.y, point.z))
+            return false;
+    }
+    return true;
+}
+
+float PlayerbotAI::GroundSampleStep() { return GROUND_SAMPLE_STEP; }
+
 bool PlayerbotAI::IsSubjectToGravity() const
 {
     return bot->IsAlive() && !bot->GetVehicle() && !bot->GetTransport() && !bot->IsInFlight() && !bot->CanFly() &&

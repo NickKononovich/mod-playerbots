@@ -231,22 +231,78 @@ namespace
     constexpr uint32 VENDOR_LOW_AMMO = 100;
 }
 
+float NewRpgBaseAction::DeathDurabilityLoss(Player* bot)
+{
+    return (sWorld->getRate(RATE_DURABILITY_LOSS_ON_DEATH) +
+            (int32(bot->GetLevel()) < sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL)
+                 ? sWorld->getRate(RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT)
+                 : 0.0f)) /
+           100.0f;
+}
+
+WorldPosition NewRpgBaseAction::NearestRepairSpawn(Player* bot)
+{
+    FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+    VendorSpawn const* best = nullptr;
+    float bestDist = FLT_MAX;
+    for (VendorSpawn const& spawn : VendorSpawns())
+    {
+        if (spawn.mapId != bot->GetMapId())
+            continue;
+        CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(spawn.entry);
+        if (!info || !(info->npcflag & UNIT_NPC_FLAG_REPAIR))
+            continue;
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(info->faction);
+        if (!faction || !own || faction->IsHostileTo(*own) || own->IsHostileTo(*faction))
+            continue;
+        float const d = bot->GetExactDist(spawn.x, spawn.y, spawn.z);
+        if (d < bestDist)
+        {
+            bestDist = d;
+            best = &spawn;
+        }
+    }
+    return best ? WorldPosition(best->mapId, best->x, best->y, best->z) : WorldPosition();
+}
+
 bool NewRpgBaseAction::StartVendorRun()
 {
     NewRpgInfo& info = botAI->rpgInfo;
+    // [regress10] the global leader's REPAIR task (single decider): its call, read once
+    GuildCoordinator::RepairCall const call = sGuildCoordinator.Repair(bot);
+    if (!call.need)
+        info.repairVisited = false;
+    // URGENT: now; CONVENIENT: in the repairer's town (the leader's look) or with the repairer in sight (its town
+    // stop reached before that look)
+    bool const repairGo = call.ready && (call.urgent || call.inTown ||
+                                         (call.at.GetMapId() == bot->GetMapId() &&
+                                          bot->GetExactDist(call.at) <= sPlayerbotAIConfig.SightDistance));
     // [guild15] a vendor run another state took over (a death's recovery, a quest, a guild order) is over: it kept
     // vendorRunEntry set and no run started again (b308: Farret L10 with 6 of 7 items broken logged "vendor: repair"
     // 750 times without walking there; 12 of 50 bots ended the run with broken gear)
     if (info.vendorRunEntry && info.GetStatus() != RPG_GO_CAMP && info.GetStatus() != RPG_WANDER_NPC)
     {
-        LOG_INFO("playerbots", "[New RPG] {} vendor run ({}) dropped by another state: planned again after its next "
-                 "loot or money gain", bot->GetName(), info.vendorRunReason);
-        info.vendorRunEntry = 0;
-        // counted as a visit: tried again once the bags or the purse grow (b311: Hobliir's unreachable Exodar vendor
-        // 29 yd off was walked to, given up and chosen again every few seconds)
-        info.vendorVisited = true;
-        info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
-        info.vendorVisitMoney = bot->GetMoney();
+        // [regress10] a run for the leader's REPAIR task is not over: only a task above it took the bot away (the
+        // death's recovery, a fight, an URGENT order), and it resumes now (b345 Ginde L5: "sell junk + repair"
+        // dropped after a death and planned again only after a money gain - both weapons broke, two more deaths)
+        if (repairGo && info.vendorRunReason.find("repair") != std::string::npos)
+        {
+            LOG_INFO("playerbots", "[tasks] {} REPAIR resumes: its vendor run ({}) was taken over by status {}",
+                     bot->GetName(), info.vendorRunReason, uint32(info.GetStatus()));
+            info.vendorRunEntry = 0;
+            info.repairVisited = false;
+        }
+        else
+        {
+            LOG_INFO("playerbots", "[New RPG] {} vendor run ({}) dropped by another state: planned again after its "
+                     "next loot or money gain", bot->GetName(), info.vendorRunReason);
+            info.vendorRunEntry = 0;
+            // counted as a visit: tried again once the bags or the purse grow (b311: Hobliir's unreachable Exodar
+            // vendor 29 yd off was walked to, given up and chosen again every few seconds)
+            info.vendorVisited = true;
+            info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
+            info.vendorVisitMoney = bot->GetMoney();
+        }
     }
     if (info.vendorRunEntry || bot->IsInCombat() || !bot->IsAlive())
         return false;
@@ -266,25 +322,11 @@ bool NewRpgBaseAction::StartVendorRun()
             ammoSubClass = subClass;
     }
     // [guild13] a broken item (0 durability: a hunter's bow shoots no more) is repaired, as a player does - at a vendor
-    // that repairs, paid from its own money; one try per money gain
-    // [guild15] ... and before the next death breaks it: an item with no more durability left than one death takes
-    // (the core's RATE_DURABILITY_LOSS_ON_DEATH, plus RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT for a bot that rises
-    // at the spirit healer) - b308: hunters fought on with broken bows at 4-5 dps and died to mobs below their level
-    float const deathLoss = (sWorld->getRate(RATE_DURABILITY_LOSS_ON_DEATH) +
-                             (int32(bot->GetLevel()) < sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL)
-                                  ? sWorld->getRate(RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT)
-                                  : 0.0f)) /
-                            100.0f;
-    bool repair = false;
-    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END && !repair; ++slot)
-        if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-        {
-            uint32 const maxDurability = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
-            repair = item->IsBroken() ||
-                     (maxDurability &&
-                      float(item->GetUInt32Value(ITEM_FIELD_DURABILITY)) <= deathLoss * float(maxDurability));
-        }
-    repair = repair && bot->GetMoney() > 0 && (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
+    // that repairs, paid from its own money; [guild15] ... and before the next death breaks it
+    // [regress10] the global leader decides (its REPAIR task: URGENT now, CONVENIENT in the repairer's town, the
+    // money for it checked against the core's repair cost); one try per money gain after a visit that left the need
+    bool repair = repairGo && bot->GetMoney() >= call.cost &&
+                  (!info.repairVisited || bot->GetMoney() > info.repairVisitMoney);
     if (!sell && !ammoSubClass && !repair)
         return false;
 
@@ -554,6 +596,11 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         LOG_INFO("playerbots", "[rpg] {} L{} {}{}", bot->GetName(), bot->GetLevel(),
                  status < RPG_STATUS_END ? names[status] : "?", detail);
     }
+
+    // [regress10] the recovery after a death comes first: before, only a far walk's MoveFarTo took it, so a quest spot
+    // in reach of the corpse was fought at once (b345 Guinudrond L11 at the Silver Stream Mine)
+    if (!bot->IsInCombat() && SoloSafety::HoldsPulls(bot) && SoloSafetyStep())
+        return true;
 
     // [coop] a co-op party member goes with its party's leader; its own plan waits (NewRpgCoop.h)
     {
@@ -1080,6 +1127,10 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                         if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
                             broken = item->IsBroken();
                     botAI->DoSpecificAction("repair", Event("repair"), true);
+                    // [regress10] the leader's REPAIR task: this visit counts (tried again after a money gain while
+                    // the need stays); its [gear] durability line follows with the leader's next look
+                    info.repairVisited = true;
+                    info.repairVisitMoney = bot->GetMoney();
                     // [guild15] its damage and the fights it refused were measured with the broken gear
                     if (broken)
                     {
@@ -1104,6 +1155,11 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         {
             if (info.vendorRunEntry)
             {
+                if (info.vendorRunReason.find("repair") != std::string::npos)
+                {
+                    info.repairVisited = true;  // [regress10] its REPAIR try there ends too
+                    info.repairVisitMoney = bot->GetMoney();
+                }
                 info.vendorRunEntry = 0;
                 info.vendorVisited = true;
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");

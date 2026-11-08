@@ -234,6 +234,10 @@ struct NewRpgInfo
     uint8 vendorVisitBagUsed{0};
     uint32 vendorVisitMoney{0};
     bool vendorVisited{false};
+    // [regress10] the global leader's REPAIR task: a visit to a repairer for it was made at this money (tried again
+    // after a money gain); cleared when the task ends
+    bool repairVisited{false};
+    uint32 repairVisitMoney{0};
     uint8 loggedStatus{255};  // [guild7] the status last written to the log ([rpg] line)
     // [stuck8] a group leader waits for a member that is not ready (NewRpgGroupNotReadyTrigger, its GROUP_WAIT line)
     bool groupWaiting{false};

@@ -2069,6 +2069,21 @@ namespace SoloSafety
         return true;
     }
 
+    bool HoldsPulls(Player* bot)
+    {
+        if (!bot || !bot->IsAlive() || bot->IsInCombat())
+            return false;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        if (found == states.end())
+            return false;
+        if (found->second.recover)
+            return true;
+        bool const full = bot->GetHealth() >= bot->GetMaxHealth() &&
+                          (!bot->GetMaxPower(POWER_MANA) || bot->GetPower(POWER_MANA) >= bot->GetMaxPower(POWER_MANA));
+        return found->second.rest && !full;
+    }
+
     std::string DeathContext(Player* bot)
     {
         std::string out = Acore::StringFormat("hp {:.0f}/{:.0f}", float(bot->GetHealth()), float(bot->GetMaxHealth()));
@@ -2189,8 +2204,13 @@ namespace SoloSafety
             RouteWall::Why why = IsElite(mob) ? RouteWall::Why::Elite
                                  : con <= XP_ORANGE ? RouteWall::Why::Con
                                                     : RouteWall::Why::None;
+            // [regress10] ... a zone where it died; a refused pull's zone is refused as its disc (DangerDiscs below),
+            // the mobs in it are judged one by one with their links as the pull judge does (b347: 8 of the 20 most
+            // logged MAZE "no way" wall lists were single mobs of the bot's level walled for standing in a refused
+            // camp's disc - Eraelor L8 by Timberling Tramplers L8 round Oakenscowl's camp, 71 MAZE lines, every walk
+            // of its log refused; Pherua L6 by the Wrathscale camp, Enyssia L5 by a Gnarlpine Warrior L7)
             if (why == RouteWall::Why::None &&
-                NewRpgBaseAction::InDangerZone(bot, mob->GetPositionX(), mob->GetPositionY()) &&
+                NewRpgBaseAction::InDeathZone(bot, mob->GetPositionX(), mob->GetPositionY()) &&
                 !NewRpgBaseAction::SameDangerZone(bot, bot->GetPositionX(), bot->GetPositionY(), mob->GetPositionX(),
                                                   mob->GetPositionY()))
                 why = RouteWall::Why::Zone;

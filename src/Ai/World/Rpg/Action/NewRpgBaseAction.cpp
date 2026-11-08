@@ -1791,6 +1791,11 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                             break;
                         continue;
                     }
+                    // [regress10] a stretch the airborne guard refuses (a sample with no liquid or ground in the map
+                    // data) is no swim: b347 Shalaeth L1 off Auberdine, every swim to the pier "refused a straight
+                    // move over open air" at (6660,667), 141 MAZE / 148 give-ups, 1176 s STUCK. Off its heading then
+                    if (!PlayerbotAI::StraightLineSupported(bot, here.x, here.y, here.z, tx, ty, tz))
+                        continue;
                     bot->GetMotionMaster()->MovePoint(0, tx, ty, tz, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
                     float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(step), 0.0f,
                                                    float(sPlayerbotAIConfig.MaxWaitForMove));
@@ -4045,6 +4050,10 @@ void NewRpgBaseAction::ForgetRefusals(Player* bot)
         refusedDest.erase(bot->GetGUID().GetCounter());
         lookedDest.erase(bot->GetGUID().GetCounter());
     }
+    {
+        std::lock_guard<std::mutex> guard(givenUpLock);  // [regress10] the walks given up among them too
+        givenUp.erase(bot->GetGUID().GetCounter());
+    }
     std::lock_guard<std::mutex> guard(deathZonesLock);
     auto const found = deathZones.find(bot->GetGUID().GetCounter());
     if (found == deathZones.end())
@@ -4077,6 +4086,27 @@ CreatureTemplate const* NewRpgBaseAction::InDangerZone(Player* bot, float x, flo
             return sObjectMgr->GetCreatureTemplate(zone.entry);
     }
     return nullptr;
+}
+
+bool NewRpgBaseAction::InDeathZone(Player* bot, float x, float y)
+{
+    if (!bot)
+        return false;
+    uint8 const level = bot->GetLevel();
+    std::lock_guard<std::mutex> guard(deathZonesLock);
+    auto const zones = deathZones.find(bot->GetGUID().GetCounter());
+    if (zones == deathZones.end())
+        return false;
+    for (DeathZone const& zone : zones->second)
+    {
+        if (zone.refused || zone.mapId != bot->GetMapId() || level > zone.level)
+            continue;
+        float const radiusSq = zone.radius * zone.radius;
+        if (SegmentDistSq(zone.killerX, zone.killerY, x, y, x, y) <= radiusSq ||
+            SegmentDistSq(zone.deathX, zone.deathY, x, y, x, y) <= radiusSq)
+            return true;
+    }
+    return false;
 }
 
 bool NewRpgBaseAction::SameDangerZone(Player* bot, float ax, float ay, float bx, float by)

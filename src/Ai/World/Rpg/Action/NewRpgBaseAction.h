@@ -65,6 +65,12 @@ public:
     // [guild14] TripDanger once per bot, destination and bot level (the route is searched once; a danger zone is
     // looked up every time); a refusal is logged once: [solo] <bot> TRIP_REFUSED <what>
     static bool TripRefused(Player* bot, float x, float y, float z, std::string const& what);
+    // [regress10] the fraction of its maximum an item loses at one death (the core's RATE_DURABILITY_LOSS_ON_DEATH,
+    // plus RATE_DURABILITY_LOSS_ON_SPIRIT_RESURRECT below the death sickness level: a bot rises at the spirit healer)
+    static float DeathDurabilityLoss(Player* bot);
+    // [regress10] the nearest friendly repairer spawn on the bot's map (no walk judged: the global leader's task
+    // place, world thread); an empty position when none
+    static WorldPosition NearestRepairSpawn(Player* bot);
     // [guild15] at login: its death zones of the last session ("dz" in playerbots_db_store)
     static void LoadDeathZones(Player* bot, std::string const& value);
     // [guild15] its refused-pull zones were judged with its old power: judged again (deaths stay until outlevelled)
@@ -83,6 +89,8 @@ public:
     static void ForgetRefusals(Player* bot);
     // [guild13] the spot lies in one of the bot's remembered danger zones (a death or a refused pack): its creature
     static CreatureTemplate const* InDangerZone(Player* bot, float x, float y);
+    // [regress10] ... where it died (a refused pull's zone left out)
+    static bool InDeathZone(Player* bot, float x, float y);
     // [pull9] one of its danger zones covers both spots (the bot standing in the zone of that mob)
     static bool SameDangerZone(Player* bot, float ax, float ay, float bx, float by);
     // [deaths] the bot's danger zones on its map within `range` of (x, y): the killer's and the death spot as discs

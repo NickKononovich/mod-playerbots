@@ -9,6 +9,7 @@
 #include "Formulas.h"  // [guild12]
 #include "SoloSafety.h"  // [guild13]
 #include "NewRpgCoop.h"  // [coop]
+#include "GuildCoordinator.h"  // [regress10] the leader's REPAIR call
 #include "NewRpgInfo.h"
 #include "Playerbots.h"
 #include "ReputationMgr.h"
@@ -49,6 +50,20 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
             continue;
 
         return unit;
+    }
+
+    // [regress10] its main weapon is broken and the global leader's repair can run: no new pull until the repairer
+    // (b347 Ginde L5: eight pulls of boars at 0.2-1.7 dps on her 200 yd walk to the vendor, two deaths to Crag Boars)
+    if (SoloSafety::Applies(bot))
+    {
+        GuildCoordinator::RepairCall const repair = sGuildCoordinator.Repair(bot);
+        if (repair.weaponBroken && repair.ready)
+            return nullptr;
+        // [regress10] after a death it rests and walks to its hub before any pull, and a rest asked for runs to full
+        // first (b345 Guinudrond L11: risen at its corpse, it pulled a Tunnel Rat Vermin there at once, then a Forest
+        // Lurker at 4 % mana on the walk to its hub; three deaths in the Silver Stream Mine)
+        if (SoloSafety::HoldsPulls(bot))
+            return nullptr;
     }
 
     GuidVector targets = *context->GetValue<GuidVector>("possible targets");

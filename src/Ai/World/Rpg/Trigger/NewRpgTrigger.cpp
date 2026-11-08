@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgTriggers.h"
+#include "NewRpgCoop.h"
 #include "Creature.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
@@ -57,7 +58,15 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
     // Emdyl, Alnia: "reason=none" while each waited for a member thousands of yards behind, GROUP_WAIT logged once)
     botAI->rpgInfo.groupWaiting = false;
     // The user's pack (Playerbots.UserPack) leads its group without him: it waits for its members like a SelfBot.
-    if ((!IsSelfBot(bot) && !UserPack::IsAutonomousLeader(bot)) || bot->IsInCombat() || bot->IsInFlight())
+    if (bot->IsInCombat() || bot->IsInFlight())
+        return false;
+    bool const ownGroup = IsSelfBot(bot) || UserPack::IsAutonomousLeader(bot);
+    // [regress10] a co-op party's leader waits for its partner as well (NewRpgCoop's plan counts on this hold): without
+    // it the leader walked to the camp it cannot solo, refused it alone and left the party (b347 Kylanor q315: 13
+    // parties with Namwe, Tuihgrelfim, Ganna broken within 4-15 s, "its own plan moved on: IDLE")
+    if (!ownGroup && !bot->GetGroup())
+        return false;
+    if (!ownGroup && !NewRpgCoop::JudgesPulls(bot))
         return false;
 
     // Boarding, riding and leaving a boat run on its schedule; the leader handles the group itself there.
@@ -67,7 +76,7 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
         return false;
 
     Group* group = bot->GetGroup();
-    if (!group || group->GetLeaderGUID() != bot->GetGUID())
+    if (!group || (ownGroup && group->GetLeaderGUID() != bot->GetGUID()))
         return false;
 
     // [timers] the members' facts alone hold the group: no wait cap, no ignore window

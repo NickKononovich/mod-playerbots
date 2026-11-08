@@ -86,7 +86,8 @@ namespace
             "DISENCHANT", "QUEST_REWARD", "FOUND_GUILD",  "SIGN_CHARTER",  "JOIN",      "BANK_TAB",  // [guild80]
             "TRADE_TO",   "MAIL_TO",      "DONATE_GOLD",                                             // [guild81]
             "SELL",                                                                                  // [tasks]
-            "COOP"};                                                                                 // [coop]
+            "COOP",                                                                                  // [coop]
+            "REPAIR"};                                                                               // [regress10]
         return uint8(type) < std::size(names) ? names[uint8(type)] : "?";
     }
 
@@ -123,6 +124,72 @@ namespace
     {
         static char const* const names[] = {"none", "train", "gather", "buy", "craft"};
         return uint8(k) < std::size(names) ? names[uint8(k)] : "?";
+    }
+
+    // [regress10] the gear the global leader has repaired: items broken or with no more durability than one death
+    // takes; urgent = a weapon among them (main / off hand, ranged) or a broken armour piece; the core's repair cost
+    // of those items (Player::DurabilityRepair, no reputation discount)
+    struct RepairNeed
+    {
+        bool any{false};
+        bool urgent{false};
+        bool weaponBroken{false};  // the main hand, a hunter's ranged weapon
+        uint32 cost{0};            // all items in need
+        uint32 urgentCost{0};      // the urgent ones
+        std::string items;         // "Worn Dirk 0/20, ..." (the [gear] durability line, the task's details)
+    };
+
+    uint32 ItemRepairCost(Item* item)
+    {
+        uint32 const maxDurability = item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
+        uint32 const curDurability = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+        ItemTemplate const* proto = item->GetTemplate();
+        if (!maxDurability || curDurability >= maxDurability || !proto)
+            return 0;
+        DurabilityCostsEntry const* costs = sDurabilityCostsStore.LookupEntry(proto->ItemLevel);
+        DurabilityQualityEntry const* quality = sDurabilityQualityStore.LookupEntry((proto->Quality + 1) * 2);
+        if (!costs || !quality)
+            return 0;
+        uint32 const multiplier =
+            costs->multiplier[ItemSubClassToDurabilityMultiplierId(proto->Class, proto->SubClass)];
+        uint32 const cost = uint32(uint32(maxDurability - curDurability) * multiplier * double(quality->quality_mod) *
+                                   sWorld->getRate(RATE_REPAIRCOST));
+        return std::max<uint32>(cost, 1);
+    }
+
+    RepairNeed RepairNeedOf(Player* p)
+    {
+        RepairNeed need;
+        float const deathLoss = NewRpgBaseAction::DeathDurabilityLoss(p);
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            Item* item = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            uint32 const maxDurability = item ? item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) : 0;
+            if (!maxDurability)
+                continue;
+            uint32 const cur = item->GetUInt32Value(ITEM_FIELD_DURABILITY);
+            bool const broken = item->IsBroken();
+            if (!broken && float(cur) > deathLoss * float(maxDurability))
+                continue;
+            bool const weapon = slot == EQUIPMENT_SLOT_MAINHAND || slot == EQUIPMENT_SLOT_OFFHAND ||
+                                slot == EQUIPMENT_SLOT_RANGED;
+            uint32 const cost = ItemRepairCost(item);
+            need.any = true;
+            need.cost += cost;
+            if (weapon || broken)
+            {
+                need.urgent = true;
+                need.urgentCost += cost;
+            }
+            if (broken && (slot == EQUIPMENT_SLOT_MAINHAND ||
+                           (slot == EQUIPMENT_SLOT_RANGED && p->getClass() == CLASS_HUNTER)))
+                need.weaponBroken = true;
+            ItemTemplate const* proto = item->GetTemplate();
+            need.items += Acore::StringFormat("{}{} {}/{}", need.items.empty() ? "" : ", ",
+                                              proto ? proto->Name1 : std::to_string(item->GetEntry()), cur,
+                                              maxDurability);
+        }
+        return need;
     }
 
     std::string TaskKey(GuildOrder const& o)
@@ -1526,6 +1593,51 @@ void GuildCoordinator::UpdateOrders()
 
         std::vector<GuildOrder> orders;
         FiveOrder(st, row.low, p, orders);  // [guild60] a five's dungeon comes first
+        // [regress10] REPAIR: the leader tracks every member's durability (b345 Ginde L5 fought on with both
+        // weapons at 0: the repair was only a side effect of a vendor run for bags or ammo, dropped by other states).
+        // URGENT for a weapon broken or at one death's loss and for a broken armour piece, CONVENIENT for other armour
+        // at one death's loss (in the repairer's town); its money against the core's cost, the shortfall sent by a
+        // member (GuildTransfer)
+        RepairNeed const repairNeed = GET_PLAYERBOT_AI(p) && !HumanControls(p) ? RepairNeedOf(p) : RepairNeed();
+        if (repairNeed.items != st.durabilityKey)
+        {
+            st.durabilityKey = repairNeed.items;
+            LOG_INFO("playerbots", "[gear] {} L{} durability: {}{}", Who(row.low), p->GetLevel(),
+                     repairNeed.any ? repairNeed.items : std::string("nothing at one death's loss or broken"),
+                     repairNeed.any ? Acore::StringFormat("; repair {} ({} urgent), money {}",
+                                                          MoneyText(repairNeed.cost), MoneyText(repairNeed.urgentCost),
+                                                          MoneyText(p->GetMoney()))
+                                    : std::string());
+        }
+        st.repairShort = 0;
+        if (repairNeed.any)
+        {
+            GuildOrder o;
+            o.type = GuildOrderType::REPAIR;
+            o.repairUrgent = repairNeed.urgent;
+            o.cost = repairNeed.urgent ? repairNeed.urgentCost : repairNeed.cost;
+            o.pos = NewRpgBaseAction::NearestRepairSpawn(p);
+            o.details = repairNeed.items + "; ремонт " + MoneyText(o.cost);
+            o.reason = repairNeed.weaponBroken ? "оружие сломано: новых пулов нет до ремонта"
+                       : repairNeed.urgent     ? "оружие / броня: сломается при следующей смерти или сломано"
+                                               : "броня: сломается при следующей смерти";
+            if (o.pos == WorldPosition())
+                o.status = "нет ремонтника на этом континенте";
+            else if (p->GetMoney() < o.cost)
+            {
+                st.repairShort = o.cost - p->GetMoney();
+                o.status = "не хватает " + MoneyText(st.repairShort) + ": золото от гильдии";
+            }
+            else
+            {
+                o.executable = true;
+                o.status = "к ремонтнику";
+            }
+            if (repairNeed.urgent)
+                orders.insert(orders.begin(), o);  // [regress10] the first executable order decides (interrupts)
+            else
+                orders.push_back(o);
+        }
         FoundingOrders(st, row.low, p, orders);  // [guild80] found / sign / join the guild, buy the bank tab
         TransferOrders(row.low, p, orders);       // [guild81] trade / mail to a member, gold for the bank tab
         if (!st.disenchant.empty())
@@ -1830,6 +1942,26 @@ void GuildCoordinator::UpdateOrders()
                     ai->rpgInfo.ChangeToIdle();
                 }
         }
+        // [regress10] the REPAIR call the map threads read (StartVendorRun, the grind target)
+        {
+            RepairCall call;
+            for (GuildOrder const& o : orders)
+                if (o.type == GuildOrderType::REPAIR)
+                {
+                    call.need = true;
+                    call.urgent = o.priority == GuildTaskPriority::URGENT;
+                    call.ready = o.executable;
+                    call.inTown = !o.waitsTown;
+                    call.cost = o.cost;
+                    call.at = o.pos;
+                    call.weaponBroken = repairNeed.weaponBroken;
+                }
+            std::lock_guard<std::mutex> repairGuard(repairLock_);
+            if (call.need)
+                repairCalls_[row.low] = call;
+            else
+                repairCalls_.erase(row.low);
+        }
         LogTaskChanges(row.low, st, orders);
         st.orders = std::move(orders);
     }
@@ -1883,6 +2015,11 @@ void GuildCoordinator::ClassifyTask(GuildOrder& o)
         case GuildOrderType::BUY:
         case GuildOrderType::SELL:
             o.place = GuildTaskPlace::VENDOR;
+            break;
+        case GuildOrderType::REPAIR:  // [regress10]
+            o.place = GuildTaskPlace::VENDOR;
+            if (o.repairUrgent)
+                o.priority = GuildTaskPriority::URGENT;
             break;
         case GuildOrderType::GATHER:  // the gatherer's own work in the field: urgent only when it beats questing
             o.priority = o.executable ? GuildTaskPriority::URGENT : GuildTaskPriority::CONVENIENT;
@@ -2902,6 +3039,15 @@ GuildProfessionKind GuildCoordinator::ProfessionCall(Player* bot, uint32* skillL
     if (skillLine)
         *skillLine = itr->second.front().skillLine;
     return itr->second.front().kind;
+}
+
+GuildCoordinator::RepairCall GuildCoordinator::Repair(Player* bot) const
+{
+    if (!bot)
+        return RepairCall();
+    std::lock_guard<std::mutex> guard(repairLock_);
+    auto const found = repairCalls_.find(bot->GetGUID().GetCounter());
+    return found == repairCalls_.end() ? RepairCall() : found->second;
 }
 
 bool GuildCoordinator::UrgentTask(Player* bot, std::string* why) const
@@ -4288,6 +4434,9 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                 started(order);
                 return step;
             }
+            case GuildOrderType::REPAIR:  // [regress10] New RPG's vendor run runs it (StartVendorRun reads Repair)
+                started(order);
+                continue;
             default:
                 continue;
         }
