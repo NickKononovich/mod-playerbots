@@ -44,3 +44,8 @@ void WorldBossStrategy::InitMultipliers(std::vector<Multiplier*>& multipliers)
     multipliers.push_back(new WorldBossStackedTankMultiplier(botAI));
     multipliers.push_back(new WorldBossCommittedAddMultiplier(botAI));
 }
+
+void WorldBossStrategy::AppendTargetExclusions(GuidSet& exclusions, TargetValueExclusionType type)
+{
+    WorldBoss::AppendTargetExclusions(botAI, exclusions, type);
+}

@@ -766,6 +766,9 @@ bool ThreatMultiplier::AreaHolds(CastSpellAction* action, SpellInfo const* info,
                                               : ThreatLead::TankShare(bot, mob);
             if (share < limit)
                 continue;
+            // [kzk1] the world boss himself in the area: his holder's share decides (WorldBoss::AreaBossShareOk)
+            if (WorldBoss::AreaBossShareOk(bot, botAI, mob, share, spell))
+                continue;
 
             if (over.empty())
                 firstShare = share;

@@ -13,6 +13,7 @@
 #include "AttackAction.h"
 #include "MovementActions.h"
 #include "Multiplier.h"
+#include "Strategy.h"
 #include "Trigger.h"
 
 class Creature;
@@ -87,6 +88,13 @@ bool Note(Player* bot, char const* key, std::string const& text);
 // per global cooldown; Challenging Shout / Roar all, Righteous Defense three) and a healer reaches it. Logs
 // "[world_boss] ...: aoe ...". False outside a world boss fight or for any mob that is no add of the boss
 bool AreaMayTake(Player* bot, PlayerbotAI* botAI, std::vector<Creature*> const& mobs, std::string const& spell);
+// [kzk1] the boss himself inside such an area: allowed while the projected share of his holder's threat stays under
+// 100 % (the game turns him only at 110 % in melee / 130 % beyond). Logs "[world_boss] ...: aoe ..."
+bool AreaBossShareOk(Player* bot, PlayerbotAI* botAI, Unit* mob, uint8 share, std::string const& spell);
+// [kzk1] the world-boss strategy's target exclusions: mobs outside the boss's fight (no add of his, over FIGHT_RANGE
+// from him) for every target kind but the tank's; for the single target (dps target) also the brute adds a tank holds
+// (the single target is the boss, the adds the area spells': KillOrder::BossFocusTarget, b33_hadronox)
+void AppendTargetExclusions(PlayerbotAI* botAI, GuidSet& exclusions, TargetValueExclusionType type);
 }  // namespace WorldBoss
 
 // --- triggers ---------------------------------------------------------------------------------------------------
