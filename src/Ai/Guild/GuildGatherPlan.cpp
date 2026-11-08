@@ -273,6 +273,19 @@ void GuildGatherPlan::Load()
     LoadNodesAndChests();
     LoadSkinning();
     LoadFishing();
+    // [ui11] the open-world harvest first (nodes, skinning, fishing): a chest never stands in for it. b-live: «Сбор:
+    // Silverleaf x364 @ chest Tattered Chest» for every bot without Herbalism - the chest's loot group gives one of
+    // seven herbs (~0.14 Silverleaf a chest), it opens without a skill, so it was the only place they could "gather" a
+    // common herb at; and its skill 0 made Silverleaf read as gatherable by anyone (gatherSkill_)
+    for (GatherPlace const& place : places_)
+    {
+        if (place.instance || place.kind == GatherKind::CHEST)
+            continue;
+        for (auto const* yield : {&place.yield, &place.poolYield})
+            for (auto const& [item, amount] : *yield)
+                if (amount > 0.0f)
+                    harvest_.insert(item);
+    }
     for (size_t i = 0; i < places_.size(); ++i)
     {
         places_[i].id = uint32(i + 1);
@@ -283,11 +296,12 @@ void GuildGatherPlan::Load()
         {
             if (amount <= 0.0f)
                 continue;
+            bool const chest = places_[i].kind == GatherKind::CHEST;
+            if (chest && !places_[i].instance && harvest_.count(item))
+                continue;  // [ui11] a herb / ore / leather / fish: its nodes, mobs and waters only
             placesByItem_[item].push_back(uint32(i));
             if (places_[i].instance)
                 continue;
-            if (places_[i].kind != GatherKind::CHEST)
-                harvest_.insert(item);
             auto const known = gatherSkill_.find(item);
             if (known == gatherSkill_.end() || places_[i].reqSkill < known->second.second)
                 gatherSkill_[item] = {places_[i].skill, places_[i].reqSkill};

@@ -803,6 +803,8 @@ public:
             sGuildCoordinator.SendResources(player);  // [guild30] the virtual guild bank
         else if (command == "plan")
             sGuildCoordinator.SendPlan(player);  // [guild70] the «План» tab
+        else if (command.compare(0, 6, "tasks ") == 0)  // [ui11] the detail pane of one bot
+            sGuildCoordinator.SendTasks(player, uint32(std::strtoul(command.c_str() + 6, nullptr, 10)));
         else if (command.compare(0, 7, "quests ") == 0)
             SelfBotControl::SendGuildQuests(player, command.substr(7));  // [live1]
         else if (command == "self on" || command == "self off" || command == "self")

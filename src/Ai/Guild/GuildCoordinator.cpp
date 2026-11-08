@@ -423,11 +423,11 @@ namespace
         return true;
     }
 
-    std::string GainText(float gain)
+    // [ui11] a pick's gain text: GuildGear::GainText (an empty slot, a near-empty one, "+N%")
+    template <typename Pick>
+    std::string GainText(Pick const& g)
     {
-        if (gain < 0.005f)
-            return "вес равный, больше брони / ур. предмета";
-        return "+" + std::to_string(int32(gain * 100.0f + 0.5f)) + "%";
+        return GuildGear::GainText(g.gain, g.score, g.current);
     }
 
     // [guild70] money as g / s / c
@@ -1558,7 +1558,7 @@ void GuildCoordinator::UpdateOrders()
                 {
                     withdraw_[row.low].emplace_back(g.itemId, std::string("улучшение ") +
                                                                   GuildGear::GroupName(g.group) + " " +
-                                                                  GainText(g.gain));
+                                                                  GainText(g));
                     withdrawn[{row.low, g.itemId}] = true;
                 }
         // [guild50] old bags: once all four bag slots hold bags, a spare bag no bigger than the smallest worn one is
@@ -1834,7 +1834,7 @@ void GuildCoordinator::UpdateOrders()
                 o.cost = g.aux;
                 o.extendedCost = g.extendedCost;
                 o.details = ItemName(g.itemId) + " для себя — " + g.text + ", цена " + Gsc(g.aux);
-                o.reason = std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g.gain) +
+                o.reason = std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g) +
                            ", на свои деньги";
                 o.status = "к торговцу";
                 o.executable = true;
@@ -3574,7 +3574,7 @@ void GuildCoordinator::UpdateGear()
 
     std::ostringstream log;
     for (GearPick const& g : now)
-        log << " [" << GuildGear::GroupName(g.group) << "] " << ItemName(g.itemId) << " " << GainText(g.gain) << " — "
+        log << " [" << GuildGear::GroupName(g.group) << "] " << ItemName(g.itemId) << " " << GainText(g) << " — "
             << g.text << ";";
     LOG_INFO("playerbots", "[guild50] gear plan {} L{}: now {}, plan {}, rewards {};{}", member->GetName(),
              member->GetLevel(), now.size(), plan.size(), rewards.size(), log.str());
@@ -3952,7 +3952,7 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
     }
     // one main hand: the better of the one-hander and the two-hander
     uint8 const oneHand = GuildGear::EquipGroup(INVTYPE_WEAPON), twoHand = GuildGear::EquipGroup(INVTYPE_2HWEAPON);
-    for (auto* best : {&bestNow, &bestPlan})
+    for (auto* best : {&bestNow, &bestPlan, &bestFuture})
     {
         auto const a = best->find(oneHand), b = best->find(twoHand);
         if (a != best->end() && b != best->end())
@@ -3963,8 +3963,13 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
         now.push_back(pick);
     for (auto const& [group, pick] : bestPlan)
         plan.push_back(pick);
+    for (auto const& [group, pick] : bestFuture)  // [ui11] by level: the nearest future first
+        future.push_back(pick);
     std::sort(now.begin(), now.end(), byGain);
     std::sort(plan.begin(), plan.end(), byGain);
+    std::sort(future.begin(), future.end(),
+              [](GearPick const& a, GearPick const& b)
+              { return a.needLevel != b.needLevel ? a.needLevel < b.needLevel : a.gain > b.gain; });
 
     // the choice rewards of the quests in its log: itself first, else a BoE for the member it upgrades most, else a
     // wanted-list item, else the one that sells for the most
@@ -3986,7 +3991,7 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                 pick.index = i;
                 pick.itemId = proto->ItemId;
                 pick.why = std::string("себе: ") + GuildGear::GroupName(GuildGear::EquipGroup(proto->InventoryType)) +
-                           " " + GainText(ev.gain);
+                           " " + GainText(ev);
             }
         }
         if (best < 0.0f)
@@ -4013,7 +4018,7 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         pick.forLow = other->GetGUID().GetCounter();
                         pick.why = "BoE для " + Who(pick.forLow) + ": " +
                                    GuildGear::GroupName(GuildGear::EquipGroup(proto->InventoryType)) + " " +
-                                   GainText(ev.gain) + ", через банк";
+                                   GainText(ev) + ", через банк";
                     }
                 }
             }
@@ -4101,7 +4106,7 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
                     m->GetItemCount(g.itemId, true) || pending.count({low, g.itemId}))
                     continue;
                 addJob(g.crafterLow, g.srcId, low, false,
-                       std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g.gain));
+                       std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g));
             }
     }
 
@@ -5199,6 +5204,7 @@ void GuildCoordinator::UpdateHealth()
             ++dead;
             st.anchorAt = 0;
             st.stuckAlerted = false;
+            st.stillWhy.clear();  // [ui11]
             continue;
         }
         // [guild15] crafting in place: a profession skill that rose since the last sample is progress, as a walk is
@@ -5219,16 +5225,23 @@ void GuildCoordinator::UpdateHealth()
             st.az = p->GetPositionZ();
             st.anchorAt = now;
             st.stuckAlerted = false;
+            st.stillWhy.clear();  // [ui11]
             continue;
         }
         if (now - st.anchorAt < STUCK_SECONDS)
             continue;
         std::string const wait = WaitReason(p, ai, st);
         if (!wait.empty())
+        {
+            st.stillWhy = "ждёт: " + wait;  // [ui11] BotControl: why it stands
             continue;
+        }
         ++stuck;
         std::string const status = StatusName(p, ai);
         std::string const order = ActiveTask(st.orders);
+        // [ui11] BotControl's detail pane: the STUCK cause (status, task, the newest actions)
+        st.stillWhy = "STUCK " + std::to_string((now - st.anchorAt) / MINUTE) + " мин: " + status + ", задача " +
+                      order + ", действия " + LastAction(ai);
         std::string const key = status + "|" + order.substr(0, order.find(" ("));
         if (st.stuckAlerted && st.stuckKey == key)
             continue;
@@ -5436,7 +5449,7 @@ void GuildCoordinator::SendOrders(Player* player)
                     break;
                 SendLine(player, "OX;" + std::to_string(row.num) + ";PLAN;" +
                                      OrdersText(std::string(GuildGear::GroupName(g.group)) + ": " + ItemName(g.itemId) +
-                                                    " " + GainText(g.gain),
+                                                    " " + GainText(g),
                                                 90) +
                                      ";" + OrdersText(g.text, 100) + ";");
             }
@@ -5446,6 +5459,82 @@ void GuildCoordinator::SendOrders(Player* player)
         SendLine(player, "OB;" + OrdersText(bagState_, 200));
     SendFives(player);  // [guild60] the fives and the completion table
     SendLine(player, "OE;n=" + std::to_string(plan_.size()));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [ui11] the BotControl detail pane of one member (asked for the selected bot only, not for all 75 every 5 s):
+//   TS;num;name;level
+//   T;i;TYPE;U|H|C;place F/T/M/B/V/R;source G/5/S;sinceMin;state;town;for whom;item   (state as the OT line)
+//   TD;i;details   TR;i;reason
+//   TG;N|P|F;slot group;item;gain;needLevel;where from   (N = now, P = plan in its level band, F = future)
+//   TW;why it stands still ("" = it moves)
+//   TE;num
+// ---------------------------------------------------------------------------------------------------------------------
+void GuildCoordinator::SendTasks(Player* player, uint32 num)
+{
+    if (!player || !player->GetSession() || player->GetSession()->IsHeadless())
+        return;
+    uint32 const now = Now();
+    std::lock_guard<std::mutex> guard(lock_);
+    PlanRow const* row = nullptr;
+    for (PlanRow const& r : plan_)
+        if (r.num == num)
+            row = &r;
+    if (!row)
+    {
+        SendLine(player, "TE;" + std::to_string(num));
+        return;
+    }
+    Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row->low));
+    bool const online = p && p->IsInWorld();
+    SendLine(player, "TS;" + std::to_string(num) + ";" + OrdersText(online ? p->GetName() : row->name, 12) + ";" +
+                         std::to_string(online ? p->GetLevel() : 0));
+    auto const st = bots_.find(row->low);
+    if (online && st != bots_.end())
+    {
+        uint32 i = 0;
+        bool runFound = false;
+        for (GuildOrder const& o : st->second.orders)
+        {
+            ++i;
+            std::string state = o.status;  // as the OT line
+            if (o.type == GuildOrderType::QUEST)
+                state = runFound ? "ждёт" : "run";
+            else if (o.waitsTown)
+                state = "town:" + o.townName;
+            else if (o.executable && !runFound)
+                state = "run";
+            runFound |= state == "run";
+            std::string const forWhom = o.forLow ? Who(o.forLow)
+                                        : o.type == GuildOrderType::BANK_DEPOSIT || o.type == GuildOrderType::DONATE_GOLD
+                                            ? std::string("банк гильдии")
+                                            : std::string("себе");
+            std::string const item = o.itemId ? ItemName(o.itemId) + (o.count > 1 ? " x" + std::to_string(o.count) : "")
+                                              : std::string();
+            std::string const n = std::to_string(i);
+            SendLine(player, "T;" + n + ";" + OrderName(o.type) + ";" + PriorityCode(o.priority) + ";" +
+                                 PlaceCode(o.place) + ";" + SourceCode(o.source) + ";" +
+                                 std::to_string(o.since ? (now - o.since) / MINUTE : 0) + ";" + OrdersText(state, 40) +
+                                 ";" + OrdersText(o.townName, 30) + ";" + OrdersText(forWhom, 24) + ";" +
+                                 OrdersText(item, 50));
+            if (!o.details.empty())
+                SendLine(player, "TD;" + n + ";" + OrdersText(o.details, 200));
+            if (!o.reason.empty())
+                SendLine(player, "TR;" + n + ";" + OrdersText(o.reason, 200));
+        }
+        auto const gear = [&](char const* kind, std::vector<GearPick> const& list)
+        {
+            for (GearPick const& g : list)
+                SendLine(player, std::string("TG;") + kind + ";" + GuildGear::GroupName(g.group) + ";" +
+                                     OrdersText(ItemName(g.itemId), 40) + ";" + OrdersText(GainText(g), 40) + ";" +
+                                     std::to_string(g.needLevel) + ";" + OrdersText(g.text, 110));
+        };
+        gear("N", st->second.gearNow);
+        gear("P", st->second.gearPlan);
+        gear("F", st->second.gearFuture);
+        SendLine(player, "TW;" + OrdersText(st->second.stillWhy, 220));
+    }
+    SendLine(player, "TE;" + std::to_string(num));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -5796,7 +5885,7 @@ void GuildCoordinator::SendPlan(Player* player)
                 rows.push_back({"источник", list == &st.gearNow ? "доступно сейчас" : "в плане",
                                 g.crafterLow ? Who(g.crafterLow) : std::string("—"), ItemName(g.itemId), Who(low),
                                 kindName(g.kind),
-                                std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g.gain) +
+                                std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g) +
                                     (g.text.empty() ? "" : ": " + g.text)});
             }
     }
