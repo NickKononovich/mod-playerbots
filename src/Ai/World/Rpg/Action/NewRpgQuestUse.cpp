@@ -520,17 +520,29 @@ bool NewRpgDoQuestAction::UseQuestTool(uint32 questId)
                             : plan->kind == NewRpgQuestUse::TargetKind::Near
                                 ? NEAR_STAND
                                 : std::max(info->GetMaxRange(!hostile, bot) - 1.0f, 1.0f);
-        if (bot->GetDistance(target) > stand || !bot->IsWithinLOSInMap(target))
+        // [runpast11] a spell focus needs no sight: the core's focus check is its distance alone
+        // (Acore::GameObjectFocusCheck, GridNotifiers.h: IsWithinDistInMap(caster, spellFocus.dist)). b349 Rumanatol
+        // and Laaral L13 stood 0 yd from the q9531 Tree Disguise focus (181694), "out of sight" of its own model:
+        // 345 s and 260 s of walks to where they stood. In range and out of sight of another target, a step closer
+        // only while there is a gap to close; at it, the core's cast check decides (a sight refusal is logged)
+        bool const inRange = bot->GetDistance(target) <= stand;
+        bool const sightNeeded = plan->kind != NewRpgQuestUse::TargetKind::Focus;
+        bool const inSight = bot->IsWithinLOSInMap(target);
+        if (!inRange || (sightNeeded && !inSight && bot->GetDistance(target) > CONTACT_DISTANCE))
         {
             // in range but out of sight: closer
-            float const to = bot->GetDistance(target) > stand ? stand * 0.8f : std::min(stand, FOCUS_STAND * 2.0f);
-            if (MoveWorldObjectTo(target->GetGUID(), to) || bot->isMoving())
+            float const to = !inRange ? stand * 0.8f : std::min(stand, FOCUS_STAND * 2.0f);
+            float const before = bot->GetDistance(target);
+            if ((!inRange || to < before) && (MoveWorldObjectTo(target->GetGUID(), to) || bot->isMoving()))
                 return true;
-            MarkTried(bot, questId, target->GetGUID(), true);
-            LOG_INFO("playerbots", "[quest] use {} q{} {} on {} result no walk to it ({:.0f} yd, {})", bot->GetName(),
-                     questId, tool, target->GetEntry(), bot->GetDistance(target),
-                     bot->IsWithinLOSInMap(target) ? "in sight" : "out of sight");
-            return true;
+            if (!inRange)
+            {
+                MarkTried(bot, questId, target->GetGUID(), true);
+                LOG_INFO("playerbots", "[quest] use {} q{} {} on {} result no walk to it ({:.0f} yd, {})",
+                         bot->GetName(), questId, tool, target->GetEntry(), bot->GetDistance(target),
+                         inSight ? "in sight" : "out of sight");
+                return true;
+            }
         }
         if (bot->isMoving())
         {
