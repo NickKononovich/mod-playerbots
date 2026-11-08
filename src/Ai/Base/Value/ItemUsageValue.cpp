@@ -7,6 +7,7 @@
 #include "ItemUsageValue.h"
 #include "AiFactory.h"
 #include "ChatHelper.h"
+#include "GuildCoordinator.h"  // [vendor13] the guild's keep-list
 #include "GuildTaskMgr.h"
 #include "Item.h"
 #include "LootObjectStack.h"
@@ -48,7 +49,16 @@ ItemUsage ItemUsageValue::Calculate()
     {
         bool needItem = false;
 
-        if (IsItemNeededForSkill(proto))
+        // [vendor13] econ2: a guild member keeps a skill reagent only for its own called skill-ups (or a quest in its
+        // log) or the guild's wanted list - "a reagent of some skill it has" alone goes to the sale (b353: bags full
+        // of materials no call of its uses). A bot outside the guild plan keeps its old rule
+        if (sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()))
+        {
+            if (IsItemNeededForSkill(proto) &&
+                (sGuildCoordinator.NeedsForOwnCalls(bot, proto->ItemId) || sGuildCoordinator.IsWanted(proto->ItemId)))
+                needItem = true;
+        }
+        else if (IsItemNeededForSkill(proto))
             needItem = true;
         else
         {
@@ -370,10 +380,15 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
         // No item equipped
         if (!oldItem)
         {
-            if (shouldEquipInSlot)
+            // [vendor13] an empty slot: anything the item adds over nothing is an upgrade - a weight score, armor, a
+            // weapon the class uses; else it is sold (before: BAD_EQUIP, kept in the bags, neither worn nor sold). A
+            // copy the guild holds (a member's upgrade, wanted material) stays in the bags for the global leader
+            if (Item* copy = bot->GetItemByEntry(itemProto->ItemId); copy && sGuildCoordinator.IsHeld(bot, copy))
+                return ITEM_USAGE_KEEP;
+            if (shouldEquipInSlot ||
+                (canWear && (itemProto->Armor > 0 || itemProto->Class == ITEM_CLASS_WEAPON)))
                 return ITEM_USAGE_EQUIP;
-            else
-                return ITEM_USAGE_BAD_EQUIP;
+            return ITEM_USAGE_VENDOR;
         }
 
         ItemTemplate const* oldItemProto = oldItem->GetTemplate();
