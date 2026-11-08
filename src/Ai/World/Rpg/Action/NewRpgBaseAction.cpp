@@ -2357,6 +2357,20 @@ bool NewRpgBaseAction::SearchQuestGiverAndAcceptOrReward()
                  bot->GetName(), bot->GetLevel(), object->GetName(), shortBy);
         info.ignoredQuestGivers.insert(npcOrGo);
         info.questGiver.Clear();
+        // [guild15] its quests wait for the next level: the planner picks starters by spot, not by this guid (b321
+        // Eraelor / Lyleria / Alnia took q932 and q2438 from Tallonkai Swiftroot on Dolanaar's upper floor again
+        // after every skip: 10 STUCK at (9925,980))
+        QuestRelationBounds const starts = object->IsCreature()
+                                               ? sObjectMgr->GetCreatureQuestRelationBounds(object->GetEntry())
+                                               : sObjectMgr->GetGOQuestRelationBounds(object->GetEntry());
+        QuestRelationBounds const ends = object->IsCreature()
+                                             ? sObjectMgr->GetCreatureQuestInvolvedRelationBounds(object->GetEntry())
+                                             : sObjectMgr->GetGOQuestInvolvedRelationBounds(object->GetEntry());
+        for (QuestRelationBounds const& bounds : {starts, ends})
+            for (auto itr = bounds.first; itr != bounds.second; ++itr)
+                if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_NONE ||
+                    bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
+                    botAI->lowPriorityQuest.insert(itr->second);
     }
     return false;
 }
@@ -2883,8 +2897,35 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
             float const aggro = std::clamp(tmpl->detection_range + float(int32(tmpl->maxlevel) - int32(level)),
                                            5.0f, MAX_AGGRO_RADIUS);
             float const t = nearestShare(spawn.x, spawn.y);
-            if (t > 0.0f && gapSq(spawn.x, spawn.y, spawn.z, t) <= aggro * aggro)
-                return tmpl;
+            if (t <= 0.0f)
+                continue;
+            float const flatSq = gapSq(spawn.x, spawn.y, NO_WAY_HEIGHT, t);
+            if (flatSq > aggro * aggro)
+                continue;
+            // [guild15] the core's aggro (Creature::CanStartAttack): a mob that cannot fly starts no attack on a
+            // player more than CREATURE_Z_ATTACK_RANGE above or below it, and the range is a 3D distance. Looked at
+            // over the stretch of the walk inside its aggro circle (its ends and the nearest point): b321-b322 the
+            // Sewer Beasts L50 at the bottom of Stormwind's canals (z 86, streets 96-100) refused 32 vendor trips
+            if (heights && !tmpl->Movement.IsFlightAllowed() && length > 0.0f)
+            {
+                float const half = std::sqrt(std::max(0.0f, aggro * aggro - flatSq)) / length;
+                float const lo = std::max(0.0f, t - half);
+                float const hi = std::min(1.0f, t + half);
+                // the walk's height is linear on the leg: its nearest height to the mob is at an end of the stretch
+                // or where it crosses the mob's height
+                float const cross = toZ != fromZ ? std::clamp((spawn.z - fromZ) / (toZ - fromZ), lo, hi) : t;
+                bool reaches = false;
+                for (float const at : {lo, t, hi, cross})
+                {
+                    float const walkZ = fromZ + (toZ - fromZ) * at;
+                    if (std::fabs(walkZ - spawn.z) <= CREATURE_Z_ATTACK_RANGE &&
+                        gapSq(spawn.x, spawn.y, spawn.z, at) <= aggro * aggro)
+                        reaches = true;
+                }
+                if (!reaches)
+                    continue;
+            }
+            return tmpl;
         }
     }
     return nullptr;
@@ -2897,6 +2938,52 @@ CreatureTemplate const* NewRpgBaseAction::TripDanger(Player* bot, float x, float
         return nullptr;
     if (CreatureTemplate const* zone = InDangerZone(bot, x, y))
         return zone;
+    // [guild15] a destination on another landmass of this map (Stormwind from Ironforge: the Deeprun Tram): the walk
+    // to the route's first ride / portal and the walk from its last one, not a straight line across the continent
+    if (TravelRouteMgr::Landmass(WorldPosition(bot)) !=
+        TravelRouteMgr::Landmass(WorldPosition(bot->GetMapId(), x, y, z)))
+    {
+        TravelRouteMgr::Leg leg;
+        float seconds = 0.0f;
+        WorldPosition exit;
+        if (!sTravelRouteMgr.FindRoute(bot, WorldPosition(bot->GetMapId(), x, y, z), leg, seconds, &exit))
+            return nullptr;  // no way there at all: the walk itself fails and gives it up, no danger to name
+        WorldPosition start;
+        if (leg.kind == TravelRouteMgr::LegKind::Portal && leg.portalIndex < sTravelRouteMgr.GetPortals().size())
+            start = sTravelRouteMgr.GetPortals()[leg.portalIndex].from;
+        else if (leg.kind == TravelRouteMgr::LegKind::Transport)
+            if (TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(leg.lineEntry))
+                if (leg.fromDock < line->docks.size())
+                    start = line->docks[leg.fromDock].pier;
+        auto const walkDanger = [bot](G3D::Vector3 const& from, G3D::Vector3 const& to) -> CreatureTemplate const*
+        {
+            Leader::RouteResult const route = Leader::Route(bot, from, to);
+            float lastX = from.x, lastY = from.y, lastZ = from.z;
+            if (route.found && route.points.size() >= 2)
+            {
+                for (size_t i = 1; i < route.points.size(); ++i)
+                    if (CreatureTemplate const* danger =
+                            DangerOnWay(bot, route.points[i - 1].x, route.points[i - 1].y, route.points[i].x,
+                                        route.points[i].y, route.points[i - 1].z, route.points[i].z))
+                        return danger;
+                if (route.complete)
+                    return nullptr;
+                lastX = route.points.back().x;
+                lastY = route.points.back().y;
+                lastZ = route.points.back().z;
+            }
+            return DangerOnWay(bot, lastX, lastY, to.x, to.y, lastZ, to.z);
+        };
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        if (start.GetMapId() == bot->GetMapId() && start != WorldPosition())
+            if (CreatureTemplate const* danger =
+                    walkDanger(here, G3D::Vector3(start.GetPositionX(), start.GetPositionY(), start.GetPositionZ())))
+                return danger;
+        if (exit.GetMapId() == bot->GetMapId() && exit != WorldPosition(bot))
+            return walkDanger(G3D::Vector3(exit.GetPositionX(), exit.GetPositionY(), exit.GetPositionZ()),
+                              G3D::Vector3(x, y, z));
+        return nullptr;
+    }
     // the walk it would take: b303 Thokhen L3 died to a Root Thresher L8 on its 919 yd vendor walk, Laaral L10 to
     // Mutated Constrictors L15 on gather and bank walks across Bloodmyst - mobs no quest check had looked at
     Leader::RouteResult const route = Leader::Route(bot, Position(x, y, z));

@@ -5227,6 +5227,51 @@ void TravelRouteMgr::Build()
                  teleport->target_Y, teleport->target_Z);
     }
 
+    // [guild15] transit maps: an instance map whose area triggers lead out onto two landmasses of a continent joins
+    // them (the Deeprun Tram: Ironforge <-> Stormwind, its tunnel walked on map 369's navmesh). Its triggers in and out
+    // are portals; the solver walks the map between them. b321: 61 WALK_FAIL "on a navmesh island" between Dun Morogh
+    // and Elwynn, bots walked at trainers and the Guild Master across the continent
+    {
+        std::map<uint32, std::set<uint32>> exitLandmasses;  // transit candidate map -> landmasses its exits land on
+        for (uint32 id = 1; id < 20000; ++id)
+        {
+            AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(id);
+            AreaTriggerTeleport const* teleport = trigger ? sObjectMgr->GetAreaTriggerTeleport(id) : nullptr;
+            if (!teleport || teleport->target_mapId == trigger->map)
+                continue;
+            MapEntry const* from = sMapStore.LookupEntry(trigger->map);
+            MapEntry const* to = sMapStore.LookupEntry(teleport->target_mapId);
+            if (!from || !to || from->IsContinent() || !to->IsContinent())
+                continue;
+            exitLandmasses[trigger->map].insert(Landmass(WorldPosition(
+                teleport->target_mapId, teleport->target_X, teleport->target_Y, teleport->target_Z)));
+        }
+        for (uint32 id = 1; id < 20000; ++id)
+        {
+            AreaTrigger const* trigger = sObjectMgr->GetAreaTrigger(id);
+            AreaTriggerTeleport const* teleport = trigger ? sObjectMgr->GetAreaTriggerTeleport(id) : nullptr;
+            if (!teleport || teleport->target_mapId == trigger->map)
+                continue;
+            MapEntry const* from = sMapStore.LookupEntry(trigger->map);
+            MapEntry const* to = sMapStore.LookupEntry(teleport->target_mapId);
+            if (!from || !to || from->IsContinent() == to->IsContinent())
+                continue;
+            uint32 const transit = from->IsContinent() ? teleport->target_mapId : trigger->map;
+            auto const exits = exitLandmasses.find(transit);
+            if (exits == exitLandmasses.end() || exits->second.size() < 2)
+                continue;
+            Portal portal;
+            portal.triggerId = id;
+            portal.from = WorldPosition(trigger->map, trigger->x, trigger->y, trigger->z);
+            portal.to = WorldPosition(teleport->target_mapId, teleport->target_X, teleport->target_Y,
+                                      teleport->target_Z);
+            _portals.push_back(portal);
+            LOG_INFO("playerbots", "[travel] area trigger {} map {} ({:.0f},{:.0f},{:.0f}) -> map {} ({:.0f},{:.0f},{:.0f}) "
+                     "as a portal of transit map {}", id, trigger->map, trigger->x, trigger->y, trigger->z,
+                     teleport->target_mapId, teleport->target_X, teleport->target_Y, teleport->target_Z, transit);
+        }
+    }
+
     LOG_INFO("playerbots", "[Travel] {} boat/zeppelin lines, {} portals, {} inns", _lines.size(), _portals.size(),
              _inns.size());
 }
@@ -5363,6 +5408,11 @@ uint32 TravelRouteMgr::Landmass(WorldPosition const& pos)
     // only by the area trigger teleports; Rut'theran and Darkshore only by the boat
     if (pos.GetMapId() == 1 && pos.GetPositionX() > 8000.0f)
         return pos.GetPositionZ() > 500.0f ? 1 * 4 + 1 : 1 * 4 + 2;
+    // [guild15] the Eastern Kingdoms' south (Elwynn, Stormwind, Westfall, Redridge, Burning Steppes and below) and
+    // north (Dun Morogh, Ironforge, Loch Modan and up): on foot only through Searing Gorge and Blackrock Mountain,
+    // a walk the route search does not finish (b321 "route partial ends 3612 yd short"); the Deeprun Tram joins them
+    if (pos.GetMapId() == 0)
+        return pos.GetPositionX() < -7400.0f ? 1 : 0;
     if (pos.GetMapId() != MAP_EXPANSION_ONE)
         return pos.GetMapId() * 4;
 
@@ -5531,7 +5581,8 @@ void TravelRouteMgr::Solve(Player* bot, WorldPosition const* dest, std::vector<N
     }
 }
 
-bool TravelRouteMgr::FindRoute(Player* bot, WorldPosition const& dest, Leg& firstLeg, float& seconds)
+bool TravelRouteMgr::FindRoute(Player* bot, WorldPosition const& dest, Leg& firstLeg, float& seconds,
+                               WorldPosition* lastExit)
 {
     std::vector<Node> nodes;
     std::vector<float> cost;
@@ -5548,6 +5599,16 @@ bool TravelRouteMgr::FindRoute(Player* bot, WorldPosition const& dest, Leg& firs
         path.push_back(v);
 
     std::reverse(path.begin(), path.end());
+    if (lastExit)
+    {
+        *lastExit = nodes[0].pos;
+        for (size_t i = path.size(); i-- > 1;)
+            if (prevKind[path[i]] != LegKind::Walk)
+            {
+                *lastExit = nodes[path[i]].pos;
+                break;
+            }
+    }
     firstLeg = Leg();
     for (size_t i = 1; i < path.size(); ++i)
     {

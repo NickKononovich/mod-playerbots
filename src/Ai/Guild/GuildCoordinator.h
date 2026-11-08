@@ -588,6 +588,9 @@ private:
         uint32 signs{0};
         uint32 needSigns{0};     // core MinPetitionSigns
         float planCost{0.0f};
+        // [guild15] signers the plan still lacks: while > 0 nobody walks or waits for the charter (b322: 9 signers and
+        // the founder walked / stood ~1200 s each at Jondor Steelbrow for a charter short of 4 signers, 0/9 signed)
+        uint32 shortBy{0};
         std::vector<uint32> signers;              // the members called to sign, cheapest first
         std::map<uint32, std::string> signerWhy;  // member -> why it was called
         std::map<uint32, std::string> joinState;  // member -> why it is not in the guild yet

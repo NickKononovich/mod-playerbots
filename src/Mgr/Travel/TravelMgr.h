@@ -1140,7 +1140,10 @@ public:
 
     // Fastest way to dest by walking, boats, zeppelins and portals. firstLeg is the first non-walking leg (Walk
     // when walking straight there is best). False when dest cannot be reached at all.
-    bool FindRoute(Player* bot, WorldPosition const& dest, Leg& firstLeg, float& seconds);
+    // [guild15] lastExit (optional): where the route's last ride or portal sets the bot down for its final walk
+    // (the start spot when the whole route is a walk)
+    bool FindRoute(Player* bot, WorldPosition const& dest, Leg& firstLeg, float& seconds,
+                   WorldPosition* lastExit = nullptr);
     // Seconds to every dock or portal exit on mapId: the quest planner prices quests on other continents with it.
     void GetArrivalCosts(Player* bot, uint32 mapId, std::vector<std::pair<WorldPosition, float>>& out);
 

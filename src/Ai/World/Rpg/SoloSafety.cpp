@@ -1262,12 +1262,73 @@ namespace SoloSafety
             // [guild15] ... and a mob whose fight alone the bot loses now: its damage (the model, every bot's and this
             // bot's measurement) over the time the bot's damage needs for its health, against the bot's health (b315:
             // 12 of 14 deaths were bots attacked on their way, most through Gnarlpine / Wendigo / murloc camps)
+            // [guild15] ... with the mobs the core brings when it is attacked: its formation and the idle mobs of
+            // its faction its assistance call reaches (CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS, Creature::CanAssistTo;
+            // an engaged mob calls again every CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD, so the call spreads one more
+            // hop per period of the fight), killed one by one, the most damage per health first (b321: 7 of 9 deaths
+            // were bots attacked on their way through camps, 2-4 mobs came; b322 Cassand L8 by 3 Prowlers L9-10)
             if (!never)
             {
+                std::vector<Creature*> pack{mob};
+                auto const inPack = [&pack](Creature* c) { return std::find(pack.begin(), pack.end(), c) != pack.end(); };
+                if (CreatureGroup* formation = mob->GetFormation())
+                    for (auto const& [mate, info] : formation->GetMembers())
+                        if (mate && mate->IsAlive() && !mate->IsInCombat() && !inPack(mate))
+                            pack.push_back(mate);
+                float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+                float const period =
+                    float(sWorld->getIntConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD)) / float(IN_MILLISECONDS);
                 std::lock_guard<std::mutex> guard(lock);
-                float mobDps = MobDps(mob, bot);
-                mobDps = std::max(mobDps, Rate(states[bot->GetGUID().GetCounter()].ownTaken, mob->GetEntry()));
-                never = mobDps * float(mob->GetHealth()) / dps >= float(bot->GetHealth());
+                auto& taken = states[bot->GetGUID().GetCounter()].ownTaken;
+                auto const packDamage = [&](float& seconds)
+                {
+                    struct Foe
+                    {
+                        float dps, hp;
+                    };
+                    std::vector<Foe> foes;
+                    for (Creature* c : pack)
+                        foes.push_back({std::max(MobDps(c, bot), Rate(taken, c->GetEntry())), float(c->GetHealth())});
+                    std::sort(foes.begin(), foes.end(), [](Foe const& x, Foe const& y)
+                              { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
+                    float incoming = 0.0f;
+                    for (Foe const& f : foes)
+                        incoming += f.dps;
+                    float damage = 0.0f;
+                    seconds = 0.0f;
+                    for (Foe const& f : foes)
+                    {
+                        float const t = f.hp / dps;
+                        damage += incoming * t;
+                        seconds += t;
+                        incoming -= f.dps;
+                    }
+                    return damage;
+                };
+                size_t hopsDone = 0;
+                size_t frontier = 0;  // pack members from here on have not called yet
+                float seconds = 0.0f;
+                float damage = packDamage(seconds);
+                // the first call at the pull, then one more hop per period while the fight lasts
+                while (assist > 0.0f && frontier < pack.size() &&
+                       (hopsDone == 0 || (period > 0.0f && float(hopsDone) * period < seconds)))
+                {
+                    size_t const end = pack.size();
+                    for (size_t i = frontier; i < end; ++i)
+                        for (Unit* other : units)
+                        {
+                            Creature* c = other->ToCreature();
+                            if (!c || inPack(c) || !c->IsAlive() || c->IsInCombat() ||
+                                !c->HasReactState(REACT_AGGRESSIVE) || c->GetFaction() != pack[i]->GetFaction() ||
+                                !c->IsWithinDistInMap(pack[i], assist) || !c->CanAssistTo(pack[i], bot))
+                                continue;
+                            pack.push_back(c);
+                        }
+                    frontier = end;
+                    ++hopsDone;
+                    damage = packDamage(seconds);
+                }
+                never = damage >= float(bot->GetHealth());
             }
             if (never)
                 refuse.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);

@@ -490,6 +490,7 @@ void GuildCoordinator::UpdateFounding()
             found_.founderLow = 0;
             found_.spot = -1;
             found_.signers.clear();
+            found_.shortBy = 0;
         }
         else
         {
@@ -530,6 +531,7 @@ void GuildCoordinator::UpdateFounding()
             found_.signerWhy = signerWhy;
             found_.planCost = bestCost;
             uint32 const shortBy = missing > signers.size() ? missing - uint32(signers.size()) : 0;
+            found_.shortBy = shortBy;
             state = "гильдия основывается: " + Who(founderLow) + " у " + guildMasters_[spot].name +
                     (founder ? ", хартия «" + charterName + "» " + std::to_string(signs) + "/" + std::to_string(need)
                              : ", хартию ещё покупает") +
@@ -677,6 +679,10 @@ void GuildCoordinator::FoundingOrders(BotState const& st, uint32 low, Player* p,
         return;
     }
     if (found_.spot < 0 || !found_.founderLow)
+        return;
+    // [guild15] a held charter the plan cannot fill yet: the founder keeps it and everyone quests on; a member that
+    // passes the founder still signs (TRADE_DISTANCE, the [guild80] passer-by rule)
+    if (found_.charterGuid && found_.shortBy)
         return;
     GuildMasterSpot const& spot = guildMasters_[found_.spot];
     std::string const charter =
