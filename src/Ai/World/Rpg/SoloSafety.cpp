@@ -552,6 +552,11 @@ namespace SoloSafety
             Creature* mob = source ? source->ToCreature() : nullptr;
             if (!mob || !SoloPlayerBot(bot))
                 return;
+            // [deaths] a dead mob's damage (its poison / bleed still ticking after it died: a DoT tick's attacker is
+            // its caster) is no fight: it opened false ones (b338 Dandolar NO_ATTACK, 12 dmg in 12 s while eating;
+            // Webwood Lurker "never attacked, fight_s=3.2, taken=1")
+            if (!mob->IsAlive() || !source->IsAlive() || !attacker->IsAlive())
+                return;
             std::lock_guard<std::mutex> guard(lock);
             SoloBotState& state = states[bot->GetGUID().GetCounter()];
             OpenIfNeeded(bot, state, now, mob);
