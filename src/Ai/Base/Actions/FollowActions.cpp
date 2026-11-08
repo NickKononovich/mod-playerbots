@@ -7,6 +7,9 @@
 #include "FollowActions.h"
 #include "BotPath.h"  // [lead109]
 #include "LeaderOrders.h"  // [lead15]
+#include "GuildHonest.h"  // [wait16]
+#include "PlayerbotAIConfig.h"  // [wait16]
+#include "SoloSafety.h"  // [wait16] StandsInReach
 #include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "EscortProtect.h"
@@ -220,10 +223,39 @@ bool FollowAction::Execute(Event /*event*/)
     // end unified transport handling
 
     bool moved = false;
+    // [wait16] coordinator 2026-11-09: a guild follower far from its leader (beyond its sight) and standing - its
+    // follow makes no progress over that distance, the leader walks to meet it ([wait14]) - stands out of every idle
+    // mob's reach (wander area, patrol beat) meanwhile, as a resting bot does (RestEscape). b355 Febineysh L8 stood
+    // 437 yd behind Orton for minutes ("stuck watchdog: no progress"), wolves and murlocs walked into it, a Murloc
+    // pack killed it
+    if (!target.empty())
+        if (Unit* leader = AI_VALUE(Unit*, target);
+            leader && GuildHonest::IsHonestBot(bot) && !bot->IsInCombat() && !bot->isMoving() &&
+            !bot->GetMap()->Instanceable() && leader->GetMapId() == bot->GetMapId() &&
+            bot->GetExactDist2d(leader) > sPlayerbotAIConfig.SightDistance)
+        {
+            std::string who;
+            std::vector<G3D::Vector3> spots;
+            if (SoloSafety::StandsInReach(bot, who, spots))
+                for (G3D::Vector3 const& at : spots)
+                {
+                    Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+                    if (!route.found || !route.complete || route.throughRefused)
+                        continue;
+                    if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+                        continue;
+                    LOG_INFO("playerbots", "[wait16] {} L{} {:.0f} yd behind its leader {}, standing within the reach "
+                             "of {}: waits at ({:.0f},{:.0f}), {:.0f} yd walk",
+                             bot->GetName(), bot->GetLevel(), bot->GetExactDist2d(leader), leader->GetName(), who,
+                             at.x, at.y, route.length);
+                    return true;
+                }
+        }
     if (!target.empty())
     {
         moved = Follow(AI_VALUE(Unit*, target));
     }
+
     else
     {
         WorldLocation loc = formation->GetLocation();
