@@ -791,12 +791,90 @@ bool NewRpgDoQuestAction::TriggerQuestGiver(uint32 questId)
         return cannot("no walk to " + giverName);
     };
 
+    // [giver17] the kill a kill step takes: one that dies within its reach of the giver where the bot fights it - a
+    // melee bot fights it where it stands (it stands within the reach now), a ranged one draws it from a spot by the
+    // giver (within its shooting reach of that spot). b357: 1451 "[giver15] ... attacks Timberstrider Fledgling 86-97
+    // yd from it" lines over 5 bots - the melee attack walked to the fledgling and killed it at its camp, no flag
+    // ever. None such now: one wandering into the reach (its wander area reaches it) or a dead one whose spawn lies
+    // in it (its respawn) is waited for - the game's own clock; neither: the trigger cannot succeed (`why`)
+    auto const pickKill = [&](Step const& killStep, std::string& why) -> Creature*
+    {
+        bool const ranged = PlayerbotAI::IsRanged(bot);
+        float const reach = killStep.radius > 0.0f
+                                ? (ranged ? killStep.radius * 0.5f + sPlayerbotAIConfig.ShootDistance
+                                          : std::max(killStep.radius - 1.0f, 0.5f))
+                                : std::numeric_limits<float>::max();
+        std::list<Creature*> found;
+        bot->GetCreatureListWithEntryInGrid(found, killStep.killEntry, sight);
+        Creature* best = nullptr;
+        bool wanders = false, respawns = false;
+        for (Creature* c : found)
+        {
+            Position const& home = c->GetHomePosition();
+            float const roam = c->GetDefaultMovementType() == RANDOM_MOTION_TYPE ? c->GetWanderDistance() : 0.0f;
+            bool const homeIn = killStep.radius <= 0.0f || home.GetExactDist2d(giver) - roam <= killStep.radius;
+            if (!c->IsAlive())
+            {
+                respawns = respawns || homeIn;
+                continue;
+            }
+            if (!bot->IsValidAttackTarget(c) ||
+                (c->IsInCombat() && !c->IsInCombatWith(bot) && !c->IsInCombatWith(giver)))
+                continue;
+            if (c->GetDistance(giver) > reach)
+            {
+                wanders = wanders || homeIn;
+                continue;
+            }
+            if (!best || c->GetDistance(giver) < best->GetDistance(giver))
+                best = c;
+        }
+        if (!best)
+            why = wanders    ? "waits for a " + CreatureName(killStep.killEntry) + " to wander within " +
+                                 Acore::StringFormat("{:.0f}", killStep.radius) + " yd of " + giverName
+                  : respawns ? "waits for a " + CreatureName(killStep.killEntry) + " to respawn near " + giverName
+                             : "";
+        return best;
+    };
+    auto const noKill = [&](Step const& killStep, std::string const& why)
+    {
+        if (!why.empty())
+        {
+            if (!run.waitLogged)
+                triggers15(why);
+            run.waitLogged = true;
+            return true;
+        }
+        return cannot(Acore::StringFormat("no {} stands, wanders or respawns within {:.0f} yd of {}{}",
+                                          CreatureName(killStep.killEntry), killStep.radius, giverName,
+                                          PlayerbotAI::IsRanged(bot) ? ""
+                                                                     : " (a melee bot fights it where it stands)"));
+    };
+
     switch (step.kind)
     {
         case StepKind::Spell:
         case StepKind::Item:
         {
+            // [giver17] a phase step before a kill: its phase lasts to the giver's next out-of-combat tick (q9612:
+            // 60 s), so it is cast with the kill at hand - a kill target in its reach chosen first, attacked at once
+            // after the cast. Before, Gift went first and the walk to the kill outlasted the phase
+            if (!run.casting && run.step + 1 < trigger.steps.size() &&
+                trigger.steps[run.step + 1].kind == StepKind::Kill)
+            {
+                Creature* ready = run.kill ? ObjectAccessor::GetCreature(*bot, run.kill) : nullptr;
+                if (!ready || !ready->IsAlive())
+                {
+                    std::string why;
+                    ready = pickKill(trigger.steps[run.step + 1], why);
+                    if (!ready)
+                        return noKill(trigger.steps[run.step + 1], why);
+                    run.kill = ready->GetGUID();
+                    run.waitLogged = false;
+                }
+            }
             if (run.casting)
+
             {
                 if (bot->IsNonMeleeSpellCast(false))
                     return true;
@@ -901,40 +979,19 @@ bool NewRpgDoQuestAction::TriggerQuestGiver(uint32 questId)
             }
             if (!target)
             {
-                std::list<Creature*> found;
-                bot->GetCreatureListWithEntryInGrid(found, step.killEntry, sight);
-                float best = std::numeric_limits<float>::max();
-                for (Creature* c : found)
-                {
-                    if (!c->IsAlive() || !bot->IsValidAttackTarget(c) || (c->IsInCombat() && !c->IsInCombatWith(bot) &&
-                                                                          !c->IsInCombatWith(giver)))
-                        continue;
-                    if (c->GetDistance(giver) < best)
-                    {
-                        best = c->GetDistance(giver);
-                        target = c;
-                    }
-                }
+                std::string why;  // [giver17] one that dies within the reach where the bot fights it
+                target = pickKill(step, why);
                 if (!target)
-                {
-                    // the trigger goes again once one is back: a spawned creature's respawn (the game's clock)
-                    if (trigger.retry && step.killSpawned)
-                    {
-                        if (!run.waitLogged)
-                            triggers15("waits for a " + CreatureName(step.killEntry) + " to respawn near it");
-                        run.waitLogged = true;
-                        return true;
-                    }
-                    return cannot("no " + CreatureName(step.killEntry) + " alive in sight to kill near " + giverName);
-                }
+                    return noKill(step, why);
                 run.waitLogged = false;
                 run.kill = target->GetGUID();  // a fight on the walk to the spot below is this kill too
             }
-            // out of its reach of the giver: the bot draws it from a spot between them, half the reach from the
-            // giver (ranged) or three quarters (melee: its aggro reach takes it over the rest), the fight comes to it
-            if (step.radius > 0.0f && target->GetDistance(giver) > step.radius)
+            // out of its reach of the giver: a ranged bot draws it from a spot by the giver, half the reach from it -
+            // the fight comes to it ([giver17]: a melee bot's target stands in the reach already)
+            if (step.radius > 0.0f && target->GetDistance(giver) > step.radius && PlayerbotAI::IsRanged(bot))
             {
-                float const lure = step.radius * (PlayerbotAI::IsRanged(bot) ? 0.5f : 0.75f);
+                float const lure = step.radius * 0.5f;
+
                 float x = 0.0f, y = 0.0f, z = 0.0f;
                 giver->GetNearPoint(bot, x, y, z, 0.0f, lure, giver->GetAngle(target));
                 if (bot->GetExactDist2d(x, y) > CONTACT_DISTANCE)
