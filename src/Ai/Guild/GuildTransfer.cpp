@@ -227,6 +227,20 @@ namespace
         return n;
     }
 
+    // [econ1] the free slots of the general bags (backpack + bags without a profession family)
+    uint32 FreeSlots(Player* p)
+    {
+        uint32 n = 0;
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            n += p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) ? 0 : 1;
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            if (Bag* bag = p->GetBagByPos(b))
+                if (!bag->GetTemplate()->BagFamily)
+                    for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                        n += bag->GetItemByPos(uint8(j)) ? 0 : 1;
+        return n;
+    }
+
     bool FreeSlot(Player* p, uint8& bagOut, uint8& slotOut)
     {
         for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
@@ -708,6 +722,62 @@ void GuildCoordinator::UpdateTransfers()
             }
             used.insert(best.guid);
             wants.push_back(best);
+        }
+    }
+
+    // f. [econ1] bag relief: a member with full bags holding reagents for the guild (held for the bank, forLow 0)
+    // sends them to a crafter whose own skill-ups to its held rank cap lack that item and whose bags have room
+    // (b350: Thamesh at the vendor 100 % -> 100 %, its bags full of wanted reagents). Nobody to take it: the
+    // global leader sells it at the next vendor (UpdateOrders, bags full); with a bank tab the deposit takes it
+    constexpr uint32 RELIEF_ROOM = 2;                        // the receiver keeps a slot for its own loot
+    std::map<std::pair<uint32, uint32>, uint32> reliefLack;  // (crafter, item) -> still lacking after the plan
+    for (auto const& [low, items] : crafterLack_)
+        for (auto const& [item, n] : items)
+            reliefLack[{low, item}] = n;
+    for (auto const& [low, st] : bots_)
+    {
+        Player* h = Online(low);
+        if (!h || !GET_PLAYERBOT_AI(h) || HumanCharacter(h) || FreeSlots(h))
+            continue;
+        for (HeldItem const& held : st.held)
+        {
+            if (held.forLow || held.purpose == "pending" || used.count(held.itemGuidLow))
+                continue;
+            Player* best = nullptr;
+            float bestDist = NONE;
+            uint32 bestLack = 0;
+            for (auto& [key, left] : reliefLack)
+            {
+                if (key.second != held.itemId || key.first == low || !left)
+                    continue;
+                Player* c = Online(key.first);
+                if (!c || !GET_PLAYERBOT_AI(c) || HumanCharacter(c) || FreeSlots(c) < RELIEF_ROOM)
+                    continue;
+                float const d = c->GetMapId() == h->GetMapId() ? h->GetExactDist(c) : NONE / 2;
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    best = c;
+                    bestLack = left;
+                }
+            }
+            if (!best)
+                continue;
+            uint32 const toLow = best->GetGUID().GetCounter();
+            uint32& left = reliefLack[{toLow, held.itemId}];
+            left -= std::min(left, held.count);
+            Want w;
+            w.key = "b" + std::to_string(held.itemGuidLow);
+            w.from = low;
+            w.to = toLow;
+            w.guid = held.itemGuidLow;
+            w.itemId = held.itemId;
+            w.count = held.count;
+            w.purpose = "reagent";
+            w.why = "bags full at " + Who(low) + "; " + Who(toLow) + "'s skill-ups to its rank cap lack " +
+                    std::to_string(bestLack);
+            used.insert(w.guid);
+            wants.push_back(w);
         }
     }
 
@@ -1428,6 +1498,9 @@ void GuildCoordinator::UpdateTransfers()
         std::string const what = t.gold ? Gold(t.money) : ItemText(t.itemId, t.count);
         logs.push_back("plan " + Who(t.fromLow) + " -> " + Who(t.toLow) + ": " + what + " by " +
                        ChannelLog(t.channel) + " (" + t.costs + ") — " + t.purpose + ": " + t.why);
+        if (t.key[0] == 'b')
+            LOG_INFO("playerbots", "[econ1] bag relief {} -> {}: {} by {}", Who(t.fromLow), Who(t.toLow), what,
+                     ChannelLog(t.channel));
         if (t.purpose != "consumable")
             Decision(Who(t.fromLow) + " → " + Who(t.toLow) + ": " + what + ", " + ChannelName(t.channel) + " (" +
                      t.purpose + "; " + t.costs + ")");

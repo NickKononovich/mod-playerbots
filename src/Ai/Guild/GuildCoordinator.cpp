@@ -5,7 +5,6 @@
  */
 
 #include "GuildCoordinator.h"
-#include "GuildHonest.h"
 
 #include <algorithm>
 #include <cmath>
@@ -32,17 +31,19 @@
 #include "GuildBankRun.h"
 #include "GuildGatherPlan.h"  // [gather]
 #include "GuildGear.h"        // [guild50]
+#include "GuildHonest.h"
 #include "Item.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
 #include "LootMgr.h"          // [questrate] the quest items' creature sources
 #include "LootObjectStack.h"  // [questrate] chest places
+#include "Mail.h"
 #include "MapMgr.h"
 #include "MotionMaster.h"
 #include "NewRpgBaseAction.h"  // [guild14] TripRefused
 #include "NewRpgCoop.h"        // [coop] the co-op hooks
-#include "NewRpgFishing.h"     // [gather] fishing places
 #include "NewRpgCraft.h"       // [guild70] crafted products, the crafting wait
+#include "NewRpgFishing.h"     // [gather] fishing places
 #include "NewRpgInfo.h"
 #include "NewRpgProfession.h"  // [guild50] BUY at a vendor
 #include "ObjectAccessor.h"
@@ -1189,6 +1190,7 @@ void GuildCoordinator::UpdateWanted()
         std::map<uint32, double> products;  // skill-ups: the recipe's product -> amount of this item for it
     };
     std::map<uint32, double> need;                      // raw item -> amount
+    std::map<uint32, std::map<uint32, double>> crafterNeed;  // [econ1] member -> raw item -> its skill-up need
     std::map<uint32, std::map<std::string, Part>> why;  // raw item -> reason -> part
     std::map<uint32, std::map<uint32, float>> via;      // raw item -> intermediate -> raw per intermediate
     std::map<uint32, double> worth;                     // [gather] raw item -> copper it is worth to the guild
@@ -1265,8 +1267,11 @@ void GuildCoordinator::UpdateWanted()
             if (online)
             {
                 skill = p->HasSkill(line) ? p->GetPureSkillValue(line) : 0;
-                cap = std::max<uint32>(TrainerCap(line, p->GetLevel()),
-                                       p->HasSkill(line) ? p->GetPureMaxSkillValue(line) : 0);
+                // [econ1] b350 Linen Cloth need 9782 / have 1485, the reagents filled the bags: once the trainer
+                // ranks load (TrainerCap > 0) the need ran to the rank its level allows, ranks it has not learned.
+                // The need runs to the cap of the rank it holds now (Player max skill); a planned line it has not
+                // learned wants nothing yet (its TRAIN call comes first)
+                cap = p->HasSkill(line) ? p->GetPureMaxSkillValue(line) : 0;
                 lastSkill_[key] = skill;
                 lastCap_[key] = cap;
             }
@@ -1289,7 +1294,11 @@ void GuildCoordinator::UpdateWanted()
                 for (auto const& [item, count] : r.reagents)
                     ExpandReagent(item, n * count, raw, &via);
                 for (auto const& [item, amount] : raw)
+                {
                     addPart(item, amount, SkillPlural(line), WHY_SKILL, row.low, r.product);
+                    if (online)
+                        crafterNeed[row.low][item] += amount;  // [econ1] its own skill-ups to its rank cap
+                }
                 // [gather] the skill points this recipe gives, at the crafter's point value
                 if (pv != pointValue.end())
                     shareWorth(raw, double(points[index]) * pv->second);
@@ -1353,9 +1362,17 @@ void GuildCoordinator::UpdateWanted()
 
     std::map<uint32, uint32> bank;
     GuildBankRun::CountBank(guild, bank);
+    // [econ1] what lies in the members' mailboxes counts as stock too (it is theirs, taken on the next visit)
+    std::map<uint32, uint32> inMail;
+    for (Player* m : members)
+        for (Mail const* mail : m->GetMails())
+            if (mail && mail->state != MAIL_STATE_DELETED)
+                for (MailItemInfo const& info : mail->items)
+                    if (Item* it = m->GetMItem(info.item_guid))
+                        inMail[it->GetEntry()] += it->GetCount();
     auto const held = [&](uint32 item)
     {
-        uint32 n = bank[item];
+        uint32 n = bank[item] + inMail[item];
         for (Player* m : members)
             n += m->GetItemCount(item, false);
         return n;
@@ -1466,8 +1483,43 @@ void GuildCoordinator::UpdateWanted()
                   return a.Short() != b.Short() ? a.Short() > b.Short() : a.itemId < b.itemId;
               });
 
+    // [econ1] the top of the list: need vs have (bags + bank + mail), one line per item when it changes
+    {
+        std::string top;
+        size_t shown = 0;
+        for (WantedItem const& w : list)
+        {
+            if (w.optional || shown >= 10)
+                break;
+            top += (shown++ ? "; " : "") + ItemName(w.itemId) + " need " + std::to_string(w.need) + " have " +
+                   std::to_string(w.have);
+        }
+        if (top != wantedTop_)
+        {
+            wantedTop_ = top;
+            LOG_INFO("playerbots", "[econ1] wanted top 10 (need to the held rank caps, have = bags + bank + mail): {}",
+                     top);
+        }
+    }
+    // [econ1] each crafter's own skill-up need minus its bags: where the bag relief sends a full holder's reagents
+    std::map<uint32, std::map<uint32, uint32>> crafterLack;
+    for (auto const& [low, items] : crafterNeed)
+    {
+        Player* c = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+        if (!c || !c->IsInWorld())
+            continue;
+        for (auto const& [item, amount] : items)
+        {
+            uint32 const n = uint32(std::ceil(amount - 0.001));
+            uint32 const have = c->GetItemCount(item, false);
+            if (n > have)
+                crafterLack[low][item] = n - have;
+        }
+    }
+
     std::lock_guard<std::mutex> guard(lock_);
     wanted_ = std::move(list);
+    crafterLack_ = std::move(crafterLack);
     guildState_ = guild ? "guild «" + guild->GetName() + "», bank tabs " + std::to_string(guild->GetPurchasedTabsSize())
                         : "no guild: the bank sleeps";
 }
@@ -1984,21 +2036,29 @@ void GuildCoordinator::UpdateOrders()
                          Who(row.low), freeSlots, total, cls == 0 ? "full" : (cls == 1 ? "low" : "ok"), heldBank,
                          st.sell.size(), noBank ? "no tab" : "yes");
             }
-            // full bags and no bank: a held item no member's craft or quest wants (IsWanted) goes to the vendor
-            // (sold, never destroyed); a wanted one stays and the transfers move it to the member who lacks it
+            // full bags and no bank: a held item goes to the vendor (sold, never destroyed) unless a transfer moves
+            // it. [econ1] b350: a wanted reagent stayed in full bags (Thamesh 100 % -> 100 % at the vendor) because
+            // the guild was short of it somewhere; now the transfers' bag relief sends it to a crafter whose own
+            // skill-ups lack it and who has room, and only what nobody can take is sold
             if (cls == 0 && noBank && !HumanCharacter(p))
                 for (auto it = st.held.begin(); it != st.held.end();)
                 {
                     if (it->forLow || it->purpose == "pending" || TransferHolds(it->itemGuidLow) ||
-                        std::any_of(wanted_.begin(), wanted_.end(), [&](WantedItem const& w)
-                                    { return w.itemId == it->itemId && !w.optional && w.Short() > 0; }) ||
                         PlannedFor(it->itemId))
                     {
                         ++it;
                         continue;
                     }
-                    LOG_INFO("playerbots", "[tasks] {} bags full, no bank tab: {} released to the vendor (nobody "
-                             "wants it)", Who(row.low), ItemName(it->itemId));
+                    bool const wanted = std::any_of(wanted_.begin(), wanted_.end(), [&](WantedItem const& w)
+                                                    { return w.itemId == it->itemId && !w.optional && w.Short() > 0; });
+                    if (wanted)
+                        LOG_INFO("playerbots",
+                                 "[econ1] wanted {} sold from full bags of {}: no crafter with room "
+                                 "lacks it, no bank tab",
+                                 ItemName(it->itemId), Who(row.low));
+                    LOG_INFO("playerbots", "[tasks] {} bags full, no bank tab: {} released to the vendor ({})",
+                             Who(row.low), ItemName(it->itemId),
+                             wanted ? "no crafter with room takes it" : "nobody wants it");
                     st.sell.push_back(it->itemGuidLow);
                     it = st.held.erase(it);
                 }

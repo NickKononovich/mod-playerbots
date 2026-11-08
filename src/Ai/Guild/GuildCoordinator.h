@@ -668,7 +668,11 @@ private:
     bool TransferHolds(uint32 itemGuidLow) const;
     void TransferPlanRows(std::vector<std::vector<std::string>>& rows) const;
     std::vector<Mailbox> mailboxes_;        // read-only after Load
-    std::vector<Mailbox> forges_;           // [econ1] forges in a town (an area with a mailbox), read-only after Load
+    std::vector<Mailbox> forges_;
+    // [econ1] UpdateWanted: member -> raw item -> what its own skill-ups to its held rank cap still lack (lock_)
+    std::map<uint32, std::map<uint32, uint32>> crafterLack_;
+    std::string wantedTop_;  // [econ1] the last logged top of the wanted list (world thread)           // [econ1]
+                             // forges in a town (an area with a mailbox), read-only after Load
     std::map<uint32, Transfer> transfers_;  // id -> transfer (lock_)
     // [recipes] (member, recipe item guid): recipes their holder is the best placed to learn, used on the next
     // RunTransfers (lock_)
