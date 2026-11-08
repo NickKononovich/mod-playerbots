@@ -68,7 +68,8 @@ namespace SoloSafety
         uint8 topLevel = 0;
         // [deaths] user 2026-11-08: two mobs whose aggro reaches overlap are no pack unless the core links them
         // (formation, assistance, the script's call): the pull is made from a spot outside the other's reach, walked
-        // to round it (`pullAvoid`: x, y, z, radius of those reaches)
+        // to round it (`pullAvoid`: x, y, z, radius of those reaches). [pullplan] The fight is fought there: the
+        // judge's pack is what the core brings to that spot
         bool pullSpot = false;
         G3D::Vector3 pull;
         std::vector<G3D::Vector4> pullAvoid;
@@ -81,6 +82,16 @@ namespace SoloSafety
     // walk to `to` near that target ends at `spot`, round the reaches in `avoid` (Leader::Route); false: no pull spot
     // applies (the target fights it already, another target, another walk)
     bool PullWalk(Player* bot, G3D::Vector3 const& to, G3D::Vector3& spot, std::vector<G3D::Vector4>& avoid);
+    // [pullplan] the pull itself, in the bot's combat walk to `target` (MovementAction::ReachCombatTo): at its pull
+    // spot a melee bot with Throw / Shoot casts it (Hold); once the target comes for it the bot waits for it at the
+    // spot (Hold) or walks back there after a body pull's step in (ToSpot, `spot`); None: the walk goes on as before
+    enum class PullMove : uint8
+    {
+        None,
+        Hold,
+        ToSpot
+    };
+    PullMove PullStep(Player* bot, Unit* target, G3D::Vector3& spot);
 
     // the bot wants to rest to full (a pull that needs it, a revive); `mana`: the drink side
     bool WantsRest(Player* bot, bool mana, std::string* why = nullptr);

@@ -30,6 +30,7 @@
 #include "NewRpgCoop.h"  // [deaths3] a co-op party's walk
 #include "Log.h"
 #include "Map.h"
+#include "MotionMaster.h"  // [pullplan] the target's chase
 #include "ModelIgnoreFlags.h"  // [deaths] the pull spot's sight of its target
 #include "Pet.h"
 #include "Player.h"
@@ -155,11 +156,15 @@ namespace
         ObjectGuid pullTarget;
         G3D::Vector3 pull;
         std::vector<G3D::Vector4> pullAvoid;
+        // [pullplan] the pack the judge counted there, and the PULL line logged at the fight's open
+        uint32 pullMobs = 0;
+        bool pullLogged = false;
         // [deaths] the last pull spot search: its target, where the bot stood, what it found (perf: one search per
         // target and spot of the bot, the judge looks every tick)
         ObjectGuid searchTarget;
         G3D::Vector3 searchFrom;
         bool searchFound = false;
+        bool searchRouted = false;  // [pullplan] its walk there searched (not a far forecast)
         G3D::Vector3 searchSpot;
         std::vector<G3D::Vector4> searchAvoid;
     };
@@ -389,6 +394,15 @@ namespace
         state.formula = DpsEstimate::Estimate(bot, mob, state.formulaCtx);
         state.formulaEntry = mob ? mob->GetEntry() : 0;
         state.formulaLevel = mob ? mob->GetLevel() : 0;
+        // [pullplan] the pull it made: where it stood when the fight opened (its pull spot, else where it was)
+        if (state.pullSpot && !state.pullLogged && mob && mob->GetGUID() == state.pullTarget)
+        {
+            state.pullLogged = true;
+            LOG_INFO("playerbots",
+                     "[solo] PULL {} target {} from ({:.0f},{:.0f}) brings {} ({:.1f} yd off its pull spot)",
+                     bot->GetName(), mob->GetEntry(), bot->GetPositionX(), bot->GetPositionY(), state.pullMobs,
+                     bot->GetExactDist2d(state.pull.x, state.pull.y));
+        }
     }
 
     // the bot's self heal from its known spells (direct heal effects; spell power counted)
@@ -769,6 +783,239 @@ namespace
         uint32 const rank = creature->GetCreatureTemplate()->rank;
         return rank == CREATURE_ELITE_ELITE || rank == CREATURE_ELITE_RAREELITE || rank == CREATURE_ELITE_WORLDBOSS;
     }
+
+    // [pullplan] an idle mob's aggro reach on the bot as a disc (x, y, z, radius): a wanderer's round its home with
+    // its wander area on top
+    G3D::Vector4 AggroDisc(Creature* mob, Player* bot)
+    {
+        float radius = mob->GetAggroRange(bot) + bot->GetCombatReach();
+        Position centre = mob->GetPosition();
+        if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+        {
+            centre = mob->GetHomePosition();
+            radius += mob->GetWanderDistance();
+        }
+        return G3D::Vector4(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
+    }
+
+    bool InDisc(G3D::Vector4 const& disc, G3D::Vector3 const& at)
+    {
+        return (disc.x - at.x) * (disc.x - at.x) + (disc.y - at.y) * (disc.y - at.y) <= disc.w * disc.w;
+    }
+
+    // [pullplan] CreatureGroup::MemberEngagingTarget: the engage of `engaged` brings its formation by its group flags
+    bool EngagesFormation(Creature* engaged, CreatureGroup const* formation)
+    {
+        auto const& members = formation->GetMembers();
+        auto const found = members.find(engaged);
+        if (found == members.end())
+            return false;
+        GroupAIFlags const needed = engaged == formation->GetLeader() ? GroupAIFlags::GROUP_AI_FLAG_MEMBER_ASSIST_LEADER
+                                                                     : GroupAIFlags::GROUP_AI_FLAG_LEADER_ASSIST_MEMBER;
+        return found->second.HasGroupFlag(std::underlying_type_t<GroupAIFlags>(needed));
+    }
+
+    // [pullplan] user 2026-11-08: what the core brings with a solo pull, mechanic by mechanic:
+    // - the engage call (Unit::Attack -> Creature::CallAssistance) of every mob that engages by itself (the target,
+    //   its formation, a mob whose aggro reach covers the bot), where it stands then; an assistant engages with its
+    //   call off (AssistDelayEvent: SetNoCallAssistance) - AnyAssistCreatureInRangeCheck: centre to centre within
+    //   CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS, in the caller's sight, Creature::CanAssistTo;
+    // - the formation (CreatureGroup::MemberEngagingTarget, its group flags);
+    // - the periodic call (Creature::Update, every CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD from the engage on) of
+    //   every engaged mob from where it fights: the fight spot, and the target's first one on its run there;
+    // - its script's call for help (SMART_ACTION_CALL_FOR_HELP) and flee for assistance at low health, at the fight;
+    // - an idle mob whose aggro reach (its wander area, its patrol beat) covers the fight spot.
+    // Nothing else comes: an idle mob near the target's camp stays when the fight is away from it.
+    struct PullModel
+    {
+        struct Member
+        {
+            Creature* mob;
+            bool calls;  // makes an engage call of its own
+        };
+        Player* bot = nullptr;
+        Creature* target = nullptr;
+        std::vector<Creature*> idle;  // idle hostile aggressive mobs round it (not the target)
+        std::vector<Member> pack;
+        float assist = 0.0f;
+        std::unordered_map<Creature*, std::vector<G3D::Vector3>> beats;  // patrols' forecast walks
+        size_t linkedUpTo = 0;  // the members whose links are counted
+
+        PullModel(Player* walker, Creature* mob, std::vector<Creature*> const& around) : bot(walker), target(mob)
+        {
+            assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+            for (Creature* c : around)
+                if (c && c != mob)
+                    idle.push_back(c);
+            pack.push_back({mob, mob->IsAlive() && !mob->IsInCombat()});
+        }
+
+        bool Has(Creature* c) const
+        {
+            return std::any_of(pack.begin(), pack.end(), [c](Member const& m) { return m.mob == c; });
+        }
+
+        std::vector<G3D::Vector3> const& Beat(Creature* c)
+        {
+            auto found = beats.find(c);
+            if (found != beats.end())
+                return found->second;
+            std::vector<G3D::Vector3> track;
+            float sampleSec = 0.0f;
+            if (c->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE ||
+                !PullPlanning::PatrolForecast(c, track, sampleSec))
+                track.clear();
+            return beats.emplace(c, std::move(track)).first->second;
+        }
+
+        // the idle mob's reach covers `at` (where it stands or wanders, or anywhere on its patrol beat)
+        bool Reaches(Creature* c, G3D::Vector3 const& at)
+        {
+            G3D::Vector4 const disc = AggroDisc(c, bot);
+            if (InDisc(disc, at))
+                return true;
+            for (G3D::Vector3 const& step : Beat(c))
+                if (InDisc(G3D::Vector4(step.x, step.y, step.z, disc.w), at))
+                    return true;
+            return false;
+        }
+
+        bool Sees(G3D::Vector3 const& from, Creature* c) const
+        {
+            return bot->GetMap()->isInLineOfSight(from.x, from.y, from.z + bot->GetCollisionHeight(),
+                                                  c->GetPositionX(), c->GetPositionY(),
+                                                  c->GetPositionZ() + c->GetCollisionHeight(), bot->GetPhaseMask(),
+                                                  LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
+        }
+
+        // the formations and engage calls of the members not counted yet
+        void Links()
+        {
+            for (size_t i = linkedUpTo; i < pack.size(); ++i)
+            {
+                Creature* m = pack[i].mob;
+                if (CreatureGroup* formation = m->GetFormation(); formation && EngagesFormation(m, formation))
+                    for (auto const& [mate, info] : formation->GetMembers())
+                        if (mate && mate != m && mate->IsAlive() && !mate->GetVictim() && !Has(mate))
+                            pack.push_back({mate, true});
+                if (!pack[i].calls || assist <= 0.0f || m->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE))
+                    continue;
+                for (Creature* c : idle)
+                    if (!Has(c) && m->IsWithinDistInMap(c, assist, true, false, false) && c->CanAssistTo(m, bot) &&
+                        m->IsWithinLOSInMap(c))
+                        pack.push_back({c, false});
+            }
+            linkedUpTo = pack.size();
+        }
+
+        // the pack of a fight at `fight` (nullptr: what comes wherever it is fought - the linked pack); `firstCall`:
+        // where the target makes its first periodic call when it has not reached the fight by then
+        void Grow(G3D::Vector3 const* fight, G3D::Vector3 const* firstCall)
+        {
+            std::set<Creature*> fled;  // one flee per member
+            for (bool changed = true; changed;)
+            {
+                changed = false;
+                Links();
+                if (!fight)
+                    break;
+                std::vector<float> callRadius;
+                for (Member const& m : pack)
+                    callRadius.push_back(ScriptHelpOf(m.mob).callRadius);
+                for (Creature* c : idle)
+                {
+                    if (Has(c))
+                        continue;
+                    bool joins = Reaches(c, *fight);
+                    bool calls = true;
+                    float const gap = c->GetExactDist(fight->x, fight->y, fight->z);
+                    for (size_t i = 0; !joins && i < callRadius.size(); ++i)
+                    {
+                        Creature* m = pack[i].mob;
+                        if (assist > 0.0f && gap <= assist && c->CanAssistTo(m, bot) && Sees(*fight, c))
+                        {
+                            joins = true;
+                            calls = false;
+                        }
+                        else if (callRadius[i] > 0.0f && gap <= callRadius[i] && c->CanAssistTo(m, bot))
+                            joins = true;
+                    }
+                    if (!joins && firstCall && assist > 0.0f &&
+                        c->GetExactDist(firstCall->x, firstCall->y, firstCall->z) <= assist &&
+                        c->CanAssistTo(target, bot) && Sees(*firstCall, c))
+                    {
+                        joins = true;
+                        calls = false;
+                    }
+                    if (joins)
+                    {
+                        pack.push_back({c, calls});
+                        changed = true;
+                    }
+                }
+                // a member that flees for assistance runs to the nearest mob that answers within the flee radius
+                float const flee = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS);
+                for (size_t i = 0; i < pack.size(); ++i)
+                {
+                    if (!ScriptHelpOf(pack[i].mob).flees || !fled.insert(pack[i].mob).second)
+                        continue;
+                    Creature* nearest = nullptr;
+                    float best = flee;
+                    for (Creature* c : idle)
+                        if (!Has(c) && c->CanAssistTo(pack[i].mob, bot))
+                            if (float const gap = c->GetExactDist2d(fight->x, fight->y); gap <= best)
+                            {
+                                best = gap;
+                                nearest = c;
+                            }
+                    if (nearest)
+                    {
+                        pack.push_back({nearest, true});
+                        changed = true;
+                    }
+                }
+            }
+        }
+    };
+
+    // [pullplan] the bot's pull from range: its rotation's reach for a ranged bot; else Throw / Shoot with the ranged
+    // weapon (and ammunition) that spell needs; 0 when it has none (a body pull at the target's aggro edge)
+    float PullReach(Player* bot, uint32* spellOut = nullptr)
+    {
+        if (spellOut)
+            *spellOut = 0;
+        if (PlayerbotAI::IsRanged(bot))
+            return Leader::Fight::LeaderSpellReach(bot);
+        constexpr uint32 SPELL_THROW = 2764;
+        constexpr uint32 SPELL_SHOOT = 3018;  // bows, guns, crossbows
+        Item* weapon = bot->GetWeaponForAttack(RANGED_ATTACK, true);
+        if (!weapon)
+            return 0.0f;
+        uint32 spell = 0;
+        switch (weapon->GetTemplate()->SubClass)
+        {
+            case ITEM_SUBCLASS_WEAPON_THROWN:
+                spell = SPELL_THROW;
+                break;
+            case ITEM_SUBCLASS_WEAPON_BOW:
+            case ITEM_SUBCLASS_WEAPON_GUN:
+            case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+            {
+                uint32 const ammo = bot->GetUInt32Value(PLAYER_AMMO_ID);
+                if (ammo && bot->HasItemCount(ammo, 1))
+                    spell = SPELL_SHOOT;
+                break;
+            }
+            default:
+                break;
+        }
+        SpellInfo const* info = spell && bot->HasSpell(spell) ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+        if (!info)
+            return 0.0f;
+        if (spellOut)
+            *spellOut = spell;
+        return info->GetMaxRange(false, bot);
+    }
 }
 
 namespace SoloSafety
@@ -881,7 +1128,8 @@ namespace SoloSafety
         if (!target || !Applies(bot))
             return verdict;
 
-        // where the fight stands: at the target for melee, at the bot's reach on its side for a ranged bot
+        // where the fight stands with no pull spot: at the target for melee, at the bot's reach on its side for a
+        // ranged bot
         Position spot = target->GetPosition();
         float const reach = PlayerbotAI::IsRanged(bot) ? Leader::Fight::LeaderSpellReach(bot) : 0.0f;
         float const gap = bot->GetExactDist2d(target);
@@ -897,110 +1145,162 @@ namespace SoloSafety
             else
                 spot = bot->GetPosition();
         }
-        // [deaths] user 2026-11-08: two mobs whose aggro reaches overlap are no pack when the core does not link them
-        // (the target's formation, its faction's assistance call, its script's call for help): the fault is a pull
-        // spot where both see the bot. The pull is made from a spot outside every other idle mob's reach - in the
-        // target's aggro reach for a melee bot (it comes), in its spell reach with sight of it for a ranged one -
-        // walked to round those reaches; with no such spot the overlapping mob stays in the pack (the judge refuses,
-        // the co-op seek asks for help)
+        std::vector<Creature*> idle;
+        for (ObjectGuid const& guid :
+             GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get())
+            if (Creature* mob = ObjectAccessor::GetCreature(*bot, guid))
+                if (mob != target && mob->IsAlive() && !mob->IsInCombat() && mob->IsHostileTo(bot) &&
+                    mob->HasReactState(REACT_AGGRESSIVE))
+                    idle.push_back(mob);
+
+        // [pullplan] user 2026-11-08: a player pulls the target away from its camp - from range (its spells, Throw /
+        // Shoot) or with its body at the edge of the target's aggro reach - and fights where it stands. The fight
+        // spot: outside every other idle mob's aggro reach (wander area, patrol beat), and where the fewest of them
+        // answer the fight's calls (the periodic assistance call there and on the target's run to it, its script's
+        // call for help), in sight of the target, walked to round those reaches. The judge then counts exactly what
+        // the core brings there (PullModel): the linked pack (formation, engage calls) and what that spot cannot avoid
+        std::vector<Unit*> pack;
         Creature* targetMob = target->ToCreature();
-        // (a melee bot's pull is its body in the target's aggro reach: only a hostile, aggressive target comes)
-        if (targetMob && !target->IsInCombat() &&
-            (reach > 0.0f || (targetMob->IsHostileTo(bot) && targetMob->HasReactState(REACT_AGGRESSIVE))))
+        if (targetMob)
         {
-            float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
-            ScriptHelp const targetHelp = ScriptHelpOf(targetMob);
-            CreatureGroup* const targetFormation = targetMob->GetFormation();
-            auto const linked = [&](Creature* mob)
-            {
-                if (targetFormation && mob->GetFormation() == targetFormation)
-                    return true;
-                if (assist > 0.0f && mob->GetFaction() == targetMob->GetFaction() &&
-                    mob->IsWithinDistInMap(targetMob, assist) && mob->CanAssistTo(targetMob, bot))
-                    return true;
-                return targetHelp.callRadius > 0.0f && mob->IsWithinDistInMap(targetMob, targetHelp.callRadius) &&
-                       mob->CanAssistTo(targetMob, bot);
-            };
-            std::vector<G3D::Vector4> reaches;  // the idle mobs not linked to the target
-            bool covered = false;
-            for (ObjectGuid const& guid : GET_PLAYERBOT_AI(bot)->GetAiObjectContext()
-                                              ->GetValue<GuidVector>("possible targets no los")->Get())
-            {
-                Creature* mob = ObjectAccessor::GetCreature(*bot, guid);
-                if (!mob || mob == targetMob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
-                    !mob->HasReactState(REACT_AGGRESSIVE) || linked(mob))
-                    continue;
-                float radius = mob->GetAggroRange(bot) + bot->GetCombatReach();
-                Position centre = mob->GetPosition();
-                if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
-                {
-                    centre = mob->GetHomePosition();
-                    radius += mob->GetWanderDistance();
-                }
-                reaches.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
-                covered = covered || centre.GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <= radius;
-            }
+            PMON_SCOPE(pullScope, PERF_MON_VALUE, "solo pull spot");
+            PullModel model(bot, targetMob, idle);
+            model.Links();
+            size_t const linked = model.pack.size();
+            float const pullReach = PullReach(bot);
+            bool const comes = targetMob->IsHostileTo(bot) && targetMob->HasReactState(REACT_AGGRESSIVE);
+            G3D::Vector3 const home(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+            // a target beyond sight: the spot is a forecast (the judge of a camp ahead); its walk is searched near it
+            bool const far = gap > sPlayerbotAIConfig.SightDistance;
             G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-            bool searched = false;
-            if (covered)
+            if (!target->IsInCombat() && (pullReach > 0.0f || comes))
             {
-                std::lock_guard<std::mutex> guard(lock);
-                SoloBotState const& state = states[bot->GetGUID().GetCounter()];
-                if (state.searchTarget == target->GetGUID() &&
-                    (state.searchFrom - from).length() <= bot->GetCombatReach())
+                bool searched = false;
                 {
-                    searched = true;
-                    verdict.pullSpot = state.searchFound;
-                    verdict.pull = state.searchSpot;
-                    verdict.pullAvoid = state.searchAvoid;
-                    if (verdict.pullSpot)
-                        spot.Relocate(verdict.pull.x, verdict.pull.y, verdict.pull.z);
-                }
-            }
-            if (covered && !searched)
-            {
-                auto const outside = [&reaches](float x, float y)
-                {
-                    for (G3D::Vector4 const& r : reaches)
-                        if ((r.x - x) * (r.x - x) + (r.y - y) * (r.y - y) <= r.w * r.w)
-                            return false;
-                    return true;
-                };
-                float const pullReach =
-                    (reach > 0.0f ? reach : targetMob->GetAggroRange(bot)) - bot->GetCombatReach();
-                std::vector<std::pair<float, G3D::Vector3>> spots;
-                if (pullReach > 0.0f)
-                {
-                    // one spot per stretch of the ring as wide as the bot's reach
-                    uint32 const arcs = std::max<uint32>(
-                        8, uint32(std::ceil(2.0f * float(M_PI) * pullReach / std::max(bot->GetCombatReach(), 1.0f))));
-                    float const height = bot->GetCollisionHeight();
-                    for (uint32 i = 0; i < arcs; ++i)
+                    std::lock_guard<std::mutex> guard(lock);
+                    SoloBotState const& state = states[bot->GetGUID().GetCounter()];
+                    // the search holds while the bot stands where it searched, or walks on to the spot it found
+                    if (state.searchTarget == target->GetGUID() && (state.searchRouted || far) &&
+                        ((state.searchFrom - from).length() <= bot->GetCombatReach() ||
+                         (state.searchFound &&
+                          (state.searchSpot - from).length() <= (state.searchSpot - state.searchFrom).length())))
                     {
-                        float const angle = 2.0f * float(M_PI) * float(i) / float(arcs);
-                        G3D::Vector3 at(target->GetPositionX() + std::cos(angle) * pullReach,
-                                        target->GetPositionY() + std::sin(angle) * pullReach, target->GetPositionZ());
-                        if (!outside(at.x, at.y))
-                            continue;
-                        bot->UpdateAllowedPositionZ(at.x, at.y, at.z);
-                        if (!bot->GetMap()->isInLineOfSight(at.x, at.y, at.z + height, target->GetPositionX(),
-                                                            target->GetPositionY(), target->GetPositionZ() + height,
-                                                            bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
-                                                            VMAP::ModelIgnoreFlags::Nothing))
-                            continue;
-                        spots.emplace_back(bot->GetExactDist2d(at.x, at.y), at);
+                        searched = true;
+                        verdict.pullSpot = state.searchFound;
+                        verdict.pull = state.searchSpot;
+                        verdict.pullAvoid = state.searchAvoid;
                     }
                 }
-                std::sort(spots.begin(), spots.end(),
-                          [](auto const& a, auto const& b) { return a.first < b.first; });
-                // the walk there round every such reach (a reach the bot stands in lies behind it); the polygons'
-                // edges are tested against the discs as the solo route search tests them (penalties at no cost)
-                G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-                std::vector<G3D::Vector4> avoid;
-                std::vector<Leader::Travel::RoutePenalty> edges;
-                for (G3D::Vector4 const& r : reaches)
-                    if ((r.x - here.x) * (r.x - here.x) + (r.y - here.y) * (r.y - here.y) > r.w * r.w)
+                if (!searched)
+                {
+                    // the reaches the pull must not wake (the linked pack comes anyway)
+                    std::vector<G3D::Vector4> reaches;
+                    struct Answer
                     {
+                        Creature* mob;
+                        bool linked;   // answers a linked mob's periodic call
+                        bool target;   // answers the target's
+                        float script;  // the largest script call for help of a linked mob it answers
+                    };
+                    std::vector<Answer> answers;
+                    for (Creature* c : idle)
+                    {
+                        if (model.Has(c))
+                            continue;
+                        G3D::Vector4 const disc = AggroDisc(c, bot);
+                        reaches.push_back(disc);
+                        G3D::Vector3 last(disc.x, disc.y, disc.z);
+                        for (G3D::Vector3 const& step : model.Beat(c))
+                            if ((step - last).length() >= disc.w)  // a disc per radius of its beat: the beat covered
+                            {
+                                reaches.emplace_back(step.x, step.y, step.z, disc.w);
+                                last = step;
+                            }
+                        Answer answer{c, false, c->CanAssistTo(targetMob, bot), 0.0f};
+                        for (size_t i = 0; i < linked; ++i)
+                            if (c->CanAssistTo(model.pack[i].mob, bot))
+                            {
+                                answer.linked = true;
+                                answer.script = std::max(answer.script, ScriptHelpOf(model.pack[i].mob).callRadius);
+                            }
+                        if (answer.linked || answer.target)
+                            answers.push_back(answer);
+                    }
+                    auto const outside = [&reaches](G3D::Vector3 const& at)
+                    {
+                        return std::none_of(reaches.begin(), reaches.end(),
+                                            [&at](G3D::Vector4 const& r) { return InDisc(r, at); });
+                    };
+                    float const period =
+                        float(sWorld->getIntConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD)) / float(IN_MILLISECONDS);
+                    float const run = target->GetSpeed(MOVE_RUN) * period;
+                    auto const firstCallOf = [&](G3D::Vector3 const& at, G3D::Vector3& call)
+                    {
+                        G3D::Vector3 const way = at - home;
+                        float const length = way.length();
+                        if (length <= run || length <= 0.0f)
+                            return false;
+                        call = home + way * (run / length);
+                        return true;
+                    };
+                    // how many idle mobs the fight at `at` calls
+                    auto const answering = [&](G3D::Vector3 const& at)
+                    {
+                        G3D::Vector3 call;
+                        bool const early = firstCallOf(at, call);
+                        uint32 count = 0;
+                        for (Answer const& a : answers)
+                        {
+                            float const gap2d = a.mob->GetExactDist2d(at.x, at.y);
+                            if ((a.linked && (gap2d <= model.assist || gap2d <= a.script)) ||
+                                (early && a.target && a.mob->GetExactDist2d(call.x, call.y) <= model.assist))
+                                ++count;
+                        }
+                        return count;
+                    };
+                    struct Candidate
+                    {
+                        uint32 calls;
+                        float walk;
+                        G3D::Vector3 at;
+                    };
+                    std::vector<Candidate> candidates;
+                    // where it stands, when it pulls from range from there
+                    if (pullReach > 0.0f && bot->IsWithinDistInMap(target, pullReach) && outside(from))
+                        candidates.push_back({answering(from), 0.0f, from});
+                    // the rings it pulls from: its pull reach, the target's aggro edge (a body pull)
+                    std::vector<float> rings;
+                    if (pullReach > bot->GetCombatReach())
+                        rings.push_back(pullReach - bot->GetCombatReach());
+                    if (comes)
+                        if (float const edge = targetMob->GetAggroRange(bot) - bot->GetCombatReach();
+                            edge > 0.0f && (rings.empty() || std::fabs(edge - rings.front()) > bot->GetCombatReach()))
+                            rings.push_back(edge);
+                    for (float const ring : rings)
+                    {
+                        // one spot per stretch of the ring as wide as the bot's reach
+                        uint32 const arcs = std::max<uint32>(
+                            8, uint32(std::ceil(2.0f * float(M_PI) * ring / std::max(bot->GetCombatReach(), 1.0f))));
+                        for (uint32 i = 0; i < arcs; ++i)
+                        {
+                            float const angle = 2.0f * float(M_PI) * float(i) / float(arcs);
+                            G3D::Vector3 const at(home.x + std::cos(angle) * ring, home.y + std::sin(angle) * ring,
+                                                  home.z);
+                            if (outside(at))
+                                candidates.push_back({answering(at), (at - from).length(), at});
+                        }
+                    }
+                    std::sort(candidates.begin(), candidates.end(), [](Candidate const& a, Candidate const& b)
+                              { return a.calls != b.calls ? a.calls < b.calls : a.walk < b.walk; });
+                    // the walk there round every such reach (a reach the bot stands in lies behind it), the target's
+                    // own too for a pull from beyond it; the polygons' edges are tested against the discs as the solo
+                    // route search tests them (penalties at no cost)
+                    std::vector<G3D::Vector4> avoid;
+                    std::vector<Leader::Travel::RoutePenalty> edges;
+                    auto const avoidDisc = [&](G3D::Vector4 const& r)
+                    {
+                        if (InDisc(r, from))
+                            return;
                         avoid.push_back(r);
                         Leader::Travel::RoutePenalty edge;
                         edge.x = r.x;
@@ -1008,112 +1308,89 @@ namespace SoloSafety
                         edge.z = r.z;
                         edge.r = r.w;
                         edges.push_back(edge);
+                    };
+                    for (G3D::Vector4 const& r : reaches)
+                        avoidDisc(r);
+                    G3D::Vector4 const targetDisc = AggroDisc(targetMob, bot);
+                    float const height = bot->GetCollisionHeight();
+                    constexpr size_t PULL_SPOT_ROUTE_TRIES = 3;  // search cost bound (the best spots), not a rule
+                    size_t routed = 0;
+                    for (Candidate& c : candidates)
+                    {
+                        if (routed >= PULL_SPOT_ROUTE_TRIES)
+                            break;
+                        if (c.walk > bot->GetCombatReach())
+                            bot->UpdateAllowedPositionZ(c.at.x, c.at.y, c.at.z);
+                        if (!bot->GetMap()->isInLineOfSight(c.at.x, c.at.y, c.at.z + height, home.x, home.y,
+                                                            home.z + height, bot->GetPhaseMask(),
+                                                            LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+                            continue;
+                        if (c.walk <= bot->GetCombatReach() || far)
+                        {
+                            verdict.pullSpot = true;
+                            verdict.pull = c.at;
+                            break;
+                        }
+                        ++routed;
+                        std::vector<G3D::Vector4> walkAvoid = avoid;
+                        std::vector<Leader::Travel::RoutePenalty> walkEdges = edges;
+                        if (!InDisc(targetDisc, c.at) && !InDisc(targetDisc, from))
+                        {
+                            walkAvoid.push_back(targetDisc);
+                            Leader::Travel::RoutePenalty edge;
+                            edge.x = targetDisc.x;
+                            edge.y = targetDisc.y;
+                            edge.z = targetDisc.z;
+                            edge.r = targetDisc.w;
+                            walkEdges.push_back(edge);
+                        }
+                        Movement::PointsArray corners;
+                        bool complete = false;
+                        if (!Leader::Travel::LongRoute(bot, from, c.at, false, corners, complete, nullptr, &walkAvoid,
+                                                       0.0f, nullptr, &walkEdges) ||
+                            !complete || corners.empty())
+                            continue;
+                        verdict.pullSpot = true;
+                        verdict.pull = corners.back();
+                        verdict.pullAvoid = std::move(walkAvoid);
+                        break;
                     }
-                constexpr size_t PULL_SPOT_ROUTE_TRIES = 3;  // search cost bound (the nearest spots), not a rule
-                for (size_t i = 0; i < spots.size() && i < PULL_SPOT_ROUTE_TRIES; ++i)
-                {
-                    Movement::PointsArray corners;
-                    bool complete = false;
-                    if (!Leader::Travel::LongRoute(bot, here, spots[i].second, false, corners, complete, nullptr,
-                                                   &avoid, 0.0f, nullptr, &edges) ||
-                        !complete || corners.empty())
-                        continue;
-                    verdict.pullSpot = true;
-                    verdict.pull = corners.back();
-                    verdict.pullAvoid = avoid;
-                    spot.Relocate(verdict.pull.x, verdict.pull.y, verdict.pull.z);
-                    break;
+                    std::lock_guard<std::mutex> guard(lock);
+                    SoloBotState& state = states[bot->GetGUID().GetCounter()];
+                    state.searchTarget = target->GetGUID();
+                    state.searchFrom = from;
+                    state.searchFound = verdict.pullSpot;
+                    state.searchRouted = !far;
+                    state.searchSpot = verdict.pull;
+                    state.searchAvoid = verdict.pullAvoid;
                 }
-                std::lock_guard<std::mutex> guard(lock);
-                SoloBotState& state = states[bot->GetGUID().GetCounter()];
-                state.searchTarget = target->GetGUID();
-                state.searchFrom = from;
-                state.searchFound = verdict.pullSpot;
-                state.searchSpot = verdict.pull;
-                state.searchAvoid = verdict.pullAvoid;
             }
+            G3D::Vector3 fight(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ());
+            G3D::Vector3 firstCall;
+            bool early = false;
+            if (verdict.pullSpot)
+            {
+                fight = verdict.pull;
+                spot.Relocate(fight.x, fight.y, fight.z);
+                G3D::Vector3 const way = fight - home;
+                float const run = target->GetSpeed(MOVE_RUN) *
+                                  float(sWorld->getIntConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD)) /
+                                  float(IN_MILLISECONDS);
+                if (way.length() > run && way.length() > 0.0f)
+                {
+                    firstCall = home + way * (run / way.length());
+                    early = true;
+                }
+            }
+            model.Grow(&fight, early ? &firstCall : nullptr);
+            for (PullModel::Member const& m : model.pack)
+                pack.push_back(m.mob);
         }
-
-        std::vector<Unit*> pack;
-        PullPlanner::SoloPack(bot, target, spot, pack);
-        if (pack.empty())
+        else
             pack.push_back(target);
         for (Unit* attacker : bot->getAttackers())
             if (attacker && attacker->IsAlive() && std::find(pack.begin(), pack.end(), attacker) == pack.end())
                 pack.push_back(attacker);
-        // [guild13] b300: "judged 1 mob, came 2-3" in most lost fights (Princess and her Porcine Entourage, Prowlers
-        // wandering in): what the core brings on top, until nothing more joins - a pack mob's formation
-        // (CreatureGroup), an idle mob whose aggro reach (with its wander area) covers the fight spot, and one its
-        // faction's assistance call reaches (CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS, Creature::CanAssistTo)
-        {
-            float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
-            std::vector<Creature*> idle;
-            for (ObjectGuid const& guid : GET_PLAYERBOT_AI(bot)->GetAiObjectContext()
-                                              ->GetValue<GuidVector>("possible targets no los")->Get())
-                if (Creature* mob = ObjectAccessor::GetCreature(*bot, guid))
-                    if (mob->IsAlive() && !mob->IsInCombat() && mob->IsHostileTo(bot) &&
-                        mob->HasReactState(REACT_AGGRESSIVE))
-                        idle.push_back(mob);
-            auto const inPack = [&pack](Unit* unit) { return std::find(pack.begin(), pack.end(), unit) != pack.end(); };
-            for (size_t i = 0; i < pack.size(); ++i)
-            {
-                Creature* member = pack[i]->ToCreature();
-                if (!member)
-                    continue;
-                if (CreatureGroup* formation = member->GetFormation())
-                    for (auto const& [mate, info] : formation->GetMembers())
-                        if (mate && mate->IsAlive() && !inPack(mate))
-                            pack.push_back(mate);
-                // [deaths3] the core's assistance (Creature::CallAssistance): the target calls once as it engages,
-                // where it stands; its assistants do not call then (SetNoCallAssistance), and from then on every
-                // engaged mob calls again each CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD from where it fights - the
-                // fight spot. Before, the call chained from every assistant's home through the whole camp (b341
-                // Thyllyn L12: "6 mobs (4 above)" for one Greymist Coastrunner, every quest there postponed)
-                for (Creature* mob : idle)
-                {
-                    if (inPack(mob) || assist <= 0.0f || mob->GetFaction() != member->GetFaction() ||
-                        !mob->CanAssistTo(member, bot))
-                        continue;
-                    bool const atEngage = member == targetMob && mob->IsWithinDistInMap(member, assist);
-                    bool const atFight =
-                        mob->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <= assist;
-                    if (atEngage || atFight)
-                        pack.push_back(mob);
-                }
-                // [guild15] the help its script calls: all in the call's radius, the nearest one it flees to
-                ScriptHelp const help = ScriptHelpOf(member);
-                if (help.callRadius > 0.0f)
-                    for (Creature* mob : idle)
-                        if (!inPack(mob) && mob->IsWithinDistInMap(member, help.callRadius) &&
-                            mob->CanAssistTo(member, bot))
-                            pack.push_back(mob);
-                if (help.flees)
-                {
-                    float const flee = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS);
-                    Creature* nearest = nullptr;
-                    for (Creature* mob : idle)
-                        if (!inPack(mob) && mob->IsWithinDistInMap(member, flee) && mob->CanAssistTo(member, bot) &&
-                            (!nearest || member->GetDistance(mob) < member->GetDistance(nearest)))
-                            nearest = mob;
-                    if (nearest)
-                        pack.push_back(nearest);
-                }
-            }
-            for (Creature* mob : idle)
-            {
-                if (inPack(mob))
-                    continue;
-                float reach = mob->GetAggroRange(bot) + bot->GetCombatReach();
-                Position centre = mob->GetPosition();
-                if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
-                {
-                    centre = mob->GetHomePosition();
-                    reach += mob->GetWanderDistance();
-                }
-                if (centre.GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <= reach)
-                    pack.push_back(mob);
-            }
-        }
 
         struct Mob
         {
@@ -1271,7 +1548,10 @@ namespace SoloSafety
             "{} mobs ({} above), {:.0f} dmg expected over {:.0f} s at {:.1f} dps ({:.1f} without mana; full: {:.0f} "
             "dmg over {:.0f} s), ehp {:.0f} now / {:.0f} full",
             verdict.mobs, verdict.above, damage, seconds, botDps, whiteDps, atFull.damage, atFull.seconds,
-            verdict.ehpNow, verdict.ehpFull);
+            verdict.ehpNow, verdict.ehpFull) +
+            (verdict.pullSpot ? Acore::StringFormat(", fought at its pull spot ({:.0f},{:.0f})", verdict.pull.x,
+                                                    verdict.pull.y)
+                              : std::string(", fought where it stands"));
         verdict.why = verdict.why.empty() ? numbers : verdict.why + ": " + numbers;
 
         bool log = false;
@@ -1298,7 +1578,10 @@ namespace SoloSafety
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
         // [deaths] the pull spot of this engage (none: the walk goes to the target as before)
+        if (state.pullTarget != target->GetGUID())
+            state.pullLogged = false;
         state.pullSpot = verdict.pullSpot;
+        state.pullMobs = verdict.mobs;
         state.pullTarget = target->GetGUID();
         state.pull = verdict.pull;
         state.pullAvoid = verdict.pullAvoid;
@@ -1336,6 +1619,44 @@ namespace SoloSafety
         float const spotGap = target->GetExactDist2d(spot.x, spot.y);
         return target->GetExactDist2d(to.x, to.y) <= spotGap + bot->GetCombatReach() &&
                bot->GetExactDist2d(spot.x, spot.y) > bot->GetCombatReach();
+    }
+
+    PullMove PullStep(Player* bot, Unit* target, G3D::Vector3& spot)
+    {
+        Creature* mob = target ? target->ToCreature() : nullptr;
+        if (!bot || !mob || !mob->IsAlive() || !Applies(bot))
+            return PullMove::None;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end() || !found->second.pullSpot || found->second.pullTarget != mob->GetGUID())
+                return PullMove::None;
+            spot = found->second.pull;
+        }
+        bool const there = bot->GetExactDist2d(spot.x, spot.y) <= bot->GetCombatReach();
+        if (!mob->IsInCombat())
+        {
+            if (!there)
+                return PullMove::None;  // its walk goes to the spot (Leader::Route: PullWalk)
+            // a melee bot with Throw / Shoot pulls from the spot; without one it steps in to the target's aggro edge
+            uint32 spell = 0;
+            float const pullReach = PullReach(bot, &spell);
+            if (spell && !PlayerbotAI::IsRanged(bot) && bot->IsWithinDistInMap(mob, pullReach) &&
+                !bot->HasSpellCooldown(spell) && !bot->IsNonMeleeSpellCast(true) && bot->IsWithinLOSInMap(mob))
+            {
+                bot->StopMoving();
+                bot->SetFacingToObject(mob);
+                if (bot->CastSpell(mob, spell, false) == SPELL_CAST_OK)
+                    return PullMove::Hold;
+            }
+            return PullMove::None;
+        }
+        // the target comes for it: the bot meets it at the spot (back there after a body pull's step in); a target
+        // that stands (a caster at its range, rooted) is gone to
+        if (mob->GetVictim() != bot || !mob->isMoving() ||
+            mob->GetMotionMaster()->GetCurrentMovementGeneratorType() != CHASE_MOTION_TYPE)
+            return PullMove::None;
+        return there ? PullMove::Hold : PullMove::ToSpot;
     }
 
     float ChaseSpellDamage(Creature* mob, float seconds)
@@ -1771,6 +2092,8 @@ namespace SoloSafety
         float const speed = bot->GetSpeed(MOVE_RUN);
         ObjectGuid const target = bot->GetTarget();
         uint8 const level = bot->GetLevel();
+        std::vector<Creature*> around;  // [pullplan] the idle mobs round the walk (built at the first priced mob)
+        bool aroundBuilt = false;
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
@@ -1797,72 +2120,42 @@ namespace SoloSafety
             // pack its pull judge refused)
             bool never = IsElite(mob) || Acore::XP::GetColorCode(level, mob->GetLevel()) <= XP_ORANGE ||
                          NewRpgBaseAction::InDangerZone(bot, mob->GetPositionX(), mob->GetPositionY());
-            // [guild15] ... and a mob whose fight alone the bot loses now: its damage (the model, every bot's and this
-            // bot's measurement) over the time the bot's damage needs for its health, against the bot's health (b315:
-            // 12 of 14 deaths were bots attacked on their way, most through Gnarlpine / Wendigo / murloc camps)
-            // [guild15] ... with the mobs the core brings when it is attacked: its formation and the idle mobs of
-            // its faction its assistance call reaches (CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS, Creature::CanAssistTo;
-            // an engaged mob calls again every CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD, so the call spreads one more
-            // hop per period of the fight), killed one by one, the most damage per health first (b321: 7 of 9 deaths
-            // were bots attacked on their way through camps, 2-4 mobs came; b322 Cassand L8 by 3 Prowlers L9-10)
+            // [pullplan] user 2026-11-08: a mob on the way is cleared one at a time as a player clears a path (the
+            // grind target's on-the-way pull from its pull spot, SoloSafety::Judge): it is priced by its kill time, a
+            // wall only when the bot loses even that one fight - the mob with what comes wherever it is fought, its
+            // formation and the engage calls (PullModel's linked pack, killed one by one, the most damage per
+            // health first). Before, the call chained hop after hop from every assistant's home through the whole camp,
+            // which the core never does (b343: 68 quests postponed for "every way there passes mobs it does not pull")
             if (!never && alone)
             {
-                std::vector<Creature*> pack{mob};
-                auto const inPack = [&pack](Creature* c) { return std::find(pack.begin(), pack.end(), c) != pack.end(); };
-                if (CreatureGroup* formation = mob->GetFormation())
-                    for (auto const& [mate, info] : formation->GetMembers())
-                        if (mate && mate->IsAlive() && !mate->IsInCombat() && !inPack(mate))
-                            pack.push_back(mate);
-                float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
-                float const period =
-                    float(sWorld->getIntConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD)) / float(IN_MILLISECONDS);
-                auto const packDamage = [&](float& seconds)
+                if (!aroundBuilt)
                 {
-                    struct Foe
-                    {
-                        float dps, hp;
-                    };
-                    std::vector<Foe> foes;
-                    for (Creature* c : pack)
-                        foes.push_back({MobDps(c, bot), float(c->GetHealth())});  // [dps1] no measurement
-                    std::sort(foes.begin(), foes.end(), [](Foe const& x, Foe const& y)
-                              { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
-                    float incoming = 0.0f;
-                    for (Foe const& f : foes)
-                        incoming += f.dps;
-                    float damage = 0.0f;
-                    seconds = 0.0f;
-                    for (Foe const& f : foes)
-                    {
-                        float const t = f.hp / dps;
-                        damage += incoming * t;
-                        seconds += t;
-                        incoming -= f.dps;
-                    }
-                    return damage;
+                    aroundBuilt = true;
+                    for (Unit* other : units)
+                        if (Creature* c = other->ToCreature())
+                            if (c->IsAlive() && !c->IsInCombat() && c->IsHostileTo(bot) &&
+                                c->HasReactState(REACT_AGGRESSIVE))
+                                around.push_back(c);
+                }
+                PullModel model(bot, mob, around);
+                model.Links();
+                struct Foe
+                {
+                    float dps, hp;
                 };
-                size_t hopsDone = 0;
-                size_t frontier = 0;  // pack members from here on have not called yet
-                float seconds = 0.0f;
-                float damage = packDamage(seconds);
-                // the first call at the pull, then one more hop per period while the fight lasts
-                while (assist > 0.0f && frontier < pack.size() &&
-                       (hopsDone == 0 || (period > 0.0f && float(hopsDone) * period < seconds)))
+                std::vector<Foe> foes;
+                for (PullModel::Member const& m : model.pack)
+                    foes.push_back({MobDps(m.mob, bot), float(m.mob->GetHealth())});  // [dps1] no measurement
+                std::sort(foes.begin(), foes.end(), [](Foe const& x, Foe const& y)
+                          { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
+                float incoming = 0.0f;
+                for (Foe const& foe : foes)
+                    incoming += foe.dps;
+                float damage = 0.0f;
+                for (Foe const& foe : foes)
                 {
-                    size_t const end = pack.size();
-                    for (size_t i = frontier; i < end; ++i)
-                        for (Unit* other : units)
-                        {
-                            Creature* c = other->ToCreature();
-                            if (!c || inPack(c) || !c->IsAlive() || c->IsInCombat() ||
-                                !c->HasReactState(REACT_AGGRESSIVE) || c->GetFaction() != pack[i]->GetFaction() ||
-                                !c->IsWithinDistInMap(pack[i], assist) || !c->CanAssistTo(pack[i], bot))
-                                continue;
-                            pack.push_back(c);
-                        }
-                    frontier = end;
-                    ++hopsDone;
-                    damage = packDamage(seconds);
+                    damage += incoming * foe.hp / dps;
+                    incoming -= foe.dps;
                 }
                 never = damage >= float(bot->GetHealth());
             }

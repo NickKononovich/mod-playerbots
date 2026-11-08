@@ -2516,6 +2516,24 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     if (!IsMovingAllowed(target))
         return false;
 
+    // [pullplan] a solo bot's pull from its pull spot: it pulls from there and meets the target there, not in its camp
+    {
+        G3D::Vector3 spot;
+        switch (SoloSafety::PullStep(bot, target, spot))
+        {
+            case SoloSafety::PullMove::Hold:
+                if (bot->isMoving())
+                    bot->StopMoving();
+                bot->SetFacingToObject(target);
+                return true;
+            case SoloSafety::PullMove::ToSpot:
+                return MoveTo(bot->GetMapId(), spot.x, spot.y, spot.z, false, false, false, false,
+                              MovementPriority::MOVEMENT_COMBAT, true);
+            default:
+                break;
+        }
+    }
+
     float tx = target->GetPositionX();
     float ty = target->GetPositionY();
     float tz = target->GetPositionZ();
