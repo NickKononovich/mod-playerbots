@@ -100,6 +100,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <tuple>
 #include <unordered_map>
@@ -187,6 +188,49 @@ namespace Leader::Travel
         return length;
     }
 
+    // [kara1] An instance loads all its grids, and with them every navmesh tile its mmaps have (Map::OnCreateMap ->
+    // LoadAllGrids -> GridTerrainLoader::LoadMMap). A point of an instance with a navmesh but no tile under it is a
+    // hole in the mmaps data: the generator wrote no file for that tile (mmaps_generator "Too many vertices! N out
+    // of 65535" skips the whole tile - Karazhan 5325235 / 5325236, the entrance hall to Moroes and the Opera,
+    // data/log_mmaps.txt). PathGenerator then answers PATHFIND_NOT_USING_PATH (CalculatePath: !HaveTile) - a straight
+    // line, through walls and floors.
+    bool NavTileMissing(Map const* map, G3D::Vector3 const& point)
+    {
+        if (!map || !map->Instanceable())
+            return false;
+        dtNavMesh const* navMesh = map->GetMapCollisionData().GetMMapData().GetNavMesh();
+        if (!navMesh)
+            return false;  // a map without mmaps at all: the straight walk is the core's own movement
+        float const detourPoint[3] = {point.y, point.z, point.x};
+        int tileX = -1;
+        int tileY = -1;
+        navMesh->calcTileLoc(detourPoint, &tileX, &tileY);
+        return tileX >= 0 && tileY >= 0 && !navMesh->getTileAt(tileX, tileY, 0);
+    }
+
+    namespace
+    {
+        // [kara1] once per map tile and process: which mmtile file is missing
+        void LogNavTileMissing(Player* from, G3D::Vector3 const& point, G3D::Vector3 const& start,
+                               G3D::Vector3 const& dest)
+        {
+            static std::mutex lock;
+            static std::set<std::tuple<uint32, int32, int32>> logged;
+            int32 const gridX = int32(32.0f - point.x / SIZE_OF_GRIDS);
+            int32 const gridY = int32(32.0f - point.y / SIZE_OF_GRIDS);
+            {
+                std::lock_guard<std::mutex> guard(lock);
+                if (!logged.insert({from->GetMapId(), gridX, gridY}).second)
+                    return;
+            }
+            LOG_INFO("playerbots", "[kara1] navmesh hole: map {} has mmaps but no tile at ({:.1f} {:.1f} {:.1f}): "
+                     "mmaps/{:03}{:02}{:02}.mmtile missing (generator skipped it, see log_mmaps.txt 'Too many "
+                     "vertices'); a straight route ({:.1f} {:.1f} {:.1f}) -> ({:.1f} {:.1f} {:.1f}) counts only in "
+                     "line of sight ({})", from->GetMapId(), point.x, point.y, point.z, from->GetMapId(), gridX, gridY,
+                     start.x, start.y, start.z, dest.x, dest.y, dest.z, from->GetName());
+        }
+    }
+
     // startAt: the route from that point instead of the owner's position (the far end of a RouteLinkDef).
     PathResult RoutePath(Player* from, float x, float y, float z, G3D::Vector3 const* startAt)
     {
@@ -202,6 +246,29 @@ namespace Leader::Travel
         result.type = BuildLeg(from, start, dest, !startAt, points, end, result.straightPath, &result.steep);
         if ((result.type & (PATHFIND_SHORTCUT | PATHFIND_NOT_USING_PATH)) && !(result.type & PATHFIND_NOPATH))
         {
+            // [kara1] A hole in an instance's mmaps (NavTileMissing): the straight line is a walk only where nothing
+            // stands between (a wall, a floor). kara-n 20261108-193702-kara-n-10A-2: from the entrance (z 49.9) the
+            // Ghostly Baker (z 77.4, the kitchen floor above) "reachable" 37 yd straight on, routeType none; the tank
+            // walked under it and stood 27.5 yd below, 13 engage orders orphaned, the run stalled at the first trash.
+            Map* const map = from->GetMap();
+            bool const startHole = NavTileMissing(map, start);
+            if (startHole || NavTileMissing(map, dest))
+            {
+                float const eye = from->GetCollisionHeight();
+                if (!map->isInLineOfSight(start.x, start.y, start.z + eye, dest.x, dest.y, dest.z + eye,
+                                          from->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS,
+                                          VMAP::ModelIgnoreFlags::Nothing))
+                {
+                    LogNavTileMissing(from, startHole ? start : dest, start, dest);
+                    result.navHole = true;
+                    result.reachable = false;
+                    result.complete = false;
+                    result.points = {start};
+                    result.length = straight;
+                    result.end = start;
+                    return result;
+                }
+            }
             // No navmesh here (map without mmaps, a tile not loaded) or flying / swimming: straight on.
             result.reachable = true;
             result.complete = true;

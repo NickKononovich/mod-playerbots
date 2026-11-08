@@ -65,7 +65,12 @@ namespace Leader::Travel
         // and SteerLeg's leg does not reach the goal's polygon (PathGenerator INCOMPLETE or a partial long route).
         bool fromSurface = false;
         bool partial = false;
+        // [kara1] a straight route over a hole in the instance's mmaps (NavTileMissing) with no line of sight
+        bool navHole = false;
     };
+
+    // [kara1] an instance point with a navmesh but no tile under it (a missing mmtile file)
+    bool NavTileMissing(Map const* map, G3D::Vector3 const& point);
 
     // Detour limits make a long walkable route look unreachable. Wave 7 boss_unreachable: Krystallus, Capacitus,
     // Dalliah, Soccothrates, Jandice and Anub'arak all had pathType 10 (SHORTCUT | NOPATH, 2 points). That is
