@@ -490,6 +490,10 @@ bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const&
             LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: {}", bot->GetName(), bot->GetLevel(),
                      quest->questId, why);
             NotePostpone(bot, quest->questId, why);
+            // [wall17] walled by mobs it never fights ([guild12] orange / red, elites): the party's quest
+            if (std::string const con = SoloSafety::ConWalls(bot); !con.empty())
+                LOG_INFO("playerbots", "[wall17] {} L{} q{} walled by {}: asks for help", bot->GetName(),
+                         bot->GetLevel(), quest->questId, con);
             // [coop] a camp it cannot solo: it looks for a party for it (NewRpgCoop.h); any spot of the quest
             // (its objective spot or a sweep spot of it; a hand-in spot ends in a [coop] no-seek line)
             NewRpgCoop::OnSpotRefused(botAI, bot, quest->questId, quest->objectiveIdx, dest);
@@ -2387,7 +2391,18 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             LOG_DEBUG("playerbots", "[New RPG] {} gives up an unreachable destination ({},{},{},{})", bot->GetName(),
                       dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId());
             if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
+            {
                 botAI->lowPriorityQuest.insert(quest->questId);
+                // [wall17] coordinator 2026-11-09: a quest walk given up behind mobs it never fights ([guild12]
+                // orange / red, elites) asks for a party as a refused spot does, not a silent postpone
+                if (std::string const con = SoloSafety::ConWalls(bot); !con.empty())
+                {
+                    LOG_INFO("playerbots", "[wall17] {} L{} q{} walled by {}: asks for help", bot->GetName(),
+                             bot->GetLevel(), quest->questId, con);
+                    NewRpgCoop::OnSpotRefused(botAI, bot, quest->questId, quest->objectiveIdx, dest);
+                }
+            }
+
 
             // [holds9] b345 Ellosera, Feeli, Pherua: the give-up went back to IDLE, the choice took the same spot
             // again (LOOP alerts) and the caller logged a HOLD with no reason: the spot is remembered as out of walk

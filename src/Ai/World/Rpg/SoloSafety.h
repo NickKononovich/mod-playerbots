@@ -141,6 +141,10 @@ namespace SoloSafety
                     std::vector<Leader::Travel::RoutePenalty>& penalties);
     // [pull9] the mobs its last route search refused, nearest first, and why (for the refused-walk lines)
     std::string RouteWalls(Player* bot);
+    // [wall17] the orange / red and elite mobs among its last route search's walls (empty: none) - [guild12] never
+    // fights them; a quest walled by them goes to a party (NewRpgCoop::OnSpotRefused)
+    std::string ConWalls(Player* bot);
+
     // [deaths] what that route search gave (complete; through a refused reach): kept for the death line
     void NoteRoute(Unit* walker, bool complete, bool throughRefused);
     // [deaths] user 2026-11-08: the walk `points` (from the bot on) passes the reach of mobs its last route search

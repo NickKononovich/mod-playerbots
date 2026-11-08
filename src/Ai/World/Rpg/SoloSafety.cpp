@@ -1203,6 +1203,14 @@ namespace
 
 namespace SoloSafety
 {
+    namespace
+    {
+        // [wall17] a judge asked by the route search for a mob on the walk (RouteCosts): it reads and writes none of
+        // the bot's engage state (the pull spot search kept for its target, the verdict line), and the route searches
+        // of its own pull spot search price their mobs without asking it again (no recursion)
+        thread_local bool wallJudge = false;
+    }
+
     float MapWanderReach(uint32 mapId) { return MaxWanderDistance(mapId); }
 
     bool Applies(Player* bot)
@@ -1406,6 +1414,7 @@ namespace SoloSafety
             if (!target->IsInCombat() && (pullReach > 0.0f || comes))
             {
                 bool searched = false;
+                if (!wallJudge)  // [wall17]
                 {
                     std::lock_guard<std::mutex> guard(lock);
                     SoloBotState const& state = states[bot->GetGUID().GetCounter()];
@@ -1592,15 +1601,19 @@ namespace SoloSafety
                         verdict.pullAvoid = std::move(walkAvoid);
                         break;
                     }
-                    std::lock_guard<std::mutex> guard(lock);
-                    SoloBotState& state = states[bot->GetGUID().GetCounter()];
-                    state.searchTarget = target->GetGUID();
-                    state.searchFrom = from;
-                    state.searchFound = verdict.pullSpot;
-                    state.searchRouted = !farTarget;
-                    state.searchSpot = verdict.pull;
-                    state.searchAvoid = verdict.pullAvoid;
+                    if (!wallJudge)  // [wall17] the engage's search stays the bot's own
+                    {
+                        std::lock_guard<std::mutex> guard(lock);
+                        SoloBotState& state = states[bot->GetGUID().GetCounter()];
+                        state.searchTarget = target->GetGUID();
+                        state.searchFrom = from;
+                        state.searchFound = verdict.pullSpot;
+                        state.searchRouted = !farTarget;
+                        state.searchSpot = verdict.pull;
+                        state.searchAvoid = verdict.pullAvoid;
+                    }
                 }
+
             }
             G3D::Vector3 fight(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ());
             G3D::Vector3 firstCall;
@@ -1792,10 +1805,12 @@ namespace SoloSafety
         verdict.why = verdict.why.empty() ? numbers : verdict.why + ": " + numbers;
 
         bool log = false;
+        if (!wallJudge)  // [wall17]
         {
             std::lock_guard<std::mutex> guard(lock);
             SoloBotState& state = states[bot->GetGUID().GetCounter()];
             if (state.loggedTarget != target->GetGUID() || state.loggedKind != uint8(verdict.kind))
+
             {
                 state.loggedTarget = target->GetGUID();
                 state.loggedKind = uint8(verdict.kind);
@@ -3100,6 +3115,43 @@ namespace SoloSafety
                 else if (LosesAtFull(bot, own, foes, petHealth))
                     why = RouteWall::Why::Loses;
                 wallPack = uint32(foes.size());
+                // [wall17] coordinator 2026-11-09: the linked pack priced where the mob stands is not the pull a
+                // player makes - the pull judge draws it out from a pull spot (SoloSafety::Judge). A mob at the bot's
+                // level band (not [guild12]'s orange / red) whose reach crosses the leg is judged so before it walls
+                // the walk: a win (or a win at full, rested first) is a pull on the way, no wall. Only mobs on the
+                // leg, nearest first (the units' order); the judge's own walks do not ask it again (wallJudge).
+                // b357: about 500 of 703 walls were mobs at +2 levels or below
+                if (why != RouteWall::Why::None && !wallJudge)
+                {
+                    G3D::Vector3 const a(from.x, from.y, 0.0f);
+                    G3D::Vector3 const ab = G3D::Vector3(to.x, to.y, 0.0f) - a;
+                    G3D::Vector3 const c(centre.GetPositionX(), centre.GetPositionY(), 0.0f);
+                    float const t = std::clamp((c - a).dot(ab) / std::max(ab.squaredLength(), 0.01f), 0.0f, 1.0f);
+                    if ((a + ab * t - c).squaredLength() <= radius * radius)
+                    {
+                        wallJudge = true;
+                        Verdict const pull = Judge(bot, mob);
+                        wallJudge = false;
+                        if (pull.kind == Verdict::Kind::Win || pull.kind == Verdict::Kind::RestFirst)
+                        {
+                            static std::mutex pullLogLock;
+                            static std::unordered_set<uint64> pullLogged;
+                            bool fresh = false;
+                            {
+                                std::lock_guard<std::mutex> guard(pullLogLock);
+                                if (pullLogged.size() > 65536)
+                                    pullLogged.clear();
+                                fresh = pullLogged.insert(mob->GetGUID().GetCounter() * 1000003ull +
+                                                          bot->GetGUID().GetCounter()).second;
+                            }
+                            if (fresh)
+                                LOG_INFO("playerbots", "[wall17] {} pulls {} L{} instead of walling: judged {}",
+                                         bot->GetName(), mob->GetName(), mob->GetLevel(), pull.why);
+                            why = RouteWall::Why::None;
+                        }
+                    }
+                }
+
                 // [runpast11] a pack it does not fight is run past when it lives through the chase, as an orange
                 // one is: the same leash model and the same sum
                 if (why != RouteWall::Why::None && mayRunPast && tryRunPast(mob, model, runPastDamage, runPastHp))
@@ -3176,8 +3228,30 @@ namespace SoloSafety
         state.routeThroughRefused = false;
     }
 
+    std::string ConWalls(Player* bot)
+    {
+        if (!bot)
+            return std::string();
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        if (found == states.end())
+            return std::string();
+        std::string out;
+        uint32 n = 0;
+        for (RouteWall const& w : found->second.routeWalls)
+            if (w.why == RouteWall::Why::Con || w.why == RouteWall::Why::Elite)
+            {
+                CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(w.entry);
+                if (++n <= 3)  // a log line's length, no decision
+                    out += Acore::StringFormat("{}{} L{} ({})", out.empty() ? "" : ", ", tmpl ? tmpl->Name : "?",
+                                               w.level, w.why == RouteWall::Why::Elite ? "elite" : "orange / red");
+            }
+        return out;
+    }
+
     std::string RouteWalls(Player* bot)
     {
+
         if (!bot)
             return std::string();
         std::vector<RouteWall> walls;
