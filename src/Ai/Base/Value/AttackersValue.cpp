@@ -327,7 +327,10 @@ bool AttackersValue::IsPossibleTarget(Unit* attacker, Player* bot, float /*range
     Creature* c = attacker->ToCreature();
     if (c)
     {
-        if (c->IsInEvadeMode())
+        // [evade11] user 2026-11-08: two mobs on it, one turns home - the bot takes the other at once. A mob that
+        // cannot reach the bot evades its attacks too (Creature::IsEvadingAttacks: CanNotReachTarget) and goes home
+        // when the core's evade timer runs out (UnitAI::EvadeTimerExpired): no target either
+        if (c->IsInEvadeMode() || (c->CanNotReachTarget() && c->GetCannotReachTarget() == bot->GetGUID()))
             return false;
 
         bool leaderHasThreat = false;
@@ -400,6 +403,8 @@ char const* AttackersValue::PossibleTargetRejection(Unit* attacker, Player* bot)
         return nullptr;
     if (creature->IsInEvadeMode())
         return "evading";
+    if (creature->CanNotReachTarget() && creature->GetCannotReachTarget() == bot->GetGUID())
+        return "cannot reach the bot (evades its attacks)";  // [evade11]
 
     bool const leaderHasThreat =
         bot->GetGroup() && botAI->GetMaster() && attacker->GetThreatMgr().GetThreat(botAI->GetMaster());
