@@ -106,6 +106,9 @@ namespace TestHarness
         // Empty: every entrance of the map, every boss of the instance.
         std::vector<uint32> entrances = {};
         std::vector<uint32> bossEntries = {};
+        // [world_boss] an open-world boss (docs/WORLD_BOSS_PLAN.md): no instance; the group is ported to a stand-off
+        // spot near the boss's live copy on mapId (LoadEntrances) and the run is done when it dies (bossEntries)
+        uint32 worldBoss = 0;
     };
 
     inline bool IsNormalDungeon(ContentDef const& content) { return !content.raid && content.difficulty == 0; }
