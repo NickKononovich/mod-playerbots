@@ -348,7 +348,7 @@ namespace TestHarness
             {"voa25", 624, 1, 25, 213, true, "Vault of Archavon 25", "wotlk-raid"},
             {"uld10", 603, 0, 10, 219, true, "Ulduar 10", "wotlk-raid"},
             {"uld25", 603, 1, 25, 226, true, "Ulduar 25", "wotlk-raid"},
-            {"uld10h", 603, 2, 10, 322, true, "Ulduar 10 Heroic", "wotlk-raid"}, // [ladder_v3] 322-331
+            {"uld10h", 603, 2, 10, 328, true, "Ulduar 10 Heroic", "wotlk-raid"}, // [ladder_v3] boss 328, max 331
             {"uld25h", 603, 3, 25, 338, true, "Ulduar 25 Heroic", "wotlk-raid"}, // [ladder_v3] 338-347
             {"toc10", 649, 0, 10, 232, true, "Trial of the Crusader 10", "wotlk-raid"},
             {"toc25", 649, 1, 25, 245, true, "Trial of the Crusader 25", "wotlk-raid"},

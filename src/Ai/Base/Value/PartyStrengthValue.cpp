@@ -89,31 +89,33 @@ namespace
     };
 
     constexpr RaidItemLevel RAID_ITEM_LEVELS[] = {
-        // WotLK
-        { 533, 200.0f, 213.0f, 200.0f, 213.0f },  // Naxxramas
+        // WotLK. [ladder_v3] heroics: boss ilvl of the v3 configs (endgame/uld*h.json, wotlk_heroic/*.json);
+        // Naxx-25H stays 277. Raids without a heroic repeat their normal values.
+        { 533, 200.0f, 213.0f, 200.0f, 277.0f },  // Naxxramas
         { 615, 200.0f, 213.0f, 200.0f, 213.0f },  // The Obsidian Sanctum
         { 616, 213.0f, 226.0f, 213.0f, 226.0f },  // The Eye of Eternity
         { 624, 213.0f, 226.0f, 213.0f, 226.0f },  // Vault of Archavon
-        { 603, 219.0f, 226.0f, 219.0f, 226.0f },  // Ulduar
+        { 603, 219.0f, 226.0f, 328.0f, 338.0f },  // Ulduar
         { 249, 232.0f, 245.0f, 232.0f, 245.0f },  // Onyxia's Lair
-        { 649, 232.0f, 245.0f, 245.0f, 258.0f },  // Trial of the Crusader
-        { 631, 251.0f, 264.0f, 264.0f, 277.0f },  // Icecrown Citadel
-        { 724, 258.0f, 271.0f, 271.0f, 284.0f },  // The Ruby Sanctum
-        // raid_rescale ladder: one size per raid, normal / hard
-        { 532, 232.0f, 232.0f, 245.0f, 245.0f },  // Karazhan
-        { 568, 245.0f, 245.0f, 258.0f, 258.0f },  // Zul'Aman
-        { 565, 245.0f, 245.0f, 258.0f, 258.0f },  // Gruul's Lair
-        { 544, 245.0f, 245.0f, 258.0f, 258.0f },  // Magtheridon's Lair
-        { 548, 258.0f, 258.0f, 271.0f, 271.0f },  // Serpentshrine Cavern
-        { 550, 258.0f, 258.0f, 271.0f, 271.0f },  // Tempest Keep: The Eye
-        { 534, 264.0f, 264.0f, 277.0f, 277.0f },  // Battle for Mount Hyjal
-        { 564, 264.0f, 264.0f, 277.0f, 277.0f },  // Black Temple
-        { 580, 271.0f, 271.0f, 284.0f, 284.0f },  // Sunwell Plateau
-        { 309, 219.0f, 219.0f, 232.0f, 232.0f },  // Zul'Gurub
-        { 509, 219.0f, 219.0f, 232.0f, 232.0f },  // Ruins of Ahn'Qiraj
-        { 409, 226.0f, 226.0f, 239.0f, 239.0f },  // Molten Core
-        { 469, 232.0f, 232.0f, 245.0f, 245.0f },  // Blackwing Lair
-        { 531, 239.0f, 239.0f, 252.0f, 252.0f },  // Temple of Ahn'Qiraj
+        { 649, 232.0f, 245.0f, 318.0f, 334.0f },  // Trial of the Crusader
+        { 631, 251.0f, 264.0f, 328.0f, 344.0f },  // Icecrown Citadel
+        { 724, 258.0f, 271.0f, 334.0f, 350.0f },  // The Ruby Sanctum
+        // raid_rescale ladder v2.1 (C:\WoW\RAID_LADDER_V2.md, configs old_raids/*.json). ZG / AQ20 / Kara / ZA have
+        // all four modes; the 25-man-only raids run normal at difficulty 0 and hard at 3, both columns alike.
+        { 532, 232.0f, 250.0f, 267.0f, 285.0f },  // Karazhan
+        { 568, 242.0f, 257.0f, 278.0f, 293.0f },  // Zul'Aman
+        { 565, 244.0f, 244.0f, 280.0f, 280.0f },  // Gruul's Lair
+        { 544, 245.0f, 245.0f, 282.0f, 282.0f },  // Magtheridon's Lair
+        { 548, 258.0f, 258.0f, 294.0f, 294.0f },  // Serpentshrine Cavern
+        { 550, 257.0f, 257.0f, 289.0f, 289.0f },  // Tempest Keep: The Eye
+        { 534, 264.0f, 264.0f, 297.0f, 297.0f },  // Battle for Mount Hyjal
+        { 564, 264.0f, 264.0f, 301.0f, 301.0f },  // Black Temple
+        { 580, 271.0f, 271.0f, 303.0f, 303.0f },  // Sunwell Plateau
+        { 309, 219.0f, 237.0f, 251.0f, 269.0f },  // Zul'Gurub
+        { 509, 219.0f, 237.0f, 253.0f, 271.0f },  // Ruins of Ahn'Qiraj
+        { 409, 226.0f, 226.0f, 256.0f, 256.0f },  // Molten Core
+        { 469, 232.0f, 232.0f, 265.0f, 265.0f },  // Blackwing Lair
+        { 531, 239.0f, 239.0f, 274.0f, 274.0f },  // Temple of Ahn'Qiraj
     };
 
     struct DungeonItemLevel
