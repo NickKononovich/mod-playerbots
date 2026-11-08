@@ -62,12 +62,8 @@ public:
 
 protected:
     // static NewRpgStatusTransitionProb transitionMat;
-    const int32 statusWanderNpcDuration = 5 * MINUTE  * IN_MILLISECONDS ;
-    const int32 statusWanderRandomDuration = 5 * MINUTE  * IN_MILLISECONDS ;
+    // [timers] the IDLE choice's re-ask cadence while REST (class b); every other status ends on its facts
     const int32 statusRestDuration = 30 * IN_MILLISECONDS ;
-    const int32 statusDoQuestDuration = 30 * MINUTE  * IN_MILLISECONDS ;
-    const int32 statusOutDoorPvPDuration = HOUR * IN_MILLISECONDS ;
-    const int32 statusDoGatherDuration = 15 * MINUTE * IN_MILLISECONDS;
     static constexpr uint32 QUEST_FIRST_CHANCE = 85;  // % of idle rolls that go straight to a quest (owned bots)
 };
 
@@ -140,8 +136,6 @@ class NewRpgWanderNpcAction : public NewRpgBaseAction
 public:
     NewRpgWanderNpcAction(PlayerbotAI* botAI) : NewRpgBaseAction(botAI, "new rpg move npcs") {}
     bool Execute(Event event) override;
-
-    const uint32 npcStayTime = 8 * IN_MILLISECONDS;
 };
 
 class NewRpgDoQuestAction : public NewRpgBaseAction
@@ -156,8 +150,6 @@ protected:
     bool HandInBlocked(NewRpgInfo::DoQuest& data);  // [guild15] why the turn-in at the ender does not happen
     bool BuyQuestVendorItem(uint32 questId);        // [guild15] an item objective a vendor in sight sells
     bool TalkToQuestNpc(uint32 questId);  // [guild15]
-
-    const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;
 };
 
 class NewRpgTravelFlightAction : public NewRpgBaseAction

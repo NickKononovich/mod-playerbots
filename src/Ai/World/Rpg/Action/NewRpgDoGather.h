@@ -30,10 +30,8 @@ protected:
     // gather session.
     void AbandonNode(NewRpgInfo::DoGather& data, bool markVisited = false);
 
-    // Max time waiting at a reached node for the loot pipeline to harvest
-    // it before giving up and moving on.
-    const uint32 nodeStayTime = 30 * IN_MILLISECONDS;
-    // Cadence for the periodic target-liveness and switch checks.
+    // [timers] class (b): cadence for the periodic target-liveness and switch checks (a node scan, expensive); the
+    // checks decide by facts.
     const uint32 passiveCheckInterval = 2 * IN_MILLISECONDS;
     // A live node passed within this range takes priority over the current
     // (possibly unverified) target.

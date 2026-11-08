@@ -745,33 +745,28 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_WANDER_RANDOM:
         {
-            // WANDER_RANDOM -> IDLE
-            if (info.HasStatusPersisted(statusWanderRandomDuration))
+            // [timers] WANDER_RANDOM -> IDLE by facts, no status duration: the grind was chosen for the level a quest
+            // needs (or quests postponed round it until the next level); a level-up re-runs the choice. No mob of its
+            // level left in reach also ends it (NewRpgWanderRandomAction); the global leader's URGENT task interrupts
+            auto& data = std::get<NewRpgInfo::WanderRandom>(info.data);
+            if (!data.level)
+                data.level = bot->GetLevel();
+            else if (data.level != bot->GetLevel())
             {
+                LOG_INFO("playerbots", "[rpg] {} L{} IDLE reason: level-up while grinding, the choice runs again",
+                         bot->GetName(), bot->GetLevel());
                 info.ChangeToIdle();
                 return true;
             }
             break;
         }
         case RPG_WANDER_NPC:
-        {
-            if (info.HasStatusPersisted(statusWanderNpcDuration))
-            {
-                info.ChangeToIdle();
-                return true;
-            }
+            // [timers] no status duration: the visit ends when its job at the npc is done, the npc is gone or no walk
+            // reaches it (NewRpgWanderNpcAction)
             break;
-        }
         case RPG_DO_QUEST:
         {
-            // Progress on the quest keeps it going past the status duration.
             auto& data = std::get<NewRpgInfo::DoQuest>(info.data);
-            uint32 const progress = GetQuestProgress(data.questId);
-            if (progress > data.progress)
-            {
-                data.progress = progress;
-                info.startT = getMSTime();
-            }
 
             // [tasks] passing through a town: its town tasks run now (NextStep runs a convenient task only in its own
             // town, the bot's quests go on after it)
@@ -790,12 +785,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 }
             }
 
-            // DO_QUEST -> IDLE
-            if (info.HasStatusPersisted(statusDoQuestDuration))
-            {
-                info.ChangeToIdle();
-                return true;
-            }
+            // [timers] DO_QUEST -> IDLE by facts, no status duration: the quest is handed in, postponed (no walk to
+            // its spots, unsupported, all camps spent and another quest cheaper than the respawn) or the global
+            // leader's URGENT task outranks it (GuildCoordinator::UpdateOrders)
             break;
         }
         case RPG_TRAVEL_FLIGHT:
@@ -811,7 +803,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_REST:
         {
-            // REST -> IDLE
+            // REST -> IDLE: [timers] class (b), the cadence the IDLE choice (ChooseBestQuest, expensive) is asked again
+            // at while nothing is to do; IDLE decides from the facts alone and the same facts give REST again
             if (info.HasStatusPersisted(statusRestDuration))
             {
                 info.ChangeToIdle();
@@ -820,19 +813,22 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             break;
         }
         case RPG_OUTDOOR_PVP:
-        {
-            if (info.HasStatusPersisted(statusOutDoorPvPDuration))
-            {
-                info.ChangeToIdle();
-                return true;
-            }
+            // [timers] no status duration: the command stays until replaced or its capture point is gone / held
+            // (NewRpgOutdoorPvpAction)
             break;
-        }
         case RPG_DO_GATHER:
         {
-            // DO_GATHER -> IDLE
-            if (info.HasStatusPersisted(statusDoGatherDuration))
+            // [timers] DO_GATHER -> IDLE by facts, no status duration: nothing (left) to gather in the zone or full
+            // bags (NewRpgDoGatherAction); a guild member's gather task gone or outranked
+            // (GuildCoordinator::UpdateOrders);
+            // a bot outside the guild plan gathers because no quest of its level was there: a level-up re-runs that
+            auto& data = std::get<NewRpgInfo::DoGather>(info.data);
+            if (!data.level)
+                data.level = bot->GetLevel();
+            else if (data.level != bot->GetLevel() && !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()))
             {
+                LOG_INFO("playerbots", "[rpg] {} L{} IDLE reason: level-up while gathering, the choice runs again",
+                         bot->GetName(), bot->GetLevel());
                 info.ChangeToIdle();
                 return true;
             }
@@ -1286,43 +1282,9 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         data.lastReachPOI = getMSTime();
         return true;
     }
-    // stayed at this POI for more than 5 minutes
-    if (GetMSTimeDiffToNow(data.lastReachPOI) >= poiStayTime)
-    {
-        bool hasProgression = false;
-        int32 currentObjective = data.objectiveIdx;
-        // check if the objective has progression
-        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
-        QuestStatusData const& q_status = bot->getQuestStatusMap().at(questId);
-        if (currentObjective < QUEST_OBJECTIVES_COUNT)
-        {
-            if (q_status.CreatureOrGOCount[currentObjective] != 0 && quest->RequiredNpcOrGoCount[currentObjective])
-                hasProgression = true;
-        }
-        else if (currentObjective < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT)
-        {
-            if (q_status.ItemCount[currentObjective - QUEST_OBJECTIVES_COUNT] != 0 &&
-                quest->RequiredItemCount[currentObjective - QUEST_OBJECTIVES_COUNT])
-                hasProgression = true;
-        }
-        if (!hasProgression)
-        {
-            // we has reach the poi for more than 5 mins but no progession
-            // may not be able to complete this quest, marked as abandoned
-            /// @TODO: It may be better to make lowPriorityQuest a global set shared by all bots (or saved in db)
-            botAI->lowPriorityQuest.insert(questId);
-            NotePostpone(bot, questId, "no progress at its spot");  // [guild90]
-            botAI->RecordQuestAbandoned(questId, QuestAbandonReason::NoProgress);
-            LOG_DEBUG("playerbots", "[New RPG] {} marked as abandoned quest {}", bot->GetName(), questId);
-            botAI->rpgInfo.ChangeToIdle();
-            return true;
-        }
-        // clear and select another poi later
-        data.lastReachPOI = 0;
-        data.pos = WorldPosition();
-        data.objectiveIdx = 0;
-        return true;
-    }
+    // [timers] no stay time at the spot: it is left when its objective is done (the completed check above), when
+    // nothing at it is left to do (the spent-spot check below: no mob it pulls, no quest object, no fight, no rest)
+    // or when the quest is postponed (no walk, unsupported, all camps spent and another quest cheaper than the respawn)
 
     // objects to use for the quest (#2725)
     if (UseQuestGameObject(questId))
@@ -1752,11 +1714,12 @@ bool NewRpgTaxiUnstallAction::Execute(Event /*event*/)
     bool recovered = false;
     TaxiStallWatch::ForEachWatched(bot, [&recovered](Player* player, NewRpgInfo& info)
     {
-        if (!info.taxiStillSince || !player->IsInFlight() ||
-            GetMSTimeDiffToNow(info.taxiStillSince) < TaxiStallWatch::STALL_MS)
+        // [timers] the stall proven by TaxiStallWatch::IsStalled (the trigger's check), no stall timer
+        if (!info.taxiStalled || !player->IsInFlight())
             return;
 
         recovered = true;
+        info.taxiStalled = false;
         info.taxiStillSince = 0;
         MotionMaster* mm = player->GetMotionMaster();
         FlightPathMovementGenerator* flight = nullptr;

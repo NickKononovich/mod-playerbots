@@ -55,7 +55,6 @@ namespace
     constexpr uint32 TICK_MS = 5 * IN_MILLISECONDS;
     constexpr uint32 LOGIN_RETRY_MS = 30 * IN_MILLISECONDS;
     constexpr uint32 STREAKS_RELOAD_MS = 60 * IN_MILLISECONDS;
-    constexpr uint32 ORDER_TIMEOUT_MS = 2 * HOUR * IN_MILLISECONDS;
     constexpr float GO_ARRIVED_RANGE = 30.0f;
     constexpr float TRAINER_REACH = 6.0f;
 
@@ -1460,15 +1459,12 @@ namespace
             _order = Order();
         }
 
-        void TickOrder(uint32 now)
+        void TickOrder(uint32 /*now*/)
         {
             if (_order.type == OrderType::None)
                 return;
-            if (getMSTimeDiff(_order.startMs, now) > ORDER_TIMEOUT_MS)
-            {
-                CancelOrder("не успели за 2 часа, играем дальше");
-                return;
-            }
+            // [timers] no order timeout: the user's command stays until it is done, replaced, cancelled or has no
+            // executor left (leader commands are final)
             // The user logged in or out while the order ran: it stops, the mode's own play takes over.
             if (_order.human != (_mode == Mode::Human))
             {

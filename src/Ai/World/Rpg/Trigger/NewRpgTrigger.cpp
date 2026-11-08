@@ -14,28 +14,41 @@
 #include "PlayerbotsUserPack.h"
 #include "Timer.h"
 #include "Transport.h"
+#include "DBCStores.h"
+#include "MotionMaster.h"
+#include "MoveSpline.h"
+#include "StringFormat.h"
+#include "WaypointMovementGenerator.h"
+#include "World.h"
 
 bool NewRpgStatusTrigger::IsActive() { return status == botAI->rpgInfo.GetStatus(); }
 
-bool NewRpgGroupNotReadyTrigger::IsMemberNotReady(Player* member)
+std::string NewRpgGroupNotReadyTrigger::MemberNotReady(Player* member)
 {
     if (!member->IsAlive())
-        return true;
+        return "dead";
 
     if (member->GetMapId() != bot->GetMapId())
-        return false;
+        return "";
 
-    if (member->IsInCombat() || !member->IsStandState())
-        return true;
+    if (member->IsInCombat())
+        return "in a fight";
 
-    if (member->GetHealthPct() < 50.0f)
-        return true;
+    // eating / drinking: its rest runs to full (a game mechanic)
+    if (!member->IsStandState())
+        return "resting";
 
-    if (member->getPowerType() == POWER_MANA && member->GetMaxPower(POWER_MANA) > 0 &&
-        member->GetPowerPct(POWER_MANA) < 40.0f)
-        return true;
+    // the core's group reward distance: no kill credit and no XP share beyond it
+    if (!member->IsAtGroupRewardDistance(bot))
+    {
+        float const speed = member->GetSpeed(MOVE_RUN);
+        float const distance = bot->GetExactDist(member);
+        return Acore::StringFormat("{:.0f} yd behind (group reward distance {:.0f} yd, eta {:.0f} s at its run speed)",
+                                   distance, sWorld->getFloatConfig(CONFIG_GROUP_XP_DISTANCE),
+                                   speed > 0.0f ? distance / speed : 0.0f);
+    }
 
-    return bot->GetDistance(member) > MAX_MEMBER_DISTANCE;
+    return "";
 }
 
 bool NewRpgGroupNotReadyTrigger::IsActive()
@@ -54,35 +67,33 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
     if (!group || group->GetLeaderGUID() != bot->GetGUID())
         return false;
 
-    uint32 const now = getMSTime();
-    if (_ignoreSince && getMSTimeDiff(_ignoreSince, now) < IGNORE_AFTER_TIMEOUT_MS)
-        return false;
-
-    bool notReady = false;
-    for (GroupReference* ref = group->GetFirstMember(); ref && !notReady; ref = ref->next())
+    // [timers] the members' facts alone hold the group: no wait cap, no ignore window
+    std::string reason;
+    std::string key;  // the member and the kind of its reason (a distance changes every check)
+    for (GroupReference* ref = group->GetFirstMember(); ref && reason.empty(); ref = ref->next())
     {
         Player* member = ref->GetSource();
-        if (member && member != bot && IsMemberNotReady(member))
-            notReady = true;
+        if (!member || member == bot)
+            continue;
+        std::string const why = MemberNotReady(member);
+        if (!why.empty())
+        {
+            reason = member->GetName() + " " + why;
+            key = member->GetName() + (why.find(" yd behind") != std::string::npos ? std::string(" behind") : why);
+        }
     }
 
-    if (!notReady)
+    if (key != _waitReason)
     {
-        _notReadySince = 0;
-        return false;
+        if (reason.empty())
+            LOG_INFO("playerbots", "[rpg] {} L{} GROUP_READY reason: every member is with the group", bot->GetName(),
+                     bot->GetLevel());
+        else
+            LOG_INFO("playerbots", "[rpg] {} L{} GROUP_WAIT reason: {}", bot->GetName(), bot->GetLevel(), reason);
+        _waitReason = key;
     }
 
-    if (!_notReadySince)
-        _notReadySince = now;
-
-    if (getMSTimeDiff(_notReadySince, now) > MAX_WAIT_MS)
-    {
-        _notReadySince = 0;
-        _ignoreSince = now;
-        return false;
-    }
-
-    return true;
+    return !reason.empty();
 }
 
 void TaxiStallWatch::ForEachWatched(Player* bot, std::function<void(Player*, NewRpgInfo&)> const& fn)
@@ -107,6 +118,7 @@ void TaxiStallWatch::ForEachWatched(Player* bot, std::function<void(Player*, New
 
 bool TaxiStallWatch::IsStalled(Player* player, NewRpgInfo& info)
 {
+    info.taxiStalled = false;
     if (!player->IsInFlight() || player->IsBeingTeleported())
     {
         info.taxiStillSince = 0;
@@ -116,17 +128,48 @@ bool TaxiStallWatch::IsStalled(Player* player, NewRpgInfo& info)
         return false;
     }
 
-    float const moved = player->GetExactDist(info.taxiLastX, info.taxiLastY, info.taxiLastZ);
-    if (!info.taxiStillSince || moved > STILL_DISTANCE)
+    // [timers] the stall is proven by the flight's own facts, no stall timer
+    FlightPathMovementGenerator* flight = nullptr;
+    if (MotionMaster* mm = player->GetMotionMaster(); mm && mm->GetCurrentMovementGeneratorType() == FLIGHT_MOTION_TYPE)
+        flight = dynamic_cast<FlightPathMovementGenerator*>(mm->top());
+    std::string why;
+    if (player->movespline->Finalized())
     {
-        info.taxiLastX = player->GetPositionX();
-        info.taxiLastY = player->GetPositionY();
-        info.taxiLastZ = player->GetPositionZ();
-        info.taxiStillSince = std::max(getMSTime(), 1u);
-        return false;
+        // the spline ended short of the route's end; a next node on another map is the cross-map leg
+        // (NewRpgTravelFlightAction::ContinueCrossMapTaxi), no stall
+        uint32 const next = player->m_taxi.GetTaxiDestination();
+        TaxiNodesEntry const* node = next ? sTaxiNodesStore.LookupEntry(next) : nullptr;
+        if (flight && !flight->HasArrived() && !(node && node->map_id != player->GetMapId()))
+            why = "the flight's spline ended short of the route's end";
     }
+    else
+    {
+        float const moved = player->GetExactDist(info.taxiLastX, info.taxiLastY, info.taxiLastZ);
+        uint32 const now = std::max(getMSTime(), 1u);
+        if (!info.taxiStillSince || moved > STILL_DISTANCE)
+        {
+            info.taxiLastX = player->GetPositionX();
+            info.taxiLastY = player->GetPositionY();
+            info.taxiLastZ = player->GetPositionZ();
+            info.taxiStillSince = now;
+            return false;
+        }
+        // the time the spline needs at its own velocity to fly STILL_DISTANCE, on the world's clock
+        float const velocity = player->movespline->Velocity();
+        if (velocity <= 0.0f)
+            return false;
+        uint32 const needMs = uint32(STILL_DISTANCE / velocity * IN_MILLISECONDS) + 1;
+        uint32 const sinceMs = getMSTimeDiff(info.taxiStillSince, now);
+        if (sinceMs < needMs)
+            return false;
+        why = Acore::StringFormat("moved {:.1f} yd in {} ms, its spline flies {:.1f} yd/s", moved, sinceMs, velocity);
+    }
+    if (why.empty())
+        return false;
 
-    return GetMSTimeDiffToNow(info.taxiStillSince) >= STALL_MS;
+    LOG_INFO("playerbots", "[rpg] {} TAXI_STALL reason: {}", player->GetName(), why);
+    info.taxiStalled = true;
+    return true;
 }
 
 bool NewRpgTaxiStalledTrigger::IsActive()
@@ -154,17 +197,9 @@ bool NewRpgLeaderAfkTrigger::IsActive()
     if (constexpr bool restAtInnOnAfk = false; !restAtInnOnAfk)
         return false;
 
-    if (!IsSelfBot(bot) || !bot->isAFK() || bot->IsInCombat() || bot->IsInFlight() || bot->GetTransport() ||
-        bot->GetMap()->Instanceable())
-    {
-        _afkSince = 0;
-        return false;
-    }
-
-    if (!_afkSince)
-        _afkSince = std::max(getMSTime(), 1u);
-
-    return GetMSTimeDiffToNow(_afkSince) >= AFK_BEFORE_INN_MS;
+    // [timers] the AFK flag itself is the fact, no AFK duration
+    return IsSelfBot(bot) && bot->isAFK() && !bot->IsInCombat() && !bot->IsInFlight() && !bot->GetTransport() &&
+           !bot->GetMap()->Instanceable();
 }
 
 bool NewRpgUnknownFlightMasterTrigger::IsActive()

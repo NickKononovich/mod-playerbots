@@ -5,6 +5,7 @@
  */
 
 #include "GuildCoordinator.h"
+#include "GuildHonest.h"
 
 #include <algorithm>
 #include <cmath>
@@ -420,6 +421,7 @@ namespace
 void GuildCoordinator::Load()
 {
     LoadPlan();
+    GuildHonest::LogStartup(planIndex_.size());  // [honest] the handouts the guild-plan bots never get
     LoadRecipes();
     LoadGatherSources();
     sGuildGatherPlan.Load();  // [gather] the gathering places of the wanted items
@@ -1705,8 +1707,13 @@ void GuildCoordinator::UpdateOrders()
         }
         // [coop] a new URGENT task outranks the bot's co-op task: it leaves the party (co-op exits with "the global
         // leader moved it")
-        if (std::any_of(st.external.begin(), st.external.end(),
-                        [](GuildOrder const& e) { return e.type == GuildOrderType::COOP; }))
+        // [timers] ... and the bot's own questing / grinding (no New RPG status duration decides that): the global
+        // leader's task priority is the computed exit; IDLE then runs the task (NextStep)
+        bool const coopTask = std::any_of(st.external.begin(), st.external.end(),
+                                          [](GuildOrder const& e) { return e.type == GuildOrderType::COOP; });
+        bool const ownPlan = st.rpgStatus == RPG_DO_QUEST || st.rpgStatus == RPG_GO_GRIND ||
+                             st.rpgStatus == RPG_WANDER_RANDOM || st.rpgStatus == RPG_REST;
+        if (coopTask || ownPlan)
             for (GuildOrder const& o : orders)
             {
                 if (!o.executable)
@@ -1716,12 +1723,34 @@ void GuildCoordinator::UpdateOrders()
                 if (o.priority == GuildTaskPriority::URGENT && !o.waitsTown && fresh)
                     if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p))
                     {
-                        LOG_INFO("playerbots", "[tasks] {} COOP interrupted by URGENT {}: {}", Who(row.low),
-                                 OrderName(o.type), o.details);
+                        LOG_INFO("playerbots", "[tasks] {} {} interrupted by URGENT {}: {}", Who(row.low),
+                                 coopTask ? "COOP" : RpgName(st.rpgStatus), OrderName(o.type), o.details);
                         ai->rpgInfo.ChangeToIdle();
                     }
                 break;  // the first executable order decides
             }
+        // [timers] a gathering run the global leader's GATHER task started ends when that task is no longer its first
+        // executable one (done, given back, or outranked) - no DO_GATHER duration
+        if (st.rpgStatus == RPG_DO_GATHER)
+        {
+            auto const firstExecutable = [](std::vector<GuildOrder> const& list) -> GuildOrder const*
+            {
+                for (GuildOrder const& o : list)
+                    if (o.executable && !o.waitsTown)
+                        return &o;
+                return nullptr;
+            };
+            GuildOrder const* before = firstExecutable(st.orders);
+            GuildOrder const* first = firstExecutable(orders);
+            if (before && before->type == GuildOrderType::GATHER &&
+                (!first || first->type != GuildOrderType::GATHER || TaskKey(*first) != TaskKey(*before)))
+                if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p))
+                {
+                    LOG_INFO("playerbots", "[tasks] {} DO_GATHER ends: its gather task {} is no longer first ({})",
+                             Who(row.low), before->details, first ? OrderName(first->type) : "none");
+                    ai->rpgInfo.ChangeToIdle();
+                }
+        }
         LogTaskChanges(row.low, st, orders);
         st.orders = std::move(orders);
     }

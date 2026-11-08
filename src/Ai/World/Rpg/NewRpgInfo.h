@@ -50,6 +50,7 @@ struct NewRpgInfo
     struct WanderRandom
     {
         WanderRandom() = default;
+        uint8 level{0};  // [timers] its level when the grind began: a level-up ends it (the choice runs again)
     };
     // RPG_DO_QUEST
     struct DoQuest
@@ -58,8 +59,7 @@ struct NewRpgInfo
         uint32 questId{0};
         int32 objectiveIdx{0};
         WorldPosition pos{};
-        uint32 lastReachPOI{0};
-        uint32 progress{0};  // objective counts done so far; growth restarts the status timer
+        uint32 lastReachPOI{0};  // non-zero once the spot is reached ([timers] a flag, no stay time reads it)
         WorldPosition giverPos{};  // set while the quest still has to be picked up there
     };
     // RPG_TRAVEL_FLIGHT
@@ -89,6 +89,7 @@ struct NewRpgInfo
         uint32 lastReach{0};
         uint32 lastPassiveCheck{0};
         ObjectGuid::LowType lastSwitchedFrom{0};
+        uint8 level{0};  // [timers] its level when the run began: a level-up ends a non-guild bot's run
     };
     // RPG_DO_PROFESSION [guild20]: a walk to a profession trainer (learn a rank) or a vendor (buy a tool)
     struct DoProfession
@@ -117,8 +118,9 @@ struct NewRpgInfo
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};
-    uint32 stuckTs{0};
-    uint32 stuckAttempts{0};
+    // [timers] the spots a walk to moveFarPos started from without getting closer (no stuck timer): a walk that
+    // starts again within the progress step of one of them closes a loop - no walk from there gets closer
+    std::vector<G3D::Vector3> stuckSpots;
     WorldPosition moveFarPos;
     // [guild15] perf: the far walk's last route search to moveFarPos found no walk from failedFrom; the same search
     // from the same spot gives the same answer, so it is asked again only once the bot stands elsewhere (game fact:
@@ -185,6 +187,10 @@ struct NewRpgInfo
         uint32 phaseStart{0};
         WorldPosition dest{};
         uint32 plannedAt{0};
+        // [timers] an unplanned ride: the dock it was boarded at, skipped until the transport has left it (no ride
+        // timer); NO_DOCK once it left
+        static constexpr uint8 NO_DOCK = 0xFF;
+        uint8 boardDock{NO_DOCK};
     };
     Trip trip;
     void SetTripPhase(TripPhase phase)
@@ -194,15 +200,18 @@ struct NewRpgInfo
     }
     void ClearTrip() { trip = Trip{}; }
 
-    uint32 dalaranPortalAskedAt{0};   // a group mage was asked for Portal: Dalaran
-    uint32 dalaranPortalFailedAt{0};
+    // [timers] Portal: Dalaran, no cast wait / retry timer: the mage asked (waited for while it casts the portal) and
+    // the mage whose cast failed for this destination (asked again only for another destination)
+    ObjectGuid dalaranPortalMage{};
+    ObjectGuid dalaranPortalFailedMage{};
 
     // taxi stall watch (#2863, #2664)
     float taxiLastX{0.0f};
     float taxiLastY{0.0f};
     float taxiLastZ{0.0f};
-    uint32 taxiStillSince{0};
+    uint32 taxiStillSince{0};  // the world's clock at the last position sample (TaxiStallWatch)
     uint8 taxiRecoveries{0};
+    bool taxiStalled{false};  // [timers] proven by TaxiStallWatch::IsStalled this check
 
     uint32 groupCheckedAt{0};  // cache of HasCapableGroup
     bool capableGroup{false};
@@ -212,9 +221,9 @@ struct NewRpgInfo
     uint32 pendingQuestObjectSince{0};
     // QUEST GIVER
     ObjectGuid questGiver;  // giver the bot is walking to or talking with
-    uint32 questGiverSince{0};
-    uint32 questGiverLastTry{0};
-    GuidSet ignoredQuestGivers;  // skipped until the next IDLE
+    // [timers] skipped until the next IDLE, by facts (no give-up timer): no walk reaches it, or an interaction with it
+    // took nothing (no quest from it the bot accepts, none it hands in)
+    GuidSet ignoredQuestGivers;
     // END QUEST GIVER
 
     // [guild3] A walk to a vendor to sell junk (bags nearly full) or buy arrows/bullets, like a player: GO_CAMP to the

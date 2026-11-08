@@ -8,6 +8,7 @@
 #include "BotPath.h"  // [lead109]
 #include "BroadcastHelper.h"
 #include "GuildCoordinator.h"  // [guild50] the quest reward pick
+#include "GuildHonest.h"       // [honest] no teleport for a guild-plan bot
 #include "ChatHelper.h"
 #include "Creature.h"
 #include "CreatureData.h"
@@ -90,9 +91,6 @@ namespace
     constexpr float DECK_RAY_LENGTH = 20.0f;        // ...and look this far down for the deck
     constexpr float DECK_MAX_STEP = 6.0f;           // a deck higher or lower than this is not reachable from the pier
     constexpr uint32 DECK_SAMPLES_INSIDE = 3;       // stop a few probes past the rail
-    constexpr uint32 UNPLANNED_RIDE_MS = MINUTE * IN_MILLISECONDS;  // a ride nobody planned ends at the next dock
-    constexpr uint32 GROUP_BOARD_GRACE_MS = 12 * IN_MILLISECONDS;   // then the leader boards without stragglers
-    constexpr uint32 PORTAL_GATHER_MS = MINUTE * IN_MILLISECONDS;
     constexpr float ENVOY_REACHED = 4.0f;
     constexpr float CRYSTAL_REACHED = 3.0f;
     constexpr float ENVOY_SEARCH_RANGE = 15.0f;
@@ -494,6 +492,75 @@ bool NewRpgBaseAction::IsGroupGathered(float distance)
     return true;
 }
 
+std::string NewRpgBaseAction::ComingStraggler(float distance)
+{
+    Group* group = bot->GetGroup();
+    if (!group)
+        return "";
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
+            member->GetMapId() != bot->GetMapId() || bot->GetDistance(member) <= distance)
+            continue;
+
+        BotPath const path = FindBotPath(member, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        if (!(path.type & PATHFIND_NOPATH) &&
+            bot->GetExactDist(path.actualEnd.x, path.actualEnd.y, path.actualEnd.z) <= distance)
+            return member->GetName();
+    }
+
+    return "";
+}
+
+uint32 NewRpgBaseAction::BoardWalkMs(MotionTransport* transport)
+{
+    if (!transport)
+        return 0;
+
+    auto runMs = [transport](Player* player)
+    {
+        float const speed = player->GetSpeed(MOVE_RUN);
+        return uint32(player->GetExactDist(transport) / (speed > 0.0f ? speed : 1.0f) * IN_MILLISECONDS);
+    };
+    uint32 slowest = runMs(bot);
+    if (Group* group = bot->GetGroup())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
+                member->GetMapId() != bot->GetMapId() || bot->GetDistance(member) > GROUP_GATHER_DISTANCE)
+                continue;
+            slowest = std::max(slowest, runMs(member));
+        }
+
+    return slowest;
+}
+
+std::string NewRpgBaseAction::StragglerInTime(MotionTransport* transport, uint32 windowMs)
+{
+    Group* group = bot->GetGroup();
+    if (!group || !transport)
+        return "";
+
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
+            member->GetMapId() != bot->GetMapId() || bot->GetDistance(member) <= GROUP_GATHER_DISTANCE)
+            continue;
+
+        float const speed = member->GetSpeed(MOVE_RUN);
+        uint32 const runMs =
+            uint32(member->GetExactDist(transport) / (speed > 0.0f ? speed : 1.0f) * IN_MILLISECONDS);
+        if (runMs < windowMs)
+            return member->GetName();
+    }
+
+    return "";
+}
+
 MotionTransport* NewRpgBaseAction::FindTransport(uint32 entry)
 {
     for (Transport* transport : bot->GetMap()->GetAllTransports())
@@ -599,15 +666,23 @@ bool NewRpgBaseAction::TravelByTransport(NewRpgInfo::Trip& trip)
             info.SetTripPhase(Phase::Wait);
             [[fallthrough]];
         case Phase::Wait:
-            if (docked && remaining >= BOARD_MIN_REMAINING_MS)
+        {
+            // [timers] the stop is taken when the time left at the dock covers the run of the bot and its gathered
+            // members to the deck (the transport's schedule, a game mechanic; no fixed boarding margin)
+            if (docked && transport && remaining >= BoardWalkMs(transport))
             {
                 info.SetTripPhase(Phase::Board);
                 return HoldPosition(IN_MILLISECONDS);
             }
 
-            // A full loop without the transport turning up: something is wrong with it, walk on for a while.
-            if (GetMSTimeDiffToNow(trip.phaseStart) > line->periodMs + WAIT_SPARE_MS)
+            // [timers] one full loop of its schedule (the transport's own period, a game mechanic; no spare time on
+            // top) passed without it docking here: it does not come (a transport off this map is on the other map
+            // of its route, no proof)
+            if (GetMSTimeDiffToNow(trip.phaseStart) > line->periodMs)
             {
+                LOG_INFO("playerbots", "[rpg] {} L{} TRIP_ABANDON transport {} reason: a full loop ({} ms) passed "
+                         "without it docking here",
+                         bot->GetName(), bot->GetLevel(), line->entry, line->periodMs);
                 WorldPosition const dest = trip.dest;
                 info.ClearTrip();
                 info.trip.dest = dest;
@@ -616,18 +691,37 @@ bool NewRpgBaseAction::TravelByTransport(NewRpgInfo::Trip& trip)
             }
 
             return HoldPosition(3 * IN_MILLISECONDS);
+        }
         case Phase::Board:
-            if (!docked || GetMSTimeDiffToNow(trip.phaseStart) > BOARD_TIMEOUT_MS)
+        {
+            // [timers] no boarding timeout: the stop ended (the transport left) -> wait for the next one
+            if (!docked)
             {
                 info.SetTripPhase(Phase::Wait);
                 return HoldPosition();
             }
 
-            // The followers board after the leader; give stragglers a moment to reach the pier.
-            if (!IsGroupGathered(GROUP_GATHER_DISTANCE) && GetMSTimeDiffToNow(trip.phaseStart) < GROUP_BOARD_GRACE_MS)
+            // The followers board after the leader; [timers] it waits for a straggler only while that straggler still
+            // reaches the deck before the stop ends (its run time against the time left after the leader's own run)
+            if (!transport)
+            {
+                info.SetTripPhase(Phase::Wait);
                 return HoldPosition();
+            }
+            uint32 const ownMs = BoardWalkMs(transport);
+            if (!IsGroupGathered(GROUP_GATHER_DISTANCE))
+            {
+                std::string const straggler =
+                    StragglerInTime(transport, remaining > ownMs ? remaining - ownMs : 0);
+                if (!straggler.empty())
+                    return HoldPosition();
+                LOG_INFO("playerbots", "[rpg] {} L{} BOARD {} reason: no straggler reaches the deck before the stop "
+                         "ends ({} ms left, own run {} ms)",
+                         bot->GetName(), bot->GetLevel(), line->entry, remaining, ownMs);
+            }
 
             return BoardTransport(transport);
+        }
         default:
             info.ClearTrip();
             return false;
@@ -720,23 +814,35 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
     bool const plannedLeg = trip.leg.kind == TravelRouteMgr::LegKind::Transport &&
                             trip.leg.lineEntry == line->entry && trip.leg.toDock < line->docks.size() &&
                             trip.phase != Phase::None;
+    uint32 remaining = 0;
     if (trip.phase != Phase::Ride && trip.phase != Phase::Leave)
     {
         if (!plannedLeg)
+        {
             trip.leg = TravelRouteMgr::Leg();
+            // [timers] an unplanned ride skips the dock it was boarded at until the transport has left it (no ride
+            // timer): getting off where it got on is no trip
+            trip.boardDock = NewRpgInfo::Trip::NO_DOCK;
+            for (uint8 d = 0; d < line->docks.size(); ++d)
+                if (TravelRouteMgr::IsDocked(transport, line->docks[d], remaining))
+                {
+                    trip.boardDock = d;
+                    break;
+                }
+        }
 
         info.SetTripPhase(Phase::Ride);
     }
+    if (!plannedLeg && trip.boardDock < line->docks.size() &&
+        !TravelRouteMgr::IsDocked(transport, line->docks[trip.boardDock], remaining))
+        trip.boardDock = NewRpgInfo::Trip::NO_DOCK;  // it left the stop it was boarded at
 
     TravelRouteMgr::Dock const* exitDock = nullptr;
-    uint32 remaining = 0;
     for (uint8 d = 0; d < line->docks.size() && !exitDock; ++d)
     {
-        // [guild15] an unplanned ride that already chose its stop keeps it: the Leave phase restarts phaseStart, and
-        // the minute of riding counted from there skipped every dock - the bot "left" and came back on the same tick,
-        // rode on and repeated it at every stop (b327/b329: Mytaeleas, Bierya 10+ round trips Rut'theran - Auberdine)
-        if (plannedLeg ? d != trip.leg.toDock
-                       : trip.phase != Phase::Leave && GetMSTimeDiffToNow(trip.phaseStart) < UNPLANNED_RIDE_MS)
+        // [guild15] an unplanned ride that already chose its stop keeps it (the Leave phase), b327/b329 Mytaeleas,
+        // Bierya 10+ round trips Rut'theran - Auberdine; [timers] the boarding dock is skipped while still docked there
+        if (plannedLeg ? d != trip.leg.toDock : trip.phase != Phase::Leave && d == trip.boardDock)
             continue;
 
         if (TravelRouteMgr::IsDocked(transport, line->docks[d], remaining))
@@ -887,9 +993,17 @@ bool NewRpgBaseAction::TravelByPortal(NewRpgInfo::Trip& trip)
         return HoldPosition(2 * IN_MILLISECONDS);
     }
 
-    // Everyone steps through together: a member left on another continent has no way to catch up.
-    if (!IsGroupGathered(GROUP_USE_DISTANCE) && GetMSTimeDiffToNow(trip.phaseStart) < PORTAL_GATHER_MS)
-        return HoldPosition();
+    // Everyone steps through together: a member left on another continent has no way to catch up. [timers] no gather
+    // timer: the leader waits while a member beyond the portal's reach is coming (alive, on this map, a walk reaches
+    // the leader from it); one that cannot come does not hold it
+    if (!IsGroupGathered(GROUP_USE_DISTANCE))
+    {
+        std::string const coming = ComingStraggler(GROUP_USE_DISTANCE);
+        if (!coming.empty())
+            return HoldPosition();
+        LOG_INFO("playerbots", "[rpg] {} L{} PORTAL reason: the members not at the portal have no walk to it",
+                 bot->GetName(), bot->GetLevel());
+    }
 
     GameObject* go = bot->FindNearestGameObject(portal.goEntry, 2.0f * INTERACTION_DISTANCE);
     WorldPosition const dest = trip.dest;
@@ -1186,12 +1300,9 @@ bool NewRpgBaseAction::UseDalaranPortal()
 {
     using namespace DalaranTravel;
     NewRpgInfo& info = botAI->rpgInfo;
-    if (info.dalaranPortalFailedAt && GetMSTimeDiffToNow(info.dalaranPortalFailedAt) < PORTAL_RETRY_MS)
-        return false;
-
     if (GameObject* portal = bot->FindNearestGameObject(GO_PORTAL_DALARAN, GROUP_GATHER_DISTANCE))
     {
-        info.dalaranPortalAskedAt = 0;
+        info.dalaranPortalMage.Clear();
         if (!bot->IsWithinDistInMap(portal, INTERACTION_DISTANCE - 1.0f))
         {
             MoveWorldObjectTo(portal->GetGUID(), 1.5f);
@@ -1201,20 +1312,27 @@ bool NewRpgBaseAction::UseDalaranPortal()
         return UseGameObjectWithGroup(portal);
     }
 
-    if (info.dalaranPortalAskedAt)
+    // [timers] no cast wait timer: the asked mage is waited for while it casts the portal (the spell's own cast time);
+    // its cast over and no portal here: that mage failed for this destination
+    if (!info.dalaranPortalMage.IsEmpty())
     {
-        if (GetMSTimeDiffToNow(info.dalaranPortalAskedAt) < PORTAL_CAST_WAIT_MS)
+        Player* asked = ObjectAccessor::FindConnectedPlayer(info.dalaranPortalMage);
+        if (asked && asked->IsInWorld() && asked->FindCurrentSpellBySpellId(SPELL_PORTAL_DALARAN))
             return HoldPosition();
 
-        info.dalaranPortalAskedAt = 0;
-        info.dalaranPortalFailedAt = getMSTime();
+        LOG_INFO("playerbots", "[rpg] {} L{} DALARAN_PORTAL reason: {}'s cast ended without a portal", bot->GetName(),
+                 bot->GetLevel(), asked ? asked->GetName() : std::string("the mage"));
+        info.dalaranPortalFailedMage = info.dalaranPortalMage;
+        info.dalaranPortalMage.Clear();
         return false;
     }
 
     Player* mage = nullptr;
-    auto canOpen = [this](Player* player)
+    auto canOpen = [this, &info](Player* player)
     {
-        return player && player->IsInWorld() && player->IsAlive() && !player->IsInCombat() &&
+        // [timers] no retry timer: a mage whose portal failed for this destination is not asked again for it
+        return player && player->GetGUID() != info.dalaranPortalFailedMage && player->IsInWorld() &&
+               player->IsAlive() && !player->IsInCombat() &&
                player->getClass() == CLASS_MAGE && player->GetMapId() == bot->GetMapId() &&
                bot->GetDistance(player) < GROUP_GATHER_DISTANCE && player->HasSpell(SPELL_PORTAL_DALARAN) &&
                !player->HasSpellCooldown(SPELL_PORTAL_DALARAN) && player->HasItemCount(ITEM_RUNE_OF_PORTALS, 1) &&
@@ -1234,12 +1352,14 @@ bool NewRpgBaseAction::UseDalaranPortal()
     PlayerbotAI* mageAI = mage == bot ? botAI : GET_PLAYERBOT_AI(mage);
     if (!mageAI || !mageAI->CastSpell(SPELL_PORTAL_DALARAN, mage))
     {
-        info.dalaranPortalFailedAt = getMSTime();
+        LOG_INFO("playerbots", "[rpg] {} L{} DALARAN_PORTAL reason: {} could not cast it", bot->GetName(),
+                 bot->GetLevel(), mage->GetName());
+        info.dalaranPortalFailedMage = mage->GetGUID();
         return false;
     }
 
     LOG_DEBUG("playerbots", "[New RPG] {} asked {} for a portal to Dalaran", bot->GetName(), mage->GetName());
-    info.dalaranPortalAskedAt = getMSTime();
+    info.dalaranPortalMage = mage->GetGUID();
     return HoldPosition();
 }
 
@@ -1707,23 +1827,37 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     // The old 1yd threshold was small enough that bots oscillating back
     // and forth around an obstacle would keep "making progress" forever
     // and never trigger the teleport recovery below.
-    if (disToDest + 5.0f < botAI->rpgInfo.nearestMoveFarDis)
+    // [timers] no stuck timer: a walk issued again from a spot within MOVE_FAR_PROGRESS of a spot an earlier walk
+    // started from without getting closer has closed a loop (or the bot stands where it stood) - no walk from here
+    // gets it closer; that is the proof the destination is out of walk
+    bool loopClosed = false;
+    if (disToDest + MOVE_FAR_PROGRESS < botAI->rpgInfo.nearestMoveFarDis)
     {
         botAI->rpgInfo.nearestMoveFarDis = disToDest;
-        botAI->rpgInfo.stuckTs = getMSTime();
-        botAI->rpgInfo.stuckAttempts = 0;
+        botAI->rpgInfo.stuckSpots.clear();
     }
-    else if (++botAI->rpgInfo.stuckAttempts >= 5 && GetMSTimeDiffToNow(botAI->rpgInfo.stuckTs) >= stuckTime)
+    else if (IsMovingAllowed() && !bot->IsNonMeleeSpellCast(false))  // a bot that cannot step now proves nothing
     {
-        // No meaningful progress toward dest for `stuckTime`: fall
-        // back to teleporting directly so the bot can get on with
-        // its RPG objective instead of oscillating indefinitely.
-        botAI->rpgInfo.stuckTs = getMSTime();
-        botAI->rpgInfo.stuckAttempts = 0;
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        for (G3D::Vector3 const& spot : botAI->rpgInfo.stuckSpots)
+            if ((spot - here).squaredLength() < MOVE_FAR_PROGRESS * MOVE_FAR_PROGRESS)
+                loopClosed = true;
+        if (!loopClosed)
+            botAI->rpgInfo.stuckSpots.push_back(here);
+    }
+    if (loopClosed)
+    {
+        LOG_INFO("playerbots", "[rpg] {} L{} MOVE_FAR_LOOP reason: back at a spot its walk to ({:.0f},{:.0f},{:.0f}) "
+                 "left without getting closer (best {:.0f} yd, now {:.0f} yd, {} spots)",
+                 bot->GetName(), bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
+                 botAI->rpgInfo.nearestMoveFarDis, disToDest, botAI->rpgInfo.stuckSpots.size());
+        botAI->rpgInfo.stuckSpots.clear();
 
         // Player-owned bots play like players: no teleport shortcut. Give the goal up so the planner picks
         // another one (the quest drops to low priority, see the callers' fallbacks).
-        if (!sRandomPlayerbotMgr.IsRandomBot(bot) || !sPlayerbotAIConfig.RandomBotTeleport)  // [guild1]
+        // [honest] a guild-plan bot is never teleported: it gives the goal up as a player does
+        if (!sRandomPlayerbotMgr.IsRandomBot(bot) || !sPlayerbotAIConfig.RandomBotTeleport ||
+            GuildHonest::IsHonestBot(bot))  // [guild1]
         {
             LOG_DEBUG("playerbots", "[New RPG] {} gives up an unreachable destination ({},{},{},{})", bot->GetName(),
                       dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId());
@@ -2582,35 +2716,43 @@ bool NewRpgBaseAction::SearchQuestGiverAndAcceptOrReward()
         return false;
 
     NewRpgInfo& info = botAI->rpgInfo;
-    if (info.questGiver != npcOrGo || GetMSTimeDiffToNow(info.questGiverLastTry) > questGiverRetryGap)
-    {
-        info.questGiver = npcOrGo;
-        info.questGiverSince = getMSTime();
-    }
-    info.questGiverLastTry = getMSTime();
+    info.questGiver = npcOrGo;
 
-    // Unreachable, or an offer the interaction never clears: let the status action and grinding resume.
-    if (GetMSTimeDiffToNow(info.questGiverSince) > questGiverGiveUpTime)
+    // [timers] no give-up timer: the giver is skipped (until the next IDLE) by facts - an interaction that took nothing
+    // (no quest from it the bot accepts, none it hands in: the quest log and the rewarded set unchanged), or no walk
+    // reaches it (below)
+    if (bot->CanInteractWithQuestGiver(object))
     {
-        LOG_DEBUG("playerbots", "[New RPG] {} gives up on quest giver {}", bot->GetName(), npcOrGo.ToString());
+        size_t const logBefore = bot->getQuestStatusMap().size();
+        size_t const rewardedBefore = bot->getRewardedQuests().size();
+        InteractWithNpcOrGameObjectForQuest(npcOrGo);
+        if (bot->getQuestStatusMap().size() == logBefore && bot->getRewardedQuests().size() == rewardedBefore)
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} SKIP quest giver {} reason: the interaction took nothing (no quest "
+                     "from it it accepts, none it hands in)",
+                     bot->GetName(), bot->GetLevel(), object->GetName());
+            info.ignoredQuestGivers.insert(npcOrGo);
+            info.questGiver.Clear();
+            return false;
+        }
+        ForceToWait(5000);
+        return true;
+    }
+    // [guild90] still walking the last walk there: the tick is taken (b317 Eraelor at Tallonkai Swiftroot on
+    // Dolanaar's upper floor, Emdyl / Thamesh at Marleth Barleybrew)
+    if (bot->isMoving())
+        return true;
+    // [timers] in reach and still no talk (hostile, its quest flag off): no walk changes that
+    if (bot->IsWithinDistInMap(object, INTERACTION_DISTANCE))
+    {
+        LOG_INFO("playerbots", "[rpg] {} L{} SKIP quest giver {} reason: in reach, it does not talk to it",
+                 bot->GetName(), bot->GetLevel(), object->GetName());
         info.ignoredQuestGivers.insert(npcOrGo);
         info.questGiver.Clear();
         return false;
     }
-
-    if (bot->CanInteractWithQuestGiver(object))
-    {
-        InteractWithNpcOrGameObjectForQuest(npcOrGo);
-        ForceToWait(5000);
-        return true;
-    }
-    if (MoveWorldObjectTo(npcOrGo))
-        return true;
-    // [guild90] the walk did not start: still walking the last one (the move is busy, the tick is taken), or no walk
-    // reaches the giver (b317 Eraelor at Tallonkai Swiftroot on Dolanaar's upper floor, Emdyl / Thamesh at Marleth
-    // Barleybrew: "attack anything" off for the giver and nothing else ran, STUCK until the one-minute give-up)
-    if (bot->isMoving())
-        return true;
+    // [timers] a new walk starts only where the route reaches the giver: the route search is the proof, asked each
+    // time the bot stands still short of it (a partial route walked to its end and re-issued never got there)
     BotPath const path = FindBotPath(bot, object->GetPositionX(), object->GetPositionY(), object->GetPositionZ());
     float const shortBy = (path.type & PATHFIND_NOPATH)
                               ? object->GetExactDist(bot)
@@ -2635,8 +2777,9 @@ bool NewRpgBaseAction::SearchQuestGiverAndAcceptOrReward()
                 if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_NONE ||
                     bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
                     botAI->lowPriorityQuest.insert(itr->second);
+        return false;
     }
-    return false;
+    return MoveWorldObjectTo(npcOrGo);
 }
 
 static std::vector<float> GenerateRandomWeights(int n)

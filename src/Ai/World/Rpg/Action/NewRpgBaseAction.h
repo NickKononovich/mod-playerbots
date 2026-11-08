@@ -159,6 +159,13 @@ protected:
     bool HoldPosition(uint32 duration = 2 * IN_MILLISECONDS);
     void MovePointDirect(float x, float y, float z);
     bool IsGroupGathered(float distance);
+    // [timers] a member beyond `distance` that is coming (alive, on this map, a walk reaches the bot from it): its
+    // name, "" when none is; what the leader waits for at a portal instead of a gather timer
+    std::string ComingStraggler(float distance);
+    // [timers] the run time in ms the bot and its gathered members need to the transport's middle (the slowest)
+    uint32 BoardWalkMs(MotionTransport* transport);
+    // [timers] a member beyond GROUP_GATHER_DISTANCE that reaches the transport within `windowMs` at its run speed
+    std::string StragglerInTime(MotionTransport* transport, uint32 windowMs);
     bool DalaranStep(WorldPosition const& dest);
     bool UseDalaranPortal();
     bool UseDalaranCrystal(uint32 entry);
@@ -210,38 +217,24 @@ protected:
 protected:
     /* FOR MOVE FAR */
     const float pathFinderDis = 70.0f;
-    // Time without real progress toward dest before MoveFarTo
-    // falls back to teleport recovery. Kept short enough that a
-    // bot truly oscillating around an unreachable destination
-    // (mmap returning non-progressing partial paths, or NOPATH +
-    // cone fallback wandering) doesn't spin for 5 minutes before
-    // the teleport fires, but long enough that a genuine long
-    // walk that is slowly making progress never triggers it.
-    const uint32 stuckTime = 90 * IN_MILLISECONDS;
+    // the progress a walk must make toward dest to count as getting closer (and the loop radius of the stuck check)
+    static constexpr float MOVE_FAR_PROGRESS = 5.0f;
 
     /* FOR TRAVEL */
     static constexpr float TRIP_PLAN_DISTANCE = 1200.0f;            // closer destinations are always walked to
+    // [timers] class (b): the route search (expensive) to the same destination is not asked again within this; the
+    // same search gives the same answer, the bot walks meanwhile
     static constexpr uint32 TRIP_REPLAN_MS = 30 * IN_MILLISECONDS;
     static constexpr float PIER_REACHED = 6.0f;
-    static constexpr uint32 BOARD_MIN_REMAINING_MS = 15 * IN_MILLISECONDS;  // later the group would miss it
-    static constexpr uint32 BOARD_TIMEOUT_MS = 25 * IN_MILLISECONDS;
-    static constexpr uint32 WAIT_SPARE_MS = 2 * MINUTE * IN_MILLISECONDS;   // on top of one full loop
     static constexpr float GROUP_GATHER_DISTANCE = 30.0f;
     static constexpr float GROUP_USE_DISTANCE = 20.0f;              // members this close use a portal with us
-    static constexpr uint32 PORTAL_CAST_WAIT_MS = 20 * IN_MILLISECONDS;
-    static constexpr uint32 PORTAL_RETRY_MS = 5 * MINUTE * IN_MILLISECONDS;
     static constexpr float QUEST_OBJECT_RANGE = 60.0f;
 
     /* FOR GROUP QUESTS */
     static constexpr uint32 MAX_GROUP_QUEST_PLAYERS = 5;
     static constexpr uint32 MIN_GROUP_FOR_ELITE = 3;     // members on the map within GROUP_LEVEL_SPREAD levels
     static constexpr int32 GROUP_LEVEL_SPREAD = 3;
-    static constexpr uint32 GROUP_CHECK_MS = 10 * IN_MILLISECONDS;
-    /* FOR QUEST GIVER */
-    // Time on one giver, walking and interacting, after which it is skipped until the next IDLE.
-    const uint32 questGiverGiveUpTime = 60 * IN_MILLISECONDS;
-    // A longer pause (combat, eating) starts the timer over.
-    const uint32 questGiverRetryGap = 5 * IN_MILLISECONDS;
+    static constexpr uint32 GROUP_CHECK_MS = 10 * IN_MILLISECONDS;  // [timers] class (b): a cache of HasCapableGroup
 };
 
 #endif

@@ -260,19 +260,20 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
         return false;
 
     // Write-off cases that do go into `visited` (this bot can't harvest
-    // the node, now or later this session):
+    // the node, now or later this session), [timers] by facts, no stay time:
     // - IsEmpty: no access to the loot at all (quest-gated chests and
-    //   anything else the index filter misses). Deliberately only the
-    //   content check - positional/transient failures like the loot
-    //   pipeline's Z-distance check on a slope are left to the timeout,
-    //   so the bot doesn't bounce off harvestable nodes.
-    // - nodeStayTime timeout: the loot pipeline failed to harvest a live
-    //   node in time; without the write-off the bot would re-select it
-    //   forever.
+    //   anything else the index filter misses).
+    // - the lock's own requirements judged without the height check (skill
+    //   too low, no tool, bags full): no step changes them.
+    // - no walk reaches the node's reach (the approach below).
+    // Positional failures like the loot pipeline's Z-distance check on a
+    // slope are the approach's business, so the bot doesn't bounce off
+    // harvestable nodes.
     LootObject lootObj(bot, go->GetGUID());
-    bool timedOut = GetMSTimeDiffToNow(data.lastReach) > nodeStayTime;
-    if (lootObj.IsEmpty() || timedOut)
+    if (lootObj.IsEmpty() || !lootObj.IsLootPossible(bot, false))
     {
+        LOG_INFO("playerbots", "[guild20] {} gives up gather node {}: {}", bot->GetName(), data.nodeSpawnId,
+                 lootObj.IsEmpty() ? "no access to its loot" : "its lock needs what the bot lacks (skill, tool, bags)");
         AbandonNode(data, /*markVisited*/ true);
         return true;
     }
@@ -296,13 +297,29 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // around a corner). A validated path (exact_waypoint false) climbs,
     // descends and routes around geometry to the node. This only runs when
     // the pipeline's higher-relevance approach already failed to move this
-    // tick; a node with no reachable path is retired by the timeout above.
+    // tick; [timers] a node no walk reaches (the walk refused from where the
+    // bot stands, its last walk there over) is written off, no timeout.
     if (!lootObj.IsLootPossible(bot) || bot->GetDistance(go) > INTERACTION_DISTANCE - 2.0f)
     {
         if (bot->isMoving())
             return false;
-        return MoveTo(bot->GetMapId(), data.nodePos.GetPositionX(), data.nodePos.GetPositionY(),
-                      data.nodePos.GetPositionZ(), false, false, false, false);
+        if (MoveTo(bot->GetMapId(), data.nodePos.GetPositionX(), data.nodePos.GetPositionY(),
+                   data.nodePos.GetPositionZ(), false, false, false, false))
+            return true;
+        // the walk's own refusal is the fact (as MoveFarToDirect reads it): a busy or not-yet-allowed move is no proof
+        std::string const& refusal = s_moveRefusal;
+        if (!refusal.empty() && refusal.find("IsWaitingForLastMove") == std::string::npos &&
+            refusal.find("IsDuplicateMove") == std::string::npos &&
+            refusal.find("IsMovingAllowed") == std::string::npos)
+        {
+            LOG_INFO("playerbots", "[guild20] {} gives up gather node {}: no walk reaches its reach ({:.1f} yd, "
+                     "height gap {:.1f} yd): {}",
+                     bot->GetName(), data.nodeSpawnId, bot->GetDistance(go),
+                     std::fabs(go->GetPositionZ() - bot->GetPositionZ()), refusal);
+            AbandonNode(data, /*markVisited*/ true);
+            return true;
+        }
+        return false;
     }
 
     // The loot pipeline only dismounts, it never leaves shapeshift form. Drop

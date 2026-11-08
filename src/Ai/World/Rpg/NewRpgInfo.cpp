@@ -103,9 +103,9 @@ void NewRpgInfo::Reset()
 void NewRpgInfo::SetMoveFarTo(WorldPosition pos)
 {
     nearestMoveFarDis = FLT_MAX;
-    stuckTs = 0;
-    stuckAttempts = 0;
+    stuckSpots.clear();
     moveFarPos = pos;
+    dalaranPortalFailedMage.Clear();  // [timers] another destination: every mage is asked again
     moveFarFailed = false;
     farRoute.clear();
 }
