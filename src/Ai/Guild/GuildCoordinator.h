@@ -55,14 +55,61 @@ enum class GuildOrderType : uint8
     JOIN,          // the guild exists: an online member with the invite right invites it (no walk), it accepts
     BANK_TAB,      // the guild master buys the first bank tab with its own gold at a guild vault
     // [guild81] honest bot <-> bot transfers (GuildTransfer.cpp)
-    TRADE_TO,      // trade an item / gold with a member next to it (core TRADE_DISTANCE)
-    MAIL_TO,       // mail an item / gold at a mailbox (core postage, core delivery time); the receiver takes it
-    DONATE_GOLD    // free surplus gold to the guild master for the first bank tab (by trade or mail)
+    TRADE_TO,     // trade an item / gold with a member next to it (core TRADE_DISTANCE)
+    MAIL_TO,      // mail an item / gold at a mailbox (core postage, core delivery time); the receiver takes it
+    DONATE_GOLD,  // free surplus gold to the guild master for the first bank tab (by trade or mail)
+    SELL,         // [tasks] items the global leader gave up: sold at the next vendor visit (SellMarked)
+    COOP          // [coop] help a member with a quest in a co-op party (New RPG co-op runs it, never NextStep)
+};
+
+// [tasks] a bot's task list: every order is a task with its urgency, place, origin and creation time
+enum class GuildTaskPriority : uint8
+{
+    URGENT,     // may interrupt questing (a five called, the guild founding, a profession that beats questing)
+    HELP,       // [coop] a co-op party's quest: below the urgent tasks, above the town ones
+    CONVENIENT  // a town task: waits until the bot is in that town anyway (turn-ins, passing through)
+};
+
+enum class GuildTaskPlace : uint8
+{
+    FIELD,
+    TOWN,
+    MAILBOX,
+    BANK,
+    VENDOR,
+    TRAINER
+};
+
+enum class GuildTaskSource : uint8
+{
+    GLOBAL,  // the global leader
+    FIVE,    // the five-leader / the five's call
+    SYSTEM   // the core / a mechanic (delivered mail, the default quest task)
+};
+
+// [tasks] PROFESSION: what the global leader shifts the bot to
+enum class GuildProfessionKind : uint8
+{
+    NONE,
+    TRAIN,   // learn the profession / the next rank at its trainer
+    GATHER,  // gather the reagents of its own skill-ups itself
+    BUY,     // buy vendor reagents of its skill-ups
+    CRAFT    // craft its skill-ups from the reagents it holds
 };
 
 struct GuildOrder
 {
     GuildOrderType type{GuildOrderType::QUEST};
+    GuildTaskPriority priority{GuildTaskPriority::URGENT};
+    GuildTaskPlace place{GuildTaskPlace::FIELD};
+    GuildTaskSource source{GuildTaskSource::GLOBAL};
+    GuildProfessionKind profession{GuildProfessionKind::NONE};
+    uint32 skillLine{0};  // PROFESSION
+    uint32 townArea{0};   // a town task: the area of its spot (0: no fixed spot)
+    uint32 townZone{0};
+    bool townCapital{false};  // a capital's zone: any spot of the city counts as being there
+    std::string townName;
+    bool waitsTown{false};  // a convenient town task the bot is not in the town of: questing goes on
     uint32 itemId{0};
     uint32 count{0};
     uint32 forLow{0};        // the member it is for (0 = the guild bank)
@@ -70,7 +117,7 @@ struct GuildOrder
     std::string reason;
     std::string status;
     bool executable{false};  // false = dormant (no guild / no tab / stage 2): New RPG goes on with quests
-    uint32 since{0};         // game time seconds
+    uint32 since{0};         // game time seconds of its creation: display only, never a decision input
     // [guild50] BUY: the vendor spawn and price; CRAFT_FOR: the recipe
     uint32 npcEntry{0};
     WorldPosition pos{};
@@ -78,6 +125,7 @@ struct GuildOrder
     uint32 extendedCost{0};  // [guild50] BUY with tokens / emblems / honor
     uint32 spellId{0};
     uint32 transferId{0};  // [guild81] TRADE_TO / MAIL_TO / DONATE_GOLD: the transfer (0: take the delivered mail)
+    uint32 placeId{0};     // [gather] GATHER: the GuildGatherPlan place
 };
 
 // What New RPG does for the order (map thread).
@@ -88,7 +136,8 @@ struct GuildRunStep
         NONE,    // no executable order: quests
         GATHER,  // DO_GATHER in this zone
         WALK,    // GO_CAMP to pos (the guild vault)
-        BUSY     // the order acted this tick (cast started)
+        BUSY,    // the order acted this tick (cast started)
+        GRIND    // [gather] GO_GRIND to pos (a skinning place: its mobs are killed and skinned)
     };
     Kind kind{NONE};
     WorldPosition pos{};
@@ -215,6 +264,15 @@ public:
     void AddAiTime(Player* bot, uint64 microseconds);
     // [guild50] the choice reward the global leader picked for this quest (-1 = none: the bot picks itself)
     int32 RewardChoice(Player* bot, Quest const* quest);
+    // [tasks] map thread: the PROFESSION task the global leader gave the bot (NONE: questing); the profession
+    // executors (NewRpgProfession::StartTask, NewRpgCraft::StartCraft) should run only for a kind returned here
+    GuildProfessionKind ProfessionCall(Player* bot, uint32* skillLine = nullptr);
+    // [coop] map thread, read only: the bot runs or must start an URGENT task now (its first executable urgent order
+    // not waiting for a town, its five, an urgent vault run); why: the task's name
+    bool UrgentTask(Player* bot, std::string* why) const;
+    // [coop] world / map thread: the co-op task enters / leaves the bot's task list ([tasks] add / done, BotControl)
+    void AddCoopTask(uint32 low, uint32 partnerLow, uint32 questId, bool leads, std::string const& why);
+    void EndCoopTask(uint32 low, uint32 questId, std::string const& why);
 
     struct PlanRow
     {
@@ -325,6 +383,7 @@ private:
         bool stuckAlerted{false};
         std::string stuckKey;
         std::string waitReason;
+        uint32 skillSum{0};         // [guild15] its profession skills at the last health sample (crafting = progress)
         std::deque<uint32> deaths;  // game time
         bool deathOpen{false};      // dead since the last DEATH alert
         uint64 xpTotal{0};
@@ -339,6 +398,33 @@ private:
         std::map<uint32, RewardPick> rewards;  // quest -> the choice to take
         std::vector<Expect> expect;      // items about to appear in its bags that belong to another member
         uint32 gearAt{0};
+        // [tasks] the task list's log and metrics
+        std::set<std::string> ranTasks;  // keys of tasks the bot started (an ended one is "done", else "dropped")
+        uint32 visitTown{0};             // the town of the town tasks it runs on this visit
+        uint32 visitTasks{0};
+        // [tasks] the pace samples of the health update: (game time, xp total, money, no PROFESSION task)
+        std::deque<std::tuple<uint32, uint64, uint32, bool>> pace;
+        float copperPerXp{0.0f};  // the core's quest XP -> money at max level over its quest log (last seen)
+        uint8 rpgStatus{0};       // the last New RPG status (gathering time)
+        uint32 rpgStatusAt{0};
+        std::map<uint32, std::string> profDecision;  // skill line -> the last [guild] decision (logged on change)
+    };
+
+    // [tasks] the global leader's profession call for one member (UpdateProfessions, lock_)
+    struct ProfessionPick
+    {
+        GuildProfessionKind kind{GuildProfessionKind::NONE};
+        uint32 skillLine{0};
+        uint32 itemId{0};  // GATHER / BUY: the reagent
+        uint32 count{0};
+        std::string details;
+        std::string reason;
+    };
+    struct TrainerRank
+    {
+        uint32 reqLevel{0};
+        uint32 reqSkill{0};
+        uint32 maxSkill{0};
     };
 
     struct LootReport
@@ -482,6 +568,8 @@ private:
         WorldPosition pos{};
         uint32 areaTeam{0};
         uint32 areaId{0};  // [guild15] its town (the area it stands in): mailed on a visit there
+        uint32 zoneId{0};
+        bool capital{false};  // [guild15] in a capital city's zone (AreaTable AREA_FLAG_CAPITAL)
     };
     void LoadMailboxes();
     void UpdateTransfers();
@@ -506,6 +594,20 @@ private:
     void UpdateLeaders();
     void UpdateWanted();
     void UpdateOrders();
+    // [tasks] the task list: urgency / place / origin / town of each task (world thread, lock_ held), whether a
+    // convenient town task waits for the town (both threads), the add / end log
+    void ClassifyTask(GuildOrder& o);
+    // [tasks] a member whose gear plan (now or later) holds this item, 0: none (lock_ held): no disenchant / sale
+    uint32 PlannedFor(uint32 itemId) const;
+    static bool TownReady(Player* bot, GuildOrder const& o);
+    void LogTaskChanges(uint32 low, BotState& st, std::vector<GuildOrder> const& now);
+    std::string TasksText(BotState const& st) const;
+    // [tasks] profession vs questing, decided by the global leader only (world thread)
+    void UpdateProfessions();
+    bool QuestPace(BotState const& st, float& copperPerMinute) const;  // false: no questing samples yet
+    float GatherPace(uint32 skill) const;                              // units per minute of gathering, < 0: no data
+    uint32 TrainerCap(uint32 skillLine, uint8 level) const;            // the highest rank's max skill by level
+    void RecordPace(BotState& st, Player* p, uint32 now) const;        // UpdateHealth
     void UpdateGear();  // [guild50] one member's upgrade plan per call
     void PlanGear(Player* m, std::vector<GearPick>& now, std::vector<GearPick>& plan,
                   std::map<uint32, RewardPick>& rewards, std::vector<Player*> const& bots,
@@ -565,7 +667,9 @@ private:
     bool autoFives_{true};
     uint32 fiveTimer_{0};
     uint32 autoFiveTimer_{0};
-    uint32 raidLeader_[2]{0, 0};  // A, B
+    uint32 raidLeader_[3]{0, 0, 0};  // A, B, C (indexed by grp - 'A')
+    uint32 gatherStockCalls_{0};  // [gather] UpdateOrders calls: the stock line every GATHER_STOCK_LOG_EVERY
+    static constexpr uint32 GATHER_STOCK_LOG_EVERY = 10;
     std::vector<WantedItem> wanted_;
     std::unordered_map<uint32, std::vector<std::pair<uint32, std::string>>> withdraw_;  // member -> bank items for it
     uint32 deathsTotal_{0};
@@ -630,6 +734,17 @@ private:
     };
     std::deque<CraftDone> craftsDone_;
     size_t gearCursor_{0};
+
+    // [tasks] professions (lock_ except the read-only trainer ranks)
+    std::unordered_map<uint32, std::vector<TrainerRank>> trainerRanks_;    // skill line -> ranks; read-only after Load
+    std::unordered_map<uint32, std::vector<ProfessionPick>> professions_;  // member -> the leader's calls
+    std::map<uint32, std::deque<std::pair<uint32, uint32>>> gatherUnits_;  // skill -> (game time, units gathered)
+    std::map<uint32, std::deque<std::pair<uint32, uint32>>> gatherTime_;   // skill -> (game time, seconds gathering)
+    std::unordered_map<uint64, uint32> townCache_;  // (map, x, y) -> area of a task spot (world thread)
+    // [tasks] metrics: town tasks started, their wait since creation, town visits with town tasks
+    uint64 townWaitSum_{0};
+    uint32 townStarted_{0};
+    uint32 townVisits_{0};
 
     // health samples (world thread)
     std::deque<std::pair<uint32, uint32>> ticks_;  // (ms time, diff ms)

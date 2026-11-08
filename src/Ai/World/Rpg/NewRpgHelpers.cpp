@@ -172,7 +172,7 @@ bool IsQuestCapableDoing(Player* bot, Quest const* quest)
     // [guild90] the same refusals as the taking action's (NewRpgBaseAction::IsQuestCapableDoing): a giver whose only
     // offer the action refuses is no giver (b317: Marleth Barleybrew's q310 ends at a script-spawned barrel, 11 bots
     // stood a minute each at him with grinding off, STUCK)
-    if (NewRpgBaseAction::EnderNeedsScript(quest->GetQuestId()) ||
+    if (NewRpgBaseAction::EnderNeedsScript(quest->GetQuestId()) || NewRpgBaseAction::NeedsItemUseCredit(quest) ||
         NewRpgBaseAction::HasFailedQuest(bot, quest->GetQuestId()) ||
         (quest->GetTimeAllowed() && !NewRpgBaseAction::TimedQuestFits(bot, quest)))
         return false;

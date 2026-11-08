@@ -153,6 +153,8 @@ public:
 protected:
     bool DoIncompleteQuest(NewRpgInfo::DoQuest& data);
     bool DoCompletedQuest(NewRpgInfo::DoQuest& data);
+    bool HandInBlocked(NewRpgInfo::DoQuest& data);  // [guild15] why the turn-in at the ender does not happen
+    bool BuyQuestVendorItem(uint32 questId);        // [guild15] an item objective a vendor in sight sells
     bool TalkToQuestNpc(uint32 questId);  // [guild15]
 
     const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;

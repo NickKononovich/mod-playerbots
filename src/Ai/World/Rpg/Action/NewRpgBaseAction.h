@@ -85,6 +85,9 @@ public:
     static bool IsSpellUnlockClassQuest(Quest const* quest);
     // [guild14] every ender of the quest is an object the world keeps despawned until a script spawns it
     static bool EnderNeedsScript(uint32 questId);
+    // [guild15] a creature / object objective whose credit comes from using the quest's own tool item (its start item,
+    // with an on-use spell: a flute, a disguise kit) - the bot does not use quest items, so it is not taken
+    static bool NeedsItemUseCredit(Quest const* quest, std::string* why = nullptr);
     // [guild13] where a bot goes after a death: the nearest ender of a quest in its log, else a travel hub (inn)
     static WorldPosition NearestHub(Player* bot);
     // [guild13] before any far walk: the revived bot's way to its hub, the regeneration sit of a bot that must rest

@@ -142,7 +142,7 @@ bool GuildCoordinator::FoundingEligible(uint32 low, Player* p) const
         p->GetGuildId() || p->GetGuildIdInvited())
         return false;
     PlanRow const* row = Row(low);
-    if (!row || (row->grp != 'A' && row->grp != 'B'))
+    if (!row || row->grp < 'A' || row->grp > 'C')
         return false;
     auto const st = bots_.find(low);
     if (st == bots_.end())
@@ -191,7 +191,7 @@ void GuildCoordinator::UpdateFounding()
     // bags (a restart keeps both)
     std::vector<std::pair<uint32, Player*>> online;
     for (PlanRow const& row : plan_)
-        if (row.grp == 'A' || row.grp == 'B')
+        if (row.grp >= 'A' && row.grp <= 'C')
             if (Player* p = Online(row.low))
                 online.emplace_back(row.low, p);
     Guild* guild = nullptr;
@@ -237,7 +237,7 @@ void GuildCoordinator::UpdateFounding()
         std::map<uint32, std::string> joinState;
         for (PlanRow const& row : plan_)
         {
-            if (row.grp != 'A' && row.grp != 'B')
+            if (row.grp < 'A' || row.grp > 'C')
                 continue;
             Player* p = Online(row.low);
             if (p && p->GetGuildId() == guild->GetId())

@@ -32,6 +32,7 @@
 #include "QuestLevelRules.h"
 #include "NewRpgStrategy.h"
 #include "SoloSafety.h"  // [guild13]
+#include "NewRpgCoop.h"  // [coop]
 #include "PerfMonitor.h"  // [guild15]
 #include "QuestStats.h"  // [guild90]
 #include "World.h"  // [guild13]
@@ -217,6 +218,15 @@ void NewRpgBaseAction::ClearSpentSpots(Player* bot, uint32 questId)
         quests->second.erase(questId);
 }
 
+namespace
+{
+    // [guild15] DestinationRefused's memory: bot -> its last look (destination, level; refused), and every destination
+    // it refused at its level
+    std::mutex refusedDestLock;
+    std::unordered_map<uint32, std::pair<std::tuple<int32, int32, uint8>, bool>> lookedDest;
+    std::unordered_map<uint32, std::set<std::tuple<int32, int32, uint8>>> refusedDest;
+}
+
 bool NewRpgBaseAction::DestinationRefused(WorldPosition const& dest)
 {
     if (dest.GetMapId() != bot->GetMapId() || !SoloSafety::Applies(bot) || bot->IsInCombat() ||
@@ -231,18 +241,31 @@ bool NewRpgBaseAction::DestinationRefused(WorldPosition const& dest)
     // the idle mob whose reach (aggro radius, its wander area) covers the destination nearest to it: its pull as the
     // judge sees it (the pack it brings); one look per destination
     // (a refusal leaves a danger zone there: the check above answers it from then on)
-    static std::mutex lookLock;
     // bot -> (destination, level) of its last look, and whether the walk there passes a refused reach
-    static std::unordered_map<uint32, std::pair<std::tuple<int32, int32, uint8>, bool>> looked;
+    // [guild15] ... and every refused destination, until the danger changes (its level, a repair: ForgetRefusals):
+    // two targets looked at in turn were each judged again on every look (b333 gather routes: Mutil, Ganna, Peny)
     std::tuple<int32, int32, uint8> const key{int32(dest.GetPositionX()), int32(dest.GetPositionY()),
                                               bot->GetLevel()};
     {
-        std::lock_guard<std::mutex> guard(lookLock);
-        auto& last = looked[bot->GetGUID().GetCounter()];
+        std::lock_guard<std::mutex> guard(refusedDestLock);
+        auto& last = lookedDest[bot->GetGUID().GetCounter()];
         if (last.first == key)
             return last.second;
+        auto& refused = refusedDest[bot->GetGUID().GetCounter()];
+        if (refused.count(key))
+            return true;
         last = {key, false};
     }
+    auto const remember = [&]()
+    {
+        std::lock_guard<std::mutex> guard(refusedDestLock);
+        lookedDest[bot->GetGUID().GetCounter()].second = true;
+        auto& refused = refusedDest[bot->GetGUID().GetCounter()];
+        // a refusal of a lower level is judged again at this one
+        for (auto it = refused.begin(); it != refused.end();)
+            it = std::get<2>(*it) != bot->GetLevel() ? refused.erase(it) : std::next(it);
+        refused.insert(key);
+    };
     // [guild15] the walk itself: a destination inside a camp it must not fight has no walk round the camp (b323:
     // Baridrol L8 to Oben Rageclaw in Ban'ethil Barrow Den, Orton / Cassand L8 to Rolf's corpse at Stone Cairn
     // Lake, Ravelandy to Jerod's Landing: attacked by 2-6, dead)
@@ -253,8 +276,7 @@ bool NewRpgBaseAction::DestinationRefused(WorldPosition const& dest)
             LOG_INFO("playerbots", "[solo] {} L{} walk to ({:.0f},{:.0f}) refused: its way passes a pack it does not "
                      "fight and no walk goes round it", bot->GetName(), bot->GetLevel(), dest.GetPositionX(),
                      dest.GetPositionY());
-            std::lock_guard<std::mutex> guard(lookLock);
-            looked[bot->GetGUID().GetCounter()].second = true;
+            remember();
             return true;
         }
     }
@@ -292,6 +314,7 @@ bool NewRpgBaseAction::DestinationRefused(WorldPosition const& dest)
              verdict.why);
     RememberDanger(bot, verdict.at.GetPositionX(), verdict.at.GetPositionY(), verdict.radius, nearest->GetEntry(),
                    verdict.topLevel);
+    remember();
     return true;
 }
 
@@ -356,7 +379,22 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
                 LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: its spot lies among mobs it does not pull",
                          bot->GetName(), bot->GetLevel(), quest->questId);
                 NotePostpone(bot, quest->questId, "its spot lies among mobs it does not pull");
+                // [coop] a camp it cannot solo: it looks for a party for it (NewRpgCoop.h)
+                if (quest->pos == dest)
+                    NewRpgCoop::OnSpotRefused(botAI, bot, quest->questId, quest->objectiveIdx, dest);
             }
+        }
+        // [guild15] a gather node there: the refusal is a fact, the next node is taken at once in the same gather run
+        // (b333 Peny: every refused node cost a whole IDLE -> GATHER round, LOOP alerts); a later run's look at it is
+        // answered from DestinationRefused's memory until the danger changes
+        if (auto* gather = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data); gather && gather->nodeSpawnId)
+        {
+            LOG_INFO("playerbots", "[guild20] {} L{} TARGET_SWITCH gather node {}: its walk is refused, the next node",
+                     bot->GetName(), bot->GetLevel(), gather->nodeSpawnId);
+            gather->visited.insert(gather->nodeSpawnId);
+            gather->nodeSpawnId = 0;
+            gather->lastReach = 0;
+            return true;
         }
         // [guild14] a gather node / profession npc there: the state ends, its action marks the target failed and
         // takes the next one (b303 Gilduck, Gnetlibozz: DO_GATHER failed on a refused node every tick, STUCK)
@@ -725,6 +763,34 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
     {
         if (trip.phase == Phase::Leave)
         {
+            // [guild15] the stop is over and the bot stands on the land (the static ground at or above the deck under
+            // it, a client knows the surface it stands on): off the passenger list, the leg is done - never a walk to
+            // a deck point of the departed transport (b332 Eraelor stood on the Auberdine pier as a passenger, walked
+            // "back onto the deck" with the transport's stale offset and was dropped in the sea, 400+ WALK_FAIL)
+            float const bx = bot->GetPositionX(), by = bot->GetPositionY(), bz = bot->GetPositionZ();
+            float deckZ = INVALID_HEIGHT;
+            if (transport->m_model)
+            {
+                G3D::Ray const ray(G3D::Vector3(bx, by, bz + DECK_RAY_ABOVE), G3D::Vector3(0.0f, 0.0f, -1.0f));
+                float distance = DECK_RAY_LENGTH;
+                if (transport->m_model->intersectRay(ray, distance, false, bot->GetPhaseMask(),
+                                                     VMAP::ModelIgnoreFlags::Nothing))
+                    deckZ = bz + DECK_RAY_ABOVE - distance;
+            }
+            bool const onDeck = deckZ != INVALID_HEIGHT && std::fabs(deckZ - bz) <= DECK_MAX_STEP;
+            float const groundZ = bot->GetMap()->GetHeight(bot->GetPhaseMask(), bx, by, bz + DECK_RAY_ABOVE, true);
+            bool const onLand = groundZ > INVALID_HEIGHT && groundZ != VMAP_INVALID_HEIGHT_VALUE &&
+                                std::fabs(groundZ - bz) <= DECK_MAX_STEP && (!onDeck || groundZ >= deckZ);
+            if (onLand)
+            {
+                transport->RemovePassenger(bot, true);
+                bot->StopMovingOnCurrentPos();
+                info.ClearTrip();
+                LOG_INFO("playerbots", "[rpg] {} L{} TRIP_LEG_DONE off {}: on the land at ({:.1f},{:.1f},{:.1f}) as "
+                         "the stop ended, the walk goes on from here",
+                         bot->GetName(), bot->GetLevel(), line->entry, bx, by, bz);
+                return HoldPosition(IN_MILLISECONDS);
+            }
             // [guild15] the transport left while the bot walked off: back to the middle of the deck, not the edge
             info.SetTripPhase(Phase::Ride);
             LOG_INFO("playerbots", "[rpg] {} L{} back onto the deck of {}: it left the stop before the bot was off "
@@ -1332,7 +1398,56 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     // the nearest polygon: the core's search box (PathGenerator::GetPolyByLocation, 3 yd round, 50 yd tall), widened
     // round the bot up to its sight
     dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery();
-    if (!query || bot->IsInWater() || bot->IsFlying())
+    if (!query || bot->IsFlying())
+        return false;
+    // [guild15] in open water (b333 Eraelor / Bierya, left in the sea off the Rut'theran boat: 400+ WALK_FAIL "no
+    // polygon in sight"): the sea's surface has no navmesh; it swims on the surface towards the destination, a sight
+    // at a time, until the shore's polygons are under it and the route search walks it on
+    {
+        Map* map = bot->GetMap();
+        LiquidData const liquid =
+            map->GetLiquidData(bot->GetPhaseMask(), here.x, here.y, here.z, bot->GetCollisionHeight(), {});
+        float const floorZ = map->GetHeight(bot->GetPhaseMask(), here.x, here.y, here.z, true);
+        bool const openWater = liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > INVALID_HEIGHT &&
+                               (bot->IsInWater() || PlayerbotAI::HasGroundSupport(bot, here.x, here.y, here.z)) &&
+                               (floorZ <= INVALID_HEIGHT || floorZ + bot->GetCollisionHeight() < liquid.Level);
+        if (openWater)
+        {
+            float const toDest = bot->GetExactDist2d(dest.GetPositionX(), dest.GetPositionY());
+            float const step = std::min(toDest, float(sPlayerbotAIConfig.SightDistance));
+            float const heading = bot->GetAngle(dest.GetPositionX(), dest.GetPositionY());
+            // the heading to the destination first, then turned off it both ways until the surface ahead is clear
+            for (float turn = 0.0f; turn <= float(M_PI) && step > bot->GetCombatReach(); turn += float(M_PI) / 6.0f)
+                for (float const side : {1.0f, -1.0f})
+                {
+                    float const angle = heading + side * turn;
+                    float const tx = here.x + std::cos(angle) * step;
+                    float const ty = here.y + std::sin(angle) * step;
+                    float const tz = liquid.Level;
+                    if (!map->isInLineOfSight(here.x, here.y, here.z + bot->GetCollisionHeight(), tx, ty,
+                                              tz + bot->GetCollisionHeight(), bot->GetPhaseMask(),
+                                              LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+                    {
+                        if (turn == 0.0f)
+                            break;
+                        continue;
+                    }
+                    bot->GetMotionMaster()->MovePoint(0, tx, ty, tz, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
+                    float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(step), 0.0f,
+                                                   float(sPlayerbotAIConfig.MaxWaitForMove));
+                    AI_VALUE(LastMovement&, "last movement")
+                        .Set(bot->GetMapId(), tx, ty, tz, bot->GetOrientation(), delay,
+                             MovementPriority::MOVEMENT_NORMAL);
+                    return logged(Acore::StringFormat("in open water (surface z {:.1f}): swims {:.0f} yd {}",
+                                                      liquid.Level, step,
+                                                      turn == 0.0f ? "towards the destination"
+                                                                   : "along the clear water off its heading"));
+                }
+            logged("in open water: no clear stretch of surface in sight");
+            return false;
+        }
+    }
+    if (bot->IsInWater())
         return false;
     dtQueryFilter filter;
     filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER));
@@ -1493,6 +1608,35 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                                       uint32(best->damage)));
 }
 
+// [guild15] the walk's points up to `length` along them: a stretch that descends more than PlayerbotAI's
+// GROUND_SUPPORT_DROP (6 yd) with no ground or liquid within that drop under a point of it (HasGroundSupport, every
+// GROUND_SAMPLE_STEP = 2 yd, the airborne spline guard's own sampling); rim: the last supported point
+static bool LegOverOpenAir(Player* bot, Movement::PointsArray const& points, float length, G3D::Vector3& rim)
+{
+    constexpr float SUPPORT_DROP = 6.0f;  // PlayerbotAI.cpp GROUND_SUPPORT_DROP
+    constexpr float SAMPLE_STEP = 2.0f;   // PlayerbotAI.cpp GROUND_SAMPLE_STEP
+    float walked = 0.0f;
+    for (size_t i = 1; i < points.size() && walked < length; ++i)
+    {
+        G3D::Vector3 const& from = points[i - 1];
+        G3D::Vector3 const& to = points[i];
+        float const gap = (to - from).length();
+        if (from.z - to.z > SUPPORT_DROP && gap > 0.0f)
+        {
+            rim = from;
+            for (float at = SAMPLE_STEP; at < gap; at += SAMPLE_STEP)
+            {
+                G3D::Vector3 const point = from + (to - from) * (at / gap);
+                if (!PlayerbotAI::HasGroundSupport(bot, point.x, point.y, point.z))
+                    return true;
+                rim = point;
+            }
+        }
+        walked += gap;
+    }
+    return false;
+}
+
 bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
 {
     if (dest == WorldPosition())
@@ -1617,8 +1761,24 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                    false, true))
             return true;
         if (!s_moveRefusal.empty() && s_moveRefusal.find("IsWaitingForLastMove") == std::string::npos &&
-            s_moveRefusal.find("IsDuplicateMove") == std::string::npos)
+            s_moveRefusal.find("IsDuplicateMove") == std::string::npos &&
+            s_moveRefusal.find("IsMovingAllowed") == std::string::npos)
+        {
             NoteWalkFailure(dest, "near walk refused: " + s_moveRefusal);  // [guild13]
+            // [guild15] a gather node the walk's own guards refuse (straight under or over the bot: under water, in
+            // a cave below - b333 Irrua, Hobliir, Mutil, Thyllyn): one refusal is the fact, the next node at once
+            if (auto* gather = std::get_if<NewRpgInfo::DoGather>(&botAI->rpgInfo.data);
+                gather && gather->nodeSpawnId && gather->nodePos == dest)
+            {
+                LOG_INFO("playerbots", "[guild20] {} L{} TARGET_SWITCH gather node {}: the near walk is refused ({}), "
+                         "the next node",
+                         bot->GetName(), bot->GetLevel(), gather->nodeSpawnId, s_moveRefusal);
+                gather->visited.insert(gather->nodeSpawnId);
+                gather->nodeSpawnId = 0;
+                gather->lastReach = 0;
+                return true;
+            }
+        }
         return false;
     }
 
@@ -1697,6 +1857,24 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 G3D::Vector3 leg = endPos;
                 if (SoloSafety::Applies(bot) && path.length > sPlayerbotAIConfig.SightDistance)
                     leg = Leader::Travel::PointOnPath(path.points, sPlayerbotAIConfig.SightDistance);
+                // [guild15] a stretch of the leg that drops through open air (no ground or liquid under it, sampled as
+                // PlayerbotAI::GuardAirborneSpline samples a descending leg): the guard cuts that walk at the rim on
+                // every try (b333 Hobliir, Ellosera at the Exodar: "refused a straight move over open air", STUCK);
+                // the ways off from here are searched instead (the core's path, the route back, a survivable jump)
+                if (G3D::Vector3 rim; LegOverOpenAir(bot, path.points,
+                                                       SoloSafety::Applies(bot) ? sPlayerbotAIConfig.SightDistance
+                                                                                : path.length,
+                                                       rim))
+                {
+                    NoteWalkFailure(dest, Acore::StringFormat("route {} ({:.0f} yd): its leg drops through open air at "
+                                                              "({:.1f},{:.1f},{:.1f})",
+                                                              type == PATHFIND_NORMAL ? "complete" : "partial",
+                                                              path.length, rim.x, rim.y, rim.z));
+                    if (WalkOffIsland(dest, disToDest))
+                        return true;
+                    NoteFarSearchFailed();
+                    return false;
+                }
                 if (MoveTo(bot->GetMapId(), leg.x, leg.y, leg.z, false, false, false, true))
                     return true;
                 NoteWalkFailure(dest, Acore::StringFormat("route {} ({:.0f} yd, ends {:.0f} yd short), the walk "
@@ -2127,6 +2305,10 @@ bool NewRpgBaseAction::IsQuestCapableDoing(Quest const* quest)
 
     // [guild14] a quest ended only at a script-spawned object is not taken (the bot does not run the script)
     if (EnderNeedsScript(quest->GetQuestId()))
+        return false;
+
+    // [guild15] an objective only the quest's tool item gives credit for (b333 Kianey q6661, Farret / Feette q9531)
+    if (NeedsItemUseCredit(quest))
         return false;
 
     // [guild12] a quest it failed once (timed, escort) is not taken again
@@ -3232,6 +3414,11 @@ void NewRpgBaseAction::ForgetRefusals(Player* bot)
 {
     if (!bot)
         return;
+    {
+        std::lock_guard<std::mutex> guard(refusedDestLock);  // [guild15] the danger changed: judged again
+        refusedDest.erase(bot->GetGUID().GetCounter());
+        lookedDest.erase(bot->GetGUID().GetCounter());
+    }
     std::lock_guard<std::mutex> guard(deathZonesLock);
     auto const found = deathZones.find(bot->GetGUID().GetCounter());
     if (found == deathZones.end())
@@ -3264,6 +3451,30 @@ CreatureTemplate const* NewRpgBaseAction::InDangerZone(Player* bot, float x, flo
             return sObjectMgr->GetCreatureTemplate(zone.entry);
     }
     return nullptr;
+}
+
+bool NewRpgBaseAction::NeedsItemUseCredit(Quest const* quest, std::string* why)
+{
+    if (!quest || !quest->GetSrcItemId())
+        return false;
+    bool creditObjective = false;
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+        creditObjective = creditObjective || (quest->RequiredNpcOrGo[i] && quest->RequiredNpcOrGoCount[i]);
+    if (!creditObjective)
+        return false;
+    ItemTemplate const* tool = sObjectMgr->GetItemTemplate(quest->GetSrcItemId());
+    if (!tool)
+        return false;
+    for (auto const& spell : tool->Spells)
+        if (spell.SpellId > 0 && spell.SpellTrigger == ITEM_SPELLTRIGGER_ON_USE)
+        {
+            if (why)
+                *why = Acore::StringFormat("its objective credit comes from using {} (spell {}), the bot does not use "
+                                           "quest items",
+                                           tool->Name1, spell.SpellId);
+            return true;
+        }
+    return false;
 }
 
 bool NewRpgBaseAction::EnderNeedsScript(uint32 questId)

@@ -65,6 +65,8 @@ namespace
     }
 }
 #include "SoloSafety.h"  // [guild13]
+#include "TerrainHazard.h"  // [guild15] SafeFloorZ
+#include "NewRpgCoop.h"  // [coop]
 #include "AreaDefines.h"
 #include "Group.h"
 #include "NewRpgTriggers.h"
@@ -551,6 +553,21 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                  status < RPG_STATUS_END ? names[status] : "?", detail);
     }
 
+    // [coop] a co-op party member goes with its party's leader; its own plan waits (NewRpgCoop.h)
+    {
+        NewRpgCoop::Order const coop = NewRpgCoop::Tick(botAI, bot);
+        if (coop.kind == NewRpgCoop::Order::Kind::Follow)
+        {
+            if (coop.farWalk ? MoveFarTo(coop.pos) : Follow(coop.leader))
+                return true;
+            if (coop.farWalk)
+                NewRpgCoop::NoWalk(bot);
+            return false;
+        }
+        if (coop.kind == NewRpgCoop::Order::Kind::Stay)
+            return false;
+    }
+
     // [guild3] full bags or low ammo: to a vendor first, as a player does (not out of a flight, rest or pvp)
     if ((status == RPG_IDLE || status == RPG_GO_GRIND || status == RPG_WANDER_RANDOM || status == RPG_DO_QUEST ||
          status == RPG_DO_GATHER || ((status == RPG_GO_CAMP || status == RPG_WANDER_NPC) && !info.vendorRunEntry)) &&
@@ -581,6 +598,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     info.ChangeToGoCamp(step.pos);
                     return true;
                 }
+                if (step.kind == GuildRunStep::GRIND)  // [gather] a skinning place: its mobs, killed and skinned
+                {
+                    LOG_INFO("playerbots", "[rpg] {} L{} GUILD GRIND reason: {}", bot->GetName(), bot->GetLevel(),
+                             step.reason);
+                    info.ChangeToGoGrind(step.pos);
+                    return true;
+                }
                 if (step.kind == GuildRunStep::GATHER)
                 {
                     if (sPlayerbotAIConfig.RpgStatusProbWeight[RPG_DO_GATHER] &&
@@ -601,7 +625,11 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 uint32 const questId = ChooseBestQuest(giverPos);
                 Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
                 // [guild20] after the hand-ins: the planned profession's trainer or tool vendor
+                // [tasks] single decider: a guild member works its profession only on the global leader's PROFESSION
+                // call, never on its own choice (a bot outside the guild plan leads itself)
                 if ((!quest || bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE) &&
+                    (!sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) ||
+                     sGuildCoordinator.ProfessionCall(bot) != GuildProfessionKind::NONE) &&
                     NewRpgProfession::StartTask(botAI, bot))
                     return true;
                 if (quest)
@@ -743,6 +771,23 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             {
                 data.progress = progress;
                 info.startT = getMSTime();
+            }
+
+            // [tasks] passing through a town: its town tasks run now (NextStep runs a convenient task only in its own
+            // town, the bot's quests go on after it)
+            if (bot->GetAreaId() != info.townCheckArea)
+            {
+                info.townCheckArea = bot->GetAreaId();
+                GuildRunStep const step = sGuildCoordinator.NextStep(bot, botAI);
+                if (step.kind == GuildRunStep::BUSY)
+                    return true;
+                if (step.kind == GuildRunStep::WALK)
+                {
+                    LOG_INFO("playerbots", "[rpg] {} L{} GUILD on the way (q{} waits) reason: {}", bot->GetName(),
+                             bot->GetLevel(), data.questId, step.reason);
+                    info.ChangeToGoCamp(step.pos);
+                    return true;
+                }
             }
 
             // DO_QUEST -> IDLE
@@ -1040,6 +1085,17 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
 bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
 {
     uint32 questId = data.questId;
+    // [guild15] a quest in the log whose objective needs its tool item used (taken before this check): postponed at
+    // once, never a wait for the respawn of something no kill gives credit for (b333 Kianey q6661 580 s STUCK)
+    if (std::string why; NewRpgBaseAction::NeedsItemUseCredit(data.quest, &why))
+    {
+        LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: unsupported: {}", bot->GetName(), bot->GetLevel(),
+                 questId, why);
+        NotePostpone(bot, questId, "unsupported: " + why);
+        botAI->lowPriorityQuest.insert(questId);
+        botAI->rpgInfo.ChangeToIdle();
+        return true;
+    }
     if (data.pos != WorldPosition())
     {
         /// @TODO: extract to a new function
@@ -1142,6 +1198,16 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             guessedZ = dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE;
             if (guessedZ)
                 dz = bot->GetPositionZ();
+            // [guild15] a floor the walk can end on: the navmesh polygon at the spot's height, else a real collision
+            // floor; the map grid's fallback height is no floor (b333 Mutil, Gnetlibozz: spots 11-22 yd under the bot,
+            // "near walk refused: the walk ends where the bot stands")
+            else if (!SafeFloorZ(bot, dx, dy, dz) && IsGridFallbackZ(bot, dx, dy, dz))
+            {
+                LOG_INFO("playerbots", "[rpg] {} L{} SKIP spot of q{} at ({:.0f},{:.0f},{:.0f}): no floor there (the "
+                         "map grid's fallback height)",
+                         bot->GetName(), bot->GetLevel(), questId, dx, dy, dz);
+                continue;
+            }
             if (FindBotPath(bot, dx, dy, dz).type & PATHFIND_NOPATH)
                 continue;
             objectiveIdx = poi.objectiveIdx;
@@ -1263,6 +1329,9 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         return true;
 
     if (TalkToQuestNpc(questId))  // [guild15]
+        return true;
+
+    if (BuyQuestVendorItem(questId))  // [guild15]
         return true;
 
     // [guild13] nothing to do at this spot (no mob it pulls, no quest object, no fight, no rest): the spot is spent,
@@ -1395,18 +1464,162 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         data.lastReachPOI = getMSTime();
         return true;
     }
-    // stayed at this POI for more than 5 minutes
-    if (GetMSTimeDiffToNow(data.lastReachPOI) >= poiStayTime)
+    // [guild15] at the ender's spot and the giver search (SearchQuestGiverAndAcceptOrReward, first in Execute) did
+    // not hand it in: why, from the game's own checks - never a wait on a clock (b333 Rollothan q83, Aevmae q9616
+    // stood 300 s each at the ender, then the quest was dropped)
+    return HandInBlocked(data);
+}
+
+// [guild15] an item objective a vendor in sight sells (b327-b333 Kharanos: q384's Rhapsody Malt from Innkeeper Belm -
+// 3-4 bots a run stood at the inn, the spot "spent" with no spawn of its source, silent STUCK): bought as a player
+// does, on its own money; a vendor it cannot buy from (money, a failed buy before) is logged and the quest postponed
+bool NewRpgDoQuestAction::BuyQuestVendorItem(uint32 questId)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest || bot->IsInCombat())
+        return false;
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
     {
-        // e.g. Can not reward quest to gameobjects
-        /// @TODO: It may be better to make lowPriorityQuest a global set shared by all bots (or saved in db)
-        botAI->lowPriorityQuest.insert(questId);
-        botAI->RecordQuestAbandoned(questId, QuestAbandonReason::CannotTurnIn);
-        LOG_DEBUG("playerbots", "[New RPG] {} marked as abandoned quest {}", bot->GetName(), questId);
-        botAI->rpgInfo.ChangeToIdle();
-        return true;
+        uint32 const itemId = quest->RequiredItemId[i];
+        if (!itemId || bot->GetItemCount(itemId, true) >= quest->RequiredItemCount[i])
+            continue;
+        for (ObjectGuid const& guid : AI_VALUE(GuidVector, "possible new rpg targets"))
+        {
+            Creature* npc = botAI->GetCreature(guid);
+            VendorItemData const* items = npc && npc->IsAlive() ? npc->GetVendorItems() : nullptr;
+            if (!items || !items->FindItemCostPair(itemId, 0))
+                continue;
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+            uint32 const cost = proto ? proto->BuyPrice : 0;
+            std::string why;
+            if (NewRpgProfession::BuyFailed(bot, npc->GetEntry(), itemId))
+                why = "the buy at " + npc->GetName() + " failed before";
+            else if (bot->GetMoney() < cost)
+                why = Acore::StringFormat("{} costs {}c at {}, it has {}c", proto->Name1, cost, npc->GetName(),
+                                          bot->GetMoney());
+            if (!why.empty())
+            {
+                LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: its item objective is sold, not dropped: {}",
+                         bot->GetName(), bot->GetLevel(), questId, why);
+                NotePostpone(bot, questId, why);
+                botAI->lowPriorityQuest.insert(questId);
+                botAI->rpgInfo.ChangeToIdle();
+                return true;
+            }
+            LOG_INFO("playerbots", "[rpg] {} L{} QUEST_BUY q{}: {} from {} ({}c)", bot->GetName(), bot->GetLevel(),
+                     questId, proto ? proto->Name1 : std::to_string(itemId), npc->GetName(), cost);
+            NewRpgProfession::StartBuy(botAI, bot, itemId, npc->GetEntry(), WorldPosition(npc), cost);
+            return true;
+        }
     }
     return false;
+}
+
+bool NewRpgDoQuestAction::HandInBlocked(NewRpgInfo::DoQuest& data)
+{
+    uint32 const questId = data.questId;
+    Quest const* quest = data.quest ? data.quest : sObjectMgr->GetQuestTemplate(questId);
+    if (!quest)
+        return false;
+    auto const postpone = [&](std::string const& why)
+    {
+        LOG_INFO("playerbots", "[rpg] {} L{} HANDIN_BLOCKED q{} {}: {}", bot->GetName(), bot->GetLevel(), questId,
+                 quest->GetTitle(), why);
+        NotePostpone(bot, questId, why);
+        botAI->lowPriorityQuest.insert(questId);
+        botAI->RecordQuestAbandoned(questId, QuestAbandonReason::CannotTurnIn);
+        botAI->rpgInfo.ChangeToIdle();
+        return true;
+    };
+    // the core's reward checks (Player::CanRewardQuest): the quest items, the money it takes, the daily limit
+    if (!bot->CanRewardQuest(quest, false))
+    {
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            if (quest->RequiredItemCount[i] &&
+                bot->GetItemCount(quest->RequiredItemId[i]) < quest->RequiredItemCount[i])
+            {
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(quest->RequiredItemId[i]);
+                return postpone(Acore::StringFormat("its item {} is not in the bags ({} of {})",
+                                                    proto ? proto->Name1 : std::to_string(quest->RequiredItemId[i]),
+                                                    bot->GetItemCount(quest->RequiredItemId[i]),
+                                                    quest->RequiredItemCount[i]));
+            }
+        if (quest->GetRewOrReqMoney() < 0 && !bot->HasEnoughMoney(-quest->GetRewOrReqMoney()))
+            return postpone(Acore::StringFormat("the turn-in takes {}c, it has {}c", -quest->GetRewOrReqMoney(),
+                                                bot->GetMoney()));
+        return postpone("the core refuses the reward (already rewarded, or a daily / weekly limit)");
+    }
+    // the reward items must fit its bags (Player::CanRewardQuest with the reward: the choice and the fixed items)
+    std::vector<std::pair<uint32, uint32>> rewards;
+    if (quest->GetRewChoiceItemsCount() > 0 && quest->RewardChoiceItemId[0])
+        rewards.emplace_back(quest->RewardChoiceItemId[0], quest->RewardChoiceItemCount[0]);
+    for (uint32 i = 0; i < quest->GetRewItemsCount(); ++i)
+        if (quest->RewardItemId[i])
+            rewards.emplace_back(quest->RewardItemId[i], quest->RewardItemIdCount[i]);
+    for (auto const& [itemId, count] : rewards)
+    {
+        ItemPosCountVec dest;
+        InventoryResult const res = bot->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, itemId, count);
+        if (res == EQUIP_ERR_OK)
+            continue;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        std::string const name = proto ? proto->Name1 : std::to_string(itemId);
+        if (res == EQUIP_ERR_INVENTORY_FULL || res == EQUIP_ERR_BAG_FULL)
+        {
+            // a free slot first: what it may sell goes to a vendor now (its visit before was at the same fill)
+            NewRpgInfo& info = botAI->rpgInfo;
+            info.vendorVisited = false;
+            if (StartVendorRun())
+            {
+                LOG_INFO("playerbots", "[rpg] {} L{} HANDIN_BLOCKED q{} {}: the bags hold no slot for {}, to a vendor "
+                         "first", bot->GetName(), bot->GetLevel(), questId, quest->GetTitle(), name);
+                return true;
+            }
+            return postpone("the bags hold no slot for its reward " + name + " and nothing in them is for sale");
+        }
+        return postpone(Acore::StringFormat("its reward {} cannot be stored (equip error {})", name, uint32(res)));
+    }
+    // rewardable: the ender in sight, and why the giver search passed it
+    for (char const* candidates : {"possible new rpg targets", "possible new rpg game objects"})
+        for (ObjectGuid const& guid : AI_VALUE(GuidVector, candidates))
+        {
+            WorldObject* object = ObjectAccessor::GetWorldObject(*bot, guid);
+            if (!object || !object->hasInvolvedQuest(questId))
+                continue;
+            if (botAI->rpgInfo.ignoredQuestGivers.count(guid))
+                return postpone("its ender " + object->GetName() + " was given up: no walk reaches it");
+            if (!NewRpgHelpers::CanInteractWithQuestGiver(bot, object))
+            {
+                // a dead ender respawns (the world's clock); the rest (hostile, no quest flag now) does not change
+                if (Creature* creature = object->ToCreature(); creature && !creature->IsAlive())
+                {
+                    time_t const now = time(nullptr);
+                    uint32 const left =
+                        creature->GetRespawnTimeEx() > now ? uint32(creature->GetRespawnTimeEx() - now) : 1;
+                    thread_local std::unordered_map<uint32, ObjectGuid> loggedDead;  // one line per bot and ender
+                    ObjectGuid& last = loggedDead[bot->GetGUID().GetCounter()];
+                    if (last != guid)
+                    {
+                        last = guid;
+                        LOG_INFO("playerbots", "[rpg] {} L{} hand-in q{}: its ender {} is dead, respawns in {} s",
+                                 bot->GetName(), bot->GetLevel(), questId, object->GetName(), left);
+                    }
+                    return ForceToWait(std::min<uint32>(left, 10) * IN_MILLISECONDS);
+                }
+                return postpone("its ender " + object->GetName() + " does not talk to it (hostile or no quest flag)");
+            }
+            // the giver search looks only so far (QUEST_GIVER_SEARCH_DISTANCE): walk up to the ender itself; within
+            // it the search should have taken it, so that is a computed failure
+            if (bot->GetDistance(object) <= NewRpgHelpers::QUEST_GIVER_SEARCH_DISTANCE)
+                return postpone("its ender " + object->GetName() + " is in reach of the giver search, which does not " +
+                                "take the turn-in");
+            data.pos = WorldPosition(object);
+            data.lastReachPOI = 0;
+            LOG_INFO("playerbots", "[rpg] {} L{} hand-in q{}: walks up to its ender {} ({:.0f} yd)", bot->GetName(),
+                     bot->GetLevel(), questId, object->GetName(), bot->GetExactDist(object));
+            return true;
+        }
+    return postpone("no ender of it in sight at its spot (despawned, phased or elsewhere)");
 }
 
 bool NewRpgTravelFlightAction::Execute(Event /*event*/)
