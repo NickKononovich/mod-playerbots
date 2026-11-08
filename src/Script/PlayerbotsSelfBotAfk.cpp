@@ -94,8 +94,11 @@ namespace
             handler.SendSysMessage(line);
     }
 
-    // Movement keys, jump, spell cast, target change: what only a person at the client sends. Stops, heartbeats
-    // and acknowledgements are left out, the client also sends those for movement the server started.
+    // [selfbot11] user 2026-11-08: only the movement keys (forward, backward, strafe, turn) take control from the
+    // SelfBot. No cast, target selection or jump does: the client sends those by itself too (b349 Eraelor: control
+    // handed back after a minimise / restore with no key pressed - CMSG_CAST_SPELL 302 x4, MSG_MOVE_START_TURN_RIGHT
+    // 189, CMSG_SET_SELECTION 317). The other ways back are the BotControl toggle and ".playerbots bot self off".
+    // Stops, heartbeats and acknowledgements are left out: the client sends those for movement the server started.
     bool IsManualInputOpcode(uint16 opcode)
     {
         switch (opcode)
@@ -106,16 +109,20 @@ namespace
             case MSG_MOVE_START_STRAFE_RIGHT:
             case MSG_MOVE_START_TURN_LEFT:
             case MSG_MOVE_START_TURN_RIGHT:
-            case MSG_MOVE_JUMP:
-            case CMSG_CAST_SPELL:
-            case CMSG_SET_SELECTION:
                 return true;
             default:
                 return false;
         }
     }
 
-    bool IsMovementOpcode(uint16 opcode) { return opcode != CMSG_CAST_SPELL && opcode != CMSG_SET_SELECTION; }
+    // [selfbot11] what counts as the person playing for the idle return (GetLastInputMs) while the person has
+    // control: the movement keys, a jump, a cast, a target change. While the AI plays these are its own echoes and
+    // count for nothing
+    bool IsActivityOpcode(uint16 opcode)
+    {
+        return IsManualInputOpcode(opcode) || opcode == MSG_MOVE_JUMP || opcode == CMSG_CAST_SPELL ||
+               opcode == CMSG_SET_SELECTION;
+    }
 
     // The AI's own server-driven movement (a move spline) would make the core reject the client's movement.
     void StopAiMovement(Player* player)
@@ -311,26 +318,12 @@ namespace SelfBotControl
     void OnClientPacket(WorldSession* session, WorldPacket const& packet)
     {
         uint16 const opcode = packet.GetOpcode();
-        if (!IsManualInputOpcode(opcode) || !session || session->IsHeadless())
+        if (!IsActivityOpcode(opcode) || !session || session->IsHeadless())
             return;
 
         Player* player = session->GetPlayer();
         if (!player || !player->IsInWorld() || player->IsInFlight())
             return;
-
-        if (opcode == CMSG_SET_SELECTION)
-        {
-            // The same target again (or none) is no decision of the person.
-            if (packet.size() < sizeof(uint64))
-                return;
-
-            WorldPacket copy(packet);
-            copy.rpos(0);
-            ObjectGuid selection;
-            copy >> selection;
-            if (!selection || selection == player->GetGuidValue(UNIT_FIELD_TARGET))
-                return;
-        }
 
         uint32 const now = NowMs();
         ObjectGuid const guid = player->GetGUID();
@@ -338,9 +331,11 @@ namespace SelfBotControl
         {
             ControlState& state = State();
             std::lock_guard<std::mutex> guard(state.lock);
-            state.lastInputMs[guid] = now;
+            bool const aiPlays = IsSelfBot(player) && !state.suspended.count(guid);
+            if (!aiPlays || IsManualInputOpcode(opcode))
+                state.lastInputMs[guid] = now;
 
-            if (sPlayerbotAIConfig.SelfBotInputTakesControl && IsSelfBot(player) && !state.suspended.count(guid))
+            if (sPlayerbotAIConfig.SelfBotInputTakesControl && aiPlays && IsManualInputOpcode(opcode))
             {
                 auto const activated = state.activatedMs.find(guid);
                 bool const inGrace = activated != state.activatedMs.end() &&
@@ -357,11 +352,10 @@ namespace SelfBotControl
         if (!takeControl)
             return;
 
-        LOG_DEBUG("playerbots", "SelfBot {}: client input (opcode {}) takes control", player->GetName(), opcode);
+        LOG_INFO("playerbots", "SelfBot {}: client input (opcode {}) takes control", player->GetName(), opcode);
 
         // This very packet must be accepted: the AI's move spline would make the core drop it.
-        if (IsMovementOpcode(opcode))
-            StopAiMovement(player);
+        StopAiMovement(player);
 
         PlayerbotWorldThreadProcessor::instance().QueueOperation(std::make_unique<SelfBotTakeControlOperation>(guid));
     }
