@@ -80,9 +80,16 @@ namespace SoloSafety
     // [guild15] the walk's stretch in sight toward `dest` passes an idle mob whose fight the judge wins only at full:
     // the bot rests to full first (true: the rest is asked for)
     bool RestBeforeWalk(Player* bot, Position const& dest);
-    // [guild15] its gear was repaired: its damage is measured again
+    // its gear was repaired (nothing to do: [dps1] its damage is the formula over the core's stats)
     void OnRepaired(Player* bot);
-    // [guild15] at login: its damage measured in its last session at this level ("solo" in playerbots_db_store)
+    // its gear, spells or talents changed (logged; [dps1] the formula's cache sees the change itself)
+    void OnPowerChanged(Player* bot, char const* why);
+    // a spell that changes its fighting power (not a profession recipe)
+    bool PowerSpell(uint32 spellId);
+    // [dps1] a hunter without its pet: the share of a fight against a mob of its level it stands in melee, computed
+    // (the mob's run from Auto Shot's range over the fight the formula's damage gives); -1 when unknown
+    float MeleeShare(Player* bot);
+    // [dps1] the 'solo' row of playerbots_db_store is no longer read (kept as a no-op for the loader)
     void LoadMeasured(Player* bot, std::string const& value);
     // the bot died: rest to full and the walk to its hub after the revive
     void OnDeath(Player* bot);
@@ -95,8 +102,9 @@ namespace SoloSafety
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,
                     std::vector<Leader::Travel::RoutePenalty>& penalties);
 
-    // the bot's damage per second: measured over its solo fights, else modelled
-    float BotDps(Player* bot);
+    // [dps1] the bot's damage per second: DpsEstimate's formula over its state now (its buff context: solo / party /
+    // raid), against `target` or a mob of its level; no fight history
+    float BotDps(Player* bot, Unit* target = nullptr);
 
     // [guild80] the open solo fight projected: the attackers on the bot (their damage per second: this fight's
     // measurement, else the model; their SmartAI spell share), the time its damage needs for them, the damage still to

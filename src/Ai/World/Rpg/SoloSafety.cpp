@@ -11,6 +11,9 @@
 #include "CellImpl.h"
 #include "ChooseTargetActions.h"
 #include "Creature.h"
+#include "DBCStores.h"
+#include "DpsEstimate.h"  // [dps1] its own damage from the formula
+#include "Item.h"
 #include "CreatureGroups.h"
 #include "ObjectAccessor.h"
 #include "World.h"
@@ -33,9 +36,7 @@
 #include "SpellMgr.h"
 #include "SmartScriptMgr.h"  // [guild14] creature casts
 #include "StringFormat.h"
-#include "PlayerbotsDatabase.h"  // [guild15] the measured damage kept
 #include <sstream>
-#include <cstdio>
 #include "Timer.h"
 
 #include <algorithm>
@@ -97,14 +98,25 @@ namespace
         uint32 meleeMs = 0;
         uint32 sampleMs = 0;
         bool sampleMelee = false;
+        // [guild15] the time it attacked (a victim, or a cast / auto shot under way, at the damage event): only that
+        // time measures its damage (b332 Colian L12: "melee 38.1 s dealt 0" - an attacker dropped by a sight bug, no
+        // victim, no swing - measured him at 4.7 dps at that gap)
+        uint32 actMs = 0;
+        bool sampleAct = false;
+        // [dps1] what invalidates the fight as a formula check: it swam or looted at a damage event
+        bool swam = false;
+        bool looted = false;
+        // [dps1] the formula at the fight's open against its first mob (for the [dps] line only)
+        DpsEstimate::Result formula;
+        DpsEstimate::BuffContext formulaCtx = DpsEstimate::BuffContext::Solo;
+        uint32 formulaEntry = 0;
+        uint8 formulaLevel = 0;
         uint32 manaAtOpen = 0;
         std::unordered_map<uint64, AttackerTrack> attackers;
         bool engaged = false;
         EngageNote engage;
-        // the bot's measured fights
-        double dealtSum = 0.0;
+        // its fights: their seconds and its own heals on itself (the heal rate; its damage is the formula's, [dps1])
         double fightSecSum = 0.0;
-        double manaSum = 0.0;
         double healedSum = 0.0;
         uint32 fights = 0;
         // rest and recovery
@@ -115,8 +127,6 @@ namespace
         ObjectGuid loggedTarget;
         uint8 loggedKind = 255;
         HealSpell heal;
-        // [guild14] its measured damage per level gap of the fight's top attacker (gap -> dealt, seconds)
-        std::map<int32, std::pair<double, double>> gapDealt;
         // [guild14] (entry, level gap) of the mobs it lost a fight to
         std::set<std::pair<uint32, int32>> lostTo;
         // [guild14] the open fight turned lost: it disengages until the fight ends
@@ -126,10 +136,6 @@ namespace
         // Root Threshers, the judge then counted 1.0 dps and refused / ran from every L8 mob, the next run 0 again)
         uint32 fleeMs = 0;
         uint64 dealtAtFlee = 0;
-        // [guild15] per creature entry, against this bot: what the entry dealt it per second, and what it dealt that
-        // entry in fights with that one attacker (damage, seconds)
-        std::unordered_map<uint32, std::pair<double, double>> ownTaken;
-        std::unordered_map<uint32, std::pair<double, double>> ownDealt;
     };
 
     struct EntryDamage
@@ -137,14 +143,6 @@ namespace
         double damage = 0.0;
         double sec = 0.0;
     };
-
-    float Rate(std::unordered_map<uint32, std::pair<double, double>> const& rates, uint32 entry)
-    {
-        auto const found = rates.find(entry);
-        if (found == rates.end() || found->second.second <= 0.0)
-            return -1.0f;
-        return float(found->second.first / found->second.second);
-    }
 
     std::mutex lock;
     std::unordered_map<uint32, SoloBotState> states;
@@ -165,30 +163,15 @@ namespace
         return std::max(float(unit->GetAttackTime(type)) / float(IN_MILLISECONDS), 0.1f);
     }
 
-    // [guild15] the bot's own damage measurement outlives a restart (b325: Cassand L9 mage, Dekorhan L7 hunter judged
-    // at their white weapon damage, 3.2 / 2.6 dps, after the restart refused every mob of their level - 13 / 15
-    // refusals, a 300 s STUCK - the judge never saw a fight to measure): kept in playerbots_db_store under "solo"
-    // with the level it was measured at; another level measures again
-    void SaveMeasured(Player* bot, SoloBotState const& state)
+    // a class spell, not a profession recipe (Playerbots.cpp drops the formula cache on a class spell learned)
+    bool ProfessionSpell(uint32 spellId)
     {
-        std::string value = "L" + std::to_string(bot->GetLevel()) + " " + std::to_string(uint64(state.dealtSum)) +
-                            " " + std::to_string(uint32(state.fightSecSum * 10.0)) + " " +
-                            std::to_string(uint64(state.manaSum)) + " " + std::to_string(uint64(state.healedSum)) +
-                            " " + std::to_string(state.fights);
-        for (auto const& [gap, at] : state.gapDealt)
-        {
-            std::string const part = " g" + std::to_string(gap) + ":" + std::to_string(uint64(at.first)) + ":" +
-                                     std::to_string(uint32(at.second * 10.0));
-            if (value.size() + part.size() > 250)
-                break;
-            value += part;
-        }
-        uint32 const guid = bot->GetGUID().GetCounter();
-        PlayerbotsDatabaseTransaction trans = PlayerbotsDatabase.BeginTransaction();
-        trans->Append(Acore::StringFormat("DELETE FROM playerbots_db_store WHERE guid = {} AND `key` = 'solo'", guid));
-        trans->Append(Acore::StringFormat(
-            "INSERT INTO playerbots_db_store (guid, `key`, value) VALUES ({}, 'solo', '{}')", guid, value));
-        PlayerbotsDatabase.CommitTransaction(trans);
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+            if (SkillLineEntry const* line = sSkillLineStore.LookupEntry(itr->second->SkillLine))
+                if (line->categoryId == SKILL_CATEGORY_PROFESSION || line->categoryId == SKILL_CATEGORY_SECONDARY)
+                    return true;
+        return false;
     }
 
     // a closed fight goes into the bot's and the entries' measurements (caller holds the lock)
@@ -208,18 +191,34 @@ namespace
             fought = float(getMSTimeDiff(state.firstMs, state.fleeMs)) / float(IN_MILLISECONDS);
             foughtDealt = state.dealtAtFlee;
         }
-        bool const measured = !state.fleeing || fought >= 2.0f * SwingSec(bot);
+        bool measured = !state.fleeing || fought >= 2.0f * SwingSec(bot);
         if (state.fleeing)
             fought += SwingSec(bot);
-        if (measured)
+        // [guild15] the time it never attacked measures nothing of its damage (a sight bug, a swim, a chest opened
+        // under a hit); [dps1] the reasons the fight is no check of the formula
+        std::string invalid;
         {
-            state.dealtSum += double(foughtDealt);
-            state.fightSecSum += fought;
+            float const acted = float(state.actMs) / float(IN_MILLISECONDS) + SwingSec(bot);
+            if (!state.actMs && !foughtDealt)
+            {
+                invalid = "never attacked";
+                measured = false;
+            }
+            else if (acted < fought)
+                fought = acted;
         }
+        if (invalid.empty() && !measured)
+            invalid = "ran before two swings";
+        if (invalid.empty() && state.swam)
+            invalid = "swimming";
+        if (invalid.empty() && state.looted)
+            invalid = "looting";
+        if (invalid.empty() && !state.formulaEntry)
+            invalid = "no target at the open";
+        // its heal rate over its fights (no decision reads its damage history: [dps1] the formula is its damage)
+        if (measured)
+            state.fightSecSum += fought;
         state.healedSum += double(state.healed);
-        uint32 const mana = bot->GetPower(POWER_MANA);
-        if (state.manaAtOpen > mana)
-            state.manaSum += double(state.manaAtOpen - mana);
         ++state.fights;
         for (auto const& [guid, track] : state.attackers)
         {
@@ -230,17 +229,32 @@ namespace
                 double(getMSTimeDiff(track.firstMs, track.lastMs)) / IN_MILLISECONDS + track.swingSec;
             entry.damage += double(track.damage);
             entry.sec += trackSec;
-            // [guild15] ... and on this bot (its armour, its level): b311 Ravelandy L7 died four times in 9 min to
-            // Prowlers / bears L9 judged won on what they dealt every bot
-            auto& own = state.ownTaken[track.entry];
-            own.first += double(track.damage);
-            own.second += trackSec;
+            // [dps1] what every solo bot measured of this entry: a log for the mob damage model, never read by a
+            // decision (user 2026-11-08)
+            LOG_INFO("playerbots", "[mobdps] {} L{} hit {} for {:.1f} dps this fight, {:.1f} dps over all solo bots",
+                     track.name, track.level, bot->GetName(), float(double(track.damage) / trackSec),
+                     float(entry.damage / entry.sec));
         }
-        if (state.attackers.size() == 1 && measured)
+        // [dps1] the formula at the open over this fight's length against what it dealt while it attacked
         {
-            auto& own = state.ownDealt[state.attackers.begin()->second.entry];
-            own.first += double(foughtDealt);
-            own.second += fought;
+            DpsEstimate::FightSample sample;
+            sample.targetEntry = state.formulaEntry;
+            sample.targetLevel = state.formulaLevel;
+            sample.mobs = uint32(state.attackers.size());
+            DpsEstimate::Result const& f = state.formula;
+            sample.formulaDps = f.oomSec < fought && fought > 0.0f
+                                    ? (f.burstDps * f.oomSec + std::min(f.whiteDps, f.burstDps) * (fought - f.oomSec)) /
+                                          fought
+                                    : f.burstDps;
+            sample.cycleSec = f.cycleSec;
+            sample.dealt = foughtDealt;
+            sample.fightSec = seconds;
+            sample.activeSec = fought;
+            sample.taken = state.taken;
+            sample.outcome = died ? "died" : state.fleeing ? "fled" : "won";
+            sample.invalidWhy = invalid;
+            sample.ctx = state.formulaCtx;
+            DpsEstimate::RecordFight(bot, sample);
         }
         std::string came;
         for (auto const& [guid, track] : state.attackers)
@@ -260,19 +274,11 @@ namespace
                      seconds * 1000.0f > float(state.meleeMs) + 1.0f
                          ? float(state.dealt - state.dealtMelee) / (seconds - float(state.meleeMs) / 1000.0f)
                          : 0.0f);
-        // [guild14] its damage at the fight's level gap (its top attacker's), and what it lost (a death, a disengage):
-        // the mobs it lost to are not pulled again at that gap (b303 Rollothan L7 died three times to a Prowler L9
-        // judged won)
+        // [guild14] what it lost (a death, a disengage) at the fight's level gap (its top attacker's)
         {
             int32 gap = std::numeric_limits<int32>::min();
             for (auto const& [guid, track] : state.attackers)
                 gap = std::max(gap, int32(track.level) - int32(bot->GetLevel()));
-            if (gap != std::numeric_limits<int32>::min() && measured)
-            {
-                auto& at = state.gapDealt[gap];
-                at.first += double(foughtDealt);
-                at.second += fought;
-            }
             if (died || state.fleeing)
                 for (auto const& [guid, track] : state.attackers)
                     if (track.entry && track.damage && int32(track.level) - int32(bot->GetLevel()) == gap)
@@ -283,8 +289,6 @@ namespace
                                  died ? "died" : "disengaged", int32(track.level) - int32(bot->GetLevel()));
                     }
         }
-        if (measured)
-            SaveMeasured(bot, state);  // [guild15]
         // [guild80] a run / reset closes with a rest to full (WantsRest drops a rest asked for in combat: b319
         // Ravelandy L8 went questing at hp 53 after a run and died to the same Prowler)
         if (state.fleeing && !died)
@@ -304,6 +308,13 @@ namespace
         state.meleeMs = 0;
         state.sampleMs = 0;
         state.sampleMelee = false;
+        state.actMs = 0;
+        state.sampleAct = false;
+        state.swam = false;
+        state.looted = false;
+        state.formula = DpsEstimate::Result();
+        state.formulaEntry = 0;
+        state.formulaLevel = 0;
     }
 
     // [guild15] the melee-phase clock: the time since the last sample counts as melee when the bot stood in reach then
@@ -311,8 +322,13 @@ namespace
     {
         if (state.sampleMs && state.sampleMelee)
             state.meleeMs += getMSTimeDiff(state.sampleMs, now);
+        if (state.sampleMs && state.sampleAct)
+            state.actMs += getMSTimeDiff(state.sampleMs, now);  // [guild15]
         state.sampleMs = now;
         state.sampleMelee = bot->IsWithinMeleeRange(mob);
+        state.sampleAct = bot->GetVictim() || bot->IsNonMeleeSpellCast(false);
+        state.swam = state.swam || bot->IsInWater();  // [dps1]
+        state.looted = state.looted || !bot->GetLootGUID().IsEmpty();
     }
 
     void CloseIfOver(Player* bot, SoloBotState& state)
@@ -321,7 +337,7 @@ namespace
             CloseFight(bot, state, false);
     }
 
-    void OpenIfNeeded(Player* bot, SoloBotState& state, uint32 now)
+    void OpenIfNeeded(Player* bot, SoloBotState& state, uint32 now, Unit* mob)
     {
         if (state.open)
             return;
@@ -329,6 +345,11 @@ namespace
         state.firstMs = now;
         state.lastMs = now;
         state.manaAtOpen = bot->GetPower(POWER_MANA);
+        // [dps1] the formula against the fight's first mob (a cached profile: no cost unless its power changed)
+        state.formulaCtx = DpsEstimate::ContextOf(bot);
+        state.formula = DpsEstimate::Estimate(bot, mob, state.formulaCtx);
+        state.formulaEntry = mob ? mob->GetEntry() : 0;
+        state.formulaLevel = mob ? mob->GetLevel() : 0;
     }
 
     // the bot's self heal from its known spells (direct heal effects; spell power counted)
@@ -370,53 +391,11 @@ namespace
         return state.heal;
     }
 
-    float MeasuredEntryDps(uint32 entry)
+    // [dps1] its damage per second from the formula over its state now (user 2026-11-08: no fight history); the
+    // target's level, armor and avoidance when known, else a mob of its level
+    DpsEstimate::Result OwnDamage(Player* bot, Unit* target, float fightSec = 0.0f)
     {
-        auto const found = entryDamage.find(entry);
-        if (found == entryDamage.end() || found->second.sec <= 0.0)
-            return 0.0f;
-        return float(found->second.damage / found->second.sec);
-    }
-
-    // its weapon's white damage per second (melee, or the ranged weapon / wand: the better) and its pet's
-    float WhiteDps(Player* bot)
-    {
-        float dps = 0.0f;
-        for (WeaponAttackType type : {BASE_ATTACK, RANGED_ATTACK})
-        {
-            if (!bot->GetAttackTime(type))
-                continue;
-            float const hit = type == BASE_ATTACK ? (bot->GetFloatValue(UNIT_FIELD_MINDAMAGE) +
-                                                     bot->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f
-                                                  : (bot->GetFloatValue(UNIT_FIELD_MINRANGEDDAMAGE) +
-                                                     bot->GetFloatValue(UNIT_FIELD_MAXRANGEDDAMAGE)) / 2.0f;
-            dps = std::max(dps, hit / SwingSec(bot, type));
-        }
-        if (Pet* pet = bot->GetPet())
-            if (pet->IsAlive())
-                dps += (pet->GetFloatValue(UNIT_FIELD_MINDAMAGE) + pet->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f /
-                       SwingSec(pet);
-        return dps;
-    }
-
-    float BotDpsLocked(Player* bot, SoloBotState const& state)
-    {
-        if (state.fightSecSum > 0.0 && state.dealtSum > 0.0)
-            return float(state.dealtSum / state.fightSecSum);
-        // before its first measured fight: its weapon's white damage only, the spells' share comes with the
-        // measurement (b297: the model's every-cast spell damage put a level 5 mage at 19 damage taken for a fight it
-        // lost in 103 s at 1.9 dps)
-        return WhiteDps(bot);
-    }
-
-    // [guild14] its damage measured in fights at that level gap (b303: Rollothan L7 dealt 4.7 dps to Prowlers L9,
-    // its all-fights figure was higher), else its all-fights figure
-    float BotDpsAt(Player* bot, SoloBotState const& state, int32 gap)
-    {
-        auto const found = state.gapDealt.find(gap);
-        if (found != state.gapDealt.end() && found->second.first > 0.0 && found->second.second > 0.0)
-            return float(found->second.first / found->second.second);
-        return BotDpsLocked(bot, state);
+        return DpsEstimate::Estimate(bot, target, DpsEstimate::ContextOf(bot), fightSec);
     }
 
     // [guild14] a creature's spell damage per second from its SmartAI: every in-combat repeating cast (SMART_EVENT_
@@ -481,10 +460,7 @@ namespace
         float const crit = std::clamp(unit->GetUnitCriticalChance(BASE_ATTACK, bot) / 100.0f, 0.0f, 1.0f);
         float dps = (total - spell) * (1.0f + crit);
         if (Creature* creature = unit->ToCreature())
-        {
             dps += std::max(spell, SpellDpsOf(creature));
-            dps = std::max(dps, MeasuredEntryDps(creature->GetEntry()));
-        }
         else
             dps += spell;
         return dps;
@@ -568,7 +544,7 @@ namespace SoloSafety
                 return;
             std::lock_guard<std::mutex> guard(lock);
             SoloBotState& state = states[bot->GetGUID().GetCounter()];
-            OpenIfNeeded(bot, state, now);
+            OpenIfNeeded(bot, state, now, mob);
             state.lastMs = now;
             uint32 const taken = std::min(damage, bot->GetHealth());
             state.taken += taken;
@@ -593,7 +569,7 @@ namespace SoloSafety
             return;
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
-        OpenIfNeeded(bot, state, now);
+        OpenIfNeeded(bot, state, now, mob);
         state.lastMs = now;
         state.dealt += std::min(damage, mob->GetHealth());
         SampleMelee(bot, mob, state, now);  // [guild15]
@@ -613,10 +589,11 @@ namespace SoloSafety
                                                                                    bot->GetMaxHealth()));
     }
 
-    float BotDps(Player* bot)
+    float BotDps(Player* bot, Unit* target)
     {
-        std::lock_guard<std::mutex> guard(lock);
-        return BotDpsLocked(bot, states[bot->GetGUID().GetCounter()]);
+        if (!bot)
+            return 0.0f;
+        return OwnDamage(bot, target).dps;
     }
 
     Verdict Judge(Player* bot, Unit* target)
@@ -728,11 +705,9 @@ namespace SoloSafety
             std::lock_guard<std::mutex> guard(lock);
             for (Unit* unit : pack)
             {
-                float dps = MobDps(unit, bot);  // [guild14] crits, SmartAI casts, the measurement
+                float dps = MobDps(unit, bot);  // [guild14] crits, SmartAI casts; [dps1] no measurement
                 if (Creature* creature = unit->ToCreature())
                 {
-                    // [guild15] what it measured dealing this bot, when higher
-                    dps = std::max(dps, Rate(states[bot->GetGUID().GetCounter()].ownTaken, creature->GetEntry()));
                     elite = elite || IsElite(creature);
                     verdict.radius = std::max(verdict.radius,
                                               unit->GetExactDist2d(target) + creature->GetAggroRange(bot));
@@ -746,31 +721,21 @@ namespace SoloSafety
         verdict.mobs = mobs.size();
 
         SoloBotState snapshot;
-        float botDps = 0.0f;
         {
             std::lock_guard<std::mutex> guard(lock);
             SoloBotState& state = states[bot->GetGUID().GetCounter()];
             CloseIfOver(bot, state);
-            botDps = BotDpsAt(bot, state, int32(verdict.topLevel) - int32(bot->GetLevel()));  // [guild14]
-            // [guild15] its damage measured on the target's entry alone, when lower (b310 Ellosera L10 dealt nothing
-            // to a Bloodmyst Hatchling it pulled twice and died)
-            if (Creature* creature = target->ToCreature())
-            {
-                float const onEntry = Rate(state.ownDealt, creature->GetEntry());
-                if (onEntry >= 0.0f)
-                    botDps = std::min(botDps, onEntry);
-            }
             // [guild15] user 2026-11-07: a mob it lost to is no veto by itself (a player kills yellow +1 / +2 mobs
-            // solo all the time): the lost fight is in the numbers - the entry's measured damage, its damage at that
-            // level gap - and only the projection refuses
+            // solo all the time): only the projection refuses
             BestHeal(bot, state);
             snapshot.heal = state.heal;
-            snapshot.manaSum = state.manaSum;
             snapshot.fightSecSum = state.fightSecSum;
             snapshot.healedSum = state.healedSum;
         }
-        if (botDps <= 0.0f)
-            botDps = 1.0f;
+        // [dps1] its damage from the formula against the target (user 2026-11-08: no fight history): its rotation
+        // while its mana lasts, then what lasts without mana
+        DpsEstimate::Result const own = OwnDamage(bot, target);
+        float const botDps = std::max(own.burstDps, 1.0f);
 
         // the kill order: the target first, then the most damage per health
         std::sort(mobs.begin() + 1, mobs.end(),
@@ -781,13 +746,11 @@ namespace SoloSafety
         if (Pet* pet = bot->GetPet())
             if (pet->IsAlive())
                 petHealth = float(pet->GetHealth());
-        // [guild15] its damage lasts as long as its mana: the mana it spends per fight second (measured over its
-        // fights) runs its spells, its weapon's white damage (and its pet's) is what is left when the mana is gone
-        // (b307/b308: priests pulled at 7-25 % mana judged on their full-mana damage and died - Orenem L10 three
-        // times, Guinudrond L9)
-        float const manaPerSec =
-            snapshot.fightSecSum > 0.0 ? float(snapshot.manaSum / snapshot.fightSecSum) : 0.0f;
-        float const whiteDps = std::clamp(WhiteDps(bot), 1.0f, botDps);
+        // [guild15] its damage lasts as long as its mana: the rotation's mana per second (the formula's spend less its
+        // in-combat regeneration) runs its spells, its weapon's white damage (and its pet's) is what is left when the
+        // mana is gone (b307/b308: priests pulled at 7-25 % mana judged on their full-mana damage and died)
+        float const manaPerSec = own.manaPerSec;
+        float const whiteDps = std::clamp(own.whiteDps, 1.0f, botDps);
         // health + pet + what it heals itself per fight second, measured (its own heals on itself over its fights),
         // as far as its mana lasts: b298 Peny L8 took 4 Murlocs on a spell model of its heals and healed 24 in 50 s
         float const healRate =
@@ -1034,60 +997,51 @@ namespace SoloSafety
         return true;
     }
 
-    void LoadMeasured(Player* bot, std::string const& value)
+    // [dps1] user 2026-11-08: no decision reads a stored damage measurement; the 'solo' rows in playerbots_db_store
+    // are neither read nor written any more (left in the table)
+    void LoadMeasured(Player* /*bot*/, std::string const& /*value*/) {}
+
+    // [dps1] broken gear loses its stats in the core (Player::_ApplyItemMods), the formula reads them as they are
+    void OnRepaired(Player* /*bot*/) {}
+
+    // [dps1] the formula's cache is keyed by its power signature: a change is computed anew at its next read
+    void OnPowerChanged(Player* bot, char const* why)
     {
-        if (!bot)
-            return;
-        std::istringstream in(value);
-        std::string level;
-        uint64 dealt = 0, mana = 0, healed = 0;
-        uint32 secTenths = 0, fights = 0;
-        if (!(in >> level >> dealt >> secTenths >> mana >> healed >> fights) ||
-            level != "L" + std::to_string(bot->GetLevel()))
-            return;  // measured at another level: measured again
-        std::lock_guard<std::mutex> guard(lock);
-        SoloBotState& state = states[bot->GetGUID().GetCounter()];
-        if (state.fights)
-            return;  // already measured in this session
-        state.dealtSum = double(dealt);
-        state.fightSecSum = double(secTenths) / 10.0;
-        state.manaSum = double(mana);
-        state.healedSum = double(healed);
-        state.fights = fights;
-        std::string part;
-        while (in >> part)
-        {
-            int32 gap = 0;
-            unsigned long long d = 0;
-            uint32 tenths = 0;
-            if (part.size() > 1 && part[0] == 'g' && sscanf(part.c_str() + 1, "%d:%llu:%u", &gap, &d, &tenths) == 3)
-                state.gapDealt[gap] = {double(d), double(tenths) / 10.0};
-        }
-        LOG_INFO("playerbots", "[solo] {} L{} measured damage from its last session: {:.1f} dps over {} fights",
-                 bot->GetName(), bot->GetLevel(),
-                 state.fightSecSum > 0.0 ? state.dealtSum / state.fightSecSum : 0.0, state.fights);
+        if (bot && bot->IsInWorld())
+            LOG_DEBUG("playerbots", "[dps] {} L{} power changed ({}): its damage formula is computed anew",
+                      bot->GetName(), bot->GetLevel(), why);
     }
 
-    void OnRepaired(Player* bot)
+    bool PowerSpell(uint32 spellId) { return !ProfessionSpell(spellId); }
+
+    // [dps1] a hunter without its pet takes the mob in melee once the mob has run from Auto Shot's longest range to
+    // its shortest (user 2026-11-08, computed, no measurement): a mob of its level, its health from
+    // creature_classlevelstats over the formula's damage the fight, the creature default run speed
+    // (ObjectMgr::CheckCreatureTemplate: speed_run 1.14286 x baseMoveSpeed)
+    float MeleeShare(Player* bot)
     {
+        constexpr uint32 SPELL_AUTO_SHOT = 75;
+        constexpr float CREATURE_DEFAULT_SPEED_RUN = 1.14286f;
+        constexpr uint8 CLASSIC_MAX_LEVEL = 60;
+        constexpr uint8 OUTLAND_MAX_LEVEL = 70;
         if (!bot)
-            return;
-        std::lock_guard<std::mutex> guard(lock);
-        auto const found = states.find(bot->GetGUID().GetCounter());
-        if (found == states.end())
-            return;
-        SoloBotState& state = found->second;
-        // [guild15] its damage was measured with broken gear (b308: 12 of 50 bots wore broken weapons, hunters dealt
-        // 4-5 dps): measured again from here
-        state.dealtSum = 0.0;
-        state.fightSecSum = 0.0;
-        state.manaSum = 0.0;
-        state.healedSum = 0.0;
-        state.fights = 0;
-        state.gapDealt.clear();
-        state.lostTo.clear();
-        state.ownTaken.clear();
-        state.ownDealt.clear();
+            return -1.0f;
+        SpellInfo const* autoShot = sSpellMgr->GetSpellInfo(SPELL_AUTO_SHOT);
+        if (!autoShot || !bot->GetWeaponForAttack(RANGED_ATTACK, true))
+            return 1.0f;
+        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(bot->GetLevel(), CLASS_WARRIOR);
+        if (!stats)
+            return -1.0f;
+        // the expansion of the content at its level (the creature_classlevelstats health column it uses)
+        uint8 const expansion = bot->GetLevel() <= CLASSIC_MAX_LEVEL   ? EXPANSION_CLASSIC
+                                : bot->GetLevel() <= OUTLAND_MAX_LEVEL ? EXPANSION_THE_BURNING_CRUSADE
+                                                                       : EXPANSION_WRATH_OF_THE_LICH_KING;
+        float const fightSec = float(stats->BaseHealth[expansion]) / std::max(OwnDamage(bot, nullptr).dps, 1.0f);
+        float const approachSec = std::max(0.0f, autoShot->GetMaxRange(false) - autoShot->GetMinRange(false)) /
+                                  (baseMoveSpeed[MOVE_RUN] * CREATURE_DEFAULT_SPEED_RUN);
+        if (fightSec <= 0.0f)
+            return 0.0f;
+        return std::clamp((fightSec - approachSec) / fightSec, 0.0f, 1.0f);
     }
 
     void OnDeath(Player* bot)
@@ -1120,7 +1074,6 @@ namespace SoloSafety
 
         // the attackers still on it (a mob on its pet hits the pet), their damage: measured this fight (each from its
         // first hit, a swing added), the model before their first hit - the higher
-        int32 gap = std::numeric_limits<int32>::min();
         for (Unit* attacker : bot->getAttackers())
         {
             if (!attacker || !attacker->IsAlive() || attacker->GetVictim() != bot)
@@ -1144,15 +1097,14 @@ namespace SoloSafety
             }
             out.foes.push_back(foe);
             out.incoming += dps;
-            gap = std::max(gap, int32(attacker->GetLevel()) - int32(bot->GetLevel()));
         }
         if (out.foes.empty() || out.incoming <= 0.0f)
             return out;
 
-        // its damage: the higher of its measurement at this level gap and this fight's once it has swung (b304 run 1:
+        // its damage: the higher of the formula (against its victim) and this fight's once it has swung (b304 run 1:
         // this fight's first seconds alone - a caster's first bolt still in flight - sent 9 bots running in 10 min)
         float const elapsed = float(getMSTimeDiff(state.firstMs, now)) / IN_MILLISECONDS;
-        float botDps = BotDpsAt(bot, state, gap);
+        float botDps = OwnDamage(bot, bot->GetVictim()).dps;  // [dps1] no fight history
         if (state.dealt && elapsed >= SwingSec(bot))
             botDps = std::max(botDps, float(state.dealt) / (elapsed + SwingSec(bot)));
         // [guild80] ... and this fight's alone once it covers two of its swings: b319 Rumanatol L11 dealt 5.0 dps to a
@@ -1343,8 +1295,6 @@ namespace SoloSafety
                 float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
                 float const period =
                     float(sWorld->getIntConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD)) / float(IN_MILLISECONDS);
-                std::lock_guard<std::mutex> guard(lock);
-                auto& taken = states[bot->GetGUID().GetCounter()].ownTaken;
                 auto const packDamage = [&](float& seconds)
                 {
                     struct Foe
@@ -1353,7 +1303,7 @@ namespace SoloSafety
                     };
                     std::vector<Foe> foes;
                     for (Creature* c : pack)
-                        foes.push_back({std::max(MobDps(c, bot), Rate(taken, c->GetEntry())), float(c->GetHealth())});
+                        foes.push_back({MobDps(c, bot), float(c->GetHealth())});  // [dps1] no measurement
                     std::sort(foes.begin(), foes.end(), [](Foe const& x, Foe const& y)
                               { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
                     float incoming = 0.0f;

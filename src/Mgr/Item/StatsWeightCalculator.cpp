@@ -986,8 +986,8 @@ void StatsWeightCalculator::GenerateAdditionalWeights(Player* player)
     if (cls == CLASS_HUNTER)
     {
         // [guild15] user 2026-11-08: a hunter without its pet takes the mob in melee (b326: 56-88 % of its fight time
-        // on the Worn Battleaxe, 2.6-4.4 dps); its melee weapon's damage counts by its measured melee share of the
-        // fight time, at the weight of its ranged weapon's damage
+        // on the Worn Battleaxe, 2.6-4.4 dps); its melee weapon's damage counts by its melee share of the fight time
+        // (computed: [dps1] SoloSafety::MeleeShare), at the weight of its ranged weapon's damage
         if (!player->GetPet())
         {
             float const share = SoloSafety::MeleeShare(player);

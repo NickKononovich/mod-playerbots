@@ -12,6 +12,8 @@
 #include "Config.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "AiFactory.h"
+#include "DpsEstimate.h"  // [dps1]
 #include "BuiltInConfig.h"
 #include "DBUpdater.h"
 #include "DatabaseEnv.h"
@@ -163,6 +165,33 @@ public:
     {
         CharacterDatabase.Execute("UPDATE characters SET online = 0 WHERE guid = {}", guid.GetCounter());
         return false;
+    }
+};
+
+// [dps1] a bot's damage formula at every boss pull in an instance: a [dpsf] line for dps_formula_check.py, which
+// sets it against the wowsims number simpct.py computes for the same bot and boss (no decision reads it)
+class PlayerbotsDpsFormulaScript : public PlayerScript
+{
+public:
+    PlayerbotsDpsFormulaScript() : PlayerScript("PlayerbotsDpsFormulaScript", {PLAYERHOOK_ON_PLAYER_ENTER_COMBAT}) {}
+
+    void OnPlayerEnterCombat(Player* player, Unit* enemy) override
+    {
+        if (!player || !enemy || !player->IsInWorld() || !GET_PLAYERBOT_AI(player) || !player->GetMap() ||
+            !player->GetMap()->Instanceable())
+            return;
+        Creature* boss = enemy->ToCreature();
+        if (!boss || !(boss->IsDungeonBoss() || boss->isWorldBoss()))
+            return;
+        DpsEstimate::BuffContext const ctx = DpsEstimate::ContextOf(player);
+        DpsEstimate::Result const r = DpsEstimate::Estimate(player, boss, ctx);
+        LOG_INFO("playerbots",
+                 "[dpsf] {} L{} {}/{} ctx={} target={} L{} formula={:.1f} white={:.1f} pet={:.1f} tps={:.1f} "
+                 "mana_s={:.1f} spells={} map={} boss={}",
+                 player->GetName(), player->GetLevel(), uint32(player->getClass()),
+                 AiFactory::GetPlayerSpecName(player), DpsEstimate::ContextName(ctx), boss->GetEntry(),
+                 uint32(boss->GetLevel()), r.burstDps, r.whiteDps, r.petDps, r.tps, r.manaPerSec, uint32(r.spells),
+                 player->GetMapId(), boss->GetName());
     }
 };
 
@@ -779,6 +808,7 @@ void AddPlayerbotsSecureLoginScripts();
 void AddPlayerbotsSelfBotAfkScripts();
 void AddLeaderDungeonRunScripts();  // [guild70] Ai/Leader/Dungeon/LeaderDungeonRun.cpp
 void AddQuestStatsScripts();        // [guild90] Ai/World/Rpg/QuestStats.cpp
+void AddNewRpgCoopScripts();        // [coop] Ai/World/Rpg/NewRpgCoop.cpp
 void AddSC_MagtheridonBotScripts();
 void AddSC_SerpentshrineCavernBotScripts();
 void AddSC_TempestKeepBotScripts();
@@ -801,6 +831,7 @@ void AddPlayerbotsScripts()
     new PlayerbotsDatabaseScript();
     new PlayerbotsPlayerScript();
     new PlayerbotsGearScript();       // [guild15]
+    new PlayerbotsDpsFormulaScript();  // [dps1]
     new PlayerbotsGuildBankScript();  // [guild15]
     new PlayerbotsDeathAndOnlineScript();  // [guild5]
     new PlayerbotsMiscScript();
@@ -815,6 +846,7 @@ void AddPlayerbotsScripts()
     AddGuildCoordinatorScripts();  // [guild30]
     AddLeaderDungeonRunScripts();  // [guild70] the five-leader's dungeon runs (world thread)
     AddQuestStatsScripts();        // [guild90] questing counters ([qstat] / [qprog] lines)
+    AddNewRpgCoopScripts();        // [coop] co-op questing: shared kills, party XP, exits on death / logout
     AddPlayerbotsCommandscripts();
     AddPlayerbotsDeathRecorder();
     AddPlayerbotsInstanceResetCatchUp();

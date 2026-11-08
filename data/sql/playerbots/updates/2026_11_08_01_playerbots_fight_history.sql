@@ -1,0 +1,30 @@
+-- [dps1] every closed fight of a bot, the damage formula against what it dealt (user 2026-11-08): for the analysis
+-- scripts only (quest_metrics.py --section dps --db), no decision reads it; the last 1000 fights per bot are kept
+CREATE TABLE IF NOT EXISTS `playerbots_fight_history` (
+    `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+    `guid` INT UNSIGNED NOT NULL,
+    `name` VARCHAR(12) NOT NULL DEFAULT '',
+    `level` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    `class` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    `spec` VARCHAR(32) NOT NULL DEFAULT '',
+    `ctx` VARCHAR(8) NOT NULL DEFAULT 'solo' COMMENT 'solo / group / raid',
+    `target_entry` INT UNSIGNED NOT NULL DEFAULT 0,
+    `target_level` TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    `mobs` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    `formula_dps` FLOAT NOT NULL DEFAULT 0,
+    `actual_dps` FLOAT NOT NULL DEFAULT 0 COMMENT 'damage dealt / active_s',
+    `fight_s` FLOAT NOT NULL DEFAULT 0,
+    `active_s` FLOAT NOT NULL DEFAULT 0,
+    `valid` TINYINT UNSIGNED NOT NULL DEFAULT 1,
+    `why` VARCHAR(255) NOT NULL DEFAULT '' COMMENT 'why the sample is invalid',
+    `taken` INT UNSIGNED NOT NULL DEFAULT 0,
+    `outcome` VARCHAR(8) NOT NULL DEFAULT 'won' COMMENT 'won / fled / died',
+    `map` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+    `x` FLOAT NOT NULL DEFAULT 0,
+    `y` FLOAT NOT NULL DEFAULT 0,
+    `z` FLOAT NOT NULL DEFAULT 0,
+    `time` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    KEY `idx_guid_id` (`guid`, `id`),
+    KEY `idx_class_level` (`class`, `level`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
