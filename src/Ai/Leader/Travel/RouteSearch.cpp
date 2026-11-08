@@ -15,6 +15,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "PerfMonitor.h"  // [guild15]
+#include "PlayerbotAI.h"  // [deaths3] HasGroundSupport
 #include "Player.h"  // [deaths] the pull spot walk
 #include "MapDefines.h"
 #include "StringFormat.h"
@@ -464,6 +465,29 @@ namespace Leader
         return source + (found ? (complete ? ", complete" : ", partial") : ", none");
     }
 
+    // [deaths3] a stretch of the walk that descends more than PlayerbotAI's GROUND_SUPPORT_DROP with no ground or
+    // liquid under a point of it (PlayerbotAI::HasGroundSupport every GROUND_SAMPLE_STEP, the spline guard's sampling)
+    static bool OverOpenAir(Unit* walker, Movement::PointsArray const& points)
+    {
+        constexpr float SUPPORT_DROP = 6.0f;  // PlayerbotAI.cpp GROUND_SUPPORT_DROP
+        constexpr float SAMPLE_STEP = 2.0f;   // PlayerbotAI.cpp GROUND_SAMPLE_STEP
+        for (size_t i = 1; i < points.size(); ++i)
+        {
+            G3D::Vector3 const& from = points[i - 1];
+            G3D::Vector3 const& to = points[i];
+            float const gap = (to - from).length();
+            if (from.z - to.z <= SUPPORT_DROP || gap <= 0.0f)
+                continue;
+            for (float at = SAMPLE_STEP; at < gap; at += SAMPLE_STEP)
+            {
+                G3D::Vector3 const point = from + (to - from) * (at / gap);
+                if (!PlayerbotAI::HasGroundSupport(walker, point.x, point.y, point.z))
+                    return true;
+            }
+        }
+        return false;
+    }
+
     RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& toAsked)
     {
         PMON_SCOPE(routeScope, PERF_MON_VALUE, "leader route search");  // [guild15]
@@ -520,6 +544,10 @@ namespace Leader
                 if (!Travel::LongRoute(walker, from, to, steep, tried, complete, nullptr, refused, ROUTE_SAMPLE_YD,
                                        &triedSurface, priced) ||
                     tried.empty())
+                    continue;
+                // [deaths3] a walk with a stretch over open air is no walk (b341 Alnia L8 at Teldrassil: "route
+                // complete (558 yd): its leg drops through open air", then WALK_FAIL loops and STUCK)
+                if (OverOpenAir(walker, triedSurface.empty() ? tried : triedSurface))
                     continue;
                 if (result.found && !complete)
                     continue;

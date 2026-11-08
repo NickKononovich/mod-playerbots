@@ -24,6 +24,7 @@
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
+#include "SoloSafety.h"  // [deaths3] alone
 #include "StringFormat.h"
 #include "Timer.h"
 #include "World.h"  // [guild13] CONFIG_DEATH_SICKNESS_LEVEL
@@ -81,8 +82,38 @@ namespace
             else
                 reach = creature->GetAggroRange(bot) + REVIVE_AGGRO_MARGIN;
             margin = std::min(margin, creature->GetExactDist(x, y, z) - reach);
+            // [deaths3] an idle wanderer reaches the spot from anywhere in its wander area (b338 Keenonk L11 rose twice
+            // at the Wetlands South Road healer, 26 yd from a Black Slime L20's home, and died within seconds)
+            if (!creature->IsInCombat() && !creature->IsInEvadeMode() &&
+                creature->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+                margin = std::min(margin, creature->GetHomePosition().GetExactDist(x, y, z) - reach -
+                                              creature->GetWanderDistance());
         }
         return margin;
+    }
+
+    // [deaths3] the spirit healer's spot was found in reach of a hostile for this death (its corpse's ghost time):
+    // the ghost takes its corpse run instead of the healer, and is not sent back to the healer for it
+    std::mutex unsafeHealerLock;
+    std::unordered_map<uint32, int64> unsafeHealer;  // bot low guid -> ghost time of the death
+
+    int64 GhostTimeOf(Player* bot)
+    {
+        Corpse* corpse = bot->GetCorpse();
+        return corpse ? int64(corpse->GetGhostTime()) : 0;
+    }
+
+    bool HealerUnsafe(Player* bot)
+    {
+        std::lock_guard<std::mutex> guard(unsafeHealerLock);
+        auto const found = unsafeHealer.find(bot->GetGUID().GetCounter());
+        return found != unsafeHealer.end() && found->second == GhostTimeOf(bot);
+    }
+
+    void MarkHealerUnsafe(Player* bot)
+    {
+        std::lock_guard<std::mutex> guard(unsafeHealerLock);
+        unsafeHealer[bot->GetGUID().GetCounter()] = GhostTimeOf(bot);
     }
 
     // [guild13] user 2026-11-07: after a death a solo questing bot does not go straight back - it rises in town. Below
@@ -91,10 +122,10 @@ namespace
     // in the Stone Cairn Lake murlocs and died again within seconds); above it the corpse run stays (a safe spot)
     bool RisesInTown(Player* bot)
     {
-        Map* map = bot->GetMap();
-        return map && !map->Instanceable() && !bot->GetGroup() &&
-               int32(bot->GetLevel()) < sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL) &&
-               GET_PLAYERBOT_AI(bot) && GET_PLAYERBOT_AI(bot)->HasStrategy("new rpg", BOT_STATE_NON_COMBAT);
+        // [deaths3] alone by SoloSafety's rule (no living member within the group reward distance); never to a healer
+        // found in reach of a hostile for this death
+        return SoloSafety::Applies(bot) &&
+               int32(bot->GetLevel()) < sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL) && !HealerUnsafe(bot);
     }
 }
 
@@ -146,7 +177,7 @@ bool ReviveFromCorpseAction::Execute(Event event)
         uint32 dCount = AI_VALUE(uint32, "death count");
 
         // In a dungeon the corpse is the only way back: its spirit healer stands at the graveyard outside.
-        if (dCount >= 5 && !bot->GetMap()->IsDungeon())
+        if (dCount >= 5 && !bot->GetMap()->IsDungeon() && !HealerUnsafe(bot))  // [deaths3]
             return botAI->DoSpecificAction("spirit healer");
     }
 
@@ -233,7 +264,8 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // per death, death and release, and never resets for a bot that gains no XP: from the third death every ghost
     // that had walked back in stood at its corpse calling for a healer it could not reach).
     bool const inDungeon = bot->GetMap()->IsDungeon();
-    if ((!botAI->HasGameClientMaster() && dCount >= 5 && !inDungeon) || RisesInTown(bot))  // [guild13]
+    if (((!botAI->HasGameClientMaster() && dCount >= 5 && !inDungeon) || RisesInTown(bot)) &&
+        !HealerUnsafe(bot))  // [guild13] [deaths3]
         return botAI->DoSpecificAction("spirit healer", Event(), true);
 
     WorldPosition botPos(bot);
@@ -279,6 +311,13 @@ bool FindCorpseAction::Execute(Event /*event*/)
             moveToPos = leaderPos;
         else if (SafeSpot(corpse, hostiles, reclaimDist, spot))
             moveToPos = WorldPosition(corpsePos.GetMapId(), spot.x, spot.y, spot.z, 0.0f);
+        // [deaths3] no spot of the corpse's radius out of every reach: the spirit healer, unless its spot was found in
+        // reach for this death too (then the ghost keeps to the corpse and rises once a spot clears)
+        else if (!safeHere && !inDungeon && !HealerUnsafe(bot))
+        {
+            LogGhost(bot, "no spot of its corpse's radius clear of the mobs there: to the spirit healer");
+            return botAI->DoSpecificAction("spirit healer", Event(), true);
+        }
         else if (!safeHere)
         {
             FleeManager manager(bot, reclaimDist, 0.0, urand(0, 1), moveToPos);
@@ -539,6 +578,27 @@ bool SpiritHealerAction::Execute(Event /*event*/)
                                                   bot->GetDistance(unit), moving ? "moving" : "the move failed",
                                                   botAI->CanMove(), bot->IsRooted()));
                 return moving;
+            }
+
+            // [deaths3] the healer revives it where it stands: in reach of a hostile it takes the corpse run instead
+            // (its corpse on this map); without one it rises once nothing comes at once
+            GuidVector const hostiles = AI_VALUE(GuidVector, "nearest hostile npcs");
+            float const margin =
+                SpotMargin(botAI, bot, hostiles, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            if (margin < 0.0f)
+            {
+                if (corpse && !bot->GetMap()->IsDungeon())
+                {
+                    MarkHealerUnsafe(bot);
+                    LogGhost(bot, Acore::StringFormat("the spirit healer's spot is {:.0f} yd inside a hostile's reach: "
+                                                      "its corpse run instead",
+                                                      -margin));
+                    return botAI->DoSpecificAction("find corpse", Event(), true);
+                }
+                LogGhost(bot, Acore::StringFormat("waits at the spirit healer: its spot is {:.0f} yd inside a "
+                                                  "hostile's reach, no corpse on this map",
+                                                  -margin));
+                return true;
             }
 
             LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
