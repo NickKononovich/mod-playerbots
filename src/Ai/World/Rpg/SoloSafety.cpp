@@ -1809,6 +1809,17 @@ namespace SoloSafety
         state.pullAvoid = verdict.pullAvoid;
         if (state.engaged && state.engage.target == target->GetGUID())
             return;
+        // [deaths14] the engaged Win verdict's numbers (a Win was never logged): b354 Tuihgrelfim L8 "judged 1 Murloc
+        // Forager, came 3" and Kylantino / Lanbuzz (Frostmane Seer) had no line saying where the judge put the fight
+        // or what it counted - the triage could not tell a wrong fight spot from an uncounted wanderer
+        LOG_INFO("playerbots", "[deaths14] {} L{} engages {} L{}: judged {} mobs ({} above), {:.0f} dmg over {:.0f} s at "
+                 "ehp {:.0f}, fought {} ({:.0f},{:.0f}), {:.0f} yd from the target",
+                 bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), verdict.mobs, verdict.above,
+                 verdict.damage, verdict.fightSec, verdict.ehpNow,
+                 verdict.pullSpot ? "at its pull spot" : (PlayerbotAI::IsRanged(bot) ? "at its reach" : "at the target"),
+                 verdict.pullSpot ? verdict.pull.x : target->GetPositionX(),
+                 verdict.pullSpot ? verdict.pull.y : target->GetPositionY(),
+                 verdict.pullSpot ? target->GetExactDist2d(verdict.pull.x, verdict.pull.y) : 0.0f);
         state.engaged = true;
         state.engage.target = target->GetGUID();
         state.engage.targetName = target->GetName();
@@ -2276,6 +2287,48 @@ namespace SoloSafety
                 if (std::none_of(discs.begin(), discs.end(), [&at](G3D::Vector4 const& d) { return InDisc(d, at); }))
                     spots.push_back(at);
             }
+        return true;
+    }
+
+    bool DenseCamp(Player* bot, std::string& why)
+    {
+        why.clear();
+        if (!bot || bot->IsInCombat() || !Applies(bot))
+            return false;
+        std::string who;
+        std::vector<G3D::Vector3> spots;
+        if (!StandsInReach(bot, who, spots) || !spots.empty())
+            return false;
+        // the roamers among the mobs whose reach covers the bot
+        float const sight = sPlayerbotAIConfig.SightDistance;
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(bot, sight + MAX_AGGRO_RADIUS);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitObjects(bot, searcher, sight + MAX_AGGRO_RADIUS);
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        uint32 roamers = 0;
+        std::string names;
+        for (Unit* unit : units)
+        {
+            Creature* mob = unit->ToCreature();
+            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                continue;
+            MovementGeneratorType const type = mob->GetDefaultMovementType();
+            if (type != RANDOM_MOTION_TYPE && type != WAYPOINT_MOTION_TYPE)
+                continue;
+            if (!InDisc(AggroDisc(mob, bot), here))
+                continue;
+            ++roamers;
+            if (roamers <= 4)
+                names += Acore::StringFormat("{}{} L{} ({})", names.empty() ? "" : ", ", mob->GetName(), mob->GetLevel(),
+                                             type == RANDOM_MOTION_TYPE ? "wanderer" : "patrol");
+        }
+        if (roamers < 2)
+            return false;
+        why = Acore::StringFormat("its objective lies where no spot within sight is out of every mob's reach and {} "
+                                  "roamers reach it ({}): a camp for a party",
+                                  roamers, names);
         return true;
     }
 

@@ -1715,6 +1715,20 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             _fishLogged = 0;  // [fish14] its catch is in: the pole off, its weapons back
             NewRpgFishing::Stop(botAI, bot);
         }
+    // [deaths14] b354 Silver Stream Mine, q416 Rat Catching: Januel L11, Manue L11, Geron L10 died among the tunnel
+    // rats - every pull judged 1-2, then the wanderers and patrols of the tunnels walked in one after another (3-5
+    // attackers a fight, "no way out clear of other mobs"). At its objective a solo bot standing where no spot within
+    // sight is out of every reach, two or more roamers reaching it, leaves the objective to a party: postponed, and
+    // the co-op / help seek of a refused spot (RefusedWalk -> NewRpgCoop::OnSpotRefused)
+    if (std::string denseWhy; data.pos != WorldPosition() && !bot->isMoving() &&
+                              bot->GetMapId() == data.pos.GetMapId() &&
+                              bot->GetExactDist(data.pos) <= sPlayerbotAIConfig.SightDistance &&
+                              SoloSafety::DenseCamp(bot, denseWhy))
+    {
+        LOG_INFO("playerbots", "[deaths14] {} L{} q{} leaves its objective to a party: {}", bot->GetName(),
+                 bot->GetLevel(), questId, denseWhy);
+        return RefusedWalk(data.pos, denseWhy);
+    }
     if (data.pos != WorldPosition())
     {
         /// @TODO: extract to a new function

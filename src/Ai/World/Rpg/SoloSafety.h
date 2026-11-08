@@ -129,6 +129,10 @@ namespace SoloSafety
     // [deaths14] a solo bot out of a fight stands in the aggro reach of an idle hostile (any: idle, wanderer, patrol)
     // and a spot out of every reach is there: its rest waits until it stands there (NewRpgBaseAction::RestEscape)
     bool RestSpotInReach(Player* bot);
+    // [deaths14] the bot stands where no spot round it (out to its sight) is out of every idle hostile's reach and two
+    // or more of those reaching it roam (a wander area, a patrol beat): between its pulls the roamers walk into it one
+    // after another - a camp for a party, not a solo bot (`why`: the roamers)
+    bool DenseCamp(Player* bot, std::string& why);
     // the death line's context: attackers now, the fight's start
     std::string DeathContext(Player* bot);
 
