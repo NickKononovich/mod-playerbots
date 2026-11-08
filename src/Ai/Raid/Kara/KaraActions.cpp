@@ -10,6 +10,15 @@
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include "RaidHonesty.h"
+#include "GossipDef.h"
+#include "Group.h"
+#include "InstanceScript.h"
+#include "Spell.h"
+#include "SpellMgr.h"
+#include "ThreatManager.h"
+#include "WorldSession.h"
+#include <set>
+#include <unordered_map>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -159,6 +168,12 @@ bool AttumenTheHuntsmanHandlePhaseOneAction::Execute(Event /*event*/)
         return attumen && AssistTankMoveAttumenFromGroup(midnight, attumen);
     }
 
+    // [kara3] a healer heals: no attack order on Midnight, whose fight brings Attumen's Shadow Cleave (a front cone,
+    // 38k) to the melee spot. b356 kara-n 20261108-234616-10A-1 t=352: the holy paladin, sent onto Midnight by this
+    // Attack, stood 1.4 yd from him in front of Attumen beside both tanks and died to one Shadow Cleave.
+    if (PlayerbotAI::IsHeal(bot))
+        return false;
+
     return AI_VALUE(Unit*, "current target") != midnight && Attack(midnight);
 }
 
@@ -271,6 +286,54 @@ bool MoroesMarkTargetAction::Execute(Event /*event*/)
     }
 
     return false;
+}
+
+// [kara3] b356 kara-n 20261108-234616-10A-1: the death knight tanked Moroes, the paladin tank the guests; Gouge
+// sent Moroes to the second on his threat list - the fury warrior (4245 against the paladin's 2204), dead at 1108 s,
+// then the warlock at 1145 s. The tank he does not hit holds the second place on his threat list: above every
+// non-tank by OFF_TANK_MARGIN, in melee; while it does, it is free for the guests. Moroes on a non-tank (its tank
+// gouged): it taunts him at once.
+bool MoroesOffTankHoldsSecondThreatAction::Execute(Event /*event*/)
+{
+    constexpr float OFF_TANK_MARGIN = 1.2f;
+    Unit* moroes = AI_VALUE2(Unit*, "find target", "moroes");
+    if (!moroes || !moroes->IsAlive() || moroes->GetVictim() == bot)
+        return false;
+    Unit* victim = moroes->GetVictim();
+    Player* victimPlayer = victim ? victim->ToPlayer() : nullptr;
+    if (victimPlayer && !PlayerbotAI::IsTank(victimPlayer))
+    {
+        static constexpr std::array<char const*, 4> taunts = {"taunt", "dark command", "hand of reckoning", "growl"};
+        for (char const* taunt : taunts)
+            if (botAI->CanCastSpell(taunt, moroes) && botAI->CastSpell(taunt, moroes))
+            {
+                LOG_INFO("playerbots", "[kara3] moroes: {} taunts Moroes off {} ({})", bot->GetName(),
+                         victimPlayer->GetName(), taunt);
+                return true;
+            }
+    }
+    float const mine = moroes->GetThreatMgr().GetThreat(bot);
+    float highest = 0.0f;
+    std::string over;
+    for (ThreatReference const* ref : moroes->GetThreatMgr().GetSortedThreatList())
+    {
+        Player* other = ref->GetVictim() ? ref->GetVictim()->ToPlayer() : nullptr;
+        if (!other || other == bot || PlayerbotAI::IsTank(other))
+            continue;
+        if (ref->GetThreat() > highest)
+        {
+            highest = ref->GetThreat();
+            over = other->GetName();
+        }
+    }
+    bool const second = mine >= highest * OFF_TANK_MARGIN && mine > 0.0f;
+    if (second && bot->IsWithinMeleeRange(moroes))
+        return false;  // its place is held: free for the guests
+    if (AI_VALUE(Unit*, "current target") == moroes)
+        return false;  // on him already: its rotation and its chase hold the place
+    LOG_INFO("playerbots", "[kara3] moroes: {} holds second threat on Moroes ({:.0f} vs {} {:.0f})",
+             bot->GetName(), mine, over.empty() ? "nobody" : over, highest);
+    return Attack(moroes);
 }
 
 // Maiden of Virtue
@@ -1550,4 +1613,596 @@ bool NightbaneManageTimersAndTrackersAction::Execute(Event /*event*/)
     }
 
     return didSomething;
+}
+
+// [kara3] Chess Event (boss_chess_event.cpp / instance_karazhan.cpp)
+//
+// How the game runs in the core: the Echo of Medivh's gossip "We want to play a game against you!" sets up the board
+// (64 invisible cell stalkers 22519) and the team of the player who asked (CHESS_EVENT_TEAM). "Control <King>" on the
+// own king starts the game; then every own piece offers "Control <piece>": Control Piece 30019 binds the player's sight
+// to it and charms it, the piece's four spells are the charm's bar. Spell 0 moves (a destination: the cell stalker
+// within 3 yd of it; the script allows one cell for king, rook, bishop and pawn, two for the knight, three for the
+// queen, a free cell only), spell 1 turns it (Change Facing, the cell stalker within 4 yd), spells 2 and 3 are its
+// abilities. Every piece hits the nearest enemy piece within 10 yd in a 60 degree front arc by itself (Melee Attack
+// timer). A piece that dies drops its controller back to the side of the board ("Recently In Game"). Medivh moves his
+// pieces himself and cheats every 45-100 s: his king healed, fire on three of the raid's cells (Fury of Medivh, the
+// fire creature 22521), or his pieces buffed. The game is won when his king dies, lost when the raid's king dies (the
+// game resets, Medivh is asked again).
+namespace KaraChess
+{
+    constexpr uint32 NPC_MEDIVH = 16816;
+    constexpr uint32 NPC_CELL = 22519;
+    constexpr uint32 NPC_FIRE = 22521;
+    constexpr uint32 SPELL_RECENTLY_INGAME = 30529;
+    constexpr uint32 DATA_CHESS_EVENT = 8;
+    constexpr uint32 DATA_CHESS_EVENT_TEAM = 33;
+    constexpr uint32 DATA_CHESS_GAME_PHASE = 35;
+    constexpr uint32 PHASE_NOT_STARTED = 0;
+    constexpr uint32 PHASE_PVE_WARMUP = 1;
+    constexpr uint32 PHASE_INPROGRESS_PVE = 2;
+    constexpr float BOARD_X0 = -11108.099609f;  // cell (0, 0): npc_echo_of_medivh::SetupBoard
+    constexpr float BOARD_Y0 = -1872.910034f;
+    constexpr float GAME_RANGE = 80.0f;         // Medivh to the farthest cell is ~45 yd
+    constexpr float CELL_TAKEN = 2.0f;          // a living piece this close to a cell's centre stands on it
+    constexpr float FIRE_REACH = 3.5f;          // a fire creature this close to a cell's centre burns it
+    constexpr float MELEE_REACH = 10.0f;        // SpellHitTarget SPELL_MELEE_ATTACK_TIMER_TRIGGER: GetEnemyPiece(10)
+    constexpr float MELEE_ARC = float(M_PI) / 3.0f;  // GetPiece checkFront
+    constexpr float HEAL_BELOW = 75.0f;              // a friendly piece under this health percent is healed
+    constexpr float RANGED_HOLD = 18.0f;             // the queen / a bishop acts from here: Holy Lance 18, blasts 20
+    constexpr float KING_GUARD = 15.0f;              // an enemy piece this close to the raid's king is met first
+
+    enum class Kind : uint8
+    {
+        King,
+        Queen,
+        Bishop,
+        Knight,
+        Rook,
+        Pawn
+    };
+
+    struct PieceDef
+    {
+        uint32 alliance;
+        uint32 horde;
+        Kind kind;
+        int8 step;  // HandlePieceMove: the farthest row / column change of a move
+        char const* name;
+    };
+
+    std::array<PieceDef, 6> const PIECES = {{
+        {21684, 21752, Kind::King, 1, "king"},
+        {21683, 21750, Kind::Queen, 3, "queen"},
+        {21682, 21747, Kind::Bishop, 1, "bishop"},
+        {21664, 21748, Kind::Knight, 2, "knight"},
+        {21160, 21726, Kind::Rook, 1, "rook"},
+        {17211, 17469, Kind::Pawn, 1, "pawn"},
+    }};
+
+    // The order the leader hands the pieces out: the king first (its control starts the game), then the pieces
+    // that win the game - the queen's range, the healers, the knights' reach, the rooks; the centre pawns last.
+    std::array<Kind, 16> const HAND_OUT = {Kind::King, Kind::Queen, Kind::Bishop, Kind::Bishop,
+                                           Kind::Knight, Kind::Knight, Kind::Rook, Kind::Rook,
+                                           Kind::Pawn, Kind::Pawn, Kind::Pawn, Kind::Pawn,
+                                           Kind::Pawn, Kind::Pawn, Kind::Pawn, Kind::Pawn};
+
+    PieceDef const* DefOf(uint32 entry)
+    {
+        for (PieceDef const& def : PIECES)
+            if (def.alliance == entry || def.horde == entry)
+                return &def;
+        return nullptr;
+    }
+
+    Creature* ChessPiece(Unit* unit)
+    {
+        return unit && unit->IsCreature() && DefOf(unit->GetEntry()) ? unit->ToCreature() : nullptr;
+    }
+
+    // The board cell of a point (the inverse of SetupBoard's x = X0 + 3.49 col + 4.4 row, y = Y0 - 4.4 col + 3.45 row)
+    void CellOf(float x, float y, int& row, int& col)
+    {
+        float const dx = x - BOARD_X0;
+        float const dy = y - BOARD_Y0;
+        float const det = 3.49f * 3.45f + 4.4f * 4.4f;
+        col = int(std::lround((3.45f * dx - 4.4f * dy) / det));
+        row = int(std::lround((4.4f * dx + 3.49f * dy) / det));
+    }
+
+    struct Board
+    {
+        InstanceScript* script = nullptr;
+        Creature* medivh = nullptr;
+        std::vector<Creature*> own;
+        std::vector<Creature*> enemy;
+        std::vector<Creature*> cells;
+        std::vector<Creature*> fires;
+        Creature* enemyKing = nullptr;
+        Creature* ownKing = nullptr;
+    };
+
+    // What a player at the board sees: the pieces of both sides (the raid's side is the team of the player who
+    // asked Medivh: CHESS_EVENT_TEAM; before the game, the bot's own), the cells and Medivh's fires.
+    bool ReadBoard(Player* bot, Board& board)
+    {
+        if (bot->GetMapId() != KARA_MAP_ID)
+            return false;
+        board.script = bot->GetInstanceScript();
+        board.medivh = bot->FindNearestCreature(NPC_MEDIVH, GAME_RANGE, true);
+        if (!board.script || !board.medivh)
+            return false;
+        uint32 const team = board.script->GetData(DATA_CHESS_EVENT_TEAM);
+        bool const alliance = team == TEAM_ALLIANCE || (team != TEAM_HORDE && bot->GetTeamId() == TEAM_ALLIANCE);
+        std::vector<uint32> entries;
+        for (PieceDef const& def : PIECES)
+        {
+            entries.push_back(def.alliance);
+            entries.push_back(def.horde);
+        }
+        std::list<Creature*> pieces;
+        board.medivh->GetCreatureListWithEntryInGrid(pieces, entries, GAME_RANGE);
+        for (Creature* piece : pieces)
+        {
+            if (!piece->IsAlive())
+                continue;
+            PieceDef const* def = DefOf(piece->GetEntry());
+            bool const ownSide = alliance ? def->alliance == piece->GetEntry() : def->horde == piece->GetEntry();
+            (ownSide ? board.own : board.enemy).push_back(piece);
+            if (def->kind == Kind::King)
+                (ownSide ? board.ownKing : board.enemyKing) = piece;
+        }
+        std::list<Creature*> cells;
+        board.medivh->GetCreatureListWithEntryInGrid(cells, NPC_CELL, GAME_RANGE);
+        board.cells.assign(cells.begin(), cells.end());
+        std::list<Creature*> fires;
+        board.medivh->GetCreatureListWithEntryInGrid(fires, NPC_FIRE, GAME_RANGE);
+        for (Creature* fire : fires)
+            if (fire->IsAlive())
+                board.fires.push_back(fire);
+        return true;
+    }
+
+    bool Burning(Board const& board, float x, float y)
+    {
+        for (Creature* fire : board.fires)
+            if (fire->GetExactDist2d(x, y) <= FIRE_REACH)
+                return true;
+        return false;
+    }
+
+    bool Taken(Board const& board, Creature const* cell, Creature const* self)
+    {
+        for (std::vector<Creature*> const* side : {&board.own, &board.enemy})
+            for (Creature* piece : *side)
+                if (piece != self && piece->GetExactDist2d(cell) <= CELL_TAKEN)
+                    return true;
+        return false;
+    }
+
+    // The members in the leader's order: the leader first, then by GUID (every member computes the same list).
+    std::vector<Player*> Members(Player* bot)
+    {
+        std::vector<Player*> members;
+        Group* group = bot->GetGroup();
+        if (!group)
+        {
+            members.push_back(bot);
+            return members;
+        }
+        Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource();
+                member && member != leader && member->IsInWorld() && member->GetMap() == bot->GetMap())
+                members.push_back(member);
+        std::sort(members.begin(), members.end(),
+                  [](Player* a, Player* b) { return a->GetGUID().GetCounter() < b->GetGUID().GetCounter(); });
+        if (leader && leader->IsInWorld() && leader->GetMap() == bot->GetMap())
+            members.insert(members.begin(), leader);
+        return members;
+    }
+
+    // [kara3] The leader's hand-out: member k takes the k-th piece of HAND_OUT that is alive and not controlled by
+    // anybody else; a member that controls a piece keeps it. Pieces of one kind go by their column, the centre first.
+    Creature* AssignedPiece(Player* bot, Board const& board)
+    {
+        std::vector<Player*> const members = Members(bot);
+        std::set<ObjectGuid> taken;
+        for (Player* member : members)
+            if (Creature* charm = ChessPiece(member->GetCharm()))
+                taken.insert(charm->GetGUID());
+        std::vector<Creature*> order;
+        std::array<uint8, 6> used{};
+        for (Kind kind : HAND_OUT)
+        {
+            std::vector<Creature*> ofKind;
+            for (Creature* piece : board.own)
+                if (DefOf(piece->GetEntry())->kind == kind)
+                    ofKind.push_back(piece);
+            std::sort(ofKind.begin(), ofKind.end(),
+                      [](Creature* a, Creature* b)
+                      {
+                          int ra = 0, ca = 0, rb = 0, cb = 0;
+                          CellOf(a->GetHomePosition().GetPositionX(), a->GetHomePosition().GetPositionY(), ra, ca);
+                          CellOf(b->GetHomePosition().GetPositionX(), b->GetHomePosition().GetPositionY(), rb, cb);
+                          float const da = std::fabs(float(ca) - 3.5f);
+                          float const db = std::fabs(float(cb) - 3.5f);
+                          return da != db ? da < db : a->GetGUID().GetCounter() < b->GetGUID().GetCounter();
+                      });
+            uint8& index = used[uint8(kind)];
+            if (index < ofKind.size())
+                order.push_back(ofKind[index++]);
+        }
+        size_t next = 0;
+        for (Player* member : members)
+        {
+            if (Creature* charm = ChessPiece(member->GetCharm()))
+            {
+                if (member == bot)
+                    return charm;
+                continue;
+            }
+            while (next < order.size() && taken.count(order[next]->GetGUID()))
+                ++next;
+            if (next >= order.size())
+                return nullptr;
+            if (member == bot)
+                return order[next];
+            ++next;
+        }
+        return nullptr;
+    }
+
+    bool GossipByText(Player* bot, Creature* npc, std::string const& prefix)
+    {
+        WorldPacket hello(CMSG_GOSSIP_HELLO);
+        hello << npc->GetGUID();
+        bot->GetSession()->HandleGossipHelloOpcode(hello);
+        GossipMenu& menu = bot->PlayerTalkClass->GetGossipMenu();
+        for (auto const& [index, item] : menu.GetMenuItems())
+            if (item.Message.rfind(prefix, 0) == 0)
+            {
+                WorldPacket select(CMSG_GOSSIP_SELECT_OPTION);
+                select << npc->GetGUID() << uint32(menu.GetMenuId()) << uint32(index);
+                bot->GetSession()->HandleGossipSelectOptionOpcode(select);
+                return true;
+            }
+        bot->PlayerTalkClass->SendCloseGossip();
+        return false;
+    }
+
+    // As the client's pet bar sends a charm's spell (CMSG_PET_CAST_SPELL: WorldSession::HandlePetCastSpellOpcode
+    // runs the charm's own cast checks and starts its cooldown when the cast goes through).
+    bool CastPieceSpell(Player* bot, Creature* piece, uint32 spellId, Unit* target, Position const* dest)
+    {
+        if (!spellId || piece->HasSpellCooldown(spellId) || piece->IsNonMeleeSpellCast(false))
+            return false;
+        SpellCastTargets targets;
+        if (target)
+            targets.SetUnitTarget(target);
+        if (dest)
+            targets.SetDst(dest->GetPositionX(), dest->GetPositionY(), dest->GetPositionZ(), 0.0f);
+        WorldPacket packet(CMSG_PET_CAST_SPELL);
+        packet << piece->GetGUID() << uint8(0) << spellId << uint8(0);
+        targets.Write(packet);
+        bot->GetSession()->HandlePetCastSpellOpcode(packet);
+        return piece->HasSpellCooldown(spellId) || piece->IsNonMeleeSpellCast(false);
+    }
+
+    enum class Use : uint8
+    {
+        None,
+        Heal,       // a friendly target (Healing / Shadow Mend)
+        SelfBuff,   // on itself (Shield Block, Water Shield, ...)
+        GroupBuff,  // the own pieces round it (Heroism / Bloodlust)
+        Single,     // an enemy target in range (Elemental Blast / Fireball)
+        Ground,     // an area on an enemy (Rain of Fire / Poison Cloud)
+        Around,     // the enemies round it (Geyser, Hellfire, Sweep, Cleave)
+        Cone        // the enemies in front of it (Smash, Stomp, Holy Lance, Heroic Blow, ...)
+    };
+
+    // The use of an ability from its own spell data (the same table for both sides' pieces).
+    Use UseOf(SpellInfo const* info, float& reach)
+    {
+        reach = 0.0f;
+        if (!info)
+            return Use::None;
+        SpellEffectInfo const& effect = info->Effects[EFFECT_0];
+        Targets const targetA = effect.TargetA.GetTarget();
+        if (effect.Effect == SPELL_EFFECT_HEAL)
+        {
+            reach = info->GetMaxRange(true);
+            return Use::Heal;
+        }
+        if (effect.Effect == SPELL_EFFECT_PERSISTENT_AREA_AURA)
+        {
+            reach = info->GetMaxRange(false);
+            return Use::Ground;
+        }
+        if (targetA == TARGET_UNIT_CASTER)
+            return Use::SelfBuff;
+        if (targetA == TARGET_UNIT_CONE_ENTRY)
+        {
+            reach = effect.CalcRadius();
+            return Use::Cone;
+        }
+        if (targetA == TARGET_SRC_CASTER)
+        {
+            reach = effect.CalcRadius();
+            return effect.Effect == SPELL_EFFECT_APPLY_AURA ? Use::GroupBuff : Use::Around;
+        }
+        if (targetA == TARGET_UNIT_TARGET_ANY || targetA == TARGET_UNIT_TARGET_ENEMY)
+        {
+            reach = info->GetMaxRange(false);
+            return Use::Single;
+        }
+        return Use::None;
+    }
+
+    // The enemy a piece goes for: Medivh's king first, else the weakest in reach.
+    Creature* BestEnemy(Creature* piece, Board const& board, float reach, bool front)
+    {
+        Creature* best = nullptr;
+        for (Creature* enemy : board.enemy)
+        {
+            if (piece->GetExactDist2d(enemy) > reach || (front && !piece->HasInArc(MELEE_ARC, enemy)))
+                continue;
+            bool const king = enemy == board.enemyKing;
+            bool const bestKing = best == board.enemyKing;
+            if (!best || (king && !bestKing) || (king == bestKing && enemy->GetHealthPct() < best->GetHealthPct()))
+                best = enemy;
+        }
+        return best;
+    }
+
+    Creature* NearestEnemy(Creature* piece, Board const& board, float& distance)
+    {
+        Creature* nearest = nullptr;
+        distance = std::numeric_limits<float>::max();
+        for (Creature* enemy : board.enemy)
+            if (float const d = piece->GetExactDist2d(enemy); d < distance)
+            {
+                distance = d;
+                nearest = enemy;
+            }
+        return nearest;
+    }
+
+    // A cell the move spell takes the piece to (HandlePieceMove: free, within its step, in the spell's range, not
+    // burning), the nearest to the goal; mustLeave: any such cell when none is nearer.
+    Creature* MoveCell(Creature* piece, Board const& board, Position const& goal, bool mustLeave, float& gain)
+    {
+        gain = 0.0f;
+        PieceDef const* def = DefOf(piece->GetEntry());
+        SpellInfo const* move = sSpellMgr->GetSpellInfo(piece->m_spells[0]);
+        if (!def || !move)
+            return nullptr;
+        float const range = move->GetMaxRange(false);
+        int row = 0;
+        int col = 0;
+        CellOf(piece->GetPositionX(), piece->GetPositionY(), row, col);
+        float const here = piece->GetExactDist2d(&goal);
+        Creature* best = nullptr;
+        float bestDistance = here;
+        for (Creature* cell : board.cells)
+        {
+            int cellRow = 0;
+            int cellCol = 0;
+            CellOf(cell->GetPositionX(), cell->GetPositionY(), cellRow, cellCol);
+            if ((cellRow == row && cellCol == col) || std::abs(cellRow - row) > def->step ||
+                std::abs(cellCol - col) > def->step || piece->GetExactDist2d(cell) > range - 0.5f ||
+                Taken(board, cell, piece) || Burning(board, cell->GetPositionX(), cell->GetPositionY()))
+                continue;
+            float const distance = cell->GetExactDist2d(&goal);
+            if ((mustLeave && !best) || distance < bestDistance)
+            {
+                best = cell;
+                bestDistance = distance;
+            }
+        }
+        gain = here - bestDistance;
+        return best;
+    }
+
+    // One line per piece each time its kind of play changes: the log shows the game without a line per tick.
+    void Note(Player* bot, Creature* piece, std::string const& what)
+    {
+        static std::unordered_map<uint64, std::string> last;  // a log memo only
+        std::string& seen = last[piece->GetGUID().GetRawValue()];
+        if (seen == what)
+            return;
+        seen = what;
+        LOG_INFO("playerbots", "[kara3] chess: {} plays {} ({:.0f} %): {}", bot->GetName(), piece->GetName(),
+                 piece->GetHealthPct(), what);
+    }
+
+    // One decision for the piece the bot controls: off a burning cell, a heal, an ability, the turn to an enemy at
+    // hand, the move toward Medivh's king. The raid's king holds its cell (its loss is the game's); the queen and the
+    // bishops stay back while an enemy is in their range.
+    bool PlayPiece(Player* bot, Creature* piece, Board const& board)
+    {
+        if (!piece->IsAlive() || piece->IsNonMeleeSpellCast(false) || piece->isMoving())
+            return true;
+        PieceDef const* def = DefOf(piece->GetEntry());
+        if (!def)
+            return false;
+
+        float gain = 0.0f;
+        if (Burning(board, piece->GetPositionX(), piece->GetPositionY()))
+        {
+            Position const away = board.enemyKing ? board.enemyKing->GetPosition() : piece->GetPosition();
+            if (Creature* cell = MoveCell(piece, board, away, true, gain))
+            {
+                Position const dest = cell->GetPosition();
+                if (CastPieceSpell(bot, piece, piece->m_spells[0], nullptr, &dest))
+                {
+                    Note(bot, piece, "leaves a burning cell");
+                    return true;
+                }
+            }
+        }
+
+        float nearest = 0.0f;
+        Creature* enemy = NearestEnemy(piece, board, nearest);
+        for (uint8 slot = 2; slot <= 3; ++slot)
+        {
+            uint32 const spellId = piece->m_spells[slot];
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            float reach = 0.0f;
+            Use const use = UseOf(info, reach);
+            if (use == Use::None || piece->HasSpellCooldown(spellId))
+                continue;
+            std::string const name = info->SpellName[0];
+            switch (use)
+            {
+                case Use::Heal:
+                {
+                    Creature* hurt = nullptr;
+                    for (Creature* own : board.own)
+                        if (piece->GetExactDist2d(own) <= reach && own->GetHealthPct() < HEAL_BELOW &&
+                            (!hurt || (own == board.ownKing && hurt != board.ownKing) ||
+                             (hurt != board.ownKing && own->GetHealthPct() < hurt->GetHealthPct())))
+                            hurt = own;
+                    if (hurt && CastPieceSpell(bot, piece, spellId, hurt, nullptr))
+                    {
+                        Note(bot, piece, name + " on " + hurt->GetName());
+                        return true;
+                    }
+                    break;
+                }
+                case Use::SelfBuff:
+                case Use::GroupBuff:
+                    if (enemy && nearest <= MELEE_REACH &&
+                        CastPieceSpell(bot, piece, spellId, use == Use::SelfBuff ? piece : nullptr, nullptr))
+                    {
+                        Note(bot, piece, name);
+                        return true;
+                    }
+                    break;
+                case Use::Single:
+                case Use::Ground:
+                    if (Creature* target = BestEnemy(piece, board, reach, false))
+                    {
+                        Position const dest = target->GetPosition();
+                        if (CastPieceSpell(bot, piece, spellId, use == Use::Single ? target : nullptr,
+                                           use == Use::Ground ? &dest : nullptr))
+                        {
+                            Note(bot, piece, name + " on " + target->GetName());
+                            return true;
+                        }
+                    }
+                    break;
+                case Use::Around:
+                case Use::Cone:
+                    if (BestEnemy(piece, board, reach, use == Use::Cone) &&
+                        CastPieceSpell(bot, piece, spellId, nullptr, nullptr))
+                    {
+                        Note(bot, piece, name);
+                        return true;
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        // An enemy at hand but none in front: the piece turns to it (its own melee and its cones hit in front only).
+        if (enemy && nearest <= MELEE_REACH)
+        {
+            if (!BestEnemy(piece, board, MELEE_REACH, true))
+            {
+                Position const dest = enemy->GetPosition();
+                if (CastPieceSpell(bot, piece, piece->m_spells[1], nullptr, &dest))
+                    Note(bot, piece, std::string("turns to ") + enemy->GetName());
+            }
+            return true;  // fighting: it holds its cell
+        }
+
+        // No enemy at hand: an enemy piece near the raid's king first (its loss is the game's), else Medivh's king.
+        // The raid's king stays; the queen and the bishops wait while an enemy is in their range (they act from
+        // there), the others walk on until an enemy stands next to them.
+        if (def->kind == Kind::King || !board.enemyKing)
+            return true;
+        if ((def->kind == Kind::Queen || def->kind == Kind::Bishop) && enemy && nearest <= RANGED_HOLD)
+            return true;
+        Creature* goalPiece = board.enemyKing;
+        if (board.ownKing)
+        {
+            float threat = KING_GUARD;
+            for (Creature* other : board.enemy)
+                if (float const d = other->GetExactDist2d(board.ownKing); d < threat)
+                {
+                    threat = d;
+                    goalPiece = other;
+                }
+        }
+        Position const goal = goalPiece->GetPosition();
+        if (Creature* cell = MoveCell(piece, board, goal, false, gain); cell && gain > 1.0f)
+        {
+            Position const dest = cell->GetPosition();
+            if (CastPieceSpell(bot, piece, piece->m_spells[0], nullptr, &dest))
+                Note(bot, piece,
+                     std::string(goalPiece == board.enemyKing ? "moves toward " : "guards the king against ") +
+                         goalPiece->GetName());
+        }
+        return true;
+    }
+
+    bool Active(Player* bot)
+    {
+        if (bot->GetMapId() != KARA_MAP_ID || !bot->IsAlive())
+            return false;
+        InstanceScript* script = bot->GetInstanceScript();
+        if (!script || script->GetData(DATA_CHESS_EVENT) == DONE)
+            return false;
+        if (ChessPiece(bot->GetCharm()))
+            return true;
+        if (bot->IsInCombat() || !bot->FindNearestCreature(NPC_MEDIVH, GAME_RANGE, true))
+            return false;
+        uint32 const phase = script->GetData(DATA_CHESS_GAME_PHASE);
+        if (phase == PHASE_NOT_STARTED)
+        {
+            Group* group = bot->GetGroup();
+            return !group || group->IsLeader(bot->GetGUID());
+        }
+        return phase == PHASE_PVE_WARMUP || phase == PHASE_INPROGRESS_PVE;
+    }
+}
+
+bool KarazhanChessPlayAction::Execute(Event /*event*/)
+{
+    using namespace KaraChess;
+    Board board;
+    if (!ReadBoard(bot, board))
+        return false;
+
+    if (Creature* charm = ChessPiece(bot->GetCharm()))
+        return PlayPiece(bot, charm, board);
+
+    uint32 const phase = board.script->GetData(DATA_CHESS_GAME_PHASE);
+    if (phase == PHASE_NOT_STARTED)
+    {
+        // the leader asks Medivh for the game (again after a lost one: the board was reset)
+        if (bot->GetExactDist(board.medivh) > INTERACTION_DISTANCE - 1.0f)
+            return MoveNear(board.medivh, INTERACTION_DISTANCE - 2.0f, MovementPriority::MOVEMENT_NORMAL);
+        bool const asked = GossipByText(bot, board.medivh, "We want to play");
+        LOG_INFO("playerbots", "[kara3] chess: {} asks {} for the game{}", bot->GetName(), board.medivh->GetName(),
+                 asked ? "" : " - no such option");
+        return asked;
+    }
+
+    if (bot->HasAura(SPELL_RECENTLY_INGAME))
+        return false;  // its piece just died: the core lets it take another one once the aura is gone
+    Creature* piece = AssignedPiece(bot, board);
+    if (!piece)
+        return false;
+    PieceDef const* def = DefOf(piece->GetEntry());
+    // the king's control starts the game; every other piece offers its control only once the game runs
+    if (phase == PHASE_PVE_WARMUP && def->kind != Kind::King)
+        return false;
+    if (bot->GetExactDist(piece) > INTERACTION_DISTANCE - 1.0f)
+        return MoveNear(piece, INTERACTION_DISTANCE - 2.0f, MovementPriority::MOVEMENT_NORMAL);
+    bool const taken = GossipByText(bot, piece, "Control ");
+    LOG_INFO("playerbots", "[kara3] chess: {} takes {} ({}){}", bot->GetName(), piece->GetName(), def->name,
+             taken ? "" : " - no Control option");
+    return taken;
 }

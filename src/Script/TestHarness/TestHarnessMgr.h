@@ -209,6 +209,9 @@ namespace TestHarness
         std::string worldBossPrepState;  // [b342] the last logged world_boss_prep state (logged on a change)
         uint8 level = 80;
         uint32 targetIlvl = 0;
+        // [kara3] a "continue" run: the members keep their raid binds and re-enter the same instance save (its dead
+        // bosses and trash stay dead - the lockout, a game mechanic), the run goes on from the next boss
+        bool resume = false;
         std::vector<Member> members;
         ObjectGuid leader;
         ObjectGuid groupGuid;
@@ -386,7 +389,8 @@ namespace TestHarness
 
         bool HandleSetup(ChatHandler* handler, uint32 groups, bool leveling, bool variants, bool horde = false);
         bool HandlePrepare(ChatHandler* handler, std::string const& compId, uint8 level, uint32 ilvl);
-        bool HandleRun(ChatHandler* handler, std::string const& contentKey, uint32 count, std::string const& compId);
+        bool HandleRun(ChatHandler* handler, std::string const& contentKey, uint32 count, std::string const& compId,
+                       bool resume = false);
         void SetRunAllRandomComp(bool on) { _runAllRandomComp = on; }
         bool HandleRunAll(ChatHandler* handler, std::string const& set, uint32 parallel, bool variants,
                           uint32 window = 10);

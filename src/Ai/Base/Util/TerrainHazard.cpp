@@ -602,7 +602,7 @@ namespace
     // Doors the instance scripts drive that the template test would let through: the click would open them before
     // their event (DoorOpensByUse). The startOpen and Doodad_ tests already cover these; the list is the explicit
     // record and the place for the next one found.
-    constexpr std::array<uint32, 24> SCRIPT_DOOR_ENTRIES = {
+    constexpr std::array<uint32, 25> SCRIPT_DOOR_ENTRIES = {
         175570,                                          // Scholomance: Kirtonos' gate (instance_scholomance)
         177371, 177372, 177373, 177374, 177375, 177376,  // Scholomance: Darkmaster Gandling's room gates
         177377,                                          // Scholomance: Gandling, upper east
@@ -618,6 +618,9 @@ namespace
         // [door_hold_pass] Gnomeregan: the Cave Ins (type 0, lock 0, flags 32) are opened and sealed by Emi
         // Shortfuse's SAI 7998 (ids 100 / 29 / 101 / 56); a click would open them out of the event's order.
         146085, 146086,
+        // [kara3] Karazhan: the Gamesman's Hall Exit Door 184277 (lock 0, flags 32) opens on the Chess Event's win
+        // (instance_karazhan.cpp DATA_CHESS_EVENT DONE: HandleGameObject); a click would skip the game.
+        184277,
     };
 
     // Doors with a lock any player opens by the click (Lock.dbc 86: one LOCK_KEY_SKILL case LOCKTYPE_QUICK_OPEN,

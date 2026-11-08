@@ -1031,7 +1031,7 @@ namespace TestHarness
             }
 
             member.prep = PrepareCharacter(bot, *member.spec, party.level, party.targetIlvl, member.professions,
-                                           hasWarlock, party.content);
+                                           hasWarlock, party.content, party.resume);
             if (!member.prep.ok)
             {
                 Finish(party, "failed", member.name + ": " + member.prep.error);
@@ -1625,6 +1625,18 @@ namespace TestHarness
                     // [world_boss] an open-world map has no instance and no bind: a member on it is ported below
                     if (content->worldBoss)
                         continue;
+                    // [kara3] a continue run: the bind stays (the same instance save); a member still inside goes
+                    // to the entrance of that same instance (a teleport inside the map keeps the instance)
+                    if (party.resume)
+                    {
+                        if (bot->GetMapId() == content->mapId)
+                        {
+                            Position const& door = party.entrances[party.entranceIdx];
+                            bot->TeleportTo(content->mapId, door.GetPositionX(), door.GetPositionY(),
+                                            door.GetPositionZ(), door.GetOrientation());
+                        }
+                        continue;
+                    }
                     if (bot->GetMapId() != content->mapId)
                         sInstanceSaveMgr->PlayerUnbindInstance(bot->GetGUID(), content->mapId,
                                                                Difficulty(content->difficulty), true, bot);
@@ -2376,6 +2388,18 @@ namespace TestHarness
             } while (result->NextRow());
         }
 
+        if (party.resume)
+        {
+            // [kara3] the lockout's state: what the earlier runs left dead
+            std::string dead;
+            for (BossTrack const& boss : party.bosses)
+                if (boss.killed)
+                    dead += (dead.empty() ? "" : ", ") + boss.name;
+            LOG_INFO("playerbots", "[kara3] continue: instance {}, bosses dead: {}", map->GetInstanceId(),
+                     dead.empty() ? "none" : dead);
+            LogEvent(party, "continue_run", JsonObject().Num("instanceId", map->GetInstanceId())
+                                                .Str("bossesDead", dead));
+        }
         LogRunStart(party);
         party.needBuff = true;
         party.buffStep = 0;
@@ -2996,6 +3020,14 @@ namespace TestHarness
                     if (!script)
                         continue;
                     state = uint8(script->GetBossState(boss.bossId));
+                    // [kara3] a slot the instance keeps as data (Karazhan's Chess Event: SetData 8, never SetBossState)
+                    if (uint32 const dataId = ScriptSlotData(party.content->mapId, boss.bossId);
+                        dataId != UINT32_MAX && state != DONE)
+                    {
+                        uint32 const data = script->GetData(dataId);
+                        if (data == DONE || data == IN_PROGRESS)
+                            state = uint8(data);
+                    }
                 }
                 else if (boss.killed)
                     state = DONE;
@@ -4737,7 +4769,7 @@ namespace TestHarness
     }
 
     bool TestHarnessMgr::HandleRun(ChatHandler* handler, std::string const& contentKey, uint32 count,
-                                   std::string const& compId)
+                                   std::string const& compId, bool resume)
     {
         ContentDef const* content = FindContent(contentKey);
         if (!content)
@@ -4754,7 +4786,13 @@ namespace TestHarness
             return false;
         }
 
-        for (uint32 i = 0; i < std::max<uint32>(count, 1); ++i)
+        // [kara3] a continue run is one party: the comp's members and their raid lockout
+        if (resume && !content->raid)
+        {
+            handler->PSendSysMessage("Test harness: 'continue' is for a raid (its lockout keeps the dead bosses)");
+            return false;
+        }
+        for (uint32 i = 0; i < (resume ? 1u : std::max<uint32>(count, 1)); ++i)
         {
             std::string error;
             Party* party = CreateParty(comp, content, content->level, content->ilvl - IlvlBelowContent(content->ilvl), error);
@@ -4763,6 +4801,7 @@ namespace TestHarness
                 handler->PSendSysMessage("Test harness: {}", error);
                 return i > 0;
             }
+            party->resume = resume;
             handler->PSendSysMessage("Test harness: run {} started ({}, comp {}, level {}, target avg ilvl {})",
                                      party->id, content->name, comp->id, party->level, party->targetIlvl);
         }

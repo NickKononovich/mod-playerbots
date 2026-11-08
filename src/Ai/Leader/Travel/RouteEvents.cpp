@@ -791,6 +791,12 @@ namespace Leader::Travel
             // [brd_ring_hold] a reached step stays the spot while its event runs (SpotHolds: EventSpotDef::eventData)
             if (state != routeState.eventSpotState.end() && (state->second == 2 || !SpotHolds(group, *spots[index])))
                 continue;
+            // [kara3] EventSpotDef::doneData: the event no kill ends is over (Karazhan's Chess Event won)
+            if (spots[index]->doneData >= 0 && leader && leader->GetMap() &&
+                leader->GetMap()->GetInstanceId() == group.InstanceId())
+                if (InstanceScript* script = leader->GetInstanceScript();
+                    script && script->GetData(uint32(spots[index]->doneData)) == DONE)
+                    continue;
             // EventSpotDef::afterUsed: a hold that begins with the use of its starter (Urok's pile, Kirtonos' brazier)
             if (EntriesDead(group, spots[index]->afterDead) && StartersUsed(group, spots[index]->afterUsed) &&
                 (spots[index]->untilDead.empty() || !EntriesDead(group, spots[index]->untilDead)))
