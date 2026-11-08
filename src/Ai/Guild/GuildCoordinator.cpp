@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iterator>
+#include <optional>
 #include <sstream>
 #include <tuple>
 
@@ -2724,7 +2725,9 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         return;  // nothing to compare with: the log stays as it is
     for (Row const& r : rows)
     {
-        if ((r.color != XP_GRAY && r.color != XP_GREEN) || !r.priced)
+        // [quest14] a grey quest is no XP/min question: the route's grey rule (map thread, GreyQuestNeed) keeps or
+        // abandons it
+        if (r.color != XP_GREEN || !r.priced)
             continue;
         uint32 const questId = r.quest->GetQuestId();
         float const value = float(r.copper * MINUTE / std::max(r.seconds, 1.0));
@@ -2843,6 +2846,9 @@ bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute
         // (b350 Rumanatol: one next to its ender made the pace 21527 c/min)
         if (q == questStatic_.end() || q->second.map != map || !q->second.ender || status != QUEST_STATUS_INCOMPLETE)
             continue;
+        // [quest14] a grey quest counts toward no rate
+        if (IsGreyQuest(p, quest))
+            continue;
         // [flit] a log quest the bot does not work (only a tool's use or a spell credits it) is no questing value
         if (status == QUEST_STATUS_INCOMPLETE &&
             (NewRpgBaseAction::NeedsItemUseCredit(quest) || NewRpgBaseAction::NeedsSpellCredit(p, quest, true)))
@@ -2891,7 +2897,9 @@ bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute
                 Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
                 if (!quest || quest->GetMinLevel() > level)
                     break;  // sorted by min level
-                if (p->GetQuestStatus(questId) == QUEST_STATUS_NONE && p->CanTakeQuest(quest, false))
+                // [quest14] a grey quest counts toward no rate
+                if (p->GetQuestStatus(questId) == QUEST_STATUS_NONE && !IsGreyQuest(p, quest) &&
+                    p->CanTakeQuest(quest, false))
                     st.questAvail.push_back(questId);
             }
     }
@@ -3715,6 +3723,221 @@ bool GuildCoordinator::NeedsForOwnCalls(Player* bot, uint32 itemId) const
         return false;
     auto const need = own->second.find(itemId);
     return need != own->second.end() && need->second > 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [quest14] user rule 2026-11-08: grey quests are not done unless needed (a chain step to a quest it would do, an
+// upgrade, a recipe / skill / attunement / key / wanted item)
+// ---------------------------------------------------------------------------------------------------------------------
+namespace
+{
+    struct GreyStatic
+    {
+        std::unordered_map<uint32, std::vector<uint32>> followers;  // quest -> the quests it opens or leads to
+        std::unordered_map<uint32, TeamId> attuneQuests;            // dungeon_access_requirements quests
+        std::unordered_set<uint32> attuneItems;                     // dungeon_access_requirements items
+        std::unordered_set<uint32> keyItems;                        // Lock.dbc item keys
+    };
+
+    GreyStatic const& GreyTables()
+    {
+        static GreyStatic const tables = []()
+        {
+            GreyStatic t;
+            auto const link = [&t](uint32 from, uint32 to)
+            {
+                if (from && to && from != to)
+                    t.followers[from].push_back(to);
+            };
+            for (auto const& [questId, quest] : sObjectMgr->GetQuestTemplates())
+            {
+                if (!quest)
+                    continue;
+                // PrevQuestId (> 0 rewarded, < 0 active) and the NextQuestId / ExclusiveGroup links the core folds
+                // into prevQuests; RewardNextQuest into prevChainQuests (ObjectMgr::LoadQuests)
+                for (int32 const prev : quest->prevQuests)
+                    link(uint32(std::abs(prev)), questId);
+                for (uint32 const prev : quest->prevChainQuests)
+                    link(prev, questId);
+                link(questId, quest->GetNextQuestId());
+                link(questId, quest->GetNextQuestInChain());
+                link(questId, quest->GetBreadcrumbForQuestId());  // a breadcrumb leads to its target
+            }
+            for (auto& [questId, list] : t.followers)
+            {
+                std::sort(list.begin(), list.end());
+                list.erase(std::unique(list.begin(), list.end()), list.end());
+            }
+            for (uint32 i = 0; i < sMapStore.GetNumRows(); ++i)
+            {
+                if (!sMapStore.LookupEntry(i))
+                    continue;
+                for (uint8 d = 0; d < MAX_DIFFICULTY; ++d)
+                    if (DungeonProgressionRequirements const* req = sObjectMgr->GetAccessRequirement(i, Difficulty(d)))
+                    {
+                        for (ProgressionRequirement const* q : req->quests)
+                            if (q)
+                                t.attuneQuests.emplace(q->id, q->faction);
+                        for (ProgressionRequirement const* item : req->items)
+                            if (item)
+                                t.attuneItems.insert(item->id);
+                    }
+            }
+            for (uint32 i = 0; i < sLockStore.GetNumRows(); ++i)
+                if (LockEntry const* lock = sLockStore.LookupEntry(i))
+                    for (uint8 j = 0; j < MAX_LOCK_CASE; ++j)
+                        if (lock->Type[j] == LOCK_KEY_ITEM && lock->Index[j])
+                            t.keyItems.insert(lock->Index[j]);
+            LOG_INFO("playerbots",
+                     "[quest14] grey tables: {} chain links, {} attunement quests, {} attunement items, {} key items",
+                     t.followers.size(), t.attuneQuests.size(), t.attuneItems.size(), t.keyItems.size());
+            return t;
+        }();
+        return tables;
+    }
+
+    // the profession skill line a spell teaches or ranks up (0: none)
+    uint32 ProfessionOf(uint32 spellId)
+    {
+        SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+        if (!info)
+            return 0;
+        for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+            if ((info->Effects[i].Effect == SPELL_EFFECT_SKILL_STEP || info->Effects[i].Effect == SPELL_EFFECT_SKILL) &&
+                IsProfessionSkill(uint32(info->Effects[i].MiscValue)))
+                return uint32(info->Effects[i].MiscValue);
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+            if (IsProfessionSkill(itr->second->SkillLine))
+                return itr->second->SkillLine;
+        return 0;
+    }
+}
+
+bool GuildCoordinator::IsGreyQuest(Player* bot, Quest const* quest)
+{
+    return bot && quest && bot->GetQuestLevel(quest) <= int32(Acore::XP::GetGrayLevel(bot->GetLevel()));
+}
+
+void GuildCoordinator::LogGrey(Player* bot, char const* decision, Quest const* quest, std::string const& reason)
+{
+    if (!bot || !quest)
+        return;
+    static std::mutex logLock;
+    static std::set<std::tuple<uint32, uint32, std::string>> logged;
+    {
+        std::lock_guard<std::mutex> guard(logLock);
+        if (!logged.emplace(bot->GetGUID().GetCounter(), quest->GetQuestId(), decision).second)
+            return;
+    }
+    LOG_INFO("playerbots", "[quest14] {} {} grey q{} {}: {}", bot->GetName(), decision, quest->GetQuestId(),
+             quest->GetTitle(), reason);
+}
+
+std::string GuildCoordinator::GreyQuestNeed(Player* bot, Quest const* quest) const
+{
+    if (!bot || !quest)
+        return std::string();
+    GreyStatic const& tables = GreyTables();
+    uint32 const low = bot->GetGUID().GetCounter();
+    // (b) and (c) of one quest: itself as an attunement, the spell it teaches, its rewards
+    auto const ownNeed = [&](Quest const* q) -> std::string
+    {
+        if (auto const att = tables.attuneQuests.find(q->GetQuestId());
+            att != tables.attuneQuests.end() && (att->second == TEAM_NEUTRAL || att->second == bot->GetTeamId()) &&
+            !bot->GetQuestRewardStatus(q->GetQuestId()))
+            return "an attunement (a dungeon's access requirement)";
+        for (int32 const spell : {q->GetRewSpellCast(), int32(q->GetRewSpell())})
+        {
+            SpellInfo const* info = spell > 0 ? sSpellMgr->GetSpellInfo(uint32(spell)) : nullptr;
+            if (!info)
+                continue;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                if (uint32 const learned =
+                        info->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL ? info->Effects[i].TriggerSpell : 0)
+                    if (uint32 const skill = ProfessionOf(learned); skill && !bot->HasSpell(learned))
+                        return "it teaches profession spell " + std::to_string(learned) + " (skill " +
+                               std::to_string(skill) + ")";
+        }
+        std::optional<StatsWeightCalculator> calc;  // built for the first equippable reward only
+        for (uint8 i = 0; i < QUEST_REWARDS_COUNT + QUEST_REWARD_CHOICES_COUNT; ++i)
+        {
+            uint32 const item =
+                i < QUEST_REWARDS_COUNT ? q->RewardItemId[i] : q->RewardChoiceItemId[i - QUEST_REWARDS_COUNT];
+            ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item) : nullptr;
+            if (!proto)
+                continue;
+            bool const lacks = !bot->HasItemCount(item, 1, true);
+            if (lacks && tables.attuneItems.count(item))
+                return "reward " + proto->Name1 + " is an attunement item";
+            if (lacks && (proto->Class == ITEM_CLASS_KEY || tables.keyItems.count(item)))
+                return "reward " + proto->Name1 + " is a key";
+            if (proto->Class == ITEM_CLASS_RECIPE && proto->RequiredSkill && bot->HasSkill(proto->RequiredSkill))
+                for (auto const& s : proto->Spells)
+                    if (s.SpellTrigger == ITEM_SPELLTRIGGER_LEARN_SPELL_ID && s.SpellId > 0 &&
+                        !bot->HasSpell(uint32(s.SpellId)))
+                        return "reward " + proto->Name1 + " is a recipe of its profession it does not know";
+            if (IsWanted(item))
+                return "reward " + proto->Name1 + " is on the guild's wanted list";
+            if (NeedsForOwnCalls(bot, item))
+                return "reward " + proto->Name1 + " is needed for its own calls";
+            if (proto->InventoryType != INVTYPE_NON_EQUIP)
+            {
+                if (!calc)
+                {
+                    calc.emplace(bot);
+                    calc->SetItemSetBonus(false);
+                    calc->SetOverflowPenalty(false);
+                }
+                GuildGear::Eval ev;
+                if (GuildGear::Evaluate(bot, *calc, proto, ev) && ev.gain > 0.0f)
+                    return "reward " + proto->Name1 + " is an upgrade for it (" +
+                           GuildGear::GainText(ev.gain, ev.score, ev.current) + ")";
+            }
+            uint32 forLow = 0;
+            {
+                std::lock_guard<std::mutex> guard(lock_);
+                forLow = PlannedFor(item);
+            }
+            if (forLow)
+                return "reward " + proto->Name1 + " is an upgrade in " +
+                       (forLow == low ? std::string("its") : Who(forLow) + "'s") + " gear plan";
+        }
+        return std::string();
+    };
+    if (std::string own = ownNeed(quest); !own.empty())
+        return own;
+    // (a) the chain: every quest it opens or leads to, onward; one the bot would do that is not grey or is needed
+    uint8 const grayLevel = Acore::XP::GetGrayLevel(bot->GetLevel());
+    std::unordered_set<uint32> seen{quest->GetQuestId()};
+    std::vector<uint32> open{quest->GetQuestId()};
+    while (!open.empty())
+    {
+        uint32 const from = open.back();
+        open.pop_back();
+        auto const next = tables.followers.find(from);
+        if (next == tables.followers.end())
+            continue;
+        for (uint32 const id : next->second)
+        {
+            if (!seen.insert(id).second)
+                continue;
+            Quest const* follow = sObjectMgr->GetQuestTemplate(id);
+            if (!follow || bot->GetQuestRewardStatus(id) || !bot->SatisfyQuestRace(follow, false) ||
+                !bot->SatisfyQuestClass(follow, false) || !bot->SatisfyQuestExclusiveGroup(follow, false))
+                continue;
+            open.push_back(id);
+            // a quest it would do: a normal or elite one, not repeatable or seasonal (NewRpgBaseAction's filters)
+            if (follow->IsRepeatable() || follow->IsSeasonal() ||
+                (follow->GetType() != 0 && follow->GetType() != QUEST_TYPE_ELITE))
+                continue;
+            if (bot->GetQuestLevel(follow) > int32(grayLevel))
+                return "it leads to q" + std::to_string(id) + " " + follow->GetTitle() + " (not grey)";
+            if (std::string own = ownNeed(follow); !own.empty())
+                return "it leads to q" + std::to_string(id) + " " + follow->GetTitle() + ": " + own;
+        }
+    }
+    return std::string();
 }
 
 GuildCoordinator::RepairCall GuildCoordinator::Repair(Player* bot) const

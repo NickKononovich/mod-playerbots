@@ -39,6 +39,7 @@
 #include "NewRpgQuestUse.h"  // [questitems]
 #include "PerfMonitor.h"  // [guild15]
 #include "QuestStats.h"  // [guild90]
+#include "QuestPackets.h"  // [quest14] the grey abandon
 #include "World.h"  // [guild13]
 #include "RouteSearch.h"  // [guild13] PointOnPath
 #include "SpellMgr.h"     // [guild13]
@@ -2725,8 +2726,23 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
             continue;
 
         QuestStatus status = bot->GetQuestStatus(questId);
-        if (status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) && bot->CanAddQuest(quest, false) &&
-            IsQuestWorthDoing(quest) && IsQuestCapableDoing(quest) && !QuestTooHighToTake(bot, quest))
+        // [quest14] user rule 2026-11-08: a grey quest is taken only when it is needed (then its low level does not
+        // hide it); one nobody needs is skipped
+        bool worth = false;
+        bool const takeable = status == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) &&
+                              bot->CanAddQuest(quest, false) && IsQuestCapableDoing(quest) &&
+                              !QuestTooHighToTake(bot, quest);
+        if (takeable && GuildCoordinator::IsGreyQuest(bot, quest) && !GuildCoordinator::HumanCharacter(bot))
+        {
+            std::string const need = sGuildCoordinator.GreyQuestNeed(bot, quest);
+            worth = !need.empty() && !quest->IsRepeatable() && !quest->IsSeasonal();
+            GuildCoordinator::LogGrey(bot, worth ? "keeps" : "skips", quest,
+                                      worth ? need : std::string("not needed (no chain step, upgrade, recipe, skill, "
+                                                                 "attunement, key or wanted item)"));
+        }
+        else if (takeable)
+            worth = IsQuestWorthDoing(quest);
+        if (takeable && worth)
         {
             AcceptQuest(quest, guid);
             // Quests that are complete on acceptance and end here (auto-complete "turn-in" quests, #2495) are handed
@@ -2829,6 +2845,21 @@ bool NewRpgBaseAction::IsWithinInteractionDist(Object* questGiver)
             break;
     }
     return false;
+}
+
+void NewRpgBaseAction::AbandonGreyQuest(uint8 slot, Quest const* quest, std::string const& reason)
+{
+    if (!quest || slot >= MAX_QUEST_LOG_SIZE || bot->GetQuestSlotQuestId(slot) != quest->GetQuestId())
+        return;
+    GuildCoordinator::LogGrey(bot, "abandons", quest, reason);
+    if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+        doing && doing->questId == quest->GetQuestId())
+        botAI->rpgInfo.ChangeToIdle();
+    WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
+    packet << uint8(slot);
+    WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
+    removeQuest.Read();
+    bot->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
 }
 
 bool NewRpgBaseAction::AcceptQuest(Quest const* quest, ObjectGuid guid)
@@ -5629,7 +5660,30 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         }
         if (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE)
             continue;
-        float const xp = GetQuestWeight(quest, rested) * quest->XPValue(level);
+        // [quest14] user rule 2026-11-08: a grey quest stays only when it is needed (a chain step, an upgrade, a
+        // recipe / skill / attunement / key / wanted item - the global leader's call); one nobody needs leaves the
+        // log, a complete one may still be handed in where the route passes its ender (PlaceGreyHandIns). A grey
+        // quest's XP counts toward no rate. A human's character, or a bot a human leads (his shared quests), keeps
+        // its log
+        bool const grey = GuildCoordinator::IsGreyQuest(bot, quest);
+        bool greyUnneeded = false;
+        if (grey && !GuildCoordinator::HumanCharacter(bot) &&
+            !(botAI->GetMaster() && GuildCoordinator::HumanCharacter(botAI->GetMaster())))
+        {
+            std::string const need = sGuildCoordinator.GreyQuestNeed(bot, quest);
+            if (!need.empty())
+                GuildCoordinator::LogGrey(bot, "keeps", quest, need);
+            else if (status == QUEST_STATUS_COMPLETE)
+                greyUnneeded = true;
+            else
+            {
+                AbandonGreyQuest(slot, quest, "not needed (no chain step, upgrade, recipe, skill, attunement, key "
+                                              "or wanted item)");
+                --inLog;
+                continue;
+            }
+        }
+        float const xp = grey ? 0.0f : GetQuestWeight(quest, rested) * quest->XPValue(level);
         std::vector<POIInfo> poiInfo;
         bool const spots = GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
         WorldPosition ender;
@@ -5638,6 +5692,12 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         {
             if (!spots)  // DoCompletedQuest needs the same spot
             {
+                if (greyUnneeded)
+                {
+                    AbandonGreyQuest(slot, quest, "complete, not needed, its ender has no spot");
+                    --inLog;
+                    continue;
+                }
                 leaveOut(questId, true);
                 continue;
             }
@@ -5646,7 +5706,24 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
             float const ez = hasEnder ? ender.GetPositionZ() : poiInfo[0].z;
             if (!onLandmass(ex, ey, ez))
             {
+                if (greyUnneeded)
+                {
+                    AbandonGreyQuest(slot, quest, "complete, not needed, its ender is off its landmass");
+                    --inLog;
+                    continue;
+                }
                 leaveOut(questId, true);
+                continue;
+            }
+            if (greyUnneeded)
+            {
+                Stop hand;
+                hand.kind = StopKind::Ender;
+                hand.x = ex;
+                hand.y = ey;
+                hand.z = ez;
+                hand.quests.push_back(questId);
+                in.greyHandIns.push_back(hand);
                 continue;
             }
             addToHub(ex, ey, ez, questId);
@@ -6082,6 +6159,11 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
             bot->RemoveActiveQuest(questId, false);
             continue;
         }
+
+        // [quest14] a grey quest nobody needs is no candidate (the route build abandons it)
+        if (GuildCoordinator::IsGreyQuest(bot, quest) && !GuildCoordinator::HumanCharacter(bot) &&
+            sGuildCoordinator.GreyQuestNeed(bot, quest).empty())
+            continue;
 
         float distance = std::numeric_limits<float>::max();
         std::vector<POIInfo> poiInfo;

@@ -118,6 +118,9 @@ namespace QuestRoute
         std::map<uint32, uint8> leftOutQuests;  // [routeplan] those quests and their status at the build
         std::set<uint64> townsSeen;             // [routeplan] the town task spots of the build, routed or not
         LegTable::MeasureFn measure;            // [routeplan] the real leg (NewRpgBaseAction::MeasureLeg); empty: none
+        // [quest14] the enders of complete grey quests nobody needs: handed in only where the solved route passes
+        // them at near-zero detour (PlaceGreyHandIns), else abandoned
+        std::vector<Stop> greyHandIns;
     };
 
     struct Plan
