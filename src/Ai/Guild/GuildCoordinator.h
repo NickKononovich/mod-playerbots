@@ -470,6 +470,7 @@ private:
         WorldPosition mailbox{};  // mail: the sender's mailbox
         bool tradeRefused{false};  // no safe walk for that channel (map thread)
         bool mailRefused{false};
+        uint32 refusedLevels{0};  // the members' levels (from << 8 | to) at the refusal: reset on a level-up
         bool stalled{false};    // no channel possible now: kept (its refusals too), traded if they meet
         bool mailed{false};     // sent: in the receiver's mailbox until it takes it
         uint32 deliverAt{0};    // the core's delivery time of the mail (game seconds)

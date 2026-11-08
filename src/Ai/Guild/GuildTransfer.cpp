@@ -780,6 +780,11 @@ void GuildCoordinator::UpdateTransfers()
                                           : sCharacterCache->GetCharacterAccountIdByGuid(
                                                 ObjectGuid::Create<HighGuid::Player>(w.to));
                 c.delay = !w.gold && sAccount != rAccount ? sWorld->getIntConfig(CONFIG_MAIL_DELIVERY_DELAY) : 0;
+                // an upgrade / product / needed reagent: the core's delivery time is time until it is usable
+                bool const needed = w.purpose == "улучшение" || w.purpose == "изделие" || w.purpose == "реагент" ||
+                                    (w.purpose == "снабжение" && w.key[0] == 'r');
+                if (needed && c.mail < NONE)
+                    c.mail += float(c.delay);
             }
             // bank: both walks to the vaults (only with the guild's tab and the rights)
             if (!w.gold && r && GuildBankRun::BankState(s, true).empty() && GuildBankRun::BankState(r, false).empty() &&
@@ -823,7 +828,7 @@ void GuildCoordinator::UpdateTransfers()
         }
         c.text = "обмен " + Sec(c.trade) +
                  (c.walkerLow && c.trade < NONE ? " (идёт " + Who(c.walkerLow) + ")" : "") + ", почта " + Sec(c.mail) +
-                 (c.mail < NONE && c.delay ? " + доставка " + std::to_string(c.delay / 60) + " мин" : "") +
+                 (c.mail < NONE && c.delay ? " (доставка " + std::to_string(c.delay / 60) + " мин)" : "") +
                  (c.mail < NONE ? ", " + Gold(MAIL_POSTAGE) : "") + ", банк " + Sec(c.bank);
         return c;
     };
@@ -999,6 +1004,22 @@ void GuildCoordinator::UpdateTransfers()
                            " (no longer to move: moved, used, sold or another plan)");
             it = transfers_.erase(it);
             continue;
+        }
+        // a refused walk is tried again after a level-up of either member (as the other refusal rules)
+        if (t.tradeRefused || t.mailRefused)
+        {
+            Player* s = Online(t.fromLow);
+            Player* r = Online(t.toLow);
+            uint32 const levels = (s ? s->GetLevel() : 0) << 8 | (r ? r->GetLevel() : 0);
+            if (!t.refusedLevels)
+                t.refusedLevels = levels;
+            else if (s && r && levels != t.refusedLevels)
+            {
+                t.tradeRefused = t.mailRefused = false;
+                t.refusedLevels = 0;
+                logs.push_back("retry " + Who(t.fromLow) + " -> " + Who(t.toLow) + ": a level-up, refused walks "
+                               "are tried again");
+            }
         }
         Choice c = choose(*d->second, &t);
         t.stalled = c.cost == NONE;  // no channel now (refused walks): kept with its refusals, traded if they meet
