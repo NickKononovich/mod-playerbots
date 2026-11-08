@@ -153,6 +153,7 @@ public:
 protected:
     bool DoIncompleteQuest(NewRpgInfo::DoQuest& data);
     bool DoCompletedQuest(NewRpgInfo::DoQuest& data);
+    bool TalkToQuestNpc(uint32 questId);  // [guild15]
 
     const uint32 poiStayTime = 5 * MINUTE * IN_MILLISECONDS;
 };

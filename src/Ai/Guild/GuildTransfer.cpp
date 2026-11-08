@@ -323,6 +323,7 @@ void GuildCoordinator::LoadMailboxes()
         box.pos = WorldPosition(data.mapid, data.posX, data.posY, data.posZ, data.orientation);
         // the town's side: its area (Crossroads in the Barrens), else its zone
         uint32 const areaId = sMapMgr->GetAreaId(PHASEMASK_NORMAL, data.mapid, data.posX, data.posY, data.posZ);
+        box.areaId = areaId;
         if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(areaId))
         {
             box.areaTeam = area->team;
@@ -364,13 +365,28 @@ void GuildCoordinator::UpdateTransfers()
         auto const st = bots_.find(p->GetGUID().GetCounter());
         return st == bots_.end() || !st->second.fiveId;  // a five's dungeon first
     };
-    auto const nearestMailbox = [&](Player* p, WorldPosition& out)
+    // [guild15] user rule 2026-11-08: no special trip to a mailbox (b325 Colian walked 400-1463 yd to hand over
+    // bananas / Rough Stone). A mailbox counts only on the bot's way: the one it passes (CAMP_REACH), one in the town
+    // (area) its own walk goes to (vendor, trainer, inn, vault), or in the town it visits now (at a vendor)
+    // (keepArea: the town of the mailbox its mail walk already goes to, while it is still in that town)
+    auto const nearestMailbox = [&](Player* p, WorldPosition& out, uint32 keepArea = 0)
     {
         float best = NONE;
+        uint32 townNow = 0;
+        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p))
+            if (ai->rpgInfo.GetStatus() == RPG_WANDER_NPC || (keepArea && p->GetAreaId() == keepArea))
+                townNow = p->GetAreaId();
+        uint32 townAhead = 0;
+        WorldPosition const target = RouteTarget(p);
+        if (Valid(target))
+            townAhead = sMapMgr->GetAreaId(PHASEMASK_NORMAL, target.GetMapId(), target.GetPositionX(),
+                                           target.GetPositionY(), target.GetPositionZ());
         for (Mailbox const& box : mailboxes_)
         {
             if (box.pos.GetMapId() != p->GetMapId())
                 continue;
+            if (Dist(Pos(p), box.pos) > CAMP_REACH && (!box.areaId || (box.areaId != townNow && box.areaId != townAhead)))
+                continue;  // not on its way
             if ((box.areaTeam == AREATEAM_ALLY && p->GetTeamId() != TEAM_ALLIANCE) ||
                 (box.areaTeam == AREATEAM_HORDE && p->GetTeamId() != TEAM_HORDE))
                 continue;  // a hostile town's mailbox
@@ -406,6 +422,7 @@ void GuildCoordinator::UpdateTransfers()
     }
 
     // 1. the members' mail: delivered (taken at a mailbox) / still in transit
+    auto const lastPickup = mailPickup_;  // [guild15] a pickup walk keeps its town's mailbox while there
     mailPickup_.clear();
     mailTransit_.clear();
     for (PlanRow const& row : plan_)
@@ -427,7 +444,12 @@ void GuildCoordinator::UpdateTransfers()
                                                 std::to_string((uint32(m->deliver_time) - now + 59) / 60) + " мин");
         }
         WorldPosition box;
-        if (delivered && nearestMailbox(p, box) < NONE)
+        uint32 keepArea = 0;
+        if (auto const last = lastPickup.find(row.low); last != lastPickup.end())
+            keepArea = sMapMgr->GetAreaId(PHASEMASK_NORMAL, last->second.second.GetMapId(),
+                                          last->second.second.GetPositionX(), last->second.second.GetPositionY(),
+                                          last->second.second.GetPositionZ());
+        if (delivered && nearestMailbox(p, box, keepArea) < NONE)
             mailPickup_[row.low] = {delivered, box};
     }
 
@@ -747,7 +769,12 @@ void GuildCoordinator::UpdateTransfers()
                     {
                         // where the other stands now, or where it walks anyway (it comes there itself)
                         WorldPosition const x = fixed ? RouteTarget(other) : Pos(other);
-                        float const sec = WalkSeconds(walker, Detour(walker, x));
+                        // [guild15] user rule 2026-11-08: only when they meet anyway - the other stands (or walks
+                        // to) within trade distance of the walker's own way; nobody walks off it to hand over
+                        float const detour = Detour(walker, x);
+                        if (detour > 2.0f * TRADE_DISTANCE)
+                            continue;
+                        float const sec = WalkSeconds(walker, detour);
                         if (sec < c.trade)
                         {
                             c.trade = sec;
@@ -765,14 +792,16 @@ void GuildCoordinator::UpdateTransfers()
                 !(old && old->mailRefused))
             {
                 WorldPosition box;
-                float const ys = nearestMailbox(s, box);
-                float yr = 0.0f;
-                WorldPosition rbox;
-                if (r)
-                    yr = canWalk(r) ? nearestMailbox(r, rbox) : NONE;
-                if (ys < NONE && yr < NONE)
+                uint32 const keepArea =
+                    old && old->channel == Transfer::MAIL && Valid(old->mailbox)
+                        ? sMapMgr->GetAreaId(PHASEMASK_NORMAL, old->mailbox.GetMapId(), old->mailbox.GetPositionX(),
+                                             old->mailbox.GetPositionY(), old->mailbox.GetPositionZ())
+                        : 0;
+                float const ys = nearestMailbox(s, box, keepArea);
+                // [guild15] the receiver takes it at a mailbox on its own way later (no walk of its own counted)
+                if (ys < NONE)
                 {
-                    c.mail = WalkSeconds(s, ys) + (r ? WalkSeconds(r, yr) : 0.0f);
+                    c.mail = WalkSeconds(s, ys);
                     c.mailbox = box;
                 }
                 uint32 const sAccount = s->GetSession()->GetAccountId();

@@ -481,6 +481,7 @@ private:
     {
         WorldPosition pos{};
         uint32 areaTeam{0};
+        uint32 areaId{0};  // [guild15] its town (the area it stands in): mailed on a visit there
     };
     void LoadMailboxes();
     void UpdateTransfers();

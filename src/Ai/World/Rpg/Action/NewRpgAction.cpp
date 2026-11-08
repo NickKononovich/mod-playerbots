@@ -7,6 +7,8 @@
 #include "NewRpgAction.h"
 #include "BotPath.h"  // [guild12]
 #include "QuestStats.h"  // [guild90]
+#include "SmartScriptMgr.h"  // [guild15] talk-to objectives
+#include <set>
 #include <mutex>
 #include <unordered_map>
 
@@ -24,6 +26,39 @@ namespace
             return false;
         last = {questId, step};
         return true;
+    }
+
+    // [guild15] talk-to objectives (b325 The Kessel Run q9663: the bot stood next to Exarch Menelaous and nothing
+    // happened): the npc's SmartAI gives the kill credit on gossip hello (event 64) or on a gossip option (event 62)
+    // with SMART_ACTION_CALL_KILLEDMONSTER; the bot talks as a player's client does, once per npc spawn
+    std::mutex talkLock;
+    std::unordered_map<uint32, std::set<std::pair<uint32, uint32>>> talked;  // bot -> (quest, npc spawn)
+
+    struct TalkCredit
+    {
+        bool hello = false;
+        bool select = false;
+        uint32 menu = 0;
+        uint32 option = 0;
+    };
+
+    TalkCredit TalkCreditOf(uint32 entry)
+    {
+        TalkCredit credit;
+        for (SmartScriptHolder const& e : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+        {
+            if (e.GetActionType() != SMART_ACTION_CALL_KILLEDMONSTER)
+                continue;
+            if (e.GetEventType() == SMART_EVENT_GOSSIP_HELLO && e.event.gossipHello.filter != 2)
+                credit.hello = true;
+            else if (e.GetEventType() == SMART_EVENT_GOSSIP_SELECT)
+            {
+                credit.select = true;
+                credit.menu = e.event.gossip.sender;
+                credit.option = e.event.gossip.action;
+            }
+        }
+        return credit;
     }
 }
 #include "SoloSafety.h"  // [guild13]
@@ -1186,6 +1221,9 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     if (UseQuestGameObject(questId))
         return true;
 
+    if (TalkToQuestNpc(questId))  // [guild15]
+        return true;
+
     // [guild13] nothing to do at this spot (no mob it pulls, no quest object, no fight, no rest): the spot is spent,
     // the next objective spot is planned - and with none left the quest is postponed (DO_QUEST is no black hole)
     if (!bot->IsInCombat() && !AI_VALUE(Unit*, "grind target") && !FindNeededQuestObject(bot) &&
@@ -1203,6 +1241,60 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     // ~8yd wander reads as the bot looking around while grind/loot
     // strategies do their work.
     return MoveRandomNear(8.0f);
+}
+
+// [guild15] a talk-to objective at hand: walk up to the npc and talk (gossip hello, and the option its script credits)
+bool NewRpgDoQuestAction::TalkToQuestNpc(uint32 questId)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest || bot->IsInCombat())
+        return false;
+    auto const statusIt = bot->getQuestStatusMap().find(questId);
+    if (statusIt == bot->getQuestStatusMap().end())
+        return false;
+    QuestStatusData const& status = statusIt->second;
+    uint32 const counter = bot->GetGUID().GetCounter();
+    for (int i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+    {
+        int32 const entry = quest->RequiredNpcOrGo[i];
+        if (entry <= 0 || status.CreatureOrGOCount[i] >= quest->RequiredNpcOrGoCount[i])
+            continue;
+        TalkCredit const credit = TalkCreditOf(uint32(entry));
+        if (!credit.hello && !credit.select)
+            continue;
+        Creature* npc = bot->FindNearestCreature(uint32(entry), sPlayerbotAIConfig.SightDistance);
+        if (!npc || !npc->IsAlive() || npc->IsInCombat() || bot->IsValidAttackTarget(npc))
+            continue;
+        {
+            std::lock_guard<std::mutex> guard(talkLock);
+            if (talked[counter].count({questId, npc->GetSpawnId()}))
+                continue;
+        }
+        if (!bot->IsWithinDistInMap(npc, INTERACTION_DISTANCE))
+            return MoveWorldObjectTo(npc->GetGUID(), INTERACTION_DISTANCE - 1.0f);
+        bot->StopMoving();
+        bot->SetFacingToObject(npc);
+        WorldPacket hello(CMSG_GOSSIP_HELLO, 8);
+        hello << npc->GetGUID();
+        bot->GetSession()->HandleGossipHelloOpcode(hello);
+        if (credit.select)
+        {
+            WorldPacket select(CMSG_GOSSIP_SELECT_OPTION, 8 + 4 + 4);
+            select << npc->GetGUID() << credit.menu << credit.option;
+            bot->GetSession()->HandleGossipSelectOptionOpcode(select);
+        }
+        bot->PlayerTalkClass->SendCloseGossip();
+        {
+            std::lock_guard<std::mutex> guard(talkLock);
+            talked[counter].insert({questId, npc->GetSpawnId()});
+        }
+        LOG_INFO("playerbots", "[rpg] {} L{} talks to {} for q{} {} ({}): objective {} now {}/{}", bot->GetName(),
+                 bot->GetLevel(), npc->GetName(), questId, quest->GetTitle(),
+                 credit.select ? "gossip option " + std::to_string(credit.option) : std::string("gossip hello"), i,
+                 status.CreatureOrGOCount[i], quest->RequiredNpcOrGoCount[i]);
+        return true;
+    }
+    return false;
 }
 
 bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)

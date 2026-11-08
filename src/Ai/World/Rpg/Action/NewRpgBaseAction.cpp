@@ -695,10 +695,37 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
             exitDock = &line->docks[d];
     }
 
+    // [guild15] the walk off takes the bot's own run time to the pier: a stop that ends before it would carry the bot
+    // away on the deck's edge, where the transport check drops it into the sea (b324/b325 Thyllyn: off the
+    // Rut'theran boat mid-sea, 3 drownings, 332 WALK_FAIL); it rides on to the next stop instead
+    if (exitDock && trip.phase != Phase::Leave)
+    {
+        float const speed = bot->GetSpeed(MOVE_RUN);
+        uint32 const walkMs =
+            uint32(bot->GetExactDist(exitDock->pier) / (speed > 0.0f ? speed : 1.0f) * IN_MILLISECONDS);
+        if (remaining < walkMs)
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} stays aboard {}: the stop ends in {} ms, the walk off takes {} ms",
+                     bot->GetName(), bot->GetLevel(), line->entry, remaining, walkMs);
+            exitDock = nullptr;
+        }
+    }
+
     if (!exitDock)
     {
         if (trip.phase == Phase::Leave)
+        {
+            // [guild15] the transport left while the bot walked off: back to the middle of the deck, not the edge
             info.SetTripPhase(Phase::Ride);
+            LOG_INFO("playerbots", "[rpg] {} L{} back onto the deck of {}: it left the stop before the bot was off",
+                     bot->GetName(), bot->GetLevel(), line->entry);
+            float x = 0.0f, y = 0.0f, z = 0.0f;
+            if (FindDeckPoint(transport, x, y, z))
+            {
+                MovePointDirect(x, y, z);
+                return true;
+            }
+        }
 
         return HoldPosition();
     }
@@ -2597,6 +2624,7 @@ namespace
 
     // [guild90] why the bot last left or skipped a quest, and the quest it works on until it is done or postponed
     std::mutex questNoteLock;
+    std::unordered_map<uint32, uint32> zoneTarget;  // [guild15] bot -> the zone of its last [zone] line
     std::unordered_map<uint32, std::unordered_map<uint32, std::string>> postponeReasons;  // bot -> quest -> why
     std::unordered_map<uint32, uint32> committedQuest;                                    // bot -> quest
     std::unordered_map<uint32, std::string> choiceNotes;  // bot -> the last ChooseBestQuest's why
@@ -4229,38 +4257,46 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
     }
     note(0, "nothing left in the log" + leaving());
 
-    // From 68 the planner also looks at Northrend, priced by the boats and zeppelins that get there.
-    std::vector<std::pair<WorldPosition, float>> northrendArrivals;
-    if (level >= NORTHREND_ENTRY_LEVEL && bot->GetMapId() != NORTHREND_MAP_ID && !bot->GetMap()->Instanceable())
-        sTravelRouteMgr.GetArrivalCosts(bot, NORTHREND_MAP_ID, northrendArrivals);
+    // [guild15] zone change by value (user queue item 4): every starter the bot may take now on the continents it can
+    // reach is priced by the travel planner's honest route (walk, Deeprun Tram, boats, portals: a giver on another map
+    // or landmass by the arrivals there), its quests are summed per zone, and the zone whose quests give the most
+    // experience per second of travel + work wins; inside it the best single quest from the bot. A zone is exhausted
+    // when it holds no starter the bot may take (computed, no timer). From 68 Northrend joins by its boats.
+    uint32 const botLandmass = TravelRouteMgr::Landmass(WorldPosition(bot));
+    constexpr uint32 LANDMASS_ZONE_KEY = 0x100000;  // above every AreaTable id
+    std::map<uint32, std::vector<std::pair<WorldPosition, float>>> arrivals;  // map -> docks / portal exits, seconds
+    auto const arrivalsOf = [&](uint32 mapId) -> std::vector<std::pair<WorldPosition, float>> const&
+    {
+        auto found = arrivals.find(mapId);
+        if (found == arrivals.end())
+        {
+            found = arrivals.emplace(mapId, std::vector<std::pair<WorldPosition, float>>()).first;
+            if (!bot->GetMap()->Instanceable())
+                sTravelRouteMgr.GetArrivalCosts(bot, mapId, found->second);
+        }
+        return found->second;
+    };
+    auto const continent = [&](uint32 mapId)
+    {
+        return mapId == 0 || mapId == 1 || mapId == 530 ||
+               (mapId == NORTHREND_MAP_ID && level >= NORTHREND_ENTRY_LEVEL);
+    };
 
+    struct StartCandidate
+    {
+        uint32 questId;
+        uint32 zone;
+        float travel, local, xp, rate;
+        WorldPosition pos;
+        int32 questLevel;
+    };
+    std::vector<StartCandidate> starts;
     FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
     for (QuestStartPoint const& start : GetQuestStartPoints())
     {
         if (!EventSpawnPresent(start.event))  // [guild15]
             continue;
-        float travelSeconds = 0.0f;
-        if (start.mapId == bot->GetMapId())
-        {
-            // [guild10] the whole continent: a zone out of quests sends the bot on to the next one
-            float const giverDistance = bot->GetDistance2d(start.x, start.y);
-            travelSeconds = giverDistance / QUEST_TRAVEL_SPEED;
-        }
-        else if (start.mapId == NORTHREND_MAP_ID && !northrendArrivals.empty())
-        {
-            travelSeconds = std::numeric_limits<float>::max();
-            for (auto const& [arrival, seconds] : northrendArrivals)
-            {
-                float const fromArrival =
-                    std::hypot(arrival.GetPositionX() - start.x, arrival.GetPositionY() - start.y);
-                if (fromArrival <= QUEST_MAX_GIVER_DISTANCE)
-                    travelSeconds = std::min(travelSeconds, seconds + fromArrival / QUEST_TRAVEL_SPEED);
-            }
-
-            if (travelSeconds == std::numeric_limits<float>::max())
-                continue;
-        }
-        else
+        if (start.mapId != bot->GetMapId() && !continent(start.mapId))
             continue;
 
         Quest const* quest = sObjectMgr->GetQuestTemplate(start.questId);
@@ -4281,6 +4317,27 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
             if (giverFaction && giverFaction->IsHostileTo(*botFaction))
                 continue;
         }
+
+        WorldPosition const giver(start.mapId, start.x, start.y, start.z);
+        float travelSeconds = std::numeric_limits<float>::max();
+        if (start.mapId == bot->GetMapId() && TravelRouteMgr::Landmass(giver) == botLandmass)
+            travelSeconds = bot->GetDistance2d(start.x, start.y) / QUEST_TRAVEL_SPEED;  // [guild10] the whole landmass
+        else
+        {
+            // another continent or landmass: the route's arrival there, then the walk to the giver
+            uint32 const giverLandmass = TravelRouteMgr::Landmass(giver);
+            for (auto const& [arrival, seconds] : arrivalsOf(start.mapId))
+            {
+                if (TravelRouteMgr::Landmass(arrival) != giverLandmass)
+                    continue;
+                float const fromArrival =
+                    std::hypot(arrival.GetPositionX() - start.x, arrival.GetPositionY() - start.y);
+                if (fromArrival <= QUEST_MAX_GIVER_DISTANCE)
+                    travelSeconds = std::min(travelSeconds, seconds + fromArrival / QUEST_TRAVEL_SPEED);
+            }
+        }
+        if (travelSeconds == std::numeric_limits<float>::max())
+            continue;
 
         if (!IsQuestWorthDoing(quest) || !IsQuestCapableDoing(quest) || !bot->CanTakeQuest(quest, false))
             continue;
@@ -4308,17 +4365,113 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
         }
 
         // walk to the giver, out to the objective and back to hand it in, plus the work itself
-        float const time = travelSeconds + 2.0f * objectiveDistance / QUEST_TRAVEL_SPEED + QUEST_OBJECTIVE_TIME;
-        float const rate = GetQuestWeight(quest, rested) * quest->XPValue(level) / time;
-        if (rate > bestRate)
+        float const local = 2.0f * objectiveDistance / QUEST_TRAVEL_SPEED + QUEST_OBJECTIVE_TIME;
+        float const xp = GetQuestWeight(quest, rested) * quest->XPValue(level);
+        // the zone the quest belongs to (QuestSortID > 0); a class / profession / holiday quest (sort <= 0) counts
+        // to the bot's own zone on its landmass, else to its giver's landmass (no terrain lookup of far grids)
+        uint32 zone = quest->GetZoneOrSort() > 0 ? uint32(quest->GetZoneOrSort()) : 0;
+        if (!zone)
+            zone = start.mapId == bot->GetMapId() && TravelRouteMgr::Landmass(giver) == botLandmass
+                       ? bot->GetZoneId()
+                       : LANDMASS_ZONE_KEY + TravelRouteMgr::Landmass(giver);
+        float const rate = xp / (travelSeconds + local);
+        // one entry per quest (a quest with several givers: the cheapest)
+        auto const same = std::find_if(starts.begin(), starts.end(),
+                                       [&](StartCandidate const& c) { return c.questId == start.questId; });
+        if (same != starts.end())
         {
-            bestRate = rate;
-            bestQuest = start.questId;
-            giverPos = WorldPosition(start.mapId, start.x, start.y, start.z);
+            if (rate > same->rate)
+                *same = {start.questId, zone, travelSeconds, local, xp, rate, giver, questLevel};
+            continue;
         }
+        starts.push_back({start.questId, zone, travelSeconds, local, xp, rate, giver, questLevel});
     }
 
-    return bestQuest;
+    struct ZoneValue
+    {
+        float xp = 0.0f;
+        float local = 0.0f;
+        float travel = std::numeric_limits<float>::max();
+        uint32 quests = 0;
+        int32 minLevel = 255;
+        int32 maxLevel = 0;
+        float Rate() const { return xp / (travel + local); }
+    };
+    std::map<uint32, ZoneValue> zones;
+    for (StartCandidate const& c : starts)
+    {
+        ZoneValue& z = zones[c.zone];
+        z.xp += c.xp;
+        z.local += c.local;
+        z.travel = std::min(z.travel, c.travel);
+        ++z.quests;
+        z.minLevel = std::min(z.minLevel, c.questLevel);
+        z.maxLevel = std::max(z.maxLevel, c.questLevel);
+    }
+    uint32 bestZone = 0;
+    float bestZoneRate = 0.0f;
+    for (auto const& [zone, value] : zones)
+        if (!bestZone || value.Rate() > bestZoneRate)
+        {
+            bestZone = zone;
+            bestZoneRate = value.Rate();
+        }
+    if (!bestZone)
+        return 0;
+
+    StartCandidate const* best = nullptr;
+    for (StartCandidate const& c : starts)
+        if (c.zone == bestZone && (!best || c.rate > best->rate))
+            best = &c;
+    if (!best)
+        return 0;
+    giverPos = best->pos;
+
+    // [zone] one line per change of the bot's questing zone: from -> to, why and the route
+    uint32 const hereZone = bot->GetZoneId();
+    if (bestZone != hereZone)
+    {
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> guard(questNoteLock);
+            uint32& last = zoneTarget[counter];
+            fresh = last != bestZone;
+            last = bestZone;
+        }
+        if (fresh)
+        {
+            auto const zoneName = [&](uint32 id) -> std::string
+            {
+                if (id >= LANDMASS_ZONE_KEY)
+                    return "landmass " + std::to_string(id - LANDMASS_ZONE_KEY);
+                AreaTableEntry const* area = sAreaTableStore.LookupEntry(id);
+                return area ? std::string(area->area_name[0]) : "zone " + std::to_string(id);
+            };
+            auto const here = zones.find(hereZone);
+            std::string const why =
+                here == zones.end()
+                    ? std::string("exhausted: no quest here it may take now")
+                    : "better value: here " + std::to_string(here->second.quests) + " quests " +
+                          std::to_string(uint32(here->second.Rate() * 3600.0f)) + " xp/h";
+            ZoneValue const& to = zones[bestZone];
+            std::string route = "walk";
+            TravelRouteMgr::Leg leg;
+            float seconds = 0.0f;
+            if (!sTravelRouteMgr.FindRoute(bot, giverPos, leg, seconds))
+                route = "none";
+            else if (leg.kind == TravelRouteMgr::LegKind::Transport)
+                route = "transport " + std::to_string(leg.lineEntry);
+            else if (leg.kind == TravelRouteMgr::LegKind::Portal)
+                route = "portal " + std::to_string(leg.portalIndex);
+            LOG_INFO("playerbots",
+                     "[zone] {} L{} {} -> {}: {}; there {} quests L{}-{} {} xp/h (travel {} s), route {} {} s, "
+                     "first q{} giver at map {} ({},{})",
+                     bot->GetName(), level, zoneName(hereZone), zoneName(bestZone), why, to.quests, to.minLevel,
+                     to.maxLevel, uint32(to.Rate() * 3600.0f), uint32(to.travel), route, uint32(seconds), best->questId,
+                     giverPos.GetMapId(), int32(giverPos.GetPositionX()), int32(giverPos.GetPositionY()));
+        }
+    }
+    return best->questId;
 }
 
 uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos)
