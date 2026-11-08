@@ -32,6 +32,9 @@ namespace
     // happened): the npc's SmartAI gives the kill credit on gossip hello (event 64) or on a gossip option (event 62)
     // with SMART_ACTION_CALL_KILLEDMONSTER; the bot talks as a player's client does, once per npc spawn
     std::mutex talkLock;
+    // [guild15] bots whose objective spot has a guessed height (see DoIncompleteQuest)
+    std::mutex guessedZLock;
+    std::set<uint32> guessedZBots;
     std::unordered_map<uint32, std::set<std::pair<uint32, uint32>>> talked;  // bot -> (quest, npc spawn)
 
     struct TalkCredit
@@ -1112,6 +1115,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         std::sort(poiInfo.begin(), poiInfo.end(), [this](POIInfo const& a, POIInfo const& b)
                   { return bot->GetDistance2d(a.pos.x, a.pos.y) < bot->GetDistance2d(b.pos.x, b.pos.y); });
         float dx = 0.0f, dy = 0.0f, dz = INVALID_HEIGHT;
+        bool guessedZ = false;
         int32 objectiveIdx = 0;
         bool reachable = false;
         size_t spent = 0;
@@ -1135,7 +1139,8 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                 dz = std::max(bot->GetMap()->GetHeight(dx, dy, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(dx, dy));
             // [guild13] a grid not loaded yet has no height: the route search snaps the bot's own height to the
             // navmesh column there (the spot is not skipped for it)
-            if (dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE)
+            guessedZ = dz == INVALID_HEIGHT || dz == VMAP_INVALID_HEIGHT_VALUE;
+            if (guessedZ)
                 dz = bot->GetPositionZ();
             if (FindBotPath(bot, dx, dy, dz).type & PATHFIND_NOPATH)
                 continue;
@@ -1161,6 +1166,13 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         data.lastReachPOI = 0;
         data.pos = pos;
         data.objectiveIdx = objectiveIdx;
+        {
+            std::lock_guard<std::mutex> guard(guessedZLock);
+            if (guessedZ)
+                guessedZBots.insert(bot->GetGUID().GetCounter());
+            else
+                guessedZBots.erase(bot->GetGUID().GetCounter());
+        }
         // [guild90] the sweep: next unspent camp nearest the bot, claimed (other bots skip it)
         ClaimSpot(bot, questId, pos);
         QuestStats::LogEvent(bot, "sweep", questId,
@@ -1169,6 +1181,25 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                                  "yd " + LastResolveStats());
     }
 
+    // [guild15] a spot planned with the bot's own height (its grid had none then) gets the ground's height once that
+    // grid is loaded (b327 Bami L9: Kharanos planned at Ironforge's z 504, 100 yd above the ground, 33 WALK_FAIL
+    // "on a navmesh island" next to the spot)
+    {
+        std::lock_guard<std::mutex> guard(guessedZLock);
+        auto const guessed = guessedZBots.find(bot->GetGUID().GetCounter());
+        float const px = data.pos.GetPositionX();
+        float const py = data.pos.GetPositionY();
+        if (guessed != guessedZBots.end() && bot->GetMap()->IsGridLoaded(px, py))
+        {
+            float const ground =
+                std::max(bot->GetMap()->GetHeight(px, py, MAX_HEIGHT), bot->GetMap()->GetWaterLevel(px, py));
+            if (ground != INVALID_HEIGHT && ground != VMAP_INVALID_HEIGHT_VALUE)
+            {
+                data.pos = WorldPosition(data.pos.GetMapId(), px, py, ground);
+                guessedZBots.erase(guessed);
+            }
+        }
+    }
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
     {
         // [guild12] a needed quest object passed on the way is looted on the way

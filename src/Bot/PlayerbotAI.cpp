@@ -71,6 +71,8 @@
 #include "SpellInfo.h"
 #include "StringFormat.h"
 #include "Transport.h"
+#include "GameObjectModel.h"  // [guild15] deck vs pier
+#include "ModelIgnoreFlags.h"
 #include "Unit.h"
 #include "UpdateTime.h"
 #include "Vehicle.h"
@@ -791,6 +793,23 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         nextTransportCheck = 1000;
         Transport* newTransport = bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(),
                                                                     bot->GetPositionY(), bot->GetPositionZ(), bot);
+        // [guild15] the ray down meets the boat's hull under a pier too: a bot standing on the pier (static ground
+        // above the deck the ray found) is off the boat, as a client knows the surface it stands on (b327: bots at
+        // the Rut'theran / Auberdine piers stayed passengers and rode back, 10+ round trips)
+        if (newTransport && newTransport->ToMotionTransport() && newTransport->m_model)
+        {
+            float const x = bot->GetPositionX(), y = bot->GetPositionY(), z = bot->GetPositionZ();
+            G3D::Ray const ray(G3D::Vector3(x, y, z + 2.0f), G3D::Vector3(0.0f, 0.0f, -1.0f));
+            float dist = 30.0f;
+            if (newTransport->m_model->intersectRay(ray, dist, false, bot->GetPhaseMask(),
+                                                    VMAP::ModelIgnoreFlags::Nothing))
+            {
+                float const deckZ = z + 2.0f - dist;
+                float const groundZ = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, z + 2.0f, true);
+                if (groundZ != INVALID_HEIGHT && groundZ != VMAP_INVALID_HEIGHT_VALUE && groundZ > deckZ)
+                    newTransport = nullptr;
+            }
+        }
 
         // A static transport (an elevator: GAMEOBJECT_TYPE_TRANSPORT) is not in the grid and GetTransportForPos
         // never finds it (it searches 75 yd around the GO origin): the bot riding one is left on it, its own lift

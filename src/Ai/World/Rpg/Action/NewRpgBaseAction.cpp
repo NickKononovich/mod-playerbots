@@ -700,7 +700,7 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
     // Rut'theran boat mid-sea, 3 drownings, 332 WALK_FAIL); it rides on to the next stop instead
     if (exitDock && trip.phase != Phase::Leave)
     {
-        float const speed = bot->GetSpeed(MOVE_RUN);
+        float const speed = bot->GetSpeed(bot->IsWalking() ? MOVE_WALK : MOVE_RUN);
         uint32 const walkMs =
             uint32(bot->GetExactDist(exitDock->pier) / (speed > 0.0f ? speed : 1.0f) * IN_MILLISECONDS);
         if (remaining < walkMs)
@@ -718,8 +718,9 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
             // [guild15] the transport left while the bot walked off: back to the middle of the deck, not the edge
             info.SetTripPhase(Phase::Ride);
             LOG_INFO("playerbots", "[rpg] {} L{} back onto the deck of {}: it left the stop before the bot was off "
-                     "(moving {}, offset on the transport ({:.1f},{:.1f},{:.1f}))",
+                     "(moving {}, walking {}, at ({:.1f},{:.1f},{:.1f}), offset on the transport ({:.1f},{:.1f},{:.1f}))",
                      bot->GetName(), bot->GetLevel(), line->entry, bot->isMoving() ? "yes" : "no",
+                     bot->IsWalking() ? "yes" : "no", bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
                      bot->GetTransOffsetX(), bot->GetTransOffsetY(), bot->GetTransOffsetZ());
             float x = 0.0f, y = 0.0f, z = 0.0f;
             if (FindDeckPoint(transport, x, y, z))
@@ -735,9 +736,10 @@ bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
     if (trip.phase != Phase::Leave)
     {
         info.SetTripPhase(Phase::Leave);
-        LOG_INFO("playerbots", "[rpg] {} L{} leaves transport {} at map {}: pier {:.0f} yd, the stop ends in {} ms",
+        LOG_INFO("playerbots", "[rpg] {} L{} leaves transport {} at map {}: pier {:.0f} yd, the stop ends in {} ms "
+                 "(walking {}, speed {:.1f})",
                  bot->GetName(), bot->GetLevel(), line->entry, exitDock->mapId, bot->GetExactDist(exitDock->pier),
-                 remaining);
+                 remaining, bot->IsWalking() ? "yes" : "no", bot->GetSpeed(bot->IsWalking() ? MOVE_WALK : MOVE_RUN));
     }
 
     // [guild15] a walk off that stopped (or never started: a last move still timed) is sent again at once
@@ -2205,6 +2207,13 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
         LootObject loot(bot, lootable->GetGUID());
         if (!loot.IsAtInteractDistance(bot))
         {
+            // [guild15] the object inside the reach of a pack it does not fight (b326 Orenem L11: 4 Bloodmyst
+            // Hatchlings at a Sand Pear; DangerOnWay looks at red / orange mobs on the line only)
+            if (DestinationRefused(WorldPosition(lootable)))
+            {
+                LogQuestObject(bot, lootable, "skipped: it lies among mobs it does not pull");
+                return false;
+            }
             LogQuestObject(bot, lootable, "used: walks up to it");
             if (MoveWorldObjectTo(lootable->GetGUID(), 1.5f))
                 return true;
@@ -2223,6 +2232,11 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
 
     if (!nearest->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
     {
+        if (DestinationRefused(WorldPosition(nearest)))  // [guild15] as above
+        {
+            LogQuestObject(bot, nearest, "skipped: it lies among mobs it does not pull");
+            return false;
+        }
         MoveWorldObjectTo(nearest->GetGUID(), 1.5f);
         return true;
     }
