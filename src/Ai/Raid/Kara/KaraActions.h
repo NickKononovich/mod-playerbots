@@ -397,4 +397,21 @@ public:
     bool Execute(Event event) override;
 };
 
+// [kara3] The Chess Event (boss_chess_event.cpp), played as players play it: the leader asks the Echo of Medivh for
+// the game, every member takes the piece the leader gives it ("Control <piece>" gossip, Control Piece 30019 charms
+// it) and plays it through the charm's own spells (CMSG_PET_CAST_SPELL, as the client's pet bar): the move spell on a
+// board cell, Change Facing, the piece's two abilities. Won when Medivh's king dies.
+namespace KaraChess
+{
+    // the chess game is the bot's business now: near the Echo of Medivh, the game not won yet
+    bool Active(Player* bot);
+}
+
+class KarazhanChessPlayAction : public MovementAction
+{
+public:
+    KarazhanChessPlayAction(PlayerbotAI* botAI) : MovementAction(botAI, "karazhan chess play") {}
+    bool Execute(Event event) override;
+};
+
 #endif

@@ -142,6 +142,9 @@ public:
 
         creators["nightbane manage timers and trackers"] =
             &RaidKarazhanActionContext::nightbane_manage_timers_and_trackers;
+
+        // [kara3] Chess Event
+        creators["karazhan chess play"] = &RaidKarazhanActionContext::karazhan_chess_play;
     }
 
 private:
@@ -324,6 +327,7 @@ private:
     {
         return new NightbaneManageTimersAndTrackersAction(botAI);
     }
+    static Action* karazhan_chess_play(PlayerbotAI* botAI) { return new KarazhanChessPlayAction(botAI); }
 };
 
 #endif

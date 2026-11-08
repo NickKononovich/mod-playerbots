@@ -1864,7 +1864,10 @@ namespace TestHarness
         for (Player* bot : players)
         {
             bool const ghostMoving = bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) && bot->isMoving();
-            if (ghostMoving || (bot->IsAlive() && bot->HasAura(15007)))
+            // [kara3] a member playing a charmed creature that fights (Karazhan's chess pieces): the fight is its
+            Unit* const charm = bot->GetCharm();
+            bool const charmFights = charm && charm->IsAlive() && (charm->IsInCombat() || charm->isMoving());
+            if (ghostMoving || charmFights || (bot->IsAlive() && bot->HasAura(15007)))
             {
                 party.lastProgressMs = now;
                 return;

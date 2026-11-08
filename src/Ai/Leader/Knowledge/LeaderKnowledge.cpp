@@ -406,6 +406,10 @@ namespace Leader::Knowledge
             {534, StarterKind::Gossip, {17772}, {0}, true, 8, 120000, "Hyjal: Jaina starts the Alliance wave sets"},
             {534, StarterKind::Gossip, {17852}, {0}, false, 8, 120000, "Hyjal: Thrall starts the Horde wave sets"},
             {532, StarterKind::Gossip, {16812}, {0, 0, 0}, false, 1, 60000, "Karazhan: Barnes starts the Opera"},
+            // [kara3] boss_nightbane.cpp go_blackened_urn: a click on the Blackened Urn (lock 1691: LOCKTYPE_OPEN, no
+            // skill) starts Nightbane's intro while his slot is NOT_STARTED
+            {532, StarterKind::UseGameObject, {194092}, {}, false, 1, 30000,
+             "Karazhan: the Blackened Urn calls Nightbane"},
             {564, StarterKind::Gossip, {23191}, {0}, false, 1, 60000, "Black Temple: Akama starts Shade of Akama"},
             {564, StarterKind::Gossip, {23089}, {0, 0}, false, 1, 60000,
              "Black Temple: Akama starts the Illidan intro"},
@@ -415,7 +419,6 @@ namespace Leader::Knowledge
         };
 
         std::vector<KnownGapDef> const knownGaps = {
-            {532, "Karazhan chess event (Echo of Medivh 16816): pieces must be controlled - needs honest tactic"},
             {534, "Hyjal Archimonde: Tears of the Goddess item use - needs honest tactic"},
             // The Argent Lance 46106 does have a source: the Lance Rack (GO 196398, type 22 spellcaster, 4 spawns in
             // map 650) casts 64682, which creates it; Ai/Dungeon/TOC "toc lance" takes it. The jousting itself
@@ -453,6 +456,22 @@ namespace Leader::Knowledge
             // SetData on him -> faction 35 + evade, instance data TYPE_NORTH_WING_PROGRESS 3 = DONE); never killed
             // after.
             {429, 14324, 3},
+            // [kara3] Karazhan: the Chess Event's Status Bar 22520 (a boss-flagged trigger, never killed) is done
+            // with the game, instance data DATA_CHESS_EVENT 8 = DONE
+            {532, 22520, 8},
+        };
+
+        // [kara3] A script boss slot the instance never sets: its state is kept as instance data instead.
+        // instance_karazhan.cpp: the Chess Event is SetData(DATA_CHESS_EVENT 8, DONE) on the win, boss slot 8 stays
+        // NOT_STARTED (no SetBossState in boss_chess_event.cpp).
+        struct ScriptSlotDataDef
+        {
+            uint32 mapId;
+            uint32 bossId;
+            uint32 dataId;
+        };
+        std::vector<ScriptSlotDataDef> const scriptSlotData = {
+            {532, 8, 8},
         };
 
         std::vector<EncounterCreditAliasDef> const encounterCreditAliases = {
@@ -746,6 +765,13 @@ namespace Leader::Knowledge
             {349, 32.0f, -160.0f, -196.4f, {13601}, {13596},
              "Maraudon: the lake surface on Rotgrip's patrol - wait, pull him as he passes", true, 40.0f, -100000.0f,
              false, {}, 100000.0f, {}, 0.0f, -1, {}, false, true},
+            // [kara3] Karazhan, the Chess Event: the game is played at the Echo of Medivh 16816 (boss_chess_event.cpp;
+            // the members' "karazhan chess play" asks him and takes the pieces). A hold spot from Aran's and the
+            // Curator's death until the game is won (DATA_CHESS_EVENT 8 DONE): the route waits there, nothing else
+            // near it is a target; the bosses elsewhere stay targets (Illhoof, Netherspite).
+            {.mapId = 532, .x = -11100.5f, .y = -1851.5f, .z = 221.2f, .afterDead = {16524, 15691}, .untilDead = {},
+             .note = "Karazhan: the Chess Event at the Echo of Medivh", .hold = true, .holdRadius = 10.0f,
+             .doneData = 8},
         };
 
         // Walkable links the navmesh lacks (RouteLinkDef). Verified with tools/navmesh_probe.py on the server mmaps.
@@ -1276,6 +1302,14 @@ namespace Leader::Knowledge
                 return def.kind;
             }
         return nullptr;
+    }
+
+    uint32 ScriptSlotData(uint32 mapId, uint32 bossId)
+    {
+        for (ScriptSlotDataDef const& def : scriptSlotData)
+            if (def.mapId == mapId && def.bossId == bossId)
+                return def.dataId;
+        return UINT32_MAX;
     }
 
     uint32 EncounterDoneData(uint32 mapId, uint32 creditEntry)

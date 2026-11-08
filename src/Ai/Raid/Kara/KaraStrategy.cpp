@@ -19,6 +19,10 @@ void RaidKarazhanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("karazhan enemies cast fear",
         { NextAction("karazhan set tremor totem", ACTION_RAID) }));
 
+    // [kara3] Chess Event: the game, its pieces and their spells
+    triggers.push_back(new TriggerNode("karazhan chess event active",
+        { NextAction("karazhan chess play", ACTION_EMERGENCY + 8) }));
+
     // Trash
     triggers.push_back(new TriggerNode("mana warp is about to explode",
         { NextAction("mana warp stun creature before warp breach", ACTION_EMERGENCY + 6) }));

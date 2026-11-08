@@ -2994,6 +2994,14 @@ namespace TestHarness
                     if (!script)
                         continue;
                     state = uint8(script->GetBossState(boss.bossId));
+                    // [kara3] a slot the instance keeps as data (Karazhan's Chess Event: SetData 8, never SetBossState)
+                    if (uint32 const dataId = ScriptSlotData(party.content->mapId, boss.bossId);
+                        dataId != UINT32_MAX && state != DONE)
+                    {
+                        uint32 const data = script->GetData(dataId);
+                        if (data == DONE || data == IN_PROGRESS)
+                            state = uint8(data);
+                    }
                 }
                 else if (boss.killed)
                     state = DONE;

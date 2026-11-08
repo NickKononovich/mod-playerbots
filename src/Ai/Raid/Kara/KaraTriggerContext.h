@@ -142,6 +142,9 @@ public:
 
         creators["nightbane should manage timers and trackers"] =
             &RaidKarazhanTriggerContext::nightbane_need_to_manage_timers_and_trackers;
+
+        // [kara3] Chess Event
+        creators["karazhan chess event active"] = &RaidKarazhanTriggerContext::karazhan_chess_event_active;
     }
 
 private:
@@ -322,6 +325,10 @@ private:
     static Trigger* nightbane_need_to_manage_timers_and_trackers(PlayerbotAI* botAI)
     {
         return new NightbaneShouldManageTimersAndTrackersTrigger(botAI);
+    }
+    static Trigger* karazhan_chess_event_active(PlayerbotAI* botAI)
+    {
+        return new KarazhanChessEventActiveTrigger(botAI);
     }
 };
 

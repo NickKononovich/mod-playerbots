@@ -244,6 +244,9 @@ namespace Leader::Knowledge
         int32 progressData = -1;
         uint32 progressMin = 0;
         uint32 progressTrigger = 0;
+        // [kara3] The spot is done once InstanceScript::GetData(doneData) == DONE (an event no kill ends: Karazhan's
+        // Chess Event, DATA_CHESS_EVENT 8). -1: none.
+        int32 doneData = -1;
     };
 
     // A walkable connection the navmesh does not have: a bridge the instance script raises as a game object (the
@@ -443,6 +446,8 @@ namespace Leader::Knowledge
     uint32 DeathlessUntilBoss(uint32 mapId, uint32 creatureEntry);
     // A dbc encounter credited by no kill: the instance data id that is DONE once it is done, 0 for none.
     uint32 EncounterDoneData(uint32 mapId, uint32 creditEntry);
+    // [kara3] A script boss slot whose state the instance keeps as data (GetData), UINT32_MAX for none.
+    uint32 ScriptSlotData(uint32 mapId, uint32 bossId);
     std::vector<KnownGapDef const*> KnownGaps(uint32 mapId);
 
     // [b32_strat_gate] [lead107 final] the members the leader found cut off behind a closed door (its TickDoorCut),

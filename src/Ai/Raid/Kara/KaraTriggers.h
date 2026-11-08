@@ -312,4 +312,12 @@ public:
     bool IsActive() override;
 };
 
+// [kara3] Chess Event
+class KarazhanChessEventActiveTrigger : public Trigger
+{
+public:
+    KarazhanChessEventActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "karazhan chess event active") {}
+    bool IsActive() override;
+};
+
 #endif
