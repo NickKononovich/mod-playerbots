@@ -721,7 +721,8 @@ bool FreyaMarkDpsTargetTrigger::IsActive()
         if (!map || !map->IsRaid())
             return false;
 
-        uint32 healthThreshold = map->Is25ManRaid() ? 7200 : 4900;  // Detonate maximum damage
+        // [uld10h] Detonate's top hit in this instance: its size variant times the rescale's spell factor
+        uint32 const healthThreshold = GetFreyaDetonateMaxDamage(firstDetonatingLasher);
 
         // Check that detonate lasher dont kill raid members
         for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())

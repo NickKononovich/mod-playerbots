@@ -54,6 +54,7 @@ enum UlduarIDs
     NPC_SNAPLASHER = 32916,
     NPC_STORM_LASHER = 32919,
     NPC_DETONATING_LASHER = 32918,
+    SPELL_FREYA_DETONATE = 62598,  // [uld10h] Detonating Lasher death blast (25-man variant via SpellDifficulty)
     NPC_ANCIENT_WATER_SPIRIT = 33202,
     NPC_ANCIENT_CONSERVATOR = 33203,
     NPC_HEALTHY_SPORE = 33215,
@@ -220,6 +221,9 @@ Creature* FindSaroniteVaporsCloud(Player* bot, float range);
 bool IsUlduar25Man(Player* bot);
 // [uld10h] Descend Into Madness portals Yogg-Saron opens per wave: 4 in 10, 10 in 25 (core RAID_MODE(4, 10)).
 uint32 GetYoggSaronBrainPortalCount(Player* bot);
+// [uld10h] Highest hit of the Detonate `lasher` casts when it dies: its own difficulty variant of the spell, the top
+// of the damage roll, times the instance rescale factor (raid_rescale_map, through mod-raid-rescale's hooks)
+uint32 GetFreyaDetonateMaxDamage(Unit* lasher);
 
 class RazorscaleBossHelper : public AiObject
 {

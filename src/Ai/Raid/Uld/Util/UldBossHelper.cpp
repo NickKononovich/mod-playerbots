@@ -8,13 +8,17 @@
 #include "DBCEnums.h"
 #include "GameObject.h"
 #include "Group.h"
+#include "LeaderHazardVerdict.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ScriptedCreature.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "World.h"
+#include <algorithm>
 
 const Position ULDUAR_THORIM_NEAR_ARENA_CENTER = Position(2134.9854f, -263.11853f, 419.8465f);
 const Position ULDUAR_THORIM_NEAR_ENTRANCE_POSITION = Position(2172.4355f, -258.27957f, 418.47162f);
@@ -305,6 +309,27 @@ bool IsUlduar25Man(Player* bot)
 }
 
 uint32 GetYoggSaronBrainPortalCount(Player* bot) { return IsUlduar25Man(bot) ? 10 : 4; }
+
+uint32 GetFreyaDetonateMaxDamage(Unit* lasher)
+{
+    SpellInfo const* base = sSpellMgr->GetSpellInfo(SPELL_FREYA_DETONATE);
+    if (!base || !lasher)
+        return 0;
+
+    SpellInfo const* info = sSpellMgr->GetSpellForDifficultyFromSpell(base, lasher);
+    if (!info)
+        info = base;
+
+    float maxDamage = 0.0f;
+    for (SpellEffectInfo const& effect : info->GetEffects())
+    {
+        if (!effect.IsEffect(SPELL_EFFECT_SCHOOL_DAMAGE))
+            continue;
+        maxDamage += float(effect.BasePoints + std::max(effect.DieSides, 1));
+    }
+
+    return uint32(maxDamage * Leader::HazardVerdict::InstanceDamageFactor(lasher, info, false));
+}
 
 Creature* FindSaroniteVaporsCloud(Player* bot, float range)
 {
