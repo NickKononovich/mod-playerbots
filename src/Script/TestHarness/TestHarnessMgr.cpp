@@ -42,6 +42,7 @@
 #include "ObjectMgr.h"
 #include "PoolMgr.h"  // [world_boss] the pooled spot of a world boss
 #include "Player.h"
+#include "World.h"  // [peaklog] sWorld->QueueCliCommand
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PathGenerator.h"
@@ -4483,6 +4484,14 @@ namespace TestHarness
             LogEvent(party, "run_end", JsonObject().Str("result", result).Str("reason", reason).Num("durationSec", 0));
 
         LOG_INFO("playerbots", "Test harness: {} finished: {} ({})", party.id, result, reason);
+
+        // [peaklog] mod-raid-rescale's per-run peak log: flush it at run end through its console command (decoupled:
+        // without the module the command is unknown and does nothing)
+        {
+            std::string const flush = "raidrescale peakflush run_end " + party.id;
+            sWorld->QueueCliCommand(new CliCommandHolder(nullptr, flush.c_str(), [](void*, std::string_view) { },
+                                                         [](void*, bool) { }));
+        }
 
         // [guild60] the five's report for the global leader (before the release drops the run's counters)
         Leader::Dungeon::ClearResult guildResult;
