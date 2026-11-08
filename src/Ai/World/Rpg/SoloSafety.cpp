@@ -234,6 +234,13 @@ namespace
                                  died ? "died" : "disengaged", int32(track.level) - int32(bot->GetLevel()));
                     }
         }
+        // [guild80] a run / reset closes with a rest to full (WantsRest drops a rest asked for in combat: b319
+        // Ravelandy L8 went questing at hp 53 after a run and died to the same Prowler)
+        if (state.fleeing && !died)
+        {
+            state.rest = true;
+            state.restWhy = "after a survival run";
+        }
         state.fleeing = false;
         state.attackers.clear();
         state.engaged = false;
@@ -1061,6 +1068,10 @@ namespace SoloSafety
         float botDps = BotDpsAt(bot, state, gap);
         if (state.dealt && elapsed >= SwingSec(bot))
             botDps = std::max(botDps, float(state.dealt) / (elapsed + SwingSec(bot)));
+        // [guild80] ... and this fight's alone once it covers two of its swings: b319 Rumanatol L11 dealt 5.0 dps to a
+        // Blue Flutterer (10.2 measured at that gap), Rollothan L8 5.7 (8.5): the fight showed lost only at hp 43 / 4
+        if (elapsed >= 2.0f * SwingSec(bot))
+            botDps = float(state.dealt) / (elapsed + SwingSec(bot));
         out.botDps = std::max(botDps, 1.0f);
         // the rest of the fight as the judge counts it: its current target first, then the most damage per health
         Unit* const victim = bot->GetVictim();

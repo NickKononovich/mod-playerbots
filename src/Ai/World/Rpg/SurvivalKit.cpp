@@ -374,7 +374,8 @@ namespace
                         piece.item = proto->ItemId;
                         piece.cost = 0.0f;
                         piece.needsWindow = info->IsChanneled();
-                        piece.cooldownSec = Sec(std::max<int32>(slot.SpellCooldown, slot.SpellCategoryCooldown));
+                        piece.cooldownSec = std::max(piece.cooldownSec,
+                                                     Sec(std::max<int32>(slot.SpellCooldown, slot.SpellCategoryCooldown)));
                         // an item heal is no spell power heal: its points as the data gives them
                         for (SpellEffectInfo const& effect : info->GetEffects())
                             if (effect.Effect == SPELL_EFFECT_HEAL)
@@ -439,6 +440,14 @@ namespace
             // an area around it: the attacker it covers must stand inside
             return botAI->CanCastSpell(piece.spell, bot);
         }
+        // a cast heal while it chases (PlayerbotAI::CanCastSpell refuses a cast on the move): it stops for it (b319
+        // Rumanatol L11 chasing a Blue Flutterer: no Healing Wave, a Lasher Root at hp 43 and Gift of the Naaru at 21)
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(piece.spell);
+        if (bot->isMoving() && info && info->CalcCastTime(bot) > 0 && !bot->HasUnitState(UNIT_STATE_LOST_CONTROL))
+            return bot->HasSpell(piece.spell) && !bot->HasSpellCooldown(piece.spell) &&
+                   (piece.cost <= 0.0f || float(bot->GetPower(POWER_MANA)) >= piece.cost) &&
+                   !bot->IsNonMeleeSpellCast(false) && bot->IsWithinLOSInMap(target) &&
+                   (target == bot || bot->IsWithinDist(target, info->GetMaxRange(false, bot)));
         return botAI->CanCastSpell(piece.spell, target);
     }
 
@@ -473,9 +482,15 @@ namespace
                 if (piece.needsWindow)
                     return 0.0f;
                 // its mana for as many casts as the fight wants
-                float const casts = piece.cost > 0.0f ? std::floor(float(bot->GetPower(POWER_MANA)) / piece.cost)
-                                    : piece.item ? 1.0f
-                                                 : std::max(1.0f, std::floor(p.seconds / std::max(piece.castSec, 0.1f)));
+                // ... within the fight (its casts, its cooldown: b319 Gift of the Naaru counted 10200 for a 3 min
+                // cooldown)
+                float casts = std::max(1.0f, std::ceil(p.seconds / std::max(piece.castSec, 0.1f)));
+                if (piece.cost > 0.0f)
+                    casts = std::min(casts, std::floor(float(bot->GetPower(POWER_MANA)) / piece.cost));
+                if (piece.cooldownSec > 0.0f)
+                    casts = std::min(casts, 1.0f + std::floor(p.seconds / piece.cooldownSec));
+                if (piece.item)
+                    casts = std::min(casts, 1.0f);
                 float const each = piece.amount - lost;
                 return each > 0.0f ? each * std::max(casts, 0.0f) : 0.0f;
             }
@@ -538,6 +553,26 @@ namespace
         std::string why;
     };
 
+    // the idle aggressive mobs round it (a way out must pass them out of their aggro reach)
+    std::vector<Creature*> IdleMobs(Player* bot, float range)
+    {
+        std::vector<Creature*> idle;
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(bot, range);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitObjects(bot, searcher, range);
+        for (Unit* unit : units)
+        {
+            Creature* mob = unit->ToCreature();
+            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() ||
+                mob->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE))
+                continue;
+            idle.push_back(mob);
+        }
+        return idle;
+    }
+
     bool WayClear(Player* bot, float angle, float length, std::vector<Creature*> const& idle)
     {
         float const x0 = bot->GetPositionX();
@@ -582,7 +617,16 @@ namespace
             else if (piece.kind == Kind::Leap && (!leap || piece.radius > leap->radius) && Castable(botAI, bot, piece, bot))
                 leap = &piece;
         }
-        float const botSpeed = bot->GetSpeed(MOVE_RUN);
+        // in water both swim (b319: Stone Cairn Lake murlocs killed Ravelandy and Orton on runs judged to cost 85 / 78)
+        UnitMoveType const moveType = bot->IsInWater() ? MOVE_SWIM : MOVE_RUN;
+        float const botSpeed = bot->GetSpeed(moveType);
+        // a melee hit from behind may daze it (Unit::AttackerStateUpdate casts 1604): its speed by that spell's data
+        float dazed = 0.0f;
+        if (sWorld->getBoolConfig(CONFIG_ENABLE_DAZE))
+            if (SpellInfo const* daze = sSpellMgr->GetSpellInfo(1604))
+                for (SpellEffectInfo const& effect : daze->GetEffects())
+                    if (effect.ApplyAuraName == SPELL_AURA_MOD_DECREASE_SPEED)
+                        dazed = std::min(dazed, float(effect.CalcValue()) / 100.0f);
         // the direction: away from the attackers' homes, clear of idle mobs
         Position home;
         float homeX = 0.0f, homeY = 0.0f;
@@ -619,7 +663,7 @@ namespace
                     plan.why = "a player attacker";
                     return plan;
                 }
-                float vm = mob->GetSpeed(MOVE_RUN);
+                float vm = mob->GetSpeed(moveType);
                 float leashLeft = float(mob->GetLastLeashExtensionTime() + time_t(mob->GetLeashTimer()) - now);
                 // a spell on the chaser refreshes its leash (Unit::AtTargetAttacked): its full timer from the cast
                 if (first && first->kind == Kind::Snare && (first->area || i == 0))
@@ -639,7 +683,10 @@ namespace
                 // until the gap passes its melee reach
                 float exposure = until;
                 float const reach = mob->GetMeleeRange(bot);
-                if (vm < vb)
+                // a slower chaser in reach can daze it down below its own speed: then it hits all the way too
+                bool const canDaze = std::max(foe.dps - foe.spellDps, 0.0f) > 0.0f && head <= 0.0f && bot->IsWithinMeleeRange(mob) &&
+                                     vb * (1.0f + dazed) <= vm;
+                if (vm < vb && !canDaze)
                     exposure = std::min(until, std::max(0.0f, reach - head) / (vb - vm));
                 else if (head > 0.0f)
                     exposure = std::max(0.0f, until - head / std::max(vm, 0.1f));
@@ -660,23 +707,7 @@ namespace
         }
         plan.dist = botSpeed * plan.leashSec;
         // the way out: straight away first, then to the sides
-        std::vector<Creature*> idle;
-        {
-            std::list<Unit*> units;
-            float const range = plan.dist + 40.0f;
-            Acore::AnyUnitInObjectRangeCheck check(bot, range);
-            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
-            Cell::VisitObjects(bot, searcher, range);
-            for (Unit* unit : units)
-            {
-                Creature* mob = unit->ToCreature();
-                if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
-                    !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() ||
-                    mob->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE))
-                    continue;
-                idle.push_back(mob);
-            }
-        }
+        std::vector<Creature*> const idle = IdleMobs(bot, plan.dist + 40.0f);
         bool clear = false;
         for (float turn : {0.0f, float(M_PI) / 4.0f, -float(M_PI) / 4.0f, float(M_PI) / 2.0f, -float(M_PI) / 2.0f})
         {
@@ -1012,11 +1043,15 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
             return true;
         if (bot->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_CONTROLLED))
             return true;
-        // the next stretch of the way out on the navmesh (straight, else a quarter to either side)
+        // the next stretch of the way out on the navmesh (straight, else a quarter to either side), each clear of idle
+        // mobs (b319 Lyleria L7: a run past its planned yards woke a Venomfang and a Nightsaber Stalker)
         float const leash = sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS);
+        std::vector<Creature*> const idle = IdleMobs(bot, leash + 40.0f);
         for (float turn : {0.0f, float(M_PI) / 4.0f, -float(M_PI) / 4.0f, float(M_PI) / 2.0f, -float(M_PI) / 2.0f})
         {
             float const a = Position::NormalizeOrientation(angle + turn);
+            if (!WayClear(bot, a, leash, idle))
+                continue;
             float x = bot->GetPositionX() + std::cos(a) * leash;
             float y = bot->GetPositionY() + std::sin(a) * leash;
             float z = bot->GetPositionZ();
@@ -1026,9 +1061,22 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
             if (path.GetPathType() != PATHFIND_NORMAL)
                 continue;
             bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
+            {
+                std::lock_guard<std::mutex> guard(lock);
+                states[bot->GetGUID().GetCounter()].fleeAngle = a;
+            }
             return true;
         }
-        return true;
+        // no stretch clear of other mobs: the run ends, the kit judges the fight again (it fights on with all it has)
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            KitState& state = states[bot->GetGUID().GetCounter()];
+            state.fleeing = false;
+            state.active = false;
+        }
+        LOG_INFO("playerbots", "[solo] {} L{} survival flee stops: no way on clear of other mobs", bot->GetName(),
+                 bot->GetLevel());
+        return false;
     }
 
     Unit* target = ObjectAccessor::GetUnit(*bot, targetGuid);
@@ -1046,6 +1094,16 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
         bot->CastItemUseSpell(item, targets, 1, 0);
         return true;
     }
+    // a cast heal on the move: it stops first, the cast goes on the next check
+    if (bot->isMoving())
+        if (SpellInfo const* info = sSpellMgr->GetSpellInfo(piece.spell))
+            if (info->CalcCastTime(bot) > 0)
+            {
+                bot->StopMoving();
+                bot->GetMotionMaster()->Clear();
+                bot->GetMotionMaster()->MoveIdle();
+                return true;
+            }
     bool const cast = botAI->CastSpell(piece.spell, target);
     if (cast)
     {
