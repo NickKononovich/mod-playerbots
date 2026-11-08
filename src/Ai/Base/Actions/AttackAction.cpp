@@ -571,5 +571,16 @@ bool MeleeAction::isUseful()
     // Do not start autoattack while prowled — let opener spells break stealth intentionally.
     // Future rogue stealth implementation should use this instead:
     // return !(botAI->HasAura("stealth", bot) || botAI->HasAura("prowl", bot));
-    return !botAI->HasAura("prowl", bot);
+    if (botAI->HasAura("prowl", bot))
+        return false;
+
+    // [noattack] A ranged bot (a healer's "healer dps", a hunter after "reach melee") swings only at a mob already in
+    // its melee reach: the action never walks, and out of reach it would only stop the bot's walk (Attack()).
+    if (!PlayerbotAI::IsMelee(bot))
+    {
+        Unit* target = GetTarget();
+        return target && bot->IsWithinMeleeRange(target);
+    }
+
+    return true;
 }

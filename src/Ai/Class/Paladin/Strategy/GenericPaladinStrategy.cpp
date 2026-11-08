@@ -105,5 +105,9 @@ void PaladinHealerDpsStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
                             NextAction("judgement of light", ACTION_DEFAULT + 0.3f),
                             NextAction("consecration", ACTION_DEFAULT + 0.2f),
                             NextAction("exorcism", ACTION_DEFAULT+ 0.1f),
+                            // [noattack] The white swings between them: b338 Rollothan L10 holy, solo, judged and
+                            // healed only - 2.5-3.0 dps against a formula of 14-15 (white 0 of its 9.6-10.3).
+                            // MeleeAction swings for a ranged spec only at a mob in its melee reach.
+                            NextAction("melee", ACTION_DEFAULT + 0.05f),
                             }));
 }

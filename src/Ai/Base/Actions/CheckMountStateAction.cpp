@@ -181,13 +181,21 @@ bool CheckMountStateAction::isUseful()
     if (!GET_PLAYERBOT_AI(bot)->HasStrategy("mount", BOT_STATE_NON_COMBAT) && !bot->IsMounted())
         return false;
 
-    // Not useful when level lower than minimum required
-    if (bot->GetLevel() < sPlayerbotAIConfig.UseGroundMountAtMinLevel)
-        return false;
+    // [noattack] The level and form gates are for mounting. A mounted bot below the mount level rides a quest mount
+    // (The Kessel Run's Kessel's Elekk, 31973, SPELL_AURA_MOUNTED) and must still get off to fight: mounted,
+    // Unit::Attack refuses every attack. b338 Farret L11 retribution, Azuremyst: five fights with the mob 1.5-3.9 yd
+    // away, "no victim, no cast", fled; b337 Rumanatol L11-12 and Laaral L13 on the same quest, 38-111 s of melee
+    // dealing 0. The "mounted" trigger (54) fired, this gate made the action useless.
+    if (!bot->IsMounted())
+    {
+        // Not useful when level lower than minimum required
+        if (bot->GetLevel() < sPlayerbotAIConfig.UseGroundMountAtMinLevel)
+            return false;
 
-    // Allow mounting while transformed only if the form allows it
-    if (bot->HasAuraType(SPELL_AURA_TRANSFORM) && bot->IsInDisallowedMountForm())
-        return false;
+        // Allow mounting while transformed only if the form allows it
+        if (bot->HasAuraType(SPELL_AURA_TRANSFORM) && bot->IsInDisallowedMountForm())
+            return false;
+    }
 
     // Mount attempts stop movement, including active jumps.
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == EFFECT_MOTION_TYPE && bot->movespline &&
