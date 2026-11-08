@@ -227,6 +227,9 @@ public:
     void SendOrders(Player* player);  // addon "BOTCTL\torders"
     void SendResources(Player* player);  // addon "BOTCTL\tresources": the virtual guild bank
     void SendPlan(Player* player);       // [guild70] addon "BOTCTL\tplan": crafts, transfers, sources
+    // [ui11] addon "BOTCTL\ttasks <num>": one member's whole task list with every field, its gear plan (now / band /
+    // future) and why it stands still - asked only for the bot the BotControl detail pane shows
+    void SendTasks(Player* player, uint32 num);
     bool IsPlanned(uint32 low) const { return planIndex_.count(low) != 0; }
     // [help] every member of the plan (read-only after Load: any thread)
     std::vector<uint32> PlannedLows() const
@@ -388,6 +391,9 @@ private:
         uint8 group{0};
         uint32 itemId{0};
         float gain{0.0f};
+        float score{0.0f};    // [ui11] its weight and the worn one's (0 = empty slot): the gain text
+        float current{0.0f};
+        uint32 needLevel{0};  // [ui11] the level it is wearable / reachable from: the item's, else its source's
         uint8 kind{0};        // GuildGear::SourceKind
         uint32 srcId{0};      // quest / boss / recipe spell / vendor entry
         uint32 aux{0};        // quest choice index / skill line / price
@@ -452,6 +458,10 @@ private:
         // [guild50] gear through the global leader
         std::vector<GearPick> gearNow;   // per slot group: the best upgrade reachable now (bank, reward, craft, buy)
         std::vector<GearPick> gearPlan;  // per slot group: the best reachable upgrade of any source
+        // [ui11] per slot group: the best upgrade beyond the plan's level band (needLevel above its level and the
+        // levels of the quests it holds): BotControl's «будущее» section only, no decision reads it
+        std::vector<GearPick> gearFuture;
+        std::string stillWhy;  // [ui11] why it stands still (the wait reason, or the STUCK cause), "" = it moves
         std::map<uint32, RewardPick> rewards;  // quest -> the choice to take
         std::vector<Expect> expect;      // items about to appear in its bags that belong to another member
         uint32 gearAt{0};
@@ -479,6 +489,7 @@ private:
         std::map<std::string, std::string> suggested;
         // [tasks] the bag pressure last logged (free slots class: 0 full, 1 low, 2 ok; -1 not logged yet)
         int8 bagClass{-1};
+        std::set<uint32> buyDropped;  // [tasks] vendor upgrades not planned (logged once per item)
         uint64 revalueKey{0};  // [questvalue] level | login time of the last re-valuation of its log
     };
 
@@ -694,7 +705,7 @@ private:
     void RecordPace(BotState& st, Player* p) const;                    // UpdateHealth: its copper per quest XP
     void LoadQuestValue();  // [questrate] playerbots_quest_value_static + the objectives' kill cost, startup
     void UpdateGear();  // [guild50] one member's upgrade plan per call
-    void PlanGear(Player* m, std::vector<GearPick>& now, std::vector<GearPick>& plan,
+    void PlanGear(Player* m, std::vector<GearPick>& now, std::vector<GearPick>& plan, std::vector<GearPick>& future,
                   std::map<uint32, RewardPick>& rewards, std::vector<Player*> const& bots,
                   std::map<uint32, uint32> const& bank, std::vector<WantedItem> const& wanted);
     void UpdateCrafts(uint32 now);  // [guild50] craft queue (upgrade crafts + bags), its wanted mats; lock_ held

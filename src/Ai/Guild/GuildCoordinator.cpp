@@ -1756,8 +1756,14 @@ void GuildCoordinator::UpdateOrders()
             GuildOrder o;
             o.type = GuildOrderType::SELL;
             o.count = uint32(st.sell.size());
-            o.details = std::to_string(o.count) + " предм.";
-            o.reason = "никому не нужно (решение глоб. лидера)";
+            // [tasks] what it sells, by name (the first few)
+            std::string names;
+            for (uint32 guid : st.sell)
+                if (Item* item = p->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(guid)); item && names.size() < 80)
+                    names += (names.empty() ? "" : ", ") + ItemName(item->GetEntry());
+            o.details = std::to_string(o.count) + " предм." + (names.empty() ? "" : ": " + names) +
+                        " — продать любому торговцу";
+            o.reason = "никому в гильдии не нужно (решение глоб. лидера), продажа освобождает сумки";
             o.status = "у ближайшего торговца по пути";
             orders.push_back(o);
         }
@@ -1794,6 +1800,31 @@ void GuildCoordinator::UpdateOrders()
                 if (g.kind != GuildGear::SRC_VENDOR || p->GetItemCount(g.itemId, true) || p->GetMoney() < g.aux ||
                     (g.extendedCost && !GuildGear::ExtendedCostMissing(p, g.extendedCost).empty()))
                     continue;
+                // [tasks] user 2026-11-08 (b349: 26 BUY tasks «waits town», most never visited): a vendor on another
+                // map is on no route of the bot; a quest reward it is about to take for the same slot supersedes
+                // the buy. Both are dropped with a line (once per item)
+                std::string drop;
+                ItemTemplate const* buyProto = sObjectMgr->GetItemTemplate(g.itemId);
+                if (g.pos.GetMapId() != p->GetMapId())
+                    drop = "the vendor is on another map (" + GuildGear::MapName(g.pos.GetMapId()) +
+                           "): no route of its own goes there";
+                else if (buyProto)
+                    for (auto const& [questId, pick] : st.rewards)
+                        if (ItemTemplate const* reward = sObjectMgr->GetItemTemplate(pick.itemId);
+                            !pick.forLow && reward && reward->InventoryType == buyProto->InventoryType &&
+                            p->GetQuestStatus(questId) != QUEST_STATUS_NONE)
+                        {
+                            drop = "superseded by the reward of q" + std::to_string(questId) + ": " +
+                                   ItemName(pick.itemId);
+                            break;
+                        }
+                if (!drop.empty())
+                {
+                    if (st.buyDropped.insert(g.itemId).second)
+                        LOG_INFO("playerbots", "[tasks] {} BUY {} not planned: {}", Who(row.low), ItemName(g.itemId),
+                                 drop);
+                    continue;
+                }
                 GuildOrder o;
                 o.type = GuildOrderType::BUY;
                 o.itemId = g.itemId;
@@ -1802,7 +1833,7 @@ void GuildCoordinator::UpdateOrders()
                 o.pos = g.pos;
                 o.cost = g.aux;
                 o.extendedCost = g.extendedCost;
-                o.details = ItemName(g.itemId) + " — " + g.text;
+                o.details = ItemName(g.itemId) + " для себя — " + g.text + ", цена " + Gsc(g.aux);
                 o.reason = std::string("улучшение ") + GuildGear::GroupName(g.group) + " " + GainText(g.gain) +
                            ", на свои деньги";
                 o.status = "к торговцу";
@@ -2204,7 +2235,7 @@ std::string GuildCoordinator::TasksText(BotState const& st) const
         text += std::string(text.empty() ? "" : " | ") + OrderName(o.type) +
                 (o.type == GuildOrderType::PROFESSION ? std::string("/") + ProfessionKindName(o.profession) : "") +
                 "[" + PriorityCode(o.priority) + "," + PlaceCode(o.place) + "," + state + "] " +
-                OrdersText(o.details, 60);
+                OrdersText(o.details, 110) + (o.reason.empty() ? "" : " — " + OrdersText(o.reason, 70));
     }
     return text;
 }
@@ -3537,9 +3568,9 @@ void GuildCoordinator::UpdateGear()
         std::lock_guard<std::mutex> guard(lock_);
         wanted = wanted_;
     }
-    std::vector<GearPick> now, plan;
+    std::vector<GearPick> now, plan, future;
     std::map<uint32, RewardPick> rewards;
-    PlanGear(member, now, plan, rewards, bots, bank, wanted);
+    PlanGear(member, now, plan, future, rewards, bots, bank, wanted);
 
     std::ostringstream log;
     for (GearPick const& g : now)
@@ -3552,6 +3583,7 @@ void GuildCoordinator::UpdateGear()
     BotState& st = bots_[member->GetGUID().GetCounter()];
     st.gearNow = std::move(now);
     st.gearPlan = std::move(plan);
+    st.gearFuture = std::move(future);
     // [guild15] gear history: the leader's reward pick is the decision behind the equip it ends in
     uint32 const low = member->GetGUID().GetCounter();
     for (auto const& [questId, pick] : rewards)
@@ -3568,7 +3600,7 @@ void GuildCoordinator::UpdateGear()
 }
 
 void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vector<GearPick>& plan,
-                                std::map<uint32, RewardPick>& rewards, std::vector<Player*> const& bots,
+                                std::vector<GearPick>& future, std::map<uint32, RewardPick>& rewards, std::vector<Player*> const& bots,
                                 std::map<uint32, uint32> const& bank, std::vector<WantedItem> const& wanted)
 {
     StatsWeightCalculator calc(m);
@@ -3592,17 +3624,22 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
     uint32 const ranks = NewRpgProfession::NextRankCost(m);
     money = money > ranks ? money - ranks : 0;
 
-    std::map<uint8, GearPick> bestNow, bestPlan;
+    // [ui11] bestFuture: a plan pick whose level (the item's, else its source's: quest, mob) is above `ahead` - an
+    // L9 bot's plan listed L74-78 pieces (the DB has RequiredLevel 0 on 834 WotLK pieces of item level 150+) and they
+    // hid the reachable ones of the same slot group
+    std::map<uint8, GearPick> bestNow, bestPlan, bestFuture;
     bool aheadItem = false;  // the member still lacks the level / reputation to wear it: a plan, not an order
     std::string lockText;
     auto const consider = [&](GearPick const& pick, bool isNow)
     {
         if (isNow && aheadItem)
             return;
+        if (isNow && pick.needLevel > level)
+            return;
         GearPick use = pick;
         if (aheadItem)
             use.text += " — " + lockText;
-        auto& best = isNow ? bestNow : bestPlan;
+        auto& best = isNow ? bestNow : (pick.needLevel > ahead ? bestFuture : bestPlan);
         auto const itr = best.find(use.group);
         if (itr == best.end() || use.gain > itr->second.gain + 1e-6f ||
             (std::fabs(use.gain - itr->second.gain) <= 1e-6f && KindRank(use.kind) < KindRank(itr->second.kind)))
@@ -3651,6 +3688,9 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
         base.group = GuildGear::EquipGroup(proto->InventoryType);
         base.itemId = proto->ItemId;
         base.gain = ev.gain;
+        base.score = ev.score;  // [ui11]
+        base.current = ev.current;
+        base.needLevel = proto->RequiredLevel;
         auto const inBank = bank.find(proto->ItemId);
         if (inBank != bank.end() && inBank->second)
         {
@@ -3672,6 +3712,17 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
             p.aux = src.aux;
             p.mapId = src.mapId;
             p.chance = src.chance;
+            // [ui11] the level the source opens at: a quest's minimum level (else its own), a boss's entrance, a
+            // world mob's lowest level, a shared reference's lowest user
+            uint32 srcLevel = 0;
+            if (src.kind == GuildGear::SRC_QUEST)
+                srcLevel = src.levelMax ? src.levelMax : src.level;
+            else if (src.kind == GuildGear::SRC_DROP || src.kind == GuildGear::SRC_WORLD)
+                srcLevel = src.level;
+            else if (src.kind == GuildGear::SRC_REFDROP)
+                if (GuildGear::RefInfo const* ref = GuildGear::Reference(src.id))
+                    srcLevel = ref->minLevel;
+            p.needLevel = std::max(p.needLevel, srcLevel);
             switch (src.kind)
             {
                 case GuildGear::SRC_QUEST:
