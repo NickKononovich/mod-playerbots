@@ -1963,7 +1963,12 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     if (bot->IsInWater())
         return false;
     dtQueryFilter filter;
-    filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER));
+    // [stuck15] the steep polygons too: the route search walks them when it finds no complete way without them
+    // (Leader::Route's steep pass), so a bot can stand on a ridge reached that way. b355 Sycina L11 walked 240 yd from
+    // Shadowglen's inn to (10235,1052,1385) in 43 s - a ridge over Shadowglen, as b308 Bierya L7 at z 1410 - and its
+    // island search, blind to the slope it came up, found "no step or survivable fall": 26 STUCK. A step onto the
+    // slope is a step its ground carries (carried) like any other
+    filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
     filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
     // [guild15] the polygons round the bot: the core's search box (3 yd round, 50 yd tall) at the bot and at points
     // all round it out to its sight (b308 Bierya L7 on a ridge over Shadowglen, z 1410: the one nearest polygon lay
