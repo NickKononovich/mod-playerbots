@@ -252,8 +252,8 @@ void AddTask(std::string const& name, uint32 low, std::string const& partner, ui
         hooks.addTask(low, partnerLow, questId, leads, why);
         return;
     }
-    LOG_INFO("playerbots", "[tasks] {} add COOP [помощь, поле, from global]: {} q{} с {} — {}", name,
-             leads ? "ведёт кооп" : "помогает", questId, partner, why);
+    LOG_INFO("playerbots", "[tasks] {} add COOP [help, field, from global]: {} q{} with {} - {}", name,
+             leads ? "leads the co-op" : "helps", questId, partner, why);
 }
 
 void EndTask(std::string const& name, uint32 low, uint32 questId, std::string const& why)
@@ -2249,7 +2249,7 @@ public:
             }
             else
             {
-                helper->Whisper("Я на месте. Пригласи меня в группу: /invite " + helper->GetName(), LANG_UNIVERSAL,
+                helper->Whisper("I am here. Invite me to your group: /invite " + helper->GetName(), LANG_UNIVERSAL,
                                 human);
                 how = "asked the human for an invite (he leads his group)";
             }
@@ -2382,7 +2382,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             r.lastRefusal = why;
             out.logs.push_back(Acore::StringFormat("[help] refuse {} quest=q{} request={}{} reason={}", r.name,
                                                    r.obj.questId, r.id, HelpStamp(), why));
-            reply = "«" + title + "»: пока некому помочь — " + why + ". Жду, когда кто-то освободится.";
+            reply = "'" + title + "': nobody can help yet - " + why + ". Waiting for someone to be free.";
         }
         return false;
     }
@@ -2449,10 +2449,10 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             aloneWins ? "the human asked; alone wins by the judge, one helper anyway"
                       : "the smallest party the judge says wins the camp"));
         coming += (coming.empty() ? "" : ", ") +
-                  Acore::StringFormat("{} ({} L{}, ~{:.0f} с)", c.p->GetName(), RoleName(c.p), c.p->GetLevel(), c.eta);
+                  Acore::StringFormat("{} ({} L{}, ~{:.0f} s)", c.p->GetName(), RoleName(c.p), c.p->GetLevel(), c.eta);
         out.after.push_back([name = c.p->GetName(), low, reqName = r.name, reqLow = r.requester.GetCounter(),
                              q = r.obj.questId]()
-                            { AddTask(name, low, reqName, reqLow, q, false, "помощь гильдии: " + reqName); });
+                            { AddTask(name, low, reqName, reqLow, q, false, "guild help: " + reqName); });
     }
     if (!r.human)
     {
@@ -2461,8 +2461,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         post.partyObj = r.obj;
         out.ops.push_back(std::make_unique<HelpFormOperation>(id, req->GetGUID()));
     }
-    reply = Acore::StringFormat("«{}»: идут {} — пати из {} выигрывает лагерь по расчёту ({:.0f} урона при запасе "
-                                "{:.0f}). Приглашение придёт от первого, кто дойдёт.",
+    reply = Acore::StringFormat("'{}': coming {} - a party of {} wins the camp by the judge ({:.0f} damage against "
+                                "{:.0f} effective health). The invite comes from the first to arrive.",
                                 title, coming, party.size(), v.damage, v.ehp);
     return true;
 }
@@ -2586,7 +2586,7 @@ bool HelpFormOperation::Execute()
             if (auto const rp = postings.find(_requester.GetCounter()); rp != postings.end())
                 rp->second.joinedAt = now;
             out.after.push_back([name = req->GetName(), low = _requester.GetCounter(), with, q = obj.questId]()
-                                { AddTask(name, low, with, 0, q, true, "помощь гильдии идёт к нему: " + with); });
+                                { AddTask(name, low, with, 0, q, true, "guild help on its way: " + with); });
         }
     }
     out.Flush();
@@ -2848,7 +2848,7 @@ uint32 ParseQuest(Player* human, std::string const& raw, std::string const& rest
     std::wstring const wanted = Lower(text);
     if (wanted.empty())
     {
-        why = "назови квест: «помогите <название / ссылка / id>»";
+        why = "name the quest: 'help <name / link / id>'";
         return 0;
     }
     std::vector<uint32> exact, part;
@@ -2880,13 +2880,13 @@ uint32 ParseQuest(Player* human, std::string const& raw, std::string const& rest
     if (found.size() == 1)
         return found.front();
     if (found.empty())
-        why = "в твоём журнале нет невыполненного квеста «" + text + "»";
+        why = "your quest log has no open quest '" + text + "'";
     else
     {
-        why = "подходят несколько квестов:";
+        why = "several quests match:";
         for (uint32 q : found)
             why += " q" + std::to_string(q);
-        why += " — укажи id";
+        why += " - give the id";
     }
     return 0;
 }
@@ -2915,7 +2915,7 @@ void Answer(Player* human, Player* via, std::string const& text)
     if (via && via->IsInWorld())
         via->Whisper(text, LANG_UNIVERSAL, human);
     else
-        ChatHandler(human->GetSession()).SendSysMessage("[Гильдия] " + text);
+        ChatHandler(human->GetSession()).SendSysMessage("[Guild] " + text);
 }
 
 // the helpers of the human's party whisper him who is coming (each its own line)
@@ -2937,7 +2937,7 @@ void HelperWhispers(Player* human, uint32 partyId)
     }
     for (auto const& [guid, eta] : helpers)
         if (Player* h = ObjectAccessor::FindPlayer(guid))
-            h->Whisper(Acore::StringFormat("Иду помочь с «{}» ({}), буду через ~{:.0f} с.", title, RoleName(h), eta),
+            h->Whisper(Acore::StringFormat("Coming to help with '{}' ({}), there in ~{:.0f} s.", title, RoleName(h), eta),
                        LANG_UNIVERSAL, human);
 }
 }  // namespace
@@ -3316,7 +3316,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
     if (!InScope(sender, receiver))
     {
         if (receiver)
-            Answer(sender, receiver, "Я помогаю только своей гильдии.");
+            Answer(sender, receiver, "I help my own guild only.");
         return receiver != nullptr;
     }
     std::string rest;
@@ -3348,7 +3348,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
                 else
                     helpRequests.erase(itr);
             }
-            reply = ended ? "Помощь отменена." : "У тебя нет открытой просьбы о помощи.";
+            reply = ended ? "Help cancelled." : "You have no open help request.";
         }
         out.Flush();
         Answer(sender, nullptr, reply);
@@ -3358,9 +3358,9 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
     uint32 const questId = ParseQuest(sender, msg, rest, why);
     Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
     if (questId && !quest)
-        why = "нет квеста q" + std::to_string(questId);
+        why = "no quest q" + std::to_string(questId);
     else if (quest && sender->GetQuestStatus(questId) != QUEST_STATUS_INCOMPLETE)
-        why = "«" + quest->GetTitle() + "» не в журнале или уже выполнен";
+        why = "'" + quest->GetTitle() + "' is not in your log or is done";
     Objective obj;
     if (why.empty() && quest)
     {
@@ -3368,7 +3368,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
         for (int32 i = 0; i < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT && !found; ++i)
             found = ReadObjective(sender, questId, i, obj) && obj.Left();
         if (!found)
-            why = "у «" + quest->GetTitle() + "» нет открытой цели «убить / добыть»";
+            why = "'" + quest->GetTitle() + "' has no open kill / loot objective";
     }
     HelpRequest request;
     if (why.empty() && quest)
@@ -3381,7 +3381,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
         request.askedAt = getMSTime();
         std::string campWhy;
         if (!StaticCamp(sender, obj, request, campWhy))
-            why = "не нахожу, где добывается цель: " + campWhy;
+            why = "I cannot find where the objective drops: " + campWhy;
     }
     LOG_INFO("playerbots", "[help] chat {} via={} quest=q{}{} text={}{}", sender->GetName(),
              receiver ? receiver->GetName() : std::string("guild"), questId, Stamp(), msg,
@@ -3398,7 +3398,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
             if (r.requester == sender->GetGUID() && r.obj.questId == questId)
                 open = &r;
         if (open && open->party)
-            reply = "«" + quest->GetTitle() + "»: помощь уже идёт.";
+            reply = "'" + quest->GetTitle() + "': help is on its way.";
         else
         {
             if (!open)
@@ -3447,7 +3447,7 @@ void UpdateHelp()
             else if (!HelpOpen(human, party))
             {
                 replies.emplace_back(party.requester,
-                                     "Квест закрыт — спасибо помощникам, они возвращаются к своим делам.");
+                                     "Quest done - thanks to the helpers, they go back to their own tasks.");
                 HelpEndLocked(party, party.requester.GetCounter(), "the requester's objective closed", true, now, out);
             }
             else if (!party.group.IsEmpty() && (!human->GetGroup() || human->GetGroup()->GetGUID() != party.group))

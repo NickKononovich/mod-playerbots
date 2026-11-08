@@ -132,15 +132,15 @@ namespace Leader::Dungeon
         switch (stage)
         {
             case Stage::Group:
-                return "группа";
+                return "group";
             case Stage::Queue:
-                return "поиск подземелий";
+                return "dungeon finder";
             case Stage::WalkIn:
-                return "входит через портал";
+                return "enters through the portal";
             case Stage::Inside:
-                return "в подземелье";
+                return "in the dungeon";
             default:
-                return "отчёт";
+                return "report";
         }
     }
 
@@ -148,23 +148,23 @@ namespace Leader::Dungeon
     {
         if (!sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER))
         {
-            why = "поиск подземелий выключен на сервере";
+            why = "the dungeon finder is off on the server";
             return false;
         }
         LFGDungeonEntry const* dungeon = request.lfgId ? sLFGDungeonStore.LookupEntry(request.lfgId) : nullptr;
         if (!dungeon || dungeon->MapID != request.mapId)
         {
-            why = "нет записи поиска подземелий для " + request.contentKey;
+            why = "no dungeon finder entry for " + request.contentKey;
             return false;
         }
         if (request.members.size() != 5)
         {
-            why = "пятёрка не полная";
+            why = "the five is not full";
             return false;
         }
         if (lfgRefused_.count(request.fiveId))
         {
-            why = "поиск подземелий уже отказал этой пятёрке";
+            why = "the dungeon finder refused this five already";
             return false;
         }
         for (FiveRunMember const& member : request.members)
@@ -172,29 +172,29 @@ namespace Leader::Dungeon
             Player* player = ObjectAccessor::FindConnectedPlayer(member.guid);
             if (!player || !player->IsInWorld())
             {
-                why = member.guid.ToString() + " не в сети";
+                why = member.guid.ToString() + " offline";
                 return false;
             }
             if (player->InBattleground() || player->InBattlegroundQueue() || player->isDead())
             {
-                why = player->GetName() + " в бою арены / поля боя или мёртв";
+                why = player->GetName() + " in an arena / battleground or dead";
                 return false;
             }
             if (player->GetLevel() < dungeon->MinLevel || player->GetLevel() > dungeon->MaxLevel)
             {
-                why = player->GetName() + " L" + std::to_string(player->GetLevel()) + " вне уровня поиска " +
+                why = player->GetName() + " L" + std::to_string(player->GetLevel()) + " outside the finder's level range " +
                       std::to_string(dungeon->MinLevel) + "-" + std::to_string(dungeon->MaxLevel);
                 return false;
             }
             lfg::LfgLockMap const& locks = sLFGMgr->GetLockedDungeons(member.guid);
             if (locks.find(dungeon->Entry()) != locks.end())
             {
-                why = player->GetName() + ": подземелье закрыто для него в поиске";
+                why = player->GetName() + ": the dungeon is locked for it in the finder";
                 return false;
             }
             if (sLFGMgr->GetState(member.guid) != lfg::LFG_STATE_NONE)
             {
-                why = player->GetName() + " уже в поиске подземелий";
+                why = player->GetName() + " already in the dungeon finder";
                 return false;
             }
         }
@@ -205,12 +205,12 @@ namespace Leader::Dungeon
     {
         if (runs_.count(request.fiveId))
         {
-            error = "пятёрка " + std::to_string(request.fiveId) + " уже ведёт свой забег";
+            error = "five " + std::to_string(request.fiveId) + " runs its own dungeon already";
             return "";
         }
         if (!ObjectAccessor::FindConnectedPlayer(request.leader))
         {
-            error = "лидер пятёрки не в сети";
+            error = "the five's leader is offline";
             return "";
         }
         Run run;
@@ -276,7 +276,7 @@ namespace Leader::Dungeon
                         offline = member.guid.ToString();
                 if (!offline.empty())
                 {
-                    End(run, "failed", offline + " не в сети до входа");
+                    End(run, "failed", offline + " offline before entering");
                     continue;
                 }
             }
@@ -331,7 +331,7 @@ namespace Leader::Dungeon
             if (!group->Create(leader))
             {
                 delete group;
-                End(run, "failed", "лидер не может создать группу");
+                End(run, "failed", "the leader cannot form the group");
                 return false;
             }
             sGroupMgr->AddGroup(group);
@@ -346,7 +346,7 @@ namespace Leader::Dungeon
                     old->RemoveMember(bot->GetGUID());
                 if (!group->AddMember(bot))
                 {
-                    End(run, "failed", bot->GetName() + " не вошёл в группу");
+                    End(run, "failed", bot->GetName() + " did not join the group");
                     return false;
                 }
             }
@@ -418,7 +418,7 @@ namespace Leader::Dungeon
                 sLFGMgr->JoinLfg(leader, LfgRoles(role, true), dungeons, "");
                 if (sLFGMgr->GetState(run.groupGuid) == lfg::LFG_STATE_NONE)
                 {
-                    End(run, "not_started", "поиск подземелий не принял пятёрку", true);
+                    End(run, "not_started", "the dungeon finder did not take the five", true);
                     return;
                 }
                 run.queued = true;
@@ -437,9 +437,9 @@ namespace Leader::Dungeon
 
         // the queue ended without the port (role check failed, proposal declined or expired - the core's rules)
         if (state == lfg::LFG_STATE_NONE)
-            End(run, "not_started", "поиск подземелий: группа не перенесена (проверка ролей / предложение)", true);
+            End(run, "not_started", "dungeon finder: the group was not moved (role check / proposal)", true);
         else if (mixed)
-            End(run, "failed", "члены пятёрки в разных копиях " + request.name);
+            End(run, "failed", "the five's members are in different instances " + request.name);
     }
 
     void DungeonRuns::TickWalkIn(Run& run)
@@ -448,7 +448,7 @@ namespace Leader::Dungeon
         Position arrival;
         if (!ArrivalInside(request, arrival))
         {
-            End(run, "failed", "нет портала в " + request.name + " у входа");
+            End(run, "failed", "no portal to " + request.name + " at the entrance");
             return;
         }
         bool all = true;
@@ -464,7 +464,7 @@ namespace Leader::Dungeon
             while (SelfTravel::TakeReport(member.guid, report))
                 if (report.action == "move to instance portal" && p->IsAlive())
                 {
-                    End(run, "failed", p->GetName() + " не может войти: " + report.reason);
+                    End(run, "failed", p->GetName() + " cannot enter: " + report.reason);
                     return;
                 }
             if (p->IsBeingTeleported() || !p->IsInWorld() || p->GetMapId() != request.mapId)
@@ -489,7 +489,7 @@ namespace Leader::Dungeon
         }
         if (mixed)
         {
-            End(run, "failed", "члены пятёрки в разных копиях " + request.name);
+            End(run, "failed", "the five's members are in different instances " + request.name);
             return;
         }
         if (!all)
@@ -528,7 +528,7 @@ namespace Leader::Dungeon
             for (Player* p : players)
                 if (p != leader && p->HasItemCount(def->itemId, 1, false))
                 {
-                    run.needs.push_back(std::to_string(def->itemId) + " у " + p->GetName() + ", не у лидера");
+                    run.needs.push_back(std::to_string(def->itemId) + " at " + p->GetName() + ", not at the leader");
                     LOG_INFO("playerbots", "[guild70] five {} run {}: {} carries item {}, the leader does not (no "
                              "hand-over yet)",
                              request.fiveId, run.id, p->GetName(), def->itemId);
@@ -539,12 +539,12 @@ namespace Leader::Dungeon
         run.stage = Stage::Inside;
         if (!engine_)
         {
-            End(run, "failed", "нет движка зачистки");
+            End(run, "failed", "no clearing engine");
             return;
         }
         std::string error;
         if (!engine_->Begin(request, run.id, error))
-            End(run, "failed", "зачистка не начата: " + error);
+            End(run, "failed", "clearing not started: " + error);
     }
 
     void DungeonRuns::OnCleared(uint32 fiveId, ClearResult const& result)
