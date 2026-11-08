@@ -37,6 +37,8 @@ public:
         creators["mc golemagg back off"] = &RaidMcActionContext::golemagg_back_off;
         creators["mc golemagg healer position"] = &RaidMcActionContext::golemagg_healer_position;
         creators["mc lava spawn focus"] = &RaidMcActionContext::lava_spawn_focus;
+        creators["mc move from flame imps"] = &RaidMcActionContext::move_from_flame_imps;
+        creators["mc flame imp focus"] = &RaidMcActionContext::flame_imp_focus;
     }
 
 private:
@@ -60,6 +62,8 @@ private:
     static Action* golemagg_back_off(PlayerbotAI* botAI) { return new McGolemaggBackOffAction(botAI); }
     static Action* golemagg_healer_position(PlayerbotAI* botAI) { return new McGolemaggHealerPositionAction(botAI); }
     static Action* lava_spawn_focus(PlayerbotAI* botAI) { return new McLavaSpawnFocusAction(botAI); }
+    static Action* move_from_flame_imps(PlayerbotAI* botAI) { return new McMoveFromFlameImpsAction(botAI); }
+    static Action* flame_imp_focus(PlayerbotAI* botAI) { return new McFlameImpFocusAction(botAI); }
 };
 
 #endif

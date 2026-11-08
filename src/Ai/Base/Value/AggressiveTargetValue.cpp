@@ -9,6 +9,7 @@
 #include "AttackersValue.h"
 #include "CreatureGroups.h"
 #include "HealthTriggers.h"
+#include "LeaderOrders.h"  // [world_boss] Leader::Orders::IsTracked
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
@@ -611,10 +612,19 @@ constexpr float ROUTE_TARGET_PICK_RANGE = 70.0f;
 
 namespace
 {
+    // [world_boss] b344 wb-kazzak 25A-1: the raid stood 28 yd from Lord Kazzak for 4 min ("no walk ... the tank's pull
+    // decides", "aggressive target" useless): every route-target rule of the pick was for a dungeon map, so in the
+    // open world the run's route target was no candidate and the plain aggro distance (28 yd) left Kazzak out. A led
+    // run's tank (the harness or a guild leader leads it: Orders tracked) picks as in a dungeon wherever the run is.
+    bool LedRouteMap(Player* bot)
+    {
+        return bot->GetMap()->IsDungeon() || Leader::Orders::IsTracked(bot->GetGUID());
+    }
+
     // The harness's live route target of this dungeon tank out of combat, empty when none.
     ObjectGuid DungeonRouteTarget(Player* bot)
     {
-        if (!bot->GetMap()->IsDungeon() || !PlayerbotAI::IsTank(bot) || bot->IsInCombat())
+        if (!LedRouteMap(bot) || !PlayerbotAI::IsTank(bot) || bot->IsInCombat())
             return ObjectGuid::Empty;
 
         return RouteTarget::Get(bot->GetGUID());
@@ -680,7 +690,7 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
         return nullptr;
     AiObjectContext* context = botAI->GetAiObjectContext();
     // the route target only for a dungeon tank out of combat (the registry's own rule)
-    ObjectGuid const routeTarget = bot->GetMap()->IsDungeon() && PlayerbotAI::IsTank(bot) && !bot->IsInCombat()
+    ObjectGuid const routeTarget = LedRouteMap(bot) && PlayerbotAI::IsTank(bot) && !bot->IsInCombat()
                                        ? pickRoute
                                        : ObjectGuid::Empty;
     Player* master = botAI->GetMaster();
@@ -696,12 +706,12 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
     float aggroRange = sPlayerbotAIConfig.AggroDistance;
     // In a dungeon the tank chooses the next pack from outside its aggro reach (the leader stops at the aggro edge
     // plus a margin, wave 11) and pulls it from range, as a player does.
-    if (bot->GetMap()->IsDungeon() && PlayerbotAI::IsTank(bot))
+    if (LedRouteMap(bot) && PlayerbotAI::IsTank(bot))
         aggroRange = std::max(aggroRange, DUNGEON_TANK_PULL_RANGE);
     std::vector<std::pair<float, Unit*>> candidates;
     // The careful pull planner left these packs a moment ago: another pack first.
     std::vector<ObjectGuid> const skip =
-        bot->GetMap()->IsDungeon() && PlayerbotAI::IsTank(bot) ? CarefulPullSkip::Get(bot) : std::vector<ObjectGuid>();
+        LedRouteMap(bot) && PlayerbotAI::IsTank(bot) ? CarefulPullSkip::Get(bot) : std::vector<ObjectGuid>();
     // The harness walks this tank to this mob: it is a candidate up to ROUTE_TARGET_PICK_RANGE, and always gets its
     // path check (the planner plans the harness's pull at once instead of waiting for the walk into pull range).
     // The route target round a corner is a candidate too ("possible targets" keeps the tank's sight): the planner
@@ -824,7 +834,7 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
 
     // [b39_scholo] The route target goes before nearer idle mobs whose pack the planner refused (see RoutePreferred).
     // It does not go before a mob in combat.
-    if (!routeTarget.IsEmpty() && bot->GetMap()->IsDungeon() && PlayerbotAI::IsTank(bot) && !bot->IsInCombat())
+    if (!routeTarget.IsEmpty() && LedRouteMap(bot) && PlayerbotAI::IsTank(bot) && !bot->IsInCombat())
     {
         auto const routeAt = std::find_if(candidates.begin(), candidates.end(), [&routeTarget](auto const& candidate)
                                           { return candidate.second->GetGUID() == routeTarget; });
@@ -888,15 +898,15 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
         rejected.push_back(candidate.second->GetGUID());
     }
 
-    if (PlayerbotAI::IsTank(bot) && bot->GetMap()->IsDungeon())
+    if (PlayerbotAI::IsTank(bot) && LedRouteMap(bot))
         TankRejects::Set(bot, rejected);
 
-    if (bot->GetMap()->IsDungeon() && PlayerbotAI::IsTank(bot) && !bot->IsInCombat())
+    if (LedRouteMap(bot) && PlayerbotAI::IsTank(bot) && !bot->IsInCombat())
         LOG_DEBUG("playerbots", "[pull hold] {}: no aggressive target of {} possible ({} candidates unreachable, "
                   "{} height, {} los, {} range {:.0f}, {} careful skip, {} encounter order, {} other)", bot->GetName(),
                   targets.size(), candidates.size(), dropHeight, dropLos, dropRange, aggroRange, dropSkip, dropOrder,
                   dropOther);
-    if (heightDropped && bot->GetMap()->IsDungeon() && PlayerbotAI::IsTank(bot) && !bot->IsInCombat())
+    if (heightDropped && LedRouteMap(bot) && PlayerbotAI::IsTank(bot) && !bot->IsInCombat())
         LOG_DEBUG("playerbots", "[pull hold] {}: height rule left out {} (dz {:.1f}, {:.1f} yd{})", bot->GetName(),
                   heightDropped->GetName(), heightDropped->GetPositionZ() - bot->GetPositionZ(),
                   bot->GetDistance(heightDropped), heightDropped->GetGUID() == routeTarget ? ", the route target" : "");
@@ -937,7 +947,7 @@ std::string AggressiveTargetValue::Explain(Player* bot, Unit* unit, ObjectGuid r
     // AggressiveTargetValue::Calculate.
     std::string verdict;
     float aggroRange = sPlayerbotAIConfig.AggroDistance;
-    if (bot->GetMap()->IsDungeon() && PlayerbotAI::IsTank(bot))
+    if (LedRouteMap(bot) && PlayerbotAI::IsTank(bot))
         aggroRange = std::max(aggroRange, DUNGEON_TANK_PULL_RANGE);
     if (unit->ToCreature() && !unit->ToCreature()->GetCreatureTemplate()->lootid &&
         bot->GetReactionTo(unit) >= REP_NEUTRAL)

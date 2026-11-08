@@ -348,3 +348,21 @@ bool McLavaSpawnFocusAction::Execute(Event /*event*/)
     Unit* spawn = McOldestLavaSpawn(botAI);
     return spawn && Attack(spawn);
 }
+
+bool McMoveFromFlameImpsAction::Execute(Event /*event*/)
+{
+    McFireNova const nova = McFireNovaAt(botAI, bot->GetPosition());
+    if (!nova.deepest || !McFireNovaKeepsOut(botAI, nova))
+        return false;
+
+    // the nova is instant: a cast under way is no reason to stand in the next one
+    bot->CastStop();
+    // past the edge by the imp's own body: the clump shifts as the tank turns it
+    return MoveAway(nova.deepest, nova.depth + nova.deepest->GetCombatReach());
+}
+
+bool McFlameImpFocusAction::Execute(Event /*event*/)
+{
+    Unit* imp = McFlameImpFocus(botAI);
+    return imp && Attack(imp);
+}

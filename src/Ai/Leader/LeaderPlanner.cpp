@@ -6005,9 +6005,62 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // A fight spot back from `from` along (`dirX`, `dirY`) (2d, unit), FIGHT_SPOT_STEP apart from step `firstStep`
     // (0: `from` itself) to FIGHT_SPOT_STEPS, on its floor, that the healer sees and no mover walks into over
     // `seconds`, and that the tank's walk from `walkFrom` reaches by its navmesh path waking nobody outside `pack`.
+    // [mcimps] The careful planner judges no raid pull (GetPullMode): a raid's engage is fought where the tank meets
+    // its mob, and nobody judged that spot against the standing packs round it. b342 / b344 mc-h 25A: the Lava Surger
+    // patrol (path 566610 runs through the 20-imp Flame Imp formation 56569) was met 19-25 yd from the formation's
+    // nearest imp; the tank and the melee round the Surger stepped into the imps' aggro reach, 20-30 imps joined
+    // (attackers 2 -> 31 / 41 in 2-6 s) and the raid wiped.
+    bool FightSpotUnplanned(Player* tank)
+    {
+        Map* map = tank->GetMap();
+        return map && map->IsRaid();
+    }
+
+    // [mcimps] An idle aggressive mob outside the fight that a fight at `spot` wakes: its aggro reach (ReachesSpot: a
+    // standing mob with the fight's spread round the spot on top - the mob on the tank at their melee range, the
+    // melee round the mob at theirs -, a wanderer by its area, a patrol by its forecast walk), or the assistance call
+    // of the fight's mob standing there (Creature::CallAssistance at the engage and every
+    // CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD: centre to centre within CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS, in
+    // sight, Creature::CanAssistTo). What comes with `target` anyway (SpawnsWith), a boss and a mob held by crowd
+    // control are left out. The nearest, in `out`.
+    bool StandingPackWakes(PlayerbotAI* botAI, Player* bot, GuidVector const& possible, Unit* target,
+                           Position const& spot, FightIntruder& out)
+    {
+        out = FightIntruder();
+        if (!target)
+            return false;
+
+        float const ring = target->GetMeleeRange(bot);
+        float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        Creature* const caller = target->ToCreature();
+        for (ObjectGuid const& guid : possible)
+        {
+            Creature* mob = botAI->GetCreature(guid);
+            if (!mob || mob == target || !IsIdleEnemy(bot, mob) || !mob->HasReactState(REACT_AGGRESSIVE) ||
+                IsCrowdControlled(mob) || IsBossMob(mob) || SpawnsWith(mob, target))
+                continue;
+
+            float const distance = mob->GetExactDist(spot);
+            if (distance > FIGHT_SPOT_SCAN || (out.mob && distance >= out.distance))
+                continue;
+
+            bool wakes = ReachesSpot(bot, mob, spot, 2.0f * ring);
+            if (!wakes && caller && assist > 0.0f && distance <= assist + ring && mob->CanAssistTo(caller, bot) &&
+                mob->IsWithinLOS(spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ() + CAREFUL_EYE_HEIGHT))
+                wakes = true;
+
+            if (wakes)
+                out = {mob, MotionOf(mob), distance};
+        }
+
+        return out.mob != nullptr;
+    }
+
+    // `standing` ([mcimps], nullptr: off): the idle mobs a spot is also judged against by StandingPackWakes.
     bool FindFightSpotBack(PlayerbotAI* botAI, Player* bot, GuidVector const& possible, Unit* target,
                            Position const& from, float dirX, float dirY, Position const& walkFrom,
-                           std::vector<Unit*> const& pack, float seconds, uint32 firstStep, Position& out)
+                           std::vector<Unit*> const& pack, float seconds, uint32 firstStep, Position& out,
+                           GuidVector const* standing = nullptr)
     {
         for (uint32 i = firstStep; i <= FIGHT_SPOT_STEPS; ++i)
         {
@@ -6025,7 +6078,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 continue;
 
             FightIntruder intruder;
-            if (!HealerSees(bot, option) || WalksIntoFight(botAI, bot, possible, target, option, seconds, intruder))
+            if (!HealerSees(bot, option) || WalksIntoFight(botAI, bot, possible, target, option, seconds, intruder) ||
+                (standing && StandingPackWakes(botAI, bot, *standing, target, option, intruder)))
                 continue;
 
             float const straight = walkFrom.GetExactDist(option);
@@ -6835,7 +6889,25 @@ namespace FightSpot
         GuidVector const possible = context->GetValue<GuidVector>("possible targets")->Get();
         Unit* target = tank->GetVictim();
         FightIntruder intruder;
-        if (!WalksIntoFight(botAI, tank, possible, target, tank->GetPosition(), FIGHT_SPOT_COMBAT_SEC, intruder))
+        bool const walksIn =
+            WalksIntoFight(botAI, tank, possible, target, tank->GetPosition(), FIGHT_SPOT_COMBAT_SEC, intruder);
+        // [mcimps] a raid's fight (no planner judged its spot): the standing packs round where it stands and round
+        // its mob the tank walks to; a boss fight keeps the encounter's own positions
+        GuidVector standing;
+        bool unplanned = target && FightSpotUnplanned(tank) && !IsBossMob(target);
+        if (unplanned)
+            for (ObjectGuid const& guid : context->GetValue<GuidVector>("attackers")->Get())
+                if (IsBossMob(botAI->GetUnit(guid)))
+                    unplanned = false;
+        bool standingWakes = false;
+        if (unplanned)
+        {
+            standing = context->GetValue<GuidVector>("possible targets no los")->Get();
+            if (!walksIn)
+                standingWakes = StandingPackWakes(botAI, tank, standing, target, tank->GetPosition(), intruder) ||
+                                StandingPackWakes(botAI, tank, standing, target, target->GetPosition(), intruder);
+        }
+        if (!walksIn && !standingWakes)
             return false;
 
         // Back toward the group (the way it came, cleared), else away from the mob through the tank.
@@ -6872,7 +6944,9 @@ namespace FightSpot
         }
 
         float const length = std::sqrt(dx * dx + dy * dy);
-        std::string const reason = FightIntruderNote(intruder);
+        std::string const reason =
+            standingWakes ? "[mcimps] " + FightIntruderNote(intruder) + " (a standing mob's reach + the fight's spread)"
+                          : FightIntruderNote(intruder);
         std::vector<Unit*> fighting;
         for (ObjectGuid const& guid : context->GetValue<GuidVector>("attackers")->Get())
         {
@@ -6880,12 +6954,29 @@ namespace FightSpot
                 fighting.push_back(unit);
         }
 
+        GuidVector const* const judged = unplanned ? &standing : nullptr;
         Position back;
-        if (length < 1.0f || !FindFightSpotBack(botAI, tank, possible, target, tank->GetPosition(), dx / length,
-                                                dy / length, tank->GetPosition(), fighting, FIGHT_SPOT_COMBAT_SEC, 1,
-                                                back))
+        bool found = false;
+        // [mcimps] a standing mob's reach: first straight away from it through the tank
+        if (standingWakes && intruder.mob)
         {
-            LOG_DEBUG("playerbots", "[fight spot] {}: {}, no spot back from here", tank->GetName(), reason);
+            float const ax = tank->GetPositionX() - intruder.mob->GetPositionX();
+            float const ay = tank->GetPositionY() - intruder.mob->GetPositionY();
+            float const away = std::sqrt(ax * ax + ay * ay);
+            found = away >= 1.0f && FindFightSpotBack(botAI, tank, possible, target, tank->GetPosition(), ax / away,
+                                                      ay / away, tank->GetPosition(), fighting, FIGHT_SPOT_COMBAT_SEC,
+                                                      1, back, judged);
+        }
+        if (!found)
+            found = length >= 1.0f && FindFightSpotBack(botAI, tank, possible, target, tank->GetPosition(),
+                                                        dx / length, dy / length, tank->GetPosition(), fighting,
+                                                        FIGHT_SPOT_COMBAT_SEC, 1, back, judged);
+        if (!found)
+        {
+            if (standingWakes)
+                LOG_INFO("playerbots", "[fight spot] {}: {}, no spot back from here", tank->GetName(), reason);
+            else
+                LOG_DEBUG("playerbots", "[fight spot] {}: {}, no spot back from here", tank->GetName(), reason);
             return false;
         }
 

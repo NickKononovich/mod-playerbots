@@ -23,6 +23,9 @@ enum MoltenCoreNPCs
     // Firelord (trash) and the Lava Spawns it summons
     NPC_FIRELORD = 11668,
     NPC_LAVA_SPAWN = 12265,
+
+    // Flame Imp (trash): its packs stand round the Lava Surger patrols
+    NPC_FLAME_IMP = 11669,
 };
 enum MoltenCoreSpells
 {
@@ -33,6 +36,9 @@ enum MoltenCoreSpells
     // Golemagg
     SPELL_GOLEMAGGS_TRUST = 20553,
     SPELL_MAGMA_SPLASH = 13880,
+
+    // Flame Imp: its SmartAI casts it in combat every 4-7 s, an instant area round the imp
+    SPELL_FIRE_NOVA = 20602,
 };
 
 constexpr uint32 MAGMA_SPLASH_BACK_OFF_STACKS = 20;

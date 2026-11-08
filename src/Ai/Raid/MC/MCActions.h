@@ -113,4 +113,22 @@ public:
     bool Execute(Event event) override;
 };
 
+// [mcimps] out of the Flame Imps' Fire Nova (McFireNovaKeepsOut): away from the imp it stands deepest in, past its edge
+class McMoveFromFlameImpsAction : public MovementAction
+{
+public:
+    McMoveFromFlameImpsAction(PlayerbotAI* botAI, std::string const name = "mc move from flame imps")
+        : MovementAction(botAI, name) {}
+    bool Execute(Event event) override;
+};
+
+// [mcimps] the damage dealers on the Flame Imp they kill first (McFlameImpFocus)
+class McFlameImpFocusAction : public AttackAction
+{
+public:
+    McFlameImpFocusAction(PlayerbotAI* botAI, std::string const name = "mc flame imp focus")
+        : AttackAction(botAI, name) {}
+    bool Execute(Event event) override;
+};
+
 #endif

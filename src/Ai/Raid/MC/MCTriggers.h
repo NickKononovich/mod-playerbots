@@ -95,4 +95,44 @@ public:
     bool IsActive() override;
 };
 
+// Flame Imp packs (20 in formation 56569, 10 more linked within the assistance radius) cast Fire Nova 20602 in combat
+// every 4-7 s (their SmartAI): an instant area round the imp, so nobody steps out once it is cast. b344 mc-h 25A
+// 996-1029 s: the melee and the healers stood among 30 imps, 30-72 novas each (2.3-3.7k a hit) and died.
+struct McFireNova
+{
+    uint32 imps = 0;            // the imps whose nova reaches the spot
+    float hits = 0.0f;          // one nova of each of them on the bot (each imp's next cast before the next heal)
+    Unit* deepest = nullptr;    // the imp the spot stands deepest in
+    float depth = 0.0f;         // how far inside its reach
+};
+
+// The Fire Novas that reach `at` for the bot: the imps among its attackers within the spell's effect radius
+// (SpellEffectInfo::CalcRadius at the imp) plus the bot's combat reach; an imp that attacks the bot itself is left
+// out (it follows the bot wherever it goes: the tank takes it back).
+McFireNova McFireNovaAt(PlayerbotAI* botAI, Position const& at);
+
+// The bot keeps out of `nova`: a member with no melee to do there (ranged, healer) out of every nova; a melee damage
+// dealer out of a spot where one nova of every imp reaching it (Leader::HazardVerdict::LandedHit) is its health or
+// more (hazard-stay-or-leave: it stays only while it survives them). The tanks hold the imps.
+bool McFireNovaKeepsOut(PlayerbotAI* botAI, McFireNova const& nova);
+
+// The imp the damage dealers kill first: an imp on a tank (no threat taken from it) with the least health, so the
+// novas fall one by one and the area spells of the aoe strategy take the clump round it; a melee only one whose spot
+// it may stand at (McFireNovaKeepsOut). Null: none.
+Unit* McFlameImpFocus(PlayerbotAI* botAI);
+
+class McFlameImpFireNovaTrigger : public Trigger
+{
+public:
+    McFlameImpFireNovaTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mc flame imp fire nova") {}
+    bool IsActive() override;
+};
+
+class McFlameImpFocusTrigger : public Trigger
+{
+public:
+    McFlameImpFocusTrigger(PlayerbotAI* botAI) : Trigger(botAI, "mc flame imp focus") {}
+    bool IsActive() override;
+};
+
 #endif
