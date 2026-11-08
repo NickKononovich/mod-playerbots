@@ -499,8 +499,8 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
         c.low = row.low;
         c.player = p;
         c.role = PlanRole(row.low, p);
-        // raid A clears every dungeon; the gatherers (B) go for upgrades only
-        c.needsClear = row.grp == 'A' && !Cleared(d.contentKey, row.low);
+        // every planned member (A, B and C) clears every dungeon, in its band (user 2026-11-08)
+        c.needsClear = !Cleared(d.contentKey, row.low);
         c.enchanter = p->HasSkill(SKILL_ENCHANTING) && p->HasSpell(SPELL_DISENCHANT);
         out.push_back(c);
     }
@@ -850,6 +850,23 @@ void GuildCoordinator::AutoFive()
 {
     if (!autoFives_)
         return;
+    // a dungeon counts only when cleared in its own band: a member above the band with it uncleared has missed it
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        for (DungeonOption const& d : dungeons_)
+            for (PlanRow const& row : plan_)
+            {
+                if (row.grp < 'A' || row.grp > 'C' || Cleared(d.contentKey, row.low) ||
+                    missed_[d.contentKey].count(row.low))
+                    continue;
+                Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                if (!p || p->GetLevel() <= d.maxLevel)
+                    continue;
+                missed_[d.contentKey].insert(row.low);
+                LOG_INFO("playerbots", "[alert] MISSED_DUNGEON {} L{} left {} ({}-{}) uncleared", Who(row.low),
+                         p->GetLevel(), d.name, d.minLevel, d.maxLevel);
+            }
+    }
     for (uint32 guardCount = 0; guardCount < 10; ++guardCount)  // one five per dungeon look, at most ten a look
     {
         // the free members of each dungeon's band (lock), their upgrades (no lock: the bots' own values)
@@ -1060,7 +1077,7 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
     }
     std::string open;
     for (uint32 low : five.members)
-        if (PlanRow const* row = Row(low); row && row->grp == 'A' && !Cleared(five.contentKey, low))
+        if (PlanRow const* row = Row(low); row && !Cleared(five.contentKey, low))
             open += (open.empty() ? "" : ", ") + Who(low);
     if (!open.empty())
         needs += (needs.empty() ? "" : "; ") + std::string("не пройдено у ") + open;
@@ -1248,17 +1265,17 @@ void GuildCoordinator::SendFives(Player* player) const
         SendLine(player, "OF;" + std::to_string(id) + ";" + FiveCell(five.dungeon, 30) + ";" + FiveCell(status, 30) + ";" +
                              FiveCell(Who(five.leaderLow), 20) + ";" + FiveCell(members, 60) + ";" + FiveCell(five.why, 80));
     }
-    // OC;dungeon;band;cleared A/total A;runs;last run (result bosses #members)
+    // OC;dungeon;band;cleared/total planned members (A, B, C);runs;last run (result bosses #members)
     uint32 totalA = 0;
     for (PlanRow const& row : plan_)
-        totalA += row.grp == 'A' ? 1 : 0;
+        totalA += row.grp >= 'A' && row.grp <= 'C' ? 1 : 0;
     for (DungeonOption const& d : dungeons_)
     {
         auto const cleared = cleared_.find(d.contentKey);
         uint32 clearedA = 0;
         if (cleared != cleared_.end())
             for (uint32 low : cleared->second)
-                if (PlanRow const* row = Row(low); row && row->grp == 'A')
+                if (PlanRow const* row = Row(low); row && row->grp >= 'A' && row->grp <= 'C')
                     ++clearedA;
         uint32 runs = 0;
         GuildRunRecord const* last = nullptr;

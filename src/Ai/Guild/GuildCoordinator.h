@@ -664,6 +664,8 @@ private:
     std::vector<DungeonOption> dungeons_;  // [guild60] read-only after Load
     std::vector<GuildRunRecord> runs_;     // [guild60] the completion table (all runs, oldest first)
     std::unordered_map<std::string, std::unordered_set<uint32>> cleared_;  // content -> characters that cleared it
+    // content -> members that outlevelled it uncleared (logged once; the in-band clear rule, user 2026-11-08)
+    std::unordered_map<std::string, std::unordered_set<uint32>> missed_;
     bool autoFives_{true};
     uint32 fiveTimer_{0};
     uint32 autoFiveTimer_{0};
