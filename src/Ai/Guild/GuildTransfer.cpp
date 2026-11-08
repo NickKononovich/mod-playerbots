@@ -41,6 +41,7 @@
 #include "Guild.h"
 #include "GuildBankRun.h"
 #include "GuildGear.h"
+#include "Group.h"  // [econ2] a party follower takes no letter
 #include "GuildMgr.h"
 #include "Item.h"
 #include "ItemPackets.h"
@@ -57,7 +58,9 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "SpellInfo.h"
+#include "Spell.h"
 #include "SpellMgr.h"
+#include "Trainer.h"  // [econ2] the profession trainers
 #include "TradeData.h"
 #include "World.h"
 #include "WorldConfig.h"
@@ -194,14 +197,43 @@ namespace
         return 0;
     }
 
-    // [recipes] the bot uses its recipe item as a player does (CMSG_USE_ITEM on itself); "" when it learned the spell
+    // [recipes] the bot uses its recipe item as a player does (CMSG_USE_ITEM on itself); "" when the Learning cast
+    // began (or the spell is known), "-" when its own Learning cast still runs (nothing to log)
     std::string LearnRecipe(Player* p, Item* item)
     {
         ItemTemplate const* proto = item->GetTemplate();
         uint32 const taught = RecipeSpell(proto);
-        if (p->IsInCombat() || p->IsNonMeleeSpellCast(false) || p->IsInFlight() || p->CanUseItem(item) != EQUIP_ERR_OK)
-            return "cannot use it now";
         uint32 const spellId = uint32(std::max<int32>(proto->Spells[0].SpellId, 0));
+        if (Spell const* current = p->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            current && current->GetSpellInfo() && current->GetSpellInfo()->Id == spellId)
+            return "-";  // the 3 s Learning cast of the last use still runs
+        if (taught && p->HasSpell(taught))
+            return "";
+        if (p->IsInCombat() || p->IsNonMeleeSpellCast(false) || p->IsInFlight())
+            return "cannot use it now: combat / a cast / a flight";
+        // [econ2] the core's own refusal, named: b353 22 "the core did not teach it" were the item check passing
+        // and the cast refused afterwards. The reasons the core gives (Player::CanUseItem)
+        switch (p->CanUseItem(item))
+        {
+            case EQUIP_ERR_OK:
+                break;
+            case EQUIP_ERR_NO_REQUIRED_PROFICIENCY:
+                return "cannot use it now: the profession is not learned";
+            case EQUIP_ERR_CANT_EQUIP_SKILL:
+                return "cannot use it now: skill " + std::to_string(p->GetSkillValue(proto->RequiredSkill)) +
+                       " below " + std::to_string(proto->RequiredSkillRank);
+            case EQUIP_ERR_CANT_EQUIP_LEVEL_I:
+                return "cannot use it now: level below " + std::to_string(proto->RequiredLevel);
+            default:
+                return "cannot use it now: the item check refuses it";
+        }
+        // [econ2] b353 Geron 16 / Geefeelli 7 "the core did not teach it", then "used" once it stood: the Learning
+        // spell (483) has a 3 s cast with SPELL_INTERRUPT_FLAG_MOVEMENT, and the core refuses a cast-time spell of a
+        // moving player (Spell::CheckCast SPELL_FAILED_MOVING) - the use came while it walked its quest route. A
+        // player stops to use it: the bot stops, then uses it (its walk waits for the cast: the motion generators
+        // hold while a movement-interrupted cast prepares, Unit::IsMovementPreventedByCasting)
+        if (p->isMoving())
+            p->StopMoving();
         // [econ1] b350: 22 "the core did not teach it" for Guinudrond - the use was sent while the global cooldown
         // ran (the core refuses the Learning cast, SPELL_FAILED_NOT_READY) and retried every second; a use waits
         // for the cooldown like a player's click does
@@ -212,7 +244,12 @@ namespace
         packet << item->GetBagSlot() << item->GetSlot() << uint8(1) << spellId << item->GetGUID() << uint32(0)
                << uint8(0) << uint32(TARGET_FLAG_NONE);
         p->GetSession()->HandleUseItemOpcode(packet);
-        return !taught || p->HasSpell(taught) || p->IsNonMeleeSpellCast(false) ? "" : "the core did not teach it";
+        if (!taught || p->HasSpell(taught))
+            return "";
+        if (Spell const* current = p->GetCurrentSpell(CURRENT_GENERIC_SPELL);
+            current && current->GetSpellInfo() && current->GetSpellInfo()->Id == spellId)
+            return "";
+        return std::string("the core did not teach it") + (p->isMoving() ? " (still moving)" : "");
     }
 
     uint32 CountKind(Player* p, uint8 kind, uint8 level)
@@ -419,6 +456,84 @@ void GuildCoordinator::LoadMailboxes()
         forges_.push_back(forge);
     }
     LOG_INFO("playerbots", "[econ1] smelting: {} town forges on the continents", forges_.size());
+    // [econ2] b353 Ryarii L7 walked 3378 yd (and took the boat) to learn Mining, Namwe 1556 yd for Herbalism: the
+    // TRAIN call had no place, so it ran wherever the bot stood. The trainers of every skill line (a tradeskill
+    // trainer teaching one of its ranks or recipes) and the Fishing Pole vendors: the call waits for the bot's visit
+    // to the town of the nearest one
+    trainerSpots_.clear();
+    poleVendors_.clear();
+    constexpr uint32 FISHING_POLE = 6256;
+    auto const spotOf = [](CreatureData const& data)
+    {
+        NpcSpot n;
+        n.entry = data.id;
+        n.spot.pos = WorldPosition(data.mapid, data.posX, data.posY, data.posZ, data.orientation);
+        n.spot.areaId = sMapMgr->GetAreaId(PHASEMASK_NORMAL, data.mapid, data.posX, data.posY, data.posZ);
+        n.spot.zoneId = sMapMgr->GetZoneId(PHASEMASK_NORMAL, data.mapid, data.posX, data.posY, data.posZ);
+        if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(n.spot.zoneId))
+            n.spot.capital = zone->flags & AREA_FLAG_CAPITAL;
+        if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(n.spot.areaId))
+        {
+            n.spot.areaTeam = area->team;
+            if (!n.spot.areaTeam && area->zone)
+                if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(area->zone))
+                    n.spot.areaTeam = zone->team;
+        }
+        return n;
+    };
+    std::unordered_map<uint32, std::set<uint32>> linesOf;  // trainer entry -> skill lines it teaches
+    auto const trainerLines = [&](uint32 entry) -> std::set<uint32> const&
+    {
+        auto itr = linesOf.find(entry);
+        if (itr != linesOf.end())
+            return itr->second;
+        std::set<uint32>& lines = linesOf[entry];
+        Trainer::Trainer* trainer = sObjectMgr->GetTrainer(entry);
+        if (!trainer || trainer->GetTrainerType() != Trainer::Type::Tradeskill)
+            return lines;
+        for (Trainer::Spell const& spell : trainer->GetSpells())
+        {
+            if (spell.ReqSkillLine)
+                lines.insert(spell.ReqSkillLine);
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spell.SpellId);
+            if (!info)
+                continue;
+            std::vector<uint32> ids{spell.SpellId};
+            for (SpellEffectInfo const& effect : info->Effects)
+                if (effect.Effect == SPELL_EFFECT_LEARN_SPELL && effect.TriggerSpell)
+                    ids.push_back(effect.TriggerSpell);
+            for (uint32 id : ids)
+                if (SpellInfo const* rank = sSpellMgr->GetSpellInfo(id))
+                    for (SpellEffectInfo const& effect : rank->Effects)
+                        if ((effect.Effect == SPELL_EFFECT_SKILL_STEP || effect.Effect == SPELL_EFFECT_SKILL) &&
+                            effect.MiscValue > 0)
+                            lines.insert(uint32(effect.MiscValue));
+        }
+        return lines;
+    };
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+    {
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(data.id);
+        MapEntry const* map = sMapStore.LookupEntry(data.mapid);
+        if (!tmpl || !map || map->Instanceable())
+            continue;
+        if (tmpl->npcflag & UNIT_NPC_FLAG_TRAINER)
+            for (uint32 line : trainerLines(data.id))
+                trainerSpots_[line].push_back(spotOf(data));
+        if (tmpl->npcflag & UNIT_NPC_FLAG_VENDOR)
+            if (VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(data.id))
+                for (VendorItem const* item : items->m_items)
+                    if (item && item->item == FISHING_POLE && !item->ExtendedCost)
+                    {
+                        poleVendors_.push_back(spotOf(data));
+                        break;
+                    }
+    }
+    size_t trainers = 0;
+    for (auto const& [line, list] : trainerSpots_)
+        trainers += list.size();
+    LOG_INFO("playerbots", "[econ2] profession towns: {} trainer spawns over {} skill lines, {} Fishing Pole vendors",
+             trainers, trainerSpots_.size(), poleVendors_.size());
     LOG_INFO("playerbots", "[guild81] transfers: {} mailboxes on the continents, postage {} copper per item, item "
              "delivery between accounts {} s, trade distance {} yd", mailboxes_.size(), MAIL_POSTAGE,
              sWorld->getIntConfig(CONFIG_MAIL_DELIVERY_DELAY), TRADE_DISTANCE);
@@ -442,6 +557,7 @@ void GuildCoordinator::UpdateTransfers()
         WorldPosition mailbox{};
         uint32 delay{0};
         std::string text;
+        std::string mailNo;  // [econ2] why no letter goes (the receiver cannot take it, it is worth less than postage)
     };
 
     auto const canWalk = [&](Player* p)
@@ -624,9 +740,15 @@ void GuildCoordinator::UpdateTransfers()
         Player* c = Online(row.low);
         if (!c || !GET_PLAYERBOT_AI(c) || HumanCharacter(c))
             continue;
+        auto const calls = professions_.find(row.low);
         for (auto const& [line, plan] : skillPlan_)
         {
-            if (!c->HasSkill(line))
+            // [econ2] only a line the leader calls it to craft (b353: Linen Cloth letters for First Aid skill-ups
+            // of members questing on)
+            if (!c->HasSkill(line) || calls == professions_.end() ||
+                std::none_of(calls->second.begin(), calls->second.end(),
+                             [&](ProfessionPick const& pick)
+                             { return pick.skillLine == line && pick.kind == GuildProfessionKind::CRAFT; }))
                 continue;
             uint32 const value = c->GetPureSkillValue(line);
             if (value >= c->GetPureMaxSkillValue(line) || value >= plan.size() || plan[value] < 0)
@@ -938,6 +1060,11 @@ void GuildCoordinator::UpdateTransfers()
         }
     }
 
+    // [econ2] what one unit is worth to the guild (the wanted list's value), against the postage of a letter
+    std::unordered_map<uint32, float> unitWorth;
+    for (WantedItem const& w : wanted_)
+        if (!w.optional)
+            unitWorth[w.itemId] = w.unitValue;
     // the channel each costs: seconds both walk off their way (see the file comment)
     uint32 const tradeLevel = sWorld->getIntConfig(CONFIG_TRADE_LEVEL_REQ);
     uint32 const mailLevel = sWorld->getIntConfig(CONFIG_MAIL_LEVEL_REQ);
@@ -989,8 +1116,40 @@ void GuildCoordinator::UpdateTransfers()
             // its walks are not refused to (it takes the letter on its next visit there); a human takes his own
             bool const receiverBox = !r || HumanCharacter(r) || !GET_PLAYERBOT_AI(r) ||
                                      Valid(NearestFriendlyMailbox(r));
+            // [econ2] b353: 101 letters lay in the members' mailboxes - Lanbuzz 20, Emdyl 12, Ravelandy 10, Orton 6:
+            // party followers (GROUP_WAIT the whole run, the party's leader walks, their own town stops never
+            // come) and full bags ("mail waits", 7). A letter goes only to a bot that can take it: no follower of
+            // a party (its letters wait for its party's town stop), bag room for what already waits in its
+            // mailbox plus this one
+            if (r && !HumanCharacter(r) && GET_PLAYERBOT_AI(r))
+            {
+                uint32 waiting = 0;
+                for (Mail const* m : r->GetMails())
+                    if (m && m->state != MAIL_STATE_DELETED)
+                        waiting += uint32(m->items.size());
+                if (Group const* group = r->GetGroup(); group && group->GetLeaderGUID() != r->GetGUID())
+                    c.mailNo = "the receiver follows its party";
+                else if (FreeSlots(r) <= waiting)
+                    c.mailNo = "the receiver's bags hold no room for its " + std::to_string(waiting) + " waiting";
+            }
+            // [econ2] a reagent / supply letter costs the postage: b353 single Copper Ore (5 c) and Linen Cloth
+            // (13 c) letters at 30 c each. It goes when the units are worth the postage to the guild (the wanted
+            // list's value per unit, else the vendor price); an upgrade, a product, a recipe, gold always go
+            if (c.mailNo.empty() && !w.gold && (w.purpose == "reagent" || w.purpose == "supply"))
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(w.itemId))
+                {
+                    auto const worth = unitWorth.find(w.itemId);
+                    float const unit = std::max({worth != unitWorth.end() ? worth->second : 0.0f,
+                                                 vendorItems_.count(w.itemId)
+                                                     ? float(proto->BuyPrice) / std::max<uint32>(1, proto->BuyCount)
+                                                     : 0.0f,
+                                                 float(proto->SellPrice)});
+                    if (unit * float(std::max<uint32>(1, w.count)) < float(postage))
+                        c.mailNo = "worth " + Gold(uint32(unit * float(std::max<uint32>(1, w.count)))) +
+                                   " < postage " + Gold(postage);
+                }
             if (s->GetLevel() >= mailLevel && canWalk(s) && FoundingFreeMoney(s) >= postage + w.money &&
-                !(old && old->mailRefused) && receiverBox)
+                !(old && old->mailRefused) && receiverBox && c.mailNo.empty())
             {
                 WorldPosition box;
                 uint32 const keepArea =
@@ -1067,7 +1226,8 @@ void GuildCoordinator::UpdateTransfers()
         c.text = "trade " + Sec(c.trade) + (c.walkerLow && c.trade < NONE ? " (walks " + Who(c.walkerLow) + ")" : "") +
                  ", mail " + Sec(c.mail) +
                  (c.mail < NONE && c.delay ? " (delivery " + std::to_string(c.delay / 60) + " min)" : "") +
-                 (c.mail < NONE ? ", " + Gold(MAIL_POSTAGE) : "") + ", bank " + Sec(c.bank);
+                 (c.mail < NONE ? ", " + Gold(MAIL_POSTAGE) : "") +
+                 (c.mailNo.empty() ? "" : " (no letter: " + c.mailNo + " [econ2])") + ", bank " + Sec(c.bank);
         return c;
     };
 
@@ -1315,6 +1475,11 @@ void GuildCoordinator::UpdateTransfers()
                         recipeLearn_.emplace_back(holderRow->low, it->GetGUID().GetCounter());
                     continue;
                 }
+                // [econ2] mailed only to a member that learns it at once (its profession learned, its skill at the
+                // recipe's rank): b353 Pattern: Stylish Green Shirt went to Orenem at Tailoring 11/120 and lay in
+                // its bags; the best learner later is chosen again once someone can learn it
+                if (!now)
+                    continue;
                 if (taught)
                     claimed.insert({bestLow, taught});
                 Want w;
@@ -1531,6 +1696,8 @@ void GuildCoordinator::RunTransfers(uint32 diff)
         for (auto const& [low, pick] : mailPickup_)
             pickups.push_back(low);
     }
+    // [econ2] member -> (taught spell, recipe name) of a Learning cast begun (world thread only)
+    static std::map<uint32, std::pair<uint32, std::string>> recipeCast;
     for (auto const& [low, guid] : learn)
     {
         Player* p = Online(low);
@@ -1540,8 +1707,29 @@ void GuildCoordinator::RunTransfers(uint32 diff)
         if (!item)
             continue;
         std::string const name = ItemText(item->GetEntry(), 1);
+        uint32 const taught = RecipeSpell(item->GetTemplate());
+        bool const known = taught && p->HasSpell(taught);
         std::string const err = LearnRecipe(p, item);
-        LOG_INFO("playerbots", "[recipes] {} learns {}: {}", p->GetName(), name, err.empty() ? "used" : err);
+        if (err == "-")
+            continue;
+        LOG_INFO("playerbots", "[recipes] {} learns {}: {}", p->GetName(), name,
+                 err.empty() ? (known ? "used (already known)" : "used") : err);
+        if (err.empty() && taught && !known)
+            recipeCast[low] = {taught, name};
+    }
+    // [econ2] the Learning cast ended: learned, or broken off (the item stays and is used again)
+    for (auto it = recipeCast.begin(); it != recipeCast.end();)
+    {
+        Player* p = Online(it->first);
+        if (p && p->IsNonMeleeSpellCast(false) && !p->HasSpell(it->second.first))
+        {
+            ++it;
+            continue;
+        }
+        if (p)
+            LOG_INFO("playerbots", "[econ2] recipe {} {}: {}", p->GetName(), it->second.second,
+                     p->HasSpell(it->second.first) ? "learned" : "the cast was broken off, used again later");
+        it = recipeCast.erase(it);
     }
     if (list.empty() && pickups.empty())
         return;
