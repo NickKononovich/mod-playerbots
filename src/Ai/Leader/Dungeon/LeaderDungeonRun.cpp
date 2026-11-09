@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "LeaderDungeonRun.h"
+#include "AiFactory.h"  // [spec71]
 
 #include "DBCStores.h"
 #include "GameTime.h"
@@ -378,6 +379,23 @@ namespace Leader::Dungeon
             if (!botAI || member.human)
                 continue;
             bot->SetDungeonDifficulty(Difficulty(request.difficulty));
+            // [spec71] its strategies play its talents: a member whose live strategies are another role than its
+            // talents (a respec, a talent change since its login) is reset to its talents' strategies before the run.
+            // b402 rfc-n five 1: Irrua L15, resto by talents (6 points) and the five's healer by them, healed 0 in
+            // all 30 pulls - Lightning Bolt, Flame Shock, Earth Shock ("[trigger flame shock / ele]"): its strategies
+            // were the elemental ones; 5 deaths, 1/4 bosses
+            {
+                bool const healSpec = PlayerbotAI::IsHeal(bot, true), healLive = PlayerbotAI::IsHeal(bot, false);
+                bool const tankSpec = PlayerbotAI::IsTank(bot, true), tankLive = PlayerbotAI::IsTank(bot, false);
+                std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(bot);
+                LOG_INFO("playerbots", "[spec71] five {} {} L{} ({} of the five): talents {}/{}/{} (tree {}), spec heal {} "
+                         "tank {}, live strategies heal {} tank {}{}",
+                         request.fiveId, bot->GetName(), bot->GetLevel(), member.role, tabs[0], tabs[1], tabs[2],
+                         AiFactory::GetPlayerSpecTab(bot), healSpec, tankSpec, healLive, tankLive,
+                         healSpec != healLive || (tankSpec && !tankLive) ? ": reset to its talents" : "");
+                if (healSpec != healLive || (tankSpec && !tankLive))
+                    botAI->ResetStrategies();
+            }
             botAI->ChangeStrategy(RUN_STRATEGIES_OFF, BOT_STATE_NON_COMBAT);
             botAI->ChangeStrategy("+instance portal,+breathe", BOT_STATE_NON_COMBAT);
             botAI->ChangeStrategy("+ghost portal", BOT_STATE_DEAD);
