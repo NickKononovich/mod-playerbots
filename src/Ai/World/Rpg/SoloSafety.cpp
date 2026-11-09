@@ -2670,16 +2670,27 @@ namespace SoloSafety
     {
         // [deaths18] group (its guid counter) -> the target its leader's party judge engaged last, and its name
         std::mutex partyPullLock;
-        std::unordered_map<uint32, std::pair<uint64, std::string>> partyPull;
+        std::unordered_map<uint32, std::tuple<uint64, std::string, uint32>> partyPull;  // [party65] + noted at
 
         // the group's judged pull among the mobs that hit the bot this fight (`state`: the bot's, lock held)
+        // [party65] a party fight also when the party judge's pull was noted while this fight of the bot was open (or
+        // just before its first hit: the pull's walk in): the pack's other mobs killed the member, not the target
+        // (b400 Rollothan L11 to a Riverpaw Brute of Kianey's judged pull, Geron L15 to a Stonesplinter Shaman of
+        // Maronic's - both logged "no judged pull (attacked)"). The log's label only
+        constexpr uint32 PARTY_PULL_LABEL_LEAD_MS = 15 * IN_MILLISECONDS;
         bool PartyPullHit(uint32 group, SoloBotState const& state, std::string& pulled)
         {
             std::lock_guard<std::mutex> guard(partyPullLock);
             auto const found = partyPull.find(group);
-            if (found == partyPull.end() || !state.attackers.count(found->second.first))
+            if (found == partyPull.end())
                 return false;
-            pulled = found->second.second;
+            bool const hit = state.attackers.count(std::get<0>(found->second)) > 0;
+            uint32 const noted = std::get<2>(found->second);
+            bool const during = state.firstMs && noted + PARTY_PULL_LABEL_LEAD_MS >= state.firstMs &&
+                                (!state.lastMs || noted <= state.lastMs);
+            if (!hit && !during)
+                return false;
+            pulled = std::get<1>(found->second) + (hit ? "" : ", its pack's other mobs hit it");
             return true;
         }
     }
@@ -2689,7 +2700,8 @@ namespace SoloSafety
         if (!leader || !target || !leader->GetGroup())
             return;
         std::lock_guard<std::mutex> guard(partyPullLock);
-        partyPull[leader->GetGroup()->GetGUID().GetCounter()] = {target->GetGUID().GetRawValue(), target->GetName()};
+        partyPull[leader->GetGroup()->GetGUID().GetCounter()] = {target->GetGUID().GetRawValue(), target->GetName(),
+                                                                 getMSTime()};
     }
 
     std::string DeathContext(Player* bot)

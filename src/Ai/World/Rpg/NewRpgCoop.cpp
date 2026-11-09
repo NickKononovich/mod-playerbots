@@ -4119,8 +4119,18 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
             float const share = m->GetMaxPower(POWER_MANA)
                                     ? float(m->GetPower(POWER_MANA)) / float(m->GetMaxPower(POWER_MANA))
                                     : 1.0f;
-            healNow += rate->second * share;
-            healFull += rate->second;
+            // [party65] the measured rate holds only as far as the healer's mana lasts: the fight's heals are at most
+            // what its mana pool casts (SurvivalKit::HealPoints, the kit's own spell costs). b400 Kianey / Rollothan
+            // L11 (help party, Stendel's Pond): 5 Riverpaw mobs priced 1456 dmg on Rollothan over 49 s against ehp
+            // 1534 - 248 health and 1286 of heals, his measured rate kept up for 49 s on a pool of a few hundred mana;
+            // he died first, Kianey after him
+            float const seconds = std::max(p.seconds, 1.0f);
+            healNow += std::min(rate->second * share * seconds,
+                                SurvivalKit::HealPoints(m, p.seconds, float(m->GetPower(POWER_MANA)), m == holder)) /
+                       seconds;
+            healFull += std::min(rate->second * seconds,
+                                 SurvivalKit::HealPoints(m, p.seconds, float(m->GetMaxPower(POWER_MANA)), m == holder)) /
+                        seconds;
         }
         p.ehpNow = float(holder->GetHealth()) + PetHealth(holder, false) + healNow * p.seconds;
         p.ehpFull = float(holder->GetMaxHealth()) + PetHealth(holder, true) + healFull * p.seconds;
