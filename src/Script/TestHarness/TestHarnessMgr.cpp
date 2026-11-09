@@ -2465,6 +2465,16 @@ namespace TestHarness
         bool const encounterData = !party.encounters.empty() || scriptTracks;
         auto notABoss = [&](Creature* creature) -> char const*
         {
+            // [kara6] a trigger nobody can select is no creature to pull, whatever credit it carries: Karazhan's
+            // Chess Piece: Status Bar 22520 (flags_extra trigger + civilian, UNIT_FLAG_NOT_SELECTABLE, the chess
+            // encounter's credit). b370 kara-n segment 8 (20261109-075713-10A-3): the route took it as the next boss
+            // from the floor below the chess room - "buff_step ... before Chess Piece: Status Bar", then the ready
+            // check and 597 "no aggressive target" until the stall at 815 s. Its encounter is done by instance data
+            // (EncounterDoneData 532 / 22520).
+            if (CreatureTemplate const* trigger = creature->GetCreatureTemplate();
+                trigger && trigger->HasFlagsExtra(CREATURE_FLAG_EXTRA_TRIGGER) &&
+                ((trigger->unit_flags & UNIT_FLAG_NOT_SELECTABLE) || creature->HasUnitFlag(UNIT_FLAG_NOT_SELECTABLE)))
+                return "trigger, not selectable";
             if (creature->IsDungeonBoss() || IsVioletHoldPrisoner(creature) ||
                 scriptCreatures.count(creature->GetGUID()) || isEncounterCredit(creature->GetEntry()))
                 return nullptr;
