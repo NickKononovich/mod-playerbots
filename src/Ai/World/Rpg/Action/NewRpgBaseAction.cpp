@@ -4469,6 +4469,55 @@ namespace
     std::unordered_map<uint32, std::unordered_set<uint32>> failedQuests;
 }
 
+std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::vector<G3D::Vector3> const& points,
+                                                             size_t fromIndex)
+{
+    std::vector<G3D::Vector4> discs;
+    FactionTemplateEntry const* botFaction = bot ? bot->GetFactionTemplateEntry() : nullptr;
+    if (!botFaction || points.size() < 2 || fromIndex >= points.size())
+        return discs;
+    QuestSpawnIndex const& index = GetQuestSpawnIndex();
+    uint8 const level = bot->GetLevel();
+    uint32 const mapId = bot->GetMapId();
+    // the cells the walk touches, each with its neighbours (no aggro reaches past one cell)
+    std::unordered_set<uint64> cells;
+    constexpr size_t CELL_STRIDE = 4;  // the walk's 4 yd samples, every 16 yd: well inside a cell (a look's cost)
+    for (size_t i = fromIndex; i < points.size(); i += CELL_STRIDE)
+        for (int32 ox = -1; ox <= 1; ++ox)
+            for (int32 oy = -1; oy <= 1; ++oy)
+                cells.insert(MobCellKey(mapId, points[i].x + ox * MAX_AGGRO_RADIUS, points[i].y + oy * MAX_AGGRO_RADIUS));
+    for (uint64 const cell : cells)
+    {
+        auto const spawns = index.mobCells.find(cell);
+        if (spawns == index.mobCells.end())
+            continue;
+        for (MobSpawn const& spawn : spawns->second)
+        {
+            CreatureTemplate const* tmpl = spawn.tmpl;
+            bool const elite = tmpl->rank == CREATURE_ELITE_ELITE || tmpl->rank == CREATURE_ELITE_RAREELITE ||
+                               tmpl->rank == CREATURE_ELITE_WORLDBOSS;
+            XPColorChar const color = Acore::XP::GetColorCode(level, tmpl->maxlevel);
+            if (!elite && color != XP_RED && color != XP_ORANGE)
+                continue;
+            if (!SpawnPresent(spawn))
+                continue;
+            FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(tmpl->faction);
+            if (!faction || !faction->IsHostileTo(*botFaction))
+                continue;
+            // Creature::GetAggroRange: the detection range grows a yard per level the mob is above the player
+            float const radius = std::clamp(tmpl->detection_range + float(int32(tmpl->maxlevel) - int32(level)), 5.0f,
+                                            MAX_AGGRO_RADIUS) +
+                                 bot->GetCombatReach();
+            bool covers = false;
+            for (size_t i = fromIndex; i < points.size() && !covers; i += 2)  // every 8 yd: within a reach
+                covers = std::hypot(points[i].x - spawn.x, points[i].y - spawn.y) <= radius;
+            if (covers)
+                discs.emplace_back(spawn.x, spawn.y, spawn.z, radius);
+        }
+    }
+    return discs;
+}
+
 CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, float fromY, float toX, float toY,
                                                       float fromZ, float toZ)
 {

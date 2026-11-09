@@ -57,6 +57,11 @@ public:
     // danger the walk is nearest to at its very start is behind the walker (it stands there now, or the previous
     // leg counted it): the walk leaves it, it is not on the way (b321: a refused pack beside the bot blocked every
     // quest of the log, 100+ postpones "objective among <the same mob>")
+    // [static39] the static spawns (the spawn index, not live units) of hostile orange / red or elite mobs whose
+    // aggro reach (a wanderer's with its wander area) covers the walk `points` from index `fromIndex` on: their
+    // reach discs (x, y, z, radius), each spawn once
+    static std::vector<G3D::Vector4> StaticDangerDiscs(Player* bot, std::vector<G3D::Vector3> const& points,
+                                                       size_t fromIndex);
     static CreatureTemplate const* DangerOnWay(Player* bot, float fromX, float fromY, float toX, float toY,
                                                float fromZ = NO_WAY_HEIGHT, float toZ = NO_WAY_HEIGHT);
     static constexpr float NO_WAY_HEIGHT = -200000.0f;

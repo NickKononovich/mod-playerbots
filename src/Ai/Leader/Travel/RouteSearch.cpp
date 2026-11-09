@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "NewRpgBaseAction.h"  // [static39]
 #include "Formulas.h"  // [zone38]
 #include "DBCStores.h"  // [zone38]
 #include "Common.h"  // math defines first (Position.h)
@@ -533,6 +534,10 @@ namespace Leader
         std::vector<Travel::RoutePenalty> penalties;
         SoloSafety::RouteCosts(walker, from, to, refuse, penalties);
         refuse.insert(refuse.end(), pullAvoid.begin(), pullAvoid.end());  // [deaths] the pull spot's walk
+        // [static39] the walk's stretch beyond the walker's sight priced from the spawn index (a search before found
+        // it through them): their reaches are refused as RouteCosts refuses the live ones it sees
+        thread_local std::vector<G3D::Vector4> staticRefuse;
+        refuse.insert(refuse.end(), staticRefuse.begin(), staticRefuse.end());
         // [guild15] a refused reach the walker stands in already lies behind the walk: it walks out of it.
         // [leave33] user 2026-11-09: out by the nearest way, not on through the camp - the reach is kept, shrunk to
         // the walker's own distance from its centre (less its combat reach, its own polygon stays open): the walk
@@ -662,6 +667,43 @@ namespace Leader
                 Travel::NoteHeightGap(walker, ground, point.z, "route sample ground");  // [lead144]
             }
             result.points.push_back(point);
+        }
+        // [static39] user 2026-11-09: RouteCosts prices only the mobs in sight at the search; the stretch beyond it
+        // is priced from the static spawns (each spawn's level, elite rank, aggro reach): when the walk passes such
+        // reaches out there, it is searched once more with them refused (b388 Ganna L14: "route complete, Crag Coyote
+        // unseen" - the Loch Modan walk round the Stonesplinter walls went through the Badlands)
+        if (walker->IsPlayer() && SoloSafety::Applies(walker->ToPlayer()) && result.found && staticRefuse.empty() &&
+            result.points.size() >= 2)
+        {
+            Player* bot = walker->ToPlayer();
+            size_t beyond = 0;
+            while (beyond < result.points.size() &&
+                   (result.points[beyond] - from).length() <= sPlayerbotAIConfig.SightDistance)
+                ++beyond;
+            std::vector<G3D::Vector3> const walk(result.points.begin(), result.points.end());
+            std::vector<G3D::Vector4> const discs = NewRpgBaseAction::StaticDangerDiscs(bot, walk, beyond);
+            // the destination's own reaches are its goal's (the walk ends there), not refused
+            std::vector<G3D::Vector4> kept;
+            for (G3D::Vector4 const& d : discs)
+                if (std::hypot(d.x - to.x, d.y - to.y) > d.w)
+                    kept.push_back(d);
+            if (!kept.empty())
+            {
+                staticRefuse = kept;
+                RouteResult again = Route(walker, from, toAsked);
+                staticRefuse.clear();
+                thread_local std::unordered_map<uint64, size_t> staticLogged;  // a log cadence, no decision reads it
+                size_t& last = staticLogged[bot->GetGUID().GetRawValue()];
+                if (last != kept.size())
+                {
+                    last = kept.size();
+                    LOG_INFO("playerbots", "[static39] {} L{} walk to ({:.0f},{:.0f}) passes {} reach(es) of unseen "
+                             "spawns it must not fight: searched round them ({})",
+                             bot->GetName(), bot->GetLevel(), to.x, to.y, kept.size(),
+                             again.found ? (again.throughRefused ? "no way round" : "a way round") : "none");
+                }
+                return again;
+            }
         }
         // [zone38] a solo walker's walk through an area far above its level (the area's own level red for it: the
         // Badlands' 35-45 for a level 14) is no walk: its mobs are out of the search's sight (RouteCosts prices the
