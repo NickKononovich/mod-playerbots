@@ -199,7 +199,8 @@ protected:
     // [regress10] no walk out of where it stands that it survives: its Hearthstone to its bind point (a game item and
     // mechanic), its cooldown waited out where it stands (logged with the ETA); false when it cannot (no stone, the
     // bind point here)
-    bool HearthOut(std::string const& why);
+    // [hearth23] camp: the walled-in walk's target - on the stone's cooldown it asks for help with that camp
+    bool HearthOut(std::string const& why, WorldPosition const* camp = nullptr);
     // [vendor12] the cheapest usable stack of its ammo bought straight from the vendor's list
     void BuyAmmoDirect(Creature* vendor, uint32 subClass, uint32 have);
     // [stuck12] the guild's WALK / GRIND step goes to a spot whose walk the bot gave up at this level

@@ -439,7 +439,7 @@ bool NewRpgBaseAction::GuildStepGivenUp(GuildRunStep const& step)
     return true;
 }
 
-bool NewRpgBaseAction::HearthOut(std::string const& why)
+bool NewRpgBaseAction::HearthOut(std::string const& why, WorldPosition const* camp)
 {
     constexpr uint32 ITEM_HEARTHSTONE = 6948;
     constexpr uint32 SPELL_HEARTHSTONE = 8690;
@@ -472,7 +472,40 @@ bool NewRpgBaseAction::HearthOut(std::string const& why)
             info.hearthNote = note;
             LOG_INFO("playerbots", "[rpg] {} L{} HEARTH reason: {}; its Hearthstone is ready in {} s: waits here",
                      bot->GetName(), bot->GetLevel(), why, left);
+            // [hearth23] coordinator 2026-11-09: walled in with the stone on its cooldown, it asks for help with the
+            // camp (the help21 / help22 pricing decides); refused or no helper, it waits the cooldown out at the
+            // safest spot. b372 Aevmae L11 waited 1269 s, Hobliir L15 279 s where the walls stood round it
+            if (camp && *camp != WorldPosition() && !NewRpgCoop::HelpAsked(bot))
+            {
+                LOG_INFO("playerbots", "[hearth23] {} L{} walled in, its Hearthstone ready in {} s: asks for help "
+                         "with the camp at ({:.0f},{:.0f})",
+                         bot->GetName(), bot->GetLevel(), left, camp->GetPositionX(), camp->GetPositionY());
+                NewRpgCoop::OnCampRefused(botAI, bot, *camp, why);
+            }
         }
+        // [hearth23] the wait is taken out of every idle mob's and wanderer's reach (the RestEscape spots)
+        if (!bot->IsInCombat() && !bot->isMoving())
+        {
+            std::string who;
+            std::vector<G3D::Vector3> spots;
+            if (SoloSafety::StandsInReach(bot, who, spots))
+                for (G3D::Vector3 const& at : spots)
+                {
+                    Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+                    if (!route.found || !route.complete || route.throughRefused)
+                        continue;
+                    if (bot->IsSitState())
+                        bot->SetStandState(UNIT_STAND_STATE_STAND);
+                    if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+                        continue;
+                    LOG_INFO("playerbots", "[hearth23] {} L{} waits for its Hearthstone out of the reach of {}: "
+                             "steps to ({:.0f},{:.0f}), {:.0f} yd walk",
+                             bot->GetName(), bot->GetLevel(), who, at.x, at.y, route.length);
+                    return true;
+                }
+        }
+        if (bot->isMoving())
+            return true;  // its step out of the reaches
         info.ChangeToRest();
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         return true;

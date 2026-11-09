@@ -817,7 +817,7 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
                 LOG_INFO("playerbots", "[help14] {} L{} stays for its help request ({}): no hearth", bot->GetName(),
                          bot->GetLevel(), walledWhy);
             else
-                HearthOut(walledWhy);
+                HearthOut(walledWhy, &dest);
         }
     }
     return true;
