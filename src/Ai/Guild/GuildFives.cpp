@@ -24,6 +24,7 @@
 #include "DatabaseEnv.h"
 #include "GameTime.h"
 #include "Group.h"
+#include "LFGMgr.h"  // [next1] whether the Dungeon Finder can port a five
 #include "Item.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
@@ -402,11 +403,16 @@ GuildCoordinator::DungeonOption const* GuildCoordinator::FindDungeon(std::string
     return nullptr;
 }
 
-std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p) const
+std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, bool walk) const
 {
     if (p->GetLevel() < d.minLevel || p->GetLevel() > d.maxLevel)
         return "L" + std::to_string(p->GetLevel()) + " outside " + std::to_string(d.minLevel) + "-" +
                std::to_string(d.maxLevel);
+    // [next1] the Dungeon Finder ports the group in from anywhere (UpdateFives queues a five before it walks): the
+    // entrance's continent and capital are only the walk's. 2026-11-09: 19 draenei on Azuremyst (map 530) and 19 night
+    // elves on Kalimdor were no candidates for Deadmines / Wailing Caverns, and Ragefire Chasm (Orgrimmar) for none.
+    if (!walk && d.lfgId && sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER))
+        return "";
     // a walk across continents has no solo safety check yet (TripRefused judges the bot's own map)
     if (p->GetMapId() != d.entrance.GetMapId())
         return "entrance on another continent (map " + std::to_string(d.entrance.GetMapId()) + ")";
@@ -694,6 +700,18 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
 // ---------------------------------------------------------------------------------------------------------------------
 // the global leader's look at the fives (every coordinator update, world thread)
 // ---------------------------------------------------------------------------------------------------------------------
+std::string GuildCoordinator::FiveWalkRefusal(GuildFive const& five) const
+{
+    DungeonOption const* d = FindDungeon(five.contentKey);
+    if (!d)
+        return "";
+    for (uint32 low : five.members)
+        if (Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low)))
+            if (std::string const why = DungeonRefusal(*d, p, true); !why.empty() && why.rfind("L", 0) != 0)
+                return Who(low) + ": " + why;
+    return "";
+}
+
 void GuildCoordinator::UpdateFives()
 {
     std::vector<std::pair<uint32, std::string>> cancel;
@@ -777,6 +795,14 @@ void GuildCoordinator::UpdateFives()
             {
                 ready.emplace_back(id, true);
                 requests[id] = lfg;
+            }
+            else if (std::string walkWhy = FiveWalkRefusal(five); !walkWhy.empty())
+            {
+                // [next1] taken in by the finder only: a walk the five cannot make ends it
+                LOG_INFO("playerbots", "[next1] five {} ({}): no Dungeon Finder ({}) and no walk in: {}", id,
+                         five.contentKey, lfgWhy, walkWhy);
+                cancel.emplace_back(id, "no dungeon finder (" + lfgWhy + "), no walk in: " + walkWhy);
+                continue;
             }
             else if (std::string& logged = fiveLfgWhy[id]; logged != lfgWhy)
             {

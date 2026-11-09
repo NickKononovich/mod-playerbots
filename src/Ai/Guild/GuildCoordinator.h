@@ -604,7 +604,10 @@ private:
     void UpdateFives();
     void AutoFive();
     DungeonOption const* FindDungeon(std::string const& contentKey) const;
-    std::string DungeonRefusal(DungeonOption const& d, Player* p) const;  // "" = the dungeon fits this character
+    // "" = the dungeon fits this character. [next1] walk: the five walks in (the Dungeon Finder does not take it),
+    // so the entrance's continent and an enemy capital count; else only while the finder cannot port the five.
+    std::string DungeonRefusal(DungeonOption const& d, Player* p, bool walk = false) const;
+    std::string FiveWalkRefusal(GuildFive const& five) const;  // [next1] a member the walk in refuses, "" = none
     bool HoldsUpgrade(DungeonOption const& d, Player* p) const;
     bool FreeForFive(uint32 low, Player* p, std::string* why = nullptr) const;  // lock_ held
     std::string PlanRole(uint32 low, Player* p) const;
