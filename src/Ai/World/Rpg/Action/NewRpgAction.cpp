@@ -526,11 +526,19 @@ bool NewRpgBaseAction::StartVendorRun()
     // (a sale of greys left the kept items near 80 %, the next few loots crossed it again), VENDOR 11 % of the time
     // (the item objectives bound the need: with more slots free than they could take, no item count is read)
     uint32 const freeSlots = bot->GetFreeInventorySpace();
+    // [vendor21] the slots its loot needs now: the item objectives of the quest it works (its DO_QUEST), not of every
+    // log quest - those are looted one quest at a time, a slot each when it gets there. b368: 274 vendor trips (b355:
+    // 148), 137 of them "5 bag slots free, its open item objectives need 5": a run at 5 free slots that freed none
+    // (nothing for sale), again and again; Thamesh 902 s, Bhogagnuth 887 s at the vendor
     std::vector<uint32> objectiveItems;
+    uint32 const working = std::holds_alternative<NewRpgInfo::DoQuest>(info.data)
+                               ? std::get<NewRpgInfo::DoQuest>(info.data).questId
+                               : 0;
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
-        if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+        if (uint32 const questId = bot->GetQuestSlotQuestId(slot); questId && questId == working)
             if (bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
                 if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+
                     for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
                         if (quest->RequiredItemId[i] && quest->RequiredItemCount[i])
                             objectiveItems.push_back(quest->RequiredItemId[i]);
