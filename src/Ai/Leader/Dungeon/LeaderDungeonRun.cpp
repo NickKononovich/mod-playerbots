@@ -382,8 +382,13 @@ namespace Leader::Dungeon
             botAI->ChangeStrategy("+instance portal,+breathe", BOT_STATE_NON_COMBAT);
             botAI->ChangeStrategy("+ghost portal", BOT_STATE_DEAD);
         }
-        LOG_INFO("playerbots", "[guild70] five {} run {}: group {} formed by {} ({} members)", request.fiveId, run.id,
-                 run.groupGuid.ToString(), leader->GetName(), group->GetMembersCount());
+        // [log28] the members by name (the triage's DUNGEON time per member)
+        std::string memberNames;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource())
+                memberNames += (memberNames.empty() ? "" : ",") + member->GetName();
+        LOG_INFO("playerbots", "[guild70] five {} run {}: group {} formed by {} ({} members: {})", request.fiveId,
+                 run.id, run.groupGuid.ToString(), leader->GetName(), group->GetMembersCount(), memberNames);
         return true;
     }
 

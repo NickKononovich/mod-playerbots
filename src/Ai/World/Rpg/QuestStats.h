@@ -29,6 +29,12 @@ namespace QuestStats
     // [budget12] a fight's (or a death's: died, from the death to the rise) milliseconds, for the time budget
     void NoteCombat(Player* bot, uint32 combatMs, bool died);
     uint64 NowMs();
+    // [log28] the triage's event lines, one per event: a town errand's start / done ("[town] <bot> <errand> done
+    // after N s"), a trip's boarding / landing ("[trip] <bot> boards <what>", "[trip] <bot> lands at map M after N s")
+    void TownStart(Player* bot, char const* kind);
+    void TownDone(uint32 low, std::string const& name, char const* errand);
+    void TripBoard(Player* bot, std::string const& what);
+    void TripLand(Player* bot);
 }
 
 void AddQuestStatsScripts();

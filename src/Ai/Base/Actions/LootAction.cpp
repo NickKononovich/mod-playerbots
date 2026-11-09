@@ -5,6 +5,7 @@
  */
 
 #include "LootAction.h"
+#include "QuestStats.h"  // [log28]
 
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
@@ -153,17 +154,30 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
         if (!CanOpenLock(skill, lootObject.reqSkillValue))
             return false;
 
+        bool cast = false;
+        char const* kind = "skin";
         switch (skill)
         {
             case SKILL_ENGINEERING:
-                return botAI->HasSkill(SKILL_ENGINEERING) ? botAI->CastSpell(ENGINEERING, creature) : false;
+                kind = "salvage";
+                cast = botAI->HasSkill(SKILL_ENGINEERING) && botAI->CastSpell(ENGINEERING, creature);
+                break;
             case SKILL_HERBALISM:
-                return botAI->HasSkill(SKILL_HERBALISM) ? botAI->CastSpell(32605, creature) : false;
+                kind = "herb";
+                cast = botAI->HasSkill(SKILL_HERBALISM) && botAI->CastSpell(32605, creature);
+                break;
             case SKILL_MINING:
-                return botAI->HasSkill(SKILL_MINING) ? botAI->CastSpell(32606, creature) : false;
+                kind = "ore";
+                cast = botAI->HasSkill(SKILL_MINING) && botAI->CastSpell(32606, creature);
+                break;
             default:
-                return botAI->HasSkill(SKILL_SKINNING) ? botAI->CastSpell(SKINNING, creature) : false;
+                cast = botAI->HasSkill(SKILL_SKINNING) && botAI->CastSpell(SKINNING, creature);
+                break;
         }
+        if (cast)  // [log28] one line per node opened
+            LOG_INFO("playerbots", "[gather] node {} {} {} opened t={}", bot->GetName(), kind, creature->GetEntry(),
+                     QuestStats::NowMs());
+        return cast;
     }
 
     GameObject* go = botAI->GetGameObject(lootObject.guid);
@@ -192,11 +206,16 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
         return useItem.UseItemOnGameObject(key, lootObject.guid);
     }
 
-    if (lootObject.skillId == SKILL_MINING)
-        return botAI->HasSkill(SKILL_MINING) ? botAI->CastSpell(MINING, bot) : false;
-
-    if (lootObject.skillId == SKILL_HERBALISM)
-        return botAI->HasSkill(SKILL_HERBALISM) ? botAI->CastSpell(HERB_GATHERING, bot) : false;
+    if (lootObject.skillId == SKILL_MINING || lootObject.skillId == SKILL_HERBALISM)
+    {
+        bool const ore = lootObject.skillId == SKILL_MINING;
+        bool const cast = botAI->HasSkill(SkillType(lootObject.skillId)) &&
+                          botAI->CastSpell(ore ? MINING : HERB_GATHERING, bot);
+        if (cast)  // [log28] one line per node opened
+            LOG_INFO("playerbots", "[gather] node {} {} {} opened t={}", bot->GetName(), ore ? "ore" : "herb",
+                     go ? go->GetEntry() : 0, QuestStats::NowMs());
+        return cast;
+    }
 
     uint32 spellId = GetOpeningSpell(lootObject);
     if (!spellId)

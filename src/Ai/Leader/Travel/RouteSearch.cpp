@@ -569,23 +569,22 @@ namespace Leader
             SoloSafety::NoteRoute(walker, hit->second.complete, hit->second.found && hit->second.throughRefused);
             return hit->second;
         }
-        struct StoreOnExit
+        // [route29] the walk is copied into the cache before it is returned: route28's store ran in a destructor
+        // after the return had moved `result` out (no NRVO), so the cache kept a found walk with no points - every
+        // later hit handed out "found, complete" with an empty walk (b379's crash: back() of an empty path in
+        // ReachCombatTo after ShortenPathUntilDist)
+        auto const remember = [&]() -> RouteResult
         {
-            std::unordered_map<uint64, RouteResult>& cache;
-            uint64 key;
-            RouteResult const& value;
-            ~StoreOnExit()
+            if (routeCache.size() >= ROUTE_CACHE_ENTRIES)
             {
-                if (cache.size() >= ROUTE_CACHE_ENTRIES)
-                {
-                    LOG_INFO("playerbots", "[route28] route cache full ({} walks): cleared, {} searches answered "
-                             "from it since its last clear", cache.size(), routeCacheHits);
-                    cache.clear();
-                    routeCacheHits = 0;
-                }
-                cache[key] = value;
+                LOG_INFO("playerbots", "[route28] route cache full ({} walks): cleared, {} searches answered "
+                         "from it since its last clear", routeCache.size(), routeCacheHits);
+                routeCache.clear();
+                routeCacheHits = 0;
             }
-        } storeOnExit{routeCache, cacheKey, result};
+            routeCache[cacheKey] = result;
+            return result;
+        };
         auto const search = [&](std::vector<G3D::Vector4> const* refused,
                                 std::vector<Travel::RoutePenalty> const* priced)
         {
@@ -649,7 +648,7 @@ namespace Leader
         }
         SoloSafety::NoteRoute(walker, result.complete, result.found && !roundRefused);
         if (!result.found)
-            return result;
+            return remember();
         result.throughRefused = !roundRefused;
         if (corners.size() == 1)
         {
@@ -675,7 +674,7 @@ namespace Leader
             }
             result.points.push_back(point);
         }
-        return result;
+        return remember();
     }
 
     RouteResult Route(Unit* walker, Position const& to)

@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "QuestStats.h"  // [log28]
 #include "NewRpgTriggers.h"
 #include "NewRpgCoop.h"
 #include "GuildHonest.h"  // [wait19]
@@ -66,27 +67,39 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
     // Emdyl, Alnia: "reason=none" while each waited for a member thousands of yards behind, GROUP_WAIT logged once)
     botAI->rpgInfo.groupWaiting = false;
     botAI->rpgInfo.groupWaitBehind.Clear();  // [wait14]
+    // [log28] a wait the trigger stops looking at (a fight, a flight, a transport, the group gone) ends with a line:
+    // GROUP_READY logs only the end the members' facts give
+    auto const stops = [this](char const* why)
+    {
+        if (!_waitReason.empty())
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} GROUP_WAIT ends: {} t={}", bot->GetName(), bot->GetLevel(), why,
+                     QuestStats::NowMs());
+            _waitReason.clear();
+        }
+        return false;
+    };
     // The user's pack (Playerbots.UserPack) leads its group without him: it waits for its members like a SelfBot.
     if (bot->IsInCombat() || bot->IsInFlight())
-        return false;
+        return stops(bot->IsInCombat() ? "in a fight" : "on a flight");
     bool const ownGroup = IsSelfBot(bot) || UserPack::IsAutonomousLeader(bot);
     // [regress10] a co-op party's leader waits for its partner as well (NewRpgCoop's plan counts on this hold): without
     // it the leader walked to the camp it cannot solo, refused it alone and left the party (b347 Kylanor q315: 13
     // parties with Namwe, Tuihgrelfim, Ganna broken within 4-15 s, "its own plan moved on: IDLE")
     if (!ownGroup && !bot->GetGroup())
-        return false;
+        return stops("no group");
     if (!ownGroup && !NewRpgCoop::JudgesPulls(bot))
-        return false;
+        return stops("no longer the party's leader");
 
     // Boarding, riding and leaving a boat run on its schedule; the leader handles the group itself there.
     NewRpgInfo::TripPhase const phase = botAI->rpgInfo.trip.phase;
     if (bot->GetTransport() || phase == NewRpgInfo::TripPhase::Board || phase == NewRpgInfo::TripPhase::Ride ||
         phase == NewRpgInfo::TripPhase::Leave)
-        return false;
+        return stops("on a transport");
 
     Group* group = bot->GetGroup();
     if (!group || (ownGroup && group->GetLeaderGUID() != bot->GetGUID()))
-        return false;
+        return stops("no group it leads");
 
     // [timers] the members' facts alone hold the group: no wait cap, no ignore window
     std::string reason;
@@ -141,7 +154,8 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
             LOG_INFO("playerbots", "[rpg] {} L{} GROUP_READY reason: every member is with the group", bot->GetName(),
                      bot->GetLevel());
         else
-            LOG_INFO("playerbots", "[rpg] {} L{} GROUP_WAIT reason: {}", bot->GetName(), bot->GetLevel(), reason);
+            LOG_INFO("playerbots", "[rpg] {} L{} GROUP_WAIT reason: {} t={}", bot->GetName(), bot->GetLevel(), reason,
+                     QuestStats::NowMs());
         _waitReason = key;
     }
 

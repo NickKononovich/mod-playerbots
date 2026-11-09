@@ -1181,6 +1181,21 @@ Transport* NewRpgBaseAction::FindTransport(uint32 entry)
         }
     }
     // [tram23] a grid-spawned car (the Deeprun Tram): the nearest of its entry the map shows the bot
+    // [tram28] ... found by its spawn, not by a grid search: the car stays filed in its spawn's grid cell while it
+    // runs (StaticTransport::UpdatePosition relocates it without a grid move), so a car spawned at the far platform
+    // was never found at this one - never "docked", TRIP_ABANDON after every loop (b377: 8 bots, 2.7 of the 4.0
+    // TRAVEL hours at the Deeprun Tram; 176081 / 176083 spawn at the other end of their bots' platform)
+    if (TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(entry); line && line->isStatic && line->spawnId)
+    {
+        auto const bounds = bot->GetMap()->GetGameObjectBySpawnIdStore().equal_range(line->spawnId);
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+            if (StaticTransport* car = itr->second ? itr->second->ToStaticTransport() : nullptr;
+                car && car->IsInWorld() && car->GetEntry() == entry)
+            {
+                sTravelRouteMgr.Observe(car);
+                return car;
+            }
+    }
     if (TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(entry); line && line->isStatic)
         if (GameObject* go = bot->FindNearestGameObject(entry, bot->GetMap()->GetVisibilityRange()))
             if (StaticTransport* car = go->ToStaticTransport(); car && car->IsInWorld())
@@ -1345,12 +1360,34 @@ bool NewRpgBaseAction::TravelByTransport(NewRpgInfo::Trip& trip)
 bool NewRpgBaseAction::BoardTransport(Transport* transport)
 {
     Map* map = bot->GetMap();
-    if (map->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
-                                bot) == transport)
+    // [tram28] a tram car is on no map transport list and filed in its spawn's grid cell: GetTransportForPos (the
+    // list, then the nearest grid car) never names it at the far platform. Its own deck under the bot, as the core
+    // tests a static car (a ray from 2 yd over the bot down onto the car's model, the ground not above the deck)
+    bool onDeck = false;
+    if (transport->ToStaticTransport() && transport->m_model)
+    {
+        G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ() + 2.0f);
+        G3D::Ray const ray(from, G3D::Vector3(0.0f, 0.0f, -1.0f));
+        float distance = 10.0f;
+        onDeck = transport->m_model->intersectRay(ray, distance, false, bot->GetPhaseMask(),
+                                                  VMAP::ModelIgnoreFlags::Nothing) &&
+                 map->GetHeight(bot->GetPhaseMask(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                true, 30.0f) < from.z - distance + 1.0f;
+    }
+    else
+        onDeck = map->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(), bot->GetPositionY(),
+                                         bot->GetPositionZ(), bot) == transport;
+    if (onDeck)
     {
         transport->AddPassenger(bot, true);
         bot->StopMovingOnCurrentPos();
         botAI->rpgInfo.SetTripPhase(NewRpgInfo::TripPhase::Ride);
+        QuestStats::TripBoard(bot, std::string(transport->ToStaticTransport() ? "tram car " : "transport ") +
+                                       std::to_string(transport->GetEntry()));  // [log28]
+        if (transport->ToStaticTransport())
+            LOG_INFO("playerbots", "[tram28] {} L{} boards tram car {} at ({:.0f},{:.0f}) on map {}", bot->GetName(),
+                     bot->GetLevel(), transport->GetEntry(), bot->GetPositionX(), bot->GetPositionY(),
+                     bot->GetMapId());
         LOG_DEBUG("playerbots", "[New RPG] {} boarded transport {}", bot->GetName(), transport->GetEntry());
         return true;
     }
@@ -1505,6 +1542,7 @@ bool NewRpgBaseAction::RideTransport(Transport* transport)
             {
                 transport->RemovePassenger(bot, true);
                 bot->StopMovingOnCurrentPos();
+                QuestStats::TripLand(bot);  // [log28]
                 info.ClearTrip();
                 LOG_INFO("playerbots", "[rpg] {} L{} TRIP_LEG_DONE off {}: on the land at ({:.1f},{:.1f},{:.1f}) as "
                          "the stop ended, the walk goes on from here",
@@ -1545,6 +1583,7 @@ bool NewRpgBaseAction::RideTransport(Transport* transport)
     {
         transport->RemovePassenger(bot, true);
         bot->StopMovingOnCurrentPos();
+        QuestStats::TripLand(bot);  // [log28]
         LOG_INFO("playerbots", "[rpg] {} L{} steps off {} at the stop, {:.0f} yd to the pier", bot->GetName(),
                  bot->GetLevel(), line->entry, bot->GetExactDist(exitDock->pier));
     }
@@ -1629,6 +1668,7 @@ bool NewRpgBaseAction::TravelByPortal(NewRpgInfo::Trip& trip)
         return false;
     }
 
+    QuestStats::TripBoard(bot, "portal " + std::to_string(go->GetEntry()));  // [log28]
     UseGameObjectWithGroup(go);
     return HoldPosition(5 * IN_MILLISECONDS);
 }

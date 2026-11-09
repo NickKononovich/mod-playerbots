@@ -1092,6 +1092,9 @@ public:
         // [tram23] a grid-spawned transport (GAMEOBJECT_TYPE_TRANSPORT: the Deeprun Tram cars) that runs its animation
         // loop (TransportAnimation.dbc), not a MotionTransport of the map's transport list
         bool isStatic = false;
+        // [tram28] its car's spawn: a StaticTransport stays filed in its spawn's grid cell while it runs (it moves by
+        // Relocate, not the map's relocation), so a grid search near the far platform never finds it
+        ObjectGuid::LowType spawnId = 0;
     };
 
     struct Portal

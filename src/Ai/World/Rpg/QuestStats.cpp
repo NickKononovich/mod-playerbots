@@ -7,6 +7,9 @@
 #include "QuestStats.h"
 
 #include "Creature.h"
+#include "DBCStores.h"  // [log28] skill names
+#include "Group.h"      // [log28] group joins
+#include "ObjectAccessor.h"
 #include "Log.h"
 #include "NewRpgQuestRoute.h"  // [routeplan] the route stop's event time
 #include "LootMgr.h"
@@ -58,6 +61,8 @@ namespace
         bool hasPos = false;
         uint32 lastLog = 0;
         uint64 lastQuestXp = 0;
+        uint64 lastKillXp = 0;  // [log28] the kill's own xp (GiveXP runs before its kill credit)
+        ObjectGuid lastKillVictim;
         bool hasLog = false;
         std::unordered_map<uint32, Snapshot> log;  // the quest log at the last rpg tick
         // [budget12] the time budget: milliseconds per bucket since login, the last tick's bucket and time
@@ -143,7 +148,8 @@ namespace
             : PlayerScript("QuestStatsPlayerScript",
                            {PLAYERHOOK_ON_GIVE_EXP, PLAYERHOOK_ON_CREATURE_KILL_CREDIT,
                             PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST, PLAYERHOOK_ON_LEVEL_CHANGED, PLAYERHOOK_ON_LOGOUT,
-                            PLAYERHOOK_ON_PLAYER_JUST_DIED, PLAYERHOOK_ON_PLAYER_RESURRECT})
+                            PLAYERHOOK_ON_PLAYER_JUST_DIED, PLAYERHOOK_ON_PLAYER_RESURRECT,
+                            PLAYERHOOK_ON_UPDATE_SKILL, PLAYERHOOK_ON_SET_SKILL, PLAYERHOOK_ON_MAP_CHANGED})
         {
         }
 
@@ -167,14 +173,18 @@ namespace
             c.diedAtMs = 0;
         }
 
-        void OnPlayerGiveXP(Player* player, uint32& amount, Unit* /*victim*/, uint8 xpSource) override
+        void OnPlayerGiveXP(Player* player, uint32& amount, Unit* victim, uint8 xpSource) override
         {
             if (!Tracked(player))
                 return;
             std::lock_guard<std::mutex> guard(lock);
             Counters& c = counters[player->GetGUID().GetCounter()];
             if (xpSource == XPSOURCE_KILL)
+            {
                 c.xpKill += amount;
+                c.lastKillXp = amount;  // [log28]
+                c.lastKillVictim = victim ? victim->GetGUID() : ObjectGuid::Empty;
+            }
             else if (xpSource == XPSOURCE_QUEST || xpSource == XPSOURCE_QUEST_DF)
             {
                 c.xpQuest += amount;
@@ -189,16 +199,22 @@ namespace
             if (!Tracked(player) || !killed)
                 return;
             bool const served = ServedQuest(player, killed);
+            uint64 xp = 0;
             {
                 std::lock_guard<std::mutex> guard(lock);
                 Counters& c = counters[player->GetGUID().GetCounter()];
                 ++c.kills;
                 if (served)
                     ++c.useful;
+                if (c.lastKillVictim == killed->GetGUID())  // [log28] this kill's xp (0: grey, or no share)
+                    xp = c.lastKillXp;
+                c.lastKillXp = 0;
+                c.lastKillVictim.Clear();
             }
             QuestStats::LogEvent(player, "kill", 0,
                                  "entry=" + std::to_string(killed->GetEntry()) + " L" +
-                                     std::to_string(killed->GetLevel()) + " useful=" + (served ? "1" : "0"));
+                                     std::to_string(killed->GetLevel()) + " useful=" + (served ? "1" : "0") +
+                                     " xp=" + std::to_string(xp));
         }
 
         void OnPlayerCompleteQuest(Player* player, Quest const* quest) override
@@ -216,6 +232,39 @@ namespace
             }
             QuestStats::LogEvent(player, "turnin", quest->GetQuestId(), "xp=" + std::to_string(xp));
             QuestRoute::NoteQuestEvent(player, quest->GetQuestId());  // [routeplan] metric only: the stop's end
+        }
+
+        // [log28] every skill-up, one line each: "[skill] <bot> <skill> a->b" (gathering, fishing, cooking, crafts,
+        // weapons; a trainer's new rank)
+        static void LogSkill(Player* player, uint32 skillId, uint32 from, uint32 to)
+        {
+            if (from == to)
+                return;
+            SkillLineEntry const* line = sSkillLineStore.LookupEntry(skillId);
+            std::string const name = line ? std::string(line->name[0]) : std::to_string(skillId);
+            LOG_INFO("playerbots", "[skill] {} {} {}->{} t={}", player->GetName(), name, from, to,
+                     QuestStats::NowMs());
+        }
+
+        void OnPlayerUpdateSkill(Player* player, uint32 skillId, uint32 value, uint32 /*max*/, uint32 /*step*/,
+                                 uint32 newValue) override
+        {
+            if (Tracked(player))
+                LogSkill(player, skillId, value, newValue);
+        }
+
+        void OnPlayerSetSkill(Player* player, uint32 skillId, uint32 value, uint32 /*max*/, uint32 /*step*/,
+                              uint32 newValue) override
+        {
+            if (Tracked(player))
+                LogSkill(player, skillId, value, newValue);
+        }
+
+        // [log28] a portal's (or a cross-map transport's) trip lands on the new map
+        void OnPlayerMapChanged(Player* player) override
+        {
+            if (Tracked(player))
+                QuestStats::TripLand(player);
         }
 
         void OnPlayerLevelChanged(Player* player, uint8 /*oldlevel*/) override
@@ -393,4 +442,106 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
     }
 }
 
-void AddQuestStatsScripts() { new QuestStatsPlayerScript(); }
+namespace
+{
+    // [log28] "[group] <bot> follows <leader>" on a join, "... leaves <leader>'s group" on a leave: an open-world
+    // group's followers run no New RPG and log no status of their own
+    class QuestStatsGroupScript : public GroupScript
+    {
+    public:
+        QuestStatsGroupScript()
+            : GroupScript("QuestStatsGroupScript", {GROUPHOOK_ON_ADD_MEMBER, GROUPHOOK_ON_REMOVE_MEMBER})
+        {
+        }
+
+        void OnAddMember(Group* group, ObjectGuid guid) override
+        {
+            Player* member = ObjectAccessor::FindConnectedPlayer(guid);
+            if (!group || !Tracked(member) || group->GetLeaderGUID() == guid)
+                return;
+            LOG_INFO("playerbots", "[group] {} follows {} t={}", member->GetName(), group->GetLeaderName(),
+                     QuestStats::NowMs());
+        }
+
+        void OnRemoveMember(Group* group, ObjectGuid guid, RemoveMethod /*method*/, ObjectGuid /*kicker*/,
+                            char const* /*reason*/) override
+        {
+            Player* member = ObjectAccessor::FindConnectedPlayer(guid);
+            if (!group || !Tracked(member))
+                return;
+            LOG_INFO("playerbots", "[group] {} leaves {}'s group t={}", member->GetName(), group->GetLeaderName(),
+                     QuestStats::NowMs());
+        }
+    };
+
+    std::mutex eventLock;
+    std::unordered_map<uint32, std::pair<std::string, uint64>> townStarts;  // bot -> (kind, start ms)
+    std::unordered_map<uint32, std::pair<std::string, uint64>> tripStarts;  // bot -> (what, board ms)
+}
+
+void QuestStats::TownStart(Player* bot, char const* kind)
+{
+    if (!Tracked(bot))
+        return;
+    std::lock_guard<std::mutex> guard(eventLock);
+    townStarts[bot->GetGUID().GetCounter()] = {kind, NowMs()};
+}
+
+void QuestStats::TownDone(uint32 low, std::string const& name, char const* errand)
+{
+    uint64 startMs = 0;
+    std::string kind;
+    {
+        std::lock_guard<std::mutex> guard(eventLock);
+        auto const found = townStarts.find(low);
+        if (found != townStarts.end())
+        {
+            kind = found->second.first;
+            startMs = found->second.second;
+            townStarts.erase(found);
+        }
+    }
+    uint64 const now = NowMs();
+    if (startMs)
+        LOG_INFO("playerbots", "[town] {} {} done after {} s (since its {} start) t={}", name, errand,
+                 (now - startMs) / IN_MILLISECONDS, kind, now);
+    else
+        LOG_INFO("playerbots", "[town] {} {} done (no start seen) t={}", name, errand, now);
+}
+
+void QuestStats::TripBoard(Player* bot, std::string const& what)
+{
+    if (!Tracked(bot))
+        return;
+    uint64 const now = NowMs();
+    {
+        std::lock_guard<std::mutex> guard(eventLock);
+        tripStarts[bot->GetGUID().GetCounter()] = {what, now};
+    }
+    LOG_INFO("playerbots", "[trip] {} boards {} at map {} ({:.0f},{:.0f}) t={}", bot->GetName(), what, bot->GetMapId(),
+             bot->GetPositionX(), bot->GetPositionY(), now);
+}
+
+void QuestStats::TripLand(Player* bot)
+{
+    uint64 startMs = 0;
+    std::string what;
+    {
+        std::lock_guard<std::mutex> guard(eventLock);
+        auto const found = tripStarts.find(bot->GetGUID().GetCounter());
+        if (found == tripStarts.end())
+            return;
+        what = found->second.first;
+        startMs = found->second.second;
+        tripStarts.erase(found);
+    }
+    uint64 const now = NowMs();
+    LOG_INFO("playerbots", "[trip] {} lands at map {} ({:.0f},{:.0f}) after {} s ({}) t={}", bot->GetName(),
+             bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), (now - startMs) / IN_MILLISECONDS, what, now);
+}
+
+void AddQuestStatsScripts()
+{
+    new QuestStatsPlayerScript();
+    new QuestStatsGroupScript();  // [log28]
+}

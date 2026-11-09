@@ -800,6 +800,7 @@ bool NewRpgBaseAction::StartVendorRun()
     info.vendorRunEntry = vendor->entry;
     info.vendorRunReason = reason;
     CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(vendor->entry);
+    QuestStats::TownStart(bot, "vendor run");  // [log28]
     LOG_INFO("playerbots", "[New RPG] {} goes to vendor {} ({:.0f} yd): {} (bags {}% full, {} ammo, {}c)",
              bot->GetName(), tmpl ? tmpl->Name : "?", dist, reason, bagUsed,
              AI_VALUE2(uint32, "item count", "ammo"), bot->GetMoney());
@@ -1065,8 +1066,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             detail = " " + std::to_string(uint32(bot->GetExactDist(camp->pos))) + " yd";
         if (info.vendorRunEntry)
             detail += " vendor: " + info.vendorRunReason;
-        LOG_INFO("playerbots", "[rpg] {} L{} {}{}", bot->GetName(), bot->GetLevel(),
-                 status < RPG_STATUS_END ? names[status] : "?", detail);
+        LOG_INFO("playerbots", "[rpg] {} L{} {}{} t={}", bot->GetName(), bot->GetLevel(),
+                 status < RPG_STATUS_END ? names[status] : "?", detail, QuestStats::NowMs());  // [log28] t=
+        if (status == RPG_DO_PROFESSION)
+            QuestStats::TownStart(bot, "DO_PROFESSION");  // [log28]
     }
 
     // [regress10] the first look after its login: a login spot inside idle mobs' reach is left first (b347 Sehdrurmund
@@ -1858,6 +1861,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                                  bot->GetName(), creature->GetName(), info.vendorRunReason, moneyBefore,
                                  bot->GetMoney(), ammoBefore, AI_VALUE2(uint32, "item count", "ammo"), bagBefore,
                                  AI_VALUE(uint8, "bag space"));
+                        QuestStats::TownDone(bot->GetGUID().GetCounter(), bot->GetName(), "vendor visit");
                         info.vendorRunEntry = 0;
                         info.vendorVisited = true;
                         info.vendorMissed = false;  // [vendor23]
