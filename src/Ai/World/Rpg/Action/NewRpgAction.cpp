@@ -1568,6 +1568,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         {
             data.npcOrGo = vendor->GetGUID();
             data.lastReach = 0;
+            data.bestDist = 0.0f;  // [vendor23] a new npc: its own walks
             return true;
         }
         LOG_INFO("playerbots", "[New RPG] {} finds no vendor {} at its spawn", bot->GetName(), info.vendorRunEntry);
@@ -1588,6 +1589,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         }
         data.npcOrGo = npcOrGo;
         data.lastReach = 0;
+        data.bestDist = 0.0f;  // [vendor23] a new npc: its own walks
         return true;
     }
 
