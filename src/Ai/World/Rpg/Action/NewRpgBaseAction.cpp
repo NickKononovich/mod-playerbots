@@ -2967,7 +2967,8 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 // it gets there (the route search penalties are of the mobs in sight) - b299: 13 of 14 deaths were
                 // mobs met on a walk planned through a camp the bot had not seen yet
                 G3D::Vector3 leg = endPos;
-                if (SoloSafety::Applies(bot) && path.length > sPlayerbotAIConfig.SightDistance)
+                // [b381] a path with a length but no points (the v21 core) keeps its end: b380 crash in PointOnPath
+                if (SoloSafety::Applies(bot) && path.length > sPlayerbotAIConfig.SightDistance && path.points.size() >= 2)
                     leg = Leader::Travel::PointOnPath(path.points, sPlayerbotAIConfig.SightDistance);
                 // [guild15] a stretch of the leg that drops through open air (no ground or liquid under it, sampled as
                 // PlayerbotAI::GuardAirborneSpline samples a descending leg): the guard cuts that walk at the rim on

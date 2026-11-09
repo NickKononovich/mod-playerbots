@@ -382,7 +382,8 @@ namespace Leader::Travel
                 return points[index - 1] + segment * ((walk - walked) / length);
             walked += length;
         }
-        return points.back();
+        // [b381] callers check for a path of 2+ points; an empty one is never back() (b380 crash)
+        return points.empty() ? G3D::Vector3() : points.back();
     }
 
     bool HeightGapLogEnabled()
