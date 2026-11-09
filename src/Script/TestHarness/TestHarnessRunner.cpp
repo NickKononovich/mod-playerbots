@@ -4232,6 +4232,29 @@ namespace TestHarness
         if (doorStop)
         {
             uint32 const now = getMSTime();
+            // [kara5] a door nobody of the group opens (no click: a lock such as Karazhan's lock 86, no key of the
+            // content, no event of it) is no way to the target: the target is skipped, the route takes another.
+            // b360 kara-n 20261109-022615-10A-3: the leader held 48 times at the Servant's Access Door 184281 (lock
+            // 86, flags 0) for a Trapped Soul behind it, 228 "no aggressive target", stalled at 1083 s.
+            if (GameObject* door = leader->GetMap() ? leader->GetMap()->GetGameObject(doorGuid) : nullptr;
+                door && !leader->IsInCombat() && !party.target.IsEmpty() && party.target != doorGuid)
+            {
+                bool opens = DoorOpensByUse(door) || DoorEventOf(door) != nullptr;
+                for (StarterTrack const& starter : party.starters)
+                    if (std::find(starter.def->entries.begin(), starter.def->entries.end(), door->GetEntry()) !=
+                        starter.def->entries.end())
+                        opens = true;
+                if (!opens)
+                {
+                    std::string const why = Acore::StringFormat(
+                        "route through a closed door ({} {}): nobody of the group opens it (lock {})", door->GetName(),
+                        door->GetEntry(), door->GetGOInfo() ? door->GetGOInfo()->door.lockId : 0);
+                    LOG_INFO("playerbots", "[kara5] leader {}: {} skipped, {}", leader->GetName(),
+                             party.target.ToString(), why);
+                    SkipTarget(party, party.target, Leader::Travel::CLOSED_DOOR_SKIP_MS, why);
+                    party.nextRetargetMs = now;
+                }
+            }
             party.doorHold = doorGuid;
             party.doorHoldMs = now ? now : 1;
             if (!party.doorHoldLogMs || getMSTimeDiff(party.doorHoldLogMs, now) >= DOOR_HOLD_LOG_MS)
