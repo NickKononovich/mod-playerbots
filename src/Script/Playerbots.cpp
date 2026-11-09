@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "ReviveFromCorpseAction.h"  // [grave44]
 #include "Playerbots.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
@@ -173,6 +174,7 @@ public:
                  threat.empty() ? std::string() : "; [deaths14] the killer's threat list: " + threat);
         SelfBotControl::RecordGuildDeath(killed, killer);  // [live1]
         NewRpgBaseAction::RecordDeath(killed, killer);       // [guild12]
+        NoteGhostDeath(killed);                              // [grave44]
     }
 
     bool OnPlayerCanMarkAccountOffline(ObjectGuid guid, uint32 /*accountId*/) override

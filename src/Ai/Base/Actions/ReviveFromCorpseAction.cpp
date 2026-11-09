@@ -166,9 +166,18 @@ namespace
         return dangers;
     }
 
+    // [grave44] a graveyard the bot rose at and died again near (its next death before it leaves the healer's yard)
+    // is unsafe for it at that level, not for one death only: bot -> graveyard -> the level it holds for
+    std::unordered_map<uint32, std::unordered_map<uint32, uint8>> graveDeaths;
+    // bot -> (graveyard it rose at, level, corpse position of the next death: its own reach)
+    std::unordered_map<uint32, std::pair<uint32, uint8>> lastHealerRise;
+
     bool GraveUnsafe(Player* bot, uint32 graveId)
     {
         std::lock_guard<std::mutex> guard(ghostLock);
+        if (auto const it = graveDeaths.find(bot->GetGUID().GetCounter()); it != graveDeaths.end())
+            if (auto const g = it->second.find(graveId); g != it->second.end() && g->second == bot->GetLevel())
+                return true;
         return DangersOf(bot).unsafe.count(graveId) != 0;
     }
 
@@ -845,8 +854,15 @@ bool SpiritHealerAction::Execute(Event /*event*/)
             // [deaths3] the healer revives it where it stands: in reach of a hostile this graveyard is unsafe for
             // this death - the next graveyard on its map, else its corpse run; with neither it rises in the window
             GuidVector const hostiles = AI_VALUE(GuidVector, "nearest hostile npcs");
-            float const margin = SpotMargin(botAI, bot, hostiles, bot->GetPositionX(), bot->GetPositionY(),
-                                            bot->GetPositionZ(), Reach::Full);
+            // [grave44] ... and a wanderer anywhere in its area, a patrol anywhere on its path, reaches the yard while
+            // the bot stands there sick: Full read a patrol where it stood at the look. b391: Kianey x48, Bami x42,
+            // Peny x29 revived at the Westfall healer by Demont's Place, the Defias Pathstalker patrols on them within
+            // seconds, over and over
+            float const margin =
+                std::min(SpotMargin(botAI, bot, hostiles, bot->GetPositionX(), bot->GetPositionY(),
+                                    bot->GetPositionZ(), Reach::Full),
+                         SpotMargin(botAI, bot, hostiles, bot->GetPositionX(), bot->GetPositionY(),
+                                    bot->GetPositionZ(), Reach::Paths));
             if (margin < 0.0f)
             {
                 MarkGraveUnsafe(bot, ClosestGrave->ID);
@@ -875,6 +891,10 @@ bool SpiritHealerAction::Execute(Event /*event*/)
                 LogGhost(bot, "rises at the spirit healer in a window: the wanderers / patrols out of its reach now");
             }
 
+            {
+                std::lock_guard<std::mutex> guard(ghostLock);
+                lastHealerRise[bot->GetGUID().GetCounter()] = {ClosestGrave->ID, bot->GetLevel()};  // [grave44]
+            }
             LOG_DEBUG("playerbots", "Bot {} {}:{} <{}> revives at spirit healer", bot->GetGUID().ToString().c_str(),
                       bot->GetTeamId() == TEAM_ALLIANCE ? "A" : "H", bot->GetLevel(), bot->GetName());
 
@@ -924,3 +944,30 @@ bool SpiritHealerAction::Execute(Event /*event*/)
 }
 
 bool SpiritHealerAction::isUseful() { return bot->HasPlayerFlag(PLAYER_FLAGS_GHOST); }
+
+void NoteGhostDeath(Player* bot)
+{
+    if (!bot || !GET_PLAYERBOT_AI(bot))
+        return;
+    uint32 const low = bot->GetGUID().GetCounter();
+    uint32 grave = 0;
+    {
+        std::lock_guard<std::mutex> guard(ghostLock);
+        auto const rise = lastHealerRise.find(low);
+        if (rise == lastHealerRise.end() || rise->second.second != bot->GetLevel())
+            return;
+        grave = rise->second.first;
+    }
+    GraveyardStruct const* g = sGraveyard->GetGraveyard(grave);
+    if (!g || g->Map != bot->GetMapId() ||
+        bot->GetExactDist2d(g->x, g->y) > sPlayerbotAIConfig.SightDistance + MAX_AGGRO_RADIUS)
+        return;
+    {
+        std::lock_guard<std::mutex> guard(ghostLock);
+        graveDeaths[low][grave] = bot->GetLevel();
+        lastHealerRise.erase(low);
+    }
+    LOG_INFO("playerbots", "[grave44] {} L{} died {:.0f} yd from graveyard {} its healer raised it at: unsafe for it "
+             "until its next level",
+             bot->GetName(), bot->GetLevel(), bot->GetExactDist2d(g->x, g->y), grave);
+}

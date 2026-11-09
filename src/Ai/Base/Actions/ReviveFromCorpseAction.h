@@ -53,4 +53,8 @@ public:
     bool isUseful() override;
 };
 
+// [grave44] a death: when the bot died near the graveyard its spirit healer last raised it (at its level), that
+// graveyard is unsafe for it until its level changes - the next ghost takes another healer or its corpse
+void NoteGhostDeath(Player* bot);
+
 #endif
