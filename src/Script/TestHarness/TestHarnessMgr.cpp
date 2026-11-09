@@ -24,6 +24,7 @@
 #include "GameTime.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "GuildCoordinator.h"  // [next1] the guildlike comp copies the global leader's five
 #include "HealthTriggers.h"
 #include "InstanceSaveMgr.h"
 #include "InstanceScript.h"
@@ -899,7 +900,8 @@ namespace TestHarness
     }
 
     Party* TestHarnessMgr::CreateParty(Composition const* comp, ContentDef const* content, uint8 level, uint32 ilvl,
-                                      std::string& error, std::vector<ObjectGuid> const* keep)
+                                      std::string& error, std::vector<ObjectGuid> const* keep,
+                                      std::vector<uint8> const* slotLevels)
     {
         if (!comp)
         {
@@ -959,7 +961,10 @@ namespace TestHarness
             }
 
             PoolCharacter const* chosen =
-                keep ? keptOf(slotIndex, spec->cls, picked) : PickCharacter(spec->cls, level, picked, comp->horde);
+                keep ? keptOf(slotIndex, spec->cls, picked)
+                     : PickCharacter(spec->cls,
+                                     slotLevels && slotIndex < slotLevels->size() ? (*slotLevels)[slotIndex] : level,
+                                     picked, comp->horde);
             if (keep && !chosen)
             {
                 error = Acore::StringFormat("continue: the kept group of comp {} has no free {} for slot {}{}",
@@ -1198,8 +1203,21 @@ namespace TestHarness
                 return false;
             }
 
-            member.prep = PrepareCharacter(bot, *member.spec, party.level, party.targetIlvl, member.professions,
-                                           hasWarlock, party.content, party.resume);
+            member.prep = PrepareCharacter(bot, *member.spec, member.copyLevel ? member.copyLevel : party.level,
+                                           party.targetIlvl, member.professions, hasWarlock, party.content,
+                                           party.resume);
+            // [next1] guildlike: the guild member's worn items in place of the prepared set, an empty slot empty
+            if (member.prep.ok && member.copyLevel)
+            {
+                std::vector<CopiedGearPiece> pieces;
+                for (Member::CopiedPiece const& piece : member.copyGear)
+                    pieces.push_back({piece.slot, piece.entry, piece.randomPropertyId, piece.enchant});
+                uint32 const worn = WearCopiedGear(bot, pieces);
+                member.prep.avgIlvl = AverageItemLevel(bot);
+                LOG_INFO("playerbots", "[next1] guildlike {}: {} copies {} - level {}, {} of {} items worn, avg ilvl "
+                         "{:.1f}", party.id, member.name, member.copyOf, bot->GetLevel(), worn, pieces.size(),
+                         member.prep.avgIlvl);
+            }
             if (!member.prep.ok)
             {
                 Finish(party, "failed", member.name + ": " + member.prep.error);
@@ -1620,6 +1638,39 @@ namespace TestHarness
         EnterInstance(party, leader);
     }
 
+    // [guild60] a character's spec by its role and its own talent tree ([next1] shared with the guildlike comp)
+    SpecDef const* SpecForBot(Player* bot, std::string const& role)
+    {
+        Role const want = role == "tank" ? Role::Tank : role == "healer" ? Role::Healer : Role::Melee;
+        auto fits = [&](SpecDef const& spec)
+        {
+            if (want == Role::Tank || want == Role::Healer)
+                return spec.role == want;
+            return spec.role != Role::Tank && spec.role != Role::Healer;
+        };
+        uint8 const tab = AiFactory::GetPlayerSpecTab(bot);
+        SpecDef const* first = nullptr;
+        SpecDef const* any = nullptr;
+        uint32 index = 0;
+        for (SpecDef const& spec : Specs())
+        {
+            if (spec.cls != bot->getClass())
+                continue;
+            if (!any)
+                any = &spec;
+            // the class's specs follow its talent tabs (the druid's feral tab is cat and bear)
+            uint32 const specTab = spec.cls == CLASS_DRUID ? (index >= 2 ? index - 1 : index) : index;
+            ++index;
+            if (!fits(spec))
+                continue;
+            if (specTab == tab)
+                return &spec;
+            if (!first)
+                first = &spec;
+        }
+        return first ? first : any;
+    }
+
     std::string TestHarnessMgr::StartGuildRun(std::string const& contentKey,
                                               std::vector<std::pair<ObjectGuid, std::string>> const& members,
                                               ObjectGuid leader, uint32 fiveId, std::string const& runId,
@@ -1639,37 +1690,7 @@ namespace TestHarness
             }
 
         // The dungeon leader reads each member's spec (its role, its class kit): the bot's own talent tree.
-        auto specFor = [](Player* bot, std::string const& role) -> SpecDef const*
-        {
-            Role const want = role == "tank" ? Role::Tank : role == "healer" ? Role::Healer : Role::Melee;
-            auto fits = [&](SpecDef const& spec)
-            {
-                if (want == Role::Tank || want == Role::Healer)
-                    return spec.role == want;
-                return spec.role != Role::Tank && spec.role != Role::Healer;
-            };
-            uint8 const tab = AiFactory::GetPlayerSpecTab(bot);
-            SpecDef const* first = nullptr;
-            SpecDef const* any = nullptr;
-            uint32 index = 0;
-            for (SpecDef const& spec : Specs())
-            {
-                if (spec.cls != bot->getClass())
-                    continue;
-                if (!any)
-                    any = &spec;
-                // the class's specs follow its talent tabs (the druid's feral tab is cat and bear)
-                uint32 const specTab = spec.cls == CLASS_DRUID ? (index >= 2 ? index - 1 : index) : index;
-                ++index;
-                if (!fits(spec))
-                    continue;
-                if (specTab == tab)
-                    return &spec;
-                if (!first)
-                    first = &spec;
-            }
-            return first ? first : any;
-        };
+        auto specFor = [](Player* bot, std::string const& role) { return SpecForBot(bot, role); };
 
         auto party = std::make_unique<Party>();
         _guildComps.push_back(Composition{"G5", uint8(members.size()), false, "guild five", {}});
@@ -5054,6 +5075,64 @@ namespace TestHarness
         return true;
     }
 
+    Party* TestHarnessMgr::CreateGuildlikeParty(ContentDef const* content, std::string& error)
+    {
+        std::vector<std::pair<uint32, std::string>> five;
+        std::string verdict;
+        if (!sGuildCoordinator.PreviewFive(content->key, five, verdict, error))
+            return nullptr;
+        if (!_poolLoaded && !LoadPool(error))
+            return nullptr;
+
+        _guildComps.push_back(Composition{"guildlike", uint8(five.size()), false, "the global leader's five", {}});
+        Composition& comp = _guildComps.back();
+        std::vector<uint8> levels;
+        std::vector<Member> copies;
+        uint8 top = 1;
+        for (size_t i = 0; i < five.size(); ++i)
+        {
+            Player* real = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(five[i].first));
+            SpecDef const* spec = real ? SpecForBot(real, five[i].second) : nullptr;
+            if (!spec)
+            {
+                error = "no spec for guild member " + std::to_string(five[i].first);
+                _guildComps.pop_back();
+                return nullptr;
+            }
+            comp.slots.push_back(CompSlot{spec->key, 1, uint8(i == 0 ? SLOT_MAIN_TANK : 0)});
+            levels.push_back(real->GetLevel());
+            top = std::max<uint8>(top, real->GetLevel());
+            Member copy;
+            copy.copyLevel = real->GetLevel();
+            copy.copyOf = real->GetName();
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+                if (Item* item = real->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                    copy.copyGear.push_back({slot, item->GetEntry(), item->GetItemRandomPropertyId(),
+                                             item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT)});
+            copies.push_back(copy);
+        }
+
+        Party* party = CreateParty(&comp, content, top, content->ilvl - IlvlBelowContent(content->ilvl), error,
+                                   nullptr, &levels);
+        if (!party)
+            return nullptr;
+        JsonObject who;
+        for (size_t i = 0; i < party->members.size() && i < copies.size(); ++i)
+        {
+            Member& member = party->members[i];
+            member.copyLevel = copies[i].copyLevel;
+            member.copyOf = copies[i].copyOf;
+            member.copyGear = copies[i].copyGear;
+            who.Str(member.name.c_str(), Acore::StringFormat("{} L{} {} ({} items)", member.copyOf, member.copyLevel,
+                                                             member.spec->label, member.copyGear.size()));
+        }
+        party->gateVerdict = verdict;
+        LOG_INFO("playerbots", "[next1] guildlike {}: the global leader's five for {} - gate: {}", party->id,
+                 content->key, verdict);
+        LogEvent(*party, "guildlike", JsonObject().Raw("members", who.Build()).Str("gate", verdict));
+        return party;
+    }
+
     bool TestHarnessMgr::HandleRun(ChatHandler* handler, std::string const& contentKey, uint32 count,
                                    std::string const& compId, bool resume)
     {
@@ -5064,11 +5143,43 @@ namespace TestHarness
             return false;
         }
 
+        // [next1] "guildlike": the five the global leader would take into this dungeon now, copied (their levels,
+        // specs and worn items) - its result is checked against the leader's own five gate
+        if (compId == "guildlike")
+        {
+            std::string error;
+            Party* party = resume || content->raid ? nullptr : CreateGuildlikeParty(content, error);
+            if (!party)
+            {
+                if (error.empty())
+                    error = "'guildlike' is for a fresh 5-man run";
+                handler->PSendSysMessage("Test harness: guildlike: {}", error);
+                return false;
+            }
+            handler->PSendSysMessage("Test harness: run {} started ({}, guildlike, up to level {}, {})", party->id,
+                                     content->name, party->level, party->gateVerdict);
+            return true;
+        }
+
         Composition const* comp = compId.empty() ? OptimalComposition(content->size) : FindComposition(compId);
         if (!comp || comp->size != content->size)
         {
             handler->PSendSysMessage("Test harness: composition '{}' does not fit a {}-player content", compId,
                                      content->size);
+            return false;
+        }
+
+        // [next1] no death knight below its starting level 55 in a normal dungeon (as the batch runner picks)
+        if (IsNormalDungeon(*content) && content->level < 55 &&
+            std::any_of(comp->slots.begin(), comp->slots.end(), [](CompSlot const& slot)
+                        {
+                            SpecDef const* spec = FindSpec(slot.spec);
+                            return spec && spec->cls == CLASS_DEATH_KNIGHT;
+                        }))
+        {
+            handler->PSendSysMessage("Test harness: composition '{}' has a death knight, {} is a level-{} dungeon "
+                                     "(death knights start at 55)",
+                                     comp->id, content->key, content->level);
             return false;
         }
 

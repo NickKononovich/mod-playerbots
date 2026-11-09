@@ -769,6 +769,33 @@ namespace TestHarness
         }
     }
 
+    uint32 WearCopiedGear(Player* bot, std::vector<CopiedGearPiece> const& pieces)
+    {
+        PlayerbotFactory::DestroyEquippedGear(bot);
+        uint32 worn = 0;
+        for (CopiedGearPiece const& piece : pieces)
+        {
+            if (!EquipPiece(bot, piece.slot, {piece.entry, piece.randomPropertyId}))
+            {
+                LOG_INFO("playerbots", "[next1] guildlike {}: item {} not wearable in slot {}", bot->GetName(),
+                         piece.entry, piece.slot);
+                continue;
+            }
+            ++worn;
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, piece.slot); item && piece.enchant)
+            {
+                bot->ApplyEnchantment(item, PERM_ENCHANTMENT_SLOT, false);
+                item->SetEnchantment(PERM_ENCHANTMENT_SLOT, piece.enchant, 0, 0);
+                bot->ApplyEnchantment(item, PERM_ENCHANTMENT_SLOT, true);
+            }
+        }
+        bot->SetFullHealth();
+        if (bot->GetMaxPower(POWER_MANA))
+            bot->SetPower(POWER_MANA, bot->GetMaxPower(POWER_MANA));
+        bot->SaveToDB(false, false);
+        return worn;
+    }
+
     int32 FindPremadeSpec(uint8 cls, std::string const& name)
     {
         if (cls >= MAX_CLASSES)
