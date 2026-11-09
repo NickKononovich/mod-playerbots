@@ -2461,6 +2461,29 @@ namespace SoloSafety
         return true;
     }
 
+    bool InRefusedReach(Player* bot, std::string& who)
+    {
+        if (!bot || !bot->IsAlive())
+            return false;
+        ObjectGuid refused;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end() || found->second.loggedKind == uint8(Verdict::Kind::Win) ||
+                found->second.loggedKind == 255)
+                return false;
+            refused = found->second.loggedTarget;
+        }
+        Creature* mob = refused.IsCreature() ? ObjectAccessor::GetCreature(*bot, refused) : nullptr;
+        if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot))
+            return false;
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        if (!InDisc(AggroDisc(mob, bot), here))
+            return false;
+        who = Acore::StringFormat("{} L{}", mob->GetName(), mob->GetLevel());
+        return true;
+    }
+
     bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots)
     {
         who.clear();

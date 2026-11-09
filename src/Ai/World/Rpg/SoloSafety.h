@@ -146,6 +146,9 @@ namespace SoloSafety
     // names) and the spots that leave every idle reach round it, nearest first (out of the covering reaches by its
     // combat reach, all round; else at its sight); false when none covers it
     bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots);
+    // [reach66] the mob its judge last refused (or would fight only at full) is alive, idle and its aggro reach
+    // covers the bot where it stands: `who` names it
+    bool InRefusedReach(Player* bot, std::string& who);
     // [objective23] a spot within `range` of `target` (and in its sight when `sight`) out of every other idle mob's and
     // wanderer's reach, the nearest to the bot (its own spot when it is one); false: no such spot (the objective
     // leaves none). `who`: the mobs whose reach covers the bot's own spot ("" when none)
