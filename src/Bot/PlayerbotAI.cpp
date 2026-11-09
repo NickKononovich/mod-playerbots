@@ -523,22 +523,44 @@ void PlayerbotAI::GuardAirborneSpline()
                 bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), p.x, p.y, p.z, bot->GetCollisionHeight(), {});
             if (liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > INVALID_HEIGHT && liquid.Level >= p.z)
                 return false;  // swims
+            // [nav31] the surface heights exactly at the sample's x, y (each polygon of the column that holds the
+            // point, its detail height): under the surface only when one lies more than walkableClimb over it and
+            // none at or under that line. [nav29] took the nearest polygon point in a 1.5 yd box - on a slope its
+            // height is the slope's 1.5 yd further on (b384: 47 refusals of plain slope steps, Gnetlibozz
+            // (-5993.5,-2770.8,405.2), Septimon (-5651.5,-76.9,418.1) twice)
             float const point[3] = {p.y, p.z, p.x};
-            float const extents[3] = {CLIMB_SUPPORT_RADIUS, 30.0f, CLIMB_SUPPORT_RADIUS};
-            float nearest[3] = {0.0f, 0.0f, 0.0f};
-            dtPolyRef ref = 0;
-            if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) || !ref)
+            float const extents[3] = {0.1f, 30.0f, 0.1f};
+            constexpr int COLUMN_POLYS = 16;  // search bound, not a behaviour rule
+            dtPolyRef refs[COLUMN_POLYS];
+            int count = 0;
+            if (!mesh || dtStatusFailed(query->queryPolygons(point, extents, &filter, refs, &count, COLUMN_POLYS)) ||
+                count <= 0)
                 return false;  // no polygon round it: the off-navmesh guards' case
-            dtMeshTile const* tile = nullptr;
-            dtPoly const* poly = nullptr;
-            if (!mesh || dtStatusFailed(mesh->getTileAndPolyByRef(ref, &tile, &poly)) || !tile || !tile->header)
-                return false;
-            return nearest[1] - p.z > tile->header->walkableClimb;  // the nearest surface lies over it
+            float climb = 0.0f;
+            bool over = false;
+            bool atOrUnder = false;
+            for (int i = 0; i < count; ++i)
+            {
+                float height = 0.0f;
+                if (dtStatusFailed(query->getPolyHeight(refs[i], point, &height)))
+                    continue;  // the column box touches it, the point lies off it
+                dtMeshTile const* tile = nullptr;
+                dtPoly const* poly = nullptr;
+                if (dtStatusFailed(mesh->getTileAndPolyByRef(refs[i], &tile, &poly)) || !tile || !tile->header)
+                    continue;
+                climb = tile->header->walkableClimb;
+                if (height - p.z > climb)
+                    over = true;
+                else
+                    atOrUnder = true;
+            }
+            return over && !atOrUnder;
         };
         auto const checkLeg = [&](G3D::Vector3 const& a, G3D::Vector3 const& b) -> bool
         {
-            // a leg from a spot already under the surface is its way out: not judged (it would hold it there)
-            if (underSurface(a))
+            // a leg from a spot already under the surface is its way out: not judged (it would hold it there);
+            // [nav31] nor a step of a sample or two (the spline's own step onto the next point of a slope)
+            if ((b - a).length() <= 2.0f * GROUND_SAMPLE_STEP || underSurface(a))
                 return true;
             float const length = (b - a).length();
             uint32 const samples = std::min(
