@@ -559,8 +559,10 @@ void PlayerbotAI::GuardAirborneSpline()
         auto const checkLeg = [&](G3D::Vector3 const& a, G3D::Vector3 const& b) -> bool
         {
             // a leg from a spot already under the surface is its way out: not judged (it would hold it there);
-            // [nav31] nor a step of a sample or two (the spline's own step onto the next point of a slope)
-            if ((b - a).length() <= 2.0f * GROUND_SAMPLE_STEP || underSurface(a))
+            // [nav31] nor a step of a sample or two (the spline's own step onto the next point of a slope).
+            // [nav32] measured across the ground (2D): a steep step's 3D length is mostly its drop - b385 Irorm
+            // (3.9 yd across, 2.8 down), Bierya (2.1 yd across, 4.4 down) were judged and refused 56 times
+            if (std::hypot(b.x - a.x, b.y - a.y) <= 2.0f * GROUND_SAMPLE_STEP || underSurface(a))
                 return true;
             float const length = (b - a).length();
             uint32 const samples = std::min(
@@ -581,7 +583,7 @@ void PlayerbotAI::GuardAirborneSpline()
                     size_t const bar = actions.rfind('|');
                     mover = bar == std::string::npos ? actions : actions.substr(bar + 1);
                 }
-                LOG_INFO("playerbots", "[nav29] {} refused a leg under the surface at ({:.1f},{:.1f},{:.1f}) on map {}: "
+                LOG_INFO("playerbots", "[nav29] [nav32] {} refused a leg under the surface at ({:.1f},{:.1f},{:.1f}) on map {}: "
                          "from ({:.1f},{:.1f},{:.1f}) to ({:.1f},{:.1f},{:.1f}), mover {}",
                          bot->GetName(), point.x, point.y, point.z, bot->GetMapId(), a.x, a.y, a.z, b.x, b.y, b.z,
                          mover.empty() ? std::string("?") : mover);
