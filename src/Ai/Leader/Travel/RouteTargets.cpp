@@ -4274,6 +4274,17 @@ namespace Leader::Travel
             float score = path.length;
             if (nextBoss && nextBoss != creature && !fledSurvivors.count(creature->GetGUID()))
                 score += BOSS_ROUTE_WEIGHT * creature->GetExactDist(nextBoss);
+            // [kara4] a raid's next boss by the encounter order: the trash of his area comes before the trash
+            // elsewhere (it holds his pull: "boss pull held"). b359 kara-n 20261109-010057-10A-1: Midnight (order 0)
+            // was the next boss from 6 s ("boss pull held, remaining 5, first Spectral Apprentice"), but every
+            // retarget took the nearer trash east of the Gatehouse (Coldmist 55 yd + 0.25 x 111 yd beat the stables
+            // ~100 yd + 0.25 x 30 yd) and walked the group step by step into the servants' quarters and the
+            // ballroom; Midnight stayed "alive, not engaged" to the 20-minute cap. A continue segment goes back the
+            // same way: his area first while he is the lowest order standing.
+            if (group.IsRaid() && nextBoss && nextOrder >= 0 && creature != nextBoss && !creature->IsInCombat() &&
+                BossAreaTrashOf(leader, nextBoss, creature,
+                                group.Route().bossCreatures.count(creature->GetGUID()) != 0))
+                score -= RAID_NEXT_BOSS_AREA_FIRST;
             if (fledSurvivors.count(creature->GetGUID()))
                 score -= FLED_SURVIVOR_BONUS;  // [fled_survivor] before anything further on
             if (deferred.count(creature->GetGUID()))

@@ -42,6 +42,8 @@ namespace Leader::Travel
     constexpr float FAILED_BOSS_RADIUS = 35.0f;
 
     constexpr float BOSS_ROUTE_WEIGHT = 0.25f;
+    // [kara4] a raid: the next boss's area trash scores this much better (yards of walk) than the trash elsewhere
+    constexpr float RAID_NEXT_BOSS_AREA_FIRST = 250.0f;
 
     constexpr float LATER_BOSS_TRASH_RADIUS = 30.0f;
 
