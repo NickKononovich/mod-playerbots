@@ -463,6 +463,7 @@ void PlayerbotAI::GuardAirborneSpline()
                                             std::max<uint32>(1, static_cast<uint32>(std::ceil(length / GROUND_SAMPLE_STEP))));
             G3D::Vector3 lastOn = a;
             bool cut = false;
+            bool swum = false;
             G3D::Vector3 bad;
             for (uint32 i = 1; i <= samples && !cut; ++i)
             {
@@ -471,7 +472,15 @@ void PlayerbotAI::GuardAirborneSpline()
                 if (onMesh(point, &snapped))
                     lastOn = snapped;
                 else if (InLiquid(point))
+                {
+                    if (!swum)
+                        LOG_INFO("playerbots", "[swim28] {} swims up on map {} from ({:.1f},{:.1f},{:.1f}) to "
+                                 "({:.1f},{:.1f},{:.1f}): under the water at ({:.1f},{:.1f},{:.1f}), no polygon needed",
+                                 bot->GetName(), bot->GetMapId(), a.x, a.y, a.z, b.x, b.y, b.z, point.x, point.y,
+                                 point.z);
+                    swum = true;
                     lastOn = point;  // [swim28] swims up through the water
+                }
                 else
                 {
                     cut = true;

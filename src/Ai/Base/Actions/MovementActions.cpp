@@ -5040,6 +5040,24 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
                     points.pop_back();
             }
             partial = points.size() >= 2;
+            if (partial)
+            {
+                // logged once per destination (the same walk asked again each tick is not a new line)
+                static std::mutex move28Lock;
+                static std::unordered_map<uint32, uint64> move28Logged;
+                uint64 const destKey = (uint64(uint32(int32(x))) << 32) ^ uint64(uint32(int32(y)));
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(move28Lock);
+                    uint64& last = move28Logged[bot->GetGUID().GetCounter()];
+                    fresh = last != destKey;
+                    last = destKey;
+                }
+                if (fresh)
+                    LOG_INFO("playerbots", "[move28] {} walks an incomplete path to ({:.1f},{:.1f},{:.1f}) as far as "
+                             "its polygons go: {} points, ends at ({:.1f},{:.1f},{:.1f})", bot->GetName(), x, y, z,
+                             points.size(), points.back().x, points.back().y, points.back().z);
+            }
         }
         if (!(type & PATHFIND_NOT_USING_PATH) && !complete && !partial)
         {

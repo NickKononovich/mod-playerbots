@@ -560,9 +560,11 @@ namespace Leader
                     mix(q(v));
         }
         thread_local std::unordered_map<uint64, RouteResult> routeCache;
+        thread_local uint64 routeCacheHits = 0;
         constexpr size_t ROUTE_CACHE_ENTRIES = 4096;  // a memory bound per thread (no age rule)
         if (auto const hit = routeCache.find(cacheKey); hit != routeCache.end())
         {
+            ++routeCacheHits;
             SoloSafety::NoteRoute(walker, hit->second.complete, hit->second.found && hit->second.throughRefused);
             return hit->second;
         }
@@ -574,7 +576,12 @@ namespace Leader
             ~StoreOnExit()
             {
                 if (cache.size() >= ROUTE_CACHE_ENTRIES)
+                {
+                    LOG_INFO("playerbots", "[route28] route cache full ({} walks): cleared, {} searches answered "
+                             "from it since its last clear", cache.size(), routeCacheHits);
                     cache.clear();
+                    routeCacheHits = 0;
+                }
                 cache[key] = value;
             }
         } storeOnExit{routeCache, cacheKey, result};
