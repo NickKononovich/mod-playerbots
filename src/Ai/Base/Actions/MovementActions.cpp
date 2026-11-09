@@ -2661,6 +2661,10 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         //     return false;
 
         path.ShortenPathUntilDist(G3D::Vector3(tx, ty, tz), shortenTo);
+        // [b380] an empty path (the v21 core's PathGenerator can leave none here): no chase, not back() of nothing
+        // (b379 crash in ReachCombatTo)
+        if (path.points.empty())
+            return false;
         endPos = path.points.back();
     }
 
