@@ -36,6 +36,8 @@
 #include "InterruptValues.h"
 #include "LFGMgr.h"
 #include "LastMovementValue.h"
+#include "DetourNavMeshQuery.h"  // [nav24]
+#include "MapDefines.h"         // [nav24] NAV_* flags
 #include "MovementActions.h"
 #include "LastSpellCastValue.h"
 #include "LogLevelAction.h"
@@ -312,6 +314,10 @@ namespace
 {
 // Deeper than this under a point counts as open air. Matches the test harness' DirectLineOverGround.
 constexpr float GROUND_SUPPORT_DROP = 6.0f;
+// [nav24] a straight leg that rises more than this climbs: each of its samples needs a navmesh polygon within this
+// height (the navmesh's walkable climb with its detail mesh; a leg through a hill or a tower wall has none)
+constexpr float CLIMB_SUPPORT = 3.0f;
+constexpr float CLIMB_SUPPORT_RADIUS = 1.5f;  // the polygon search box's half width round a sample
 constexpr float GROUND_SAMPLE_STEP = 2.0f;
 constexpr uint32 GROUND_MAX_SAMPLES = 16;
 constexpr float GROUND_MIN_TRUNCATED_MOVE = 2.0f;
@@ -391,6 +397,95 @@ void PlayerbotAI::GuardAirborneSpline()
     bool const single = path.last() - path.first() == 1;
     G3D::Vector3 start = path.getPoint(path.first());
     G3D::Vector3 end = path.getPoint(single ? path.last() : path.first() + 1);
+    // [nav24] the navmesh owner 2026-11-09: a straight leg that CLIMBS was never checked - the guard below looks only
+    // at descents and asks for ground within 6 yd under each sample, which a leg rising through a hillside or a
+    // tower always has. The server spline has no collision: the bot walked up through the hill onto the Shadowglen
+    // ridge, through the Dolanaar inn tower onto its roof (46.9 yd over the terrain), up into the Exodar. A climbing
+    // single leg (the core's straight shortcut), a climbing tail (an incomplete path's straight end) or a climbing
+    // first leg from a spot off the navmesh needs a navmesh polygon under every sample; it is cut at the last one
+    if (dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery())
+    {
+        dtQueryFilter filter;
+        filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+        auto const onMesh = [&](G3D::Vector3 const& p, G3D::Vector3* at)
+        {
+            float const point[3] = {p.y, p.z, p.x};
+            float const extents[3] = {CLIMB_SUPPORT_RADIUS, CLIMB_SUPPORT, CLIMB_SUPPORT_RADIUS};
+            float nearest[3] = {0.0f, 0.0f, 0.0f};
+            dtPolyRef ref = 0;
+            if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) || !ref)
+                return false;
+            if (at)
+                *at = G3D::Vector3(nearest[2], nearest[0], nearest[1]);
+            return true;
+        };
+        G3D::Vector3 a, b;
+        bool check = false;
+        bool climbTail = false;
+        if (single)
+        {
+            a = start;
+            b = end;
+            check = b.z - a.z > CLIMB_SUPPORT;
+        }
+        else
+        {
+            G3D::Vector3 const tailA = path.getPoint(path.last() - 1);
+            G3D::Vector3 const tailB = path.getPoint(path.last());
+            if (end.z - start.z > CLIMB_SUPPORT && !onMesh(start, nullptr))
+            {
+                a = start;
+                b = end;
+                check = true;
+            }
+            else if (tailB.z - tailA.z > CLIMB_SUPPORT)
+            {
+                a = tailA;
+                b = tailB;
+                check = true;
+                climbTail = true;
+            }
+        }
+        if (check)
+        {
+            float const length = (b - a).length();
+            uint32 const samples = std::min(GROUND_MAX_SAMPLES,
+                                            std::max<uint32>(1, static_cast<uint32>(std::ceil(length / GROUND_SAMPLE_STEP))));
+            G3D::Vector3 lastOn = a;
+            bool cut = false;
+            G3D::Vector3 bad;
+            for (uint32 i = 1; i <= samples && !cut; ++i)
+            {
+                G3D::Vector3 const point = a + (b - a) * (static_cast<float>(i) / static_cast<float>(samples));
+                G3D::Vector3 snapped;
+                if (onMesh(point, &snapped))
+                    lastOn = snapped;
+                else
+                {
+                    cut = true;
+                    bad = point;
+                }
+            }
+            if (cut)
+            {
+                uint32 const now = getMSTime();
+                if (!lastAirborneLogMs || getMSTimeDiff(lastAirborneLogMs, now) > AIRBORNE_LOG_INTERVAL_MS)
+                {
+                    lastAirborneLogMs = now;
+                    LOG_INFO("playerbots", "[nav24] {} refused a climbing straight leg on map {} from ({:.1f},{:.1f},"
+                             "{:.1f}) to ({:.1f},{:.1f},{:.1f}) (+{:.1f} yd): no navmesh polygon at ({:.1f},{:.1f},{:.1f})",
+                             bot->GetName(), bot->GetMapId(), a.x, a.y, a.z, b.x, b.y, b.z, b.z - a.z, bad.x, bad.y,
+                             bad.z);
+                }
+                bot->GetMotionMaster()->Clear();
+                bot->StopMoving();
+                if (climbTail || (lastOn - a).length() >= GROUND_MIN_TRUNCATED_MOVE)
+                    bot->GetMotionMaster()->MovePoint(0, lastOn.x, lastOn.y, lastOn.z, FORCED_MOVEMENT_NONE, 0.0f,
+                                                      0.0f, climbTail, true);
+                return;
+            }
+        }
+    }
     // [b32_occ] ... and the last leg: a path whose end polygon is not the destination's (PATHFIND_INCOMPLETE to a
     // spot over open air) runs on the mesh to the rim, then the core's straight tail to the destination. occ-h
     // 20261025-221216-occ-h-5G-22 (496 s): the tank's walk from Ring 2 (z 433) ended at (1171.1,1041.2,105.1),
@@ -482,8 +577,17 @@ void PlayerbotAI::StartFall()
 
     bot->SetFallInformation(0, startZ);
     fallPending = true;
-    LOG_INFO("playerbots", "{} falls from ({:.1f}, {:.1f}, {:.1f}) on map {}", bot->GetName(), bot->GetPositionX(),
-             bot->GetPositionY(), startZ, bot->GetMapId());
+    // [nav24] a drop under the core's fall-damage height (Player::HandleFall MIN_FALL_DMG_DIST: 13.48 yd, plus a Safe Fall aura's
+    // yards) is a step, not a fall: b350-b372's "repeated falls" were dismount micro-falls of 0.1-1.3 yd onto the
+    // floor under the mount (CheckMountStateAction -> RequestFallCheck), counted as falls and navmesh gaps
+    constexpr float FALL_DAMAGE_HEIGHT = 13.48f;
+    float const ground = bot->GetMapWaterOrGroundLevel(bot->GetPositionX(), bot->GetPositionY(), startZ);
+    float const safe = float(bot->GetTotalAuraModifier(SPELL_AURA_SAFE_FALL));
+    if (ground > INVALID_HEIGHT && startZ - ground < FALL_DAMAGE_HEIGHT + safe)
+        return;
+    LOG_INFO("playerbots", "{} falls from ({:.1f}, {:.1f}, {:.1f}) on map {} ({:.1f} yd)", bot->GetName(),
+             bot->GetPositionX(), bot->GetPositionY(), startZ, bot->GetMapId(),
+             ground > INVALID_HEIGHT ? startZ - ground : 0.0f);
 }
 
 void PlayerbotAI::UpdateFall()
