@@ -2401,8 +2401,10 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         return false;
     }
     // [runpast11] off the navmesh: a landing whose walk leads on to the destination first (b349 Thyllyn L12 jumped
-    // off a Darnassus ledge onto the nearest polygon at (10091,2581) - a 16-polygon island, 971 s STUCK); none leads
-    // on: the nearest landing still puts it on the navmesh, as before
+    // off a Darnassus ledge onto the nearest polygon at (10091,2581) - a 16-polygon island, 971 s STUCK).
+    // [nav24] user 2026-11-09: only such a landing - one with a walk on to the destination. Before, "none leads on:
+    // the nearest landing still puts it on the navmesh": Thyllyn's island, Geron / Namwe in Frostmane Hold, Ginde on
+    // the Elwynn river bank, the Fargodeep gallery. None: the [navgap] alarm and a help request, no move
     if (!onPolygon)
     {
         std::vector<Way> leading;
@@ -2415,8 +2417,17 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         for (size_t i = 0; i < order.size() && i < PATH_TRIES && leading.empty(); ++i)
             if (leadsOn(*order[i]))
                 leading.push_back(*order[i]);
-        if (!leading.empty())
-            ways = leading;
+        if (leading.empty())
+        {
+            NavGap(bot, "off the navmesh: no landing in sight has a walk on to its destination");
+            if (dest.GetMapId() == bot->GetMapId())
+                NewRpgCoop::OnCampRefused(botAI, bot, dest, "off the navmesh: no landing leads on");
+            logged(Acore::StringFormat("[nav24] off the navmesh: {} landings in sight, none with a walk on to "
+                                       "({:.0f},{:.0f}): no step, no jump",
+                                       ways.size(), dest.GetPositionX(), dest.GetPositionY()));
+            return false;
+        }
+        ways = leading;
     }
     // a step the ground carries, the nearest; else a jump down the bot survives, the least fall damage
     Way const* best = nullptr;
@@ -2444,8 +2455,25 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                                    bot->GetHealth()));
         return false;
     }
-    // a player jumps down: the core's jump arc to the polygon, the fall damage the core's formula gives
+    // [nav24] a real jump: its reach is the run speed over the air time of the core's jump from the drop's height
+    // (MoveJump's speedZ, gravity Movement::gravity); b349-b372 logged 96-98 yd "jumps" (a long glide)
     float const speedXY = bot->GetSpeed(MOVE_RUN);
+    {
+        float const g = float(Movement::gravity);
+        float const up = speedXY;  // the jump's vertical speed passed to MoveJump below
+        float const air = (up + std::sqrt(up * up + 2.0f * g * std::max(best->drop, 0.0f))) / g;
+        if (best->gap > speedXY * air)
+        {
+            NavGap(bot, Acore::StringFormat("off the navmesh: the landing {:.0f} yd off is past a jump's reach "
+                                            "({:.0f} yd)",
+                                            best->gap, speedXY * air));
+            logged(Acore::StringFormat("[nav24] off the navmesh: the landing ({:.1f},{:.1f},{:.1f}) {:.0f} yd off is "
+                                       "past a jump's {:.0f} yd: no jump",
+                                       best->to.x, best->to.y, best->to.z, best->gap, speedXY * air));
+            return false;
+        }
+    }
+    // a player jumps down: the core's jump arc to the polygon, the fall damage the core's formula gives
     bot->GetMotionMaster()->MoveJump(best->to.x, best->to.y, best->to.z, speedXY, speedXY);
     if (uint32 const fallDamage = uint32(best->damage))
         bot->EnvironmentalDamage(DAMAGE_FALL, fallDamage);

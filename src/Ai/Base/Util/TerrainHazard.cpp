@@ -1016,7 +1016,11 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
         // plain step down even with no way back up (Azjol-Nerub's one-way drops to the lower level); an island is
         // refused only when the fall hurts (dtk-n 163758-62: 18-34 yd) or the landing is no floor at all
         // A landing in deep water on navmesh is as harmless up to LEDGE_WATER_MAX_DROP (the swim on is the navmesh's).
-        bool const harmless = verdict.onMesh && verdict.safe &&
+        // [nav24] user 2026-11-09: out in the world an island landing is never taken - there the drops are no
+        // dungeon's one-way levels, and an island is where a bot stands stranded (b349-b372: the Darnassus terraces,
+        // Frostmane Hold, the Elwynn river bank, the Westfall cove); a dungeon's harmless island drop stays
+        bool const openWorld = map && !map->Instanceable();
+        bool const harmless = verdict.onMesh && verdict.safe && (!openWorld || verdict.connected) &&
                               (verdict.height <= LEDGE_FALL_SAFE ||
                                (verdict.water && verdict.height <= LEDGE_WATER_MAX_DROP));
         verdict.allowed = (verdict.connected && verdict.safe) || harmless;
@@ -1085,8 +1089,8 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
                                                        FallDamageShare(unit, verdict.height) >=
                                                    LEDGE_LISTED_HP_MARGIN;
             };
-            bool fallback =
-                !verdict.burns && memo.refusals >= LEDGE_REFUSALS_FALLBACK && verdict.onMesh && survives(mover);
+            bool fallback = !verdict.burns && memo.refusals >= LEDGE_REFUSALS_FALLBACK && verdict.onMesh &&
+                            survives(mover) && (!openWorld || verdict.connected);  // [nav24] no island in the world
             if (fallback)
                 if (Player* player = mover->ToPlayer())
                     if (Group* group = player->GetGroup())
