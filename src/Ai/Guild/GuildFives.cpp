@@ -1147,7 +1147,7 @@ bool GuildCoordinator::PreviewFive(std::string const& contentKey, std::vector<st
     std::vector<FiveCandidate> five;
     uint32 mapId = 0;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         DungeonOption const* d = FindDungeon(contentKey);
         if (!d)
         {
