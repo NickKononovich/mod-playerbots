@@ -1162,6 +1162,66 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     }
 
 
+    // [deaths14] Resurrection Sickness (spell 15007, Player::SpiritHealer... ResurrectPlayer: all stats and the damage it
+    // deals at a quarter for (level - CONFIG_DEATH_SICKNESS_LEVEL + 1) minutes, ten from the tenth level above it): the
+    // judge's numbers hold only for the bot without it - a wanderer or a camp it walks past meets a quarter of the bot.
+    // b354: Laaral L14 (3 deaths, 83-151 s after its rise) and Rumanatol L13 (87 s) rose at the Blood Watch spirit
+    // healer, walked out at 139 max health and 2.7 dps and died to single Elder Brown Bears L15-16. The bot stays where
+    // it rose (the spirit healer's graveyard) until the aura is gone - a game mechanic's end, not a clock of its own
+    // [deaths21] ... a co-op / help party member too: b368 Peny L13 (help party of Guinudrond in Westfall) died twice
+    // under the sickness, 33 s and 174 s after its spirit-healer rise at 132 max health, following its party into the
+    // Riverpaw camp; its leader waits for it ("under Resurrection Sickness", NewRpgGroupNotReadyTrigger)
+    // [sick37] ... before the recovery's walk to its hub and any vendor run: the hold sat after both, so a sick bot
+    // walked its RECOVER walk (b388: Aestymro 12 deaths at Longshore, rising sick and walking back through the camp)
+    // and its vendor runs into camps - 15 deaths under the sickness in two windows
+    if (!bot->IsInCombat() && !bot->IsInFlight() && !bot->GetTransport())
+    {
+        constexpr uint32 SPELL_RESURRECTION_SICKNESS = 15007;
+
+        static std::mutex sickLock;
+        static std::unordered_set<uint32> sickLogged;
+        uint32 const low = bot->GetGUID().GetCounter();
+        if (Aura* sickness = bot->GetAura(SPELL_RESURRECTION_SICKNESS))
+        {
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(sickLock);
+                fresh = sickLogged.insert(low).second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[deaths14] {} L{} waits out Resurrection Sickness at ({:.0f},{:.0f}): {} s left, "
+                         "max health {} - no field work until it ends",
+                         bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(),
+                         std::max(0, sickness->GetDuration()) / IN_MILLISECONDS, bot->GetMaxHealth());
+            if (status != RPG_IDLE)
+                info.ChangeToIdle();
+            // [sick37] it waits at a safe spot: a rise in an idle mob's reach (a wanderer's area, a patrol's beat)
+            // steps out of every reach first, as the login escape does
+            {
+                std::string who;
+                std::vector<G3D::Vector3> spots;
+                if (!bot->isMoving() && SoloSafety::StandsInReach(bot, who, spots))
+                    for (G3D::Vector3 const& at : spots)
+                    {
+                        Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+                        if (!route.found || !route.complete)
+                            continue;
+                        if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+                            continue;
+                        LOG_INFO("playerbots", "[sick37] {} L{} under Resurrection Sickness in the reach of {}: steps "
+                                 "out to ({:.0f},{:.0f}) to wait there",
+                                 bot->GetName(), bot->GetLevel(), who, at.x, at.y);
+                        return true;
+                    }
+            }
+            if (bot->isMoving())
+                bot->StopMoving();
+            return true;
+        }
+        std::lock_guard<std::mutex> guard(sickLock);
+        sickLogged.erase(low);
+    }
+
     // [regress10] the recovery after a death comes first: before, only a far walk's MoveFarTo took it, so a quest spot
     // in reach of the corpse was fought at once (b345 Guinudrond L11 at the Silver Stream Mine)
     if (!bot->IsInCombat() && SoloSafety::HoldsPulls(bot) && SoloSafetyStep())
@@ -1212,43 +1272,6 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     if (NewRpgFishing::PutPoleAway(bot))
         return true;
 
-    // [deaths14] Resurrection Sickness (spell 15007, Player::SpiritHealer... ResurrectPlayer: all stats and the damage it
-    // deals at a quarter for (level - CONFIG_DEATH_SICKNESS_LEVEL + 1) minutes, ten from the tenth level above it): the
-    // judge's numbers hold only for the bot without it - a wanderer or a camp it walks past meets a quarter of the bot.
-    // b354: Laaral L14 (3 deaths, 83-151 s after its rise) and Rumanatol L13 (87 s) rose at the Blood Watch spirit
-    // healer, walked out at 139 max health and 2.7 dps and died to single Elder Brown Bears L15-16. The bot stays where
-    // it rose (the spirit healer's graveyard) until the aura is gone - a game mechanic's end, not a clock of its own
-    // [deaths21] ... a co-op / help party member too: b368 Peny L13 (help party of Guinudrond in Westfall) died twice
-    // under the sickness, 33 s and 174 s after its spirit-healer rise at 132 max health, following its party into the
-    // Riverpaw camp; its leader waits for it ("under Resurrection Sickness", NewRpgGroupNotReadyTrigger)
-    if (!bot->IsInCombat() && !bot->IsInFlight() && !bot->GetTransport())
-    {
-        constexpr uint32 SPELL_RESURRECTION_SICKNESS = 15007;
-
-        static std::mutex sickLock;
-        static std::unordered_set<uint32> sickLogged;
-        uint32 const low = bot->GetGUID().GetCounter();
-        if (Aura* sickness = bot->GetAura(SPELL_RESURRECTION_SICKNESS))
-        {
-            bool fresh = false;
-            {
-                std::lock_guard<std::mutex> guard(sickLock);
-                fresh = sickLogged.insert(low).second;
-            }
-            if (fresh)
-                LOG_INFO("playerbots", "[deaths14] {} L{} waits out Resurrection Sickness at ({:.0f},{:.0f}): {} s left, "
-                         "max health {} - no field work until it ends",
-                         bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(),
-                         std::max(0, sickness->GetDuration()) / IN_MILLISECONDS, bot->GetMaxHealth());
-            if (status != RPG_IDLE)
-                info.ChangeToIdle();
-            if (bot->isMoving())
-                bot->StopMoving();
-            return true;
-        }
-        std::lock_guard<std::mutex> guard(sickLock);
-        sickLogged.erase(low);
-    }
 
     switch (status)
     {
