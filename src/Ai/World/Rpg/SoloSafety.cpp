@@ -3132,7 +3132,12 @@ namespace SoloSafety
                         wallJudge = true;
                         Verdict const pull = Judge(bot, mob);
                         wallJudge = false;
-                        if (pull.kind == Verdict::Kind::Win || pull.kind == Verdict::Kind::RestFirst)
+                        // [wall18] only the pull the rule is for: one mob drawn out from a pull spot, won with its
+                        // health now. b359: of 28 "pulls instead of walling", Manue's were wins only at full (ehp 113 of
+                        // 243) and Gnetlibozz's a 2-mob pack at 213 of 225 in Silver Stream Mine - it engaged the next
+                        // pack there, 4 came, it died
+                        if (pull.kind == Verdict::Kind::Win && pull.mobs == 1 && pull.pullSpot)
+
                         {
                             static std::mutex pullLogLock;
                             static std::unordered_set<uint64> pullLogged;
