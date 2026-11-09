@@ -547,7 +547,7 @@ void GuildCoordinator::LoadMailboxes()
 void GuildCoordinator::UpdateTransfers()
 {
     uint32 const now = NowSec();
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     std::vector<std::string> logs;
     struct Choice  // the channel picked and what each one costs
     {
@@ -1707,7 +1707,7 @@ void GuildCoordinator::RunTransfers(uint32 diff)
     std::vector<uint32> pickups;
     std::vector<std::pair<uint32, uint32>> learn;  // [recipes] (member, recipe item guid) it learns now
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         learn.swap(recipeLearn_);
         for (auto const& [id, t] : transfers_)
             if (t.channel != Transfer::BANK && !t.mailed)
@@ -1945,7 +1945,7 @@ void GuildCoordinator::RunTransfers(uint32 diff)
         }
     }
 
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     for (Outcome const& o : outcomes)
     {
         auto const it = transfers_.find(o.id);

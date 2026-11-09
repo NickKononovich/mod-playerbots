@@ -207,7 +207,9 @@ struct Party
     std::set<ObjectGuid> campDead;
 };
 
-// [b372] recursive: AssignLocked (held) -> WalkYd -> SoloSafety::RouteCosts -> JudgesPulls takes it again (b371 crash)
+// [b372] recursive: AssignLocked (held) -> WalkYd -> SoloSafety::RouteCosts -> JudgesPulls took it again (b371 crash).
+// [lock23] JudgesPulls takes it no more (partyLows and the core group); the recursion stays as the guard of a path
+// the audit did not see
 std::recursive_mutex lock;
 std::unordered_map<uint32, Posting> postings;
 std::unordered_map<uint64, Bucket> buckets;
@@ -3492,14 +3494,14 @@ bool JudgesPulls(Player* bot)
 {
     if (!bot)
         return false;
+    // [lock23] no board lock: the route search asks this (SoloSafety::RouteCosts), and the global leader's lock_ is
+    // held over route searches (NextStep -> TripRefused) while the board's holder calls the global leader (lock
+    // order board -> lock_): a board lock here closed the cycle. A formed party's members are partyLows (a leaf
+    // lock); its leader is the core group's leader (the party's group is made with it, CoopLeaveOperation hands it on)
+    if (InParty(bot->GetGUID().GetCounter()))
     {
-        std::lock_guard<std::recursive_mutex> guard(lock);
-        auto const me = postings.find(bot->GetGUID().GetCounter());
-        if (me != postings.end() && me->second.party)
-        {
-            auto const party = parties.find(me->second.party);
-            return party != parties.end() && party->second.formed && party->second.leader == bot->GetGUID();
-        }
+        Group* group = bot->GetGroup();
+        return group && group->GetLeaderGUID() == bot->GetGUID();
     }
     return OpenWorldGroupLeader(bot, nullptr);  // [deaths12]
 }

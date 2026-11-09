@@ -335,7 +335,7 @@ void GuildCoordinator::UpdateFounding()
             }
         }
 
-        std::lock_guard<std::mutex> lockGuard(lock_);
+        CoordLock lockGuard(lock_, __func__);
         if (found_.guildId != guild->GetId())
         {
             if (found_.founderLow && found_.charterGuid)
@@ -367,7 +367,7 @@ void GuildCoordinator::UpdateFounding()
     int32 spot = -1;
     std::vector<uint32> eligible;  // may sign when standing next to the founder
     {
-        std::lock_guard<std::mutex> lockGuard(lock_);
+        CoordLock lockGuard(lock_, __func__);
         found_.guildId = 0;
         found_.joinState.clear();
         found_.tabGmLow = 0;
@@ -631,7 +631,7 @@ void GuildCoordinator::UpdateFounding()
                 logs.push_back(f->GetName() + " could not turn in the charter at " + gmSpot.name);
         }
     }
-    std::lock_guard<std::mutex> lockGuard(lock_);
+    CoordLock lockGuard(lock_, __func__);
     found_.charterGuid = charter.GetRawValue();
     found_.charterName = charterName;
     found_.signs = founder ? SignCount(charter) : 0;

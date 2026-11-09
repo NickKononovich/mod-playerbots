@@ -983,6 +983,8 @@ void GuildCoordinator::Update(uint32 diff)
     if (!loaded_)
         return;
 
+    DrainDeferredLoot();  // [lock23]
+
     uint32 const ms = getMSTime();
     ticks_.emplace_back(ms, diff);
     aiTicks_.emplace_back(ms, uint32(std::min<uint64>(aiTimeTotalUs_.exchange(0), UINT32_MAX)));
@@ -1033,7 +1035,7 @@ void GuildCoordinator::Update(uint32 diff)
 
 void GuildCoordinator::UpdateLeaders()
 {
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     for (uint8 g = 0; g < 3; ++g)
     {
         char const grp = char('A' + g);
@@ -1226,7 +1228,7 @@ void GuildCoordinator::UpdateWanted()
     std::unordered_map<uint32, float> copperPerXp;  // member -> the core's quest XP -> money rate (RecordPace)
     std::set<std::pair<uint32, uint32>> called;     // [econ2] (member, line) the leader calls to craft / gather / buy
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         pointValue = pointValue_;
         for (auto const& [low, picks] : professions_)
             for (ProfessionPick const& pick : picks)
@@ -1383,7 +1385,7 @@ void GuildCoordinator::UpdateWanted()
     {
         std::map<uint32, std::map<std::string, GearNeed>> gear;
         {
-            std::lock_guard<std::mutex> guard(lock_);
+            CoordLock guard(lock_, __func__);
             gear = gearWanted_;
         }
         for (auto const& [item, reasons] : gear)
@@ -1562,7 +1564,7 @@ void GuildCoordinator::UpdateWanted()
         for (auto const& [item, amount] : items)
             crafterNeedUnits[low][item] = uint32(std::ceil(amount - 0.001));
 
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     wanted_ = std::move(list);
     crafterLack_ = std::move(crafterLack);
     crafterNeed_ = std::move(crafterNeedUnits);  // [econ2]
@@ -1572,7 +1574,7 @@ void GuildCoordinator::UpdateWanted()
 
 bool GuildCoordinator::IsWanted(uint32 itemId) const
 {
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     for (WantedItem const& w : wanted_)
         if (w.itemId == itemId)
             return w.Short() > 0 || w.optional;
@@ -1583,7 +1585,7 @@ void GuildCoordinator::RequestWithdraw(Player* bot, uint32 itemId, std::string c
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
         return;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto& list = withdraw_[bot->GetGUID().GetCounter()];
     for (auto const& [item, text] : list)
         if (item == itemId)
@@ -1604,7 +1606,7 @@ void GuildCoordinator::UpdateOrders()
         // [questrate] gatherer -> the questing formula's numbers (the plan's log line)
         std::map<uint32, std::string> questWhy;
         {
-            std::lock_guard<std::mutex> guard(lock_);
+            CoordLock guard(lock_, __func__);
             for (WantedItem const& w : wanted_)
                 if (!w.optional && w.Short() && sGuildGatherPlan.Gatherable(w.itemId))
                 {
@@ -1633,7 +1635,7 @@ void GuildCoordinator::UpdateOrders()
         if (gatherStockCalls_++ % GATHER_STOCK_LOG_EVERY == 0)  // a log cadence, no decision
             sGuildGatherPlan.LogStock(stock);
     }
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     uint32 const now = Now();
     // [guild50] expected items that appeared become held for their member; one that did not come (cast broken, no
     // reward) is dropped once the bot no longer casts
@@ -2289,7 +2291,7 @@ void GuildCoordinator::UpdateOrders()
 
 void GuildCoordinator::SetOrder(uint32 low, GuildOrder order, std::string const& decision)
 {
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     BotState& st = bots_[low];
     order.since = Now();
     if (order.status.empty())
@@ -2991,7 +2993,7 @@ void GuildCoordinator::UpdateProfessions()
                std::find(row.secondary.begin(), row.secondary.end(), line) != row.secondary.end();
     };
 
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     // what the plan wants crafted that no guild crafter can make yet (nobody knows the recipe)
     struct Need
     {
@@ -3588,7 +3590,7 @@ void GuildCoordinator::UpdateProfessions()
 
 float GuildCoordinator::PlannedGain(uint32 low, uint8 group) const
 {
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(low);
     if (itr == bots_.end())
         return 0.0f;
@@ -3631,7 +3633,7 @@ GuildProfessionKind GuildCoordinator::ProfessionCall(Player* bot, uint32* skillL
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
         return GuildProfessionKind::NONE;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     if (itr == bots_.end())
         return GuildProfessionKind::NONE;
@@ -3690,7 +3692,7 @@ bool GuildCoordinator::ProfessionErrand(Player* bot, uint32 skillLine, bool tool
                                                                  : SameTown(bot->GetAreaId(), npcArea);
     if (!here)
         return false;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     if (itr == bots_.end())
         return false;
@@ -3717,7 +3719,7 @@ bool GuildCoordinator::NeedsForOwnCalls(Player* bot, uint32 itemId) const
                 for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
                     if (quest->RequiredItemId[i] == itemId)
                         return true;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const own = crafterNeed_.find(bot->GetGUID().GetCounter());
     if (own == crafterNeed_.end())
         return false;
@@ -3896,7 +3898,7 @@ std::string GuildCoordinator::GreyQuestNeed(Player* bot, Quest const* quest) con
             }
             uint32 forLow = 0;
             {
-                std::lock_guard<std::mutex> guard(lock_);
+                CoordLock guard(lock_, __func__);
                 forLow = PlannedFor(item);
             }
             if (forLow)
@@ -3953,7 +3955,7 @@ bool GuildCoordinator::UrgentTask(Player* bot, std::string* why) const
 {
     if (!bot)
         return false;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     if (itr == bots_.end())
         return false;
@@ -3987,7 +3989,7 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
     uint32 const low = bot->GetGUID().GetCounter();
     std::vector<std::pair<WorldPosition, std::string>> stops;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         auto const itr = bots_.find(low);
         if (itr == bots_.end() || itr->second.fiveId)
             return;
@@ -4018,7 +4020,7 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
     }
     if (refused.empty())
         return;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto& entry = townRefused_[low];
     if (entry.first != bot->GetLevel())
         entry = {bot->GetLevel(), {}};
@@ -4106,7 +4108,7 @@ void GuildCoordinator::AddCoopTask(uint32 low, uint32 partnerLow, uint32 questId
     o.reason = why;
     o.status = "co-op party (New RPG)";
     o.executable = false;  // New RPG co-op runs it, never NextStep
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     ClassifyTask(o);
     BotState& st = bots_[low];
     o.since = Now();
@@ -4120,7 +4122,7 @@ void GuildCoordinator::AddCoopTask(uint32 low, uint32 partnerLow, uint32 questId
 
 void GuildCoordinator::EndCoopTask(uint32 low, uint32 questId, std::string const& why)
 {
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(low);
     if (itr == bots_.end())
         return;
@@ -4259,7 +4261,7 @@ void GuildCoordinator::UpdateGear()
     GuildBankRun::CountBank(guild, bank);
     std::vector<WantedItem> wanted;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         wanted = wanted_;
     }
     std::vector<GearPick> now, plan, future;
@@ -4273,7 +4275,7 @@ void GuildCoordinator::UpdateGear()
     LOG_INFO("playerbots", "[guild50] gear plan {} L{}: now {}, plan {}, rewards {};{}", member->GetName(),
              member->GetLevel(), now.size(), plan.size(), rewards.size(), log.str());
 
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     BotState& st = bots_[member->GetGUID().GetCounter()];
     st.gearNow = std::move(now);
     st.gearPlan = std::move(plan);
@@ -4892,7 +4894,7 @@ int32 GuildCoordinator::RewardChoice(Player* bot, Quest const* quest)
 {
     if (!bot || !quest || !IsPlanned(bot->GetGUID().GetCounter()) || quest->GetRewChoiceItemsCount() <= 1)
         return -1;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     if (itr == bots_.end())
         return -1;
@@ -4911,10 +4913,68 @@ int32 GuildCoordinator::RewardChoice(Player* bot, Quest const* quest)
 // ---------------------------------------------------------------------------------------------------------------------
 // loot flow
 // ---------------------------------------------------------------------------------------------------------------------
+namespace
+{
+    thread_local uint32 coordLockDepth = 0;  // [lock23] lock_ held on this thread (its CoordLock depth)
+}
+
+CoordLock::CoordLock(std::mutex& m, char const* where)
+{
+    if (coordLockDepth++)
+    {
+        // one line per place (a log line, no decision)
+        static std::mutex logLock;
+        static std::set<std::string> logged;
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> guard(logLock);
+            fresh = logged.insert(where ? where : "?").second;
+        }
+        if (fresh)
+            LOG_ERROR("playerbots", "[lock23] the global leader's lock taken again on its own thread in {}: runs "
+                      "under the hold it has", where ? where : "?");
+        return;
+    }
+    m.lock();
+    m_ = &m;
+}
+
+CoordLock::~CoordLock()
+{
+    if (m_)
+        m_->unlock();
+    --coordLockDepth;
+}
+
+bool CoordLock::Held() { return coordLockDepth != 0; }
+
+void GuildCoordinator::DrainDeferredLoot()
+{
+    std::vector<std::tuple<ObjectGuid, ObjectGuid, uint32>> loot;
+    {
+        std::lock_guard<std::mutex> guard(deferredLock_);
+        loot.swap(deferredLoot_);
+    }
+    for (auto const& [playerGuid, itemGuid, count] : loot)
+        if (Player* player = ObjectAccessor::FindPlayer(playerGuid))
+            if (Item* item = player->GetItemByGuid(itemGuid))
+                OnLoot(player, item, count);
+}
+
 void GuildCoordinator::OnLoot(Player* player, Item* item, uint32 count)
 {
     if (!player || !item || !IsPlanned(player->GetGUID().GetCounter()))
         return;
+    // [lock23] a loot hook fired by a core call made under lock_ on this thread (a cast, an item moved by a step):
+    // taken at the next Update, out of the lock - its decisions walk the same state the holder is working on
+    if (CoordLock::Held())
+    {
+        LOG_INFO("playerbots", "[lock23] {} loot of {} x{} deferred: the global leader's lock is held on this thread",
+                 player->GetName(), item->GetEntry(), count);
+        std::lock_guard<std::mutex> guard(deferredLock_);
+        deferredLoot_.emplace_back(player->GetGUID(), item->GetGUID(), count);
+        return;
+    }
     FiveLoot(player, item, count);  // [guild60] a five's drop: its report, the fate of spare BoP
     sGuildGatherPlan.OnGathered(player, item->GetEntry(), count);  // [gather] the plan's measured yield
     ItemTemplate const* proto = item->GetTemplate();
@@ -4930,7 +4990,7 @@ void GuildCoordinator::OnLoot(Player* player, Item* item, uint32 count)
     uint32 const low = player->GetGUID().GetCounter();
     PlayerbotAI* ai = GET_PLAYERBOT_AI(player);
     bool const gathering = ai && ai->rpgInfo.GetStatus() == RPG_DO_GATHER;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     BotState& st = bots_[low];
     // [tasks] the gathering pace: node units looted while gathering
     if (auto const src = gatherSource_.find(item->GetEntry()); gathering && src != gatherSource_.end())
@@ -4954,7 +5014,7 @@ void GuildCoordinator::ProcessLoot()
 {
     std::vector<LootReport> reports;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         reports.swap(lootQueue_);
     }
     for (LootReport const& report : reports)
@@ -5021,7 +5081,7 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
     if (PlayerbotAI* ai = GET_PLAYERBOT_AI(looter))
         looterUsage = ai->GetAiObjectContext()->GetValue<ItemUsage>("item usage", std::to_string(report.itemId))->Get();
 
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     BotState& st = bots_[looterLow];
     auto held = std::find_if(st.held.begin(), st.held.end(),
                              [&](HeldItem const& h) { return h.itemGuidLow == report.itemGuidLow; });
@@ -5174,7 +5234,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
     GuildRunStep step;
     if (!bot || !botAI || !IsPlanned(bot->GetGUID().GetCounter()))
         return step;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     if (itr == bots_.end())
         return step;
@@ -5627,7 +5687,7 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
         return 0;
     uint32 const low = bot->GetGUID().GetCounter();
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(low);
     if (itr == bots_.end() || !itr->second.run)
         return 0;
@@ -5699,7 +5759,7 @@ bool GuildCoordinator::IsHeld(Player* bot, Item* item)
 {
     if (!bot || !item || !IsPlanned(bot->GetGUID().GetCounter()))
         return false;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     if (itr == bots_.end())
         return false;
@@ -5732,7 +5792,7 @@ void GuildCoordinator::SellMarked(PlayerbotAI* botAI)
         return;
     std::vector<uint32> sell;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         auto const itr = bots_.find(bot->GetGUID().GetCounter());
         if (itr == bots_.end())
             return;
@@ -5784,7 +5844,7 @@ bool GuildCoordinator::HasMarkedSale(Player* bot) const
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
         return false;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     return itr != bots_.end() && !itr->second.sell.empty();
 }
@@ -5794,7 +5854,7 @@ void GuildCoordinator::SetOrderStatus(Player* bot, std::string const& status)
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
         return;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     if (itr == bots_.end())
         return;
@@ -5824,7 +5884,7 @@ void GuildCoordinator::SetWait(Player* bot, std::string const& reason)
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
         return;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     bots_[bot->GetGUID().GetCounter()].waitReason = reason;
 }
 
@@ -5849,7 +5909,7 @@ void GuildCoordinator::OnKilledByCreature(Player* killed, Creature* killer)
     report.killer = killer->GetName() + " L" + std::to_string(killer->GetLevel()) + " (entry " +
                     std::to_string(killer->GetEntry()) + ")";
     report.cause = ConText(killed, killer);
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     deathQueue_.push_back(report);
 }
 
@@ -5861,7 +5921,7 @@ void GuildCoordinator::OnJustDied(Player* killed)
     report.playerLow = killed->GetGUID().GetCounter();
     report.cause = killed->IsInWater() ? "water / environment" : "environment / not a creature";
     report.killer = "-";
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     deathQueue_.push_back(report);
 }
 
@@ -5873,14 +5933,14 @@ void GuildCoordinator::ProcessDeaths()
     ++deathCall_;
     std::vector<DeathReport> reports;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         if (deathQueue_.empty() && envPending_.empty())
             return;
         reports.swap(deathQueue_);
     }
     std::map<uint32, DeathReport> byBot;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         for (DeathReport const& r : reports)
         {
             if (r.creature)
@@ -5919,7 +5979,7 @@ void GuildCoordinator::ProcessDeaths()
     if (byBot.empty())
         return;
     uint32 const now = Now();
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     for (auto const& [low, r] : byBot)
     {
         Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
@@ -5958,7 +6018,7 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
     for (uint32 const line : {uint32(SKILL_MINING), uint32(SKILL_HERBALISM), uint32(SKILL_SKINNING),
                               uint32(SKILL_FISHING)})
         work += bot->HasSkill(line) ? uint64(bot->GetPureSkillValue(line)) << 32 : 0;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     BotState& st = bots_[bot->GetGUID().GetCounter()];
     work += uint64(st.casts) << 48;
     // [tasks] the gathering pace: seconds spent in DO_GATHER, per gathering skill the bot has
@@ -6032,7 +6092,7 @@ void GuildCoordinator::UpdateHealth()
             aiBots.emplace_back(us, plan_[i].low);
     std::sort(aiBots.begin(), aiBots.end(), std::greater<>());
 
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     uint32 online = 0, dead = 0, stuck = 0;
     RateSample sample;
     sample.at = now;
@@ -6228,7 +6288,7 @@ void GuildCoordinator::SendOrders(Player* player)
     if (!player || !player->GetSession() || player->GetSession()->IsHeadless())
         return;
     uint32 const now = Now();
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     SendLine(player, "OS;n=" + std::to_string(plan_.size()));
     SendLine(player, "OR;" + OrdersText(RaidLeaderText('A'), 40) + ";" + OrdersText(RaidLeaderText('B'), 40) + ";" +
                          OrdersText(!found_.state.empty() ? found_.state  // [guild80] founding / bank tab state
@@ -6360,7 +6420,7 @@ void GuildCoordinator::SendTasks(Player* player, uint32 num)
     if (!player || !player->GetSession() || player->GetSession()->IsHeadless())
         return;
     uint32 const now = Now();
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     PlanRow const* row = nullptr;
     for (PlanRow const& r : plan_)
         if (r.num == num)
@@ -6435,7 +6495,7 @@ void GuildCoordinator::SendResources(Player* player)
     std::unordered_map<uint32, uint32> wantedNeed;
     std::unordered_map<uint32, std::pair<std::string, bool>> wantedWhy;  // [guild70] item -> (why, optional)
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         for (WantedItem const& w : wanted_)
         {
             if (w.need)
@@ -6564,7 +6624,7 @@ void GuildCoordinator::OnCrafted(Player* bot, uint32 spellId, uint32 before, uin
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
         return;
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     craftsDone_.push_back({Now(), bot->GetGUID().GetCounter(), spellId, before, after});
     while (craftsDone_.size() > 40)
         craftsDone_.pop_front();
@@ -6710,7 +6770,7 @@ void GuildCoordinator::SendPlan(Player* player)
         }
     }
 
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     for (auto const& [low, st] : bots_)  // [guild70] the leader's BUY orders: who pays what
         for (GuildOrder const& o : st.orders)
             if (o.type == GuildOrderType::BUY)

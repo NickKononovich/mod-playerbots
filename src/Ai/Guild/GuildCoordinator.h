@@ -16,9 +16,11 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <tuple>
 #include <vector>
 
 #include "Define.h"
+#include "ObjectGuid.h"  // [lock23]
 #include "QuestDef.h"  // [questrate] QUEST_OBJECTIVES_COUNT
 #include "TravelMgr.h"
 
@@ -213,6 +215,23 @@ struct GuildFiveReport
     std::vector<std::pair<std::string, uint32>> deaths;
 };
 
+// [lock23] the global leader's lock_ with its holder known on this thread. A core call made under it (a cast, an item
+// moved) can fire a player hook into the leader on the same thread (b366: DecideLoot -> ItemUsage -> IsHeld threw
+// resource_deadlock_would_occur on the std::mutex): the hooks defer themselves while it is held (Held), and a
+// method that takes it again on its own thread logs that and runs under the hold it already has (no second lock)
+class CoordLock
+{
+public:
+    CoordLock(std::mutex& m, char const* where);
+    ~CoordLock();
+    CoordLock(CoordLock const&) = delete;
+    CoordLock& operator=(CoordLock const&) = delete;
+    static bool Held();
+
+private:
+    std::mutex* m_{nullptr};  // null: the thread held it already
+};
+
 class GuildCoordinator
 {
 public:
@@ -288,6 +307,8 @@ public:
     bool HasMarkedSale(Player* bot) const;
     void SetOrderStatus(Player* bot, std::string const& status);
     void OnLoot(Player* player, Item* item, uint32 count);
+    // [lock23] the loots a hook got while this thread held lock_: taken at the next Update, out of the lock
+    void DrainDeferredLoot();
     void OnKilledByCreature(Player* killed, Creature* killer);
     void OnJustDied(Player* killed);
     void OnRpgStatus(Player* bot, uint8 status);
@@ -846,6 +867,8 @@ private:
     std::unordered_map<uint32, std::vector<uint32>> questsByMap_;  // map -> takeable quests, by min level
 
     mutable std::mutex lock_;
+    std::mutex deferredLock_;  // [lock23] a leaf: nothing is called under it
+    std::vector<std::tuple<ObjectGuid, ObjectGuid, uint32>> deferredLoot_;  // player, item, count
     // [regress10] the REPAIR calls the map threads read (Repair), written by UpdateOrders
     mutable std::mutex repairLock_;
     std::unordered_map<uint32, RepairCall> repairCalls_;

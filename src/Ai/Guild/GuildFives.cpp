@@ -644,7 +644,7 @@ uint32 GuildCoordinator::FormFive(uint32 leaderLow, std::vector<uint32> const& m
     for (uint32 low : members)
         if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low)))
             roles[low] = PlanRole(low, p);
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     return FormFiveLocked(leaderLow, members, *d, roles, forced ? "order by command" : "global leader's decision",
                           forced, error);
 }
@@ -653,7 +653,7 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
 {
     bool running = false;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         auto const itr = fives_.find(fiveId);
         if (itr == fives_.end())
             return;
@@ -667,7 +667,7 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
         return;
     }
     runs.ForgetFive(fiveId);
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = fives_.find(fiveId);
     if (itr == fives_.end())
         return;
@@ -730,7 +730,7 @@ void GuildCoordinator::UpdateFives()
     };
     std::map<uint32, Leader::Dungeon::FiveRunRequest> requests;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         for (auto& [id, five] : fives_)
         {
             if (five.stage != GuildFive::Stage::Gather)
@@ -793,7 +793,7 @@ void GuildCoordinator::UpdateFives()
     {
         std::vector<ObjectGuid> members;
         {
-            std::lock_guard<std::mutex> guard(lock_);
+            CoordLock guard(lock_, __func__);
             auto const itr = fives_.find(id);
             if (itr == fives_.end())
                 continue;
@@ -820,7 +820,7 @@ void GuildCoordinator::UpdateFives()
         if (runId.empty())
         {
             {
-                std::lock_guard<std::mutex> guard(lock_);
+                CoordLock guard(lock_, __func__);
                 auto const itr = fives_.find(id);
                 if (itr != fives_.end())
                     itr->second.stage = GuildFive::Stage::Gather;  // nothing runs: disbanded as a gathering five
@@ -828,7 +828,7 @@ void GuildCoordinator::UpdateFives()
             DisbandFive(id, "dungeon cannot start: " + error);
             continue;
         }
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         auto const itr = fives_.find(id);
         if (itr == fives_.end())
             continue;
@@ -852,7 +852,7 @@ void GuildCoordinator::AutoFive()
         return;
     // a dungeon counts only when cleared in its own band: a member above the band with it uncleared has missed it
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         for (DungeonOption const& d : dungeons_)
             for (PlanRow const& row : plan_)
             {
@@ -872,7 +872,7 @@ void GuildCoordinator::AutoFive()
         // the free members of each dungeon's band (lock), their upgrades (no lock: the bots' own values)
         std::vector<std::pair<DungeonOption const*, std::vector<FiveCandidate>>> pools;
         {
-            std::lock_guard<std::mutex> guard(lock_);
+            CoordLock guard(lock_, __func__);
             for (DungeonOption const& d : dungeons_)
             {
                 std::vector<FiveCandidate> pool = Candidates(d, true);
@@ -922,7 +922,7 @@ void GuildCoordinator::AutoFive()
         std::string const why = "free: a tank, a healer and 3 dps of level " + std::to_string(best->minLevel) + "-" +
                                 std::to_string(best->maxLevel) + "; not cleared by " + std::to_string(clears) +
                                 ", upgrades for " + std::to_string(upgrades);
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         // still free (nothing changed since the look: world thread)
         for (uint32 low : members)
             if (!FreeForFive(low, ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low))))
@@ -954,7 +954,7 @@ std::string GuildCoordinator::FormFiveCommand(Player* issuer, std::string const&
             return "";
         std::string why;
         {
-            std::lock_guard<std::mutex> guard(lock_);
+            CoordLock guard(lock_, __func__);
             if (!FreeForFive(low, p, &why) && !(IsHuman(p) && why == "in a group"))
                 return p->GetName() + ": " + why;
         }
@@ -975,7 +975,7 @@ std::string GuildCoordinator::FormFiveCommand(Player* issuer, std::string const&
     // the rest from the free members (the band and the need are not checked: a forced test)
     std::vector<FiveCandidate> pool;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         pool = Candidates(*d, false);
     }
     uint32 tanks = 0, healers = 0, dps = 0;
@@ -1017,7 +1017,7 @@ std::string GuildCoordinator::FormFiveCommand(Player* issuer, std::string const&
     std::string error;
     uint32 id = 0;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         id = FormFiveLocked(leaderLow, chosen, *d, roles,
                             "order by command" + (levels.empty() ? std::string() : " (out of level: " + levels + ")"),
                             true, &error);
@@ -1033,7 +1033,7 @@ std::string GuildCoordinator::FormFiveCommand(Player* issuer, std::string const&
 // ---------------------------------------------------------------------------------------------------------------------
 void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report)
 {
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const itr = fives_.find(fiveId);
     if (itr == fives_.end())
         return;
@@ -1219,7 +1219,7 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
 
 bool GuildCoordinator::InSameActiveFive(uint32 a, uint32 b) const
 {
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     for (auto const& [id, five] : fives_)
     {
         if (five.stage != GuildFive::Stage::Gather && five.stage != GuildFive::Stage::Run)
@@ -1323,7 +1323,7 @@ void GuildCoordinator::SendFives(Player* player) const
 
 std::string GuildCoordinator::FivesText() const
 {
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     std::ostringstream out;
     out << "fives: " << fives_.size() << ", auto " << (autoFives_ ? "on" : "off") << ", runs recorded " << runs_.size();
     for (auto const& [id, five] : fives_)
@@ -1376,7 +1376,7 @@ bool GuildCoordinator::FiveRollVote(Player* bot, uint64 lootGuid, uint32 itemId,
     std::pair<uint32, bool> decided{0, false};
     bool known = false;
     {
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         auto const st = bots_.find(low);
         if (st == bots_.end() || !st->second.fiveId)
             return false;
@@ -1414,7 +1414,7 @@ bool GuildCoordinator::FiveRollVote(Player* bot, uint64 lootGuid, uint32 itemId,
             if (Player* e = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(enchanter));
                 e && e->GetMap() == bot->GetMap() && CanDisenchant(e, proto))
                 decided = {enchanter, true};
-        std::lock_guard<std::mutex> guard(lock_);
+        CoordLock guard(lock_, __func__);
         auto const five = fives_.find(fiveId);
         if (five == fives_.end())
             return false;
@@ -1444,7 +1444,7 @@ void GuildCoordinator::FiveLoot(Player* player, Item* item, uint32 count)
         bopSpare = UpgradeGain(player, proto, item->GetItemRandomPropertyId()) <= 0.0f;
         disenchant = bopSpare && CanDisenchant(player, proto);
     }
-    std::lock_guard<std::mutex> guard(lock_);
+    CoordLock guard(lock_, __func__);
     auto const st = bots_.find(low);
     if (st == bots_.end() || !st->second.fiveId)
         return;
