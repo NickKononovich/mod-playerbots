@@ -146,8 +146,12 @@ public:
     static std::string LastResolveStats();
     // [guild90] seconds until the first spent camp of the quest respawns (spawntimesecs); 0: none pending
     static uint32 EarliestRespawn(Player* bot, uint32 questId);
+    // [qeff32] at its spot: the grind target serves an open objective of the quest, or a living source of one that no
+    // other player has tapped stands within the spot's circle (another mob to grind is no reason to stay)
+    static bool ObjectiveTargetHere(Player* bot, uint32 questId, Unit* grindTarget);
     // [guild90] the cheapest other quest in the log (travel at QUEST_TRAVEL_SPEED + the work left); -1: none
-    float OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest);
+    // [qeff32] walkSeconds (optional): the walk alone to the chosen quest's nearest spot
+    float OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest, float* walkSeconds = nullptr);
     // [guild12] a timed quest: the walk to its nearest ender at the bot's run speed fits its time
     static bool TimedQuestFits(Player* bot, Quest const* quest);
     // [guild13] the spawn (with its floor's height) of the quest's ender nearest the bot on its map

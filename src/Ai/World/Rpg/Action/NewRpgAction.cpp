@@ -2658,8 +2658,12 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             {
                 std::string const resolved = LastResolveStats();  // before OtherQuestSeconds resolves the others
                 uint32 other = 0;
-                float const otherSeconds = OtherQuestSeconds(questId, other);
-                if (!other || float(wait) <= otherSeconds)
+                float otherWalk = 0.0f;
+                float const otherSeconds = OtherQuestSeconds(questId, other, &otherWalk);
+                // [qeff32] the wait is the bot's time idle; another open objective is worked meanwhile unless its
+                // walk there and back here costs more than the wait (it comes back at the respawn: NoteResume).
+                // Before, it waited whenever the respawn was shorter than the other quest's whole remaining time
+                if (!other || float(wait) <= 2.0f * otherWalk)
                 {
                     if (FirstWaitLog(bot, questId, wait / 30 + 1))
                     {
@@ -2677,8 +2681,10 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                 }
                 QuestStats::LogEvent(bot, "target-switch", other,
                                      "from=q" + std::to_string(questId) + " wait_s=" + std::to_string(wait) +
-                                         " other_s=" + std::to_string(uint32(otherSeconds)) +
-                                         " reason=all camps spent, the other quest is cheaper than the respawn");
+                                         " other_s=" + std::to_string(uint32(otherSeconds)) + " walk_back_s=" +
+                                         std::to_string(uint32(2.0f * otherWalk)) +
+                                         " reason=all camps spent, the other quest is worked until the respawn "
+                                         "[qeff32]");
                 NoteResume(bot, questId);  // [flit] back to it at its respawn or once the other is done
             }
             // can't find a poi pos to go, stop doing quest for now
@@ -2922,7 +2928,12 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
 
     // [guild13] nothing to do at this spot (no mob it pulls, no quest object, no fight, no rest): the spot is spent,
     // the next objective spot is planned - and with none left the quest is postponed (DO_QUEST is no black hole)
-    if (!bot->IsInCombat() && !AI_VALUE(Unit*, "grind target") && !FindNeededQuestObject(bot) &&
+    // [qeff32] ... no mob that serves the quest: another mob in reach to grind kept the spot "unspent" for as long as
+    // mobs came - b400 Lanbuzz camped q88's Princess (one spawn) 765 s, 20 kills of other mobs, no spent / respawn
+    // line; spent now, the spot waits for the Princess's respawn (the map's clock) and the quest yields to another
+    // open objective meanwhile (EarliestRespawn against OtherQuestSeconds below)
+    if (!bot->IsInCombat() && !ObjectiveTargetHere(bot, questId, AI_VALUE(Unit*, "grind target")) &&
+        !FindNeededQuestObject(bot) &&
         !SoloSafety::WantsRest(bot, false) && !SoloSafety::WantsRest(bot, true) && !bot->IsSitState())
     {
         NoteQuestWait(bot, 0, "the spot is spent");  // [qeff31]
@@ -2938,12 +2949,14 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         NoteQuestWait(bot, 0, "its fight starts");
     else
     {
-        Unit* const grind = AI_VALUE(Unit*, "grind target");
+        Unit* const grind = ObjectiveTargetHere(bot, questId, AI_VALUE(Unit*, "grind target"))
+                                ? AI_VALUE(Unit*, "grind target")
+                                : nullptr;
         NoteQuestWait(bot, questId,
                       grind ? "at its spot, target " + grind->GetName() + " not engaged"
                       : bot->IsSitState() || SoloSafety::WantsRest(bot, false) || SoloSafety::WantsRest(bot, true)
                           ? std::string("at its spot, resting")
-                          : std::string("at its spot, a quest object in reach"));
+                          : std::string("at its spot, an objective mob or a quest object in reach"));
     }
     // At the POI: keep the bot actively placed but avoid large
     // random 20yd hops that look like pacing back and forth. A small
