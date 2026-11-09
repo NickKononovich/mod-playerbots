@@ -507,6 +507,85 @@ void PlayerbotAI::GuardAirborneSpline()
             }
         }
     }
+    // [nav29] a straight leg under the surface: the server spline has no collision, so a straight leg that keeps
+    // its height where the ground rises (a slope, a cliff, a floor up a step) runs inside the terrain or under the
+    // floor - b377 Aestymro L13 7 yd inside a Westfall cliff ("ground -200000"), b378 Relara L10 2.5-3.5 yd under the
+    // Dolanaar inn's floor. A leg whose sample lies more than the navmesh's walkableClimb under the polygon over it
+    // (none nearer below; water is swum) is refused as [nav24] refuses a climbing one, cut at its last sample above
+    if (dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery())
+    {
+        dtNavMesh const* mesh = query->getAttachedNavMesh();
+        dtQueryFilter filter;
+        filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+        auto const underSurface = [&](G3D::Vector3 const& p) -> bool
+        {
+            LiquidData const liquid =
+                bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), p.x, p.y, p.z, bot->GetCollisionHeight(), {});
+            if (liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > INVALID_HEIGHT && liquid.Level >= p.z)
+                return false;  // swims
+            float const point[3] = {p.y, p.z, p.x};
+            float const extents[3] = {CLIMB_SUPPORT_RADIUS, 30.0f, CLIMB_SUPPORT_RADIUS};
+            float nearest[3] = {0.0f, 0.0f, 0.0f};
+            dtPolyRef ref = 0;
+            if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) || !ref)
+                return false;  // no polygon round it: the off-navmesh guards' case
+            dtMeshTile const* tile = nullptr;
+            dtPoly const* poly = nullptr;
+            if (!mesh || dtStatusFailed(mesh->getTileAndPolyByRef(ref, &tile, &poly)) || !tile || !tile->header)
+                return false;
+            return nearest[1] - p.z > tile->header->walkableClimb;  // the nearest surface lies over it
+        };
+        auto const checkLeg = [&](G3D::Vector3 const& a, G3D::Vector3 const& b) -> bool
+        {
+            // a leg from a spot already under the surface is its way out: not judged (it would hold it there)
+            if (underSurface(a))
+                return true;
+            float const length = (b - a).length();
+            uint32 const samples = std::min(
+                GROUND_MAX_SAMPLES, std::max<uint32>(1, static_cast<uint32>(std::ceil(length / GROUND_SAMPLE_STEP))));
+            G3D::Vector3 lastAbove = a;
+            for (uint32 i = 1; i <= samples; ++i)
+            {
+                G3D::Vector3 const point = a + (b - a) * (static_cast<float>(i) / static_cast<float>(samples));
+                if (!underSurface(point))
+                {
+                    lastAbove = point;
+                    continue;
+                }
+                std::string mover;
+                if (Engine* engine = currentEngine)
+                {
+                    std::string const actions = engine->GetLastAction();
+                    size_t const bar = actions.rfind('|');
+                    mover = bar == std::string::npos ? actions : actions.substr(bar + 1);
+                }
+                LOG_INFO("playerbots", "[nav29] {} refused a leg under the surface at ({:.1f},{:.1f},{:.1f}) on map {}: "
+                         "from ({:.1f},{:.1f},{:.1f}) to ({:.1f},{:.1f},{:.1f}), mover {}",
+                         bot->GetName(), point.x, point.y, point.z, bot->GetMapId(), a.x, a.y, a.z, b.x, b.y, b.z,
+                         mover.empty() ? std::string("?") : mover);
+                bot->GetMotionMaster()->Clear();
+                bot->StopMoving();
+                if ((lastAbove - a).length() >= GROUND_MIN_TRUNCATED_MOVE)
+                    bot->GetMotionMaster()->MovePoint(0, lastAbove.x, lastAbove.y, lastAbove.z, FORCED_MOVEMENT_NONE,
+                                                      0.0f, 0.0f, false, true);
+                return false;
+            }
+            return true;
+        };
+        if (single)
+        {
+            if (!checkLeg(start, end))
+                return;
+        }
+        else
+        {
+            // a navmesh path's own legs lie on its polygons; its last leg may be an incomplete path's straight tail
+            G3D::Vector3 const tailA = path.getPoint(path.last() - 1);
+            G3D::Vector3 const tailB = path.getPoint(path.last());
+            if (!checkLeg(tailA, tailB))
+                return;
+        }
+    }
     // [b32_occ] ... and the last leg: a path whose end polygon is not the destination's (PATHFIND_INCOMPLETE to a
     // spot over open air) runs on the mesh to the rim, then the core's straight tail to the destination. occ-h
     // 20261025-221216-occ-h-5G-22 (496 s): the tank's walk from Ring 2 (z 433) ended at (1171.1,1041.2,105.1),
