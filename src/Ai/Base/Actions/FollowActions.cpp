@@ -10,6 +10,9 @@
 #include "GuildHonest.h"  // [wait16]
 #include "PlayerbotAIConfig.h"  // [wait16]
 #include "SoloSafety.h"  // [wait16] StandsInReach
+#include "NewRpgCoop.h"  // [group18]
+#include <mutex>          // [group18]
+#include <unordered_set>  // [group18]
 #include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "EscortProtect.h"
@@ -223,6 +226,32 @@ bool FollowAction::Execute(Event /*event*/)
     // end unified transport handling
 
     bool moved = false;
+    // [group18] a group the session restored (the core keeps groups across a restart) whose purpose is gone: no
+    // co-op / help party holds the follower or its guild leader (that registry starts empty with the session), the
+    // leader is no human and stands in another zone. Looked at once per session at the follower's first follow.
+    // b359: 7 bots without a DO_QUEST all run - Ainne 3567 yd behind Kianey, Kylantino 3205, Mutil 4990, Galiver,
+    // Cassand, Gilduck, Arrengyl - each following a leader of an earlier session's help party
+    if (!target.empty() && GuildHonest::IsHonestBot(bot) && bot->GetGroup() && !bot->GetMap()->Instanceable())
+    {
+        static std::mutex staleLock;
+        static std::unordered_set<uint32> staleChecked;
+        bool first = false;
+        {
+            std::lock_guard<std::mutex> guard(staleLock);
+            first = staleChecked.insert(bot->GetGUID().GetCounter()).second;
+        }
+        if (first)
+            if (Unit* leaderUnit = AI_VALUE(Unit*, target))
+                if (Player* leader = leaderUnit->ToPlayer();
+                    leader && leader != bot && GuildHonest::IsHonestBot(leader) &&
+                    !NewRpgCoop::InParty(bot->GetGUID().GetCounter()) &&
+                    !NewRpgCoop::InParty(leader->GetGUID().GetCounter()) &&
+                    (leader->GetMapId() != bot->GetMapId() || leader->GetZoneId() != bot->GetZoneId()) &&
+                    NewRpgCoop::LeaveStaleGroup(
+                        bot, Acore::StringFormat("its leader {} is in another zone ({:.0f} yd), no party holds them",
+                                                 leader->GetName(), bot->GetExactDist2d(leader))))
+                    return true;
+    }
     // [wait16] coordinator 2026-11-09: a guild follower far from its leader (beyond its sight) and standing - its
     // follow makes no progress over that distance, the leader walks to meet it ([wait14]) - stands out of every idle
     // mob's reach (wander area, patrol beat) meanwhile, as a resting bot does (RestEscape). b355 Febineysh L8 stood
