@@ -1649,6 +1649,7 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest)
     if (path.size() < 2)
         return false;
     float flightYd = 0.0f;
+    float hopDelay = 0.0f;  // [taxi22] seconds the flight stands at its path's stops
     uint32 fare = 0;
     for (size_t i = 1; i < path.size(); ++i)
     {
@@ -1656,15 +1657,34 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest)
         TaxiNodesEntry const* b = sTaxiNodesStore.LookupEntry(path[i]);
         if (!a || !b)
             return false;
-        flightYd += std::hypot(a->x - b->x, a->y - b->y);
         uint32 pathId = 0, cost = 0;
         sObjectMgr->GetTaxiPath(path[i - 1], path[i], pathId, cost);
         fare += cost;
+        // [taxi22] the flight's own path (its TaxiPathNode points, with their stops' delays), not the straight hop:
+        // b370 FLIGHT 8 % of the time, the straight hops underpriced every flight
+        float hop = std::hypot(a->x - b->x, a->y - b->y);
+        if (pathId < sTaxiPathNodesByPath.size() && sTaxiPathNodesByPath[pathId].size() >= 2)
+        {
+            TaxiPathNodeList const& nodes = sTaxiPathNodesByPath[pathId];
+            hop = 0.0f;
+            for (size_t k = 1; k < nodes.size(); ++k)
+                hop += std::sqrt((nodes[k]->x - nodes[k - 1]->x) * (nodes[k]->x - nodes[k - 1]->x) +
+                                 (nodes[k]->y - nodes[k - 1]->y) * (nodes[k]->y - nodes[k - 1]->y) +
+                                 (nodes[k]->z - nodes[k - 1]->z) * (nodes[k]->z - nodes[k - 1]->z));
+            for (TaxiPathNodeEntry const* node : nodes)
+                hopDelay += float(node->delay);
+        }
+        flightYd += hop;
     }
     float const run = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
     float const taxi = std::max(sWorld->getFloatConfig(CONFIG_TAXI_FLIGHT_SPEED), 1.0f);
-    float const fly = bot->GetExactDist(master->pos) / run + flightYd / taxi + toGap / run;
-    float const walk = bot->GetExactDist(dest) / run;
+    // [taxi22] the walks by their routes (Leader::WalkYd: the navmesh walk), the flight master's and the one off
+    // the landing; the walk it replaces by its route too (a real walk, not the straight line)
+    WorldPosition const landing(dest.GetMapId(), to->x, to->y, to->z);
+    float const toMaster = Leader::WalkYd(bot, bot->GetPosition(), master->pos);
+    float const offLanding = std::max(toGap, Leader::WalkYd(bot, landing, dest));
+    float const fly = toMaster / run + flightYd / taxi + hopDelay + offLanding / run;
+    float const walk = Leader::WalkYd(bot, bot->GetPosition(), dest) / run;
     if (fly >= walk || bot->GetMoney() < fare)
         return false;
     LOG_INFO("playerbots", "[taxi20] {} L{} flies {} -> {} ({} nodes, {} c): {:.0f} s by air against {:.0f} s on "
