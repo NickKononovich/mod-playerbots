@@ -206,7 +206,8 @@ struct Party
     std::set<ObjectGuid> campDead;
 };
 
-std::mutex lock;
+// [b372] recursive: AssignLocked (held) -> WalkYd -> SoloSafety::RouteCosts -> JudgesPulls takes it again (b371 crash)
+std::recursive_mutex lock;
 std::unordered_map<uint32, Posting> postings;
 std::unordered_map<uint64, Bucket> buckets;
 std::map<uint32, Party> parties;
@@ -1740,7 +1741,7 @@ bool CoopFormOperation::Execute()
     WorldPosition spot;
     bool spotSet = false;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const party = parties.find(_party);
         auto const lp = postings.find(_leader.GetCounter());
         auto const mp = postings.find(_member.GetCounter());
@@ -1825,7 +1826,7 @@ bool CoopFormOperation::Execute()
     Out out;
     uint32 const now = getMSTime();
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const party = parties.find(_party);
         auto const mpi = postings.find(_member.GetCounter());
         auto const lpi = postings.find(_leader.GetCounter());
@@ -1935,7 +1936,7 @@ public:
             return;
         std::string line;
         {
-            std::lock_guard<std::mutex> guard(lock);
+            std::lock_guard<std::recursive_mutex> guard(lock);
             auto const me = postings.find(player->GetGUID().GetCounter());
             if (me == postings.end())
                 return;
@@ -1967,7 +1968,7 @@ public:
     {
         if (!player || xpSource != XPSOURCE_KILL)
             return;
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const me = postings.find(player->GetGUID().GetCounter());
         if (me != postings.end() && me->second.party)
             me->second.xp += amount;
@@ -1984,7 +1985,7 @@ private:
             return;
         Out out;
         {
-            std::lock_guard<std::mutex> guard(lock);
+            std::lock_guard<std::recursive_mutex> guard(lock);
             uint32 const low = player->GetGUID().GetCounter();
             auto const me = postings.find(low);
             if (me == postings.end())
@@ -2605,7 +2606,7 @@ bool HelpFormOperation::Execute()
     WorldPosition campAt;
     bool campOnly = false;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const party = parties.find(_party);
         if (party == parties.end())
             return false;
@@ -2685,7 +2686,7 @@ bool HelpFormOperation::Execute()
     Out out;
     uint32 const now = getMSTime();
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const party = parties.find(_party);
         if (party == parties.end())
             return false;
@@ -3057,7 +3058,7 @@ void HelperWhispers(Player* human, uint32 partyId)
     std::vector<std::pair<ObjectGuid, float>> helpers;
     std::string title;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const party = parties.find(partyId);
         if (party == parties.end())
             return;
@@ -3091,7 +3092,7 @@ Order Tick(PlayerbotAI* botAI, Player* bot)
     bool const weaponBroken = sGuildCoordinator.Repair(bot).weaponBroken;
     Out out;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         Posting& me = postings[bot->GetGUID().GetCounter()];
         UpdatePostingLocked(botAI, bot, me);
         if (me.party && weaponBroken)
@@ -3152,7 +3153,7 @@ void NoWalk(Player* bot, std::string const& why)
         return;
     Out out;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const me = postings.find(bot->GetGUID().GetCounter());
         if (me != postings.end() && me->second.party)
             LeaveLocked(me->second, "no walk to its leader: " + why, getMSTime(), out);
@@ -3263,7 +3264,7 @@ void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 object
     std::string line;
     std::string helpLine;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         Posting& me = postings[bot->GetGUID().GetCounter()];
         if (me.guid.IsEmpty())
         {
@@ -3346,7 +3347,7 @@ void OnCampRefused(PlayerbotAI* botAI, Player* bot, WorldPosition const& dest, s
     }
     std::string line;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         if (auto const post = postings.find(bot->GetGUID().GetCounter()); post != postings.end() && post->second.party)
             return;  // in a party already
         for (auto const& [id, r] : helpRequests)
@@ -3389,7 +3390,7 @@ bool HelpQuestOf(Player* bot, uint32& questId, int32& objectiveIdx, WorldPositio
 {
     if (!bot)
         return false;
-    std::lock_guard<std::mutex> guard(lock);
+    std::lock_guard<std::recursive_mutex> guard(lock);
     auto const post = postings.find(bot->GetGUID().GetCounter());
     if (post == postings.end() || !post->second.party)
         return false;
@@ -3407,7 +3408,7 @@ bool HelpAsked(Player* bot)
 {
     if (!bot)
         return false;
-    std::lock_guard<std::mutex> guard(lock);
+    std::lock_guard<std::recursive_mutex> guard(lock);
     for (auto const& [id, r] : helpRequests)
         if (r.requester == bot->GetGUID() && (r.party || r.lastRefusal.empty()))
             return true;
@@ -3418,7 +3419,7 @@ bool HelpCampOf(Player* bot, WorldPosition& pos)
 {
     if (!bot)
         return false;
-    std::lock_guard<std::mutex> guard(lock);
+    std::lock_guard<std::recursive_mutex> guard(lock);
     auto const post = postings.find(bot->GetGUID().GetCounter());
     if (post == postings.end() || !post->second.party)
         return false;
@@ -3444,7 +3445,7 @@ bool IsMember(Player* bot)
 {
     if (!bot)
         return false;
-    std::lock_guard<std::mutex> guard(lock);
+    std::lock_guard<std::recursive_mutex> guard(lock);
     auto const me = postings.find(bot->GetGUID().GetCounter());
     if (me == postings.end() || !me->second.party)
         return false;
@@ -3481,7 +3482,7 @@ bool JudgesPulls(Player* bot)
     if (!bot)
         return false;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const me = postings.find(bot->GetGUID().GetCounter());
         if (me != postings.end() && me->second.party)
         {
@@ -3519,7 +3520,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
     if (restTrim == L"отмена" || restTrim == L"cancel" || restTrim == L"стоп" || restTrim == L"stop")
     {
         {
-            std::lock_guard<std::mutex> guard(lock);
+            std::lock_guard<std::recursive_mutex> guard(lock);
             uint32 ended = 0;
             std::vector<uint32> ids;
             for (auto const& [id, r] : helpRequests)
@@ -3582,7 +3583,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
         return true;
     }
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         HelpRequest* open = nullptr;
         for (auto& [id, r] : helpRequests)
             if (r.requester == sender->GetGUID() && r.obj.questId == questId)
@@ -3618,7 +3619,7 @@ void UpdateHelp()
     std::vector<std::pair<ObjectGuid, std::string>> replies;
     std::vector<std::pair<ObjectGuid, uint32>> whispers;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         uint32 const now = getMSTime();
         // the human parties (no bot tick of the requester): the end by his quest log and his group
         std::vector<uint32> ends;
@@ -3703,7 +3704,7 @@ bool InParty(uint32 low)
 
 bool PartyLeaderOf(uint32 low, ObjectGuid& leader)
 {
-    std::lock_guard<std::mutex> guard(lock);
+    std::lock_guard<std::recursive_mutex> guard(lock);
     auto const me = postings.find(low);
     auto const party = me != postings.end() ? parties.find(me->second.party) : parties.end();
     if (party == parties.end())
@@ -3736,7 +3737,7 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
     std::unordered_map<uint32, float> healRate;
     bool openGroup = false;  // [deaths12] an open-world group, no co-op party: its heals from the kit below
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const me = postings.find(leader->GetGUID().GetCounter());
         auto const party = me != postings.end() ? parties.find(me->second.party) : parties.end();
         if (party != parties.end())
@@ -3912,7 +3913,7 @@ void RestParty(Player* leader, std::string const& why)
         return;
     std::vector<ObjectGuid> members;
     {
-        std::lock_guard<std::mutex> guard(lock);
+        std::lock_guard<std::recursive_mutex> guard(lock);
         auto const me = postings.find(leader->GetGUID().GetCounter());
         auto const party = me != postings.end() ? parties.find(me->second.party) : parties.end();
         if (party != parties.end())
