@@ -2006,12 +2006,24 @@ namespace TestHarness
             // (strat-h 20261025-184229-5: keyed at 87 s, the 1 s target thrash on them from 141 s to the 185 s pull).
             std::string const doorTag = Acore::StringFormat("leader held at a closed door ({} {})", door->GetName(),
                                                             door->GetEntry());
+            // [strat1] ...and the boss skipped "next boss behind a closed door (<gate>)" with its order hold: strat-n
+            // 20261106-160738-strat-n-5H-8 keyed King's Square Gate 175352 for Timmy at 703 s, the tank passed at
+            // 704 s, but Timmy's 60 s skip (691 s) still stood - the route fell back to The Unforgiven on the near
+            // side, the tank's plans all crossed the shut gate and the run failed at 727 s.
+            std::string const bossTag = Acore::StringFormat("next boss behind a closed door ({} {})", door->GetName(),
+                                                            door->GetEntry());
             std::vector<ObjectGuid> lifted;
             for (auto const& [guid, why] : party.skipReason)
-                if (why.find(doorTag) != std::string::npos)
+                if (why.find(doorTag) != std::string::npos || why.rfind(bossTag, 0) == 0)
                     lifted.push_back(guid);
             for (ObjectGuid const& guid : lifted)
             {
+                if (party.skipReason[guid].rfind(bossTag, 0) == 0)
+                {
+                    party.orderHoldSinceMs.erase(guid);
+                    LOG_INFO("playerbots", "[strat1] {}: {} keyed - the boss behind it is the next boss again",
+                             party.id, door->GetName());
+                }
                 party.skipUntil.erase(guid);
                 party.skipReason.erase(guid);
                 party.unreachableFrom.erase(guid);
