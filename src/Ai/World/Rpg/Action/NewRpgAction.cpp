@@ -753,7 +753,10 @@ bool NewRpgBaseAction::StartVendorRun()
     // that repairs, paid from its own money; [guild15] ... and before the next death breaks it
     // [regress10] the global leader decides (its REPAIR task: URGENT now, CONVENIENT in the repairer's town, the
     // money for it checked against the core's repair cost); one try per money gain after a visit that left the need
-    bool repair = repairGo && bot->GetMoney() >= call.cost &&
+    // [broken40] user 2026-11-09: the run goes even when its money pays only a part - the repairer buys its sale
+    // first and "repair" pays what it can, weapons first (RepairAllAction); before, a bot short of the full cost made
+    // no run at all: b388 Peny / Irrua L14 at 0 durability with full bags stood IDLE all run, 5 deaths each
+    bool repair = repairGo && (bot->GetMoney() >= call.cost || bot->GetMoney() > 0 || sell) &&
                   (!info.repairVisited || bot->GetMoney() > info.repairVisitMoney);
     // [pace25] coordinator 2026-11-09: out of food (or, using mana, out of drink) it buys some, as a player restocks:
     // b373's bots "sat to regenerate: nothing to eat or drink" 7263 times (Orton 1336: mana 5 % to 17 % over minutes)

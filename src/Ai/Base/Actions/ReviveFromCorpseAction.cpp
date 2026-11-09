@@ -5,6 +5,7 @@
  */
 
 #include "WaypointMgr.h"  // [rise33]
+#include "GuildCoordinator.h"  // [ghost40]
 #include "ReviveFromCorpseAction.h"
 #include "BotPath.h"  // [lead109]
 #include "Corpse.h"
@@ -448,6 +449,16 @@ bool FindCorpseAction::Execute(Event /*event*/)
     // per death, death and release, and never resets for a bot that gains no XP: from the third death every ghost
     // that had walked back in stood at its corpse calling for a healer it could not reach).
     bool const inDungeon = bot->GetMap()->IsDungeon();
+    // [ghost40] user 2026-11-09: a ghost whose weapon is broken cannot fight what comes at its corpse: the spirit
+    // healer, never the corpse among hostiles (b388 Peny / Irrua at 0 durability rose at their corpses in the camp,
+    // 5 deaths each)
+    if (!inDungeon && !bot->InBattleground() && sGuildCoordinator.Repair(bot).weaponBroken && HealerLeft(bot) &&
+        !AI_VALUE(GuidVector, "nearest hostile npcs").empty())
+    {
+        LogGhost(bot, "[ghost40] its weapon is broken: to the spirit healer, not its corpse among hostiles");
+        ChooseHealer(bot, corpse);
+        return botAI->DoSpecificAction("spirit healer", Event(), true);
+    }
     // [ghost14] ... only where the healer costs no sickness: from its level on the corpse comes first
     if (((!botAI->HasGameClientMaster() && dCount >= 5 && !inDungeon && !HealerSickens(bot)) || RisesInTown(bot)) &&
         HealerLeft(bot))  // [guild13] [deaths3]

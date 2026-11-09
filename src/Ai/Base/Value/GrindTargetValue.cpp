@@ -63,8 +63,43 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     if (SoloSafety::Applies(bot))
     {
         GuildCoordinator::RepairCall const repair = sGuildCoordinator.Repair(bot);
-        if (repair.weaponBroken && repair.ready)
+        // [broken40] ... while a repair can still come: money to pay a part, or a repairer visit not tried at this
+        // money. Broken and broke after a visit (nothing left to sell), it fights on unarmed - never an IDLE without
+        // end (b388 Peny, Irrua: 0 durability all run, no pull, no run, 5 deaths each). The line says which
+        NewRpgInfo const& info = botAI->rpgInfo;
+        bool const brokeAfterVisit = bot->GetMoney() == 0 && info.repairVisited;
+        if (repair.weaponBroken && repair.ready && !brokeAfterVisit)
+        {
+            static std::mutex brokenLock;  // one line per bot and money value: a log cadence, no decision reads it
+            static std::unordered_map<uint32, uint32> brokenLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(brokenLock);
+                uint32& last = brokenLogged[bot->GetGUID().GetCounter()];
+                fresh = last != bot->GetMoney() + 1;
+                last = bot->GetMoney() + 1;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[broken40] {} L{} no new pull: its weapon is broken and its repair can run "
+                         "(money {}c of {}c; {})",
+                         bot->GetName(), bot->GetLevel(), bot->GetMoney(), repair.cost,
+                         info.vendorRunEntry ? "on its vendor run" : "the vendor run is due");
             return nullptr;
+        }
+        if (repair.weaponBroken && brokeAfterVisit)
+        {
+            static std::mutex unarmedLock;
+            static std::unordered_set<uint32> unarmedLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(unarmedLock);
+                fresh = unarmedLogged.insert(bot->GetGUID().GetCounter()).second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[broken40] {} L{} broken and broke after its repairer visit: fights on with "
+                         "what it has (its pulls judged at its broken gear) until money comes",
+                         bot->GetName(), bot->GetLevel());
+        }
         // [regress10] after a death it rests and walks to its hub before any pull, and a rest asked for runs to full
         // first (b345 Guinudrond L11: risen at its corpse, it pulled a Tunnel Rat Vermin there at once, then a Forest
         // Lurker at 4 % mana on the walk to its hub; three deaths in the Silver Stream Mine)

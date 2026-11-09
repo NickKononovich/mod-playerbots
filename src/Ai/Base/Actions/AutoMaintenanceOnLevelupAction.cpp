@@ -4,6 +4,8 @@
  * or (at your option) any later version.
  */
 
+#include "GuildCoordinator.h"  // [login40]
+#include "Playerbots.h"  // [login40] GET_PLAYERBOT_AI
 #include "AutoMaintenanceOnLevelupAction.h"
 #include "BroadcastHelper.h"
 #include "GuildHonest.h"
@@ -129,6 +131,19 @@ uint32 AutoMaintenanceOnLevelupAction::LearnGuildClassSpells(Player* bot, char c
     if (skillCount || count || std::strcmp(why, "login") == 0)
         LOG_INFO("playerbots", "[honest] {} L{} learned {} class spells, {} skills ({}){}{}", bot->GetName(),
                  bot->GetLevel(), count, skillCount, why, skillCount ? ": " : "", skillNames);
+    // [login40] user 2026-11-09: each bot's state once at its login - alive or dead, in a fight, its gear's state, its
+    // New RPG strategy - so a bot that never logs a status later (dead or fighting from the start) is still seen
+    if (std::strcmp(why, "login") == 0)
+    {
+        GuildCoordinator::RepairCall const repair = sGuildCoordinator.Repair(bot);
+        LOG_INFO("playerbots", "[login40] {} L{} at login: {}{}, money {}c{}{}", bot->GetName(), bot->GetLevel(),
+                 bot->IsAlive() ? "alive" : (bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? "a ghost" : "dead"),
+                 bot->IsInCombat() ? " in a fight" : "", bot->GetMoney(),
+                 repair.weaponBroken ? ", weapon broken" : "",
+                 GET_PLAYERBOT_AI(bot) && GET_PLAYERBOT_AI(bot)->HasStrategy("new rpg", BOT_STATE_NON_COMBAT)
+                     ? ""
+                     : ", no New RPG strategy");
+    }
     return count;
 }
 
