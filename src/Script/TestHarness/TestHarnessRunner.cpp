@@ -4279,10 +4279,22 @@ namespace TestHarness
         filter.banned = &banned;
         std::vector<dtPolyRef> path(MAX_POLYS);
         int pathCount = 0;
-        if (dtStatusFailed(
-                query->findPath(startRef, endRef, startAt, endAt, &filter, path.data(), &pathCount, MAX_POLYS)) ||
-            !pathCount || path[pathCount - 1] != endRef)
+        dtStatus const pathStatus =
+            query->findPath(startRef, endRef, startAt, endAt, &filter, path.data(), &pathCount, MAX_POLYS);
+        if (dtStatusFailed(pathStatus) || !pathCount || path[pathCount - 1] != endRef ||
+            dtStatusDetail(pathStatus, DT_PARTIAL_RESULT))
+        {
+            // [kara6b] where the way without the door ends (a partial path: the nearest reachable polygon)
+            float lastAt[3] = {startAt[0], startAt[1], startAt[2]};
+            if (pathCount)
+                query->closestPointOnPoly(path[pathCount - 1], endAt, lastAt, nullptr);
+            LOG_INFO("playerbots", "[kara6] {}: no way round {} {} to ({:.1f},{:.1f},{:.1f}): status 0x{:x}, {} "
+                     "polys, ends at ({:.1f},{:.1f},{:.1f}) {:.1f} yd from the goal", leader->GetName(),
+                     door->GetName(), door->GetEntry(), goal.x, goal.y, goal.z, uint32(pathStatus), pathCount,
+                     lastAt[2], lastAt[0], lastAt[1],
+                     G3D::Vector3(lastAt[2] - goal.x, lastAt[0] - goal.y, lastAt[1] - goal.z).length());
             return false;
+        }
         std::vector<float> straight(size_t(MAX_POLYS) * 3);
         int straightCount = 0;
         if (dtStatusFailed(query->findStraightPath(startAt, endAt, path.data(), pathCount, straight.data(), nullptr,
@@ -4328,7 +4340,6 @@ namespace TestHarness
         };
         std::unordered_map<uint32, RoundWalk> roundWalks;  // party seq (the harness's world thread)
         constexpr float ROUND_CORNER_REACHED = 3.0f;      // a corner this near is passed
-        constexpr float ROUND_PAST_DOOR = 25.0f;          // the walk ends this far from the door (2D)
 
         // the corner the leader walks to now; false: no walk round (none, over, or a fight / the door opened)
         bool RoundWalkPoint(Party& party, Player* leader, G3D::Vector3& point)
@@ -4356,8 +4367,9 @@ namespace TestHarness
                 ++walk.next;
             if (walk.next >= walk.way.size())
                 return end("its last corner reached");
-            if (leader->GetExactDist2d(door) >= ROUND_PAST_DOOR && walk.next >= 2)
-                return end("past the door's area");
+            // [kara6b] no end by leaving the door's box: b364 segment 8 shuttled 20 min on the z 94 landing (100
+            // "ends: past the door's area" at 25 yd, the route's next walk met the door again, a new way round). The
+            // walk ends at its last corner - the goal - or on a fight / the door opening
             point = walk.way[walk.next];
             return true;
         }
@@ -4437,9 +4449,9 @@ namespace TestHarness
                     walk.door = door->GetGUID();
                     walk.way = std::move(way);
                     walk.next = 1;
-                    LOG_INFO("playerbots", "[kara6] leader {}: follows the way round {} ({} corners, {:.0f} yd)",
-                             leader->GetName(), door->GetName(), walk.way.size(),
-                             walk.way.empty() ? 0.0f : (walk.way.back() - walk.way.front()).length());
+                    LOG_INFO("playerbots", "[kara6] leader {}: follows the way round {} ({} corners) to {} - its end "
+                             "{:.1f} yd from it", leader->GetName(), door->GetName(), walk.way.size(),
+                             party.target.ToString(), walk.way.empty() ? 0.0f : (walk.way.back() - goal).length());
                     if (G3D::Vector3 corner; RoundWalkPoint(party, leader, corner))
                         GiveWaypoint(party, leader, corner.x, corner.y, corner.z, false, false);
                     else
