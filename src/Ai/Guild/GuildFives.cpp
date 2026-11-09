@@ -740,8 +740,12 @@ bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) cons
 
 std::string GuildCoordinator::PlanRole(uint32 low, Player* p) const
 {
+    // [five27] the plan's role holds only when the bot plays it now (its spec and strategies): b375 rfc-n five 2 had
+    // Farret, planned a healer, as its healer while he played retribution - he cast Judgement and no heal in the
+    // whole pull, the gate counted his 86 hps, the tank died at 321 s (pull 13, 5 mobs, 28 s)
     if (PlanRow const* row = Row(low))
-        if (row->role == "tank" || row->role == "healer")
+        if ((row->role == "tank" && PlayerbotAI::IsTank(p, true)) ||
+            (row->role == "healer" && PlayerbotAI::IsHeal(p, true)))
             return row->role;
     if (PlayerbotAI::IsTank(p, true))
         return "tank";
