@@ -5000,7 +5000,10 @@ bool NewRpgBaseAction::LoginEscape()
             }
         }
     }
-    if (bot->IsInCombat() || !SoloSafety::Applies(bot))
+    // [group38] ... a group's leader too (its group follows it out): b388 Gnetlibozz's open-world group logged in
+    // inside the Stonesplinter camp at (-4923,-3424), no escape for a leader that is not alone - Gilduck and
+    // Blahadrin died there within the first minutes
+    if (bot->IsInCombat() || !(SoloSafety::Applies(bot) || NewRpgCoop::JudgesPulls(bot)))
         return false;  // in a fight already: the survival kit judges it (fight on or flee)
     std::string who;
     std::vector<G3D::Vector3> spots;

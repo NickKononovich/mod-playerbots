@@ -1128,7 +1128,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // of a fight steps out of every idle mob's reach and stays there, as a player logs out away from a camp - its
     // session ends there and its next login is no login inside a camp (b375: 6 deaths "logged in inside the camp",
     // attacked before its first look: Irrua at 40 % in Amberweb Pass, Mytaeleas among the Blackwood)
-    if (sWorld->IsShuttingDown() && !bot->IsInCombat() && SoloSafety::Applies(bot))
+    if (sWorld->IsShuttingDown() && !bot->IsInCombat() &&
+        (SoloSafety::Applies(bot) || NewRpgCoop::JudgesPulls(bot)))  // [group38] a group's leader leads it out
     {
         if (bot->isMoving())
             return true;
