@@ -41,6 +41,12 @@ std::string NewRpgGroupNotReadyTrigger::MemberNotReady(Player* member)
     if (!member->IsStandState())
         return "resting";
 
+    // [deaths21] Resurrection Sickness: a quarter of its stats until the aura ends (a game mechanic) - the party waits
+    // for it as for a rest (the member holds where it rose, NewRpgStatusUpdateAction)
+    if (member->HasAura(15007))
+        return "under Resurrection Sickness";
+
+
     // the core's group reward distance: no kill credit and no XP share beyond it
     if (!member->IsAtGroupRewardDistance(bot))
     {

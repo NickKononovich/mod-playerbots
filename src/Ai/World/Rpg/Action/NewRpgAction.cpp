@@ -526,11 +526,19 @@ bool NewRpgBaseAction::StartVendorRun()
     // (a sale of greys left the kept items near 80 %, the next few loots crossed it again), VENDOR 11 % of the time
     // (the item objectives bound the need: with more slots free than they could take, no item count is read)
     uint32 const freeSlots = bot->GetFreeInventorySpace();
+    // [vendor21] the slots its loot needs now: the item objectives of the quest it works (its DO_QUEST), not of every
+    // log quest - those are looted one quest at a time, a slot each when it gets there. b368: 274 vendor trips (b355:
+    // 148), 137 of them "5 bag slots free, its open item objectives need 5": a run at 5 free slots that freed none
+    // (nothing for sale), again and again; Thamesh 902 s, Bhogagnuth 887 s at the vendor
     std::vector<uint32> objectiveItems;
+    uint32 const working = std::holds_alternative<NewRpgInfo::DoQuest>(info.data)
+                               ? std::get<NewRpgInfo::DoQuest>(info.data).questId
+                               : 0;
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
-        if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+        if (uint32 const questId = bot->GetQuestSlotQuestId(slot); questId && questId == working)
             if (bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
                 if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+
                     for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
                         if (quest->RequiredItemId[i] && quest->RequiredItemCount[i])
                             objectiveItems.push_back(quest->RequiredItemId[i]);
@@ -903,9 +911,18 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     if (!bot->IsInCombat() && SoloSafety::HoldsPulls(bot) && SoloSafetyStep())
         return true;
 
+    // [deaths21] a party member under Resurrection Sickness does not follow: it holds where it rose until the aura
+    // ends (the hold below; its leader waits for it)
+    if (NewRpgCoop::IsMember(bot) && !bot->IsInCombat() && bot->HasAura(15007))
+    {
+        if (bot->isMoving())
+            bot->StopMoving();
+        return true;
+    }
     // [coop] a co-op party member goes with its party's leader; its own plan waits (NewRpgCoop.h)
     {
         NewRpgCoop::Order const coop = NewRpgCoop::Tick(botAI, bot);
+
         if (coop.kind == NewRpgCoop::Order::Kind::Follow)
         {
             if (TownTaskHere())  // [town12] the leader's route brought it to its own town stop
@@ -945,9 +962,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // b354: Laaral L14 (3 deaths, 83-151 s after its rise) and Rumanatol L13 (87 s) rose at the Blood Watch spirit
     // healer, walked out at 139 max health and 2.7 dps and died to single Elder Brown Bears L15-16. The bot stays where
     // it rose (the spirit healer's graveyard) until the aura is gone - a game mechanic's end, not a clock of its own
-    if (!bot->IsInCombat() && !NewRpgCoop::IsMember(bot) && !bot->IsInFlight() && !bot->GetTransport())
+    // [deaths21] ... a co-op / help party member too: b368 Peny L13 (help party of Guinudrond in Westfall) died twice
+    // under the sickness, 33 s and 174 s after its spirit-healer rise at 132 max health, following its party into the
+    // Riverpaw camp; its leader waits for it ("under Resurrection Sickness", NewRpgGroupNotReadyTrigger)
+    if (!bot->IsInCombat() && !bot->IsInFlight() && !bot->GetTransport())
     {
         constexpr uint32 SPELL_RESURRECTION_SICKNESS = 15007;
+
         static std::mutex sickLock;
         static std::unordered_set<uint32> sickLogged;
         uint32 const low = bot->GetGUID().GetCounter();

@@ -5168,6 +5168,13 @@ void TravelRouteMgr::Build()
                 float const distance = std::hypot(dock.x - data.posX, dock.y - data.posY);
                 if (distance > DOCK_SEARCH_RADIUS)
                     continue;
+                // [travel21] a monster by the pier (hostile to every player: a crab, a murloc) is nobody's pier: its
+                // faction made the whole line hostile to every bot (CanUseLine). b368: the draenei on Azuremyst saw
+                // 123 starters of their band as "no route" with the Auberdine - Valaar's Berth boat 181646 built
+                if (FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(creatureTemplate->faction);
+                    faction && faction->IsHostileToPlayers())
+                    continue;
+
 
                 float const score = distance - (IsDockMaster(creatureTemplate->SubName) ? DOCK_MASTER_BONUS : 0.0f);
                 if (score < pierScore[l][d])
@@ -5207,6 +5214,14 @@ void TravelRouteMgr::Build()
                 built += " " + std::to_string(dock.mapId);
         }
         LOG_INFO("playerbots", "[travel20] {} transport lines (entry: dock maps): {}", _lines.size(), built);
+        // [travel21] each dock's pier and its faction (a hostile pier makes the line unusable for a team)
+        for (Line const& line : _lines)
+            for (Dock const& dock : line.docks)
+                LOG_INFO("playerbots", "[travel21] transport {} dock map {} ({:.0f},{:.0f}): pier ({:.0f},{:.0f}) "
+                         "faction {}",
+                         line.entry, dock.mapId, dock.x, dock.y, dock.pier.GetPositionX(), dock.pier.GetPositionY(),
+                         dock.pierFaction);
+
     }
 
 

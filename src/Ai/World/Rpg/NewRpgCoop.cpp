@@ -2033,6 +2033,9 @@ struct HelpRequest
     std::vector<ObjectGuid> campMobs;
     WorldPosition retry{};
     uint8 level = 0;           // [help12] the requester's level at the request
+    // [help21] the inputs of its last refusal by price (requester level, free helpers, its quest): priced again only
+    // when one changes (b368: Ginde's request priced 112 times, Salleas' 102)
+    uint64 refusedKey = 0;
 };
 
 std::map<uint32, HelpRequest> helpRequests;  // behind the board's lock
@@ -2354,6 +2357,12 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         pool.push_back({p, walk / std::max(p->GetSpeed(MOVE_RUN), 1.0f), walk});
     }
     std::sort(pool.begin(), pool.end(), [](Candidate const& a, Candidate const& b) { return a.eta < b.eta; });
+    // [help21] the inputs of the price: unchanged since its last refusal by price - no new pricing
+    uint64 priceKey = (uint64(req->GetLevel()) << 56) ^ (uint64(r.obj.questId) << 24) ^ uint64(pool.size());
+    for (Candidate const& c : pool)
+        priceKey = priceKey * 1000003ull + c.p->GetGUID().GetCounter();
+    if (!r.human && r.refusedKey && r.refusedKey == priceKey)
+        return false;
 
     std::vector<Player*> party{req};
     std::vector<Candidate> chosen;
@@ -2435,14 +2444,37 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     float helpCost = 0.0f;
     for (Candidate const& c : chosen)
         helpCost += QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) * (c.eta + v.seconds);
-    float const questXp = quest ? float(quest->XPValue(req->GetLevel())) : 0.0f;
+    // [help21] a camp request (no quest of its own: a camp in its way) is worth the quests it walls off: the
+    // requester's open log quests with an objective spot within its sight of the camp. Before, 0: every camp request
+    // refused (b368: 263 refusals, Salleas "value 0 xp ... cost 2061")
+    float questXp = quest ? float(quest->XPValue(req->GetLevel())) : 0.0f;
+    if (!quest && r.at != WorldPosition())
+        for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            if (uint32 const questId = req->GetQuestSlotQuestId(slot);
+                questId && req->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE)
+                if (Quest const* walled = sObjectMgr->GetQuestTemplate(questId))
+                    if (QuestPOIVector const* pois = sObjectMgr->GetQuestPOIVector(questId))
+                    {
+                        bool inSight = false;
+                        for (QuestPOI const& poi : *pois)
+                            for (QuestPOIPoint const& pt : poi.points)
+                                inSight = inSight || (poi.MapId == r.at.GetMapId() &&
+                                                std::hypot(float(pt.x) - r.at.GetPositionX(),
+                                                           float(pt.y) - r.at.GetPositionY()) <=
+                                                    sPlayerbotAIConfig.SightDistance);
+                        if (inSight)
+                            questXp += float(walled->XPValue(req->GetLevel()));
+                    }
+
     float const saved = aloneWins ? std::max(0.0f, aloneSeconds - v.seconds) : 0.0f;
     float const helpValue = questXp + QuestRoute::XpPerSecond(req->GetGUID().GetCounter()) * saved;
     std::string const priced = Acore::StringFormat("value {:.0f} xp (quest {:.0f} + {:.0f} s saved), cost {:.0f} xp",
                                                    helpValue, questXp, saved, helpCost);
     if (!r.human && helpCost > helpValue)
     {
+        r.refusedKey = priceKey;  // [help21]
         std::string const why = "the help costs more than it gives: " + priced;
+
         if (why != r.lastRefusal)
         {
             r.lastRefusal = why;

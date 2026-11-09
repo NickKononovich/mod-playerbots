@@ -135,6 +135,10 @@ namespace QuestRoute
         float xp{0.0f};
         uint32 takes{0};          // quests it plans to take on the way
         uint32 earlierHandIns{0};  // [quest15] enders moved sooner by the hand-in weighting (HandInsEarlier)
+        // [help21] the experience of the open quests' hand-ins only (no ready hub: a complete quest's hand-in comes
+        // whatever the bot does) - the rate its time is worth (XpPerSecond)
+        float openXp{0.0f};
+
 
         float walkRatio{1.0f};    // [routeplan] the build's measured walk over straight yards
         float fightPerYd{0.0f};   // [routeplan] the build's measured fight seconds per straight yard
