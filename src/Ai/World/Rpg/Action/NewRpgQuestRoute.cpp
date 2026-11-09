@@ -515,7 +515,10 @@ float QuestRoute::XpPerSecond(uint32 botLow)
     auto const found = routes.find(botLow);
     if (found == routes.end() || !found->second.built || found->second.plan.eta <= 0.0f)
         return 0.0f;
-    return found->second.plan.xp / found->second.plan.eta;
+    // [help21] the open quests' experience over the route's seconds: a complete quest by its ender inflated it (b368
+    // Febineysh's helpers priced 1183 xp against 850 for q412)
+    return found->second.plan.openXp / found->second.plan.eta;
+
 }
 
 
@@ -717,6 +720,8 @@ QuestRoute::Plan QuestRoute::Solve(Input const& in)
         plan.eta += s.leg + s.work;
         plan.walkYd += s.legYd;
         prev = s.node;
+        if (s.kind == StopKind::Ender && !s.ready)
+            plan.openXp += s.xp;  // [help21]
         plan.stops.push_back(std::move(s));
     }
     plan.xp = xp;
