@@ -817,8 +817,6 @@ private:
     // [questvalue] its green log quests valued against the route's rate; the ones not worth it abandoned ([quest14]
     // greys: the route's grey rule, GreyQuestNeed)
     void RevalueQuests(BotState& st, Player* p);
-    // [obj55] the objective formula of `questId` beside the measured rate, logged (no decision reads it)
-    void LogObjectiveFormula(Player* p, uint32 questId);
     float GatherPace(uint32 skill) const;                              // units per minute of gathering, < 0: no data
     uint32 TrainerCap(uint32 skillLine, uint8 level) const;            // the highest rank's max skill by level
     void RecordPace(BotState& st, Player* p) const;                    // UpdateHealth: its copper per quest XP
@@ -894,25 +892,6 @@ private:
         float itemHp[QUEST_ITEM_OBJECTIVES_COUNT]{};
     };
     std::unordered_map<uint32, QuestStatic> questStatic_;
-    // [obj48] an objective's sources by formula: a kill credit / a quest item -> the creatures giving it (entry, the
-    // chance per kill, the template health), and those creatures' spawns (map, x, y): the per-unit time is the
-    // nearest source's kill time (health / its dps) plus the walk between its spawns at their density, over its chance
-    struct ObjSource
-    {
-        uint32 entry{0};
-        float chance{1.0f};
-        float hp{0.0f};
-        uint8 level{0};
-    };
-    std::unordered_map<uint64, std::vector<ObjSource>> objSources_;  // (1 item / 0 credit) << 32 | id -> sources
-    // entry -> spawns (map, x, y, respawn seconds)
-    std::unordered_map<uint32, std::vector<std::tuple<uint16, float, float, uint32>>> sourceSpawns_;
-    // the per-unit seconds of an objective for `p` (its nearest source on its map), the walk to that source, and
-    // which source it is; false when no source spawns on its map
-    // [obj49] `sharers`: the bots working the same objective on its map (itself included): a camp's respawns are
-    // shared among them
-    bool ObjectiveUnitSeconds(Player* p, uint64 key, float dps, float speed, uint32 sharers, double& perUnit,
-                              double& walkTo, ObjSource& source) const;
     std::unordered_map<uint32, std::vector<uint32>> questsByMap_;  // map -> takeable quests, by min level
 
     // [roles59] the global leader's role plan (world thread writes under roleLock_, a leaf; any thread reads)
