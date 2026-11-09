@@ -6690,6 +6690,13 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     // planner as any route. b367: 9 of the 13 "[zone19] no zone" bots had 286-331 starters of their band on the
     // continent closed until Outland's level and none left on their own
     bool openedOther = false;  // [zone21]
+    // [group22] a group's leader chooses its camps for its weakest member: the lowest level of the group on its map
+    // (the group's pulls are the party judge's; the camp filter is the never-fight rule of its weakest)
+    uint8 campLevel = level;
+    if (Group* group = bot->GetGroup(); group && group->GetLeaderGUID() == bot->GetGUID())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* m = ref->GetSource(); m && m->GetMapId() == bot->GetMapId())
+                campLevel = std::min<uint8>(campLevel, m->GetLevel());
     for (int pass = 0; pass < 2 && starts.empty(); ++pass)
     {
         bool const otherOldWorld = pass == 1;
@@ -6820,7 +6827,7 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
                             bool const elite = m.tmpl->rank == CREATURE_ELITE_ELITE ||
                                                m.tmpl->rank == CREATURE_ELITE_RAREELITE ||
                                                m.tmpl->rank == CREATURE_ELITE_WORLDBOSS;
-                            if (elite || Acore::XP::GetColorCode(level, m.tmpl->maxlevel) <= XP_ORANGE)
+                            if (elite || Acore::XP::GetColorCode(campLevel, m.tmpl->maxlevel) <= XP_ORANGE)
                                 walled = true;
                         }
                     }

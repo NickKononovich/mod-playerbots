@@ -2885,9 +2885,16 @@ namespace SoloSafety
         // Lurker L6 killed Ryarii): orange / red, elite and danger-zone reaches are refused; the pack it loses alone is
         // the party's judgement (NewRpgCoop::JudgePull), not refused here
         bool const alone = Applies(bot);
-        if (!alone && !(NewRpgCoop::InParty(bot->GetGUID().GetCounter()) && !bot->GetMap()->Instanceable() &&
-                        GET_PLAYERBOT_AI(bot) && GET_PLAYERBOT_AI(bot)->HasStrategy("new rpg", BOT_STATE_NON_COMBAT)))
+        // [group22] coordinator 2026-11-09: any bot leading an open-world group (co-op, help, user pack, a restored
+        // group) prices its walk for the group as a co-op leader does - the reaches of mobs it never fights refused,
+        // the packs the party judge's (JudgePull); a human leader decides himself (no bot walk). b370: the user-pack
+        // leaders Kianey and Manue walked their groups unpriced into Stendel's Pond (Riverpaw L15-17) and the Westfall
+        // Riverpaw camps - 3 + 2 + 1 deaths there, "a dense camp ... none judged"
+        if (!alone && !((NewRpgCoop::InParty(bot->GetGUID().GetCounter()) || NewRpgCoop::JudgesPulls(bot)) &&
+                        !bot->GetMap()->Instanceable() && GET_PLAYERBOT_AI(bot) &&
+                        GET_PLAYERBOT_AI(bot)->HasStrategy("new rpg", BOT_STATE_NON_COMBAT)))
             return;
+
         // the walk's first leg as far as the bot sees: the rest is planned again from there. [deaths] The leg ends up
         // to SightDistance from the bot, so a mob whose aggro reach (Creature::GetAggroRange, at most the core's
         // MAX_AGGRO_RADIUS) covers its end stands up to that much farther: those are seen too
