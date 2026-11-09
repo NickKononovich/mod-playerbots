@@ -444,6 +444,27 @@ namespace
     }
 }
 
+float QuestRoute::ChainXp(Player* bot, uint32 questId)
+{
+    if (!bot || !questId)
+        return 0.0f;
+    constexpr size_t CHAIN_QUESTS = 32;  // search bound (a chain's length), no behaviour rule
+    std::vector<uint32> open{questId};
+    std::set<uint32> seen{questId};
+    float xp = 0.0f;
+    for (size_t i = 0; i < open.size() && i < CHAIN_QUESTS; ++i)
+    {
+        Quest const* quest = sObjectMgr->GetQuestTemplate(open[i]);
+        if (!quest || bot->GetQuestRewardStatus(open[i]))
+            continue;
+        xp += float(quest->XPValue(bot->GetLevel()));
+        for (uint32 next : UnlockedBy(open[i]))
+            if (seen.insert(next).second)
+                open.push_back(next);
+    }
+    return xp;
+}
+
 uint32 QuestRoute::LegTable::Add(float x, float y, float z)
 {
     points_.push_back({x, y, z});

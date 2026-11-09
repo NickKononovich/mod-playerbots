@@ -2476,16 +2476,27 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     // [help22] ... and the requester's own time while it waits for its helpers to come (the farthest one's walk)
     float helpCost = 0.0f;
     float farthest = 0.0f;
+    // [help25] ... less what the helpers earn in the help itself: the camp's kills, each kill's experience at the
+    // helper's level (the core's base gain at the kill rate) shared by the party (Player::GiveXP's group split)
+    ContentLevels const helpContent = GetContentLevelsForMapAndZone(req->GetMapId(), req->GetZoneId());
+    float const partySize = float(chosen.size() + 1);
     for (Candidate const& c : chosen)
     {
-        helpCost += TimeRate(c.p) * (c.eta + v.seconds);
+        float const killXp = float(Acore::XP::BaseGain(c.p->GetLevel(), c.p->GetLevel(), helpContent)) *
+                             sWorld->getRate(RATE_XP_KILL);
+        helpCost += std::max(0.0f, TimeRate(c.p) * (c.eta + v.seconds) - float(r.mobs.size()) * killXp / partySize);
         farthest = std::max(farthest, c.eta);
     }
     helpCost += TimeRate(req) * farthest;
     // [help21] a camp request (no quest of its own: a camp in its way) is worth the quests it walls off: the
     // requester's open log quests with an objective spot within its sight of the camp. Before, 0: every camp request
     // refused (b368: 263 refusals, Salleas "value 0 xp ... cost 2061")
-    float questXp = quest ? float(quest->XPValue(req->GetLevel())) : 0.0f;
+    // [help25] coordinator 2026-11-09: a requester that loses alone is blocked - the quest and every quest its
+    // hand-in opens are walled off for it, not the one quest's experience. b373: 671 refusals, 0 helps; Alnia's q3524
+    // "value 675 xp" against 1093-2048 xp of helpers' grind time
+    float questXp = quest ? (aloneWins ? float(quest->XPValue(req->GetLevel()))
+                                       : QuestRoute::ChainXp(req, quest->GetQuestId()))
+                          : 0.0f;
     if (!quest && r.at != WorldPosition())
         for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
             if (uint32 const questId = req->GetQuestSlotQuestId(slot);
@@ -2501,7 +2512,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                                                            float(pt.y) - r.at.GetPositionY()) <=
                                                     sPlayerbotAIConfig.SightDistance);
                         if (inSight)
-                            questXp += float(walled->XPValue(req->GetLevel()));
+                            questXp += aloneWins ? float(walled->XPValue(req->GetLevel()))
+                                                 : QuestRoute::ChainXp(req, questId);  // [help25]
                     }
 
     float const saved = aloneWins ? std::max(0.0f, aloneSeconds - v.seconds) : 0.0f;
