@@ -4204,6 +4204,109 @@ namespace TestHarness
         member.hasWaypoint = true;
     }
 
+    // [kara5] A walk round a door nobody of the group opens: Detour's path from the leader to `goal` with the door's
+    // polygons left out (the polygons the door's model box overlaps, the leader's and the goal's own excepted), as a
+    // player walks the other way round. Karazhan: after the Opera the raid goes up to the Curator through the
+    // ballroom and the stairs; the Servant's Access Door 184281 (lock 86) is the Master's Key shortcut. Returns the
+    // point WAYPOINT_STEP yd along that way that the walk does not take through the door, or false: no other way.
+    namespace
+    {
+        struct DoorAvoidFilter : dtQueryFilter
+        {
+            std::vector<dtPolyRef> const* banned = nullptr;
+            bool passFilter(dtPolyRef const ref, dtMeshTile const* tile, dtPoly const* poly) const override
+            {
+                return std::find(banned->begin(), banned->end(), ref) == banned->end() &&
+                       dtQueryFilter::passFilter(ref, tile, poly);
+            }
+        };
+    }
+
+    static bool WalkRoundDoor(Player* leader, GameObject* door, G3D::Vector3 const& goal, G3D::Vector3& step)
+    {
+        constexpr int MAX_POLYS = 4096;  // a way round through other halls is long
+        constexpr float DOOR_MARGIN = 1.0f;
+        Map* map = leader->GetMap();
+        dtNavMesh const* mesh = map ? map->GetMapCollisionData().GetMMapData().GetNavMesh() : nullptr;
+        if (!mesh || !door->m_model)
+            return false;
+        // its own query with a node pool for a long way round (the map's query has 1024 nodes: a walk through other
+        // halls ends partial); the harness's world thread only, kept per navmesh
+        static dtNavMesh const* queryMesh = nullptr;
+        static std::unique_ptr<dtNavMeshQuery, void (*)(dtNavMeshQuery*)> ownQuery(nullptr, dtFreeNavMeshQuery);
+        if (queryMesh != mesh || !ownQuery)
+        {
+            ownQuery.reset(dtAllocNavMeshQuery());
+            if (!ownQuery || dtStatusFailed(ownQuery->init(mesh, 32768)))
+            {
+                ownQuery.reset();
+                return false;
+            }
+            queryMesh = mesh;
+        }
+        dtNavMeshQuery const* query = ownQuery.get();
+        DoorAvoidFilter filter;
+        filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+        filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
+        float const extents[3] = {3.0f, 6.0f, 3.0f};
+        float const start[3] = {leader->GetPositionY(), leader->GetPositionZ(), leader->GetPositionX()};
+        float const end[3] = {goal.y, goal.z, goal.x};
+        dtPolyRef startRef = 0;
+        dtPolyRef endRef = 0;
+        float startAt[3];
+        float endAt[3];
+        if (dtStatusFailed(query->findNearestPoly(start, extents, &filter, &startRef, startAt)) || !startRef ||
+            dtStatusFailed(query->findNearestPoly(end, extents, &filter, &endRef, endAt)) || !endRef)
+            return false;
+        G3D::AABox const& bounds = door->m_model->GetBounds();
+        G3D::Vector3 const low = bounds.low() - G3D::Vector3(DOOR_MARGIN, DOOR_MARGIN, DOOR_MARGIN);
+        G3D::Vector3 const high = bounds.high() + G3D::Vector3(DOOR_MARGIN, DOOR_MARGIN, DOOR_MARGIN);
+        G3D::Vector3 const middle = (low + high) * 0.5f;
+        G3D::Vector3 const half = (high - low) * 0.5f;
+        float const boxCenter[3] = {middle.y, middle.z, middle.x};
+        float const boxHalf[3] = {half.y, half.z, half.x};
+        std::vector<dtPolyRef> found(256);
+        int foundCount = 0;
+        dtQueryFilter all;
+        query->queryPolygons(boxCenter, boxHalf, &all, found.data(), &foundCount, int(found.size()));
+        std::vector<dtPolyRef> banned;
+        for (int i = 0; i < foundCount; ++i)
+            if (found[i] != startRef && found[i] != endRef)
+                banned.push_back(found[i]);
+        filter.banned = &banned;
+        std::vector<dtPolyRef> path(MAX_POLYS);
+        int pathCount = 0;
+        if (dtStatusFailed(
+                query->findPath(startRef, endRef, startAt, endAt, &filter, path.data(), &pathCount, MAX_POLYS)) ||
+            !pathCount || path[pathCount - 1] != endRef)
+            return false;
+        std::vector<float> straight(size_t(MAX_POLYS) * 3);
+        int straightCount = 0;
+        if (dtStatusFailed(query->findStraightPath(startAt, endAt, path.data(), pathCount, straight.data(), nullptr,
+                                                   nullptr, &straightCount, MAX_POLYS)) ||
+            straightCount < 2)
+            return false;
+        Movement::PointsArray points;
+        for (int i = 0; i < straightCount; ++i)
+            points.emplace_back(straight[i * 3 + 2], straight[i * 3], straight[i * 3 + 1]);
+        if (RouteThroughClosedDoor(points, std::vector<GameObject*>{door}, leader->GetPhaseMask()))
+            return false;  // the only way left still runs through it
+        // the point WAYPOINT_STEP yd along the way
+        float left = WAYPOINT_STEP;
+        step = points.back();
+        for (size_t i = 1; i < points.size(); ++i)
+        {
+            float const length = (points[i] - points[i - 1]).length();
+            if (length >= left)
+            {
+                step = points[i - 1] + (points[i] - points[i - 1]) * (left / std::max(length, 0.01f));
+                break;
+            }
+            left -= length;
+        }
+        return true;
+    }
+
     void TestHarnessMgr::SetLeaderWaypoint(Party& party, Player* leader, float x, float y, float z, bool straight)
     {
         G3D::Vector3 point(x, y, z);
@@ -4244,6 +4347,19 @@ namespace TestHarness
                     if (std::find(starter.def->entries.begin(), starter.def->entries.end(), door->GetEntry()) !=
                         starter.def->entries.end())
                         opens = true;
+                // a way round it first (the door's polygons left out): the walk goes that way, nothing is skipped
+                G3D::Vector3 round;
+                G3D::Vector3 goal(x, y, z);
+                if (Creature* goalMob = leader->GetMap()->GetCreature(party.target))
+                    goal = G3D::Vector3(goalMob->GetPositionX(), goalMob->GetPositionY(), goalMob->GetPositionZ());
+                if (!opens && WalkRoundDoor(leader, door, goal, round))
+                {
+                    LOG_INFO("playerbots", "[kara5] leader {}: walks round {} {} (nobody of the group opens it) to "
+                             "({:.1f},{:.1f},{:.1f}), target {}", leader->GetName(), door->GetName(), door->GetEntry(),
+                             round.x, round.y, round.z, party.target.ToString());
+                    GiveWaypoint(party, leader, round.x, round.y, round.z, false, false);
+                    return;
+                }
                 if (!opens)
                 {
                     std::string const why = Acore::StringFormat(
