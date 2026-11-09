@@ -12,6 +12,8 @@
 #include "PlayerbotAIConfig.h"  // [wait16]
 #include "SoloSafety.h"  // [wait16] StandsInReach
 #include "NewRpgCoop.h"  // [group18]
+#include "RouteSearch.h"  // [follow57] PointOnPath
+#include <unordered_map>  // [follow57]
 #include <mutex>          // [group18]
 #include <unordered_set>  // [group18]
 #include "CheckMountStateAction.h"
@@ -304,6 +306,8 @@ bool FollowAction::Execute(Event /*event*/)
     // MemberHandIn, also from isUseful - the follow is not run while the follower stands by its leader)
     if (MemberHandIn(true))
         return true;
+    if (FarFollowWalk(target))  // [follow57]
+        return true;
     if (!target.empty())
     {
         moved = Follow(AI_VALUE(Unit*, target));
@@ -419,6 +423,76 @@ bool FollowAction::MemberHandIn(bool act)
             return true;
     }
     return false;
+}
+
+// [follow57] user rule: every fight priced. A guild follower with no member within the group reward distance is
+// judged as a solo bot (SoloSafety::Applies), yet its follow to the far leader was the core's walk (MoveTo / MoveFollow
+// straight on the navmesh): no route round the mobs it does not pull, and the party judge prices the leader's pulls
+// only. b397 Ginde L13 joined Namwe's co-op party 349 yd off from the edge of the Stonesplinter camp its own judge had
+// refused, followed into a Stonesplinter Seer L14 5 yd off at once and died to 3 of them, Namwe in GROUP_WAIT. The walk
+// is the route search's (Leader::Route, RouteCosts' refused reaches and penalties), a leg in sight at a time; a walk
+// that passes a reach it must not fight is not walked: it stands ([wait16] out of every reach) and its leader walks to
+// meet it ([wait14])
+bool FollowAction::FarFollowWalk(std::string const& target)
+{
+    Unit* leader = !target.empty() ? AI_VALUE(Unit*, target)
+                   : bot->GetGroup()   ? ObjectAccessor::FindPlayer(bot->GetGroup()->GetLeaderGUID())
+                                       : nullptr;
+    if (!leader || leader == bot || !GuildHonest::IsHonestBot(bot) || bot->IsInCombat() || !bot->IsAlive() ||
+        bot->GetMap()->Instanceable() || bot->GetTransport() || bot->IsInFlight() ||
+        leader->GetMapId() != bot->GetMapId() || leader->GetTransport() || leader->HasUnitState(UNIT_STATE_IN_FLIGHT) ||
+        bot->GetExactDist2d(leader) <= sPlayerbotAIConfig.FollowDistance || !SoloSafety::Applies(bot))
+    {
+        _farLeg = false;
+        return false;
+    }
+    // the leg under way is walked to its end (one route search per leg, not per tick)
+    if (_farLeg && bot->isMoving() &&
+        bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        return true;
+    _farLeg = false;
+    Leader::RouteResult const route = Leader::Route(bot, leader->GetPosition());
+    if (!route.found || route.throughRefused || route.points.size() < 2)
+    {
+        if (_farRefusedLog != leader->GetGUID())
+        {
+            _farRefusedLog = leader->GetGUID();
+            LOG_INFO("playerbots", "[follow57] {} L{} does not follow {} {:.0f} yd off: {} - it stands, its leader "
+                     "walks to meet it",
+                     bot->GetName(), bot->GetLevel(), leader->GetName(), bot->GetExactDist2d(leader),
+                     route.found ? "its only walk passes the reach of a mob it must not fight" : "no walk there");
+        }
+        if (bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+        {
+            bot->GetMotionMaster()->Clear();
+            bot->StopMoving();
+        }
+        return true;
+    }
+    _farRefusedLog = ObjectGuid::Empty;
+    float const sight = sPlayerbotAIConfig.SightDistance;
+    Movement::PointsArray const points(route.points.begin(), route.points.end());
+    G3D::Vector3 const end = route.length > sight ? Leader::Travel::PointOnPath(points, sight) : points.back();
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FOLLOW_MOTION_TYPE)
+        bot->GetMotionMaster()->Clear();
+    if (!MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
+        return true;  // no core walk instead: the leader walks to meet it
+    _farLeg = true;
+    // one line per leader and walk start (a log cadence, no decision reads it)
+    static std::mutex walkLogLock;
+    static std::unordered_map<uint32, ObjectGuid> walkLogged;
+    bool fresh = false;
+    {
+        std::lock_guard<std::mutex> guard(walkLogLock);
+        ObjectGuid& last = walkLogged[bot->GetGUID().GetCounter()];
+        fresh = last != leader->GetGUID();
+        last = leader->GetGUID();
+    }
+    if (fresh)
+        LOG_INFO("playerbots", "[follow57] {} L{} follows {} {:.0f} yd off by its priced walk ({:.0f} yd, {})",
+                 bot->GetName(), bot->GetLevel(), leader->GetName(), bot->GetExactDist2d(leader), route.length,
+                 route.complete ? "complete" : "partial");
+    return true;
 }
 
 bool FollowAction::isUseful()

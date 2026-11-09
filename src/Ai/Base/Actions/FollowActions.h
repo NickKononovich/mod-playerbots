@@ -21,6 +21,14 @@ public:
     bool CanDeadFollow(Unit* target);
     bool MemberHandIn(bool act);  // [quest17] [quest18]
     bool TakeTried(uint32 questId, bool mark);  // [group23]
+
+private:
+    // [follow57] a guild follower judged solo (no member within the group reward distance: SoloSafety::Applies)
+    // walks to its leader by its priced walk, a leg in sight at a time, or stands when that walk passes a reach it
+    // must not fight; true: the tick is used
+    bool FarFollowWalk(std::string const& target);
+    bool _farLeg = false;        // [follow57] the leg under way is its priced walk's
+    ObjectGuid _farRefusedLog;   // [follow57] one refusal line per leader
 };
 
 #endif
