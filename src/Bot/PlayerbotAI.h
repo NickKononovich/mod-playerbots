@@ -750,6 +750,9 @@ protected:
     bool spellInterruptRequested = false;
     uint32 lastDodgeStopCastMs = 0;  // a bot that cannot get out is not kept from casting forever
     uint32 checkedSplineId = 0;       // GuardAirborneSpline checks each spline once
+    uint64 paceSpot = 0;              // [pace25] the spot and New RPG state of the last standing look
+    uint8 paceSameLooks = 0;          // [pace25] standing looks in a row there
+    static constexpr uint8 PACE_SAME_LOOKS = 2;  // the fast looks a standing bot gets before the idle tick
     uint32 lastAirborneLogMs = 0;
     bool fallCheckRequested = false;  // dismounted or left a vehicle: fall if nothing is below
     bool fallPending = false;         // falling; HandleFall runs where the fall spline ends

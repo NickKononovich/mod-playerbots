@@ -48,6 +48,8 @@ namespace
         double movingRunYd = 0.0;  // what its run speed covers in those samples' time
         uint64 movingMs = 0;
         uint64 standingMs = 0;
+        uint64 standingBy[RPG_STATUS_END] = {};  // [pace25] the standing seconds by its New RPG state
+        uint64 standingRegenMs = 0;              // [pace25] ... of them below full health or mana (a regeneration)
         uint64 walkFlagMs = 0;  // moving with the walk flag set
         uint32 sampleMs = 0;
         bool sampleMoving = false;
@@ -90,6 +92,18 @@ namespace
                  bot->GetName(), bot->GetLevel(), double(c.movingMs) / IN_MILLISECONDS, c.movingYd,
                  c.movingRunYd > 0.0 ? 100.0 * c.movingYd / c.movingRunYd : 0.0,
                  double(c.standingMs) / IN_MILLISECONDS, double(c.walkFlagMs) / IN_MILLISECONDS);
+        {
+            static char const* const names[RPG_STATUS_END] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM",
+                                                               "WANDER_NPC", "DO_QUEST", "TRAVEL_FLIGHT", "REST",
+                                                               "OUTDOOR_PVP", "DO_GATHER", "DO_PROFESSION"};
+            std::string by;
+            for (uint32 i = 0; i < RPG_STATUS_END; ++i)
+                if (c.standingBy[i] >= IN_MILLISECONDS)
+                    by += Acore::StringFormat("{}{} {}", by.empty() ? "" : ", ", names[i],
+                                              c.standingBy[i] / IN_MILLISECONDS);
+            LOG_INFO("playerbots", "[pace25] {} L{} stood by state: {}; below full health or mana {} s",
+                     bot->GetName(), bot->GetLevel(), by.empty() ? "-" : by, c.standingRegenMs / IN_MILLISECONDS);
+        }
     }
 
     // the kill served a quest: its entry (or kill credit) is an objective of a quest in the log not yet past its
@@ -296,7 +310,14 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
                 }
                 else if (!c.sampleMoving && !movingNow && walkingState && !bot->IsSitState() &&
                          !bot->IsNonMeleeSpellCast(false))
+                {
                     c.standingMs += dt;
+                    if (status < RPG_STATUS_END)
+                        c.standingBy[status] += dt;
+                    if (bot->GetHealth() < bot->GetMaxHealth() ||
+                        (bot->GetMaxPower(POWER_MANA) && bot->GetPower(POWER_MANA) < bot->GetMaxPower(POWER_MANA)))
+                        c.standingRegenMs += dt;
+                }
             }
         }
         c.sampleMs = sampleNow;

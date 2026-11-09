@@ -110,6 +110,7 @@ namespace
 #include "SharedDefines.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "BuyAction.h"  // [pace25] RESTOCK_*, CountBagFood
 #include "DetourNavMeshQuery.h"  // [nav24]
 #include "MapDefines.h"         // [nav24]
 #include "WaypointMovementGenerator.h"
@@ -192,6 +193,35 @@ namespace
         return best;
     }
 
+    // [pace25] the cheapest food (SPELL_AURA_OBS_MOD_HEALTH) or drink (SPELL_AURA_OBS_MOD_POWER) of its level the
+    // vendor sells (BuyAction's restock items, spell category 11 / 59); 0 when none
+    uint32 RestockPrice(Player* bot, uint32 entry, uint32 spellCategory)
+    {
+        VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry);
+        if (!items)
+            return 0;
+        AuraType const wanted =
+            spellCategory == RESTOCK_SPELL_CATEGORY_FOOD ? SPELL_AURA_OBS_MOD_HEALTH : SPELL_AURA_OBS_MOD_POWER;
+        uint32 best = 0;
+        for (VendorItem const* item : items->m_items)
+        {
+            ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
+            if (!proto || item->ExtendedCost || proto->Class != ITEM_CLASS_CONSUMABLE ||
+                proto->Spells[0].SpellCategory != spellCategory || proto->RequiredLevel > bot->GetLevel() ||
+                !proto->BuyPrice)
+                continue;
+            SpellInfo const* spell = sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId);
+            bool real = false;
+            for (uint8 i = 0; spell && i < MAX_SPELL_EFFECTS; ++i)
+                real = real || spell->Effects[i].ApplyAuraName == wanted;
+            if (real && (!best || proto->BuyPrice < best))
+                best = proto->BuyPrice;
+        }
+        return best;
+    }
+
+    thread_local uint32 restockWanted = 0;  // [pace25] the spell categories the vendor choice needs (bit 0 food, 1 drink)
+
     // The nearest vendor spawn on the bot's map that is not hostile to it (and sells its ammo when it needs some).
     // [guild14] repair: only those that repair (UNIT_NPC_FLAG_REPAIR); a solo bot's trip there must be safe
     // (NewRpgBaseAction::TripRefused), else the next nearest
@@ -235,6 +265,10 @@ namespace
             if (!faction || !own || faction->IsHostileTo(*own) || own->IsHostileTo(*faction))
                 continue;
             if (ammoSubClass && !AmmoPrice(bot, spawn.entry, ammoSubClass))
+                continue;
+            // [pace25] a restock run goes to a vendor that sells what it lacks
+            if (((restockWanted & 1) && !RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_FOOD)) ||
+                ((restockWanted & 2) && !RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_DRINK)))
                 continue;
             candidates.emplace_back(bot->GetExactDist(spawn.x, spawn.y, spawn.z), &spawn);
         }
@@ -637,11 +671,22 @@ bool NewRpgBaseAction::StartVendorRun()
     // money for it checked against the core's repair cost); one try per money gain after a visit that left the need
     bool repair = repairGo && bot->GetMoney() >= call.cost &&
                   (!info.repairVisited || bot->GetMoney() > info.repairVisitMoney);
-    if (!sell && !ammoSubClass && !repair)
+    // [pace25] coordinator 2026-11-09: out of food (or, using mana, out of drink) it buys some, as a player restocks:
+    // b373's bots "sat to regenerate: nothing to eat or drink" 7263 times (Orton 1336: mana 5 % to 17 % over minutes)
+    // - the 17,623 s they stood in walking states were mostly that. RestockFoodAction buys only at a vendor within 25
+    // yd; nothing sent them to one. One run per money gain after a visit, as the ammo run
+    bool const usesMana = bot->GetMaxPower(POWER_MANA) > 0;
+    bool const noFood = !CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
+    bool const noDrink = usesMana && !CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK);
+    bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 &&
+                         (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
+    if (!sell && !ammoSubClass && !repair && !restock)
         return false;
 
     float dist = 0.0f;
+    restockWanted = restock && !sell && !ammoSubClass && !repair ? (noFood ? 1u : 0u) | (noDrink ? 2u : 0u) : 0u;
     VendorSpawn const* vendor = repair ? NearestRepairer(bot, dist) : NearestVendor(bot, ammoSubClass, dist);
+    restockWanted = 0;
     if (repair && !vendor)
     {
         repair = false;
@@ -665,6 +710,9 @@ bool NewRpgBaseAction::StartVendorRun()
     if (ammoSubClass)
         reason += std::string(!reason.empty() ? " + " : "") +
                   (ammoSubClass == ITEM_SUBCLASS_ARROW ? "buy arrows" : "buy bullets");
+    if (restock)  // [pace25]
+        reason += std::string(!reason.empty() ? " + " : "") +
+                  (noFood && noDrink ? "buy food and drink" : noFood ? "buy food" : "buy drink");
     info.ChangeToGoCamp(WorldPosition(vendor->mapId, vendor->x, vendor->y, vendor->z));
     info.vendorRunEntry = vendor->entry;
     info.vendorRunReason = reason;
@@ -1655,6 +1703,9 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                     // bots without money for cheap consumables, unless they came here for ammo.
                     if (bot->GetMoney() >= MIN_VENDOR_BALANCE || vendorRun)
                         botAI->DoSpecificAction("buy", Event("buy", "vendor"), true);
+                    // [pace25] its food and drink, as RestockFoodAction buys them standing at the vendor
+                    if (vendorRun)
+                        botAI->DoSpecificAction("restock food", Event("restock food"), true);
 
                     // [vendor12] a run for ammo that the generic buy left at the same count (its item-usage /
                     // weight look found no use for it: b350 Sehdrurmund L6, four runs to Adlin Pridedrift, ammo

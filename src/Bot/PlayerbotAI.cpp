@@ -8546,8 +8546,21 @@ uint32 PlayerbotAI::GetReactDelay()
         uint32 const now = getMSTime();
         if (!bot->isMoving() && last.msTime + uint32(last.lastdelayTime) > now)
             return std::clamp<uint32>(last.msTime + uint32(last.lastdelayTime) - now, base, base * 30);
-        if (status != RPG_REST && status != RPG_TRAVEL_FLIGHT && status != RPG_OUTDOOR_PVP && !bot->IsSitState() &&
-            !bot->IsNonMeleeSpellCast(false) && !bot->IsInFlight())
+        // [pace25] ... while its looks change something: a look that left the bot where it stood in the same state
+        // (nothing to step to: a regeneration with nothing to eat, a wait on a spawn) twice in a row goes back to
+        // the idle tick until it moves or its state changes. b373: tick 1.57 -> 1.95 ms, AI max 162 -> 268 ms with
+        // pace23's twice-the-base looks at every standing bot
+        uint64 const spot = (uint64(uint32(int32(bot->GetPositionX()))) << 32) ^ uint32(int32(bot->GetPositionY())) ^
+                            (uint64(status) << 56);
+        if (spot != paceSpot)
+        {
+            paceSpot = spot;
+            paceSameLooks = 0;
+        }
+        else if (paceSameLooks < PACE_SAME_LOOKS)
+            ++paceSameLooks;
+        if (paceSameLooks < PACE_SAME_LOOKS && status != RPG_REST && status != RPG_TRAVEL_FLIGHT &&
+            status != RPG_OUTDOOR_PVP && !bot->IsSitState() && !bot->IsNonMeleeSpellCast(false) && !bot->IsInFlight())
             return base * 2;
     }
 
