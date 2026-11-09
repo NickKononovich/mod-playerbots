@@ -153,6 +153,11 @@ std::map<uint8, uint32> AiFactory::GetPlayerSpecTabs(Player* bot)
         {
             continue;
         }
+        // [spec72] a talent unlearned (Player::resetTalents marks it removed until the next save) is no point of its
+        // spec: right after a trainer's unlearn its old tree still counted, the new points tied it and the first tree
+        // won the majority - the role's strategies were picked from the old tree
+        if (i->second->State == PLAYERSPELL_REMOVED)
+            continue;
         TalentSpellPos const* talentPos = GetTalentSpellPos(spellId);
         if (!talentPos)
             continue;

@@ -395,6 +395,13 @@ namespace Leader::Dungeon
                          healSpec != healLive || (tankSpec && !tankLive) ? ": reset to its talents" : "");
                 if (healSpec != healLive || (tankSpec && !tankLive))
                     botAI->ResetStrategies();
+                // [spec72] the five's roles from its members' talents: a tank by talents in a dps slot is the five's
+                // assist tank (the group's main tank stays the five's tank, MEMBER_FLAG_MAINTANK) - its own role, not
+                // a dps whose tank strategies fight the main tank for threat (b402 Hobliir L17: 30 aggro losses)
+                if (tankSpec && member.role == "dps" && member.guid != request.leader)
+                    LOG_INFO("playerbots", "[spec72] five {} {} L{}: a tank by its talents in a dps slot: the five's "
+                             "assist tank (main tank {})",
+                             request.fiveId, bot->GetName(), bot->GetLevel(), request.leader.ToString());
             }
             botAI->ChangeStrategy(RUN_STRATEGIES_OFF, BOT_STATE_NON_COMBAT);
             botAI->ChangeStrategy("+instance portal,+breathe", BOT_STATE_NON_COMBAT);

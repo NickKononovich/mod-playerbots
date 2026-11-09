@@ -1772,6 +1772,8 @@ void PlayerbotFactory::ResetQuests()
 
 uint32 PlayerbotFactory::InitTalentsTree(bool increment /*false*/, bool use_template /*true*/, bool reset /*false*/)
 {
+    // [spec72] its role's strategies follow its talents: the tree before, compared at the end
+    uint8 const treeBefore = AiFactory::GetPlayerSpecTab(bot);
     uint32 specTab;
     uint8 cls = bot->getClass();
     // [gather] a planned guild character keeps its planned spec (playerbots_random_bots "planSpec" = premade spec
@@ -1865,6 +1867,18 @@ uint32 PlayerbotFactory::InitTalentsTree(bool increment /*false*/, bool use_temp
     }
 
     bot->SendTalentsInfoData(false);
+    // [spec72] a talent change that changes its tree (its first points after a login with none, an unlearn's refill, a
+    // dual spec's second spec) resets its strategies from its talents at once: b402 Irrua L15 played the elemental
+    // strategies (picked at its login with no talent points: the shaman's default tree) while its free points went
+    // into resto later - the five's healer by talents healed 0 in 30 pulls. Not inside a dungeon run (its leader's
+    // strategies stand there; the run start reconciles them, [spec71])
+    if (uint8 const treeAfter = AiFactory::GetPlayerSpecTab(bot); treeAfter != treeBefore)
+        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot); ai && bot->IsInWorld() && !bot->GetMap()->Instanceable())
+        {
+            ai->ResetStrategies();
+            LOG_INFO("playerbots", "[spec72] {} L{} talents now in tree {} (was {}): strategies reset from them",
+                     bot->GetName(), bot->GetLevel(), treeAfter, treeBefore);
+        }
     return sPlayerbotAIConfig.RandomClassSpecIndex[cls][specTab];
 }
 
