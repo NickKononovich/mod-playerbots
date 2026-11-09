@@ -405,7 +405,13 @@ namespace Leader::Knowledge
             // Raids (TBC raid agent notes)
             {534, StarterKind::Gossip, {17772}, {0}, true, 8, 120000, "Hyjal: Jaina starts the Alliance wave sets"},
             {534, StarterKind::Gossip, {17852}, {0}, false, 8, 120000, "Hyjal: Thrall starts the Horde wave sets"},
-            {532, StarterKind::Gossip, {16812}, {0, 0, 0}, false, 1, 60000, "Karazhan: Barnes starts the Opera"},
+            // [kara6] priority once Moroes 15687 is dead (Barnes offers the Opera only then: karazhan.cpp
+            // npc_barnes OnGossipHello, DATA_MOROES DONE): the next bosses wait for it. b367 kara-n segment 3
+            // (20261109-060246-10A-4): its priority came only from "the next boss behind a closed door" (the
+            // Curator's Servant's Access Door, judged on and off), the route switched between Barnes and the full
+            // clear of the servants' quarters (two 245 s pulls) and the ballroom, 20 minutes without the Opera.
+            {532, StarterKind::Gossip, {16812}, {0, 0, 0}, true, 1, 60000, "Karazhan: Barnes starts the Opera",
+             false, 0, {15687}},
             // [kara3] boss_nightbane.cpp go_blackened_urn: a click on the Blackened Urn (lock 1691: LOCKTYPE_OPEN, no
             // skill) starts Nightbane's intro while his slot is NOT_STARTED
             // [kara6] after Prince Malchezaar 15690 (afterDead): Nightbane last. The urn stands on the Master's
