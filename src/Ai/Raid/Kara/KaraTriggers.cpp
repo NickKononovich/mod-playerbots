@@ -22,6 +22,14 @@ bool KarazhanBotIsNotInCombatTrigger::IsActive()
 
 bool KarazhanChessEventActiveTrigger::IsActive() { return KaraChess::Active(bot); }  // [kara3]
 
+bool KarazhanSpectralRetainerInFightTrigger::IsActive()  // [kara4]
+{
+    if (!IsMechanicTrackerBot(bot, KARA_MAP_ID))
+        return false;
+    Unit* retainer = AI_VALUE2(Unit*, "find target", "spectral retainer");
+    return retainer && retainer->IsAlive() && retainer->IsInCombat();
+}
+
 bool MoroesOffTankShouldHoldThreatTrigger::IsActive()  // [kara3]
 {
     if (!PlayerbotAI::IsTank(bot))

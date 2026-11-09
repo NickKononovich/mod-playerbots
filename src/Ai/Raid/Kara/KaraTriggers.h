@@ -312,6 +312,15 @@ public:
     bool IsActive() override;
 };
 
+// [kara4] a Spectral Retainer (Oath of Fealty) fights the group
+class KarazhanSpectralRetainerInFightTrigger : public Trigger
+{
+public:
+    KarazhanSpectralRetainerInFightTrigger(PlayerbotAI* botAI)
+        : Trigger(botAI, "karazhan spectral retainer in fight") {}
+    bool IsActive() override;
+};
+
 // [kara3] Moroes: a tank that is not his target
 class MoroesOffTankShouldHoldThreatTrigger : public Trigger
 {

@@ -145,6 +145,8 @@ public:
 
         // [kara3] Chess Event
         creators["karazhan chess event active"] = &RaidKarazhanTriggerContext::karazhan_chess_event_active;
+        creators["karazhan spectral retainer in fight"] =
+            &RaidKarazhanTriggerContext::karazhan_spectral_retainer_in_fight;
         creators["moroes off-tank should hold second threat"] =
             &RaidKarazhanTriggerContext::moroes_off_tank_should_hold_second_threat;
     }
@@ -331,6 +333,10 @@ private:
     static Trigger* karazhan_chess_event_active(PlayerbotAI* botAI)
     {
         return new KarazhanChessEventActiveTrigger(botAI);
+    }
+    static Trigger* karazhan_spectral_retainer_in_fight(PlayerbotAI* botAI)
+    {
+        return new KarazhanSpectralRetainerInFightTrigger(botAI);
     }
     static Trigger* moroes_off_tank_should_hold_second_threat(PlayerbotAI* botAI)
     {
