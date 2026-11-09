@@ -5039,6 +5039,20 @@ bool NewRpgBaseAction::LoginEscape()
             // Rumanatol 91 yd over Azuremyst): it falls, as a player whose flight broke does - no hanging there
             if (!PlayerbotAI::HasGroundSupport(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()))
             {
+                // [nav45] no ground at all under it (the map's height lookup finds none: under the world's floor,
+                // saved there by an earlier session): no fall lands anywhere - it leaves by its Hearthstone. b392
+                // Ryarii L11 logged in at (6572,781,-53) under the Darkshore sea floor, "199947 yd in the air", and
+                // stood there both windows (STUCK 2271 s)
+                if (bot->GetMapWaterOrGroundLevel(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()) <=
+                    INVALID_HEIGHT)
+                {
+                    LOG_INFO("playerbots", "[nav45] {} L{} logged in with no ground under it at ({:.0f},{:.0f},{:.0f}): "
+                             "its Hearthstone",
+                             bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(),
+                             bot->GetPositionZ());
+                    if (HearthOut("logged in with no ground under it (under the world's floor)"))
+                        return true;
+                }
                 LOG_INFO("playerbots", "[nav28] {} L{} logged in {:.0f} yd in the air (not on a flight): falls",
                          bot->GetName(), bot->GetLevel(),
                          bot->GetPositionZ() - bot->GetMapWaterOrGroundLevel(bot->GetPositionX(),

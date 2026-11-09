@@ -1220,6 +1220,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                          "max health {} - no field work until it ends",
                          bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(),
                          std::max(0, sickness->GetDuration()) / IN_MILLISECONDS, bot->GetMaxHealth());
+            if (fresh)  // [idle45] the hold's own decision line: its IDLE is a sickness wait, not an unlabelled idle
+                LOG_INFO("playerbots", "[rpg] {} L{} RECOVER reason: waits out Resurrection Sickness ({} s)",
+                         bot->GetName(), bot->GetLevel(), std::max(0, sickness->GetDuration()) / IN_MILLISECONDS);
             if (status != RPG_IDLE)
                 info.ChangeToIdle();
             // [sick37] it waits at a safe spot: a rise in an idle mob's reach (a wanderer's area, a patrol's beat)

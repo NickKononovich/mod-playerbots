@@ -1971,6 +1971,29 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         }
     }
 
+    // [swim45] the destination under the water the bot swims in (a sea floor's chest, bones on a lake bed): the
+    // navmesh holds only the surface, so its path ends where the bot floats - it dives straight down to it, as a
+    // player swims. b392 Lyleria L12 above q4681's (6311,857,-14) off Auberdine: "near walk refused: the walk ends
+    // where the bot stands", MOVE_FAR_LOOP, GIVE_UP, IDLE the whole window
+    if (!dry && bot->IsInWater() && bot->GetExactDist2d(origX, origY) <= sPlayerbotAIConfig.SightDistance)
+    {
+        LiquidData const liquid =
+            bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), origX, origY, origZ, bot->GetCollisionHeight(), {});
+        if (liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > INVALID_HEIGHT && liquid.Level >= origZ)
+        {
+            if (bot->IsSitState())
+                bot->SetStandState(UNIT_STAND_STATE_STAND);
+            DoMovePoint(bot, origX, origY, origZ, false, false);
+            float const delay = std::min(float(sPlayerbotAIConfig.MaxWaitForMove),
+                                         IN_MILLISECONDS * MoveDelay(bot->GetExactDist(origX, origY, origZ), false));
+            AI_VALUE(LastMovement&, "last movement")
+                .Set(mapId, origX, origY, origZ, bot->GetOrientation(), delay, priority);
+            AI_VALUE(LastMovement&, "last movement").lastMoveAsked = WorldPosition(mapId, origX, origY, origZ);
+            LOG_INFO("playerbots", "[swim45] {} dives to ({:.1f},{:.1f},{:.1f}) under the water it swims in ({:.0f} yd)",
+                     bot->GetName(), origX, origY, origZ, bot->GetExactDist(origX, origY, origZ));
+            return true;
+        }
+    }
     return refuse("the walk ends where the bot stands");
     //
     // // LOG_DEBUG("playerbots", "IsMovingAllowed {}", IsMovingAllowed());
