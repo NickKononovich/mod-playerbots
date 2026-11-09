@@ -1142,7 +1142,17 @@ void NewRpgBaseAction::NavGap(Player* bot, std::string const& event)
     if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot); ai && ai->rpgInfo.trip.phase != NewRpgInfo::TripPhase::None)
         add(Acore::StringFormat("trip phase {}", uint32(ai->rpgInfo.trip.phase)));
     float const ground = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, z + 2.0f, true, 100.0f);
-    if (ground > INVALID_HEIGHT && z - ground > 6.0f)
+    // [navgap29] under a liquid's surface the bot swims: no fall, the navmesh's water is its surface polygons only.
+    // b378 Alnia x3, Hobliir, Shalaeth, Salleas in the sea off Auberdine at z -5..-15, every alarm "in the air 8 yd
+    // over the ground: a fall not run, a knockback" ([swim28] takes the way up)
+    LiquidData const liquid =
+        bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, z, bot->GetCollisionHeight(), {});
+    bool const underLiquid = liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > INVALID_HEIGHT && liquid.Level >= z;
+    if (underLiquid)
+        add(Acore::StringFormat("[navgap29] under water {:.0f} yd below its surface (z {:.1f}), {:.0f} yd over the "
+                                "floor: swims (the navmesh holds only the surface)",
+                                liquid.Level - z, liquid.Level, ground > INVALID_HEIGHT ? z - ground : 0.0f));
+    else if (ground > INVALID_HEIGHT && z - ground > 6.0f)
         add(Acore::StringFormat("in the air {:.0f} yd over the ground (z {:.1f}): a fall not run, a knockback, a "
                                 "transport gone from under it",
                                 z - ground, ground));
