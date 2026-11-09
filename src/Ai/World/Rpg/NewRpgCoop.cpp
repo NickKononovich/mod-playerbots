@@ -2487,7 +2487,11 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         helpCost += std::max(0.0f, TimeRate(c.p) * (c.eta + v.seconds) - float(r.mobs.size()) * killXp / partySize);
         farthest = std::max(farthest, c.eta);
     }
-    helpCost += TimeRate(req) * farthest;
+    // [help25] a blocked requester's own time is no cost of the help: alone it gains nothing at that camp, and its
+    // other stops go on while the helpers walk to it (b373: 109-113 s at its route's 11.15 xp/s were most of the
+    // refused prices)
+    if (aloneWins)
+        helpCost += TimeRate(req) * farthest;
     // [help21] a camp request (no quest of its own: a camp in its way) is worth the quests it walls off: the
     // requester's open log quests with an objective spot within its sight of the camp. Before, 0: every camp request
     // refused (b368: 263 refusals, Salleas "value 0 xp ... cost 2061")
