@@ -282,6 +282,10 @@ public:
     std::string FivesText() const;  // "playerbots guild fives"
     std::string DungeonsText(uint8 level) const;  // "playerbots guild dungeons [level]": the band and why / why not
     void SetAutoFives(bool on) { autoFives_ = on; }
+    // [next1] the five the global leader would take into `contentKey` now (members in its band, tank / healer / dps as
+    // PickFive picks them, the tank first) and its five-gate verdict - the harness's "guildlike" comp copies it
+    bool PreviewFive(std::string const& contentKey, std::vector<std::pair<uint32, std::string>>& members,
+                     std::string& verdict, std::string& error);
     bool AutoFives() const { return autoFives_; }
     // [wait19] both are members of one five the global leader formed that gathers at its dungeon's entrance or
     // heads into the dungeon (Gather / Run): its leader's group wait and meet walk hold for it
@@ -625,7 +629,10 @@ private:
     void UpdateFives();
     void AutoFive();
     DungeonOption const* FindDungeon(std::string const& contentKey) const;
-    std::string DungeonRefusal(DungeonOption const& d, Player* p) const;  // "" = the dungeon fits this character
+    // "" = the dungeon fits this character. [next1] walk: the five walks in (the Dungeon Finder does not take it),
+    // so the entrance's continent and an enemy capital count; else only while the finder cannot port the five.
+    std::string DungeonRefusal(DungeonOption const& d, Player* p, bool walk = false) const;
+    std::string FiveWalkRefusal(GuildFive const& five) const;  // [next1] a member the walk in refuses, "" = none
     bool HoldsUpgrade(DungeonOption const& d, Player* p) const;
     bool FreeForFive(uint32 low, Player* p, std::string* why = nullptr) const;  // lock_ held
     std::string PlanRole(uint32 low, Player* p) const;

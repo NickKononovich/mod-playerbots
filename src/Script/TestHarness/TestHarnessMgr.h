@@ -102,6 +102,18 @@ namespace TestHarness
         std::pair<uint16, uint16> professions{0, 0};
         PrepareResult prep;
         bool prepared = false;
+        // [next1] a "guildlike" comp: the guild member this one copies - its level and its worn items (entry, random
+        // suffix, permanent enchant per slot; an empty slot stays empty)
+        struct CopiedPiece
+        {
+            uint8 slot = 0;
+            uint32 entry = 0;
+            int32 randomPropertyId = 0;
+            uint32 enchant = 0;
+        };
+        uint8 copyLevel = 0;  // 0: no copy
+        std::string copyOf;
+        std::vector<CopiedPiece> copyGear;
         uint32 deadSinceMs = 0;
         uint32 awaySinceMs = 0;  // dead or outside since (AWAY_MAX_MS is per member, not "somebody away")
         // Back in through the portal (MeetMember's regroup): seen on the run's map, then off it, then on it again.
@@ -213,6 +225,7 @@ namespace TestHarness
         // bosses and trash stay dead - the lockout, a game mechanic), the run goes on from the next boss
         bool resume = false;
         uint32 keptInstanceId = 0;  // [strat1] a 5-man continue: the instance its kept group holds
+        std::string gateVerdict;  // [next1] a guildlike run: the global leader's five-gate verdict for this five
         std::vector<Member> members;
         ObjectGuid leader;
         ObjectGuid groupGuid;
@@ -462,7 +475,11 @@ namespace TestHarness
         // parties
         // [strat1] keep: the characters to take (a 5-man continue: the kept group, its leader in the leading slot)
         Party* CreateParty(Composition const* comp, ContentDef const* content, uint8 level, uint32 ilvl,
-                           std::string& error, std::vector<ObjectGuid> const* keep = nullptr);
+                           std::string& error, std::vector<ObjectGuid> const* keep = nullptr,
+                           std::vector<uint8> const* slotLevels = nullptr);
+        // [next1] "guildlike": the five the global leader would take into `content` now, copied onto test characters
+        // (their levels, specs and worn items); nullptr and `error` when the leader has none
+        Party* CreateGuildlikeParty(ContentDef const* content, std::string& error);
         // [strat1] a 5-man continue: the group an earlier run of this content kept. Its leader holds the instance
         // bind the group enters (InstanceSaveMgr::PlayerGetDestinationInstanceId: in a group, the leader's bind).
         bool FindKeptFive(Composition const* comp, ContentDef const* content, std::vector<ObjectGuid>& members,

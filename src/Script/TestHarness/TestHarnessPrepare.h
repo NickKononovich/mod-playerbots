@@ -58,6 +58,18 @@ namespace TestHarness
     // counts twice): trinkets come at 50, neck and head at 30, rings at 20.
     float AverageItemLevel(Player* bot);
     int32 FindPremadeSpec(uint8 cls, std::string const& name);
+
+    // [next1] the guildlike comp: a guild member's worn items (equipment slot, entry, random suffix, permanent
+    // enchant) in place of the prepared set - every equipped item goes, a slot the member left empty stays empty.
+    // Returns the pieces worn (an item the character cannot wear is logged and left out).
+    struct CopiedGearPiece
+    {
+        uint8 slot = 0;
+        uint32 entry = 0;
+        int32 randomPropertyId = 0;
+        uint32 enchant = 0;
+    };
+    uint32 WearCopiedGear(Player* bot, std::vector<CopiedGearPiece> const& pieces);
 }
 
 #endif
