@@ -7,6 +7,7 @@
 #include "NewRpgTriggers.h"
 #include "NewRpgCoop.h"
 #include "GuildHonest.h"  // [wait19]
+#include "GuildCoordinator.h"  // [wait19] the guild fives
 #include "Creature.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
@@ -106,8 +107,10 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
         if (ObjectGuid partyLeader; GuildHonest::IsHonestBot(bot) && GuildHonest::IsHonestBot(member) &&
                                     !bot->GetMap()->Instanceable() &&
                                     !(NewRpgCoop::PartyLeaderOf(member->GetGUID().GetCounter(), partyLeader) &&
-                                      partyLeader == bot->GetGUID()))
-            continue;
+                                      partyLeader == bot->GetGUID()) &&
+                                    !sGuildCoordinator.InSameActiveFive(bot->GetGUID().GetCounter(),
+                                                                        member->GetGUID().GetCounter()))
+            continue;  // (a guild five gathering or heading in keeps its wait)
         std::string const why = MemberNotReady(member);
         if (!why.empty())
         {
