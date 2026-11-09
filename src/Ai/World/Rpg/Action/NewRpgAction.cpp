@@ -75,6 +75,7 @@ namespace
 #include "SpellAuras.h"  // [deaths14] Resurrection Sickness
 #include "TerrainHazard.h"  // [guild15] SafeFloorZ
 #include "NewRpgCoop.h"  // [coop]
+#include "LeaderOrders.h"  // [deaths20] Leader::Route
 #include "AreaDefines.h"
 #include "Group.h"
 #include "NewRpgTriggers.h"
@@ -871,6 +872,29 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // [deaths13] hurt, out of a fight, in a wanderer's reach: the rest is taken out of every reach
     if (RestEscape())
         return true;
+    // [deaths20] an IDLE bot (between its tasks: a fight's end, a loot, a hand-in) standing in an idle hostile's reach
+    // steps out of every reach before it plans, as a hurt one does: its next walk starts from there. b367: of 9
+    // "attacked, no judged pull" deaths, 5 had the attacker idle 5-6 yd from its home at 1-5 yd from the bot standing
+    // (Ainne, Tuihgrelfim, Thyllyn x2 by the Defias and Blackwood camps) - the bot stood in its reach
+    if (status == RPG_IDLE && !bot->IsInCombat() && !bot->isMoving() && SoloSafety::Applies(bot))
+    {
+        std::string who;
+        std::vector<G3D::Vector3> spots;
+        if (SoloSafety::StandsInReach(bot, who, spots))
+            for (G3D::Vector3 const& at : spots)
+            {
+                Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+                if (!route.found || !route.complete || route.throughRefused)
+                    continue;
+                if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+                    continue;
+                LOG_INFO("playerbots", "[deaths20] {} L{} IDLE within the reach of {}: steps out to ({:.0f},{:.0f}), "
+                         "{:.0f} yd walk",
+                         bot->GetName(), bot->GetLevel(), who, at.x, at.y, route.length);
+                return true;
+            }
+    }
+
 
     // [regress10] the recovery after a death comes first: before, only a far walk's MoveFarTo took it, so a quest spot
     // in reach of the corpse was fought at once (b345 Guinudrond L11 at the Silver Stream Mine)
@@ -2180,8 +2204,30 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         {
             static std::mutex handLock;
             static std::unordered_map<uint32, std::tuple<uint32, float, float>> handWalk;  // quest, nearest, logged
-            float const d = bot->GetDistance(data.pos);
+            // [quest20] the walk still to go along its far route (its rest from the point nearest the bot, then on
+            // to the ender), not the straight line: a route that first leaves the ender's direction (the Rut'theran
+            // boat, Ironforge's gate) is no walk away. b367: 14 [quest19] lines, nearly all such detours (Dandolar
+            // to Darkshore over the boat, Namwe out of Ironforge)
+            float d = bot->GetDistance(data.pos);
+            if (std::vector<G3D::Vector3> const& route = botAI->rpgInfo.farRoute; route.size() >= 2)
+            {
+                G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                size_t nearestPoint = 0;
+                float bestSq = std::numeric_limits<float>::max();
+                for (size_t i = 0; i < route.size(); ++i)
+                    if (float const sq = (route[i] - here).squaredLength(); sq < bestSq)
+                    {
+                        bestSq = sq;
+                        nearestPoint = i;
+                    }
+                float rest = std::sqrt(bestSq);
+                for (size_t i = nearestPoint + 1; i < route.size(); ++i)
+                    rest += (route[i] - route[i - 1]).length();
+                rest += data.pos.GetExactDist(route.back().x, route.back().y, route.back().z);
+                d = rest;
+            }
             bool log = false;
+
             float nearest = d;
             {
                 std::lock_guard<std::mutex> guard(handLock);
@@ -2204,8 +2250,8 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
             {
                 LastMovement const& last = AI_VALUE(LastMovement&, "last movement");
                 LOG_INFO("playerbots",
-                         "[quest19] {} L{} q{} hand-in walk: ender at map {} ({:.0f},{:.0f},{:.0f}) {:.0f} yd, nearest "
-                         "{:.0f} yd; walk {}; far route {} points; last move to ({:.0f},{:.0f}); status {}",
+                         "[quest19] {} L{} q{} hand-in walk: ender at map {} ({:.0f},{:.0f},{:.0f}) {:.0f} yd to go, "
+                         "nearest {:.0f} yd; walk {}; far route {} points; last move to ({:.0f},{:.0f}); status {}",
                          bot->GetName(), bot->GetLevel(), data.questId, data.pos.GetMapId(),
                          data.pos.GetPositionX(), data.pos.GetPositionY(), data.pos.GetPositionZ(), d, nearest,
                          walks ? "under way" : "none (" + s_moveRefusal + ")", botAI->rpgInfo.farRoute.size(),
