@@ -112,6 +112,13 @@ namespace
     }
 }
 
+namespace
+{
+    // [deaths18] bot -> the hub its recovery after a death walks to; set when that walk is given up
+    std::mutex recoveryLock;
+    std::unordered_map<uint32, std::pair<WorldPosition, bool>> recoveryHub;
+}
+
 bool NewRpgBaseAction::SoloSafetyStep()
 {
     if (bot->IsInCombat() || !bot->IsAlive() || bot->IsInFlight() || bot->GetTransport())
@@ -132,10 +139,38 @@ bool NewRpgBaseAction::SoloSafetyStep()
         {
             LOG_INFO("playerbots", "[rpg] {} L{} RECOVER after a death: rests to full, walks to its hub ({:.0f} yd)",
                      bot->GetName(), bot->GetLevel(), bot->GetExactDist(hub));
+            {
+                std::lock_guard<std::mutex> guard(recoveryLock);
+                recoveryHub[bot->GetGUID().GetCounter()] = {hub, false};  // [deaths18]
+            }
             botAI->rpgInfo.ChangeToGoCamp(hub);
             return true;
         }
     }
+    // [deaths18] coordinator 2026-11-09: its recovery walk out of the camp that killed it was given up (the maze
+    // search: every way passes mobs it does not pull): it does not stay by the camp - its Hearthstone, else a help
+    // request for the camp; meanwhile it stands out of every idle reach. b359 Guinudrond L12 rose 32 yd from its
+    // corpse by the Riverpaw camp in Westfall (L13-18), gave the 744 yd hub walk up, quested on from there and died
+    // twice more at the same spot
+    WorldPosition blockedHub;
+    {
+        std::lock_guard<std::mutex> guard(recoveryLock);
+        auto const found = recoveryHub.find(bot->GetGUID().GetCounter());
+        if (found != recoveryHub.end() && found->second.second)
+        {
+            blockedHub = found->second.first;
+            recoveryHub.erase(found);
+        }
+    }
+    if (blockedHub != WorldPosition())
+    {
+        std::string const why = "after a death its walk out of the camp to its hub is given up";
+        LOG_INFO("playerbots", "[deaths18] {} L{} {}: hearth, else help", bot->GetName(), bot->GetLevel(), why);
+        if (HearthOut(why))
+            return true;
+        NewRpgCoop::OnCampRefused(botAI, bot, blockedHub, why);
+    }
+
     if (SoloSafety::WaitsToRegen(bot))
     {
         if (!bot->IsSitState())
@@ -4179,6 +4214,14 @@ void NewRpgBaseAction::NoteWalkGivenUp(Player* bot, WorldPosition const& dest, s
 {
     if (!bot || dest == WorldPosition())
         return;
+    {
+        std::lock_guard<std::mutex> guard(recoveryLock);
+        auto const found = recoveryHub.find(bot->GetGUID().GetCounter());
+        if (found != recoveryHub.end() && found->second.first.GetMapId() == dest.GetMapId() &&
+            found->second.first.GetExactDist2d(dest.GetPositionX(), dest.GetPositionY()) < 1.0f)
+            found->second.second = true;  // [deaths18] its recovery walk is refused
+    }
+
     std::tuple<uint32, int32, int32> const key{dest.GetMapId(), int32(dest.GetPositionX()), int32(dest.GetPositionY())};
     {
         std::lock_guard<std::mutex> guard(givenUpLock);
