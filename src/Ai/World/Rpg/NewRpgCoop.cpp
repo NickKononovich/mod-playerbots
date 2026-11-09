@@ -2348,6 +2348,25 @@ float TimeRate(Player* p)
 
 // lock held: the global leader assigns the helpers of one open request (world thread: every player readable). `reply`:
 // the answer for a human requester
+// [help53] the help update's two passes: the walks its pricing asks for are searched outside the board's lock.
+// Pass 1 (planning, under the lock) records the (helper, camp) walks it lacks and assigns nothing that needed one;
+// the walks are searched without the lock; pass 2 (under the lock) prices with them. Behind the board's lock
+bool helpPlanning = false;
+struct WalkNeed
+{
+    ObjectGuid helper;
+    Position camp;
+};
+std::vector<WalkNeed> walkNeeds;
+std::map<std::pair<uint32, std::tuple<int32, int32, int32>>, float> walkCache;  // (helper, camp to a yard) -> yd
+bool walkMissing = false;  // pass 1: a walk was asked for that is not in the cache
+
+std::pair<uint32, std::tuple<int32, int32, int32>> WalkKey(Player* p, Position const& camp)
+{
+    return {p->GetGUID().GetCounter(),
+            {int32(camp.GetPositionX()), int32(camp.GetPositionY()), int32(camp.GetPositionZ())}};
+}
+
 bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
 {
     reply.clear();
@@ -2425,7 +2444,18 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     {
         if (c.exact)
             return;
-        c.walkYd = Leader::WalkYd(c.p, campOf(c.p));
+        // [help53] the walk searched outside the lock, else (planning) asked for, else searched here
+        Position const camp = campOf(c.p);
+        if (auto const cached = walkCache.find(WalkKey(c.p, camp)); cached != walkCache.end())
+            c.walkYd = cached->second;
+        else if (helpPlanning)
+        {
+            walkNeeds.push_back({c.p->GetGUID(), camp});
+            walkMissing = true;
+            return;  // its lower bound stays (pass 2 prices it)
+        }
+        else
+            c.walkYd = Leader::WalkYd(c.p, camp);
         c.eta = c.walkYd / std::max(c.p->GetSpeed(MOVE_RUN), 1.0f);
         c.exact = true;
     };
@@ -2512,6 +2542,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     std::string skippedText;
     for (auto const& [why, n] : skipped)
         skippedText += (skippedText.empty() ? "" : ", ") + why + " " + std::to_string(n);
+    if (helpPlanning)
+        return false;  // [help53] planned: its walks are searched outside the lock, priced in pass 2
     if (!v.win || chosen.empty())
     {
         std::string const why =
@@ -3728,6 +3760,47 @@ void UpdateHelp()
     Out out;
     std::vector<std::pair<ObjectGuid, std::string>> replies;
     std::vector<std::pair<ObjectGuid, uint32>> whispers;
+    // [help53] pass 1 under the lock: the requests priced this update and the walks their pricing asks for
+    std::set<uint32> assignNow;
+    std::vector<WalkNeed> needs;
+    {
+        std::lock_guard<std::recursive_mutex> guard(lock);
+        walkCache.clear();
+        constexpr uint32 ASSIGNS_PER_UPDATE = 3;  // [help32] a cost bound per update, not a behaviour rule
+        static uint32 assignCursor = 0;          // behind the board's lock: the last request id priced
+        std::vector<uint32> assignOrder;
+        for (auto const& [id, r] : helpRequests)
+            if (!r.party)
+                assignOrder.push_back(id);
+        std::rotate(assignOrder.begin(),
+                    std::upper_bound(assignOrder.begin(), assignOrder.end(), assignCursor), assignOrder.end());
+        for (uint32 id : assignOrder)
+        {
+            if (assignNow.size() >= ASSIGNS_PER_UPDATE)
+                break;
+            assignNow.insert(id);
+            assignCursor = id;
+        }
+        helpPlanning = true;
+        walkNeeds.clear();
+        for (uint32 id : assignNow)
+            if (auto const r = helpRequests.find(id); r != helpRequests.end() && !r->second.human && !r->second.party)
+            {
+                walkMissing = false;
+                std::string plannedReply;
+                Out plannedOut;  // pass 1's lines are dropped: pass 2 logs the pricing
+                AssignLocked(r->second, plannedOut, plannedReply);
+            }
+        helpPlanning = false;
+        walkMissing = false;
+        needs.swap(walkNeeds);
+    }
+    // the walks without the lock (a long route each): Leader::WalkYd may take the board's lock itself (RouteCosts ->
+    // JudgesPulls), so none of it runs while this update holds it
+    std::vector<std::pair<std::pair<uint32, std::tuple<int32, int32, int32>>, float>> walked;
+    for (WalkNeed const& need : needs)
+        if (Player* helper = ObjectAccessor::FindPlayer(need.helper); helper && helper->IsInWorld())
+            walked.emplace_back(WalkKey(helper, need.camp), Leader::WalkYd(helper, need.camp));
     {
         std::lock_guard<std::recursive_mutex> guard(lock);
         uint32 const now = getMSTime();
@@ -3758,22 +3831,8 @@ void UpdateHelp()
         // [help32] the pricing (AssignLocked: every candidate's walk) runs for a few requests per update, in turn by
         // request id from where the last update stopped - a queue, no clock; the cheap drop checks run for all.
         // b385: help update 145 ms avg, 1209 ms max over 246 updates, every open request priced every update
-        constexpr uint32 ASSIGNS_PER_UPDATE = 3;  // a cost bound per update, not a behaviour rule
-        static uint32 assignCursor = 0;          // behind the board's lock: the last request id priced
-        std::vector<uint32> assignOrder;
-        for (auto const& [id, r] : helpRequests)
-            if (!r.party)
-                assignOrder.push_back(id);
-        std::rotate(assignOrder.begin(),
-                    std::upper_bound(assignOrder.begin(), assignOrder.end(), assignCursor), assignOrder.end());
-        std::set<uint32> assignNow;
-        for (uint32 id : assignOrder)
-        {
-            if (assignNow.size() >= ASSIGNS_PER_UPDATE)
-                break;
-            assignNow.insert(id);
-            assignCursor = id;
-        }
+        for (auto const& [key, yd] : walked)  // [help53] pass 2 prices with the walks searched outside the lock
+            walkCache[key] = yd;
         uint32 deferred = 0;
         for (auto itr = helpRequests.begin(); itr != helpRequests.end();)
         {
