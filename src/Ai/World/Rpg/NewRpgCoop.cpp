@@ -2324,7 +2324,10 @@ float TimeRate(Player* p)
         // respawn floor), not its fight alone
         std::string parts;
         float const cycle = NewRpgBaseAction::GrindCycleSeconds(p, WorldPosition(p), killSeconds, parts);
-        grind = cycle > 0.0f ? killXp / cycle : 0.0f;
+        // [help25] no mob of its level where it stands (a town, a cleared spot): its grind goes on elsewhere, at
+        // its fight's own pace - a helper's time is never free. b373: helpers at "0.00 xp/s (grind)" were sent
+        // 1837-6252 yd (Namwe to Septimon, then to Maronic, eta 893 s): 8 help parties over 1000 yd
+        grind = killXp / (cycle > 0.0f ? cycle : killSeconds);
     }
     return std::max(route, grind);
 }
