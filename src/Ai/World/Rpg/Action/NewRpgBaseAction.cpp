@@ -2167,18 +2167,6 @@ static float FallDamageShare(Player* bot, float height)
 // shortcut, which glides through the air), the route found from the destination back to the bot walked the other way,
 // and at last a step onto the nearest navmesh polygon in sight - walked when the ground carries it there, else a
 // jump down when the fall (the core's fall damage) leaves the bot alive. Each one logs WALK_FAIL with the position.
-namespace
-{
-    // [steep29] the flags of a polygon (NAV_GROUND / NAV_GROUND_STEEP / NAV_WATER), 0 when unknown
-    uint16 PolyFlagsAt(dtNavMeshQuery const* query, dtPolyRef ref)
-    {
-        dtNavMesh const* mesh = query ? query->getAttachedNavMesh() : nullptr;
-        uint16 flags = 0;
-        if (!mesh || dtStatusFailed(mesh->getPolyFlags(ref, &flags)))
-            return 0;
-        return flags;
-    }
-}
 
 bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
 {
@@ -2604,45 +2592,32 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     // Kalimdor's main region, "off the navmesh: the landing 96 yd off is past a jump's reach (6 yd)", WALK_FAIL
     if (onPolygon)
     {
-        float const startPoint[3] = {here.y, here.z, here.x};
-        float const extents[3] = {3.0f, 50.0f, 3.0f};
-        float startNearest[3] = {0.0f, 0.0f, 0.0f};
-        dtPolyRef startRef = 0;
-        if (dtStatusSucceed(query->findNearestPoly(startPoint, extents, &filter, &startRef, startNearest)) &&
-            startRef)
+        // [steep32] the corridor by the long route search (its own node pool, steep slopes included): the map's
+        // query holds 1024 nodes, a 96 yd corridor over the small polygons of a slope ran out of them and came back
+        // partial - steep29 never walked (b385: 15 Barrens alarms, Feette at (1102,-1302,216), "landing 96 yd off").
+        // The landings nearest first; the walk is the corridor's corners
+        std::vector<Way const*> byGap;
+        for (Way const& way : ways)
+            byGap.push_back(&way);
+        std::sort(byGap.begin(), byGap.end(), [](Way const* a, Way const* b) { return a->gap < b->gap; });
+        constexpr size_t CORRIDOR_TRIES = 8;  // search cost bound, not a behaviour rule
+        for (size_t i = 0; i < byGap.size() && i < CORRIDOR_TRIES; ++i)
         {
-            Way const* walkTo = nullptr;
-            for (Way const& way : ways)
-            {
-                if (walkTo && walkTo->gap <= way.gap)
-                    continue;
-                float const endPoint[3] = {way.to.y, way.to.z, way.to.x};
-                float endNearest[3] = {0.0f, 0.0f, 0.0f};
-                dtPolyRef endRef = 0;
-                if (dtStatusFailed(query->findNearestPoly(endPoint, extents, &filter, &endRef, endNearest)) || !endRef)
-                    continue;
-                constexpr int CORRIDOR_POLYS = 512;  // search bound, not a behaviour rule
-                std::vector<dtPolyRef> corridor(CORRIDOR_POLYS);
-                int count = 0;
-                dtStatus const status = query->findPath(startRef, endRef, startNearest, endNearest, &filter,
-                                                        corridor.data(), &count, CORRIDOR_POLYS);
-                if (dtStatusSucceed(status) && !dtStatusDetail(status, DT_PARTIAL_RESULT) && count > 0 &&
-                    corridor[size_t(count - 1)] == endRef)
-                    walkTo = &way;
-            }
-            if (walkTo)
-            {
-                bot->GetMotionMaster()->MovePoint(0, walkTo->to.x, walkTo->to.y, walkTo->to.z, FORCED_MOVEMENT_NONE,
-                                                  0.0f, 0.0f, true, true);
-                LOG_INFO("playerbots", "[steep29] {} L{} on {} ground at ({:.1f},{:.1f},{:.1f}): walks the navmesh "
-                         "{:.0f} yd to the landing ({:.1f},{:.1f},{:.1f}) its region joins",
-                         bot->GetName(), bot->GetLevel(), PolyFlagsAt(query, startRef) & NAV_GROUND_STEEP ? "steep"
-                                                                                                           : "its",
-                         here.x, here.y, here.z, walkTo->gap, walkTo->to.x, walkTo->to.y, walkTo->to.z);
-                return logged(Acore::StringFormat("[steep29] on the navmesh: walks {:.0f} yd to the landing its region "
-                                                  "joins",
-                                                  walkTo->gap));
-            }
+            Way const& way = *byGap[i];
+            Movement::PointsArray corners;
+            bool complete = false;
+            if (!Leader::Travel::LongRoute(bot, here, way.to, true, corners, complete) || !complete ||
+                corners.size() < 2)
+                continue;
+            if (!WalkBotPoints(bot, corners))
+                continue;
+            LOG_INFO("playerbots", "[steep29] {} L{} at ({:.1f},{:.1f},{:.1f}): walks the navmesh {:.0f} yd to the "
+                     "landing ({:.1f},{:.1f},{:.1f}) its region joins ({} corners)",
+                     bot->GetName(), bot->GetLevel(), here.x, here.y, here.z, way.gap, way.to.x, way.to.y, way.to.z,
+                     corners.size());
+            return logged(Acore::StringFormat("[steep29] on the navmesh: walks {:.0f} yd to the landing its region "
+                                              "joins",
+                                              way.gap));
         }
     }
     // a step the ground carries, the nearest; else a jump down the bot survives, the least fall damage
