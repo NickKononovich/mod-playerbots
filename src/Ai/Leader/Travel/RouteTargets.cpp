@@ -3893,6 +3893,7 @@ namespace Leader::Travel
 
         ObjectGuid bestGuid;
         float bestScore = 0.0f;
+        bool bestAreaFirst = false;  // [kara4] the next raid boss's area trash
         bool bestIsBoss = false;
         bool bestObjective = false;  // a hold spot's holdAlways entry: never "respawning trash" or far trash
         bool nearObjective = false;
@@ -3900,10 +3901,12 @@ namespace Leader::Travel
         // The best of the targets that are no far trash (FAR_TARGET_PATH): taken over a far best one.
         ObjectGuid nearGuid;
         float nearScore = 0.0f;
+        bool nearAreaFirst = false;  // [kara4]
         bool nearIsBoss = false;
         // [target_commit] the current target as scored this retarget (empty: not scored - dead, skipped, unreachable)
         ObjectGuid commitGuid;
         float commitScore = 0.0f;
+        bool commitAreaFirst = false;  // [kara4]
         float commitLength = 0.0f;
         bool commitIsBoss = false;
         bool commitObjective = false;
@@ -4274,17 +4277,17 @@ namespace Leader::Travel
             float score = path.length;
             if (nextBoss && nextBoss != creature && !fledSurvivors.count(creature->GetGUID()))
                 score += BOSS_ROUTE_WEIGHT * creature->GetExactDist(nextBoss);
-            // [kara4] a raid's next boss by the encounter order: the trash of his area comes before the trash
-            // elsewhere (it holds his pull: "boss pull held"). b359 kara-n 20261109-010057-10A-1: Midnight (order 0)
-            // was the next boss from 6 s ("boss pull held, remaining 5, first Spectral Apprentice"), but every
-            // retarget took the nearer trash east of the Gatehouse (Coldmist 55 yd + 0.25 x 111 yd beat the stables
-            // ~100 yd + 0.25 x 30 yd) and walked the group step by step into the servants' quarters and the
-            // ballroom; Midnight stayed "alive, not engaged" to the 20-minute cap. A continue segment goes back the
-            // same way: his area first while he is the lowest order standing.
-            if (group.IsRaid() && nextBoss && nextOrder >= 0 && creature != nextBoss && !creature->IsInCombat() &&
-                BossAreaTrashOf(leader, nextBoss, creature,
-                                group.Route().bossCreatures.count(creature->GetGUID()) != 0))
-                score -= RAID_NEXT_BOSS_AREA_FIRST;
+            // [kara4] a raid's next boss by the encounter order: the trash of his area (it holds his pull: "boss
+            // pull held") comes before every other trash - an ordering, compared before the score (areaFirst, then
+            // score). b359 kara-n 20261109-010057-10A-1: Midnight (order 0) was the next boss from 6 s ("boss pull
+            // held, remaining 5, first Spectral Apprentice"), but every retarget took the nearer trash east of the
+            // Gatehouse (Coldmist 55 yd + 0.25 x 111 yd beat the stables ~100 yd + 0.25 x 30 yd) and walked the
+            // group step by step into the servants' quarters and the ballroom; Midnight stayed "alive, not engaged"
+            // to the 20-minute cap. A continue segment goes back the same way while he is the lowest order standing.
+            bool const areaFirst = group.IsRaid() && nextBoss && nextOrder >= 0 && creature != nextBoss &&
+                                   !creature->IsInCombat() &&
+                                   BossAreaTrashOf(leader, nextBoss, creature,
+                                                   group.Route().bossCreatures.count(creature->GetGUID()) != 0);
             if (fledSurvivors.count(creature->GetGUID()))
                 score -= FLED_SURVIVOR_BONUS;  // [fled_survivor] before anything further on
             if (deferred.count(creature->GetGUID()))
@@ -4393,6 +4396,7 @@ namespace Leader::Travel
                 !creature->IsInCombat())
             {
                 commitGuid = creature->GetGUID();  // [target_commit]
+                commitAreaFirst = areaFirst;
                 commitScore = score;
                 commitLength = path.length;
                 commitIsBoss = isBoss;
@@ -4404,17 +4408,23 @@ namespace Leader::Travel
                 planScore = score;
                 planLength = path.length;
             }
-            if (bestGuid.IsEmpty() || score < bestScore)
+            // [kara4] (areaFirst, score) in that order
+            auto const before = [areaFirst, score](bool otherFirst, float otherScore)
+            { return areaFirst != otherFirst ? areaFirst : score < otherScore; };
+            if (bestGuid.IsEmpty() || before(bestAreaFirst, bestScore))
             {
                 bestGuid = creature->GetGUID();
+                bestAreaFirst = areaFirst;
                 bestScore = score;
                 bestIsBoss = isBoss;
                 bestObjective = objective;
                 bestLength = path.length;
             }
-            if ((isBoss || objective || path.length <= FAR_TARGET_PATH) && (nearGuid.IsEmpty() || score < nearScore))
+            if ((isBoss || objective || path.length <= FAR_TARGET_PATH) &&
+                (nearGuid.IsEmpty() || before(nearAreaFirst, nearScore)))
             {
                 nearGuid = creature->GetGUID();
+                nearAreaFirst = areaFirst;
                 nearScore = score;
                 nearIsBoss = isBoss;
                 nearObjective = objective;
@@ -4435,7 +4445,9 @@ namespace Leader::Travel
                     ROUTE_BOSS_AREA_CLEAR && keptBoss && keptBoss->IsAlive() &&
                     BossAreaTrashOf(leader, keptBoss, challenger,
                                     group.Route().bossCreatures.count(challenger->GetGUID()) != 0);
-                if (!areaChallenger && bestScore > commitScore - margin)
+                // [kara4] the next raid boss's area trash is never kept out by a committed other target
+                bool const raidAreaFirst = bestAreaFirst && !commitAreaFirst;
+                if (!areaChallenger && !raidAreaFirst && bestScore > commitScore - margin)
                 {
                     if (targetCommitLogged.insert({group.Run().runSeq, commitGuid, bestGuid}).second)
                         if (Creature* kept = map->GetCreature(commitGuid))
@@ -4448,6 +4460,7 @@ namespace Leader::Travel
                                              now) / IN_MILLISECONDS));
                     bestGuid = commitGuid;
                     bestScore = commitScore;
+                    bestAreaFirst = commitAreaFirst;
                     bestIsBoss = commitIsBoss;
                     bestObjective = commitObjective;
                     bestLength = commitLength;
@@ -4471,10 +4484,11 @@ namespace Leader::Travel
         // pending starter. Taken only when nothing else is there.
         bool bestFar = ROUTE_CHAIN_GUARD && !bestGuid.IsEmpty() && !bestIsBoss && !bestObjective &&
                        bestLength > FAR_TARGET_PATH;
-        if (bestFar && !nearGuid.IsEmpty())
+        if (bestFar && !nearGuid.IsEmpty() && (!bestAreaFirst || nearAreaFirst))  // [kara4] the order stays
         {
             bestGuid = nearGuid;
             bestScore = nearScore;
+            bestAreaFirst = nearAreaFirst;
             bestIsBoss = nearIsBoss;
             bestObjective = nearObjective;
             bestFar = false;
@@ -4493,7 +4507,8 @@ namespace Leader::Travel
         {
             Creature* const best = bestGuid.IsEmpty() ? nullptr : map->GetCreature(bestGuid);
             bool const bestYields =
-                !best || (!best->IsInCombat() && !bestObjective && (!bestIsBoss || best == nextBoss));
+                !best || (!best->IsInCombat() && !bestObjective && (!bestIsBoss || best == nextBoss) &&
+                          !bestAreaFirst);  // [kara4] the next raid boss's area trash before the plan's stop
             if (!planScored)
             {
                 group.Route().planRefusedFrom[planNext] = leader->GetPosition();
@@ -4513,6 +4528,7 @@ namespace Leader::Travel
                                                           .Str("step", planStep));
                 bestGuid = planNext;
                 bestScore = planScore;
+                bestAreaFirst = false;
                 bestIsBoss = false;
                 bestObjective = false;
                 bestLength = planLength;
