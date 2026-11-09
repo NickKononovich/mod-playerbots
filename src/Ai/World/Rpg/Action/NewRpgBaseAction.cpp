@@ -4772,8 +4772,13 @@ void NewRpgBaseAction::RecordDeath(Player* bot, Creature* killer)
     {
         std::lock_guard<std::mutex> guard(deathZonesLock);
         auto& list = deathZones[bot->GetGUID().GetCounter()];
+        // [danger29] the zone holds until the bot outlevels both the killer and itself at its death: a death to a
+        // mob below its level (a pack, a camp) was in force "until L<killer+1>", a level the bot already had - void
+        // at once. b378: 7 of 42 such marks void; Guinudrond L13 died 4 times in the Moonbrook Defias camp (L12 mobs),
+        // each rise walked it back ("kept away until L13" at L13), Peny 3, Jurdogs 3 there too
         list.push_back({bot->GetMapId(), killer->GetPositionX(), killer->GetPositionY(), bot->GetPositionX(),
-                        bot->GetPositionY(), killer->GetEntry(), uint8(killer->GetLevel()), radius});
+                        bot->GetPositionY(), killer->GetEntry(),
+                        uint8(std::max<uint32>(killer->GetLevel(), bot->GetLevel())), radius});
         // [guild15] its deaths outlive a restart (b327-b331: Baridrol L9 died to the Gnarlpine at (9891,1553) in
         // every run, Cassand to the Stone Cairn Lake murlocs - the zones were forgotten at each restart); the
         // newest that fit playerbots_db_store's 255 characters, still in force (its level not above the killer's)
@@ -4797,9 +4802,9 @@ void NewRpgBaseAction::RecordDeath(Player* bot, Creature* killer)
             "INSERT INTO playerbots_db_store (guid, `key`, value) VALUES ({}, 'dz', '{}')", guid, saved));
         PlayerbotsDatabase.CommitTransaction(trans);
     }
-    LOG_INFO("playerbots", "[rpg] {} L{} DANGER remembered: {} L{} at ({:.0f},{:.0f}), {:.0f} yd, kept away until L{}",
+    LOG_INFO("playerbots", "[rpg] {} L{} DANGER remembered: {} L{} at ({:.0f},{:.0f}), {:.0f} yd, kept away until L{} [danger29]",
              bot->GetName(), bot->GetLevel(), killer->GetName(), killer->GetLevel(), killer->GetPositionX(),
-             killer->GetPositionY(), radius, killer->GetLevel() + 1);
+             killer->GetPositionY(), radius, std::max<uint32>(killer->GetLevel(), bot->GetLevel()) + 1);
     // the quest it was on goes back to the planner: its spots there are now judged dangerous
     if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
         if (botAI->rpgInfo.GetStatus() == RPG_DO_QUEST)
@@ -4866,7 +4871,8 @@ void NewRpgBaseAction::RememberDanger(Player* bot, float x, float y, float radiu
         if (zone.mapId == bot->GetMapId() && zone.entry == entry &&
             SegmentDistSq(zone.killerX, zone.killerY, x, y, x, y) <= zone.radius * zone.radius)
             return;
-    list.push_back({bot->GetMapId(), x, y, x, y, entry, level, radius, true});
+    // [danger29] in force until the bot outlevels the pack or itself at the refusal (a pack below its level was void)
+    list.push_back({bot->GetMapId(), x, y, x, y, entry, uint8(std::max<uint32>(level, bot->GetLevel())), radius, true});
 }
 
 void NewRpgBaseAction::ForgetRefusals(Player* bot)
