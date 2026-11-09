@@ -4426,6 +4426,42 @@ namespace
                 ++resolveStats.spent;
                 continue;
             }
+            // [share64] the spawn itself down by the map's own respawn clock (dead, looted, despawned - by whoever: a
+            // guildmate's kill is the world's fact, not that bot's memory): no spot until it is up again. The spent
+            // marks were each bot's own, so every bot on a quest walked to the same empty spawn in turn (b400 q9537:
+            // a single spawn, Feeli, Farret 2704 yd, Zharet 1581 yd, Aevmae - each "every camp seen empty")
+            if (spot->spawnId && spot->mapId == bot->GetMapId())
+            {
+                Map* map = bot->GetMap();
+                time_t const now = time(nullptr);
+                time_t up = spot->object ? map->GetGORespawnTime(spot->spawnId)
+                                         : map->GetCreatureRespawnTime(spot->spawnId);
+                bool alive = false;
+                if (spot->object)
+                {
+                    auto const range = map->GetGameObjectBySpawnIdStore().equal_range(spot->spawnId);
+                    for (auto it = range.first; it != range.second; ++it)
+                        if (it->second->isSpawned())
+                            alive = true;
+                        else
+                            up = std::max(up, it->second->GetRespawnTime());
+                }
+                else
+                {
+                    auto const range = map->GetCreatureBySpawnIdStore().equal_range(spot->spawnId);
+                    for (auto it = range.first; it != range.second; ++it)
+                        if (it->second->IsAlive())
+                            alive = true;
+                        else
+                            up = std::max(up, it->second->GetRespawnTime());
+                }
+                if (!alive && up > now)
+                {
+                    ++spent;
+                    ++resolveStats.spent;
+                    continue;
+                }
+            }
             // [guild90] another bot works that camp for the quest: taken, like a player sees it
             if (TakenByOther(bot, questId, spot->x, spot->y))
             {
