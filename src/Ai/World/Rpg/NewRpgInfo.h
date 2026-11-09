@@ -239,6 +239,7 @@ struct NewRpgInfo
     std::string vendorRunReason;
     uint8 vendorVisitBagUsed{0};
     uint32 vendorVisitMoney{0};
+    bool fiveRestockTried{false};  // [five43] its five's supply run made once past the visit gate
     bool vendorVisited{false};
     bool vendorMissed{false};  // [vendor23] its last vendor run ended without reaching the vendor
     // [regress10] the global leader's REPAIR task: a visit to a repairer for it was made at this money (tried again

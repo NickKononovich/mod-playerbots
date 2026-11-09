@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "GuildCoordinator.h"  // [group43]
 #include "FollowActions.h"
 #include "BotPath.h"  // [lead109]
 #include "LeaderOrders.h"  // [lead15]
@@ -256,11 +257,18 @@ bool FollowAction::Execute(Event /*event*/)
                 std::lock_guard<std::mutex> guard(staleLock);
                 first = staleChecked.insert(low).second;
             }
+            // [group43] ... in its leader's zone too: a restored group no party holds is no plan of the global
+            // leader's, and its member runs no New RPG of its own (AiFactory gives "new rpg" to a group's leader
+            // only) - no sickness hold, no login escape, no rest out of reach. b390: Bami (in Kianey's), Peny
+            // (Guinudrond's), Feette, Mytaeleas, Nelaeleas never logged a status all run; Bami 13 deaths, most under
+            // Resurrection Sickness following its leader into the Westfall camps
             if (first && !NewRpgCoop::InParty(low) && !NewRpgCoop::InParty(leader->GetGUID().GetCounter()) &&
-                (leader->GetMapId() != bot->GetMapId() || leader->GetZoneId() != bot->GetZoneId()) &&
+                !sGuildCoordinator.InSameActiveFive(low, leader->GetGUID().GetCounter()) &&
                 NewRpgCoop::LeaveStaleGroup(
-                    bot, Acore::StringFormat("its leader {} is in another zone ({:.0f} yd), no party holds them",
-                                             leader->GetName(), bot->GetExactDist2d(leader))))
+                    bot, Acore::StringFormat("[group43] a restored group no party holds (its leader {} {:.0f} yd, {})",
+                                             leader->GetName(), bot->GetExactDist2d(leader),
+                                             leader->GetZoneId() == bot->GetZoneId() ? "same zone"
+                                                                                     : "another zone")))
                 return true;
         }
     }

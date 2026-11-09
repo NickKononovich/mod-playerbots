@@ -768,8 +768,17 @@ bool NewRpgBaseAction::StartVendorRun()
     uint32 const line = fiveSupply ? RESTOCK_FOOD_MIN : 1;
     bool const noFood = CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD) < line;
     bool const noDrink = usesMana && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < line;
+    // [five43] a five member's supply run before its five goes in passes the "one run per money gain" gate once:
+    // its last visit (a food vendor without drink, a sale) left it short and the five waited for a run that never
+    // started (b390: "[supply27] Orenem / Thokhen supply run could not be made (no vendor run started)", the five
+    // went into RFC short of drink and food)
+    if (!fiveSupply)
+        info.fiveRestockTried = false;
+    bool const fiveRetry = fiveSupply && !info.fiveRestockTried;
     bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 &&
-                         (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
+                         (fiveRetry || !info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
+    if (restock && fiveRetry)
+        info.fiveRestockTried = true;
     // [supply34] why a bot out of food / drink makes no run: one line per money value it has (b386: 1.10 h sat
     // "nothing to eat or drink", Bierya 193, Orenem 135, Jurdogs 110 - and no "goes to vendor" line of them)
     auto const noRunWhy = [&](char const* why)

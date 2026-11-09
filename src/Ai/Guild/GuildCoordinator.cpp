@@ -1779,13 +1779,31 @@ void GuildCoordinator::UpdateOrders()
                 priceCache[key] = price;
                 return price;
             };
+            // [gold43] only what a vendor sells for gold (npc_vendor, no extended cost): the item store's best
+            // food of a level was often a quest or event item never sold - b390 Peny "short of its food and drink
+            // 21 s" with 81 s in its purse
+            static std::once_flag soldOnce;
+            static std::unordered_set<uint32> sold;
+            std::call_once(soldOnce, []()
+            {
+                for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
+                {
+                    if (!(tmpl.npcflag & UNIT_NPC_FLAG_VENDOR))
+                        continue;
+                    if (VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry))
+                        for (VendorItem const* item : items->m_items)
+                            if (item && !item->ExtendedCost)
+                                sold.insert(item->item);
+                }
+            });
             auto const unitPrice = [p](auto const& matches) -> float
             {
                 int32 bestLevel = -1;
                 float best = 0.0f;
                 for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
                 {
-                    if (!proto.BuyPrice || int32(proto.RequiredLevel) > int32(p->GetLevel()) || !matches(proto))
+                    if (!proto.BuyPrice || int32(proto.RequiredLevel) > int32(p->GetLevel()) || !sold.count(id) ||
+                        !matches(proto))
                         continue;
                     float const unit = float(proto.BuyPrice) / float(std::max<uint32>(1, proto.BuyCount));
                     if (int32(proto.RequiredLevel) > bestLevel || (int32(proto.RequiredLevel) == bestLevel && unit < best))

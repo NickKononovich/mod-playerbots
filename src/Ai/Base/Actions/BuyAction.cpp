@@ -494,5 +494,8 @@ bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have)
     std::ostringstream out;
     out << "Buying " << gained << "x " << ChatHelper::FormatItem(proto);
     botAI->TellMaster(out.str());
+    // [supply41] one line per purchase (the restock's own proof in the log)
+    LOG_INFO("playerbots", "[supply41] {} L{} bought {} {} at {} ({}c left)", bot->GetName(), bot->GetLevel(), gained,
+             proto->Name1, vendor->GetName(), bot->GetMoney());
     return true;
 }
