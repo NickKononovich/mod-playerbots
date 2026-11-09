@@ -5047,7 +5047,7 @@ bool NewRpgBaseAction::LoginEscape()
                     INVALID_HEIGHT)
                 {
                     LOG_INFO("playerbots", "[nav45] {} L{} logged in with no ground under it at ({:.0f},{:.0f},{:.0f}): "
-                             "its Hearthstone",
+                             "its Hearthstone as the last resort (the cause, a dive under the bed, is [seabed46])",
                              bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(),
                              bot->GetPositionZ());
                     if (HearthOut("logged in with no ground under it (under the world's floor)"))

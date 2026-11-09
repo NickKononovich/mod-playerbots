@@ -5024,6 +5024,17 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
     if (!mm)
         return;
 
+    // [seabed46] a swimmer's straight move (the navmesh has no underwater floor) ends no lower than the sea / lake
+    // bed under its end: a chase after a mob on the floor, a dive, took the bot through the bed. b388 Ryarii L11 (a
+    // help party's follower) chased a Darkshore Thresher down to (6572,781,-53.5) - under the bed, no ground under
+    // it - logged out there, and every later session logged in under the sea floor (STUCK 2271 s)
+    if (unit->IsInWater())
+    {
+        float const bed = unit->GetMap()->GetGridHeight(x, y);
+        if (bed > INVALID_HEIGHT && z < bed + 0.5f)
+            z = bed + 0.5f;
+    }
+
     // bot water collision correction
     if (unit->HasUnitMovementFlag(MOVEMENTFLAG_WATERWALKING) && unit->HasWaterWalkAura())
     {

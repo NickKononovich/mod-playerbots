@@ -2378,6 +2378,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         bool reachable = false;
         size_t spent = 0;
         std::optional<WorldPosition> roamerSpot;  // [spot35] the first spot a roamer's round covers
+        std::optional<WorldPosition> dangerSpot;  // [danger46] the first spot in one of its danger zones
         std::string roamerWho;
         for (POIInfo const& poi : poiInfo)
         {
@@ -2414,6 +2415,15 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                 LOG_INFO("playerbots", "[rpg] {} L{} SKIP spot of q{} at ({:.0f},{:.0f},{:.0f}): no floor there (the "
                          "map grid's fallback height)",
                          bot->GetName(), bot->GetLevel(), questId, dx, dy, dz);
+                continue;
+            }
+            // [danger46] user 2026-11-09: a spot in one of its danger zones (where it died, a pack it refused) is its
+            // quest's own camp grown dangerous - not skipped in silence: when no other spot is left, the objective goes
+            // to the camp-help request (a party), as a walled camp does
+            if (SoloSafety::Applies(bot) && InDangerZone(bot, dx, dy))
+            {
+                if (!dangerSpot)
+                    dangerSpot = WorldPosition(bot->GetMapId(), dx, dy, dz);
                 continue;
             }
             BotPath const spotPath = FindBotPath(bot, dx, dy, dz);
@@ -2455,6 +2465,13 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             objectiveIdx = poi.objectiveIdx;
             reachable = true;
             break;
+        }
+        if (!reachable && dangerSpot && !roamerSpot)
+        {
+            std::string const why = "its quest's camp lies in a danger zone of its own (where it died or refused a pack)";
+            LOG_INFO("playerbots", "[danger46] {} L{} q{}: {}: asks for help", bot->GetName(), bot->GetLevel(), questId,
+                     why);
+            NewRpgCoop::OnCampRefused(botAI, bot, *dangerSpot, why);
         }
         if (!reachable && roamerSpot)
         {
