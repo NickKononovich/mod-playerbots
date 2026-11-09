@@ -89,6 +89,8 @@ namespace SoloSafety
     // covers. True when `to` (a chase's end, the bot's own spot) lies outside it; `why` names the reach it would enter.
     // A position past it is judged again there: the joiners it would wake (`why`), the area moved to that spot
     bool FightPastJudged(Player* bot, Unit* target, G3D::Vector3 const& to, std::string& why);
+    // [fight50] the judged fight spot of its engage of `target`; false when none
+    bool JudgedFightSpot(Player* bot, Unit* target, G3D::Vector3& at);
     // [deaths18] a party judge's engaged pull (the leader's grind target, NewRpgCoop::JudgePull): the death line of a
     // member names a party fight only when this target hit it
     void NotePartyPull(Player* leader, Unit* target);

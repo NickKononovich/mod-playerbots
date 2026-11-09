@@ -2548,6 +2548,26 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     if (SoloSafety::Applies(bot) && bot->IsInCombat())
     {
         std::string why;
+        // [fight50] the bot itself out of the judged area (a knockback, a fear, a charge): judged again where it
+        // stands - in a reach the judge left out, it steps back into the area by the safe way (its route there)
+        {
+            std::string drift;
+            G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            G3D::Vector3 back;
+            if (!bot->isMoving() && SoloSafety::FightPastJudged(bot, target, here, drift) &&
+                SoloSafety::JudgedFightSpot(bot, target, back))
+            {
+                Leader::RouteResult const route = Leader::Route(bot, Position(back.x, back.y, back.z));
+                if (route.found && route.complete && !route.throughRefused &&
+                    MoveTo(bot->GetMapId(), back.x, back.y, back.z, false, false, false, true))
+                {
+                    LOG_INFO("playerbots", "[fight50] {} L{} out of its judged fight area ({}): steps back to "
+                             "({:.0f},{:.0f})",
+                             bot->GetName(), bot->GetLevel(), drift, back.x, back.y);
+                    return true;
+                }
+            }
+        }
         if (SoloSafety::FightPastJudged(bot, target,
                                         G3D::Vector3(target->GetPositionX(), target->GetPositionY(),
                                                      target->GetPositionZ()),
@@ -2567,6 +2587,18 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
                          target->GetName(), target->GetLevel(), why);
             if (bot->isMoving())
                 bot->StopMoving();
+            // [fight50] a runner (the core's flee at low health) is slowed or stopped with the class's own tools
+            // where it can reach it, as a player does, instead of being chased into the reach
+            if (target->HasUnitState(UNIT_STATE_FLEEING))
+                for (char const* spell : {"hamstring", "wing clip", "concussive shot", "frost nova", "frostbolt",
+                                          "frost shock", "earthbind totem", "hammer of justice", "entangling roots",
+                                          "chains of ice", "curse of exhaustion", "mind flay", "crippling poison"})
+                    if (botAI->CanCastSpell(spell, target) && botAI->CastSpell(spell, target))
+                    {
+                        LOG_INFO("playerbots", "[fight50] {} L{} slows its fleeing {} with {} instead of a chase",
+                                 bot->GetName(), bot->GetLevel(), target->GetName(), spell);
+                        return true;
+                    }
             return false;
         }
     }

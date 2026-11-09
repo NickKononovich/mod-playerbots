@@ -1941,6 +1941,18 @@ namespace SoloSafety
         }
     }
 
+    bool JudgedFightSpot(Player* bot, Unit* target, G3D::Vector3& at)
+    {
+        if (!bot || !target)
+            return false;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        if (found == states.end() || !found->second.engaged || found->second.engage.target != target->GetGUID())
+            return false;
+        at = found->second.engage.fightAt;
+        return true;
+    }
+
     bool FightPastJudged(Player* bot, Unit* target, G3D::Vector3 const& to, std::string& why)
     {
         if (!bot || !target)
