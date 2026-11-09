@@ -5,6 +5,7 @@
  */
 
 #include "Common.h"
+#include "SoloSafety.h"  // [rez27] StandsInReach
 #include "LeaderEvents.h"
 #include "LeaderBuffing.h"  // [lead1333] BuffPassSec
 
@@ -803,6 +804,26 @@ namespace Leader::Dungeon
                                       fields);
                 };
                 Leader::Support::Tick(group, tank, living, livingHealer, livingFight, deadLog);
+                // [rez27] the wait itself is safe: a living member out of a fight that stands in an idle mob's reach
+                // (an aggro disc, a wanderer's area, a patrol's beat) steps out of every reach; the resurrecter's own
+                // walk (its External order) keeps its move
+                if (!livingFight)
+                    for (Player* bot : living)
+                    {
+                        Leader::MemberEvents now;
+                        if (bot->IsInCombat() || bot->isMoving() ||
+                            (Leader::Events::Get(bot->GetGUID(), now) && now.move != Leader::MoveEvent::None))
+                            continue;
+                        std::string who;
+                        std::vector<G3D::Vector3> spots;
+                        if (!SoloSafety::StandsInReach(bot, who, spots) || spots.empty())
+                            continue;
+                        G3D::Vector3 const& out = spots.front();
+                        if (Leader::Events::SetMove(bot->GetGUID(), Leader::MoveEvent::MoveTo,
+                                                    Position(out.x, out.y, out.z), Leader::LEADER_SPOT_TOLERANCE,
+                                                    "[rez27] waits for the dead out of the reach of " + who))
+                            deadLog(bot, "MoveTo", JsonObject().Str("why", "out of the reach of " + who));
+                    }
             }
             return;
         }
