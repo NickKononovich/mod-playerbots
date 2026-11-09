@@ -247,6 +247,10 @@ namespace Leader::Knowledge
         // [kara3] The spot is done once InstanceScript::GetData(doneData) == DONE (an event no kill ends: Karazhan's
         // Chess Event, DATA_CHESS_EVENT 8). -1: none.
         int32 doneData = -1;
+        // [kara6] A step spot (hold false) that holds while this instance boss slot is IN_PROGRESS (an event of a
+        // boss state, not of instance data: Karazhan's Opera, SetBossState(DATA_OPERA_PERFORMANCE 3)), as
+        // eventData does for GetData. -1: none.
+        int32 eventBossSlot = -1;
     };
 
     // A walkable connection the navmesh does not have: a bridge the instance script raises as a game object (the
