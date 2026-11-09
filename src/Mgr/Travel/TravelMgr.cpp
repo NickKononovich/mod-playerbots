@@ -5129,7 +5129,11 @@ void TravelRouteMgr::Build()
 
         if (line.docks.size() >= 2)
             _lines.push_back(line);
+        else  // [travel20]
+            LOG_INFO("playerbots", "[travel20] transport {} skipped: {} distinct stop(s) in its {} key frames", entry,
+                     line.docks.size(), transportInfo->keyFrames.size());
     }
+
 
     // One pass over the creature spawns: piers, inns and the Dalaran envoys.
     std::vector<std::vector<float>> pierScore(_lines.size());
@@ -5186,12 +5190,25 @@ void TravelRouteMgr::Build()
 
         if (!allPiers)
         {
-            LOG_DEBUG("playerbots", "[Travel] transport {} skipped: a dock has no pier spawn", _lines[l].entry);
+            LOG_INFO("playerbots", "[travel20] transport {} skipped: a dock has no pier spawn", _lines[l].entry);
             _lines[l].docks.clear();
         }
     }
     _lines.erase(std::remove_if(_lines.begin(), _lines.end(), [](Line const& line) { return line.docks.empty(); }),
                  _lines.end());
+    // [travel20] the boat / zeppelin lines the planner routes by, once at startup: b367's draenei on Azuremyst found
+    // "no route" to every Kalimdor starter (the Auberdine - Valaar's Berth boat 181646 never taken in any run)
+    {
+        std::string built;
+        for (Line const& line : _lines)
+        {
+            built += (built.empty() ? "" : ", ") + std::to_string(line.entry) + ":";
+            for (Dock const& dock : line.docks)
+                built += " " + std::to_string(dock.mapId);
+        }
+        LOG_INFO("playerbots", "[travel20] {} transport lines (entry: dock maps): {}", _lines.size(), built);
+    }
+
 
     // Portals that stand in the world for everyone (Shattrath, Dalaran, the Dark Portal ones in the capitals),
     // and the two Dalaran crystals.
