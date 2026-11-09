@@ -539,6 +539,7 @@ namespace Leader
         // reach, its RECOVER walk to its hub (952 yd) went on through the camp, died again 20 yd off
         float const reachOwn = walker->GetCombatReach();
         uint32 shrunk = 0;
+        uint64 shrunkKey = 0;  // [leave34] the reaches it stands in, for the log line's dedup
         refuse.erase(std::remove_if(refuse.begin(), refuse.end(),
                                     [&](G3D::Vector4& c)
                                     {
@@ -549,14 +550,16 @@ namespace Leader
                                             return true;
                                         c.w = inFrom - reachOwn;
                                         ++shrunk;
+                                        shrunkKey = shrunkKey * 1000003ull + uint64(int64(c.x) * 7919 + int64(c.y));
                                         return false;
                                     }),
                      refuse.end());
         if (shrunk)
         {
-            // logged once per walker and spot (5 yd): a log cadence, no decision reads it
+            // [leave34] logged once per walker and set of reaches it stands in (b386: 505 lines of Maronic's waits,
+            // its spot alternating between a few yards): a log cadence, no decision reads it
             thread_local std::unordered_map<uint64, uint64> leaveLogged;
-            uint64 const spot = (uint64(uint32(int32(from.x / 5.0f))) << 32) ^ uint64(uint32(int32(from.y / 5.0f)));
+            uint64 const spot = shrunkKey;
             uint64& last = leaveLogged[walker->GetGUID().GetRawValue()];
             if (last != spot)
             {
