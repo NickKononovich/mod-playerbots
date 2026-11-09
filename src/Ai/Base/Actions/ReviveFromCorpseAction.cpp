@@ -329,7 +329,10 @@ bool ReviveFromCorpseAction::Execute(Event event)
         uint32 dCount = AI_VALUE(uint32, "death count");
 
         // In a dungeon the corpse is the only way back: its spirit healer stands at the graveyard outside.
-        if (dCount >= 5 && !bot->GetMap()->IsDungeon() && HealerLeft(bot))  // [deaths3]
+        // [ghost34] ... and only where the healer costs no sickness, as "find corpse" rules ([ghost14]): the two
+        // disagreed from the third death on - "find corpse" walked the ghost back to its corpse ("the spot is safe"),
+        // this action sent it to the healer, round after round (b386 Aestymro L13 at Longshore: 8 rounds, ~25 min)
+        if (dCount >= 5 && !bot->GetMap()->IsDungeon() && HealerLeft(bot) && !HealerSickens(bot))  // [deaths3]
             return botAI->DoSpecificAction("spirit healer");
     }
 
