@@ -202,8 +202,14 @@ namespace
         VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry);
         if (!items)
             return 0;
+        // [supply36] the food / drink spells' own auras: "Food" (433 and its ranks) is SPELL_AURA_MOD_REGEN,
+        // "Drink" (430 and its ranks) SPELL_AURA_MOD_POWER_REGEN; the OBS_MOD ones are the newer buff foods' few.
+        // Only the OBS_MOD pair was looked for: no vendor "sold" plain drink - b387: 296 "[supply34] no vendor of its
+        // faction sells it food / drink", 173 of them out of drink (Jurdogs L11 with 7289c never at a vendor)
         AuraType const wanted =
             spellCategory == RESTOCK_SPELL_CATEGORY_FOOD ? SPELL_AURA_OBS_MOD_HEALTH : SPELL_AURA_OBS_MOD_POWER;
+        AuraType const wantedRegen =
+            spellCategory == RESTOCK_SPELL_CATEGORY_FOOD ? SPELL_AURA_MOD_REGEN : SPELL_AURA_MOD_POWER_REGEN;
         uint32 best = 0;
         for (VendorItem const* item : items->m_items)
         {
@@ -215,7 +221,7 @@ namespace
             SpellInfo const* spell = sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId);
             bool real = false;
             for (uint8 i = 0; spell && i < MAX_SPELL_EFFECTS; ++i)
-                real = real || spell->Effects[i].ApplyAuraName == wanted;
+                real = real || spell->Effects[i].ApplyAuraName == wanted || spell->Effects[i].ApplyAuraName == wantedRegen;
             if (real && (!best || proto->BuyPrice < best))
                 best = proto->BuyPrice;
         }
