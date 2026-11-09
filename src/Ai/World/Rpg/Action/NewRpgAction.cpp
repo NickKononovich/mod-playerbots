@@ -678,8 +678,11 @@ bool NewRpgBaseAction::StartVendorRun()
     // - the 17,623 s they stood in walking states were mostly that. RestockFoodAction buys only at a vendor within 25
     // yd; nothing sent them to one. One run per money gain after a visit, as the ammo run
     bool const usesMana = bot->GetMaxPower(POWER_MANA) > 0;
-    bool const noFood = !CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
-    bool const noDrink = usesMana && !CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK);
+    // [supply27] a five member before its five goes in restocks below the restock line, not only when out
+    bool const fiveSupply = sGuildCoordinator.SupplyWanted(bot);
+    uint32 const line = fiveSupply ? RESTOCK_FOOD_MIN : 1;
+    bool const noFood = CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD) < line;
+    bool const noDrink = usesMana && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < line;
     bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 &&
                          (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
     if (!sell && !ammoSubClass && !repair && !restock)
