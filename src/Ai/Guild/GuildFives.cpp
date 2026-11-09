@@ -1002,6 +1002,10 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
         std::string const refusal = DungeonRefusal(d, p);
         if (!refusal.empty() && (band || refusal.rfind("L", 0) != 0))
             continue;
+        // [lfg69] refused for this dungeon at its level (its walk there, or the finder): left out until it levels
+        if (auto const r = refusedFor_.find(d.contentKey); r != refusedFor_.end())
+            if (auto const m = r->second.find(row.low); m != r->second.end() && m->second == p->GetLevel())
+                continue;
         FiveCandidate c;
         c.low = row.low;
         c.player = p;
@@ -1391,6 +1395,12 @@ void GuildCoordinator::UpdateFives()
             }
             else if (!walkWhy.empty())
             {
+                // [lfg69] the member the finder named (level range, a lock) is left out of this dungeon's fives at its
+                // level
+                for (uint32 low : five.members)
+                    if (Player* m = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+                        m && lfgWhy.find(m->GetName()) != std::string::npos)
+                        refusedFor_[five.contentKey][low] = m->GetLevel();
                 // [next1] taken in by the finder only: a walk the five cannot make ends it
                 LOG_INFO("playerbots", "[next1] five {} ({}): no Dungeon Finder ({}) and no walk in: {}", id,
                          five.contentKey, lfgWhy, walkWhy);
@@ -1554,6 +1564,10 @@ void GuildCoordinator::AutoFive()
                             ++busy[why];
                         else if (std::string const refusal = DungeonRefusal(d, p); !refusal.empty())
                             ++busy[refusal];
+                        else if (auto const r = refusedFor_.find(d.contentKey);
+                                 r != refusedFor_.end() && r->second.count(row.low) &&
+                                 r->second.at(row.low) == p->GetLevel())
+                            ++busy["[lfg69] refused at its level"];
                     }
                     if (inBand)
                     {
@@ -1995,9 +2009,26 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
     // of combat where it is until the finder ports it. b402 five 2 (rfc-n, Alliance): "Brelir L16 GUILD reason:
     // DUNGEON five 2 -> Ragefire Chasm entrance, 8416 yd" - its members' gather walk went to Orgrimmar while the five
     // waited for two members' drink
-    if (five.lfgId && sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER))
-        if (std::string const walkWhy = FiveWalkRefusal(five); !walkWhy.empty())
+    // [lfg69] ... and every five the finder can take (each member in its level range) waits for it: the finder
+    // ports it from where it stands, no member's walk can call it off. b402: RFC fives 11, 17-23 formed and were
+    // disbanded in turn, "#10 Thelengyl: no safe way to the entrance of Ragefire Chasm" (his trip to the entrance
+    // refused: Craven Drok L35's patrol round), each before it could queue
+    bool finderTakes = false;
+    if (LFGDungeonEntry const* entry = five.lfgId ? sLFGDungeonStore.LookupEntry(five.lfgId) : nullptr)
+    {
+        finderTakes = true;
+        for (uint32 low : five.members)
         {
+            Player* m = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+            if (!m || m->GetLevel() < entry->MinLevel || m->GetLevel() > entry->MaxLevel)
+                finderTakes = false;
+        }
+    }
+    if (five.lfgId && sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER))
+        if (std::string walkWhy = FiveWalkRefusal(five); !walkWhy.empty() || finderTakes)
+        {
+            if (walkWhy.empty())
+                walkWhy = "the finder takes the five from where it stands";
             if (st.fiveRefused.empty() && bot->IsInCombat())
                 return false;  // its fight first (the survival kit)
             step.kind = GuildRunStep::BUSY;
@@ -2013,6 +2044,9 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
                                       "dungeon entrance " + five.contentKey))
     {
         st.fiveRefused = "no safe way to the entrance of " + five.dungeon;
+        // [lfg69] a lasting refusal is remembered for this member and dungeon until a fact changes (its level): the
+        // global leader forms the next five without it (b402: the same five re-formed right after each disband)
+        refusedFor_[five.contentKey][bot->GetGUID().GetCounter()] = bot->GetLevel();
         return false;
     }
     st.run = true;

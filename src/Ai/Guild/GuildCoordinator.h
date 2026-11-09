@@ -906,6 +906,9 @@ private:
     std::map<std::string, std::string> rolesWhy_;  // band -> its last logged plan line
     std::string fiveLook_;                         // [five58] the last logged look line
     std::unordered_set<uint32> shutdownOut_;       // [cleft62] members sent out of their dungeon for the shutdown
+    // [lfg69] dungeon -> member -> the level it was refused at (its walk to the entrance, the finder): left out of
+    // that dungeon's fives until its level changes (lock_ held)
+    std::unordered_map<std::string, std::unordered_map<uint32, uint8>> refusedFor_;
     void PlanRoles();                              // world thread, lock_ held
     std::string SpecRoleNow(Player* p) const;      // tank / healer / dps by its talents now
     mutable std::mutex lock_;
