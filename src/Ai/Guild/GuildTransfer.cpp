@@ -1369,39 +1369,63 @@ void GuildCoordinator::UpdateTransfers()
 
     // e. [regress10] gold for a repair the member cannot pay (its REPAIR task's shortfall, the core's repair cost):
     // from the member whose free money covers it at the cheapest channel
+    // [gold41] user 2026-11-09: ... and for its essential supplies (food, drink, ammo of its level) it cannot pay. The
+    // leader's choice: the richest member whose spare money (above its own needs: the module's budget keeps its
+    // repairs, consumables, spells and travel back, less its next profession ranks) covers the need and the postage;
+    // of equal spare the cheapest channel. Mailed or traded honestly (the core's mail / trade), one line per decision
+    static std::map<std::string, std::string> goldLogged;  // want key -> decision last logged (a log cadence)
     for (auto const& [low, st] : bots_)
-    {
-        if (!st.repairShort || !IsPlanned(low))
-            continue;
-        Player* r = Online(low);
-        if (!r || !GET_PLAYERBOT_AI(r) || HumanCharacter(r))
-            continue;
-        Want best;
-        float bestCost = NONE;
-        for (PlanRow const& row : plan_)
+        for (int kind = 0; kind < 2; ++kind)
         {
-            Player* s = row.low == low ? nullptr : Online(row.low);
-            if (!s || !GET_PLAYERBOT_AI(s) || HumanCharacter(s) || !canWalk(s) ||
-                FoundingFreeMoney(s) < st.repairShort + MAIL_POSTAGE)
+            uint32 const shortBy = kind == 0 ? st.repairShort : st.supplyGoldShort;
+            if (!shortBy || !IsPlanned(low))
                 continue;
-            Want w;
-            w.key = "p" + std::to_string(low);
-            w.gold = true;
-            w.from = row.low;
-            w.to = low;
-            w.money = st.repairShort;
-            w.purpose = "repair";
-            w.why = "short of the repair " + Gold(st.repairShort);
-            Choice const c = choose(w, nullptr);
-            if (c.cost < bestCost)
+            Player* r = Online(low);
+            if (!r || !GET_PLAYERBOT_AI(r) || HumanCharacter(r))
+                continue;
+            Want best;
+            float bestCost = NONE;
+            uint32 bestSpare = 0;
+            for (PlanRow const& row : plan_)
             {
-                bestCost = c.cost;
-                best = w;
+                Player* s = row.low == low ? nullptr : Online(row.low);
+                if (!s || !GET_PLAYERBOT_AI(s) || HumanCharacter(s) || !canWalk(s))
+                    continue;
+                uint32 const spare = FoundingFreeMoney(s);
+                if (spare < shortBy + MAIL_POSTAGE || spare < bestSpare)
+                    continue;
+                Want w;
+                w.key = (kind == 0 ? "p" : "q") + std::to_string(low);
+                w.gold = true;
+                w.from = row.low;
+                w.to = low;
+                w.money = shortBy;
+                w.purpose = kind == 0 ? "repair" : "supplies";
+                w.why = kind == 0 ? "short of the repair " + Gold(shortBy)
+                                  : "short of its " + st.supplyWhat + " " + Gold(shortBy);
+                Choice const c = choose(w, nullptr);
+                if (c.cost >= NONE)
+                    continue;
+                if (spare > bestSpare || c.cost < bestCost)
+                {
+                    bestSpare = spare;
+                    bestCost = c.cost;
+                    best = w;
+                }
+            }
+            if (bestCost < NONE)
+            {
+                std::string const decision = Acore::StringFormat(
+                    "{} -> {} {} for {} (its spare {} the richest that covers it)", Who(best.from), Who(best.to),
+                    Gold(best.money), kind == 0 ? std::string("its repair") : "its " + st.supplyWhat, Gold(bestSpare));
+                if (goldLogged[best.key] != decision)
+                {
+                    goldLogged[best.key] = decision;
+                    LOG_INFO("playerbots", "[gold41] the global leader: {}", decision);
+                }
+                wants.push_back(best);
             }
         }
-        if (bestCost < NONE)
-            wants.push_back(best);
-    }
 
     // e. [recipes] user 2026-11-08 (Eraelor held Recipe: Brilliant Smallfish): every recipe item in a member's bags
     // goes to the member best placed to learn it - one with that profession (its own or planned, GuildProfPath's

@@ -557,6 +557,10 @@ private:
         // as last logged ([gear] durability line on change)
         uint32 repairShort{0};
         std::string durabilityKey;
+        // [gold41] its essential supplies it cannot pay (out of food, of drink using mana, a hunter low on ammo): the
+        // copper its money lacks for a stack of each of its level, and what for
+        uint32 supplyGoldShort{0};
+        std::string supplyWhat;
         // [human] the suggestions sent to a human member: key -> text (sent again only when the text changes)
         std::map<std::string, std::string> suggested;
         // [tasks] the bag pressure last logged (free slots class: 0 full, 1 low, 2 ok; -1 not logged yet)

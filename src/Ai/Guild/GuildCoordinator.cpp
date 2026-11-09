@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "BuyAction.h"  // [gold41]
 #include "GuildCoordinator.h"
 
 #include <algorithm>
@@ -1751,6 +1752,103 @@ void GuildCoordinator::UpdateOrders()
                                                           MoneyText(repairNeed.cost), MoneyText(repairNeed.urgentCost),
                                                           MoneyText(p->GetMoney()))
                                     : std::string());
+        }
+        // [gold41] user 2026-11-09: essential supplies it cannot pay - out of food (out of drink, using mana; a hunter
+        // under its low-ammo line): a stack of the best of its level at the vendor price, less its money, asked from
+        // the guild (the transfers plan picks the member whose spare money covers it, the richest first)
+        st.supplyGoldShort = 0;
+        st.supplyWhat.clear();
+        if (p->IsAlive() && GET_PLAYERBOT_AI(p) && !HumanCharacter(p))
+        {
+            // the vendor price of `count` of the best item its level uses (the highest RequiredLevel at or below its
+            // level, the cheapest of those): food / drink by their spell category and real Food / Drink aura, ammo by
+            // its projectile subclass
+            // the price per item kind and level, looked up once (the item store is static)
+            static std::mutex priceLock;
+            static std::map<std::pair<uint32, uint32>, float> priceCache;  // (kind, level) -> unit copper
+            auto const cachedPrice = [p](uint32 kind, auto const& compute) -> float
+            {
+                std::pair<uint32, uint32> const key{kind, p->GetLevel()};
+                {
+                    std::lock_guard<std::mutex> guard(priceLock);
+                    if (auto const found = priceCache.find(key); found != priceCache.end())
+                        return found->second;
+                }
+                float const price = compute();
+                std::lock_guard<std::mutex> guard(priceLock);
+                priceCache[key] = price;
+                return price;
+            };
+            auto const unitPrice = [p](auto const& matches) -> float
+            {
+                int32 bestLevel = -1;
+                float best = 0.0f;
+                for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
+                {
+                    if (!proto.BuyPrice || int32(proto.RequiredLevel) > int32(p->GetLevel()) || !matches(proto))
+                        continue;
+                    float const unit = float(proto.BuyPrice) / float(std::max<uint32>(1, proto.BuyCount));
+                    if (int32(proto.RequiredLevel) > bestLevel || (int32(proto.RequiredLevel) == bestLevel && unit < best))
+                    {
+                        bestLevel = int32(proto.RequiredLevel);
+                        best = unit;
+                    }
+                }
+                return best;
+            };
+            auto const consumable = [](uint32 category, AuraType a, AuraType b)
+            {
+                return [category, a, b](ItemTemplate const& proto)
+                {
+                    if (proto.Class != ITEM_CLASS_CONSUMABLE || proto.Spells[0].SpellCategory != category)
+                        return false;
+                    SpellInfo const* spell = sSpellMgr->GetSpellInfo(proto.Spells[0].SpellId);
+                    for (uint8 i = 0; spell && i < MAX_SPELL_EFFECTS; ++i)
+                        if (spell->Effects[i].ApplyAuraName == a || spell->Effects[i].ApplyAuraName == b)
+                            return true;
+                    return false;
+                };
+            };
+            constexpr uint32 SUPPLY_STACK = 20;    // a stack of food / drink (the restock's buy)
+            constexpr uint32 AMMO_ROUNDS = 1000;   // a hunter's quiver load
+            constexpr uint32 LOW_AMMO = 100;       // the vendor run's low-ammo line
+            float need = 0.0f;
+            if (CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD) == 0)
+            {
+                need += SUPPLY_STACK * cachedPrice(0, [&]() {
+                            return unitPrice(consumable(RESTOCK_SPELL_CATEGORY_FOOD, SPELL_AURA_MOD_REGEN,
+                                                        SPELL_AURA_OBS_MOD_HEALTH)); });
+                st.supplyWhat += "food";
+            }
+            if (p->GetMaxPower(POWER_MANA) > 0 && CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK) == 0)
+            {
+                need += SUPPLY_STACK * cachedPrice(1, [&]() {
+                            return unitPrice(consumable(RESTOCK_SPELL_CATEGORY_DRINK, SPELL_AURA_MOD_POWER_REGEN,
+                                                        SPELL_AURA_OBS_MOD_POWER)); });
+                st.supplyWhat += st.supplyWhat.empty() ? "drink" : " and drink";
+            }
+            if (p->getClass() == CLASS_HUNTER)
+                if (Item* ranged = p->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
+                {
+                    uint32 const sub = ranged->GetTemplate()->SubClass;
+                    uint32 const ammoSub = sub == ITEM_SUBCLASS_WEAPON_BOW || sub == ITEM_SUBCLASS_WEAPON_CROSSBOW
+                                               ? ITEM_SUBCLASS_ARROW
+                                           : sub == ITEM_SUBCLASS_WEAPON_GUN ? ITEM_SUBCLASS_BULLET
+                                                                             : 0;
+                    uint32 const rounds =
+                        GET_PLAYERBOT_AI(p)->GetAiObjectContext()->GetValue<uint32>("item count", "ammo")->Get();
+                    if (ammoSub && rounds < LOW_AMMO)
+                    {
+                        need += AMMO_ROUNDS * cachedPrice(2 + ammoSub, [&]() {
+                                    return unitPrice([ammoSub](ItemTemplate const& proto)
+                                                     { return proto.Class == ITEM_CLASS_PROJECTILE &&
+                                                              proto.SubClass == ammoSub; }); });
+                        st.supplyWhat += st.supplyWhat.empty() ? "ammo" : " and ammo";
+                    }
+                }
+            uint32 const needCopper = uint32(std::ceil(need));
+            if (needCopper && p->GetMoney() < needCopper)
+                st.supplyGoldShort = needCopper - p->GetMoney();
         }
         st.repairShort = 0;
         if (repairNeed.any)
