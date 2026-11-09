@@ -2350,6 +2350,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         Player* p;
         float eta;
         float walkYd;
+        bool exact = false;  // [help34] eta / walkYd from its searched walk (else the straight line's lower bound)
     };
     std::vector<Candidate> pool;
     std::map<std::string, uint32> skipped;  // why not, counted (the reply and the refuse line)
@@ -2386,7 +2387,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         // [help14] the helper's walk is to the camp it helps at (the requester walks there too): b354 Nelaeleas L12
         // was assigned to Sycina's q1580 camp at "eta 25 s, walk 175 yd" - the yards to Sycina standing next to it in
         // Darkshore; Sycina hearthed to Darnassus, the camp lay on Teldrassil, the helper walked 3849 yd and a boat
-        pool.push_back({p, 0.0f, 0.0f});
+        pool.push_back({p, 0.0f, 0.0f, false});
     }
     // [help21] the inputs of the price: unchanged since its last refusal by price - no new pricing.
     // [help28] ... read before the walks are searched: the candidates' walks (a long route each, every update, for
@@ -2397,12 +2398,27 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                    uint64(int64(c.p->GetPositionX() / 100.0f) * 7919 + int64(c.p->GetPositionY() / 100.0f));
     if (!r.human && r.refusedKey && r.refusedKey == priceKey)
         return false;
+    // [help34] the walks are searched only where they can decide: each candidate starts with the straight line to
+    // the camp (a walk is never shorter), its walk is searched when its lower bound could still beat the best found
+    // (the winner's cost, the healer's eta) and for every member chosen. b386: help update median 128 ms, max 879 -
+    // every candidate's walk (a long route each) for every priced request
+    auto const campOf = [&](Player* p)
+    {
+        return r.at != WorldPosition() && r.at.GetMapId() == p->GetMapId()
+                   ? Position(r.at.GetPositionX(), r.at.GetPositionY(), r.at.GetPositionZ())
+                   : req->GetPosition();
+    };
+    auto const exactWalk = [&](Candidate& c)
+    {
+        if (c.exact)
+            return;
+        c.walkYd = Leader::WalkYd(c.p, campOf(c.p));
+        c.eta = c.walkYd / std::max(c.p->GetSpeed(MOVE_RUN), 1.0f);
+        c.exact = true;
+    };
     for (Candidate& c : pool)
     {
-        Position const campAt = r.at != WorldPosition() && r.at.GetMapId() == c.p->GetMapId()
-                                    ? Position(r.at.GetPositionX(), r.at.GetPositionY(), r.at.GetPositionZ())
-                                    : req->GetPosition();
-        c.walkYd = Leader::WalkYd(c.p, campAt);
+        c.walkYd = c.p->GetExactDist(campOf(c.p));
         c.eta = c.walkYd / std::max(c.p->GetSpeed(MOVE_RUN), 1.0f);
     }
     std::sort(pool.begin(), pool.end(), [](Candidate const& a, Candidate const& b) { return a.eta < b.eta; });
@@ -2420,7 +2436,23 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         bool const healerIn = std::any_of(party.begin(), party.end(), [](Player* m) { return PlayerbotAI::IsHeal(m); });
         auto pick = pool.end();
         if (v.needsHeals && !healerIn)
-            pick = std::find_if(pool.begin(), pool.end(), [](Candidate const& c) { return PlayerbotAI::IsHeal(c.p); });
+        {
+            // [help34] the nearest healer by its walk: lower bounds in order, searched until none can beat it
+            for (auto c = pool.begin(); c != pool.end(); ++c)
+            {
+                if (!PlayerbotAI::IsHeal(c->p))
+                    continue;
+                if (pick != pool.end() && c->eta >= pick->eta)
+                {
+                    if (!c->exact)
+                        break;  // its lower bound already loses (the pool is in lower-bound order)
+                    continue;
+                }
+                exactWalk(*c);
+                if (pick == pool.end() || c->eta < pick->eta)
+                    pick = c;
+            }
+        }
         if (pick == pool.end())
         {
             float bestGap = std::numeric_limits<float>::max();
@@ -2435,6 +2467,10 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                 {
                     // [help20] the winner whose time costs least: its own route's experience per second over its
                     // walk and the help (before, the nearest winner: a far one with nothing to do cost the same)
+                    // [help34] its walk searched only when its lower bound still beats the best winner
+                    if (winner && TimeRate(c->p) * (c->eta + with.seconds) >= bestCost)
+                        continue;
+                    exactWalk(*c);
                     float const cost = TimeRate(c->p) * (c->eta + with.seconds);  // [help22]
                     if (!winner || cost < bestCost)
                     {
@@ -2454,6 +2490,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                 }
             }
         }
+        exactWalk(*pick);  // [help34] every member chosen walks its searched walk in the price
         party.push_back(pick->p);
         chosen.push_back(*pick);
         pool.erase(pick);
@@ -3709,6 +3746,7 @@ void UpdateHelp()
             assignNow.insert(id);
             assignCursor = id;
         }
+        uint32 deferred = 0;
         for (auto itr = helpRequests.begin(); itr != helpRequests.end();)
         {
             HelpRequest& r = itr->second;
@@ -3748,6 +3786,7 @@ void UpdateHelp()
             std::string reply;
             if (!r.human && !assignNow.count(itr->first))
             {
+                ++deferred;
                 ++itr;  // [help32] its turn comes in a later update
                 continue;
             }
@@ -3757,6 +3796,9 @@ void UpdateHelp()
                 replies.emplace_back(r.requester, reply);
             ++itr;
         }
+        if (deferred)  // [help34] the queue at work: one line per update that left requests for later
+            out.logs.push_back(Acore::StringFormat("[help32] priced {} open request(s) this update, {} wait their turn",
+                                                   assignNow.size(), deferred));
     }
     out.Flush();
     for (auto const& [guid, text] : replies)
