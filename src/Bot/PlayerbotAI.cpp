@@ -727,6 +727,20 @@ void PlayerbotAI::UpdateFall()
 
     Movement::MoveSpline const* spline = bot->movespline;
     bool const splineActive = spline->Initialized() && !spline->Finalized();
+    // [ledge54] any move that ended (a straight step, a chase, a knockback or fear's controlled move) ends where the
+    // core does not make the bot fall - the server spline has no gravity: off a ledge it stands in the air. A move's
+    // end with no ground under it falls (the core fall). b386 Idunk L12 slid sideways off a 7-polygon rock ledge in
+    // Frostmane Hold (-5536.7,579.9,402-404) and stood 6-8 yd in the air ("[navgap] in the air at a walk's start")
+    if (wasSplineActive && !splineActive && !fallPending && !fallCheckRequested && bot->IsAlive() &&
+        !bot->IsInFlight() && !bot->GetTransport() && !bot->GetVehicle() && IsSubjectToGravity() &&
+        !HasGroundSupport(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()))
+    {
+        LOG_INFO("playerbots", "[ledge54] {} L{} a move ended over open air at ({:.1f},{:.1f},{:.1f}) on map {}: falls",
+                 bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                 bot->GetMapId());
+        fallCheckRequested = true;
+    }
+    wasSplineActive = splineActive;
     if (fallCheckRequested && !fallPending && !(splineActive && spline->isBoarding()))
     {
         fallCheckRequested = false;

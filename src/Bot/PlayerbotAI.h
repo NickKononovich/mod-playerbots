@@ -757,6 +757,7 @@ protected:
     bool fallCheckRequested = false;  // dismounted or left a vehicle: fall if nothing is below
     bool fallPending = false;         // falling; HandleFall runs where the fall spline ends
     bool wasOnVehicle = false;
+    bool wasSplineActive = false;  // [ledge54] a move ended this tick: the ground under its end is looked at
     uint32 lastCastSpellId = 0;  // the last spell CastSpell started, for the GCD-aligned wake-up in combat
 
     // Temporary heal diagnostics: a healer in an instance group casts nothing while a member in combat is below
