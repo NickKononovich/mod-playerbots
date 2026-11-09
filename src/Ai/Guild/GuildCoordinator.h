@@ -263,6 +263,10 @@ public:
     std::string FivesText() const;  // "playerbots guild fives"
     std::string DungeonsText(uint8 level) const;  // "playerbots guild dungeons [level]": the band and why / why not
     void SetAutoFives(bool on) { autoFives_ = on; }
+    // [next1] the five the global leader would take into `contentKey` now (members in its band, tank / healer / dps as
+    // PickFive picks them, the tank first) and its five-gate verdict - the harness's "guildlike" comp copies it
+    bool PreviewFive(std::string const& contentKey, std::vector<std::pair<uint32, std::string>>& members,
+                     std::string& verdict, std::string& error);
     bool AutoFives() const { return autoFives_; }
     // [wait19] both are members of one five the global leader formed that gathers at its dungeon's entrance or
     // heads into the dungeon (Gather / Run): its leader's group wait and meet walk hold for it

@@ -22,6 +22,8 @@
 #include "Chat.h"
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
+#include "DpsEstimate.h"  // [next1] the five gate
+#include "HealthTriggers.h"  // [next1] RestState::HealerThroughput
 #include "GameTime.h"
 #include "Group.h"
 #include "LFGMgr.h"  // [next1] whether the Dungeon Finder can port a five
@@ -60,6 +62,8 @@ namespace
     constexpr char const* FIVE_ITEM_NEED = "item needed: ";
     // [guild70] the last "no Dungeon Finder" reason logged per five (world thread)
     std::map<uint32, std::string> fiveLfgWhy;
+    // [next1] the last five-gate reason logged per dungeon (world thread)
+    std::map<std::string, std::string> gateWhy;
 
     uint32 Now() { return uint32(GameTime::GetGameTime().count()); }
 
@@ -148,6 +152,270 @@ namespace
         return p && proto && proto->DisenchantID && proto->Quality >= ITEM_QUALITY_UNCOMMON &&
                p->HasSkill(SKILL_ENCHANTING) && p->GetPureSkillValue(SKILL_ENCHANTING) >= proto->RequiredDisenchantSkill &&
                p->HasSpell(SPELL_DISENCHANT);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [next1] the five's capacity against the dungeon (user rule: the leader computes from game math, no level floor)
+// ---------------------------------------------------------------------------------------------------------------------
+namespace FiveGate
+{
+    // One spawn as its template makes it (Creature::UpdateEntry / the stat system: creature_classlevelstats at the
+    // template's top level, the template's health and damage modifiers), the melee as SoloSafety::RunPastTemplate
+    // reads it: weapon damage base .. 1.5 x base plus attack power / 14 per second of swing.
+    struct Mob
+    {
+        uint32 entry = 0;
+        std::string name;
+        uint8 level = 1;
+        float health = 0.0f;
+        float melee = 0.0f;  // damage per second before the tank's armor and avoidance
+        bool boss = false;
+    };
+
+    // What one pull brings as the core brings it ([kara4] PackJoiners): the mob pulled, its formation
+    // (creature_formations) and the mobs of the core's engage call - within CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS of
+    // it (Creature::CallAssistance). The chain spread past that is the planner's fight estimate, not the gate's.
+    struct Pack
+    {
+        std::vector<Mob> mobs;
+        bool boss = false;
+        float health = 0.0f;
+    };
+
+    std::map<uint32, std::vector<Pack>> packsByMap;  // world thread (AutoFive, PreviewFive)
+
+    std::vector<Pack> const& Packs(uint32 mapId)
+    {
+        if (auto const found = packsByMap.find(mapId); found != packsByMap.end())
+            return found->second;
+        std::vector<Pack>& packs = packsByMap[mapId];
+
+        std::set<uint32> credits;
+        if (QueryResult result =
+                WorldDatabase.Query("SELECT creditEntry FROM instance_encounters WHERE creditType = 0"))
+            do
+                credits.insert(result->Fetch()[0].Get<uint32>());
+            while (result->NextRow());
+
+        struct Spawn
+        {
+            uint32 guid = 0;
+            uint32 leader = 0;
+            G3D::Vector3 pos;
+            Mob mob;
+        };
+        std::vector<Spawn> spawns;
+        if (QueryResult result = WorldDatabase.Query(
+                "SELECT c.guid, c.id, c.position_x, c.position_y, c.position_z, IFNULL(f.leaderGUID, 0) "
+                "FROM creature c "
+                "LEFT JOIN creature_formations f ON f.memberGUID = c.guid WHERE c.map = {}",
+                mapId))
+        {
+            do
+            {
+                Field* f = result->Fetch();
+                CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(f[1].Get<uint32>());
+                if (!tmpl || tmpl->type == CREATURE_TYPE_CRITTER ||
+                    (tmpl->unit_flags & (UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE)))
+                    continue;
+                FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(tmpl->faction);
+                if (!ft || !(ft->IsHostileToPlayers() || ft->IsHostileToAlliancePlayers()))
+                    continue;
+                CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(tmpl->maxlevel, tmpl->unit_class);
+                if (!stats)
+                    continue;
+                Spawn s;
+                s.guid = f[0].Get<uint32>();
+                s.pos = G3D::Vector3(f[2].Get<float>(), f[3].Get<float>(), f[4].Get<float>());
+                s.leader = f[5].Get<uint32>();
+                s.mob.entry = tmpl->Entry;
+                s.mob.name = tmpl->Name;
+                s.mob.level = tmpl->maxlevel;
+                s.mob.health = float(stats->GenerateHealth(tmpl));
+                float const swing = std::max(float(tmpl->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
+                float const base = stats->GenerateBaseDamage(tmpl);
+                s.mob.melee = ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) *
+                              tmpl->DamageModifier / swing;
+                s.mob.boss = credits.count(tmpl->Entry) || tmpl->rank == CREATURE_ELITE_WORLDBOSS;
+                spawns.push_back(s);
+            } while (result->NextRow());
+        }
+
+        float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        std::set<std::vector<uint32>> seen;
+        for (Spawn const& seed : spawns)
+        {
+            std::vector<size_t> members;
+            for (size_t j = 0; j < spawns.size(); ++j)
+            {
+                Spawn const& other = spawns[j];
+                bool const formation = (seed.leader && (other.leader == seed.leader || other.guid == seed.leader)) ||
+                                       (other.leader && other.leader == seed.guid);
+                if (&other == &seed || formation || (assist > 0.0f && (other.pos - seed.pos).length() <= assist))
+                    members.push_back(j);
+            }
+            std::vector<uint32> key;
+            for (size_t j : members)
+                key.push_back(spawns[j].guid);
+            std::sort(key.begin(), key.end());
+            if (!seen.insert(key).second)
+                continue;
+            Pack pack;
+            for (size_t j : members)
+            {
+                pack.mobs.push_back(spawns[j].mob);
+                pack.boss |= spawns[j].mob.boss;
+                pack.health += spawns[j].mob.health;
+            }
+            packs.push_back(std::move(pack));
+        }
+        LOG_INFO("playerbots", "[next1] five gate: map {} - {} hostile spawns, {} distinct pulls", mapId, spawns.size(),
+                 packs.size());
+        return packs;
+    }
+
+    // The core's spell miss chance against a mob `diff` levels above the caster (3.3.5: 4 / 5 / 6 %, then +11 % per
+    // level), as a factor on the damage of a mob of its own level (DpsEstimate's target)
+    float HitFactor(int32 diff)
+    {
+        if (diff <= 0)
+            return 1.0f;
+        float const miss = diff <= 2 ? 4.0f + float(diff) : 6.0f + 11.0f * float(diff - 2);
+        return std::max(0.0f, 1.0f - std::min(miss, 99.0f) / 100.0f) / 0.96f;
+    }
+
+    // Unit::CalcArmorReducedDamage for an attacker below level 60
+    float ArmorReduction(float armor, uint8 level)
+    {
+        float const lvl = level > 59 ? float(level) + 4.5f * float(level - 59) : float(level);
+        return std::clamp(armor / (armor + 85.0f * lvl + 400.0f), 0.0f, 0.75f);
+    }
+
+    struct Verdict
+    {
+        bool clears = true;
+        std::string why;
+    };
+
+    // The five: the tank first, the healer second (PickFive's order). Each pull is judged as the planner judges a pull
+    // "as it comes": the group's damage (DpsEstimate, each member against a mob of its level, the spell miss of the
+    // mobs' levels) kills the mobs one by one, weakest first; every living one lands its melee on the tank (its armor,
+    // dodge and parry); the healer's best rate (RestState::HealerThroughput) heals after its first gap. Clears when, in
+    // every pull, the tank's deepest drop leaves it one more heal gap at the pull's full rate (the planner's maxDrop)
+    // and the healer's mana covers the healing. Not counted: the mobs' spells, area damage on the group, splitting a
+    // pull.
+    Verdict Judge(uint32 mapId, std::vector<Player*> const& five)
+    {
+        Verdict out;
+        if (five.size() < 2 || !five[0] || !five[1])
+        {
+            out.clears = false;
+            out.why = "no tank / healer";
+            return out;
+        }
+        Player* tank = five[0];
+        Player* healer = five[1];
+        // each member's burst, what lasts with no mana and the seconds its mana carries the burst (DpsEstimate on its
+        // state now): a pull of T seconds gets burst x min(T, oom) + white x the rest, over T
+        struct Damage
+        {
+            uint8 level = 1;
+            float burst = 0.0f;
+            float white = 0.0f;
+            float oomSec = 0.0f;
+            float Over(float sec) const
+            {
+                if (sec <= 0.0f || sec <= oomSec)
+                    return burst;
+                return (burst * oomSec + white * (sec - oomSec)) / sec;
+            }
+        };
+        std::vector<Damage> dps;
+        float groupDps = 0.0f;
+        for (Player* p : five)
+            if (p)
+            {
+                DpsEstimate::Result const r = DpsEstimate::Estimate(p, nullptr, DpsEstimate::BuffContext::Group);
+                Damage d;
+                d.level = p->GetLevel();
+                d.burst = r.burstDps;
+                d.white = r.whiteDps;
+                d.oomSec = r.oomSec;
+                dps.push_back(d);
+                groupDps += d.burst;
+            }
+        RestState::HealerFacts const heal = RestState::HealerThroughput(healer, tank);
+        float const tankHealth = float(tank->GetMaxHealth());
+        float const avoid =
+            std::clamp((tank->GetUnitDodgeChance() + tank->GetUnitParryChance()) / 100.0f, 0.0f, 0.75f);
+        float const armor = float(tank->GetArmor());
+        float const healMana = heal.maxMana;
+        float const gap = std::max(heal.gapSec, 1.5f);
+
+        float worst = 0.0f;
+        std::string worstWhy;
+        uint32 judged = 0, failed = 0;
+        for (Pack const& pack : Packs(mapId))
+        {
+            ++judged;
+            std::vector<Mob> mobs = pack.mobs;
+            std::sort(mobs.begin(), mobs.end(), [](Mob const& a, Mob const& b) { return a.health < b.health; });
+            auto landed = [&](Mob const& m)
+            { return m.melee * (1.0f - ArmorReduction(armor, m.level)) * (1.0f - avoid); };
+            float rate = 0.0f;
+            for (Mob const& m : mobs)
+                rate += landed(m);
+            float const fightGuess = groupDps > 0.0f ? pack.health / groupDps : 0.0f;
+            float const startRate = rate;
+            float t = 0.0f, drop = 0.0f, deepest = 0.0f, intake = 0.0f;
+            for (Mob const& m : mobs)
+            {
+                float killDps = 0.0f;
+                for (Damage const& d : dps)
+                    killDps += d.Over(fightGuess) * HitFactor(int32(m.level) - int32(d.level));
+                float const seg = killDps > 0.0f ? m.health / killDps : 3600.0f;
+                // before the healer's first heal lands, then after it
+                float const before = std::clamp(gap - t, 0.0f, seg);
+                drop += rate * before;
+                deepest = std::max(deepest, drop);
+                drop = std::max(0.0f, drop + (rate - heal.hps) * (seg - before));
+                deepest = std::max(deepest, drop);
+                intake += rate * seg;
+                t += seg;
+                rate -= landed(m);
+            }
+            float const healNeeded = std::max(0.0f, intake - drop);
+            float const manaNeeded = heal.healPerMana > 0.0f ? healNeeded / heal.healPerMana : 0.0f;
+            float const dropShare = tankHealth > 0.0f ? (deepest + startRate * gap) / tankHealth : 99.0f;
+            float const manaShare = healMana > 0.0f ? manaNeeded / healMana : (healNeeded > 0.0f ? 99.0f : 0.0f);
+            float const load = std::max(dropShare, manaShare);
+            if (load > 1.0f)
+                ++failed;
+            if (load > worst)
+            {
+                worst = load;
+                uint8 lo = 255, hi = 0;
+                for (Mob const& m : mobs)
+                {
+                    lo = std::min(lo, m.level);
+                    hi = std::max(hi, m.level);
+                }
+                worstWhy = Acore::StringFormat(
+                    "{}{} x{} (L{}-{}, {:.0f} hp): fight {:.0f} s, tank drop {:.0f} + one gap {:.0f} of {:.0f} hp "
+                    "({:.2f}), heal mana {:.0f} of {:.0f} ({:.2f})",
+                    pack.boss ? "boss pull " : "", mobs.front().name, mobs.size(), lo, hi, pack.health, t, deepest,
+                    startRate * gap, tankHealth, dropShare, manaNeeded, healMana, manaShare);
+            }
+        }
+        out.clears = failed == 0 && judged > 0;
+        out.why = Acore::StringFormat(
+            "{} of {} pulls over capacity; worst {:.2f}: {}; group burst dps {:.0f}, healer {} {:.0f} hps "
+            "(gap {:.1f} s, {:.1f} hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f} [mob melee from templates; "
+            "spells, area damage and splits not counted]",
+            failed, judged, worst, worstWhy.empty() ? "-" : worstWhy, groupDps, healer->GetName(), heal.hps, gap,
+            heal.healPerMana, tank->GetName(), tankHealth, armor, avoid);
+        return out;
     }
 }
 
@@ -872,6 +1140,40 @@ void GuildCoordinator::UpdateFives()
     }
 }
 
+bool GuildCoordinator::PreviewFive(std::string const& contentKey, std::vector<std::pair<uint32, std::string>>& members,
+                                   std::string& verdict, std::string& error)
+{
+    members.clear();
+    std::vector<FiveCandidate> five;
+    uint32 mapId = 0;
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        DungeonOption const* d = FindDungeon(contentKey);
+        if (!d)
+        {
+            error = "no dungeon '" + contentKey + "' in the global leader's list";
+            return false;
+        }
+        mapId = d->mapId;
+        std::vector<FiveCandidate> const pool = Candidates(*d, true);
+        if (!PickFive(pool, five))
+        {
+            error = Acore::StringFormat("no free tank, healer and 3 dps of level {}-{} for {} ({} candidates)",
+                                        d->minLevel, d->maxLevel, d->name, pool.size());
+            return false;
+        }
+    }
+    std::vector<Player*> players;
+    for (FiveCandidate const& c : five)
+    {
+        members.emplace_back(c.low, c.role);
+        players.push_back(c.player);
+    }
+    FiveGate::Verdict const v = FiveGate::Judge(mapId, players);
+    verdict = std::string(v.clears ? "clears: " : "does not clear: ") + v.why;
+    return true;
+}
+
 void GuildCoordinator::AutoFive()
 {
     if (!autoFives_)
@@ -925,12 +1227,29 @@ void GuildCoordinator::AutoFive()
                                                       [](FiveCandidate const& c) { return c.needsClear; })) +
                                  uint32(std::count_if(five.begin(), five.end(),
                                                       [](FiveCandidate const& c) { return c.upgrade; }));
-            if (score > bestScore)
+            if (score <= bestScore)
+                continue;
+            // [next1] the five clears the dungeon by the game's numbers (FiveGate::Judge), else it waits - no level
+            // floor
+            std::vector<Player*> players;
+            for (FiveCandidate const& c : five)
+                players.push_back(c.player);
+            FiveGate::Verdict const verdict = FiveGate::Judge(d->mapId, players);
+            if (!verdict.clears)
             {
-                bestScore = score;
-                best = d;
-                bestFive = five;
+                if (std::string& logged = gateWhy[d->contentKey]; logged != verdict.why)
+                {
+                    logged = verdict.why;
+                    LOG_INFO("playerbots", "[next1] five for {} waits (leader {}): {}", d->contentKey,
+                             five.front().player->GetName(), verdict.why);
+                }
+                continue;
             }
+            LOG_INFO("playerbots", "[next1] five for {} passes the gate (leader {}): {}", d->contentKey,
+                     five.front().player->GetName(), verdict.why);
+            bestScore = score;
+            best = d;
+            bestFive = five;
         }
         if (!best)
             return;
