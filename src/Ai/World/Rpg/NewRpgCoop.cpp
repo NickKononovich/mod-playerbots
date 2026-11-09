@@ -3084,14 +3084,31 @@ Order Tick(PlayerbotAI* botAI, Player* bot)
         return order;
     EnsureIndex();  // built at startup; never under the board's lock
     uint32 const now = getMSTime();
+    // [repair22] a member whose weapon is broken leaves its party for its repairer (the global leader's urgent
+    // REPAIR, its own small lock - read before the board's): b370 Peny L13 followed Guinudrond's help party with every
+    // item at 0 durability ("weapon broken: no new pulls until repaired"), no DO_QUEST all run, its REPAIR at
+    // Sentinel Hill never ran
+    bool const weaponBroken = sGuildCoordinator.Repair(bot).weaponBroken;
     Out out;
     {
         std::lock_guard<std::mutex> guard(lock);
         Posting& me = postings[bot->GetGUID().GetCounter()];
         UpdatePostingLocked(botAI, bot, me);
+        if (me.party && weaponBroken)
+            if (auto const party = parties.find(me.party);
+                party != parties.end() && party->second.leader != bot->GetGUID())
+            {
+                std::string const why = "its weapon is broken: to its repairer";
+                out.logs.push_back(Acore::StringFormat("[repair22] {} leaves its party: {}", bot->GetName(), why));
+                if (party->second.help)
+                    HelpEndLocked(party->second, bot->GetGUID().GetCounter(), why, false, now, out);
+                else
+                    LeaveLocked(me, why, now, out);
+            }
         if (me.party)
         {
             auto const party = parties.find(me.party);
+
             order = party != parties.end() && party->second.help ? HelpTickLocked(botAI, bot, me, now, out)
                                                                   : PartyTickLocked(botAI, bot, me, now, out);
         }
