@@ -3745,6 +3745,7 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
         if (bot->isMoving())
             bot->StopMoving();
         LogQuestObject(bot, lootable, "used: loots it");
+        NoteQuestUse(bot, questId, lootable->GetEntry());  // [qeff31]
         return AI_VALUE(LootObjectStack*, "available loot")->Add(lootable->GetGUID());
     }
 
@@ -3767,6 +3768,7 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
         bot->StopMoving();
 
     LogQuestObject(bot, nearest, "used: q" + std::to_string(questId) + " objective");
+    NoteQuestUse(bot, questId, nearest->GetEntry());  // [qeff31]
     WorldPacket use(CMSG_GAMEOBJ_USE, 8);
     use << nearest->GetGUID();
     RelayInteractPacketToGroupBots(nearest->GetGUID());

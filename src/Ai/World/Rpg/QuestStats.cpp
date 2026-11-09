@@ -18,6 +18,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "PlayerbotsDatabase.h"  // [qeff31] the accept times
 #include "QuestDef.h"
 #include "ScriptMgr.h"
 #include "Timer.h"
@@ -80,6 +81,21 @@ namespace
 
     bool Tracked(Player* player) { return player && GET_PLAYERBOT_AI(player); }
 
+    // [qeff31] bot -> quest -> its accept time (unix ms), kept in playerbots_db_store ('qa<quest>') across sessions:
+    // the triage's quest clock starts at the accept, also for a quest accepted in an earlier session (a log only)
+    std::unordered_map<uint32, std::unordered_map<uint32, uint64>> acceptedAt;  // under `lock`
+
+    void StoreAccepted(uint32 guid, uint32 questId, uint64 ms)
+    {
+        PlayerbotsDatabaseTransaction trans = PlayerbotsDatabase.BeginTransaction();
+        trans->Append(Acore::StringFormat("DELETE FROM playerbots_db_store WHERE guid = {} AND `key` = 'qa{}'", guid,
+                                          questId));
+        if (ms)
+            trans->Append(Acore::StringFormat(
+                "INSERT INTO playerbots_db_store (guid, `key`, value) VALUES ({}, 'qa{}', '{}')", guid, questId, ms));
+        PlayerbotsDatabase.CommitTransaction(trans);
+    }
+
     void LogCounters(Player* bot, Counters const& c, char const* why)
     {
         std::string budget;
@@ -113,12 +129,16 @@ namespace
     }
 
     // the kill served a quest: its entry (or kill credit) is an objective of a quest in the log not yet past its
-    // count before this kill, or it carries loot a quest in the log still needs
-    bool ServedQuest(Player* bot, Creature* killed)
+    // count before this kill, or it carries loot a quest in the log still needs. [qeff31] the quest it served (the
+    // kill line names it: the triage's kills per objective unit counted every useful kill against the quest worked
+    // then, other quests' kills too - b400 q102 "6.2 kills a unit" held Blahadrin's Fleshrippers for q22); 0: none
+    uint32 ServedQuestId(Player* bot, Creature* killed)
     {
         CreatureTemplate const* tmpl = killed->GetCreatureTemplate();
         if (!tmpl)
-            return false;
+            return 0;
+        LootTemplate const* loot = tmpl->lootid ? LootTemplates_Creature.GetLootFor(tmpl->lootid) : nullptr;
+        uint32 lootQuest = 0;
         for (auto const& [questId, status] : bot->getQuestStatusMap())
         {
             if (status.Status != QUEST_STATUS_INCOMPLETE && status.Status != QUEST_STATUS_COMPLETE)
@@ -136,10 +156,24 @@ namespace
                 // the credit already landed (the hook runs after it): a count still short, or just filled
                 if (match && status.CreatureOrGOCount[i] <= quest->RequiredNpcOrGoCount[i] &&
                     status.CreatureOrGOCount[i] > 0)
-                    return true;
+                    return questId;
+            }
+            for (uint8 i = 0; loot && !lootQuest && i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            {
+                uint32 const item = quest->RequiredItemId[i];
+                if (!item || status.ItemCount[i] >= quest->RequiredItemCount[i])
+                    continue;
+                loot->VisitEntries([&](LootStoreItem const& e, float /*chance*/)
+                                   {
+                                       if (!e.reference && e.itemid == item)
+                                           lootQuest = questId;
+                                   });
             }
         }
-        return tmpl->lootid && LootTemplates_Creature.HaveQuestLootForPlayer(tmpl->lootid, bot);
+        if (lootQuest)
+            return lootQuest;
+        // a quest loot the walk above did not name (a reference table): the core's own check, no quest named
+        return tmpl->lootid && LootTemplates_Creature.HaveQuestLootForPlayer(tmpl->lootid, bot) ? UINT32_MAX : 0;
     }
 
     class QuestStatsPlayerScript : public PlayerScript
@@ -199,7 +233,8 @@ namespace
         {
             if (!Tracked(player) || !killed)
                 return;
-            bool const served = ServedQuest(player, killed);
+            uint32 const servedQuest = ServedQuestId(player, killed);
+            bool const served = servedQuest != 0;
             uint64 xp = 0;
             {
                 std::lock_guard<std::mutex> guard(lock);
@@ -214,7 +249,7 @@ namespace
             }
             if (served)
                 QuestStats::NoteObjectiveKill(player);  // [obj47]
-            QuestStats::LogEvent(player, "kill", 0,
+            QuestStats::LogEvent(player, "kill", servedQuest == UINT32_MAX ? 0 : servedQuest,
                                  "entry=" + std::to_string(killed->GetEntry()) + " L" +
                                      std::to_string(killed->GetLevel()) + " useful=" + (served ? "1" : "0") +
                                      " xp=" + std::to_string(xp));
@@ -232,7 +267,9 @@ namespace
                 xp = c.lastQuestXp;  // GiveXP runs before this hook in Player::RewardQuest
                 c.lastQuestXp = 0;
                 c.log.erase(quest->GetQuestId());
+                acceptedAt[player->GetGUID().GetCounter()].erase(quest->GetQuestId());  // [qeff31]
             }
+            StoreAccepted(player->GetGUID().GetCounter(), quest->GetQuestId(), 0);
             QuestStats::LogEvent(player, "turnin", quest->GetQuestId(), "xp=" + std::to_string(xp));
             QuestRoute::NoteQuestEvent(player, quest->GetQuestId());  // [routeplan] metric only: the stop's end
         }
@@ -285,7 +322,10 @@ namespace
             std::lock_guard<std::mutex> guard(lock);
             auto const found = counters.find(player->GetGUID().GetCounter());
             if (found != counters.end())
+            {
                 LogCounters(player, found->second, "logout");
+                found->second.hasLog = false;  // [qeff31] its next login logs its open quests again
+            }
         }
     };
 }
@@ -379,6 +419,20 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
         c.x = bot->GetPositionX();
         c.y = bot->GetPositionY();
 
+        // [qeff31] its first tick of the session: one line per open quest with its accept time
+        if (!c.hasLog)
+        {
+            auto const& times = acceptedAt[bot->GetGUID().GetCounter()];
+            for (auto const& [questId, snap] : now)
+            {
+                auto const at = times.find(questId);
+                events.push_back({"open", {questId, "accepted_t=" + (at != times.end() ? std::to_string(at->second)
+                                                                                       : std::string("unknown")) +
+                                                        " status=" +
+                                                        (snap.status == QUEST_STATUS_COMPLETE ? "complete"
+                                                                                              : "incomplete")}});
+            }
+        }
         if (c.hasLog)
         {
             for (auto const& [questId, snap] : now)
@@ -387,6 +441,7 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
                 if (before == c.log.end())
                 {
                     events.push_back({"accept", {questId, ""}});
+                    acceptedAt[bot->GetGUID().GetCounter()][questId] = NowMs();  // [qeff31]
                     continue;
                 }
                 Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
@@ -405,7 +460,10 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
             }
             for (auto const& [questId, snap] : c.log)
                 if (!now.count(questId) && !bot->GetQuestRewardStatus(questId))
+                {
                     events.push_back({"abandon", {questId, ""}});
+                    acceptedAt[bot->GetGUID().GetCounter()].erase(questId);  // [qeff31]
+                }
         }
         c.log = std::move(now);
         c.hasLog = true;
@@ -440,6 +498,11 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
     }
     for (auto const& [event, data] : events)
     {
+        // [qeff31] the accept time kept for the next session (gone with its turn-in / abandon)
+        if (std::string(event) == "accept")
+            StoreAccepted(bot->GetGUID().GetCounter(), data.first, NowMs());
+        else if (std::string(event) == "abandon")
+            StoreAccepted(bot->GetGUID().GetCounter(), data.first, 0);
         LogEvent(bot, event, data.first, data.second);
         QuestRoute::NoteQuestEvent(bot, data.first);  // [routeplan] metric only: the route stop's end
     }
@@ -630,4 +693,16 @@ void AddQuestStatsScripts()
 {
     new QuestStatsPlayerScript();
     new QuestStatsGroupScript();  // [log28]
+}
+
+void QuestStats::LoadAccepted(Player* bot, std::string const& key, std::string const& value)
+{
+    if (!bot || key.size() <= 2 || key.compare(0, 2, "qa") != 0)
+        return;
+    uint32 const questId = uint32(std::strtoul(key.c_str() + 2, nullptr, 10));
+    uint64 const ms = std::strtoull(value.c_str(), nullptr, 10);
+    if (!questId || !ms)
+        return;
+    std::lock_guard<std::mutex> guard(lock);
+    acceptedAt[bot->GetGUID().GetCounter()][questId] = ms;
 }

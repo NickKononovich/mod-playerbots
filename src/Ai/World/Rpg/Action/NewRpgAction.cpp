@@ -1208,10 +1208,137 @@ bool StartRpgDoQuestAction::Execute(Event event)
     return false;
 }
 
+namespace
+{
+    // [qeff31] the quest-efficiency triage's lines, one per event with t=: the worked quest (focus) on / off with its
+    // reason, a wait at the objective (respawn, no target) start / end, the arrival at the objective area, a quest
+    // object's use start / end. Log state only, no decision reads it
+    struct FocusLog
+    {
+        uint32 quest = 0;
+        uint32 waitQuest = 0;
+        std::string waitWhy;
+        uint32 waitMs = 0;
+        uint32 useQuest = 0;
+        uint32 useEntry = 0;
+        uint32 useMs = 0;
+    };
+    std::mutex focusLogLock;
+    std::unordered_map<uint32, FocusLog> focusLogs;
+
+    void QuestWaitEnd(Player* bot, FocusLog& f, char const* why)
+    {
+        if (!f.waitQuest)
+            return;
+        LOG_INFO("playerbots", "[quest] wait {} q{} ends after {:.0f} s: {} t={}", bot->GetName(), f.waitQuest,
+                 float(getMSTimeDiff(f.waitMs, getMSTime())) / float(IN_MILLISECONDS), why, QuestStats::NowMs());
+        f.waitQuest = 0;
+        f.waitWhy.clear();
+    }
+
+    void QuestUseEnd(Player* bot, FocusLog& f, char const* why)
+    {
+        if (!f.useQuest)
+            return;
+        LOG_INFO("playerbots", "[quest] use {} q{} object {} ends after {:.1f} s: {} t={}", bot->GetName(), f.useQuest,
+                 f.useEntry, float(getMSTimeDiff(f.useMs, getMSTime())) / float(IN_MILLISECONDS), why,
+                 QuestStats::NowMs());
+        f.useQuest = 0;
+        f.useEntry = 0;
+    }
+
+    // the worked quest now: DO_QUEST's quest unless a detour holds it (a vendor run, a group wait, a meet walk, a
+    // co-op / help party it follows); `why` the detour or the status
+    uint32 FocusNow(Player* bot, NewRpgInfo& info, std::string& why)
+    {
+        static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC",
+                                             "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER",
+                                             "DO_PROFESSION"};
+        NewRpgStatus const status = info.GetStatus();
+        auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data);
+        if (!bot->IsAlive())
+            why = "dead";
+        else if (status != RPG_DO_QUEST || !quest)
+            why = std::string("status ") + (status < RPG_STATUS_END ? names[status] : "?");
+        else if (info.vendorRunEntry)
+            why = "vendor run: " + info.vendorRunReason;
+        else if (info.groupWaiting)
+            why = "group wait";
+        else if (info.meetWalk)
+            why = "walks to meet a member";
+        else if (NewRpgCoop::IsMember(bot))
+            why = "follows its co-op / help party";
+        else
+        {
+            why = quest->giverPos != WorldPosition() ? "to its giver" : "DO_QUEST";
+            return quest->questId;
+        }
+        return 0;
+    }
+}
+
+void NewRpgBaseAction::NoteQuestWait(Player* bot, uint32 questId, std::string const& why)
+{
+    std::lock_guard<std::mutex> guard(focusLogLock);
+    FocusLog& f = focusLogs[bot->GetGUID().GetCounter()];
+    if (!questId)
+    {
+        QuestWaitEnd(bot, f, why.c_str());
+        return;
+    }
+    if (f.waitQuest == questId && f.waitWhy == why)
+        return;
+    QuestWaitEnd(bot, f, "another wait");
+    f.waitQuest = questId;
+    f.waitWhy = why;
+    f.waitMs = getMSTime();
+    LOG_INFO("playerbots", "[quest] wait {} q{}: {} t={}", bot->GetName(), questId, why, QuestStats::NowMs());
+}
+
+void NewRpgBaseAction::NoteQuestUse(Player* bot, uint32 questId, uint32 entry)
+{
+    std::lock_guard<std::mutex> guard(focusLogLock);
+    FocusLog& f = focusLogs[bot->GetGUID().GetCounter()];
+    if (!questId)
+    {
+        // the use is over once no cast and no loot window hold it (a log reading, no decision)
+        if (f.useQuest && !bot->IsNonMeleeSpellCast(false) && !bot->GetLootGUID() &&
+            getMSTimeDiff(f.useMs, getMSTime()) >= IN_MILLISECONDS)
+            QuestUseEnd(bot, f, "done");
+        return;
+    }
+    QuestUseEnd(bot, f, "another use");
+    f.useQuest = questId;
+    f.useEntry = entry;
+    f.useMs = getMSTime();
+    LOG_INFO("playerbots", "[quest] use {} q{} object {} starts t={}", bot->GetName(), questId, entry,
+             QuestStats::NowMs());
+}
+
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
     NewRpgStatus status = info.GetStatus();
+    // [qeff31] the worked quest's change: one off line and one on line, with the reason
+    {
+        std::string why;
+        uint32 const focus = FocusNow(bot, info, why);
+        std::lock_guard<std::mutex> guard(focusLogLock);
+        FocusLog& f = focusLogs[bot->GetGUID().GetCounter()];
+        if (focus != f.quest)
+        {
+            if (f.quest)
+            {
+                QuestWaitEnd(bot, f, "off the quest");
+                QuestUseEnd(bot, f, "off the quest");
+                LOG_INFO("playerbots", "[focus] {} off q{}: {} t={}", bot->GetName(), f.quest,
+                         focus ? "q" + std::to_string(focus) + " worked instead" : why, QuestStats::NowMs());
+            }
+            if (focus)
+                LOG_INFO("playerbots", "[focus] {} on q{}: {} t={}", bot->GetName(), focus, why, QuestStats::NowMs());
+            f.quest = focus;
+        }
+    }
     // [guild90] questing counters (yards walked, the active quest's progress) for tools/guild_stats.py
     {
         auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data);
@@ -2345,6 +2472,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
 
 bool NewRpgDoQuestAction::Execute(Event /*event*/)
 {
+    NoteQuestUse(bot, 0, 0);  // [qeff31] a quest object's use under way ends here once its cast / loot is over
     if (SettleQuestUse())  // [questitems]
         return true;
 
@@ -2542,6 +2670,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                                                         : std::string("none")) +
                                                  " " + resolved);
                     }
+                    NoteQuestWait(bot, questId, "every objective spot spent: the first respawn");  // [qeff31]
                     // the respawn is the world's clock: re-checked in short steps, the grind and loot strategies
                     // take what appears (and wanderers) meanwhile
                     return ForceToWait(std::min<uint32>(wait, 10) * IN_MILLISECONDS);
@@ -2695,6 +2824,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             else
                 guessedZBots.erase(bot->GetGUID().GetCounter());
         }
+        NoteQuestWait(bot, 0, "an objective spot is unspent again");  // [qeff31]
         // [guild90] the sweep: next unspent camp nearest the bot, claimed (other bots skip it)
         ClaimSpot(bot, questId, pos);
         QuestStats::LogEvent(bot, "sweep", questId,
@@ -2766,6 +2896,11 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     if (!data.lastReachPOI)
     {
         data.lastReachPOI = getMSTime();
+        // [qeff31] the arrival at the objective area
+        QuestStats::LogEvent(bot, "arrive", questId,
+                             "obj=" + std::to_string(data.objectiveIdx) + " spot=(" +
+                                 std::to_string(int32(data.pos.GetPositionX())) + "," +
+                                 std::to_string(int32(data.pos.GetPositionY())) + ")");
         return true;
     }
     // [timers] no stay time at the spot: it is left when its objective is done (the completed check above), when
@@ -2790,6 +2925,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     if (!bot->IsInCombat() && !AI_VALUE(Unit*, "grind target") && !FindNeededQuestObject(bot) &&
         !SoloSafety::WantsRest(bot, false) && !SoloSafety::WantsRest(bot, true) && !bot->IsSitState())
     {
+        NoteQuestWait(bot, 0, "the spot is spent");  // [qeff31]
         NoteSpentSpot(bot, questId, WorldPosition(bot));  // [guild90] the circle it scanned from where it stands
         data.lastReachPOI = 0;
         data.pos = WorldPosition();
@@ -2797,6 +2933,18 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         return true;
     }
 
+    // [qeff31] at its spot out of a fight: what holds it there (a target not engaged yet, its rest, a quest object)
+    if (bot->IsInCombat())
+        NoteQuestWait(bot, 0, "its fight starts");
+    else
+    {
+        Unit* const grind = AI_VALUE(Unit*, "grind target");
+        NoteQuestWait(bot, questId,
+                      grind ? "at its spot, target " + grind->GetName() + " not engaged"
+                      : bot->IsSitState() || SoloSafety::WantsRest(bot, false) || SoloSafety::WantsRest(bot, true)
+                          ? std::string("at its spot, resting")
+                          : std::string("at its spot, a quest object in reach"));
+    }
     // At the POI: keep the bot actively placed but avoid large
     // random 20yd hops that look like pacing back and forth. A small
     // ~8yd wander reads as the bot looking around while grind/loot

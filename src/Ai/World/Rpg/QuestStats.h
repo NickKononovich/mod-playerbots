@@ -44,6 +44,9 @@ namespace QuestStats
     // [obj55] a measurement point (every 10 useful kills on the worked quest): true once per point, `questId` the
     // quest - the global leader logs its formula beside the measured rate then (a log, no decision)
     bool TakeObjectiveLog(Player* bot, uint32& questId);
+    // [qeff31] a stored accept time ('qa<quest>' of playerbots_db_store, read at login): the session's first tick
+    // logs "[quest] open <bot> L<n> q<id> ... accepted_t=<unix ms|unknown>" per open quest
+    void LoadAccepted(Player* bot, std::string const& key, std::string const& value);
 }
 
 void AddQuestStatsScripts();

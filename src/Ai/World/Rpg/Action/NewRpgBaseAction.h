@@ -187,6 +187,11 @@ public:
     // of the choices (TripRefused, the grind spot choice) until the bot's next level; one GIVE_UP line per spot
     static void NoteWalkGivenUp(Player* bot, WorldPosition const& dest, std::string const& why);
     static bool WalkGivenUp(Player* bot, float x, float y);
+    // [qeff31] the triage's wait and use lines: "[quest] wait <bot> q<N>: <why>" / "... ends after N s: <why>"
+    // (questId 0 ends the wait), "[quest] use <bot> q<N> object <entry> starts" / "... ends" (questId 0 checks the
+    // use under way for its end); log state only
+    static void NoteQuestWait(Player* bot, uint32 questId, std::string const& why);
+    static void NoteQuestUse(Player* bot, uint32 questId, uint32 entry);
     // [help12] the camp that walled the walk is cleared: the spot is its choice again
     static void ForgetWalkGivenUp(Player* bot, WorldPosition const& dest);
     // [holds9] a GO_GRIND / GO_CAMP tick: the far walk to `pos`, else a nudge, else the walk given up or a HOLD with
