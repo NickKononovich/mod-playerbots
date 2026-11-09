@@ -5005,6 +5005,26 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
     // [lead109] a player bot walks the leader's route (BotPath.h); no route found: the core's own path as before
     if (unit == bot && generatePath && !backwards && WalkBotRoute(bot, x, y, z))
         return;
+    // [nav24] the navmesh owner 2026-11-09: ... but only a complete core path. Its straight shortcut (no polygon at
+    // the destination) and the straight tail of an INCOMPLETE path (past MAX_PATH_LENGTH 74 / 148 polygons or the
+    // 1024-node query: the Dolanaar inn's 110-polygon stair, Ban'ethil's 356) climbed through towers and hills. No
+    // complete path: no move (the walk's own search gives the spot up); a map with no navmesh keeps its straight walk
+    if (unit == bot && generatePath && !backwards && UsesLeaderRoute(bot) && !bot->GetMap()->Instanceable())
+    {
+        PathGenerator core(bot);
+        bool const valid = core.CalculatePath(x, y, z, false);
+        PathType const type = core.GetPathType();
+        bool const complete = valid && (type & PATHFIND_NORMAL) &&
+                              !(type & (PATHFIND_SHORTCUT | PATHFIND_INCOMPLETE | PATHFIND_NOPATH | PATHFIND_FARFROMPOLY));
+        if (!(type & PATHFIND_NOT_USING_PATH) && !complete)
+        {
+            LOG_DEBUG("playerbots", "[nav24] {} no move to ({:.1f},{:.1f},{:.1f}): no route, the core's path is not "
+                      "complete (type {:#x})", bot->GetName(), x, y, z, uint32(type));
+            return;
+        }
+        if (complete && WalkBotPoints(bot, core.GetPath()))
+            return;
+    }
 
     mm->Clear();
     if (backwards)

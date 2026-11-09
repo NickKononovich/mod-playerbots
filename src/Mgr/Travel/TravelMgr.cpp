@@ -5589,6 +5589,12 @@ uint32 TravelRouteMgr::Landmass(WorldPosition const& pos)
     // [guild15] the Eastern Kingdoms' south (Elwynn, Stormwind, Westfall, Redridge, Burning Steppes and below) and
     // north (Dun Morogh, Ironforge, Loch Modan and up): on foot only through Searing Gorge and Blackrock Mountain,
     // a walk the route search does not finish (b321 "route partial ends 3612 yd short"); the Deeprun Tram joins them
+    // [nav24] Stormwind's Wizard's Sanctum (Maginor Dumas and five more trainers / vendors, z 30 under the Mage
+    // Quarter's tower) is reached only by its area triggers 702 / 704 from the tower's top: a landmass of its own, so
+    // the planner takes the trigger (a same-map portal) and never walks at it (b353-b372 Orton, Geefeelli "a dead end")
+    if (pos.GetMapId() == 0 && std::hypot(pos.GetPositionX() + 9010.0f, pos.GetPositionY() - 880.0f) < 60.0f &&
+        pos.GetPositionZ() < 70.0f)
+        return 2;
     if (pos.GetMapId() == 0)
         return pos.GetPositionX() < -7400.0f ? 1 : 0;
     // [tram23] the Deeprun Tram's two platforms (Ironforge's end at y 0-80, Stormwind's at y 2450-2520) are joined
