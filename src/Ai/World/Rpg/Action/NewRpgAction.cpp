@@ -1687,7 +1687,41 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         if (object && bot->isMoving() &&
             bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
             return true;
-        if (object && !bot->isMoving() && object->GetMapId() == bot->GetMapId())
+        // [vendor23] the npc is gone from the bot's map view (despawned, its guid stale): the visit ends as for a
+        // vendor gone from its spawn - before, random steps round the spot every tick for the whole run
+        if (!object)
+        {
+            LOG_INFO("playerbots", "[vendor23] {} L{} npc of its visit no longer seen: the visit ends", bot->GetName(),
+                     bot->GetLevel());
+            if (info.vendorRunEntry)
+            {
+                info.vendorRunEntry = 0;
+                info.vendorVisited = true;
+                info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
+                info.vendorVisitMoney = bot->GetMoney();
+            }
+            info.ChangeToIdle();
+            return true;
+        }
+        // [vendor23] a walk to the npc that ended no nearer than the nearest it stood after an earlier walk of this
+        // visit gets it no closer (the MOVE_FAR_LOOP fact): no walk reaches the npc, the visit ends. b372 Sylaenas
+        // L2 walked 3392 yd up and down Aldrassil for 1200 s to its vendor 43 yd off, [vendor13] / [vendor14] silent
+        // (the walk still to go, along its navmesh way: a ramp round a tree leads away before it leads up)
+        bool noCloser = false;
+        if (!bot->isMoving() && object->GetMapId() == bot->GetMapId() && !IsWithinInteractionDist(object))
+        {
+            BotPath const toGo =
+                FindBotPath(bot, object->GetPositionX(), object->GetPositionY(), object->GetPositionZ());
+            float const d = (toGo.type & PATHFIND_NOPATH) || toGo.points.size() < 2 ? bot->GetExactDist(object)
+                                                                                     : toGo.length;
+            noCloser = data.bestDist > 0.0f && d + MOVE_FAR_PROGRESS >= data.bestDist;
+            if (noCloser)
+                LOG_INFO("playerbots", "[vendor23] {} L{} npc {} not reached: its walk ended {:.1f} yd of walk off, "
+                         "no nearer than {:.1f} yd after an earlier walk - the visit ends",
+                         bot->GetName(), bot->GetLevel(), object->GetName(), d, data.bestDist);
+            data.bestDist = data.bestDist > 0.0f ? std::min(data.bestDist, d) : d;
+        }
+        if (!noCloser && !bot->isMoving() && object->GetMapId() == bot->GetMapId())
         {
             BotPath const path =
                 FindBotPath(bot, object->GetPositionX(), object->GetPositionY(), object->GetPositionZ());
@@ -1716,11 +1750,11 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                     return true;
             }
         }
-        if (!atWalkEnd && MoveWorldObjectTo(data.npcOrGo))
+        if (!atWalkEnd && !noCloser && MoveWorldObjectTo(data.npcOrGo))
             return true;
         // [guild15] b319 GO_CAMP "sell junk" STUCK (Kylantino, Gnetlibozz, Rumanatol): no walk reaches the npc from
         // here - the visit ends (a vendor run counts as visited, as when the vendor is gone)
-        if (object && (atWalkEnd || NpcOutOfWalk(object)))
+        if (object && (atWalkEnd || noCloser || NpcOutOfWalk(object)))
         {
             if (info.vendorRunEntry)
             {

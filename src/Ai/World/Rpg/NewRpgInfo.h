@@ -47,6 +47,7 @@ struct NewRpgInfo
     {
         ObjectGuid npcOrGo{};
         uint32 lastReach{0};
+        float bestDist{0.0f};  // [vendor23] the nearest it stood to the npc after a walk of this visit (0: none yet)
     };
     // RPG_WANDER_RANDOM
     struct WanderRandom
