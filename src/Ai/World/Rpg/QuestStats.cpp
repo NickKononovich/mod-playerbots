@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "NewRpgInfo.h"  // [obj47]
 #include "QuestStats.h"
 
 #include "Creature.h"
@@ -211,6 +212,8 @@ namespace
                 c.lastKillXp = 0;
                 c.lastKillVictim.Clear();
             }
+            if (served)
+                QuestStats::NoteObjectiveKill(player);  // [obj47]
             QuestStats::LogEvent(player, "kill", 0,
                                  "entry=" + std::to_string(killed->GetEntry()) + " L" +
                                      std::to_string(killed->GetLevel()) + " useful=" + (served ? "1" : "0") +
@@ -477,6 +480,71 @@ namespace
     std::mutex eventLock;
     std::unordered_map<uint32, std::pair<std::string, uint64>> townStarts;  // bot -> (kind, start ms)
     std::unordered_map<uint32, std::pair<std::string, uint64>> tripStarts;  // bot -> (what, board ms)
+}
+
+namespace
+{
+    // [obj47] bot -> the quest its useful kills served: (quest, first kill ms, its units then, its units now, kills)
+    struct ObjectiveWatch
+    {
+        uint32 questId = 0;
+        uint64 firstMs = 0;
+        uint32 firstUnits = 0, units = 0, kills = 0;
+    };
+    std::mutex objLock;
+    std::unordered_map<uint32, ObjectiveWatch> objectiveWatch;
+    std::unordered_map<uint32, uint32> objectiveVersion;
+
+    uint32 UnitsDone(Player* bot, uint32 questId)
+    {
+        auto const data = bot->getQuestStatusMap().find(questId);
+        if (data == bot->getQuestStatusMap().end())
+            return 0;
+        uint32 units = 0;
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            units += data->second.CreatureOrGOCount[i];
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            units += data->second.ItemCount[i];
+        return units;
+    }
+}
+
+void QuestStats::NoteObjectiveKill(Player* bot)
+{
+    PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+    if (!ai)
+        return;
+    auto const* doQuest = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data);
+    if (!doQuest || !doQuest->questId)
+        return;
+    uint32 const units = UnitsDone(bot, doQuest->questId);
+    std::lock_guard<std::mutex> guard(objLock);
+    ObjectiveWatch& w = objectiveWatch[bot->GetGUID().GetCounter()];
+    if (w.questId != doQuest->questId)
+        w = ObjectiveWatch{doQuest->questId, NowMs(), units, units, 0};
+    w.units = units;
+    if (++w.kills % 10 == 0)
+        ++objectiveVersion[bot->GetGUID().GetCounter()];
+}
+
+bool QuestStats::ObservedObjective(Player* bot, uint32 questId, double& secondsPerUnit, uint32& kills)
+{
+    std::lock_guard<std::mutex> guard(objLock);
+    auto const w = objectiveWatch.find(bot->GetGUID().GetCounter());
+    if (w == objectiveWatch.end() || w->second.questId != questId || w->second.kills < 10)
+        return false;
+    uint32 const gained = w->second.units > w->second.firstUnits ? w->second.units - w->second.firstUnits : 0;
+    // none gained yet: the time so far is a lower bound for the next unit
+    secondsPerUnit = double(NowMs() - w->second.firstMs) / IN_MILLISECONDS / double(std::max<uint32>(gained, 1));
+    kills = w->second.kills;
+    return true;
+}
+
+uint32 QuestStats::ObservedVersion(Player* bot)
+{
+    std::lock_guard<std::mutex> guard(objLock);
+    auto const v = objectiveVersion.find(bot->GetGUID().GetCounter());
+    return v == objectiveVersion.end() ? 0 : v->second;
 }
 
 void QuestStats::TownStart(Player* bot, char const* kind)

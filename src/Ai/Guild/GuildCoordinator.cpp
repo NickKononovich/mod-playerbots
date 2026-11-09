@@ -1730,7 +1730,10 @@ void GuildCoordinator::UpdateOrders()
         st.disenchant.erase(std::remove_if(st.disenchant.begin(), st.disenchant.end(), gone), st.disenchant.end());
 
         // [questvalue] a level-up or a login: the green / grey quests of its log are valued again
-        if (uint64 const key = uint64(p->GetLevel()) | (uint64(p->m_logintime) << 8); key != st.revalueKey)
+        // [obj47] ... and a new measurement of the quest it works (its objective rate, every 10 useful kills)
+        if (uint64 const key = uint64(p->GetLevel()) | (uint64(p->m_logintime) << 8) ^
+                               (uint64(QuestStats::ObservedVersion(p)) << 48);
+            key != st.revalueKey)
         {
             st.revalueKey = key;
             RevalueQuests(st, p);
@@ -2764,6 +2767,7 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         double copper;
         double seconds;
         bool priced;
+        bool observed = false;  // [obj47] its time from its own measured objective rate
     };
     std::vector<Row> rows;
     double routeCopper = 0.0, routeSeconds = 0.0;
@@ -2781,15 +2785,37 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         double const copper = double(quest->XPValue(level)) * rate;  // XP (the field keeps its name)
         // the time it still takes, by the static table (no row: not priced, kept)
         bool priced = false;
+        bool observedNow = false;  // [obj47]
         double seconds = 0.0;
         auto const q = questStatic_.find(questId);
         if (q != questStatic_.end() && q->second.map == p->GetMapId() && q->second.ender)
         {
             QuestStatic const& s = q->second;
+            double perUnit = 0.0;  // [obj47]
+            uint32 kills = 0;
             if (status == QUEST_STATUS_COMPLETE)
             {
                 seconds = std::hypot(x - s.enderX, y - s.enderY) / speed;
                 priced = true;
+            }
+            else if (status == QUEST_STATUS_INCOMPLETE && QuestStats::ObservedObjective(p, questId, perUnit, kills))
+            {
+                // [obj47] user 2026-11-09: the quest's real objective rate - the sources it really kills (grey ones
+                // too) at their real drop chance, measured over its useful kills - prices the units it still lacks.
+                // b392 Irorm L14 farmed L6-7 Elwynn murlocs for q116 Dry Times: 91 kills, 0 XP, no completion
+                auto const data = p->getQuestStatusMap().find(questId);
+                uint32 left = 0;
+                for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+                    if (uint32 const need = quest->RequiredNpcOrGoCount[i]; need && quest->RequiredNpcOrGo[i])
+                        left += need - std::min<uint32>(data != p->getQuestStatusMap().end()
+                                                            ? data->second.CreatureOrGOCount[i] : 0, need);
+                for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                    if (uint32 const need = quest->RequiredItemCount[i]; need && quest->RequiredItemId[i])
+                        left += need - std::min<uint32>(data != p->getQuestStatusMap().end()
+                                                            ? data->second.ItemCount[i] : 0, need);
+                seconds = double(left) * perUnit + std::hypot(x - s.enderX, y - s.enderY) / speed;
+                priced = true;
+                observedNow = true;
             }
             else if (status == QUEST_STATUS_INCOMPLETE && dps > 0.0f)
             {
@@ -2820,7 +2846,7 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
                 priced = true;
             }
         }
-        rows.push_back({slot, quest, color, copper, seconds, priced});
+        rows.push_back({slot, quest, color, copper, seconds, priced, observedNow});
         // [econ1] the route's rate: the yellow / orange quests it still works; a complete one is handed in either
         // way (its XP comes with or without the green quest) and is no measure of what the time is worth
         if (priced && color != XP_GRAY && color != XP_GREEN && status == QUEST_STATUS_INCOMPLETE)
@@ -2845,10 +2871,21 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
     {
         // [quest14] a grey quest is no XP/min question: the route's grey rule (map thread, GreyQuestNeed) keeps or
         // abandons it
-        if (r.color != XP_GREEN || !r.priced)
+        // [obj47] ... and a yellow / orange quest priced by its measured objective rate, against the route's rate
+        // without itself
+        bool const measured = r.observed && r.color != XP_GRAY && r.color != XP_GREEN;
+        if ((r.color != XP_GREEN && !measured) || !r.priced)
             continue;
         uint32 const questId = r.quest->GetQuestId();
         float const value = float(r.copper * MINUTE / std::max(r.seconds, 1.0));
+        float routeRateHere = routeRate;
+        if (measured)
+        {
+            double const others = routeSeconds - r.seconds;
+            if (others <= 0.0)
+                continue;  // no other quest of its route to compare with
+            routeRateHere = float((routeCopper - r.copper) * MINUTE / others);
+        }
         std::string keep;
         for (uint8 i = 0; i < QUEST_REWARDS_COUNT + QUEST_REWARD_CHOICES_COUNT && keep.empty(); ++i)
         {
@@ -2861,9 +2898,11 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
             if (Quest const* follow = keep.empty() && next ? sObjectMgr->GetQuestTemplate(next) : nullptr)
                 if (Acore::XP::GetColorCode(level, uint8(std::max<int32>(1, p->GetQuestLevel(follow)))) != XP_GRAY)
                     keep = "it leads to q" + std::to_string(next) + " (not grey)";
-        if (keep.empty() && value >= routeRate)
-            keep = Acore::StringFormat("{:.0f} XP/min >= route rate {:.0f} XP/min", value, routeRate);
-        char const* colorName = r.color == XP_GRAY ? "grey" : "green";
+        if (keep.empty() && value >= routeRateHere)
+            keep = Acore::StringFormat("{:.0f} XP/min >= route rate {:.0f} XP/min", value, routeRateHere);
+        char const* colorName = r.color == XP_GRAY    ? "grey"
+                                : r.color == XP_GREEN ? "green"
+                                                      : "measured [obj47]";
         if (!keep.empty())
         {
             LOG_INFO("playerbots", "[quest] keep {} L{} q{} t={} at=({:.0f},{:.0f}) reason: {}, {}", p->GetName(),
@@ -2873,7 +2912,7 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         LOG_INFO("playerbots",
                  "[quest] abandon {} L{} q{} t={} at=({:.0f},{:.0f}) reason: {}, {:.0f} XP/min < route rate {:.0f} "
                  "XP/min (route: {}) [econ1]",
-                 p->GetName(), level, questId, QuestStats::NowMs(), x, y, colorName, value, routeRate, routeWhy);
+                 p->GetName(), level, questId, QuestStats::NowMs(), x, y, colorName, value, routeRateHere, routeWhy);
         if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data); doing && doing->questId == questId)
             ai->rpgInfo.ChangeToIdle();
         WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);

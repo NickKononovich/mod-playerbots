@@ -35,6 +35,12 @@ namespace QuestStats
     void TownDone(uint32 low, std::string const& name, char const* errand);
     void TripBoard(Player* bot, std::string const& what);
     void TripLand(Player* bot);
+    // [obj47] the quest its New RPG works: the objective units it gained per second of its useful kills there (the
+    // sources it really kills, grey ones too, at their real drop chance); true once 10 useful kills are counted.
+    // `version` grows with each 10 more: a new measurement (the global leader values its log again)
+    bool ObservedObjective(Player* bot, uint32 questId, double& secondsPerUnit, uint32& kills);
+    uint32 ObservedVersion(Player* bot);
+    void NoteObjectiveKill(Player* bot);
 }
 
 void AddQuestStatsScripts();
