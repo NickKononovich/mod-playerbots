@@ -2297,6 +2297,30 @@ private:
     ObjectGuid _human;
 };
 
+// [help22] what a second of the bot's own time is worth: its route's open quests' experience per second, else (no
+// quest of its own) what it earns grinding mobs of its level (a kill's experience over its kill time at its damage,
+// the core's base health and experience formulas). b370: helpers without a route cost 0 - Bierya sent 4831-5263 yd
+// (eta 690-752 s) to Nelaeleas and Lyleria, Aestymro 2300 yd, Orenem 3012 yd
+float TimeRate(Player* p)
+{
+    if (!p)
+        return 0.0f;
+    float const route = QuestRoute::XpPerSecond(p->GetGUID().GetCounter());
+    uint8 const level = p->GetLevel();
+    ContentLevels const content = GetContentLevelsForMapAndZone(p->GetMapId(), p->GetZoneId());
+    CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, CLASS_WARRIOR);
+    float const dps = DpsEstimate::EstimateDps(p, nullptr, DpsEstimate::BuffContext::Solo);
+    float grind = 0.0f;
+    if (stats && dps > 0.0f)
+    {
+        float const killXp = float(Acore::XP::BaseGain(level, level, content)) * sWorld->getRate(RATE_XP_KILL);
+        float const killSeconds =
+            float(stats->BaseHealth[std::min<uint32>(content, MAX_EXPANSIONS - 1)]) / dps;
+        grind = killSeconds > 0.0f ? killXp / killSeconds : 0.0f;
+    }
+    return std::max(route, grind);
+}
+
 // lock held: the global leader assigns the helpers of one open request (world thread: every player readable). `reply`:
 // the answer for a human requester
 bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
@@ -2392,7 +2416,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                 {
                     // [help20] the winner whose time costs least: its own route's experience per second over its
                     // walk and the help (before, the nearest winner: a far one with nothing to do cost the same)
-                    float const cost = QuestRoute::XpPerSecond(c->p->GetGUID().GetCounter()) * (c->eta + with.seconds);
+                    float const cost = TimeRate(c->p) * (c->eta + with.seconds);  // [help22]
                     if (!winner || cost < bestCost)
                     {
                         winner = true;
@@ -2441,9 +2465,15 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     // own rate over the time the party saves against its solo pull (none when it loses alone: the quest is the
     // value). A bot requester's help whose cost exceeds its value is refused. b367: Mutil was sent 6372 yd (eta
     // 910 s) to Ainne, Bami 3769 yd to Ginde; requester and helper walked to meet, six bots made no turn-in
+    // [help22] ... and the requester's own time while it waits for its helpers to come (the farthest one's walk)
     float helpCost = 0.0f;
+    float farthest = 0.0f;
     for (Candidate const& c : chosen)
-        helpCost += QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) * (c.eta + v.seconds);
+    {
+        helpCost += TimeRate(c.p) * (c.eta + v.seconds);
+        farthest = std::max(farthest, c.eta);
+    }
+    helpCost += TimeRate(req) * farthest;
     // [help21] a camp request (no quest of its own: a camp in its way) is worth the quests it walls off: the
     // requester's open log quests with an objective spot within its sight of the camp. Before, 0: every camp request
     // refused (b368: 263 refusals, Salleas "value 0 xp ... cost 2061")
@@ -2470,7 +2500,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     float const helpValue = questXp + QuestRoute::XpPerSecond(req->GetGUID().GetCounter()) * saved;
     std::string const priced = Acore::StringFormat("value {:.0f} xp (quest {:.0f} + {:.0f} s saved), cost {:.0f} xp",
                                                    helpValue, questXp, saved, helpCost);
-    if (!r.human && helpCost > helpValue)
+    if (!r.human && helpCost >= helpValue)  // [help22] no value (0) is no help either
     {
         r.refusedKey = priceKey;  // [help21]
         std::string const why = "the help costs more than it gives: " + priced;
