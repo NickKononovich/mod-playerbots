@@ -2566,6 +2566,10 @@ namespace TestHarness
                 if (kept != _keptStarters.end() && def->note && kept->second.count(def->note))
                 {
                     starter.uses = def->maxUses;
+                    // its use is the last one before this run: an auto-closing key gate re-arms for a member behind
+                    // it or the leader's walk held at it, as after a use in this run (RouteTargets re-arm)
+                    if (!party.lastStarterUseMs)
+                        party.lastStarterUseMs = getMSTime();
                     LOG_INFO("playerbots", "[strat1] continue: {} - used by an earlier run of this instance",
                              def->note);
                     LogEvent(party, "continue_starter_done",
@@ -2587,6 +2591,8 @@ namespace TestHarness
                 if (any && allOpen)
                 {
                     starter.uses = def->maxUses;
+                    if (!party.lastStarterUseMs)
+                        party.lastStarterUseMs = getMSTime();
                     LOG_INFO("playerbots", "[strat1] continue: {} - the door is open already, a used starter",
                              def->note);
                     LogEvent(party, "continue_starter_done",

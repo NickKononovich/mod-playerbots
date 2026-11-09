@@ -1228,12 +1228,49 @@ namespace TestHarness
 
         // A script slot IN_PROGRESS (an event between its waves): the instance script's own state is the fact
         // ([lead135] no SCRIPT_EVENT_MAX_MS 10 min cap)
+        // [strat1] Stratholme's slaughter square (instance_stratholme.cpp ProcessSlaughterEvent): Ramstein's death sends
+        // 33 Mindless Undead (5 s, then one per 210 ms) through the side gate, their deaths 5 Black Guards 20 s later,
+        // and only theirs opens the Baron's ziggurat door 175796. The script keeps that phase to itself (no GetData),
+        // so the facts are read: Ramstein dead, the door still shut, the Baron alive - the next wave is coming, not
+        // "no reachable targets" (the Baron behind his shut door).
+        constexpr uint32 STRAT_MAP_ID = 329;
+        constexpr uint32 STRAT_RAMSTEIN = 10439;
+        constexpr uint32 STRAT_BARON = 10440;
+        constexpr uint32 STRAT_BARON_DOOR = 175796;  // GO_ZIGGURAT_DOORS5
+        bool StratSlaughterRunning(Party const& party)
+        {
+            if (!party.content || party.content->mapId != STRAT_MAP_ID || party.deadEntries.count(STRAT_BARON))
+                return false;
+            bool ramsteinDead = party.deadEntries.count(STRAT_RAMSTEIN) != 0;
+            for (BossTrack const& boss : party.bosses)
+                if (boss.killed && (boss.entry == STRAT_RAMSTEIN ||
+                                    std::find(boss.credits.begin(), boss.credits.end(), STRAT_RAMSTEIN) !=
+                                        boss.credits.end()))
+                    ramsteinDead = true;
+            Player* leader = ObjectAccessor::FindPlayer(party.leader);
+            Map* map = leader ? leader->GetMap() : nullptr;
+            if (!ramsteinDead || !map || map->GetInstanceId() != party.instanceId)
+                return false;
+            for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
+                if (go && go->GetEntry() == STRAT_BARON_DOOR)
+                {
+                    if (go->GetGoState() != GO_STATE_READY)
+                        return false;
+                    static std::set<uint32> logged;  // world thread; once per run
+                    if (logged.insert(party.seq).second)
+                        LOG_INFO("playerbots", "[strat1] {}: slaughter square - Ramstein dead, the Baron's door shut: "
+                                 "the group waits for the Mindless Undead / Black Guards", party.id);
+                    return true;
+                }
+            return false;
+        }
+
         bool ScriptEventRunning(Party const& party)
         {
             for (BossTrack const& boss : party.bosses)
                 if (!boss.dbc && !boss.killed && !boss.failed && boss.lastState == IN_PROGRESS)
                     return true;
-            return false;
+            return StratSlaughterRunning(party);
         }
 
         bool SpotBossIsNext(Party const& party, EventSpotDef const& spot, Player* leader)
