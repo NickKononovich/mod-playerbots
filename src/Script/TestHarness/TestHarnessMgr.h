@@ -212,6 +212,7 @@ namespace TestHarness
         // [kara3] a "continue" run: the members keep their raid binds and re-enter the same instance save (its dead
         // bosses and trash stay dead - the lockout, a game mechanic), the run goes on from the next boss
         bool resume = false;
+        uint32 keptInstanceId = 0;  // [strat1] a 5-man continue: the instance its kept group holds
         std::vector<Member> members;
         ObjectGuid leader;
         ObjectGuid groupGuid;
@@ -459,8 +460,15 @@ namespace TestHarness
                                            bool horde = false) const;
 
         // parties
+        // [strat1] keep: the characters to take (a 5-man continue: the kept group, its leader in the leading slot)
         Party* CreateParty(Composition const* comp, ContentDef const* content, uint8 level, uint32 ilvl,
-                           std::string& error);
+                           std::string& error, std::vector<ObjectGuid> const* keep = nullptr);
+        // [strat1] a 5-man continue: the group an earlier run of this content kept. Its leader holds the instance
+        // bind the group enters (InstanceSaveMgr::PlayerGetDestinationInstanceId: in a group, the leader's bind).
+        bool FindKeptFive(Composition const* comp, ContentDef const* content, std::vector<ObjectGuid>& members,
+                          uint32& instanceId, std::string& error) const;
+        // [strat1] a character in a group of test characters only (a kept five waiting for its continue)
+        bool InKeptGroup(ObjectGuid guid) const;
         void TickParty(Party& party);
         void SetPhase(Party& party, Phase phase);
         bool TickLogin(Party& party);
@@ -741,6 +749,12 @@ namespace TestHarness
         std::vector<PoolCharacter> _pool;
         bool _poolLoaded = false;
         std::set<ObjectGuid> _inUse;
+        // [strat1] a kept five's used starters per instance id (kept_fives.txt in the tests dir): a continue goes on
+        // with the key doors its earlier runs used (the afterUsed chain), as one run would
+        std::map<uint32, std::set<std::string>> _keptStarters;
+        bool _keptStartersLoaded = false;
+        void LoadKeptStarters();
+        void SaveKeptStarters();
         SetupJob _setup;
         std::deque<Composition> _guildComps;  // [guild60] one per guild run (Party::comp points into it)
         uint32 _setupTimer = 0;

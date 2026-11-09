@@ -1228,12 +1228,49 @@ namespace TestHarness
 
         // A script slot IN_PROGRESS (an event between its waves): the instance script's own state is the fact
         // ([lead135] no SCRIPT_EVENT_MAX_MS 10 min cap)
+        // [strat1] Stratholme's slaughter square (instance_stratholme.cpp ProcessSlaughterEvent): Ramstein's death sends
+        // 33 Mindless Undead (5 s, then one per 210 ms) through the side gate, their deaths 5 Black Guards 20 s later,
+        // and only theirs opens the Baron's ziggurat door 175796. The script keeps that phase to itself (no GetData),
+        // so the facts are read: Ramstein dead, the door still shut, the Baron alive - the next wave is coming, not
+        // "no reachable targets" (the Baron behind his shut door).
+        constexpr uint32 STRAT_MAP_ID = 329;
+        constexpr uint32 STRAT_RAMSTEIN = 10439;
+        constexpr uint32 STRAT_BARON = 10440;
+        constexpr uint32 STRAT_BARON_DOOR = 175796;  // GO_ZIGGURAT_DOORS5
+        bool StratSlaughterRunning(Party const& party)
+        {
+            if (!party.content || party.content->mapId != STRAT_MAP_ID || party.deadEntries.count(STRAT_BARON))
+                return false;
+            bool ramsteinDead = party.deadEntries.count(STRAT_RAMSTEIN) != 0;
+            for (BossTrack const& boss : party.bosses)
+                if (boss.killed && (boss.entry == STRAT_RAMSTEIN ||
+                                    std::find(boss.credits.begin(), boss.credits.end(), STRAT_RAMSTEIN) !=
+                                        boss.credits.end()))
+                    ramsteinDead = true;
+            Player* leader = ObjectAccessor::FindPlayer(party.leader);
+            Map* map = leader ? leader->GetMap() : nullptr;
+            if (!ramsteinDead || !map || map->GetInstanceId() != party.instanceId)
+                return false;
+            for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
+                if (go && go->GetEntry() == STRAT_BARON_DOOR)
+                {
+                    if (go->GetGoState() != GO_STATE_READY)
+                        return false;
+                    static std::set<uint32> logged;  // world thread; once per run
+                    if (logged.insert(party.seq).second)
+                        LOG_INFO("playerbots", "[strat1] {}: slaughter square - Ramstein dead, the Baron's door shut: "
+                                 "the group waits for the Mindless Undead / Black Guards", party.id);
+                    return true;
+                }
+            return false;
+        }
+
         bool ScriptEventRunning(Party const& party)
         {
             for (BossTrack const& boss : party.bosses)
                 if (!boss.dbc && !boss.killed && !boss.failed && boss.lastState == IN_PROGRESS)
                     return true;
-            return false;
+            return StratSlaughterRunning(party);
         }
 
         bool SpotBossIsNext(Party const& party, EventSpotDef const& spot, Player* leader)
@@ -1969,12 +2006,24 @@ namespace TestHarness
             // (strat-h 20261025-184229-5: keyed at 87 s, the 1 s target thrash on them from 141 s to the 185 s pull).
             std::string const doorTag = Acore::StringFormat("leader held at a closed door ({} {})", door->GetName(),
                                                             door->GetEntry());
+            // [strat1] ...and the boss skipped "next boss behind a closed door (<gate>)" with its order hold: strat-n
+            // 20261106-160738-strat-n-5H-8 keyed King's Square Gate 175352 for Timmy at 703 s, the tank passed at
+            // 704 s, but Timmy's 60 s skip (691 s) still stood - the route fell back to The Unforgiven on the near
+            // side, the tank's plans all crossed the shut gate and the run failed at 727 s.
+            std::string const bossTag = Acore::StringFormat("next boss behind a closed door ({} {})", door->GetName(),
+                                                            door->GetEntry());
             std::vector<ObjectGuid> lifted;
             for (auto const& [guid, why] : party.skipReason)
-                if (why.find(doorTag) != std::string::npos)
+                if (why.find(doorTag) != std::string::npos || why.rfind(bossTag, 0) == 0)
                     lifted.push_back(guid);
             for (ObjectGuid const& guid : lifted)
             {
+                if (party.skipReason[guid].rfind(bossTag, 0) == 0)
+                {
+                    party.orderHoldSinceMs.erase(guid);
+                    LOG_INFO("playerbots", "[strat1] {}: {} keyed - the boss behind it is the next boss again",
+                             party.id, door->GetName());
+                }
                 party.skipUntil.erase(guid);
                 party.skipReason.erase(guid);
                 party.unreachableFrom.erase(guid);

@@ -769,6 +769,16 @@ namespace TestHarness
                 if (!GET_PLAYERBOT_AI(online))
                     continue;
 
+            // [strat1] A character of a kept five (a 5-man bind waiting for its continue) last: taking it out of its
+            // group drops the group's instance (Player::ResetInstances, INSTANCE_RESET_GROUP_LEAVE).
+            bool const kept = InKeptGroup(character.guid);
+            bool const bestKept = best && InKeptGroup(best->guid);
+            if (best && kept != bestKept)
+            {
+                if (!kept)
+                    best = &character;
+                continue;
+            }
             // Highest level first: least to raise, and the low characters stay free for low dungeons.
             if (!best || character.level > best->level ||
                 (character.level == best->level && character.leveling && !best->leveling))
@@ -777,8 +787,119 @@ namespace TestHarness
         return best;
     }
 
+    namespace
+    {
+        constexpr char const* KEPT_FIVES_FILE = "kept_fives.txt";  // [strat1] "<instance id>\t<starter note>" lines
+    }
+
+    void TestHarnessMgr::LoadKeptStarters()
+    {
+        if (_keptStartersLoaded)
+            return;
+        _keptStartersLoaded = true;
+        std::ifstream file(TestsDir() + KEPT_FIVES_FILE);
+        std::string line;
+        while (std::getline(file, line))
+        {
+            size_t const tab = line.find('\t');
+            if (tab == std::string::npos)
+                continue;
+            if (uint32 const id = uint32(std::strtoul(line.substr(0, tab).c_str(), nullptr, 10)))
+                _keptStarters[id].insert(line.substr(tab + 1));
+        }
+    }
+
+    void TestHarnessMgr::SaveKeptStarters()
+    {
+        // an instance the core dropped (reset, 3-day expiry, no bind left) takes its lines with it
+        for (auto itr = _keptStarters.begin(); itr != _keptStarters.end();)
+            itr = sInstanceSaveMgr->GetInstanceSave(itr->first) ? std::next(itr) : _keptStarters.erase(itr);
+        std::error_code error;
+        std::filesystem::create_directories(TestsDir(), error);
+        std::ofstream file(TestsDir() + KEPT_FIVES_FILE, std::ios::trunc);
+        for (auto const& [id, notes] : _keptStarters)
+            for (std::string const& note : notes)
+                file << id << '\t' << note << '\n';
+    }
+
+    bool TestHarnessMgr::InKeptGroup(ObjectGuid guid) const
+    {
+        ObjectGuid const groupGuid = sCharacterCache->GetCharacterGroupGuidByGuid(guid);
+        Group const* group = groupGuid ? sGroupMgr->GetGroupByGUID(groupGuid.GetCounter()) : nullptr;
+        if (!group || group->isRaidGroup() || group->GetMembersCount() < 2)
+            return false;
+        for (Group::MemberSlot const& slot : group->GetMemberSlots())
+            if (!IsTestCharacter(slot.guid))
+                return false;
+        return true;
+    }
+
+    bool TestHarnessMgr::FindKeptFive(Composition const* comp, ContentDef const* content,
+                                      std::vector<ObjectGuid>& members, uint32& instanceId, std::string& error) const
+    {
+        // [strat1] A normal / heroic 5-man instance is the group's while the group lasts: the core keeps no group
+        // bind; a member in a group enters its leader's bind (PlayerGetDestinationInstanceId), a temporary bind
+        // saved in character_instance (permanent 0) and loaded at startup (LoadCharacterBinds). The kept five is the
+        // group of test characters whose leader holds a bind on this map and difficulty; the newest instance wins.
+        members.clear();
+        instanceId = 0;
+        Difficulty const difficulty = Difficulty(content->difficulty);
+        std::multiset<uint8> wanted;
+        for (CompSlot const& slot : comp->slots)
+            if (SpecDef const* spec = FindSpec(slot.spec))
+                wanted.insert(spec->cls);
+
+        std::string seen;
+        for (PoolCharacter const& character : _pool)
+        {
+            InstancePlayerBind const* bind =
+                sInstanceSaveMgr->PlayerGetBoundInstance(character.guid, content->mapId, difficulty);
+            if (!bind || !bind->save)
+                continue;
+            ObjectGuid const groupGuid = sCharacterCache->GetCharacterGroupGuidByGuid(character.guid);
+            Group const* group = groupGuid ? sGroupMgr->GetGroupByGUID(groupGuid.GetCounter()) : nullptr;
+            if (!group || group->GetLeaderGUID() != character.guid || group->isRaidGroup())
+                continue;
+
+            std::multiset<uint8> classes;
+            std::vector<ObjectGuid> guids;
+            bool fits = true;
+            for (Group::MemberSlot const& slot : group->GetMemberSlots())
+            {
+                auto const member = std::find_if(_pool.begin(), _pool.end(), [&slot](PoolCharacter const& candidate)
+                                                 { return candidate.guid == slot.guid; });
+                if (member == _pool.end() || _inUse.count(slot.guid))
+                {
+                    fits = false;
+                    break;
+                }
+                classes.insert(member->cls);
+                guids.push_back(slot.guid);
+            }
+            uint32 const id = bind->save->GetInstanceId();
+            seen += Acore::StringFormat("{}{} (instance {}, {} members{})", seen.empty() ? "" : ", ", character.name,
+                                        id,
+                                        guids.size(), fits && classes == wanted ? "" : ", not this comp");
+            if (!fits || classes != wanted || id <= instanceId)
+                continue;
+            instanceId = id;
+            members = guids;
+            // the leader first: CreateParty puts it into the leading slot
+            std::iter_swap(members.begin(), std::find(members.begin(), members.end(), character.guid));
+        }
+
+        if (members.empty())
+        {
+            error = Acore::StringFormat("continue: no kept group of comp {} holds a {} instance ({}){}", comp->id,
+                                        content->key, seen.empty() ? "no leader bound to it" : seen,
+                                        " - a 5-man instance lasts while its group does (start a fresh run)");
+            return false;
+        }
+        return true;
+    }
+
     Party* TestHarnessMgr::CreateParty(Composition const* comp, ContentDef const* content, uint8 level, uint32 ilvl,
-                                      std::string& error)
+                                      std::string& error, std::vector<ObjectGuid> const* keep)
     {
         if (!comp)
         {
@@ -798,9 +919,38 @@ namespace TestHarness
         party->phaseSinceMs = party->createdMs;
         party->nextTickMs = party->createdMs;
 
-        std::set<ObjectGuid> picked;
-        for (CompSlot const& slot : comp->slots)
+        // [strat1] a kept five: its leader (keep->front()) goes into the slot that leads (the first main tank, else the
+        // first tank, else the first slot - as below), the others by class
+        size_t leadSlot = comp->slots.size();
+        if (keep)
         {
+            for (size_t i = 0; i < comp->slots.size() && leadSlot == comp->slots.size(); ++i)
+                if (comp->slots[i].flags & SLOT_MAIN_TANK)
+                    leadSlot = i;
+            for (size_t i = 0; i < comp->slots.size() && leadSlot == comp->slots.size(); ++i)
+                if (SpecDef const* spec = FindSpec(comp->slots[i].spec); spec && spec->role == Role::Tank)
+                    leadSlot = i;
+            if (leadSlot == comp->slots.size())
+                leadSlot = 0;
+        }
+        auto keptOf = [&](size_t slotIndex, uint8 cls, std::set<ObjectGuid> const& taken) -> PoolCharacter const*
+        {
+            for (size_t k = 0; k < keep->size(); ++k)
+            {
+                ObjectGuid const guid = (*keep)[k];
+                if (taken.count(guid) || (k == 0) != (slotIndex == leadSlot))
+                    continue;
+                for (PoolCharacter const& character : _pool)
+                    if (character.guid == guid && character.cls == cls)
+                        return &character;
+            }
+            return nullptr;
+        };
+
+        std::set<ObjectGuid> picked;
+        for (size_t slotIndex = 0; slotIndex < comp->slots.size(); ++slotIndex)
+        {
+            CompSlot const& slot = comp->slots[slotIndex];
             SpecDef const* spec = FindSpec(slot.spec);
             if (!spec)
             {
@@ -808,7 +958,15 @@ namespace TestHarness
                 return nullptr;
             }
 
-            PoolCharacter const* chosen = PickCharacter(spec->cls, level, picked, comp->horde);
+            PoolCharacter const* chosen =
+                keep ? keptOf(slotIndex, spec->cls, picked) : PickCharacter(spec->cls, level, picked, comp->horde);
+            if (keep && !chosen)
+            {
+                error = Acore::StringFormat("continue: the kept group of comp {} has no free {} for slot {}{}",
+                                            comp->id, ClassName(spec->cls), slotIndex + 1,
+                                            slotIndex == leadSlot ? " (its leader must lead)" : "");
+                return nullptr;
+            }
             if (!chosen)
             {
                 if (comp->horde)
@@ -1027,7 +1185,17 @@ namespace TestHarness
                             Finish(party, "failed", member.name + " is grouped with a non-test character");
                             return false;
                         }
-                group->RemoveMember(bot->GetGUID());
+                // [strat1] a 5-man continue stays in its kept group: leaving it drops the temporary binds of the
+                // instance (Player::ResetInstances, INSTANCE_RESET_GROUP_LEAVE; inside, the homebind flag)
+                bool const keptFive = party.resume && party.content && !party.content->raid &&
+                                      group->GetLeaderGUID() == party.leader;
+                if (!keptFive)
+                    group->RemoveMember(bot->GetGUID());
+            }
+            else if (party.resume && party.content && !party.content->raid)
+            {
+                Finish(party, "failed", "continue: " + member.name + " left the kept group (its instance is lost)");
+                return false;
             }
 
             member.prep = PrepareCharacter(bot, *member.spec, party.level, party.targetIlvl, member.professions,
@@ -1100,6 +1268,35 @@ namespace TestHarness
         {
             Finish(party, "failed", "leader offline");
             return false;
+        }
+
+        // [strat1] a 5-man continue: the kept group goes on as it is (same leader, so the same instance bind); a group
+        // missing a member or led by another would enter another instance - the continue fails instead
+        if (party.resume && party.content && !party.content->raid)
+        {
+            Group* group = leader->GetGroup();
+            std::string missing;
+            if (!group || group->GetLeaderGUID() != party.leader)
+                missing = "the leader's group";
+            else
+                for (Member const& member : party.members)
+                    if (!group->IsMember(member.guid))
+                        missing += (missing.empty() ? "" : ", ") + member.name;
+            if (!missing.empty())
+            {
+                Finish(party, "failed", "continue: kept group lost (" + missing + ")");
+                return false;
+            }
+            Difficulty const difficulty = Difficulty(party.content->difficulty);
+            if (group->GetDungeonDifficulty() != difficulty)  // a direct set, no reset (Group::SetDungeonDifficulty)
+                group->SetDungeonDifficulty(difficulty);
+            for (Member const& member : party.members)
+                if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
+                    if (bot->GetDungeonDifficulty() != difficulty)
+                        bot->SetDungeonDifficulty(difficulty);
+            party.groupGuid = group->GetGUID();
+            ApplyStrategies(party);
+            return true;
         }
 
         if (Group* old = leader->GetGroup())
@@ -1627,9 +1824,11 @@ namespace TestHarness
                         continue;
                     // [kara3] a continue run: the bind stays (the same instance save); a member still inside goes
                     // to the entrance of that same instance (a teleport inside the map keeps the instance)
+                    // [strat1] a 5-man continue: a member inside goes on where it logged out (the core put it back
+                    // there); only one outside is ported to the entrance
                     if (party.resume)
                     {
-                        if (bot->GetMapId() == content->mapId)
+                        if (bot->GetMapId() == content->mapId && content->raid)
                         {
                             Position const& door = party.entrances[party.entranceIdx];
                             bot->TeleportTo(content->mapId, door.GetPositionX(), door.GetPositionY(),
@@ -2357,6 +2556,49 @@ namespace TestHarness
         {
             StarterTrack starter;
             starter.def = def;
+            // [strat1] a 5-man continue: a key door an earlier run of this instance opened and that is still open (the
+            // map stayed loaded, or the script saved its state) is a used starter - the doors after it (afterUsed:
+            // King's Square 175353 after 175352) come next, as in the run that opened it
+            if (party.resume && !party.content->raid)
+            {
+                LoadKeptStarters();
+                auto const kept = _keptStarters.find(map->GetInstanceId());
+                if (kept != _keptStarters.end() && def->note && kept->second.count(def->note))
+                {
+                    starter.uses = def->maxUses;
+                    // its use is the last one before this run: an auto-closing key gate re-arms for a member behind
+                    // it or the leader's walk held at it, as after a use in this run (RouteTargets re-arm)
+                    if (!party.lastStarterUseMs)
+                        party.lastStarterUseMs = getMSTime();
+                    LOG_INFO("playerbots", "[strat1] continue: {} - used by an earlier run of this instance",
+                             def->note);
+                    LogEvent(party, "continue_starter_done",
+                             JsonObject().Str("note", def->note).Str("by", "earlier run"));
+                }
+            }
+            if (party.resume && !party.content->raid && def->kind == StarterKind::UseItem &&
+                starter.uses < def->maxUses)
+            {
+                bool any = false;
+                bool allOpen = true;
+                for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
+                    if (go && go->isSpawned() && go->GetGoType() == GAMEOBJECT_TYPE_DOOR &&
+                        std::find(def->entries.begin(), def->entries.end(), go->GetEntry()) != def->entries.end())
+                    {
+                        any = true;
+                        allOpen &= go->GetGoState() != GO_STATE_READY;
+                    }
+                if (any && allOpen)
+                {
+                    starter.uses = def->maxUses;
+                    if (!party.lastStarterUseMs)
+                        party.lastStarterUseMs = getMSTime();
+                    LOG_INFO("playerbots", "[strat1] continue: {} - the door is open already, a used starter",
+                             def->note);
+                    LogEvent(party, "continue_starter_done",
+                             JsonObject().Str("note", def->note).Str("by", "door open"));
+                }
+            }
             party.starters.push_back(starter);
         }
 
@@ -2395,8 +2637,22 @@ namespace TestHarness
             for (BossTrack const& boss : party.bosses)
                 if (boss.killed)
                     dead += (dead.empty() ? "" : ", ") + boss.name;
-            LOG_INFO("playerbots", "[kara3] continue: instance {}, bosses dead: {}", map->GetInstanceId(),
-                     dead.empty() ? "none" : dead);
+            // [strat1] a 5-man's continue under its own tag (the group's instance, not a raid lockout)
+            if (party.keptInstanceId && party.keptInstanceId != map->GetInstanceId())
+            {
+                LOG_INFO("playerbots", "[strat1] continue: entered instance {}, the kept group holds {}",
+                         map->GetInstanceId(), party.keptInstanceId);
+                LogEvent(party, "continue_instance_lost", JsonObject().Num("instanceId", map->GetInstanceId())
+                                                              .Num("keptInstanceId", party.keptInstanceId));
+                Finish(party, "failed", "continue: entered another instance than the kept group's");
+                return;
+            }
+            if (party.content->raid)
+                LOG_INFO("playerbots", "[kara3] continue: instance {}, bosses dead: {}", map->GetInstanceId(),
+                         dead.empty() ? "none" : dead);
+            else
+                LOG_INFO("playerbots", "[strat1] continue: instance {}, bosses dead: {}", map->GetInstanceId(),
+                         dead.empty() ? "none" : dead);
             LogEvent(party, "continue_run", JsonObject().Num("instanceId", map->GetInstanceId())
                                                 .Str("bossesDead", dead));
         }
@@ -4650,10 +4906,30 @@ namespace TestHarness
             Leader::Events::Clear(member.guid);
         DecisionLog::Instance().EndRun(party.seq);
 
+        // [strat1] a 5-man run that entered and did not clear keeps its group: the instance (its dead bosses and trash)
+        // is the group's while the group lasts, and a 'continue' goes on in it. Disbanding would drop every temporary
+        // bind (INSTANCE_RESET_GROUP_LEAVE; inside, Group::_homebindIfInstance and the port out at logout).
+        bool const keepFive = party.content && !party.content->raid && !party.content->worldBoss && !party.guild &&
+                              party.instanceId && party.result != "done";
         if (Player* leader = ObjectAccessor::FindPlayer(party.leader))
             if (Group* group = leader->GetGroup())
                 if (group->GetGUID() == party.groupGuid)
-                    group->Disband();
+                {
+                    if (!keepFive)
+                        group->Disband();
+                    else
+                    {
+                        LOG_INFO("playerbots", "[strat1] {} keeps its group for a continue: instance {} ({})", party.id,
+                                 party.instanceId, party.result);
+                        LoadKeptStarters();
+                        std::set<std::string>& used = _keptStarters[party.instanceId];
+                        for (StarterTrack const& starter : party.starters)
+                            if (starter.def && starter.def->note &&
+                                (starter.uses >= starter.def->maxUses || starter.doorRearms))
+                                used.insert(starter.def->note);
+                        SaveKeptStarters();
+                    }
+                }
 
         for (Member const& member : party.members)
         {
@@ -4787,21 +5063,44 @@ namespace TestHarness
         }
 
         // [kara3] a continue run is one party: the comp's members and their raid lockout
+        // [strat1] a 5-man continue is one party too: the group an earlier run kept, its leader's instance bind
+        if (resume && content->worldBoss)
+        {
+            handler->PSendSysMessage("Test harness: 'continue' needs an instance (an open-world boss has none)");
+            return false;
+        }
+        std::vector<ObjectGuid> kept;
+        uint32 keptInstanceId = 0;
         if (resume && !content->raid)
         {
-            handler->PSendSysMessage("Test harness: 'continue' is for a raid (its lockout keeps the dead bosses)");
-            return false;
+            std::string error;
+            uint32& instanceId = keptInstanceId;
+            if (!_poolLoaded && !LoadPool(error))
+            {
+                handler->PSendSysMessage("Test harness: {}", error);
+                return false;
+            }
+            if (!FindKeptFive(comp, content, kept, instanceId, error))
+            {
+                LOG_INFO("playerbots", "[strat1] {}", error);
+                handler->PSendSysMessage("Test harness: {}", error);
+                return false;
+            }
+            LOG_INFO("playerbots", "[strat1] continue: {} comp {} takes the kept group of instance {}", content->key,
+                     comp->id, instanceId);
         }
         for (uint32 i = 0; i < (resume ? 1u : std::max<uint32>(count, 1)); ++i)
         {
             std::string error;
-            Party* party = CreateParty(comp, content, content->level, content->ilvl - IlvlBelowContent(content->ilvl), error);
+            Party* party = CreateParty(comp, content, content->level, content->ilvl - IlvlBelowContent(content->ilvl),
+                                       error, kept.empty() ? nullptr : &kept);
             if (!party)
             {
                 handler->PSendSysMessage("Test harness: {}", error);
                 return i > 0;
             }
             party->resume = resume;
+            party->keptInstanceId = keptInstanceId;
             handler->PSendSysMessage("Test harness: run {} started ({}, comp {}, level {}, target avg ilvl {})",
                                      party->id, content->name, comp->id, party->level, party->targetIlvl);
         }
