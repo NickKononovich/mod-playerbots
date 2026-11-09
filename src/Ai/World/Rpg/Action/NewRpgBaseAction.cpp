@@ -6667,9 +6667,19 @@ namespace
         uint32 respawnSec;
     };
 
-    std::unordered_map<uint32, std::vector<GrindSpawn>> const& GrindSpawns()
+    // [pace25] by map and 100-yd cell (the look reads the cells round its spot, not the whole map: b373 AI max
+    // 162 -> 268 ms, TimeRate walked every spawn of the map for each helper of each request)
+    constexpr float GRIND_CELL = 100.0f;
+    uint64 GrindCellKey(uint32 mapId, float x, float y)
     {
-        static std::unordered_map<uint32, std::vector<GrindSpawn>> byMap;
+        int64 const cx = int64(std::floor(x / GRIND_CELL)) + (1 << 19);
+        int64 const cy = int64(std::floor(y / GRIND_CELL)) + (1 << 19);
+        return (uint64(mapId) << 40) | (uint64(cx & 0xFFFFF) << 20) | uint64(cy & 0xFFFFF);
+    }
+
+    std::unordered_map<uint64, std::vector<GrindSpawn>> const& GrindSpawns()
+    {
+        static std::unordered_map<uint64, std::vector<GrindSpawn>> byMap;
         static std::once_flag once;
         std::call_once(once, []()
         {
@@ -6679,7 +6689,7 @@ namespace
                 if (!t || t->npcflag || (t->unit_flags & (UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE)) ||
                     (t->flags_extra & CREATURE_FLAG_EXTRA_CIVILIAN) || t->rank != CREATURE_ELITE_NORMAL)
                     continue;
-                byMap[data.mapid].push_back({data.posX, data.posY, t->Entry, t->minlevel, t->maxlevel,
+                byMap[GrindCellKey(data.mapid, data.posX, data.posY)].push_back({data.posX, data.posY, t->Entry, t->minlevel, t->maxlevel,
                                              data.spawntimesecs});
             }
         });
@@ -6746,12 +6756,18 @@ float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot
     float const radius = sPlayerbotAIConfig.SightDistance;
     FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
     auto const& all = GrindSpawns();
-    auto const onMap = all.find(spot.GetMapId());
     uint32 count = 0;
     float respawn = 0.0f;
     float mobDps = 0.0f;
-    if (onMap != all.end())
-        for (GrindSpawn const& g : onMap->second)
+    int32 const reach = int32(std::ceil(radius / GRIND_CELL));
+    for (int32 dx = -reach; dx <= reach; ++dx)
+        for (int32 dy = -reach; dy <= reach; ++dy)
+    {
+        auto const cell = all.find(GrindCellKey(spot.GetMapId(), spot.GetPositionX() + float(dx) * GRIND_CELL,
+                                                spot.GetPositionY() + float(dy) * GRIND_CELL));
+        if (cell == all.end())
+            continue;
+        for (GrindSpawn const& g : cell->second)
         {
             if (g.maxLevel <= gray || g.minLevel > level + 1 ||
                 std::hypot(g.x - spot.GetPositionX(), g.y - spot.GetPositionY()) > radius)
@@ -6764,6 +6780,7 @@ float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot
             respawn += float(g.respawnSec);
             mobDps += GrindMobDps(bot, t, std::clamp<uint8>(level, g.minLevel, g.maxLevel));
         }
+    }
     if (!count)
     {
         parts = "no mob of its level within sight of the spot";
