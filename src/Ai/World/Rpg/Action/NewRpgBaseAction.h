@@ -26,6 +26,7 @@ struct BotPath;
 struct GuildRunStep;  // [stuck12]
 struct CreatureTemplate;
 class MotionTransport;
+class Transport;
 class WorldPacket;
 
 struct POIInfo
@@ -230,10 +231,10 @@ protected:
     bool TravelTrip(WorldPosition const& dest);
     bool TravelByTransport(NewRpgInfo::Trip& trip);
     bool TravelByPortal(NewRpgInfo::Trip& trip);
-    bool RideTransport(MotionTransport* transport);
-    bool BoardTransport(MotionTransport* transport);
-    bool FindDeckPoint(MotionTransport* transport, float& x, float& y, float& z);
-    MotionTransport* FindTransport(uint32 entry);
+    bool RideTransport(Transport* transport);
+    bool BoardTransport(Transport* transport);
+    bool FindDeckPoint(Transport* transport, float& x, float& y, float& z);
+    Transport* FindTransport(uint32 entry);  // [tram23] a boat / zeppelin, or a tram car in sight
     bool HoldPosition(uint32 duration = 2 * IN_MILLISECONDS);
     void MovePointDirect(float x, float y, float z);
     bool IsGroupGathered(float distance);
@@ -241,9 +242,9 @@ protected:
     // name, "" when none is; what the leader waits for at a portal instead of a gather timer
     std::string ComingStraggler(float distance);
     // [timers] the run time in ms the bot and its gathered members need to the transport's middle (the slowest)
-    uint32 BoardWalkMs(MotionTransport* transport);
+    uint32 BoardWalkMs(Transport* transport);
     // [timers] a member beyond GROUP_GATHER_DISTANCE that reaches the transport within `windowMs` at its run speed
-    std::string StragglerInTime(MotionTransport* transport, uint32 windowMs);
+    std::string StragglerInTime(Transport* transport, uint32 windowMs);
     bool DalaranStep(WorldPosition const& dest);
     bool UseDalaranPortal();
     bool UseDalaranCrystal(uint32 entry);
@@ -296,6 +297,10 @@ protected:
     bool CloseRouteStop(QuestRoute::BotRoute& route,
                         std::vector<std::pair<WorldPosition, std::string>> const& towns);
     uint64 RouteKey();
+    // [navgap] user 2026-11-09: a bot off the navmesh or on an island is a navmesh / travel defect to repair, not a
+    // state to hearth out of: one alarm per bot and spot with the map, the position and the facts of how it got there
+    // (a transport it rides or was left by, a trip phase, standing in the air, falling, a steep polygon, a hole)
+    static void NavGap(Player* bot, std::string const& event);
     // [zone23] a grind kill's whole cycle at `spot` (fight, walk at the spawn density, rest, the respawn floor)
     // -1: no mob of its level there
     float GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts);

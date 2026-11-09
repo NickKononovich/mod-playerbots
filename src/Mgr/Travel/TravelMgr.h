@@ -1029,6 +1029,7 @@ private:
 #define sTravelMgr TravelMgr::instance()
 
 class MotionTransport;
+class Transport;  // [tram23]
 
 // Dalaran floats over Crystalsong Forest and has a no-fly zone: it is only entered or left by its own ways.
 namespace DalaranTravel
@@ -1088,6 +1089,9 @@ public:
         uint32 periodMs = 0;
         TeamId team = TEAM_NEUTRAL;
         std::vector<Dock> docks;
+        // [tram23] a grid-spawned transport (GAMEOBJECT_TYPE_TRANSPORT: the Deeprun Tram cars) that runs its animation
+        // loop (TransportAnimation.dbc), not a MotionTransport of the map's transport list
+        bool isStatic = false;
     };
 
     struct Portal
@@ -1132,8 +1136,10 @@ public:
     bool CanUsePortal(Player* bot, Portal const& portal);
 
     // Same-map callers only: reads the transport's path progress.
-    void Observe(MotionTransport* transport);
-    static bool IsDocked(MotionTransport* transport, Dock const& dock, uint32& remainingMs);
+    void Observe(Transport* transport);
+    static bool IsDocked(Transport* transport, Dock const& dock, uint32& remainingMs);
+    // [tram23] the loop of a MotionTransport (its path time) or a static one (its animation's total time); 0: none
+    static uint32 PeriodOf(Transport* transport);
     // Time from `inMs` from now until the transport leaves `dock`; half a loop when it was never seen.
     uint32 GetTimeToDepartureMs(Line const& line, uint8 dock, uint32 inMs);
     static uint32 GetRideMs(Line const& line, uint8 fromDock, uint8 toDock);

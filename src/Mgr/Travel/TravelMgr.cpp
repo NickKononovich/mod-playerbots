@@ -5134,6 +5134,81 @@ void TravelRouteMgr::Build()
                      line.docks.size(), transportInfo->keyFrames.size());
     }
 
+    // [tram23] user 2026-11-09: the Deeprun Tram is ridden, not walked. Its cars are grid-spawned transports
+    // (GAMEOBJECT_TYPE_TRANSPORT, 176080-176085) running their TransportAnimation.dbc loop: a stop is a stretch of the
+    // loop where the car stands still (two path nodes at one offset), its spot the spawn's stationary position plus
+    // that offset turned by the spawn's path rotation (StaticTransport::RelocateToProgress). Before, the tram map was
+    // one landmass: Januel L12 (b363) walked from the Ironforge platform into the tunnel toward the Stormwind
+    // trigger and stood mid-tunnel at (0,1551,-69) over the pit, off the navmesh, for 9 builds
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
+    {
+        GameObjectTemplate const* goTemplate = sObjectMgr->GetGameObjectTemplate(data.id);
+        if (!goTemplate || goTemplate->type != GAMEOBJECT_TYPE_TRANSPORT)
+            continue;
+        MapEntry const* mapEntry = sMapStore.LookupEntry(data.mapid);
+        TransportAnimation const* anim = sTransportMgr->GetTransportAnimInfo(data.id);
+        if (!mapEntry || mapEntry->Instanceable() || !anim || !anim->TotalTime || anim->Path.size() < 2)
+            continue;
+        float pathAngle = 0.0f;
+        if (GameObjectAddon const* addon = sObjectMgr->GetGameObjectAddon(spawnId))
+        {
+            float const sign = addon->ParentRotation.z >= 0.0f ? 1.0f : -1.0f;
+            pathAngle = sign * 2.0f * std::acos(std::clamp(addon->ParentRotation.w, -1.0f, 1.0f));
+        }
+        float const cs = std::cos(pathAngle);
+        float const sn = std::sin(pathAngle);
+        Line line;
+        line.entry = data.id;
+        line.periodMs = anim->TotalTime;
+        line.team = TEAM_NEUTRAL;
+        line.isStatic = true;
+        auto const addStop = [&](TransportAnimationEntry const* at, uint32 from, uint32 to)
+        {
+            Dock dock;
+            dock.mapId = data.mapid;
+            dock.x = data.posX + at->X * cs - at->Y * sn;
+            dock.y = data.posY + at->X * sn + at->Y * cs;
+            dock.z = data.posZ + at->Z;
+            dock.arriveMs = from;
+            dock.departMs = to;
+            for (Dock& other : line.docks)
+                if (std::hypot(other.x - dock.x, other.y - dock.y) < DOCK_DISTINCT)
+                {
+                    if (dock.departMs - dock.arriveMs > other.departMs - other.arriveMs)
+                        other = dock;  // the longer stand of the two at one stop
+                    return;
+                }
+            line.docks.push_back(dock);
+        };
+        auto prev = anim->Path.begin();
+        uint32 standFrom = prev->first;
+        bool standing = false;
+        for (auto next = std::next(prev); next != anim->Path.end(); prev = next, ++next)
+        {
+            bool const still = std::fabs(next->second->X - prev->second->X) < 0.01f &&
+                               std::fabs(next->second->Y - prev->second->Y) < 0.01f &&
+                               std::fabs(next->second->Z - prev->second->Z) < 0.01f;
+            if (still && !standing)
+            {
+                standing = true;
+                standFrom = prev->first;
+            }
+            else if (!still && standing)
+            {
+                standing = false;
+                addStop(prev->second, standFrom, prev->first);
+            }
+        }
+        if (standing)
+            addStop(prev->second, standFrom, prev->first);
+        if (line.docks.size() >= 2)
+        {
+            LOG_INFO("playerbots", "[tram23] transport {} ({}) on map {}: {} stops in its {} ms loop", data.id,
+                     goTemplate->name, data.mapid, line.docks.size(), line.periodMs);
+            _lines.push_back(line);
+        }
+    }
+
 
     // One pass over the creature spawns: piers, inns and the Dalaran envoys.
     std::vector<std::vector<float>> pierScore(_lines.size());
@@ -5162,7 +5237,9 @@ void TravelRouteMgr::Build()
                     std::fabs(dock.y - data.posY) > DOCK_SEARCH_RADIUS)
                     continue;
 
-                if (data.posZ < dock.z - DOCK_BELOW || data.posZ > dock.z + DOCK_ABOVE || data.posZ < DOCK_MIN_Z)
+                // [tram23] the sea's fish filter is for boats: the tram's platforms lie under the sea's level
+                if (data.posZ < dock.z - DOCK_BELOW || data.posZ > dock.z + DOCK_ABOVE ||
+                    (!_lines[l].isStatic && data.posZ < DOCK_MIN_Z))
                     continue;
 
                 float const distance = std::hypot(dock.x - data.posX, dock.y - data.posY);
@@ -5437,22 +5514,35 @@ bool TravelRouteMgr::CanUsePortal(Player* bot, Portal const& portal)
     return conditions.empty() || sConditionMgr->IsObjectMeetToConditions(bot, conditions);
 }
 
-void TravelRouteMgr::Observe(MotionTransport* transport)
+uint32 TravelRouteMgr::PeriodOf(Transport* transport)
 {
-    if (!transport || !transport->GetPeriod())
+    if (!transport)
+        return 0;
+    if (MotionTransport* motion = transport->ToMotionTransport())
+        return motion->GetPeriod();
+    if (StaticTransport* fixed = transport->ToStaticTransport())
+        return fixed->GetPeriod();
+    return 0;
+}
+
+void TravelRouteMgr::Observe(Transport* transport)
+{
+    uint32 const period = PeriodOf(transport);
+    if (!period)
         return;
 
     std::lock_guard<std::mutex> guard(_observedLock);
-    _observed[transport->GetEntry()] = {transport->GetPathProgress() % transport->GetPeriod(), getMSTime()};
+    _observed[transport->GetEntry()] = {transport->GetPathProgress() % period, getMSTime()};
 }
 
-bool TravelRouteMgr::IsDocked(MotionTransport* transport, Dock const& dock, uint32& remainingMs)
+bool TravelRouteMgr::IsDocked(Transport* transport, Dock const& dock, uint32& remainingMs)
 {
     remainingMs = 0;
-    if (!transport || !transport->GetPeriod() || transport->GetMapId() != dock.mapId)
+    uint32 const period = PeriodOf(transport);
+    if (!period || transport->GetMapId() != dock.mapId)
         return false;
 
-    uint32 const phase = transport->GetPathProgress() % transport->GetPeriod();
+    uint32 const phase = transport->GetPathProgress() % period;
     if (phase < dock.arriveMs || phase >= dock.departMs)
         return false;
 
@@ -5501,6 +5591,10 @@ uint32 TravelRouteMgr::Landmass(WorldPosition const& pos)
     // a walk the route search does not finish (b321 "route partial ends 3612 yd short"); the Deeprun Tram joins them
     if (pos.GetMapId() == 0)
         return pos.GetPositionX() < -7400.0f ? 1 : 0;
+    // [tram23] the Deeprun Tram's two platforms (Ironforge's end at y 0-80, Stormwind's at y 2450-2520) are joined
+    // only by the cars: no walk through the tunnel
+    if (pos.GetMapId() == 369)
+        return 369 * 4 + (pos.GetPositionY() > 1250.0f ? 1 : 0);
     if (pos.GetMapId() != MAP_EXPANSION_ONE)
         return pos.GetMapId() * 4;
 
