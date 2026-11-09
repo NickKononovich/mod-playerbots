@@ -419,6 +419,16 @@ void PlayerbotAI::GuardAirborneSpline()
                 *at = G3D::Vector3(nearest[2], nearest[0], nearest[1]);
             return true;
         };
+        // [swim28] a point under a liquid's surface is swum, not climbed: the navmesh holds water as its surface
+        // polygons only, so a dive's way up (the sea floor to the surface) has no polygon under its samples. b377
+        // Dekorhan L12 killed a crawler on the sea floor off Auberdine (6419,634,-8.3): every leg up to the surface
+        // was refused "a climbing straight leg ... no navmesh polygon at (6419.1,634.1,-6.6)", MOVE_FAR_LOOP, HEARTH
+        auto const InLiquid = [this](G3D::Vector3 const& p)
+        {
+            LiquidData const liquid =
+                bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), p.x, p.y, p.z, bot->GetCollisionHeight(), {});
+            return liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > INVALID_HEIGHT && liquid.Level >= p.z;
+        };
         G3D::Vector3 a, b;
         bool check = false;
         bool climbTail = false;
@@ -453,6 +463,7 @@ void PlayerbotAI::GuardAirborneSpline()
                                             std::max<uint32>(1, static_cast<uint32>(std::ceil(length / GROUND_SAMPLE_STEP))));
             G3D::Vector3 lastOn = a;
             bool cut = false;
+            bool swum = false;
             G3D::Vector3 bad;
             for (uint32 i = 1; i <= samples && !cut; ++i)
             {
@@ -460,6 +471,16 @@ void PlayerbotAI::GuardAirborneSpline()
                 G3D::Vector3 snapped;
                 if (onMesh(point, &snapped))
                     lastOn = snapped;
+                else if (InLiquid(point))
+                {
+                    if (!swum)
+                        LOG_INFO("playerbots", "[swim28] {} swims up on map {} from ({:.1f},{:.1f},{:.1f}) to "
+                                 "({:.1f},{:.1f},{:.1f}): under the water at ({:.1f},{:.1f},{:.1f}), no polygon needed",
+                                 bot->GetName(), bot->GetMapId(), a.x, a.y, a.z, b.x, b.y, b.z, point.x, point.y,
+                                 point.z);
+                    swum = true;
+                    lastOn = point;  // [swim28] swims up through the water
+                }
                 else
                 {
                     cut = true;

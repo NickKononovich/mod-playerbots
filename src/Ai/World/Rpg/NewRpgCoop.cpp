@@ -2386,19 +2386,26 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         // [help14] the helper's walk is to the camp it helps at (the requester walks there too): b354 Nelaeleas L12
         // was assigned to Sycina's q1580 camp at "eta 25 s, walk 175 yd" - the yards to Sycina standing next to it in
         // Darkshore; Sycina hearthed to Darnassus, the camp lay on Teldrassil, the helper walked 3849 yd and a boat
-        Position const campAt = r.at != WorldPosition() && r.at.GetMapId() == p->GetMapId()
-                                    ? Position(r.at.GetPositionX(), r.at.GetPositionY(), r.at.GetPositionZ())
-                                    : req->GetPosition();
-        float const walk = Leader::WalkYd(p, campAt);
-        pool.push_back({p, walk / std::max(p->GetSpeed(MOVE_RUN), 1.0f), walk});
+        pool.push_back({p, 0.0f, 0.0f});
     }
-    std::sort(pool.begin(), pool.end(), [](Candidate const& a, Candidate const& b) { return a.eta < b.eta; });
-    // [help21] the inputs of the price: unchanged since its last refusal by price - no new pricing
+    // [help21] the inputs of the price: unchanged since its last refusal by price - no new pricing.
+    // [help28] ... read before the walks are searched: the candidates' walks (a long route each, every update, for
+    // every open request) were the help update's cost - b377: 253 updates, 87 ms each, max 811 ms
     uint64 priceKey = (uint64(req->GetLevel()) << 56) ^ (uint64(r.obj.questId) << 24) ^ uint64(pool.size());
-    for (Candidate const& c : pool)
-        priceKey = priceKey * 1000003ull + c.p->GetGUID().GetCounter();
+    for (Candidate const& c : pool)  // each one and the 100-yd cell it stands in (a walk changes with it)
+        priceKey = (priceKey * 1000003ull + c.p->GetGUID().GetCounter()) * 31ull +
+                   uint64(int64(c.p->GetPositionX() / 100.0f) * 7919 + int64(c.p->GetPositionY() / 100.0f));
     if (!r.human && r.refusedKey && r.refusedKey == priceKey)
         return false;
+    for (Candidate& c : pool)
+    {
+        Position const campAt = r.at != WorldPosition() && r.at.GetMapId() == c.p->GetMapId()
+                                    ? Position(r.at.GetPositionX(), r.at.GetPositionY(), r.at.GetPositionZ())
+                                    : req->GetPosition();
+        c.walkYd = Leader::WalkYd(c.p, campAt);
+        c.eta = c.walkYd / std::max(c.p->GetSpeed(MOVE_RUN), 1.0f);
+    }
+    std::sort(pool.begin(), pool.end(), [](Candidate const& a, Candidate const& b) { return a.eta < b.eta; });
 
     std::vector<Player*> party{req};
     std::vector<Candidate> chosen;
@@ -2532,7 +2539,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         rates += Acore::StringFormat("{}{} {:.2f} xp/s{}", rates.empty() ? "" : ", ", c.p->GetName(), TimeRate(c.p),
                                      QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) > 0.0f ? "" : " (grind)");
     std::string const priced =
-        Acore::StringFormat("value {:.0f} xp (quest {:.0f} + {:.0f} s saved), cost {:.0f} xp ([help22] helpers {}; "
+        Acore::StringFormat("value {:.0f} xp (quest {:.0f} [help28] + {:.0f} s saved), cost {:.0f} xp ([help22] helpers {}; "
                             "requester's wait {:.0f} s at {:.2f} xp/s)",
                             helpValue, questXp, saved, helpCost, rates, farthest, TimeRate(req));
     if (!r.human && helpCost >= helpValue)  // [help22] no value (0) is no help either

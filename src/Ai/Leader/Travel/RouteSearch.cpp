@@ -535,6 +535,56 @@ namespace Leader
                                     { return (c.x - from.x) * (c.x - from.x) + (c.y - from.y) * (c.y - from.y) <=
                                              c.w * c.w; }),
                      refuse.end());
+        // [route28] the search's own inputs are its cache key: the map and instance, the walker's kind, both ends (to
+        // half a yard) and every refused reach and priced penalty RouteCosts gave (the mobs alive where they stand
+        // now, the danger zones): the navmesh is static, so equal inputs give the equal walk. A changed input (a mob
+        // moved or died, the walker stepped) is a new key - no clock. b377: 24255 searches, 3.3 ms each, 72.7 % of
+        // all AI time, most of them the same walk asked again (IDLE looks, pull spots, rest spots, every leg)
+        uint64 cacheKey = 0;
+        {
+            auto const mix = [&cacheKey](int64 v)
+            { cacheKey = (cacheKey ^ uint64(v)) * 1099511628211ull + 0x9E3779B97F4A7C15ull; };
+            auto const q = [](float v) { return int64(std::floor(v * 2.0f)); };
+            mix(map->GetId());
+            mix(map->GetInstanceId());
+            mix(walker->IsPlayer() ? 1 : 2);
+            for (float v : {from.x, from.y, from.z, to.x, to.y, to.z})
+                mix(q(v));
+            mix(int64(refuse.size()));
+            for (G3D::Vector4 const& c : refuse)
+                for (float v : {c.x, c.y, c.z, c.w})
+                    mix(q(v));
+            mix(int64(penalties.size()));
+            for (Travel::RoutePenalty const& pen : penalties)
+                for (float v : {pen.x, pen.y, pen.z, pen.r, pen.cost})
+                    mix(q(v));
+        }
+        thread_local std::unordered_map<uint64, RouteResult> routeCache;
+        thread_local uint64 routeCacheHits = 0;
+        constexpr size_t ROUTE_CACHE_ENTRIES = 4096;  // a memory bound per thread (no age rule)
+        if (auto const hit = routeCache.find(cacheKey); hit != routeCache.end())
+        {
+            ++routeCacheHits;
+            SoloSafety::NoteRoute(walker, hit->second.complete, hit->second.found && hit->second.throughRefused);
+            return hit->second;
+        }
+        struct StoreOnExit
+        {
+            std::unordered_map<uint64, RouteResult>& cache;
+            uint64 key;
+            RouteResult const& value;
+            ~StoreOnExit()
+            {
+                if (cache.size() >= ROUTE_CACHE_ENTRIES)
+                {
+                    LOG_INFO("playerbots", "[route28] route cache full ({} walks): cleared, {} searches answered "
+                             "from it since its last clear", cache.size(), routeCacheHits);
+                    cache.clear();
+                    routeCacheHits = 0;
+                }
+                cache[key] = value;
+            }
+        } storeOnExit{routeCache, cacheKey, result};
         auto const search = [&](std::vector<G3D::Vector4> const* refused,
                                 std::vector<Travel::RoutePenalty> const* priced)
         {

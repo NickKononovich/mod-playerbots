@@ -459,9 +459,13 @@ float QuestRoute::ChainXp(Player* bot, uint32 questId)
         if (!quest || bot->GetQuestRewardStatus(open[i]))
             continue;
         xp += float(quest->XPValue(bot->GetLevel()));
-        for (uint32 next : UnlockedBy(open[i]))
-            if (seen.insert(next).second)
-                open.push_back(next);
+        // [help28] the quests this hand-in opens at once, not the whole chain behind them: each later one has its own
+        // camps and walks the help does not clear (b377: q985 priced 5825 xp, q224 4600 xp - helpers sent 4991 and
+        // 6323 yd at 0.7-5 xp/s; 10 help parties over 1000 yd)
+        if (i == 0)
+            for (uint32 next : UnlockedBy(open[i]))
+                if (seen.insert(next).second)
+                    open.push_back(next);
     }
     return xp;
 }
