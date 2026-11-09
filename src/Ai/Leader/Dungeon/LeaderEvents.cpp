@@ -775,7 +775,37 @@ namespace Leader::Dungeon
         if (!leaderDown)
             lead.leaderDownCleared = false;
         if (!tank->IsAlive())
+        {
+            // [rez27] user 2026-11-09: a dead leader commands nothing, but the group's standard play goes on - its
+            // living members raise the dead (the leader too) right after the fight: the resurrection pass runs with
+            // the living (Support::Tick picks a living frame for a dead tank). Before, this return left the dead tank
+            // unraised and its body released on the old wait (b375 rfc-n five 2: 191 s, the ghost in Orgrimmar)
+            Map* const deadMap = tank->GetMap();
+            std::vector<Player*> living;
+            Player* livingHealer = nullptr;
+            bool livingFight = false;
+            for (ObjectGuid const& groupMember : group.MemberGuids())
+            {
+                Player* bot = ObjectAccessor::FindPlayer(groupMember);
+                if (!bot || bot == tank || bot->GetMap() != deadMap || !bot->IsAlive() || !GET_PLAYERBOT_AI(bot))
+                    continue;
+                living.push_back(bot);
+                if (!livingHealer && PlayerbotAI::IsHeal(bot))
+                    livingHealer = bot;
+                livingFight |= bot->IsInCombat() && !bot->getAttackers().empty();
+            }
+            if (!living.empty())
+            {
+                auto const deadLog = [&](Player* bot, char const* kind, JsonObject fields)
+                {
+                    fields.Str("member", bot->GetName()).Str("event", kind);
+                    Decisions().Write(group.Run(), "leader", "leader_event", bot->GetGUID(), bot->GetName(), true,
+                                      fields);
+                };
+                Leader::Support::Tick(group, tank, living, livingHealer, livingFight, deadLog);
+            }
             return;
+        }
         if (tank->GetMapId() != group.MapId())
         {
             if (!lead.outsideLogged)
