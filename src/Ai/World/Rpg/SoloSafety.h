@@ -42,8 +42,8 @@ namespace Leader::Travel
 namespace SoloSafety
 {
     bool Applies(Player* bot);
-    // [deaths23] the group member fights with the bot: both in the co-op / help party, or neither and the member
-    // plays no New RPG plan of its own (a human, a follower); an own-plan bot member walks its own route
+    // [deaths23] the group member fights with the bot: both in the co-op / help party, or neither and not both bots
+    // on their own New RPG plans (a human, a follower and its leader); two own-plan bots walk their own routes
     bool FightsWith(Player* bot, Player* member);
     // [deaths12] the largest wander distance of the map's spawns (a wanderer's reach is its home's plus it)
     float MapWanderReach(uint32 mapId);

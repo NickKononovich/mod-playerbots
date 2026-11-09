@@ -229,7 +229,8 @@ namespace
         bool const botParty = NewRpgCoop::InParty(bot->GetGUID().GetCounter());
         if (botParty != NewRpgCoop::InParty(member->GetGUID().GetCounter()))
             return false;
-        return botParty || !PlaysOwnPlan(member);
+        // out of a party: two bots each on its own plan walk apart; a follower and its leader, a human, do not
+        return botParty || !PlaysOwnPlan(member) || !PlaysOwnPlan(bot);
     }
 
     bool SoloPlayerBot(Player* bot)
