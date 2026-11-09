@@ -1326,6 +1326,29 @@ namespace Leader::Dungeon
                                               .Bool("tankInReach", tankInReach));
                     }
                     judgeBlockingPack(bot, mob);  // [lead76]
+                    // [spot70] the spot itself clear, only its walk in a reach: the member walks round the reaches
+                    // to the walk's first corner (judged again from there), not "stays"
+                    if (mob && !noPath && member != tank->GetGUID() && reject.rfind("the spot or its walk", 0) == 0 &&
+                        !(fightTarget ? LeaderFightAggroAt(bot, spot, fightTarget) : LeaderAggroAt(bot, spot)))
+                    {
+                        Position corner;
+                        std::string round;
+                        if (LeaderWalkRound(bot, spot, fightTarget, corner, round))
+                        {
+                            std::string const walkWhy = why + ": walks round " + round;
+                            if (Leader::Events::SetMove(member, Leader::MoveEvent::MoveTo, corner, 1.5f, walkWhy))
+                                Decisions().Write(run, "leader", "spot_walk_round", member, bot->GetName(), true,
+                                                  JsonObject()
+                                                      .Str("member", bot->GetName())
+                                                      .Str("why", why)
+                                                      .Str("round", round)
+                                                      .Real("x", corner.GetPositionX())
+                                                      .Real("y", corner.GetPositionY())
+                                                      .Real("z", corner.GetPositionZ())
+                                                      .Str("tag", "[spot70]"));
+                            return true;
+                        }
+                    }
                     // [lead99] b138 rfc-h 339-427 s: the engage's range / meeting spots on the ledge had no walk
                     // ("no walk to the spot"), the members stayed and blocked the group - the order stood open and
                     // nobody could execute it. A walk-along spot with no walk at all (the route search found none) is
@@ -8895,6 +8918,22 @@ namespace Leader::Dungeon
                                         if (!meleeAtTarget(at, "at target"))
                                             continue;
                                         float const walk = bot->GetExactDist(at);
+                                        // [spot70] a ring spot whose walk crosses an idle reach with no walk round
+                                        // it is no spot (only a nearer candidate is looked at: the search's cost)
+                                        if (best < 0.0f || walk < best)
+                                        {
+                                            bool noWalk = false;
+                                            if (LeaderAggroOnWalk(bot, at, noWalk, target) || noWalk)
+                                            {
+                                                Position corner;
+                                                std::string round;
+                                                if (noWalk || !LeaderWalkRound(bot, at, target, corner, round))
+                                                {
+                                                    NoteSpotReject("at target", "no clean walk");
+                                                    continue;
+                                                }
+                                            }
+                                        }
                                         if (best < 0.0f || walk < best)
                                         {
                                             best = walk;

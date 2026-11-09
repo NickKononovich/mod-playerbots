@@ -466,6 +466,12 @@ namespace Leader::Travel
 // [lead99] the leader's one route service (Leader::Route, LeaderOrders.h)
 namespace Leader
 {
+    namespace
+    {
+        // [spot70] the extra reaches one RouteAvoiding call refuses (this thread, for that call only)
+        thread_local std::vector<G3D::Vector4> const* extraAvoid = nullptr;
+    }
+
     std::string RouteResult::Describe() const
     {
         return source + (found ? (complete ? ", complete" : ", partial") : ", none");
@@ -538,6 +544,8 @@ namespace Leader
         // it through them): their reaches are refused as RouteCosts refuses the live ones it sees
         thread_local std::vector<G3D::Vector4> staticRefuse;
         refuse.insert(refuse.end(), staticRefuse.begin(), staticRefuse.end());
+        if (extraAvoid)  // [spot70] the caller's reaches (a led member's walk round idle mobs)
+            refuse.insert(refuse.end(), extraAvoid->begin(), extraAvoid->end());
         // [guild15] a refused reach the walker stands in already lies behind the walk: it walks out of it.
         // [leave33] user 2026-11-09: out by the nearest way, not on through the camp - the reach is kept, shrunk to
         // the walker's own distance from its centre (less its combat reach, its own polygon stays open): the walk
@@ -746,6 +754,15 @@ namespace Leader
                 break;
             }
         }
+        return result;
+    }
+
+    RouteResult RouteAvoiding(Unit* walker, Position const& to, std::vector<G3D::Vector4> const& avoid)
+    {
+        std::vector<G3D::Vector4> const* const before = extraAvoid;
+        extraAvoid = &avoid;
+        RouteResult result = Route(walker, to);
+        extraAvoid = before;
         return result;
     }
 

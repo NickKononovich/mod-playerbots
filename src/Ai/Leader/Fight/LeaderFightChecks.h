@@ -272,6 +272,10 @@ namespace Leader::Fight
     // the walk to the spot passes no unpulled mob's reach (and there is a walk)
     // [lead490] `fightTarget`: the walk of a member to its fight spot on that target (LeaderFightAggroAt per point)
     Creature* LeaderAggroOnWalk(Player* bot, Position const& spot, bool& noPath, Unit* fightTarget = nullptr);
+    // [spot70] the walk to `spot` passes an unpulled mob's reach: a walk round the reaches it meets (each blocker's
+    // reach refused in the route search, one more each round), the first corner of it set in `corner` (the member
+    // walks there, the walk on is judged from there). False: no such walk (or the plain walk is clear)
+    bool LeaderWalkRound(Player* bot, Position const& spot, Unit* fightTarget, Position& corner, std::string& round);
 
     // a candidate of a spot search: 0 rejected (an unpulled mob reaches it), 1 valid on new ground (kept as the
     // fallback), 2 valid on cleared ground (taken at once); `fightTarget`: a fight spot on it (LeaderFightAggroAt)
