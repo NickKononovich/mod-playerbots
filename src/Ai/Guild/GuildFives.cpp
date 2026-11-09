@@ -1203,6 +1203,38 @@ std::string GuildCoordinator::FiveWalkRefusal(GuildFive const& five) const
 
 void GuildCoordinator::UpdateFives()
 {
+    // [cleft62] the server announced its shutdown (the countdown every player sees): a five's bots inside their dungeon
+    // leave it as players do (the Dungeon Finder's teleport out, else the way they came: Player::TeleportToEntryPoint).
+    // An instance gone at the restart puts its players at the dungeon's entrance instead (Player::LoadFromDB) - b393's
+    // RFC five was inside at the stop and Alliance Orenem / Brelir logged in in Orgrimmar's Cleft of Shadow, dead to
+    // its guards, ghosts there in every later run
+    if (sWorld->IsShuttingDown())
+    {
+        std::vector<ObjectGuid> out;
+        {
+            CoordLock guard(lock_, __func__);
+            for (auto const& [id, five] : fives_)
+                if (five.stage == GuildFive::Stage::Run)
+                    for (uint32 low : five.members)
+                        out.push_back(ObjectGuid::Create<HighGuid::Player>(low));
+        }
+        for (ObjectGuid const& guid : out)
+        {
+            Player* p = ObjectAccessor::FindConnectedPlayer(guid);
+            if (!p || IsHuman(p) || !p->IsInWorld() || p->IsBeingTeleported() || !p->GetMap()->IsDungeon())
+                continue;
+            if (!shutdownOut_.insert(guid.GetCounter()).second)
+                continue;
+            bool const lfg = p->GetGroup() && p->GetGroup()->isLFGGroup();
+            if (lfg)
+                sLFGMgr->TeleportPlayer(p, true);
+            else
+                p->TeleportToEntryPoint();
+            LOG_INFO("playerbots", "[cleft62] {} L{} leaves {} for the server's shutdown ({})", p->GetName(),
+                     p->GetLevel(), p->GetMap()->GetMapName(), lfg ? "the Dungeon Finder's teleport out" :
+                                                                      "back where it entered");
+        }
+    }
     std::vector<std::pair<uint32, std::string>> cancel;
     // [guild70] fives the five-leader takes in now: (id, by the Dungeon Finder)
     std::vector<std::pair<uint32, bool>> ready;

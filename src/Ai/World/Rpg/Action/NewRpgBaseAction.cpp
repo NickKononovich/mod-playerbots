@@ -5166,6 +5166,17 @@ bool NewRpgBaseAction::LoginEscape()
     // Blahadrin died there within the first minutes
     if (bot->IsInCombat() || !(SoloSafety::Applies(bot) || NewRpgCoop::JudgesPulls(bot)))
         return false;  // in a fight already: the survival kit judges it (fight on or flee)
+    // [cleft62] logged in inside the other faction's capital (its guards L75 everywhere): the core put it at the
+    // instance entrance (Player::LoadFromDB, a dungeon instance gone at the restart) - out by its Hearthstone, as a
+    // player leaves. b393: the five in Ragefire Chasm was in it at the server stop; Alliance Orenem L15 / Brelir L16
+    // logged in in the Cleft of Shadow, Orgrimmar, died to Orgrimmar Grunts, ghosts there every run since
+    if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(bot->GetZoneId()))
+    {
+        uint32 const own = bot->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
+        if ((zone->flags & AREA_FLAG_CAPITAL) && zone->team && zone->team != own && zone->team != AREATEAM_ANY &&
+            HearthOut(std::string("[cleft62] logged in in the enemy capital ") + zone->area_name[0]))
+            return true;
+    }
     std::string who;
     std::vector<G3D::Vector3> spots;
     if (!SoloSafety::StandsInReach(bot, who, spots))
