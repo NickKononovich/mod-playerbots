@@ -6413,6 +6413,134 @@ bool NewRpgBaseAction::MeasureLeg(Player* bot, QuestRoute::Point const& from, Qu
 // travel and work: quests already in the log and quests it could still pick up, near or far.
 // giverPos is set when the winner still has to be picked up.
 // [questroute] the fallback of the route (nothing to route on its landmass): a zone change, a far log quest
+namespace
+{
+    // [zone23] the world's attackable creature spawns by map (read once): where a grind finds its mobs
+    struct GrindSpawn
+    {
+        float x, y;
+        uint32 entry;
+        uint8 minLevel, maxLevel;
+        uint32 respawnSec;
+    };
+
+    std::unordered_map<uint32, std::vector<GrindSpawn>> const& GrindSpawns()
+    {
+        static std::unordered_map<uint32, std::vector<GrindSpawn>> byMap;
+        static std::once_flag once;
+        std::call_once(once, []()
+        {
+            for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+            {
+                CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(data.id);
+                if (!t || t->npcflag || (t->unit_flags & (UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE)) ||
+                    (t->flags_extra & CREATURE_FLAG_EXTRA_CIVILIAN) || t->rank != CREATURE_ELITE_NORMAL)
+                    continue;
+                byMap[data.mapid].push_back({data.posX, data.posY, t->Entry, t->minlevel, t->maxlevel,
+                                             data.spawntimesecs});
+            }
+        });
+        return byMap;
+    }
+
+    // a creature template's melee damage per second at `level` (the core's base stats: NewRpgCoop's
+    // TemplateMeleeDps), less the bot's armour (Unit::CalcArmorReducedDamage)
+    float GrindMobDps(Player* bot, CreatureTemplate const* t, uint8 level)
+    {
+        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, t->unit_class);
+        if (!stats)
+            return 0.0f;
+        float const swing = std::max(float(t->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
+        float const base = stats->GenerateBaseDamage(t);
+        float const dps =
+            ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * t->DamageModifier / swing;
+        float const armor = float(bot->GetArmor());
+        float const divisor =
+            level < 60 ? 400.0f + 85.0f * level : 400.0f + 85.0f * level + 4.5f * 85.0f * (level - 59);
+        return dps * (1.0f - std::clamp(armor / (armor + divisor), 0.0f, 0.75f));
+    }
+
+    float FoodRegen(Player* bot, Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || proto->RequiredLevel > bot->GetLevel())
+            return 0.0f;
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId);
+        if (!spell)
+            return 0.0f;
+        float best = 0.0f;
+        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+            if (spell->Effects[e].ApplyAuraName == SPELL_AURA_OBS_MOD_HEALTH && spell->Effects[e].Amplitude > 0)
+                best = std::max(best, float(spell->Effects[e].CalcValue(bot)) /
+                                          (float(spell->Effects[e].Amplitude) / float(IN_MILLISECONDS)));
+        return best;
+    }
+
+    // its health back per second out of a fight: the best food in its bags (SPELL_AURA_OBS_MOD_HEALTH, eaten
+    // sitting), else the core's spirit regeneration (Player::OCTRegenHPPerSpirit, per second)
+    float GrindRegen(Player* bot)
+    {
+        float best = bot->OCTRegenHPPerSpirit() * float(bot->GetStat(STAT_SPIRIT));
+        for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+            best = std::max(best, FoodRegen(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, i)));
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            if (Bag* container = bot->GetBagByPos(bag))
+                for (uint32 i = 0; i < container->GetBagSize(); ++i)
+                    best = std::max(best, FoodRegen(bot, container->GetItemByPos(uint8(i))));
+        return best;
+    }
+}
+
+// [zone23] coordinator 2026-11-09: a grind kill's whole cycle, not its fight alone: the fight, the walk to the next
+// mob at the spot's spawn density, the rest for the damage it took (food in its bags, else its spirit regeneration),
+// and no faster than the spot's spawns come back (all of them killed in turn: their mean respawn over their number).
+// b372 [zone19]: Colian L17 "50699 xp in 14339 s (65 xp a kill of 18 s)" counted the fights only and kept the
+// draenei grinding in Bloodmyst against Darkshore's quests
+float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts)
+{
+    uint8 const level = bot->GetLevel();
+    uint8 const gray = Acore::XP::GetGrayLevel(level);
+    float const radius = sPlayerbotAIConfig.SightDistance;
+    FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+    auto const& all = GrindSpawns();
+    auto const onMap = all.find(spot.GetMapId());
+    uint32 count = 0;
+    float respawn = 0.0f;
+    float mobDps = 0.0f;
+    if (onMap != all.end())
+        for (GrindSpawn const& g : onMap->second)
+        {
+            if (g.maxLevel <= gray || g.minLevel > level + 1 ||
+                std::hypot(g.x - spot.GetPositionX(), g.y - spot.GetPositionY()) > radius)
+                continue;
+            CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(g.entry);
+            FactionTemplateEntry const* faction = t ? sFactionTemplateStore.LookupEntry(t->faction) : nullptr;
+            if (!t || !faction || (own && own->IsFriendlyTo(*faction)))
+                continue;
+            ++count;
+            respawn += float(g.respawnSec);
+            mobDps += GrindMobDps(bot, t, std::clamp<uint8>(level, g.minLevel, g.maxLevel));
+        }
+    if (!count)
+    {
+        parts = "no mob of its level within sight of the spot";
+        return -1.0f;
+    }
+    respawn /= float(count);
+    mobDps /= float(count);
+    float const speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    // the mean gap to the nearest other spawn at that density (Poisson: half the root of the area per spawn)
+    float const walk = 0.5f * std::sqrt(float(M_PI) * radius * radius / float(count)) / speed;
+    float const regen = GrindRegen(bot);
+    float const rest = regen > 0.0f ? mobDps * killSeconds / regen : 0.0f;
+    float const cycle = killSeconds + walk + rest;
+    float const camped = respawn / float(count);
+    parts = Acore::StringFormat("fight {:.0f} s + walk {:.0f} s ({} spawns in sight) + rest {:.0f} s ({:.1f} dps "
+                                "taken, {:.1f} hp/s back); respawn floor {:.0f} s",
+                                killSeconds, walk, count, rest, mobDps, regen, camped);
+    return std::max(cycle, camped);
+}
+
 uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
 {
     uint8 const level = bot->GetLevel();
@@ -7112,9 +7240,14 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
             missing = missing > have ? missing - have : 0;
             float const killXp = float(Acore::XP::BaseGain(level, level, content)) * sWorld->getRate(RATE_XP_KILL);
             float const killSeconds = float(stats->BaseHealth[std::min<uint32>(content, MAX_EXPANSIONS - 1)]) / dps;
+            // [zone23] the kill's whole cycle at the grind spot (GrindCycleSeconds), not its fight alone
+            std::string cycleParts;
+            float const cycle = nextGrind != WorldPosition() && nextGrind.GetMapId() == bot->GetMapId()
+                                    ? GrindCycleSeconds(bot, nextGrind, killSeconds, cycleParts)
+                                    : -1.0f;
             float const grindSeconds =
-                killXp > 0.0f && nextGrind != WorldPosition() && nextGrind.GetMapId() == bot->GetMapId()
-                    ? float(missing) / killXp * killSeconds + bot->GetExactDist(nextGrind) / QUEST_TRAVEL_SPEED
+                killXp > 0.0f && cycle > 0.0f
+                    ? float(missing) / killXp * cycle + bot->GetExactDist(nextGrind) / QUEST_TRAVEL_SPEED
                     : -1.0f;
             // [zone19] coordinator 2026-11-09: the grind wins only when it earns more experience than the best zone
             // over the same time: the grind's `missing` xp in `grindSeconds` against that zone's quest rate (its
@@ -7136,10 +7269,11 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
                 if (fresh)
                     LOG_INFO("playerbots",
                              "[zone19] {} L{} stays: L{} for q{} here by grinding {} xp in {} s ({} xp a kill of {} "
-                             "s) beats the {} xp zone {} gives in that time after its {} s travel (first q{})",
+                             "s) beats the {} xp zone {} gives in that time after its {} s travel (first q{}) "
+                             "[zone23 kill cycle: {}]",
                              bot->GetName(), level, next->GetMinLevel(), nextQuest, missing, uint32(grindSeconds),
-                             uint32(killXp), uint32(killSeconds), uint32(zoneXp), bestZone,
-                             uint32(zones[bestZone].travel), best->questId);
+                             uint32(killXp), uint32(cycle), uint32(zoneXp), bestZone,
+                             uint32(zones[bestZone].travel), best->questId, cycleParts);
                 giverPos = WorldPosition();
                 return 0;
             }
