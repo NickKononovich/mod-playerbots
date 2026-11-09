@@ -4216,7 +4216,8 @@ namespace TestHarness
             std::vector<dtPolyRef> const* banned = nullptr;
             bool passFilter(dtPolyRef const ref, dtMeshTile const* tile, dtPoly const* poly) const override
             {
-                return std::find(banned->begin(), banned->end(), ref) == banned->end() &&
+                // [b363] null before the door's polygons are set (findNearestPoly runs first): b362 crash
+                return (!banned || std::find(banned->begin(), banned->end(), ref) == banned->end()) &&
                        dtQueryFilter::passFilter(ref, tile, poly);
             }
         };
