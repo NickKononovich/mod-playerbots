@@ -306,6 +306,9 @@ protected:
     // [zone23] a grind kill's whole cycle at `spot` (fight, walk at the spawn density, rest, the respawn floor)
     // -1: no mob of its level there
 public:
+    // [supply27] what a five member lacks of its ammo (a hunter below the vendor run's low-ammo line) and of the
+    // vendor-sold reagents its known spells use (none left of one); "" = nothing. missingReagents: those item ids
+    static std::string FiveGearShort(Player* bot, std::vector<uint32>* missingReagents = nullptr);
     static float GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts);
 protected:
     // [routeplan] the stops done, postponed or dropped are cut out of the order (no new build); a hand-in that opens

@@ -1077,6 +1077,9 @@ void GuildCoordinator::UpdateFives()
                     shortOf = "drink " + std::to_string(drink);
                 if (food < RESTOCK_FOOD_MIN)
                     shortOf += (shortOf.empty() ? "" : ", ") + ("food " + std::to_string(food));
+                // [supply27] ammo (a hunter) and the vendor-sold reagents of its spells, the same way
+                if (std::string const gear = NewRpgBaseAction::FiveGearShort(p); !gear.empty())
+                    shortOf += (shortOf.empty() ? "" : ", ") + gear;
                 if (shortOf.empty() || st.supplyDone)
                 {
                     if (!shortOf.empty() && st.supplyShort != "in: " + shortOf)

@@ -111,7 +111,8 @@ namespace
 #include "SharedDefines.h"
 #include "Timer.h"
 #include "TravelMgr.h"
-#include "BuyAction.h"  // [pace25] RESTOCK_*, CountBagFood
+#include "BuyAction.h"
+#include "GuildGear.h"  // [supply27] VendorsOf  // [pace25] RESTOCK_*, CountBagFood
 #include "DetourNavMeshQuery.h"  // [nav24]
 #include "MapDefines.h"         // [nav24]
 #include "WaypointMovementGenerator.h"
@@ -221,7 +222,8 @@ namespace
         return best;
     }
 
-    thread_local uint32 restockWanted = 0;  // [pace25] the spell categories the vendor choice needs (bit 0 food, 1 drink)
+    thread_local uint32 restockWanted = 0;
+    thread_local std::vector<uint32> const* reagentsWanted = nullptr;  // [supply27] the vendor sells one of them  // [pace25] the spell categories the vendor choice needs (bit 0 food, 1 drink)
 
     // The nearest vendor spawn on the bot's map that is not hostile to it (and sells its ammo when it needs some).
     // [guild14] repair: only those that repair (UNIT_NPC_FLAG_REPAIR); a solo bot's trip there must be safe
@@ -267,6 +269,18 @@ namespace
                 continue;
             if (ammoSubClass && !AmmoPrice(bot, spawn.entry, ammoSubClass))
                 continue;
+            // [supply27] a five member's reagent run goes to a vendor that sells one it lacks
+            if (reagentsWanted && !reagentsWanted->empty())
+            {
+                VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(spawn.entry);
+                bool sells = false;
+                for (VendorItem const* item : items ? items->m_items : std::vector<VendorItem*>())
+                    sells = sells || (item && !item->ExtendedCost &&
+                                      std::find(reagentsWanted->begin(), reagentsWanted->end(), item->item) !=
+                                          reagentsWanted->end());
+                if (!sells)
+                    continue;
+            }
             // [pace25] a restock run goes to a vendor that sells what it lacks
             if (((restockWanted & 1) && !RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_FOOD)) ||
                 ((restockWanted & 2) && !RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_DRINK)))
@@ -575,6 +589,54 @@ bool NewRpgBaseAction::BindAtInnHere()
     return false;
 }
 
+std::string NewRpgBaseAction::FiveGearShort(Player* bot, std::vector<uint32>* missingReagents)
+{
+    if (!bot)
+        return "";
+    std::string out;
+    // ammo: the vendor run's own line (VENDOR_LOW_AMMO) for the ammo its ranged weapon fires
+    if (uint32 const sub = RequiredAmmoSubClass(bot); sub && bot->getClass() == CLASS_HUNTER)
+    {
+        uint32 have = 0;
+        auto const count = [&](Item* item)
+        {
+            ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+            if (proto && proto->Class == ITEM_CLASS_PROJECTILE && proto->SubClass == sub)
+                have += item->GetCount();
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            count(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            if (Bag* container = bot->GetBagByPos(bag))
+                for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
+                    count(container->GetItemByPos(uint8(slot)));
+        if (have < VENDOR_LOW_AMMO)
+            out = "ammo " + std::to_string(have);
+    }
+    // reagents: each one its known spells use that a vendor sells (GuildGear::VendorsOf) and it holds none of
+    std::set<uint32> seen;
+    for (auto const& [spellId, spell] : bot->GetSpellMap())
+    {
+        if (!spell || spell->State == PLAYERSPELL_REMOVED || !spell->Active)
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        for (uint8 r = 0; info && r < MAX_SPELL_REAGENTS; ++r)
+        {
+            if (info->Reagent[r] <= 0 || !seen.insert(uint32(info->Reagent[r])).second)
+                continue;
+            uint32 const item = uint32(info->Reagent[r]);
+            std::vector<GuildGear::VendorSpawn> const* vendors = GuildGear::VendorsOf(item);
+            if (!vendors || vendors->empty() || bot->GetItemCount(item, false))
+                continue;
+            if (missingReagents)
+                missingReagents->push_back(item);
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+            out += (out.empty() ? "" : ", ") + std::string("reagent ") + (proto ? proto->Name1 : std::to_string(item));
+        }
+    }
+    return out;
+}
+
 bool NewRpgBaseAction::StartVendorRun()
 {
     SlowScope slow("vendor run look", &bot->GetName());  // [perf26]
@@ -685,13 +747,20 @@ bool NewRpgBaseAction::StartVendorRun()
     bool const noDrink = usesMana && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < line;
     bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 &&
                          (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
-    if (!sell && !ammoSubClass && !repair && !restock)
+    // [supply27] a five member before its five goes in buys the vendor-sold reagents its spells use and has none of
+    std::vector<uint32> reagents;
+    if (fiveSupply && bot->GetMoney() > 0 && (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney))
+        FiveGearShort(bot, &reagents);
+    bool const reagentRun = !reagents.empty();
+    if (!sell && !ammoSubClass && !repair && !restock && !reagentRun)
         return false;
 
     float dist = 0.0f;
     restockWanted = restock && !sell && !ammoSubClass && !repair ? (noFood ? 1u : 0u) | (noDrink ? 2u : 0u) : 0u;
+    reagentsWanted = reagentRun && !sell && !ammoSubClass && !repair && !restock ? &reagents : nullptr;
     VendorSpawn const* vendor = repair ? NearestRepairer(bot, dist) : NearestVendor(bot, ammoSubClass, dist);
     restockWanted = 0;
+    reagentsWanted = nullptr;
     if (repair && !vendor)
     {
         repair = false;
@@ -722,6 +791,8 @@ bool NewRpgBaseAction::StartVendorRun()
     if (ammoSubClass)
         reason += std::string(!reason.empty() ? " + " : "") +
                   (ammoSubClass == ITEM_SUBCLASS_ARROW ? "buy arrows" : "buy bullets");
+    if (reagentRun)  // [supply27]
+        reason += std::string(!reason.empty() ? " + " : "") + "buy reagents";
     if (restock)  // [pace25]
         reason += std::string(!reason.empty() ? " + " : "") +
                   (noFood && noDrink ? "buy food and drink" : noFood ? "buy food" : "buy drink");
@@ -1743,6 +1814,27 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                     // [pace25] its food and drink, as RestockFoodAction buys them standing at the vendor
                     if (vendorRun)
                         botAI->DoSpecificAction("restock food", Event("restock food"), true);
+                    // [supply27] a five member's missing reagents this vendor sells: a stack of each, its own money
+                    if (vendorRun && sGuildCoordinator.SupplyWanted(bot))
+                    {
+                        std::vector<uint32> missing;
+                        FiveGearShort(bot, &missing);
+                        if (VendorItemData const* items = creature->GetVendorItems())
+                            for (size_t i = 0; i < items->m_items.size(); ++i)
+                            {
+                                VendorItem const* item = items->m_items[i];
+                                ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
+                                if (!proto || item->ExtendedCost ||
+                                    std::find(missing.begin(), missing.end(), item->item) == missing.end() ||
+                                    bot->GetMoney() < proto->BuyPrice)
+                                    continue;
+                                bool const bought = bot->BuyItemFromVendorSlot(creature->GetGUID(), uint32(i),
+                                                                               item->item, uint8(1), NULL_BAG, NULL_SLOT);
+                                LOG_INFO("playerbots", "[supply27] {} L{} buys reagent {} at {}: {}", bot->GetName(),
+                                         bot->GetLevel(), proto->Name1, creature->GetName(),
+                                         bought ? "bought" : "refused by the core");
+                            }
+                    }
 
                     // [vendor12] a run for ammo that the generic buy left at the same count (its item-usage /
                     // weight look found no use for it: b350 Sehdrurmund L6, four runs to Adlin Pridedrift, ammo
