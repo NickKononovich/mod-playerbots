@@ -4426,6 +4426,42 @@ namespace
                 ++resolveStats.spent;
                 continue;
             }
+            // [share64] the spawn itself down by the map's own respawn clock (dead, looted, despawned - by whoever: a
+            // guildmate's kill is the world's fact, not that bot's memory): no spot until it is up again. The spent
+            // marks were each bot's own, so every bot on a quest walked to the same empty spawn in turn (b400 q9537:
+            // a single spawn, Feeli, Farret 2704 yd, Zharet 1581 yd, Aevmae - each "every camp seen empty")
+            if (spot->spawnId && spot->mapId == bot->GetMapId())
+            {
+                Map* map = bot->GetMap();
+                time_t const now = time(nullptr);
+                time_t up = spot->object ? map->GetGORespawnTime(spot->spawnId)
+                                         : map->GetCreatureRespawnTime(spot->spawnId);
+                bool alive = false;
+                if (spot->object)
+                {
+                    auto const range = map->GetGameObjectBySpawnIdStore().equal_range(spot->spawnId);
+                    for (auto it = range.first; it != range.second; ++it)
+                        if (it->second->isSpawned())
+                            alive = true;
+                        else
+                            up = std::max(up, it->second->GetRespawnTime());
+                }
+                else
+                {
+                    auto const range = map->GetCreatureBySpawnIdStore().equal_range(spot->spawnId);
+                    for (auto it = range.first; it != range.second; ++it)
+                        if (it->second->IsAlive())
+                            alive = true;
+                        else
+                            up = std::max(up, it->second->GetRespawnTime());
+                }
+                if (!alive && up > now)
+                {
+                    ++spent;
+                    ++resolveStats.spent;
+                    continue;
+                }
+            }
             // [guild90] another bot works that camp for the quest: taken, like a player sees it
             if (TakenByOther(bot, questId, spot->x, spot->y))
             {
@@ -6472,6 +6508,33 @@ std::string NewRpgBaseAction::LastResolveStats()
            " taken=" + std::to_string(resolveStats.taken) + " offered=" + std::to_string(resolveStats.offered);
 }
 
+void NewRpgBaseAction::ForEachHostileSpawn(Player* bot, float x, float y, float radius,
+                                           std::function<void(CreatureTemplate const*, float, float, float)> const& fn)
+{
+    QuestSpawnIndex const& index = GetQuestSpawnIndex();
+    FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+    if (!own)
+        return;
+    int32 const cells = int32(std::ceil(radius / MAX_AGGRO_RADIUS));
+    for (int32 dx = -cells; dx <= cells; ++dx)
+        for (int32 dy = -cells; dy <= cells; ++dy)
+        {
+            auto const cell = index.mobCells.find(
+                MobCellKey(bot->GetMapId(), x + float(dx) * MAX_AGGRO_RADIUS, y + float(dy) * MAX_AGGRO_RADIUS));
+            if (cell == index.mobCells.end())
+                continue;
+            for (MobSpawn const& m : cell->second)
+            {
+                if (!SpawnPresent(m) || std::hypot(m.x - x, m.y - y) > radius)
+                    continue;
+                FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(m.tmpl->faction);
+                if (!faction || !faction->IsHostileTo(*own))
+                    continue;
+                fn(m.tmpl, m.x, m.y, m.wander);
+            }
+        }
+}
+
 bool NewRpgBaseAction::ObjectiveTargetHere(Player* bot, uint32 questId, Unit* grindTarget)
 {
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
@@ -6834,6 +6897,58 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
                 in.respawnDue = in.respawnDue ? std::min(in.respawnDue, now + wait) : now + wait;
             leaveOut(questId, true);
             continue;
+        }
+        // [camp63] each objective camp priced now, from the static spawns, with the solo judge's formula against the
+        // bot at full: a camp it loses even at full is no stop - its objective goes to the co-op seek / camp-help
+        // request at once instead of a walk to it (b400: 125 objective stops left postponed, 20106 s walked). Priced
+        // at every build: a level, its gear or a party that changes the price brings the quest back into the route
+        if (SoloSafety::Applies(bot) && !NewRpgCoop::InParty(bot->GetGUID().GetCounter()))
+        {
+            std::string lostWhy;
+            POIInfo lostAt = poiInfo[0];
+            poiInfo.erase(std::remove_if(poiInfo.begin(), poiInfo.end(),
+                                         [&](POIInfo const& poi)
+                                         {
+                                             int32 const i = poi.objectiveIdx;
+                                             bool const priced =
+                                                 (i >= 0 && i < QUEST_OBJECTIVES_COUNT &&
+                                                  quest->RequiredNpcOrGo[i] > 0) ||
+                                                 (i >= QUEST_OBJECTIVES_COUNT &&
+                                                  i < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT);
+                                             std::string w;
+                                             if (!priced || !NewRpgCoop::StaticCampLost(
+                                                                bot, questId, i,
+                                                                WorldPosition(bot->GetMapId(), poi.pos.x, poi.pos.y,
+                                                                              poi.z),
+                                                                w))
+                                                 return false;
+                                             if (lostWhy.empty())
+                                             {
+                                                 lostWhy = w;
+                                                 lostAt = poi;
+                                             }
+                                             return true;
+                                         }),
+                          poiInfo.end());
+            if (poiInfo.empty())
+            {
+                static std::mutex campLogLock;  // one line per bot, quest and level: a log cadence
+                static std::set<std::tuple<uint32, uint32, uint8>> campLogged;
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(campLogLock);
+                    fresh = campLogged.insert({bot->GetGUID().GetCounter(), questId, level}).second;
+                }
+                if (fresh)
+                    LOG_INFO("playerbots", "[camp63] {} L{} q{} left out of its route: every objective camp is lost "
+                             "even at full - {}; to the co-op seek / camp-help request",
+                             bot->GetName(), level, questId, lostWhy);
+                NewRpgCoop::OnStaticCampLost(
+                    bot, questId, lostAt.objectiveIdx,
+                    WorldPosition(bot->GetMapId(), lostAt.pos.x, lostAt.pos.y, lostAt.z), lostWhy);
+                leaveOut(questId, true);
+                continue;
+            }
         }
         // the area's middle: the unspent camp nearest all the others
         POIInfo const* middle = &poiInfo[0];

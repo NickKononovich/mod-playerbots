@@ -1444,6 +1444,18 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // [deaths13] hurt, out of a fight, in a wanderer's reach: the rest is taken out of every reach
     if (RestEscape())
         return true;
+    // [cap65] standing in the other faction's capital (its guards L75 everywhere; cleft62 covers only a login there):
+    // out by its Hearthstone, as a player leaves - b400 Feette L19 (Alliance) walked from Durotar into Orgrimmar's
+    // north and stood walled by Orgrimmar Grunts L75 for the whole run, 31 dead-end postpones
+    if (!bot->IsInCombat() && bot->IsAlive() && SoloSafety::Applies(bot) && !bot->GetMap()->Instanceable())
+        if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(bot->GetZoneId()))
+        {
+            uint32 const own = bot->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
+            if ((zone->flags & AREA_FLAG_CAPITAL) && zone->team && zone->team != own &&
+                zone->team != AREATEAM_ANY &&
+                HearthOut(std::string("[cap65] stands in the enemy capital ") + zone->area_name[0]))
+                return true;
+        }
     // [deaths20] an IDLE bot (between its tasks: a fight's end, a loot, a hand-in) standing in an idle hostile's reach
     // steps out of every reach before it plans, as a hurt one does: its next walk starts from there. b367: of 9
     // "attacked, no judged pull" deaths, 5 had the attacker idle 5-6 yd from its home at 1-5 yd from the bot standing
