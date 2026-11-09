@@ -2320,7 +2320,11 @@ float TimeRate(Player* p)
         float const killXp = float(Acore::XP::BaseGain(level, level, content)) * sWorld->getRate(RATE_XP_KILL);
         float const killSeconds =
             float(stats->BaseHealth[std::min<uint32>(content, MAX_EXPANSIONS - 1)]) / dps;
-        grind = killSeconds > 0.0f ? killXp / killSeconds : 0.0f;
+        // [zone23] the kill's whole cycle where the helper stands (fight, walk at the spawn density, rest, the
+        // respawn floor), not its fight alone
+        std::string parts;
+        float const cycle = NewRpgBaseAction::GrindCycleSeconds(p, WorldPosition(p), killSeconds, parts);
+        grind = cycle > 0.0f ? killXp / cycle : 0.0f;
     }
     return std::max(route, grind);
 }

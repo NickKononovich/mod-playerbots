@@ -303,7 +303,9 @@ protected:
     static void NavGap(Player* bot, std::string const& event);
     // [zone23] a grind kill's whole cycle at `spot` (fight, walk at the spawn density, rest, the respawn floor)
     // -1: no mob of its level there
-    float GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts);
+public:
+    static float GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts);
+protected:
     // [routeplan] the stops done, postponed or dropped are cut out of the order (no new build); a hand-in that opens
     // a follow-up the bot may take: its why (the route is built again)
     std::string TrimRoute(QuestRoute::BotRoute& route, std::vector<std::pair<WorldPosition, std::string>> const& towns);
