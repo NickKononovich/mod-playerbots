@@ -4775,9 +4775,32 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
         LOG_INFO("playerbots", "[solo] {} L{} TRIP_REFUSED {} at ({:.0f},{:.0f}) {:.0f} yd: its walk passes {} L{}-{}",
                  bot->GetName(), bot->GetLevel(), what, x, y, bot->GetExactDist(x, y, z), danger->Name,
                  danger->minlevel, danger->maxlevel);
+    // [trip37] the trip is priced like any walk: a destination in an orange / red or elite roamer's round, or one
+    // whose only walk passes a reach the bot must never fight (no complete walk round), is refused. b388: vendor runs
+    // into camps - Kianey L14's repair walk to Gavin Gnarltree among the Nightbane Dark Runners (6 deaths),
+    // Aestymro's "buy drink" walk through the Longshore murlocs, Guinudrond and Manue through the Riverpaw gnolls
+    bool refused = danger != nullptr;
+    if (!refused)
+    {
+        std::string roamer;
+        if (SoloSafety::RoamerReaches(bot, G3D::Vector3(x, y, z), roamer))
+        {
+            refused = true;
+            LOG_INFO("playerbots", "[trip37] {} L{} TRIP_REFUSED {} at ({:.0f},{:.0f}): it lies in the round of {}",
+                     bot->GetName(), bot->GetLevel(), what, x, y, roamer);
+        }
+        else if (Leader::RouteResult const route = Leader::Route(bot, Position(x, y, z));
+                 route.found && route.throughRefused)
+        {
+            refused = true;
+            LOG_INFO("playerbots", "[trip37] {} L{} TRIP_REFUSED {} at ({:.0f},{:.0f}): its only walk passes the reach "
+                     "of a mob it must not fight",
+                     bot->GetName(), bot->GetLevel(), what, x, y);
+        }
+    }
     std::lock_guard<std::mutex> guard(lock);
-    judged[bot->GetGUID().GetCounter()][key] = {bot->GetLevel(), danger != nullptr};
-    return danger != nullptr;
+    judged[bot->GetGUID().GetCounter()][key] = {bot->GetLevel(), refused};
+    return refused;
 }
 
 void NewRpgBaseAction::RecordDeath(Player* bot, Creature* killer)
