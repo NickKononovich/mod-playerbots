@@ -407,6 +407,22 @@ namespace KaraChess
     bool Active(Player* bot);
 }
 
+// [kara6] The Wizard of Oz: a tank holds Tinhead (taunts him off anybody else); the others step behind him
+class WizardOfOzTankTinheadAction : public AttackAction
+{
+public:
+    WizardOfOzTankTinheadAction(PlayerbotAI* botAI) : AttackAction(botAI, "wizard of oz tank tinhead") {}
+    bool Execute(Event event) override;
+};
+
+class WizardOfOzStepBehindTinheadAction : public MovementAction
+{
+public:
+    WizardOfOzStepBehindTinheadAction(PlayerbotAI* botAI)
+        : MovementAction(botAI, "wizard of oz step behind tinhead") {}
+    bool Execute(Event event) override;
+};
+
 // [kara4] The Spectral Retainer charms a member (Oath of Fealty 29546, 15 s, no dispel): it dies first in its pull,
 // the dangerous caster - the raid's skull.
 class KarazhanMarkSpectralRetainerAction : public Action

@@ -145,6 +145,8 @@ public:
 
         // [kara3] Chess Event
         creators["karazhan chess event active"] = &RaidKarazhanTriggerContext::karazhan_chess_event_active;
+        creators["wizard of oz tinhead needs a tank"] = &RaidKarazhanTriggerContext::wizard_of_oz_tinhead_needs_a_tank;
+        creators["wizard of oz in front of tinhead"] = &RaidKarazhanTriggerContext::wizard_of_oz_in_front_of_tinhead;
         creators["karazhan spectral retainer in fight"] =
             &RaidKarazhanTriggerContext::karazhan_spectral_retainer_in_fight;
         creators["moroes off-tank should hold second threat"] =
@@ -333,6 +335,14 @@ private:
     static Trigger* karazhan_chess_event_active(PlayerbotAI* botAI)
     {
         return new KarazhanChessEventActiveTrigger(botAI);
+    }
+    static Trigger* wizard_of_oz_tinhead_needs_a_tank(PlayerbotAI* botAI)
+    {
+        return new WizardOfOzTinheadNeedsTankTrigger(botAI);
+    }
+    static Trigger* wizard_of_oz_in_front_of_tinhead(PlayerbotAI* botAI)
+    {
+        return new WizardOfOzInFrontOfTinheadTrigger(botAI);
     }
     static Trigger* karazhan_spectral_retainer_in_fight(PlayerbotAI* botAI)
     {
