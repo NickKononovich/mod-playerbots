@@ -81,6 +81,8 @@ namespace
         float healthPct = 0.0f;
         float manaPct = 0.0f;
         uint32 mobs = 0;
+        G3D::Vector3 fightAt;     // [fight49] where the judge put the fight
+        float safeRadius = -1.0f;  // [fight49] the yards round it out of every reach it left out (-1: not set)
     };
 
     // the self heal the bot casts best (most healing per mana), from spell data
@@ -1902,6 +1904,82 @@ namespace SoloSafety
         state.engage.healthPct = bot->GetHealthPct();
         state.engage.manaPct = bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f;
         state.engage.mobs = verdict.mobs;
+        // [fight49] the safe area: the fight spot and its margin to the nearest idle mob's reach that is not the
+        // target's own (the judge counted those joining it)
+        state.engage.fightAt = verdict.pullSpot ? verdict.pull
+                                                : G3D::Vector3(target->GetPositionX(), target->GetPositionY(),
+                                                               target->GetPositionZ());
+        state.engage.safeRadius = -1.0f;
+    }
+
+    namespace
+    {
+        // the margin round `at` to the nearest idle hostile reach of a mob other than the fight's (in sight)
+        float SafeMargin(Player* bot, Unit* target, G3D::Vector3 const& at, std::string& nearest)
+        {
+            float const look = sPlayerbotAIConfig.SightDistance;
+            std::list<Unit*> units;
+            Acore::AnyUnitInObjectRangeCheck check(bot, look);
+            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+            Cell::VisitObjects(bot, searcher, look);
+            float margin = look;
+            for (Unit* unit : units)
+            {
+                Creature* mob = unit->ToCreature();
+                if (!mob || mob == target || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                    !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                    continue;
+                G3D::Vector4 const disc = AggroDisc(mob, bot);
+                float const gap = std::hypot(disc.x - at.x, disc.y - at.y) - disc.w;
+                if (gap < margin)
+                {
+                    margin = gap;
+                    nearest = Acore::StringFormat("{} L{}", mob->GetName(), mob->GetLevel());
+                }
+            }
+            return margin;
+        }
+    }
+
+    bool FightPastJudged(Player* bot, Unit* target, G3D::Vector3 const& to, std::string& why)
+    {
+        if (!bot || !target)
+            return false;
+        G3D::Vector3 at;
+        float radius = -1.0f;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end() || !found->second.engaged || found->second.engage.target != target->GetGUID())
+                return false;
+            at = found->second.engage.fightAt;
+            radius = found->second.engage.safeRadius;
+        }
+        std::string nearest;
+        if (radius < 0.0f)
+        {
+            radius = std::max(0.0f, SafeMargin(bot, target, at, nearest));
+            std::lock_guard<std::mutex> guard(lock);
+            states[bot->GetGUID().GetCounter()].engage.safeRadius = radius;
+        }
+        float const off = std::hypot(to.x - at.x, to.y - at.y);
+        if (off <= radius)
+            return false;
+        // past the judged area: judged again at `to` - a reach it would enter there is its answer
+        std::string entered;
+        float const there = SafeMargin(bot, target, to, entered);
+        if (there >= 0.0f)
+        {
+            // no reach there either: the area grows to it (the fight goes on there)
+            std::lock_guard<std::mutex> guard(lock);
+            auto& engage = states[bot->GetGUID().GetCounter()].engage;
+            engage.fightAt = to;
+            engage.safeRadius = there;
+            return false;
+        }
+        why = Acore::StringFormat("{:.0f} yd past the judged fight spot ({:.0f},{:.0f}, safe {:.0f} yd): the reach of {}",
+                                  off - radius, at.x, at.y, radius, entered);
+        return true;
     }
 
     bool PullWalk(Player* bot, G3D::Vector3 const& to, G3D::Vector3& spot, std::vector<G3D::Vector4>& avoid)

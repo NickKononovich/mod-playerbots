@@ -2541,6 +2541,36 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     if (!IsMovingAllowed(target))
         return false;
 
+    // [fight49] user 2026-11-09: a solo bot keeps its fight at the judged spot - a chase whose end leaves the judged
+    // area into a reach the judge left out is not walked; the target is let go there (its class tools slow or stop a
+    // runner as its rotation does), the bot fights what comes to it. b393 W2: 112 of the UNJUDGED fights were
+    // wanderers walking into a DO_QUEST fight that had drifted off its judged spot
+    if (SoloSafety::Applies(bot) && bot->IsInCombat())
+    {
+        std::string why;
+        if (SoloSafety::FightPastJudged(bot, target,
+                                        G3D::Vector3(target->GetPositionX(), target->GetPositionY(),
+                                                     target->GetPositionZ()),
+                                        why))
+        {
+            static std::mutex fightLock;  // one line per bot and target: a log cadence, no decision reads it
+            static std::unordered_map<uint32, ObjectGuid> fightLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(fightLock);
+                ObjectGuid& last = fightLogged[bot->GetGUID().GetCounter()];
+                fresh = last != target->GetGUID();
+                last = target->GetGUID();
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[fight49] {} L{} does not chase {} L{}: {}", bot->GetName(), bot->GetLevel(),
+                         target->GetName(), target->GetLevel(), why);
+            if (bot->isMoving())
+                bot->StopMoving();
+            return false;
+        }
+    }
+
     // [pullplan] a solo bot's pull from its pull spot: it pulls from there and meets the target there, not in its camp
     {
         G3D::Vector3 spot;
