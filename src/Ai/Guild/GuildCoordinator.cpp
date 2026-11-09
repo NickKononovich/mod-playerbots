@@ -5015,6 +5015,12 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
         }
     }
 
+    // [b367] the looter's own use of the item, read before lock_: ItemUsageValue asks IsHeld, which takes lock_ too
+    // (std::mutex is not recursive - the b366 crash: resource_deadlock_would_occur from IsHeld under DecideLoot)
+    ItemUsage looterUsage = ITEM_USAGE_NONE;
+    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(looter))
+        looterUsage = ai->GetAiObjectContext()->GetValue<ItemUsage>("item usage", std::to_string(report.itemId))->Get();
+
     std::lock_guard<std::mutex> guard(lock_);
     BotState& st = bots_[looterLow];
     auto held = std::find_if(st.held.begin(), st.held.end(),
@@ -5057,10 +5063,9 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
         }
 
     // the looter uses it itself (its profession, a spell, a quest): no decision needed
-    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(looter))
+    if (GET_PLAYERBOT_AI(looter))
     {
-        ItemUsage const usage =
-            ai->GetAiObjectContext()->GetValue<ItemUsage>("item usage", std::to_string(report.itemId))->Get();
+        ItemUsage const usage = looterUsage;
         if (usage == ITEM_USAGE_SKILL || usage == ITEM_USAGE_USE || usage == ITEM_USAGE_QUEST ||
             usage == ITEM_USAGE_KEEP || usage == ITEM_USAGE_AMMO || usage == ITEM_USAGE_GUILD_TASK ||
             usage == ITEM_USAGE_EQUIP || usage == ITEM_USAGE_REPLACE)
