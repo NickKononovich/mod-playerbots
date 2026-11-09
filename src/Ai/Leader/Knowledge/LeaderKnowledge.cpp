@@ -775,6 +775,15 @@ namespace Leader::Knowledge
             {349, 32.0f, -160.0f, -196.4f, {13601}, {13596},
              "Maraudon: the lake surface on Rotgrip's patrol - wait, pull him as he passes", true, 40.0f, -100000.0f,
              false, {}, 100000.0f, {}, 0.0f, -1, {}, false, true},
+            // [kara6] Karazhan, the Opera: once Barnes's gossip started it (karazhan.cpp npc_barnes StartEvent:
+            // SetBossState(DATA_OPERA_PERFORMANCE 3, IN_PROGRESS), his walk, the curtain, PrepareEncounter summons
+            // the actors at x -10896..-10884, y -1758, z 90.5), the group stands on the stage and fights them until
+            // the slot leaves IN_PROGRESS - no idle boss elsewhere, no starter. b367 kara-n segment 4
+            // (20261109-062352-10A-5): the Opera went IN_PROGRESS at 465 s, the route took stage trash, the seating,
+            // then the Curator and Aran; the actors were never engaged and the slot ended "not started".
+            {.mapId = 532, .x = -10891.0f, .y = -1765.0f, .z = 90.5f, .afterDead = {15687}, .untilDead = {},
+             .note = "Karazhan: the Opera stage while the Opera runs", .hold = false, .holdRadius = 35.0f,
+             .afterUsed = {16812}, .eventBossSlot = 3},
             // [kara3] Karazhan, the Chess Event: the game is played at the Echo of Medivh 16816 (boss_chess_event.cpp;
             // the members' "karazhan chess play" asks him and takes the pieces). A hold spot from Aran's and the
             // Curator's death until the game is won (DATA_CHESS_EVENT 8 DONE): the route waits there, nothing else

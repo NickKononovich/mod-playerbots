@@ -558,6 +558,14 @@ namespace Leader::Travel
         // [b32_pos] EventSpotDef::progressData: a reached step holds until the instance progress got there.
         if (spot.progressData >= 0)
             return ProgressStepPending(group, spot);
+        if (spot.eventBossSlot >= 0)  // [kara6] a boss slot's event
+        {
+            Player* leader = ObjectAccessor::FindPlayer(group.LeaderGuid());
+            Map* map = leader ? leader->GetMap() : nullptr;
+            InstanceMap* instance = map && map->GetInstanceId() == group.InstanceId() ? map->ToInstanceMap() : nullptr;
+            InstanceScript* script = instance ? instance->GetInstanceScript() : nullptr;
+            return script && script->GetBossState(uint32(spot.eventBossSlot)) == IN_PROGRESS;
+        }
         if (spot.eventData < 0)
             return false;
         if (routeState.eventSpotRetry)

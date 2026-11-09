@@ -1187,6 +1187,30 @@ void TickBuffOrders(LeaderGroup& group, std::vector<Player*> const& members, Log
             work += (work.empty() ? "" : ", ") + order.what + " (its mana for the cast)";
             continue;
         }
+        // [kara6] the game would bounce it: a stronger aura of the same exclusive group is on the target
+        // (Spell::CheckCast SPELL_FAILED_AURA_BOUNCED - Blessing of Might under a Greater Blessing of Might or a
+        // stronger Battle Shout). b367: 56 "failed: the game refuses it on ...: SPELL_FAILED_AURA_BOUNCED"
+        if (Unit* buffTarget = ObjectAccessor::GetUnit(*caster, order.target))
+        {
+            uint8 auraMask = 0;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+                if (info->Effects[i].IsAura())
+                    auraMask |= uint8(1 << i);
+            bool bounced = false;
+            for (uint8 i = 0; i < MAX_SPELL_EFFECTS && !bounced && !info->IsTargetingArea(); ++i)
+                if ((auraMask & (1 << i)) &&
+                    !buffTarget->IsHighestExclusiveAuraEffect(info, AuraType(info->Effects[i].ApplyAuraName),
+                                                              info->Effects[i].CalcValue(caster), auraMask, false))
+                    bounced = true;
+            if (bounced)
+            {
+                st.buffFailed[key] = "a stronger aura of its exclusive group is on the target";
+                LOG_INFO("playerbots", "[kara6] buff_order: {} not issued: a stronger aura of its exclusive group is "
+                         "on {} ({})", order.what, buffTarget->GetName(), group.Run().runId);
+                busy.erase(order.caster);
+                continue;
+            }
+        }
         std::string stale;
         Leader::Events::TakeExternalFailed(order.caster, order.spell, stale);  // a report of an earlier order
         bool const changed = Leader::Events::SetExternal(order.caster, order.spell, order.target);

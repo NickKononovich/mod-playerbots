@@ -2342,7 +2342,7 @@ namespace Leader::Travel
         // [brd_ring_hold] A step that holds while its event runs (EventSpotDef::eventData, the Ring of Law): idle
         // bosses outside holdRadius and every starter wait too - 2026-10-25 brd-n: an Anvilrage Guardsman 86 yd out
         // was the target 1 s after the trigger, the group left the arena and the waves failed.
-        bool const eventHold = holdSpot && holdSpot->eventData >= 0;
+        bool const eventHold = holdSpot && (holdSpot->eventData >= 0 || holdSpot->eventBossSlot >= 0);  // [kara6]
         if (eventHold && (!group.Route().eventHoldLogMs || getMSTimeDiff(group.Route().eventHoldLogMs, now) >=
             EVENT_HOLD_LOG_MS))
         {
