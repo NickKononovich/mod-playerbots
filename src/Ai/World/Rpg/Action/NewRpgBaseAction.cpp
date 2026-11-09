@@ -473,6 +473,8 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 
     if (SoloSafetyStep())  // [guild13]
         return true;
+    if (TramTrackStep())  // [tram25]
+        return true;
     if (DestinationRefused(dest))  // [guild13]
         return RefusedWalk(dest, "its spot lies among mobs it does not pull");
     // [guild15] the next stretch of the walk passes an idle mob whose fight it wins only at full health and mana: it
@@ -545,6 +547,75 @@ void NewRpgBaseAction::GiveUpWalkTargets(WorldPosition const& dest, std::string 
         }
     if (info.trip.phase != NewRpgInfo::TripPhase::Ride && info.trip.phase != NewRpgInfo::TripPhase::Leave)
         info.ClearTrip();
+}
+
+bool NewRpgBaseAction::TramTrackStep()
+{
+    // [tram25] coordinator 2026-11-09: a bot left standing on a tram line's track off the navmesh (an earlier
+    // session walked it into the tunnel: b364-b373 Januel at (0,1551,-69) over the Deeprun pit) gets off it the way a
+    // player does - the next car that comes under it carries it (the core's own test of the car's model under it,
+    // Map::GetTransportForPos), it rides to the car's next stop and steps off at its platform (RideTransport).
+    // Until a car comes it waits where it stands: no walk off the track, no Hearthstone
+    if (bot->GetTransport() || bot->IsInFlight() || bot->IsBeingTeleported() || bot->IsInCombat())
+        return false;
+    TravelRouteMgr::Line const* track = nullptr;
+    float trackGap = 0.0f;
+    for (TravelRouteMgr::Line const& line : sTravelRouteMgr.GetLines())
+    {
+        if (!line.isStatic || line.docks.size() < 2 || line.docks.front().mapId != bot->GetMapId())
+            continue;
+        // the car's way between its stops, as the straight line their spots span (the tram's tunnel)
+        TravelRouteMgr::Dock const& a = line.docks.front();
+        TravelRouteMgr::Dock const& b = line.docks.back();
+        float const abx = b.x - a.x, aby = b.y - a.y;
+        float const t = std::clamp(((bot->GetPositionX() - a.x) * abx + (bot->GetPositionY() - a.y) * aby) /
+                                       std::max(abx * abx + aby * aby, 1.0f),
+                                   0.0f, 1.0f);
+        float const gap = std::hypot(a.x + abx * t - bot->GetPositionX(), a.y + aby * t - bot->GetPositionY());
+        if (!track || gap < trackGap)
+        {
+            track = &line;
+            trackGap = gap;
+        }
+    }
+    constexpr float TRACK_HALF_WIDTH = 10.0f;  // the car's half width and the track beside it
+    if (!track || trackGap > TRACK_HALF_WIDTH)
+        return false;
+    // on the navmesh (a platform): the walk goes on as planned
+    if (dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery())
+    {
+        dtQueryFilter filter;
+        filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+        float const point[3] = {bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX()};
+        float const extents[3] = {3.0f, 5.0f, 3.0f};
+        float nearest[3] = {0.0f, 0.0f, 0.0f};
+        dtPolyRef ref = 0;
+        if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref)
+            return false;
+    }
+    if (Transport* car = bot->GetMap()->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(),
+                                                           bot->GetPositionY(), bot->GetPositionZ(), bot))
+        if (TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(car->GetEntry()); line && line->isStatic)
+        {
+            car->AddPassenger(bot, true);
+            bot->StopMovingOnCurrentPos();
+            botAI->rpgInfo.ClearTrip();
+            botAI->rpgInfo.SetTripPhase(NewRpgInfo::TripPhase::Ride);
+            LOG_INFO("playerbots", "[tram25] {} L{} off the navmesh on the track at ({:.1f},{:.1f},{:.1f}): boards "
+                     "car {} as it passes under it",
+                     bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                     car->GetEntry());
+            return true;
+        }
+    if (botAI->rpgInfo.holdNote != "tram25")
+    {
+        botAI->rpgInfo.holdNote = "tram25";
+        LOG_INFO("playerbots", "[tram25] {} L{} off the navmesh on the track at ({:.1f},{:.1f},{:.1f}), {:.0f} yd off "
+                 "the line of car {}: waits for a car to pass under it",
+                 bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                 trackGap, track->entry);
+    }
+    return HoldPosition(IN_MILLISECONDS);
 }
 
 bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const& why)
