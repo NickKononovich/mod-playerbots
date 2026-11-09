@@ -23,6 +23,10 @@ void RaidKarazhanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("karazhan chess event active",
         { NextAction("karazhan chess play", ACTION_EMERGENCY + 8) }));
 
+    // [kara4] the Spectral Retainer (Oath of Fealty) dies first in its pull
+    triggers.push_back(new TriggerNode("karazhan spectral retainer in fight",
+        { NextAction("karazhan mark spectral retainer", ACTION_RAID) }));
+
     // Trash
     triggers.push_back(new TriggerNode("mana warp is about to explode",
         { NextAction("mana warp stun creature before warp breach", ACTION_EMERGENCY + 6) }));

@@ -288,6 +288,20 @@ bool MoroesMarkTargetAction::Execute(Event /*event*/)
     return false;
 }
 
+// [kara4] b359 kara-n 20261109-010057-10A-1 t=339-377: the Retainer's Oath of Fealty took the fury warrior, then the
+// priest (dead at 377 s); the group fought the guests round it. The skull on it: the members' focus.
+bool KarazhanMarkSpectralRetainerAction::Execute(Event /*event*/)
+{
+    Unit* retainer = AI_VALUE2(Unit*, "find target", "spectral retainer");
+    if (!retainer || !retainer->IsAlive())
+        return false;
+    bool const marked = MarkTargetWithSkull(bot, retainer);
+    if (marked)
+        LOG_INFO("playerbots", "[kara4] charm: {} marks {} first in its pull (Oath of Fealty)", bot->GetName(),
+                 retainer->GetName());
+    return marked;
+}
+
 // [kara3] b356 kara-n 20261108-234616-10A-1: the death knight tanked Moroes, the paladin tank the guests; Gouge
 // sent Moroes to the second on his threat list - the fury warrior (4245 against the paladin's 2204), dead at 1108 s,
 // then the warlock at 1145 s. The tank he does not hit holds the second place on his threat list: above every

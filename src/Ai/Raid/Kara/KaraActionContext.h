@@ -145,6 +145,7 @@ public:
 
         // [kara3] Chess Event
         creators["karazhan chess play"] = &RaidKarazhanActionContext::karazhan_chess_play;
+        creators["karazhan mark spectral retainer"] = &RaidKarazhanActionContext::karazhan_mark_spectral_retainer;
         creators["moroes off-tank holds second threat"] =
             &RaidKarazhanActionContext::moroes_off_tank_holds_second_threat;
     }
@@ -330,6 +331,10 @@ private:
         return new NightbaneManageTimersAndTrackersAction(botAI);
     }
     static Action* karazhan_chess_play(PlayerbotAI* botAI) { return new KarazhanChessPlayAction(botAI); }
+    static Action* karazhan_mark_spectral_retainer(PlayerbotAI* botAI)
+    {
+        return new KarazhanMarkSpectralRetainerAction(botAI);
+    }
     static Action* moroes_off_tank_holds_second_threat(PlayerbotAI* botAI)
     {
         return new MoroesOffTankHoldsSecondThreatAction(botAI);

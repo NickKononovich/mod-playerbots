@@ -407,6 +407,15 @@ namespace KaraChess
     bool Active(Player* bot);
 }
 
+// [kara4] The Spectral Retainer charms a member (Oath of Fealty 29546, 15 s, no dispel): it dies first in its pull,
+// the dangerous caster - the raid's skull.
+class KarazhanMarkSpectralRetainerAction : public Action
+{
+public:
+    KarazhanMarkSpectralRetainerAction(PlayerbotAI* botAI) : Action(botAI, "karazhan mark spectral retainer") {}
+    bool Execute(Event event) override;
+};
+
 // [kara3] Moroes' Gouge (boss_moroes.cpp) incapacitates his target and he turns to the next on his threat list:
 // the tank that does not tank him keeps that second place, in melee, and taunts him back off anybody else.
 class MoroesOffTankHoldsSecondThreatAction : public AttackAction

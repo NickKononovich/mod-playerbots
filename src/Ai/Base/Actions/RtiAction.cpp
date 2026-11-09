@@ -24,6 +24,7 @@
 #include "RaidMarkOwnership.h"
 #include "RtiTargetValue.h"
 #include "RtiValue.h"
+#include "SpellAuraEffects.h"  // [kara4] CharmAura
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
@@ -1228,11 +1229,55 @@ namespace
 
     std::mutex charmedAllyClaimLock;
     std::unordered_map<uint64, std::pair<uint64, uint32>> charmedAllyClaims;  // member -> (bot, since)
+
+    // [kara4] The charm on a member and whether a dispel takes it off. Unit::GetDispellableAuraList reads a charmed
+    // unit's reaction by its own faction (GetReactionTo(caster, IsCharmed())): the member counts as friendly, its
+    // negative magic auras go with a Dispel Magic. A charm whose spell has no dispel type cannot be dispelled -
+    // Karazhan's Spectral Retainer Oath of Fealty 29546 (Spell.dbc Dispel 0, mechanic charm, 15 s).
+    Aura const* CharmAura(Player* member)
+    {
+        for (AuraType type : {SPELL_AURA_MOD_CHARM, SPELL_AURA_MOD_POSSESS, SPELL_AURA_AOE_CHARM})
+            for (AuraEffect const* effect : member->GetAuraEffectsByType(type))
+                if (effect && effect->GetBase() && effect->GetCasterGUID() != member->GetGUID())
+                    return effect->GetBase();
+        return nullptr;
+    }
+
+    // A group member that dispels magic with a spell on any target (a priest's Dispel Magic: TARGET_UNIT_TARGET_ANY;
+    // a paladin's Cleanse takes allies only, which a charmed member is not), alive, in reach.
+    Player* MagicDispeller(Player* bot, Player* member)
+    {
+        Group* group = bot->GetGroup();
+        if (!group)
+            return nullptr;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* other = ref->GetSource(); other && other != member && other->IsAlive() &&
+                                                  other->GetMap() == bot->GetMap() &&
+                                                  other->getClass() == CLASS_PRIEST &&
+                                                  !AttackersValue::IsCharmedAlly(other, bot) &&
+                                                  other->IsWithinDist(member, 30.0f))
+                return other;
+        return nullptr;
+    }
+
+    // one "[kara4] charm:" line per member and choice
+    void NoteCharm(Player* bot, Player* member, std::string const& what)
+    {
+        static std::mutex lock;
+        static std::unordered_map<uint64, std::string> last;
+        std::lock_guard<std::mutex> guard(lock);
+        std::string& seen = last[member->GetGUID().GetRawValue() ^ (bot->GetGUID().GetRawValue() << 1)];
+        if (seen == what)
+            return;
+        seen = what;
+        LOG_INFO("playerbots", "[kara4] charm: {} on {}: {}", bot->GetName(), member->GetName(), what);
+    }
 }
 
 bool ControlCharmedMemberAction::isUseful()
 {
-    return !CharmedAllyOptions(bot->getClass()).empty() &&
+    // [kara4] a priest dispels a magic charm (Execute)
+    return (!CharmedAllyOptions(bot->getClass()).empty() || bot->getClass() == CLASS_PRIEST) &&
            AttackersValue::FindCharmedAlly(bot, CHARMED_ALLY_RANGE) != nullptr;
 }
 
@@ -1241,6 +1286,32 @@ bool ControlCharmedMemberAction::Execute(Event /*event*/)
     Player* member = AttackersValue::FindCharmedAlly(bot, CHARMED_ALLY_RANGE);
     if (!member)
         return false;
+
+    // [kara4] a dispellable charm is dispelled, not crowd-controlled: the member is the group's again at once.
+    // Only with nobody of the group able to dispel it does the control below run.
+    Aura const* charm = CharmAura(member);
+    SpellInfo const* charmInfo = charm ? charm->GetSpellInfo() : nullptr;
+    bool const dispellable = charmInfo && charmInfo->Dispel == DISPEL_MAGIC;
+    if (dispellable)
+    {
+        if (bot->getClass() == CLASS_PRIEST && botAI->CanCastSpell("dispel magic", member) &&
+            botAI->CastSpell("dispel magic", member))
+        {
+            NoteCharm(bot, member,
+                      Acore::StringFormat("dispel magic on {} {}", charmInfo->SpellName[0], charmInfo->Id));
+            return true;
+        }
+        if (Player* dispeller = MagicDispeller(bot, member); dispeller && dispeller != bot)
+        {
+            NoteCharm(bot, member, Acore::StringFormat("no control: {} {} is magic, {} dispels it",
+                                                       charmInfo->SpellName[0], charmInfo->Id, dispeller->GetName()));
+            return false;
+        }
+    }
+    if (charmInfo)
+        NoteCharm(bot, member, Acore::StringFormat("{} {} {}: control", charmInfo->SpellName[0], charmInfo->Id,
+                                                   dispellable ? "is magic, no dispeller in reach"
+                                                               : "has no dispel type"));
 
     uint32 const now = getMSTime();
     uint64 const memberKey = member->GetGUID().GetRawValue();
