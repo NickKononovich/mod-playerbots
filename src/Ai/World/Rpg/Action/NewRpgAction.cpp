@@ -1232,6 +1232,69 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                         return true;
                     }
             }
+            // [sick42] ... and out of every orange / red or elite roamer's round (a wanderer's area, a patrol's path):
+            // StandsInReach sees the idle mobs in sight where they stand now, a roamer away on its round is none of
+            // them. b389: Bami L13 12 deaths to a Black Ravager Mastiff L25 (wanderer, aggro 30), each ~21 s after its
+            // spirit-healer rise; Ganna L14 9 deaths to a Starving Buzzard L36 (patrol); [sick37] logged nothing
+            if (!bot->isMoving())
+            {
+                G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                std::string roamer;
+                // one search per spot: a spot with no way out is not searched again until the bot has moved (the
+                // search is a look's cost, no rule)
+                static std::mutex sickSearchLock;
+                static std::unordered_map<uint32, std::pair<int32, int32>> sickSearched;
+                std::pair<int32, int32> const spotKey{int32(here.x), int32(here.y)};
+                bool searchedHere = false;
+                {
+                    std::lock_guard<std::mutex> guard(sickSearchLock);
+                    auto const found = sickSearched.find(bot->GetGUID().GetCounter());
+                    searchedHere = found != sickSearched.end() && found->second == spotKey;
+                }
+                // a spot searched without a way out: its Hearthstone again (its cooldown may have run out)
+                if (searchedHere && HearthOut("under Resurrection Sickness in a roamer's round with no spot out of "
+                                              "it: a zone above its level"))
+                    return true;
+                if (!searchedHere && SoloSafety::RoamerReaches(bot, here, roamer))
+                {
+                    constexpr uint32 DIRECTIONS = 12;  // the search's directions all round (a look's cost, no rule)
+                    for (float const ring : {15.0f, 30.0f, 45.0f, 60.0f})
+                        for (uint32 i = 0; i < DIRECTIONS; ++i)
+                        {
+                            float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                            float x = here.x + std::cos(angle) * ring;
+                            float y = here.y + std::sin(angle) * ring;
+                            float z = here.z;
+                            bot->UpdateAllowedPositionZ(x, y, z);
+                            std::string other;
+                            if (SoloSafety::RoamerReaches(bot, G3D::Vector3(x, y, z), other))
+                                continue;
+                            Leader::RouteResult const route = Leader::Route(bot, Position(x, y, z));
+                            if (!route.found || !route.complete || route.throughRefused)
+                                continue;
+                            if (!MoveTo(bot->GetMapId(), x, y, z, false, false, false, true))
+                                continue;
+                            LOG_INFO("playerbots", "[sick42] {} L{} under Resurrection Sickness in the round of {}: "
+                                     "steps out to ({:.0f},{:.0f}) to wait there",
+                                     bot->GetName(), bot->GetLevel(), roamer, x, y);
+                            return true;
+                        }
+                    // no spot out of the roamers' rounds near the healer's yard: the zone is above its level - it
+                    // leaves by its Hearthstone (a game action to leave a zone, not a navmesh workaround)
+                    {
+                        std::lock_guard<std::mutex> guard(sickSearchLock);
+                        sickSearched[bot->GetGUID().GetCounter()] = spotKey;  // searched without a way out
+                    }
+                    if (HearthOut("under Resurrection Sickness in the round of " + roamer +
+                                  " with no spot out of it: a zone above its level"))
+                    {
+                        LOG_INFO("playerbots", "[sick42] {} L{} leaves by its Hearthstone: the healer's yard lies in the "
+                                 "round of {}, no spot out of it",
+                                 bot->GetName(), bot->GetLevel(), roamer);
+                        return true;
+                    }
+                }
+            }
             if (bot->isMoving())
                 bot->StopMoving();
             return true;
