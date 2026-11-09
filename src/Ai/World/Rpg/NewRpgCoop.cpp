@@ -33,6 +33,7 @@
 #include "Log.h"
 #include "LootMgr.h"
 #include "NewRpgBaseAction.h"  // [help12] ForgetWalkGivenUp
+#include "NewRpgQuestRoute.h"  // [help20] the route's experience per second
 #include "Map.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -2358,6 +2359,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     std::vector<Candidate> chosen;
     HelpVerdict v = JudgeHelp(r, party);
     bool const aloneWins = v.win;
+    float const aloneSeconds = v.seconds;  // [help20] its solo pull's time
+
     // the smallest party that wins: a healer first when the camp's damage exceeds the hit-taker's health, then the
     // member with which the party wins (the nearest such), else the one that closes most of the gap
     while ((!v.win || (r.human && chosen.empty())) && party.size() < MAXGROUPSIZE && !pool.empty())
@@ -2369,6 +2372,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         if (pick == pool.end())
         {
             float bestGap = std::numeric_limits<float>::max();
+            float bestCost = std::numeric_limits<float>::max();
+            bool winner = false;
             for (auto c = pool.begin(); c != pool.end(); ++c)
             {
                 party.push_back(c->p);
@@ -2376,9 +2381,20 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                 party.pop_back();
                 if (with.win)
                 {
-                    pick = c;  // the pool is by ETA: the nearest winner
-                    break;
+                    // [help20] the winner whose time costs least: its own route's experience per second over its
+                    // walk and the help (before, the nearest winner: a far one with nothing to do cost the same)
+                    float const cost = QuestRoute::XpPerSecond(c->p->GetGUID().GetCounter()) * (c->eta + with.seconds);
+                    if (!winner || cost < bestCost)
+                    {
+                        winner = true;
+                        bestCost = cost;
+                        pick = c;
+                    }
+                    continue;
                 }
+                if (winner)
+                    continue;
+
                 if (with.damage - with.ehp < bestGap)
                 {
                     bestGap = with.damage - with.ehp;
@@ -2411,9 +2427,37 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         return false;
     }
 
+    // [help20] coordinator 2026-11-09: the help is priced. Its cost: each helper's own route experience per second
+    // over its walk and the help; its value: the experience of the requester's quest it opens, plus the requester's
+    // own rate over the time the party saves against its solo pull (none when it loses alone: the quest is the
+    // value). A bot requester's help whose cost exceeds its value is refused. b367: Mutil was sent 6372 yd (eta
+    // 910 s) to Ainne, Bami 3769 yd to Ginde; requester and helper walked to meet, six bots made no turn-in
+    float helpCost = 0.0f;
+    for (Candidate const& c : chosen)
+        helpCost += QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) * (c.eta + v.seconds);
+    float const questXp = quest ? float(quest->XPValue(req->GetLevel())) : 0.0f;
+    float const saved = aloneWins ? std::max(0.0f, aloneSeconds - v.seconds) : 0.0f;
+    float const helpValue = questXp + QuestRoute::XpPerSecond(req->GetGUID().GetCounter()) * saved;
+    std::string const priced = Acore::StringFormat("value {:.0f} xp (quest {:.0f} + {:.0f} s saved), cost {:.0f} xp",
+                                                   helpValue, questXp, saved, helpCost);
+    if (!r.human && helpCost > helpValue)
+    {
+        std::string const why = "the help costs more than it gives: " + priced;
+        if (why != r.lastRefusal)
+        {
+            r.lastRefusal = why;
+            out.logs.push_back(Acore::StringFormat("[help20] refuse {} quest=q{} request={}{} reason={}", r.name,
+                                                   r.obj.questId, r.id, HelpStamp(), why));
+        }
+        return false;
+    }
+    out.logs.push_back(Acore::StringFormat("[help20] {} quest=q{} request={}: {}", r.name, r.obj.questId, r.id,
+                                           priced));
+
     uint32 const now = getMSTime();
     uint32 const id = nextParty++;
     Party& party_ = parties[id];
+
     party_.id = id;
     party_.help = true;
     party_.human = r.human;
