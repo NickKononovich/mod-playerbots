@@ -2734,7 +2734,8 @@ void GuildCoordinator::LoadQuestValue()
                 wanted.insert(src.entry);
         for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
             if (wanted.count(data.id))
-                sourceSpawns_[data.id].emplace_back(uint16(data.mapid), data.posX, data.posY);
+                sourceSpawns_[data.id].emplace_back(uint16(data.mapid), data.posX, data.posY,
+                                                    uint32(std::max<int32>(0, data.spawntimesecs)));
     }
     for (auto& [questId, q] : questStatic_)
         if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
@@ -2768,56 +2769,66 @@ void GuildCoordinator::LoadQuestValue()
 // tour share left, the kills, the walk to its ender) against the route's own rate (the yellow / orange quests of its
 // log, else the best quest it may take). Kept when worth it, or when a reward is an upgrade in some member's gear
 // plan, or when it leads to a follow-up that is not grey; else abandoned (the core's CMSG_QUESTLOG_REMOVE_QUEST)
-bool GuildCoordinator::ObjectiveUnitSeconds(Player* p, uint64 key, float dps, float speed, double& perUnit,
-                                            double& walkTo, ObjSource& source) const
+bool GuildCoordinator::ObjectiveUnitSeconds(Player* p, uint64 key, float dps, float speed, uint32 sharers,
+                                            double& perUnit, double& walkTo, ObjSource& source) const
 {
+    // [obj49] b393: obj48 was 200-300x off where measured (Thamesh q88: "7 s a unit", measured 1513-2199 s; q38
+    // "0 % a kill -> 59305 s"). The kill cycle is bounded by the camp's respawns shared among the bots on it, a
+    // near source with a tiny chance is no better than a far one with a good chance, and a 0 % source is no source
     auto const sources = objSources_.find(key);
     if (sources == objSources_.end() || dps <= 0.0f)
         return false;
     float const x = p->GetPositionX(), y = p->GetPositionY();
-    float bestDist = -1.0f;
-    float bestSpacing = 0.0f;
+    double best = -1.0;
     for (ObjSource const& src : sources->second)
     {
+        if (src.chance <= 0.0f)
+            continue;  // not from this source
         auto const spawns = sourceSpawns_.find(src.entry);
         if (spawns == sourceSpawns_.end())
             continue;
-        // its spawns on this map, the nearest first: the one the bot farms, the spawn density round it
-        std::vector<std::pair<float, std::pair<float, float>>> spots;
-        for (auto const& [map, sx, sy] : spawns->second)
+        std::vector<std::tuple<float, float, float, uint32>> spots;  // distance, x, y, respawn
+        for (auto const& [map, sx, sy, respawn] : spawns->second)
             if (map == p->GetMapId())
-                spots.push_back({std::hypot(sx - x, sy - y), {sx, sy}});
+                spots.emplace_back(std::hypot(sx - x, sy - y), sx, sy, respawn);
         if (spots.empty())
             continue;
-        std::sort(spots.begin(), spots.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
-        if (bestDist >= 0.0f && spots.front().first >= bestDist)
-            continue;
-        // the walk between spawns: the mean nearest-neighbour distance of the spawns round the nearest one (up to
-        // 20, a look's cost) - the zone23 cycle's walk per kill
+        std::sort(spots.begin(), spots.end());
+        // the camp: the spawns round the nearest one (up to 20, a look's cost)
         size_t const n = std::min<size_t>(spots.size(), 20);
-        double spacing = 0.0;
-        for (size_t i = 0; i < n; ++i)
+        double spacing = 0.0, respawn = 0.0;
+        for (size_t a = 0; a < n; ++a)
         {
             float nn = -1.0f;
-            for (size_t j = 0; j < n; ++j)
-                if (i != j)
+            for (size_t b = 0; b < n; ++b)
+                if (a != b)
                 {
-                    float const d = std::hypot(spots[i].second.first - spots[j].second.first,
-                                               spots[i].second.second - spots[j].second.second);
+                    float const d = std::hypot(std::get<1>(spots[a]) - std::get<1>(spots[b]),
+                                               std::get<2>(spots[a]) - std::get<2>(spots[b]));
                     if (nn < 0.0f || d < nn)
                         nn = d;
                 }
             spacing += nn > 0.0f ? nn : 0.0f;
+            respawn += double(std::get<3>(spots[a]));
         }
-        bestDist = spots.front().first;
-        bestSpacing = n > 1 ? float(spacing / double(n)) : 0.0f;
-        source = src;
+        spacing = n > 1 ? spacing / double(n) : 0.0;
+        respawn /= double(n);
+        // a kill takes its fight and the walk to the next spawn; the camp yields at most its n spawns per respawn
+        // time, shared among the bots working it
+        double const fight = double(src.hp) / double(dps) + spacing / double(speed);
+        double const camp = respawn * double(std::max<uint32>(sharers, 1)) / double(n);
+        double const unit = std::max(fight, camp) / double(src.chance);
+        double const walk = double(std::get<0>(spots.front())) / double(speed);
+        // the source it farms: the one whose units come soonest (the walk to it and one unit)
+        if (best < 0.0 || walk + unit < best)
+        {
+            best = walk + unit;
+            perUnit = unit;
+            walkTo = walk;
+            source = src;
+        }
     }
-    if (bestDist < 0.0f || source.chance <= 0.0f)
-        return false;
-    perUnit = (double(source.hp) / double(dps) + double(bestSpacing) / double(speed)) / double(source.chance);
-    walkTo = double(bestDist) / double(speed);
-    return true;
+    return best >= 0.0;
 }
 
 void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
@@ -2843,6 +2854,18 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
     };
     std::vector<Row> rows;
     double routeCopper = 0.0, routeSeconds = 0.0;
+    // [obj49] the bots on its map whose New RPG works that quest (itself included)
+    auto const SharersOf = [&](uint32 questId) -> uint32
+    {
+        uint32 n = 0;
+        for (PlanRow const& row : plan_)
+            if (Player* o = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                o && o->IsInWorld() && o->GetMapId() == p->GetMapId())
+                if (PlayerbotAI* oai = GET_PLAYERBOT_AI(o))
+                    if (auto const* d = std::get_if<NewRpgInfo::DoQuest>(&oai->rpgInfo.data); d && d->questId == questId)
+                        ++n;
+        return std::max<uint32>(n, 1);
+    };
     for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
         uint32 const questId = p->GetQuestSlotQuestId(slot);
@@ -2900,7 +2923,7 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
                              double perUnit = 0.0, walk = 0.0;
                              ObjSource src;
                              if (!ObjectiveUnitSeconds(p, (uint64(item ? 1 : 0) << 32) | uint32(id), dps, speed,
-                                                       perUnit, walk, src))
+                                                       SharersOf(questId), perUnit, walk, src))
                                  return false;  // a source off its map or none: the static table prices it
                              total += double(left) * perUnit;
                              walkTo = std::max(walkTo, walk);
@@ -2947,7 +2970,8 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
                 priced = true;
             }
         }
-        rows.push_back({slot, quest, color, copper, seconds, priced, observedNow && sourceGrey, formulaSource});
+        rows.push_back({slot, quest, color, copper, seconds, priced, observedNow && sourceGrey,
+                        observedNow ? formulaSource : std::string()});
         // [econ1] the route's rate: the yellow / orange quests it still works; a complete one is handed in either
         // way (its XP comes with or without the green quest) and is no measure of what the time is worth
         if (priced && color != XP_GRAY && color != XP_GREEN && status == QUEST_STATUS_INCOMPLETE)
@@ -2968,6 +2992,19 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         routeWhy = "the best quest it may take (" + routeWhy + ")";
     else
         return;  // nothing to compare with: the log stays as it is
+    // [obj47] the formula beside the measured rate, every quest it prices (log only: the formula's accuracy)
+    for (Row const& r : rows)
+    {
+        if (r.source.empty())
+            continue;
+        double seen = 0.0;
+        uint32 kills = 0;
+        bool const measured = QuestStats::ObservedObjective(p, r.quest->GetQuestId(), seen, kills);
+        LOG_INFO("playerbots", "[obj47] {} L{} q{}: formula {} ({:.0f} s to finish){}", p->GetName(), level,
+                 r.quest->GetQuestId(), r.source, r.seconds,
+                 measured ? Acore::StringFormat(", measured {:.0f} s a unit over {} kills", seen, kills)
+                          : std::string(", not measured yet"));
+    }
     for (Row const& r : rows)
     {
         // [quest14] a grey quest is no XP/min question: the route's grey rule (map thread, GreyQuestNeed) keeps or
