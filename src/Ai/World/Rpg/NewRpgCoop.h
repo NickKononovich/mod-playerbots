@@ -107,6 +107,9 @@ void RestParty(Player* leader, std::string const& why);
 bool InParty(uint32 low);
 // [group18] the bot leaves its group (the world thread's leave): a group the session restored, its purpose gone
 bool LeaveStaleGroup(Player* bot, std::string const& why);
+// [group19] the leader of the co-op / help party that holds the bot (false: none)
+bool PartyLeaderOf(uint32 low, ObjectGuid& leader);
+
 
 
 // the global leader's side of co-op, set once by GuildCoordinator at its Load (before any bot ticks); an unset member

@@ -228,29 +228,41 @@ bool FollowAction::Execute(Event /*event*/)
     bool moved = false;
     // [group18] a group the session restored (the core keeps groups across a restart) whose purpose is gone: no
     // co-op / help party holds the follower or its guild leader (that registry starts empty with the session), the
-    // leader is no human and stands in another zone. Looked at once per session at the follower's first follow.
-    // b359: 7 bots without a DO_QUEST all run - Ainne 3567 yd behind Kianey, Kylantino 3205, Mutil 4990, Galiver,
-    // Cassand, Gilduck, Arrengyl - each following a leader of an earlier session's help party
-    if (!target.empty() && GuildHonest::IsHonestBot(bot) && bot->GetGroup() && !bot->GetMap()->Instanceable())
+    // leader is no human and stands in another zone. Looked at once per session, once its leader is in the world.
+    // [group19] ... and any time a party holds the follower whose leader is not its group's leader (a help party it
+    // was assigned to while a restored group held it: the invite could not take it). b363: group18 never fired -
+    // the follow's formation target is empty for a group follower (it follows the formation's spot, the leader
+    // read from the group now), the first follow came before the leader was in the world, and InParty held Bami
+    // (help party of Irorm) in Sehdrurmund's restored group 3549 yd away; Ainne 1949 yd behind Kianey, Kylantino 1561
+    if (Group* group = bot->GetGroup();
+        group && GuildHonest::IsHonestBot(bot) && !bot->GetMap()->Instanceable() &&
+        group->GetLeaderGUID() != bot->GetGUID())
     {
-        static std::mutex staleLock;
-        static std::unordered_set<uint32> staleChecked;
-        bool first = false;
+        Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+        if (leader && GuildHonest::IsHonestBot(leader))
         {
-            std::lock_guard<std::mutex> guard(staleLock);
-            first = staleChecked.insert(bot->GetGUID().GetCounter()).second;
+            uint32 const low = bot->GetGUID().GetCounter();
+            ObjectGuid partyLeader;
+            if (NewRpgCoop::InParty(low) && NewRpgCoop::PartyLeaderOf(low, partyLeader) && partyLeader &&
+                partyLeader != leader->GetGUID() &&
+                NewRpgCoop::LeaveStaleGroup(
+                    bot, Acore::StringFormat("[group19] its party's leader is not its group's leader {} ({:.0f} yd)",
+                                             leader->GetName(), bot->GetExactDist2d(leader))))
+                return true;
+            static std::mutex staleLock;
+            static std::unordered_set<uint32> staleChecked;
+            bool first = false;
+            {
+                std::lock_guard<std::mutex> guard(staleLock);
+                first = staleChecked.insert(low).second;
+            }
+            if (first && !NewRpgCoop::InParty(low) && !NewRpgCoop::InParty(leader->GetGUID().GetCounter()) &&
+                (leader->GetMapId() != bot->GetMapId() || leader->GetZoneId() != bot->GetZoneId()) &&
+                NewRpgCoop::LeaveStaleGroup(
+                    bot, Acore::StringFormat("its leader {} is in another zone ({:.0f} yd), no party holds them",
+                                             leader->GetName(), bot->GetExactDist2d(leader))))
+                return true;
         }
-        if (first)
-            if (Unit* leaderUnit = AI_VALUE(Unit*, target))
-                if (Player* leader = leaderUnit->ToPlayer();
-                    leader && leader != bot && GuildHonest::IsHonestBot(leader) &&
-                    !NewRpgCoop::InParty(bot->GetGUID().GetCounter()) &&
-                    !NewRpgCoop::InParty(leader->GetGUID().GetCounter()) &&
-                    (leader->GetMapId() != bot->GetMapId() || leader->GetZoneId() != bot->GetZoneId()) &&
-                    NewRpgCoop::LeaveStaleGroup(
-                        bot, Acore::StringFormat("its leader {} is in another zone ({:.0f} yd), no party holds them",
-                                                 leader->GetName(), bot->GetExactDist2d(leader))))
-                    return true;
     }
     // [wait16] coordinator 2026-11-09: a guild follower far from its leader (beyond its sight) and standing - its
     // follow makes no progress over that distance, the leader walks to meet it ([wait14]) - stands out of every idle

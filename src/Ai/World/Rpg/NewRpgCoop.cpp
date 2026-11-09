@@ -3578,8 +3578,20 @@ bool InParty(uint32 low)
     return partyLows.count(low) != 0;
 }
 
+bool PartyLeaderOf(uint32 low, ObjectGuid& leader)
+{
+    std::lock_guard<std::mutex> guard(lock);
+    auto const me = postings.find(low);
+    auto const party = me != postings.end() ? parties.find(me->second.party) : parties.end();
+    if (party == parties.end())
+        return false;
+    leader = party->second.leader;
+    return true;
+}
+
 bool LeaveStaleGroup(Player* bot, std::string const& why)
 {
+
     Group* group = bot ? bot->GetGroup() : nullptr;
     if (!group)
         return false;
