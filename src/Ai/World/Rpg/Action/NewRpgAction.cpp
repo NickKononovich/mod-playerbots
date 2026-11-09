@@ -127,6 +127,27 @@ namespace
 
 namespace
 {
+    // [sick51] the walks the sickness hold issued (a step out of a reach, the walk out to its hub): the hold keeps
+    // them going instead of stopping every move (it stopped its own steps the tick after)
+    std::mutex sickWalkLock;
+    std::unordered_set<uint32> sickWalking;
+    void SickWalk(Player* bot, bool on)
+    {
+        std::lock_guard<std::mutex> guard(sickWalkLock);
+        if (on)
+            sickWalking.insert(bot->GetGUID().GetCounter());
+        else
+            sickWalking.erase(bot->GetGUID().GetCounter());
+    }
+    bool SickWalking(Player* bot)
+    {
+        std::lock_guard<std::mutex> guard(sickWalkLock);
+        return sickWalking.count(bot->GetGUID().GetCounter()) != 0;
+    }
+}
+
+namespace
+{
     // [guild3] Vendor spawns of the world, read once from the creature spawn table.
     struct VendorSpawn
     {
@@ -1241,6 +1262,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                         LOG_INFO("playerbots", "[sick37] {} L{} under Resurrection Sickness in the reach of {}: steps "
                                  "out to ({:.0f},{:.0f}) to wait there",
                                  bot->GetName(), bot->GetLevel(), who, at.x, at.y);
+                        SickWalk(bot, true);
                         return true;
                     }
             }
@@ -1263,6 +1285,41 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     auto const found = sickSearched.find(bot->GetGUID().GetCounter());
                     searchedHere = found != sickSearched.end() && found->second == spotKey;
                 }
+                // [sick51] no spot out of the rounds and its Hearthstone on its cooldown (or none): it walks out to its
+                // hub (the nearest ender of a quest in its log or an inn: a place of its level) by a trip it does not
+                // refuse, instead of waiting in the round
+                constexpr uint32 SPELL_HEARTHSTONE = 8690;
+                constexpr uint32 ITEM_HEARTHSTONE = 6948;
+                bool const stoneReady = bot->HasItemCount(ITEM_HEARTHSTONE, 1) && !bot->HasSpellCooldown(SPELL_HEARTHSTONE);
+                auto const walkOut = [&]() -> bool
+                {
+                    WorldPosition const hub = NearestHub(bot);
+                    if (hub == WorldPosition() || hub.GetMapId() != bot->GetMapId() ||
+                        TripRefused(bot, hub.GetPositionX(), hub.GetPositionY(), hub.GetPositionZ(), "hub (sick)"))
+                        return false;
+                    static std::mutex walkLock;  // one line per bot and hub: a log cadence, no decision reads it
+                    static std::unordered_map<uint32, std::pair<int32, int32>> walkLogged;
+                    bool fresh = false;
+                    {
+                        std::lock_guard<std::mutex> guard(walkLock);
+                        auto& last = walkLogged[bot->GetGUID().GetCounter()];
+                        std::pair<int32, int32> const key{int32(hub.GetPositionX()), int32(hub.GetPositionY())};
+                        fresh = last != key;
+                        last = key;
+                    }
+                    if (fresh)
+                        LOG_INFO("playerbots", "[sick51] {} L{} under Resurrection Sickness with no spot out of the "
+                                 "roamers' rounds, its Hearthstone not ready: walks out to its hub ({:.0f},{:.0f}) "
+                                 "{:.0f} yd",
+                                 bot->GetName(), bot->GetLevel(), hub.GetPositionX(), hub.GetPositionY(),
+                                 bot->GetExactDist(hub));
+                    bool const walking = MoveFarTo(hub);
+                    if (walking)
+                        SickWalk(bot, true);
+                    return walking;
+                };
+                if (searchedHere && !stoneReady && walkOut())
+                    return true;
                 // a spot searched without a way out: its Hearthstone again (its cooldown may have run out)
                 if (searchedHere && HearthOut("under Resurrection Sickness in a roamer's round with no spot out of "
                                               "it: a zone above its level"))
@@ -1289,6 +1346,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                             LOG_INFO("playerbots", "[sick42] {} L{} under Resurrection Sickness in the round of {}: "
                                      "steps out to ({:.0f},{:.0f}) to wait there",
                                      bot->GetName(), bot->GetLevel(), roamer, x, y);
+                            SickWalk(bot, true);
                             return true;
                         }
                     // no spot out of the roamers' rounds near the healer's yard: the zone is above its level - it
@@ -1297,6 +1355,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                         std::lock_guard<std::mutex> guard(sickSearchLock);
                         sickSearched[bot->GetGUID().GetCounter()] = spotKey;  // searched without a way out
                     }
+                    if (!stoneReady && walkOut())  // [sick51]
+                        return true;
                     if (HearthOut("under Resurrection Sickness in the round of " + roamer +
                                   " with no spot out of it: a zone above its level"))
                     {
@@ -1307,6 +1367,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     }
                 }
             }
+            if (bot->isMoving() && SickWalking(bot))
+                return true;  // [sick51] its own step / walk out goes on
+            SickWalk(bot, false);
             if (bot->isMoving())
                 bot->StopMoving();
             return true;
