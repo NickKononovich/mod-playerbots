@@ -2258,7 +2258,11 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             // [guild15] a floor the walk can end on: the navmesh polygon at the spot's height, else a real collision
             // floor; the map grid's fallback height is no floor (b333 Mutil, Gnetlibozz: spots 11-22 yd under the bot,
             // "near walk refused: the walk ends where the bot stands")
-            else if (!SafeFloorZ(bot, dx, dy, dz) && IsGridFallbackZ(bot, dx, dy, dz))
+            // [postpone34] a spot under water is swum to (a sea floor's bones, a lake's chest): the navmesh holds
+            // only the water's surface, the grid's height there is the real floor. b386: q4681 Washed Ashore's
+            // (6311,857,-14) off Auberdine skipped as "no floor" by every bot - 10 postpones
+            else if (!SafeFloorZ(bot, dx, dy, dz) && IsGridFallbackZ(bot, dx, dy, dz) &&
+                     !bot->GetMap()->IsInWater(bot->GetPhaseMask(), dx, dy, dz + 1.0f, bot->GetCollisionHeight()))
             {
                 LOG_INFO("playerbots", "[rpg] {} L{} SKIP spot of q{} at ({:.0f},{:.0f},{:.0f}): no floor there (the "
                          "map grid's fallback height)",
