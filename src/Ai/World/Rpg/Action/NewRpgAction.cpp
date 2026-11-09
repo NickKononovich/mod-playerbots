@@ -747,6 +747,27 @@ bool NewRpgBaseAction::StartVendorRun()
     bool const noDrink = usesMana && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < line;
     bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 &&
                          (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
+    // [supply34] why a bot out of food / drink makes no run: one line per money value it has (b386: 1.10 h sat
+    // "nothing to eat or drink", Bierya 193, Orenem 135, Jurdogs 110 - and no "goes to vendor" line of them)
+    auto const noRunWhy = [&](char const* why)
+    {
+        if (!(noFood || noDrink))
+            return;
+        static std::mutex supplyLogLock;
+        static std::unordered_map<uint32, uint32> supplyLogged;  // bot -> money logged with
+        {
+            std::lock_guard<std::mutex> guard(supplyLogLock);
+            uint32& last = supplyLogged[bot->GetGUID().GetCounter()];
+            if (last == bot->GetMoney() + 1)
+                return;
+            last = bot->GetMoney() + 1;
+        }
+        LOG_INFO("playerbots", "[supply34] {} L{} out of {}: no vendor run - {} (money {}c, last visit at {}c)",
+                 bot->GetName(), bot->GetLevel(), noFood && noDrink ? "food and drink" : noFood ? "food" : "drink",
+                 why, bot->GetMoney(), info.vendorVisited ? info.vendorVisitMoney : 0);
+    };
+    if ((noFood || noDrink) && !restock)
+        noRunWhy(bot->GetMoney() == 0 ? "no money" : "no money gained since its last vendor visit or look");
     // [supply27] a five member before its five goes in buys the vendor-sold reagents its spells use and has none of
     std::vector<uint32> reagents;
     if (fiveSupply && bot->GetMoney() > 0 && (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney))
@@ -777,6 +798,8 @@ bool NewRpgBaseAction::StartVendorRun()
     }
     if (!vendor)
     {
+        if (restock)
+            noRunWhy("no vendor of its faction sells it food / drink of its level on a walk it takes");
         // [supply26] no vendor sells it a way it walks: looked again after its next money gain (the look is a scan of
         // the map's vendors and their trips, not for every tick of its rest)
         info.vendorVisited = true;
