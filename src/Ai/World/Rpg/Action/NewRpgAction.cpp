@@ -1304,6 +1304,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return true;
         }
     }
+    // [red63] inside an area red for it with no walk out: out by its Hearthstone
+    if (RedAreaEscape())
+        return true;
     // [deaths13] hurt, out of a fight, in a wanderer's reach: the rest is taken out of every reach
     if (RestEscape())
         return true;

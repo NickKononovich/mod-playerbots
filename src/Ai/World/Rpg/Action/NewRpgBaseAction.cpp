@@ -5226,6 +5226,44 @@ bool NewRpgBaseAction::LoginEscape()
 // of every reach - its rest there lets the wanderer walk in at reduced health. b353 Guinudrond L11: after a won fight
 // (took 100 of 232) a Stonesplinter Trogg wandering 20 yd off (wander 3, aggro 19) walked into it, the fight began at
 // reduced health and mana, it died ("no judged pull (attacked)")
+// [red63] b400: 9 of the 22 "no judged pull (attacked)" deaths in Brightwood Grove (Duskwood, area level 28):
+// Manue L15 x4, Gilduck L14 x2, Guinudrond L14 x3 to Nightbane Dark Runners L28-29 (wanderers, aggro 32), Black
+// Ravagers, Green Recluses. They had logged in there (an earlier session's walk) and rose at their corpses there; every
+// walk out was refused by zone38 (Darkshire 25, Raven Hill 24, Addle's Stead 24 - all red for L14-15), the route search
+// answered "no route" (not a wall: WalledIn and its Hearthstone never ran), so each stood until a wanderer walked in
+bool NewRpgBaseAction::RedAreaEscape()
+{
+    if (bot->IsInCombat() || !bot->IsAlive() || bot->isMoving() || bot->IsInFlight() || bot->GetTransport() ||
+        !SoloSafety::Applies(bot) || bot->GetMap()->Instanceable())
+        return false;
+    AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetAreaId());
+    if (!area || area->area_level <= 0 ||
+        Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(area->area_level, 255))) != XP_RED)
+        return false;
+    WorldPosition const bind(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ);
+    WorldPosition const out = bind.GetMapId() == bot->GetMapId() ? bind : NearestHub(bot);
+    if (out == WorldPosition() || out.GetMapId() != bot->GetMapId())
+        return false;
+    // one route search per area and level it stands in (the answer holds while it stands there: a refused walk out
+    // does not move it); map thread, per bot
+    thread_local std::unordered_map<uint64, std::tuple<uint32, uint8, bool>> judged;
+    auto& [jArea, jLevel, refused] = judged[bot->GetGUID().GetRawValue()];
+    if (jArea != area->ID || jLevel != bot->GetLevel())
+    {
+        BotPath const walk = FindBotPath(bot, out.GetPositionX(), out.GetPositionY(), out.GetPositionZ());
+        jArea = area->ID;
+        jLevel = bot->GetLevel();
+        refused = !(walk.points.size() >= 2 && !walk.throughRefused && walk.type != PATHFIND_NOPATH);
+    }
+    if (!refused)
+        return false;  // a walk out it takes: its plan leaves the area
+    std::string const why = Acore::StringFormat("[red63] stands in {} (area level {}, red for L{}) and its walk out to "
+                                                "({:.0f},{:.0f}) is refused",
+                                                area->area_name[0], area->area_level, bot->GetLevel(),
+                                                out.GetPositionX(), out.GetPositionY());
+    return HearthOut(why, nullptr);
+}
+
 bool NewRpgBaseAction::RestEscape()
 {
     if (bot->IsInCombat() || bot->isMoving() || !SoloSafety::Applies(bot))
