@@ -4,6 +4,8 @@
  * or (at your option) any later version.
  */
 
+#include "Formulas.h"  // [zone38]
+#include "DBCStores.h"  // [zone38]
 #include "Common.h"  // math defines first (Position.h)
 #include "SlowScope.h"  // [perf26]
 #include "RouteSearch.h"
@@ -660,6 +662,47 @@ namespace Leader
                 Travel::NoteHeightGap(walker, ground, point.z, "route sample ground");  // [lead144]
             }
             result.points.push_back(point);
+        }
+        // [zone38] a solo walker's walk through an area far above its level (the area's own level red for it: the
+        // Badlands' 35-45 for a level 14) is no walk: its mobs are out of the search's sight (RouteCosts prices the
+        // mobs it sees), the detour round a refused reach could lead there. b388 Ganna L14's q2038 sweep walk in Loch
+        // Modan went round the Stonesplinter walls through the Badlands ("route complete, Crag Coyote unseen"): 7
+        // deaths to L35 coyotes and buzzards. The start's and the destination's own areas are not judged here
+        if (walker->IsPlayer() && SoloSafety::Applies(walker->ToPlayer()) && result.points.size() >= 2)
+        {
+            Player* bot = walker->ToPlayer();
+            uint32 const phase = bot->GetPhaseMask();
+            uint32 const fromArea = map->GetAreaId(phase, from.x, from.y, from.z);
+            uint32 const toArea = map->GetAreaId(phase, to.x, to.y, to.z);
+            constexpr size_t AREA_SAMPLE_EVERY = 25;  // ~100 yd of 4 yd samples: a look's cost, no rule
+            for (size_t i = AREA_SAMPLE_EVERY; i < result.points.size(); i += AREA_SAMPLE_EVERY)
+            {
+                G3D::Vector3 const& p = result.points[i];
+                uint32 const area = map->GetAreaId(phase, p.x, p.y, p.z);
+                if (!area || area == fromArea || area == toArea)
+                    continue;
+                AreaTableEntry const* entry = sAreaTableStore.LookupEntry(area);
+                if (!entry || entry->area_level <= 0)
+                    continue;
+                if (Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(entry->area_level, 255))) != XP_RED)
+                    continue;
+                thread_local std::unordered_map<uint64, uint32> zoneLogged;  // a log cadence, no decision reads it
+                uint32& last = zoneLogged[bot->GetGUID().GetRawValue()];
+                if (last != area)
+                {
+                    last = area;
+                    LOG_INFO("playerbots", "[zone38] {} L{} refuses a walk to ({:.0f},{:.0f}): it passes {} (area level "
+                             "{}) at ({:.0f},{:.0f})",
+                             bot->GetName(), bot->GetLevel(), to.x, to.y, entry->area_name[0], entry->area_level, p.x,
+                             p.y);
+                }
+                result.found = false;
+                result.complete = false;
+                result.points.clear();
+                result.corners.clear();
+                result.length = 0.0f;
+                break;
+            }
         }
         return result;
     }
