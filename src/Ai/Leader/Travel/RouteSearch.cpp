@@ -537,76 +537,9 @@ namespace Leader
                                     { return (c.x - from.x) * (c.x - from.x) + (c.y - from.y) * (c.y - from.y) <=
                                              c.w * c.w; }),
                      refuse.end());
-        // [route28] the search's own inputs are its cache key: the map and instance, the walker's kind, both ends (to
-        // half a yard) and every refused reach and priced penalty RouteCosts gave (the mobs alive where they stand
-        // now, the danger zones): the navmesh is static, so equal inputs give the equal walk. A changed input (a mob
-        // moved or died, the walker stepped) is a new key - no clock. b377: 24255 searches, 3.3 ms each, 72.7 % of
-        // all AI time, most of them the same walk asked again (IDLE looks, pull spots, rest spots, every leg)
-        uint64 cacheKey = 0;
-        {
-            auto const mix = [&cacheKey](int64 v)
-            { cacheKey = (cacheKey ^ uint64(v)) * 1099511628211ull + 0x9E3779B97F4A7C15ull; };
-            auto const q = [](float v) { return int64(std::floor(v * 2.0f)); };
-            mix(map->GetId());
-            mix(map->GetInstanceId());
-            mix(walker->IsPlayer() ? 1 : 2);
-            for (float v : {from.x, from.y, from.z, to.x, to.y, to.z})
-                mix(q(v));
-            mix(int64(refuse.size()));
-            for (G3D::Vector4 const& c : refuse)
-                for (float v : {c.x, c.y, c.z, c.w})
-                    mix(q(v));
-            mix(int64(penalties.size()));
-            for (Travel::RoutePenalty const& pen : penalties)
-                for (float v : {pen.x, pen.y, pen.z, pen.r, pen.cost})
-                    mix(q(v));
-        }
-        // [route30] least recently used out, not the whole cache: route28/29 cleared all 4096 walks when full (b382:
-        // 4 clears, ~550 hits between them) - every clear dropped the walks still asked for
-        using RouteLru = std::list<std::pair<uint64, RouteResult>>;
-        thread_local RouteLru routeOrder;
-        thread_local std::unordered_map<uint64, RouteLru::iterator> routeCache;
-        thread_local uint64 routeCacheHits = 0;
-        thread_local uint64 routeCacheMisses = 0;
-        constexpr size_t ROUTE_CACHE_ENTRIES = 4096;  // a memory bound per thread (no age rule)
-        constexpr uint64 ROUTE_CACHE_LOG_EVERY = 4096;  // a log cadence by count, no decision reads it
-        constexpr size_t ROUTE_CACHE_BYTES = size_t(8) << 20;  // a memory bound per thread: the walks' points
-        thread_local size_t routeCacheBytes = 0;
-        auto const walkBytes = [](RouteResult const& r)
-        { return (r.points.size() + r.corners.size()) * sizeof(G3D::Vector3) + sizeof(RouteResult); };
-        if (auto const hit = routeCache.find(cacheKey); hit != routeCache.end())
-        {
-            ++routeCacheHits;
-            routeOrder.splice(routeOrder.begin(), routeOrder, hit->second);
-            RouteResult const& cached = hit->second->second;
-            SoloSafety::NoteRoute(walker, cached.complete, cached.found && cached.throughRefused);
-            return cached;
-        }
-        // [route29] the walk is copied into the cache before it is returned: route28's store ran in a destructor
-        // after the return had moved `result` out (no NRVO), so the cache kept a found walk with no points - every
-        // later hit handed out "found, complete" with an empty walk (b379's crash: back() of an empty path in
-        // ReachCombatTo after ShortenPathUntilDist)
-        auto const remember = [&]() -> RouteResult
-        {
-            if (++routeCacheMisses % ROUTE_CACHE_LOG_EVERY == 0)
-                LOG_INFO("playerbots", "[route30] route cache: {} hits / {} searches ({} walks held)", routeCacheHits,
-                         routeCacheMisses, routeCache.size());
-            size_t const bytes = walkBytes(result);
-            while ((routeCache.size() >= ROUTE_CACHE_ENTRIES || routeCacheBytes + bytes > ROUTE_CACHE_BYTES) &&
-                   !routeOrder.empty())
-            {
-                routeCacheBytes -= std::min(routeCacheBytes, walkBytes(routeOrder.back().second));
-                routeCache.erase(routeOrder.back().first);
-                routeOrder.pop_back();
-            }
-            if (bytes <= ROUTE_CACHE_BYTES)
-            {
-                routeOrder.emplace_front(cacheKey, result);
-                routeCache[cacheKey] = routeOrder.begin();
-                routeCacheBytes += bytes;
-            }
-            return result;
-        };
+        // [route31] no walk cache: route28-30 held ~12 % hits (the key holds both ends to half a yard, a walker that
+        // moved is a new key) and its stored walks (MBs of points per map thread) slowed every other call: b382 /
+        // b384 AI 1.57-2.07 ms per tick against b377's 0.37, trivial values (invalid target, inventory items) 2x
         auto const search = [&](std::vector<G3D::Vector4> const* refused,
                                 std::vector<Travel::RoutePenalty> const* priced)
         {
@@ -670,7 +603,7 @@ namespace Leader
         }
         SoloSafety::NoteRoute(walker, result.complete, result.found && !roundRefused);
         if (!result.found)
-            return remember();
+            return result;
         result.throughRefused = !roundRefused;
         if (corners.size() == 1)
         {
@@ -696,7 +629,7 @@ namespace Leader
             }
             result.points.push_back(point);
         }
-        return remember();
+        return result;
     }
 
     RouteResult Route(Unit* walker, Position const& to)
