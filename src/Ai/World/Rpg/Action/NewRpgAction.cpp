@@ -2281,6 +2281,20 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
     if (data.pos == WorldPosition())
         return false;
 
+    // [quest23] the hand-in walk reached another landmass than its route was built on (off the boat, out of a
+    // portal): the route is built again there - the quests done or open by it get their stops (RouteKey)
+    if (QuestRoute::BotRoute const& route = QuestRoute::Of(bot->GetGUID().GetCounter());
+        route.built && route.key != RouteKey() && !bot->GetTransport() && !bot->IsInFlight() &&
+        botAI->rpgInfo.trip.phase == NewRpgInfo::TripPhase::None)
+    {
+        LOG_INFO("playerbots", "[quest23] {} L{} q{} hand-in walk on a landmass its route was not built on: the "
+                 "route is built again here",
+                 bot->GetName(), bot->GetLevel(), questId);
+        CurrentRoute();  // built now (its key the bot's again): the IDLE choice reads it, no second pass here
+        botAI->rpgInfo.ChangeToIdle();
+        return true;
+    }
+
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
     {
         bool const walks = MoveFarTo(data.pos);

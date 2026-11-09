@@ -738,7 +738,10 @@ QuestRoute::Plan QuestRoute::Solve(Input const& in)
 // compared stop by stop (RouteMissingStop, TrimRoute)
 uint64 NewRpgBaseAction::RouteKey()
 {
-    return Mix(Mix(0, bot->GetLevel()), bot->GetMapId());
+    // [quest23] ... and its landmass: a route built on Teldrassil holds no stop of Darkshore (same map 1), its
+    // quests completed there were never routed to their enders (b372 Bierya: q1001 complete by Auberdine, its walk
+    // went on 2000 yd south to q952's ender, "not in its 0 stops")
+    return Mix(Mix(Mix(0, bot->GetLevel()), bot->GetMapId()), TravelRouteMgr::Landmass(WorldPosition(bot)));
 }
 
 void NewRpgBaseAction::InvalidateRoute(Player* bot, uint32 questId, std::string const& why)
