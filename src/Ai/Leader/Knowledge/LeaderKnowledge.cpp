@@ -408,8 +408,12 @@ namespace Leader::Knowledge
             {532, StarterKind::Gossip, {16812}, {0, 0, 0}, false, 1, 60000, "Karazhan: Barnes starts the Opera"},
             // [kara3] boss_nightbane.cpp go_blackened_urn: a click on the Blackened Urn (lock 1691: LOCKTYPE_OPEN, no
             // skill) starts Nightbane's intro while his slot is NOT_STARTED
+            // [kara6] after Prince Malchezaar 15690 (afterDead): Nightbane last. The urn stands on the Master's
+            // Terrace next to the Opera's way (reachable: tools navmesh probe from the Curator, 226 polys), so the
+            // route would click it as soon as it passes - his fight (flight phases, Charred Earth, skeletons) in the
+            // middle of the run instead of at its end.
             {532, StarterKind::UseGameObject, {194092}, {}, false, 1, 30000,
-             "Karazhan: the Blackened Urn calls Nightbane"},
+             "Karazhan: the Blackened Urn calls Nightbane", false, 0, {15690}},
             {564, StarterKind::Gossip, {23191}, {0}, false, 1, 60000, "Black Temple: Akama starts Shade of Akama"},
             {564, StarterKind::Gossip, {23089}, {0, 0}, false, 1, 60000,
              "Black Temple: Akama starts the Illidan intro"},
