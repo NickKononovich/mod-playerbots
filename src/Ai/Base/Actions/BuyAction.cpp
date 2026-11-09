@@ -311,10 +311,15 @@ bool IsRestockFood(ItemTemplate const* proto, uint32 spellCategory)
     if (!spellInfo)
         return false;
 
+    // [supply41] the real Food / Drink spells: SPELL_AURA_MOD_REGEN (433, 1131) / SPELL_AURA_MOD_POWER_REGEN (430-432,
+    // 1133, 22734) - only the OBS_MOD auras of a few buff foods were taken, so a "buy drink" run ([supply36]) reached
+    // the vendor and bought none
     AuraType const wanted =
         spellCategory == RESTOCK_SPELL_CATEGORY_FOOD ? SPELL_AURA_OBS_MOD_HEALTH : SPELL_AURA_OBS_MOD_POWER;
+    AuraType const wantedRegen =
+        spellCategory == RESTOCK_SPELL_CATEGORY_FOOD ? SPELL_AURA_MOD_REGEN : SPELL_AURA_MOD_POWER_REGEN;
     for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
-        if (spellInfo->Effects[i].ApplyAuraName == wanted)
+        if (spellInfo->Effects[i].ApplyAuraName == wanted || spellInfo->Effects[i].ApplyAuraName == wantedRegen)
             return true;
 
     return false;
