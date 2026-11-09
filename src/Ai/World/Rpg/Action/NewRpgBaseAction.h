@@ -248,6 +248,7 @@ protected:
     bool UseDalaranCrystal(uint32 entry);
     bool TeleportByDalaranEnvoy();
     bool FlyTowards(uint32 toNode);
+    bool FlyIfFaster(WorldPosition const& dest);  // [taxi20]
     bool UseGameObjectWithGroup(GameObject* go);
     void GossipTeleportToDalaran(Player* player, Creature* envoy);
     bool HasDalaranTeleportQuest(Player* player);

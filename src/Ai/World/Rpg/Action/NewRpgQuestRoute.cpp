@@ -509,6 +509,16 @@ QuestRoute::BotRoute& QuestRoute::Of(uint32 botLow)
     return routes[botLow];  // references stay valid across rehashes; entries are never erased
 }
 
+float QuestRoute::XpPerSecond(uint32 botLow)
+{
+    std::lock_guard<std::mutex> guard(routesLock);
+    auto const found = routes.find(botLow);
+    if (found == routes.end() || !found->second.built || found->second.plan.eta <= 0.0f)
+        return 0.0f;
+    return found->second.plan.xp / found->second.plan.eta;
+}
+
+
 void QuestRoute::NoteQuestEvent(Player* bot, uint32 questId)
 {
     if (!bot)

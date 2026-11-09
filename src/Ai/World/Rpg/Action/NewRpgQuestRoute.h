@@ -179,6 +179,10 @@ namespace QuestRoute
         std::set<uint64> townsSeen;             // [routeplan] of the last build
     };
     BotRoute& Of(uint32 botLow);
+    // [help20] the bot's own route: its experience over its seconds (0: no route built) - what an hour of its own plan
+    // is worth, the price of the time it gives a help party
+    float XpPerSecond(uint32 botLow);
+
 
     // [routeplan] QuestStats' accept / complete / turn-in event (the bot's map thread): the stop it is on is done at
     // this moment, whenever the bot next asks its route (the done line counts the stop's seconds to this event)
