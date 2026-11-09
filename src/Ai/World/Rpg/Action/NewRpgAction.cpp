@@ -2265,8 +2265,30 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                          bot->GetName(), bot->GetLevel(), questId, dx, dy, dz);
                 continue;
             }
-            if (FindBotPath(bot, dx, dy, dz).type & PATHFIND_NOPATH)
+            BotPath const spotPath = FindBotPath(bot, dx, dy, dz);
+            if (spotPath.type & PATHFIND_NOPATH)
                 continue;
+            // [sweep33] user 2026-11-09: a spot whose only walk passes the reach of a mob the bot must never fight
+            // (orange / red, elite, a danger zone: RouteCosts' refusals, no complete walk round) is no sweep spot -
+            // the walk is priced like any other. b385 Kianey L14 (Bami following) swept q116 to a spot 798 yd off
+            // through The Darkened Bank's L18-21 spiders and wolves: both died there
+            if (spotPath.throughRefused)
+            {
+                static std::mutex sweepLogLock;  // one line per bot and spot: a log cadence, no decision reads it
+                static std::unordered_map<uint32, std::pair<int32, int32>> sweepLogged;
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(sweepLogLock);
+                    auto& last = sweepLogged[bot->GetGUID().GetCounter()];
+                    fresh = last != std::make_pair(int32(dx), int32(dy));
+                    last = {int32(dx), int32(dy)};
+                }
+                if (fresh)
+                LOG_INFO("playerbots", "[sweep33] {} L{} SKIP spot of q{} at ({:.0f},{:.0f}): its only walk passes the "
+                         "reach of a mob it must not fight",
+                         bot->GetName(), bot->GetLevel(), questId, dx, dy);
+                continue;
+            }
             objectiveIdx = poi.objectiveIdx;
             reachable = true;
             break;
