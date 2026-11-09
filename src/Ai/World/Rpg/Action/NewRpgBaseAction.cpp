@@ -497,6 +497,11 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         !TravelRouteMgr::IsInDalaran(WorldPosition(bot)) && UseDalaranPortal())
         return true;
 
+    // [taxi20] a flight, as a player takes one, when it is the faster way there and its fare is paid
+    if (FlyIfFaster(dest))
+        return true;
+
+
     if (TravelTrip(dest))
         return true;
 
@@ -1597,7 +1602,81 @@ bool NewRpgBaseAction::FlyTowards(uint32 toNode)
     return true;
 }
 
+// [taxi20] coordinator 2026-11-09: a guild bot takes a flight when it is the faster way to `dest` on this map - the
+// walk to its nearest flight master, the flight over its known nodes (their straight legs at the realm's taxi speed,
+// CONFIG_TAXI_FLIGHT_SPEED) and the walk from the known node nearest `dest`, against the straight walk there at its
+// run speed (no walk is shorter) - and it holds the fare (each hop's TaxiPath price). Decided once per destination.
+// b367: the q6391 / q6388 / q6392 chain (meant to be flown) was walked; Keenonk and Namwe stood STUCK at Gryth
+// Thurden in Ironforge, Namwe walked 2100+ yd back to Thelsamar
+bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest)
+{
+    if (!GuildHonest::IsHonestBot(bot) || !SoloSafety::Applies(bot) || dest.GetMapId() != bot->GetMapId() ||
+        bot->GetMap()->Instanceable() || botAI->rpgInfo.GetStatus() == RPG_TRAVEL_FLIGHT)
+        return false;
+    static std::mutex flyLock;
+    static std::unordered_map<uint32, std::tuple<uint32, int32, int32>> decided;
+    std::tuple<uint32, int32, int32> const key{dest.GetMapId(), int32(dest.GetPositionX() / 10.0f),
+                                               int32(dest.GetPositionY() / 10.0f)};
+    {
+        std::lock_guard<std::mutex> guard(flyLock);
+        auto& last = decided[bot->GetGUID().GetCounter()];
+        if (last == key)
+            return false;
+        last = key;
+    }
+    TravelMgr::FlightMasterInfo const* master = sTravelMgr.GetNearestFlightMasterInfo(bot);
+    if (!master || !master->taxiNodeId || master->pos.GetMapId() != bot->GetMapId() ||
+        !bot->m_taxi.IsTaximaskNodeKnown(master->taxiNodeId))
+        return false;
+    TaxiNodesEntry const* from = sTaxiNodesStore.LookupEntry(master->taxiNodeId);
+    TaxiNodesEntry const* to = nullptr;
+    float toGap = std::numeric_limits<float>::max();
+    for (uint32 i = 0; i < sTaxiNodesStore.GetNumRows(); ++i)
+    {
+        TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(i);
+        if (!node || node->map_id != dest.GetMapId() || !bot->m_taxi.IsTaximaskNodeKnown(node->ID))
+            continue;
+        float const gap = std::hypot(node->x - dest.GetPositionX(), node->y - dest.GetPositionY());
+        if (gap < toGap)
+        {
+            toGap = gap;
+            to = node;
+        }
+    }
+    if (!from || !to || to->ID == from->ID)
+        return false;
+    std::vector<uint32> path = sTravelNodeMap.FindKnownTaxiPath(bot, from->ID, to->ID);
+    if (path.size() < 2)
+        return false;
+    float flightYd = 0.0f;
+    uint32 fare = 0;
+    for (size_t i = 1; i < path.size(); ++i)
+    {
+        TaxiNodesEntry const* a = sTaxiNodesStore.LookupEntry(path[i - 1]);
+        TaxiNodesEntry const* b = sTaxiNodesStore.LookupEntry(path[i]);
+        if (!a || !b)
+            return false;
+        flightYd += std::hypot(a->x - b->x, a->y - b->y);
+        uint32 pathId = 0, cost = 0;
+        sObjectMgr->GetTaxiPath(path[i - 1], path[i], pathId, cost);
+        fare += cost;
+    }
+    float const run = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    float const taxi = std::max(sWorld->getFloatConfig(CONFIG_TAXI_FLIGHT_SPEED), 1.0f);
+    float const fly = bot->GetExactDist(master->pos) / run + flightYd / taxi + toGap / run;
+    float const walk = bot->GetExactDist(dest) / run;
+    if (fly >= walk || bot->GetMoney() < fare)
+        return false;
+    LOG_INFO("playerbots", "[taxi20] {} L{} flies {} -> {} ({} nodes, {} c): {:.0f} s by air against {:.0f} s on "
+             "foot to ({:.0f},{:.0f})",
+             bot->GetName(), bot->GetLevel(), from->name[0], to->name[0], path.size(), fare, fly, walk,
+             dest.GetPositionX(), dest.GetPositionY());
+    botAI->rpgInfo.ChangeToTravelFlight(master->templateEntry, master->pos, path);
+    return true;
+}
+
 bool NewRpgBaseAction::UseDalaranCrystal(uint32 entry)
+
 {
     WorldPosition crystal;
     float nearest = std::numeric_limits<float>::max();
