@@ -6905,8 +6905,32 @@ public:
     void OnUpdate(uint32 diff) override { sGuildCoordinator.Update(diff); }
 };
 
+// [tram26] a tram car of a travel line runs its loop server-side only while its grid is updated: a grid-spawned
+// StaticTransport moves in GameObject::Update, which the map runs in active cells only - a car that rolled into the
+// unwatched tunnel stood there, the platforms' bots waited a full loop in vain (b375: TRIP_ABANDON "a full loop
+// (143333 ms) passed without it docking here" 26 times, Irorm / Idunk / Blahadrin / Namwe stood 850-1205 s in
+// DO_QUEST). The car is an active object, as a player watching it keeps it moving
+class TramCarActiveScript : public AllGameObjectScript
+{
+public:
+    TramCarActiveScript() : AllGameObjectScript("TramCarActiveScript") {}
+
+    void OnGameObjectAddWorld(GameObject* go) override
+    {
+        if (!go || go->GetGoType() != GAMEOBJECT_TYPE_TRANSPORT || go->isActiveObject())
+            return;
+        TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(go->GetEntry());
+        if (!line || !line->isStatic)
+            return;
+        go->setActive(true);
+        LOG_INFO("playerbots", "[tram26] tram car {} on map {} kept running (an active object)", go->GetEntry(),
+                 go->GetMapId());
+    }
+};
+
 void AddGuildCoordinatorScripts()
 {
+    new TramCarActiveScript();
     new GuildCoordinatorPlayerScript();
     new GuildCoordinatorWorldScript();
 }
