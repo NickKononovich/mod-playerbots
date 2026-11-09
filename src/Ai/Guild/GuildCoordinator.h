@@ -884,6 +884,22 @@ private:
         float itemHp[QUEST_ITEM_OBJECTIVES_COUNT]{};
     };
     std::unordered_map<uint32, QuestStatic> questStatic_;
+    // [obj48] an objective's sources by formula: a kill credit / a quest item -> the creatures giving it (entry, the
+    // chance per kill, the template health), and those creatures' spawns (map, x, y): the per-unit time is the
+    // nearest source's kill time (health / its dps) plus the walk between its spawns at their density, over its chance
+    struct ObjSource
+    {
+        uint32 entry{0};
+        float chance{1.0f};
+        float hp{0.0f};
+        uint8 level{0};
+    };
+    std::unordered_map<uint64, std::vector<ObjSource>> objSources_;  // (1 item / 0 credit) << 32 | id -> sources
+    std::unordered_map<uint32, std::vector<std::tuple<uint16, float, float>>> sourceSpawns_;  // entry -> spawns
+    // the per-unit seconds of an objective for `p` (its nearest source on its map), the walk to that source, and
+    // which source it is; false when no source spawns on its map
+    bool ObjectiveUnitSeconds(Player* p, uint64 key, float dps, float speed, double& perUnit, double& walkTo,
+                              ObjSource& source) const;
     std::unordered_map<uint32, std::vector<uint32>> questsByMap_;  // map -> takeable quests, by min level
 
     mutable std::mutex lock_;
