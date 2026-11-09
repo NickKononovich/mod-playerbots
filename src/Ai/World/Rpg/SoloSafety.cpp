@@ -2362,6 +2362,68 @@ namespace SoloSafety
         return true;
     }
 
+    bool WorkSpot(Player* bot, WorldObject* target, float range, bool sight, G3D::Vector3& at, std::string& who)
+    {
+        who.clear();
+        if (!bot || !target || !bot->IsAlive() || range <= 0.0f)
+            return false;
+        float const look = std::min(sPlayerbotAIConfig.SightDistance +
+                                        std::min(MaxWanderDistance(bot->GetMapId()), bot->GetMap()->GetVisibilityRange()),
+                                    bot->GetMap()->GetVisibilityRange());
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(target, look);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, units, check);
+        Cell::VisitObjects(target, searcher, look);
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        std::vector<G3D::Vector4> discs;
+        for (Unit* unit : units)
+        {
+            Creature* mob = unit->ToCreature();
+            if (!mob || mob == target || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                continue;
+            G3D::Vector4 const disc = AggroDisc(mob, bot);
+            discs.push_back(disc);
+            if (InDisc(disc, here))
+                who += Acore::StringFormat("{}{} L{}", who.empty() ? "" : ", ", mob->GetName(), mob->GetLevel());
+        }
+        auto const clear = [&](G3D::Vector3 const& p)
+        { return std::none_of(discs.begin(), discs.end(), [&p](G3D::Vector4 const& d) { return InDisc(d, p); }); };
+        auto const works = [&](G3D::Vector3 const& p)
+        {
+            return target->GetExactDist(p.x, p.y, p.z) <= range &&
+                   (!sight || target->IsWithinLOS(p.x, p.y, p.z + bot->GetCollisionHeight()));
+        };
+        if (clear(here) && works(here))
+        {
+            at = here;
+            return true;
+        }
+        constexpr uint32 DIRECTIONS = 16;  // the search's directions all round the target (a look's cost, no rule)
+        bool found = false;
+        float best = 0.0f;
+        for (float const share : {0.9f, 0.6f, 0.3f})
+            for (uint32 i = 0; i < DIRECTIONS; ++i)
+            {
+                float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                float x = target->GetPositionX() + std::cos(angle) * range * share;
+                float y = target->GetPositionY() + std::sin(angle) * range * share;
+                float z = target->GetPositionZ();
+                bot->UpdateAllowedPositionZ(x, y, z);
+                G3D::Vector3 const p(x, y, z);
+                if (!clear(p) || !works(p))
+                    continue;
+                float const d = (p - here).length();
+                if (!found || d < best)
+                {
+                    found = true;
+                    best = d;
+                    at = p;
+                }
+            }
+        return found;
+    }
+
     bool DenseCamp(Player* bot, std::string& why)
     {
         why.clear();

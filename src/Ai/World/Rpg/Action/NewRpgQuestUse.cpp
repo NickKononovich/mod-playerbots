@@ -28,6 +28,8 @@
 #include "SmartScriptMgr.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
+#include "LeaderOrders.h"  // [objective23] Leader::Route
+#include "SoloSafety.h"    // [objective23]
 #include "StringFormat.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
@@ -538,8 +540,32 @@ bool NewRpgDoQuestAction::UseQuestTool(uint32 questId)
         // and Laaral L13 stood 0 yd from the q9531 Tree Disguise focus (181694), "out of sight" of its own model:
         // 345 s and 260 s of walks to where they stood. In range and out of sight of another target, a step closer
         // only while there is a gap to close; at it, the core's cast check decides (a sight refusal is logged)
-        bool const inRange = bot->GetDistance(target) <= stand;
         bool const sightNeeded = plan->kind != NewRpgQuestUse::TargetKind::Focus;
+        // [objective23] coordinator 2026-11-09: the use is made from a spot out of every other idle mob's and
+        // wanderer's reach when the item's range leaves one (SoloSafety::WorkSpot), as a player stands off the camp
+        // to throw a net. b372 Aevmae L11 used q9629's item 28 yd from its target among the Blacksilt camp: a scout
+        // wandering 17 yd off came, it died ("attacked, no judged pull"); 8 such solo deaths at objectives
+        if (SoloSafety::Applies(bot) && !bot->isMoving())
+        {
+            G3D::Vector3 spot;
+            std::string who;
+            if (SoloSafety::WorkSpot(bot, target, stand, sightNeeded, spot, who) &&
+                bot->GetExactDist(spot.x, spot.y, spot.z) > bot->GetCombatReach())
+            {
+                Leader::RouteResult const route = Leader::Route(bot, Position(spot.x, spot.y, spot.z));
+                if (route.found && route.complete && !route.throughRefused &&
+                    MoveTo(bot->GetMapId(), spot.x, spot.y, spot.z, false, false, false, true))
+                {
+                    LOG_INFO("playerbots", "[objective23] {} L{} q{} uses {} on {} from ({:.0f},{:.0f}), out of the "
+                             "reach of {} ({:.0f} yd walk)",
+                             bot->GetName(), bot->GetLevel(), questId, tool, target->GetEntry(), spot.x, spot.y,
+                             who.empty() ? std::string("every mob there") : who,
+                             route.length);
+                    return true;
+                }
+            }
+        }
+        bool const inRange = bot->GetDistance(target) <= stand;
         bool const inSight = bot->IsWithinLOSInMap(target);
         if (!inRange || (sightNeeded && !inSight && bot->GetDistance(target) > CONTACT_DISTANCE))
         {
