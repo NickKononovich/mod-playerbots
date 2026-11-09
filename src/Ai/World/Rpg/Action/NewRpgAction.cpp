@@ -128,6 +128,8 @@ namespace
         uint32 entry;
         uint16 mapId;
         float x, y, z;
+        ObjectGuid::LowType spawnId;
+        bool walks;  // [vendor23] a waypoint path (its spawn's MovementType or addon path): not met at its spawn
     };
 
     std::vector<VendorSpawn> const& VendorSpawns()
@@ -141,7 +143,9 @@ namespace
                 CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(data.id);
                 if (!info || !(info->npcflag & UNIT_NPC_FLAG_VENDOR) || !sObjectMgr->GetNpcVendorItemList(data.id))
                     continue;
-                spawns.push_back({data.id, data.mapid, data.posX, data.posY, data.posZ});
+                CreatureAddon const* addon = sObjectMgr->GetCreatureAddon(spawnId);
+                bool const walks = data.movementType == WAYPOINT_MOTION_TYPE || (addon && addon->path_id);
+                spawns.push_back({data.id, data.mapid, data.posX, data.posY, data.posZ, spawnId, walks});
             }
         });
         return spawns;
@@ -189,14 +193,39 @@ namespace
     // The nearest vendor spawn on the bot's map that is not hostile to it (and sells its ammo when it needs some).
     // [guild14] repair: only those that repair (UNIT_NPC_FLAG_REPAIR); a solo bot's trip there must be safe
     // (NewRpgBaseAction::TripRefused), else the next nearest
+    // [vendor23] a vendor that walks a waypoint path is where the map has it now: its live position on the bot's map
+    // (no creature loaded there or a dead one: no place to meet it). b372 Ravelandy L14: Antonio Perelli (the
+    // Traveling Salesman, path 811810) chosen at his spawn 0 yd off 35 times - "finds no vendor 844 at its spawn",
+    // the leader's marked sale sending the run again each time, VENDOR 1200 s
+    thread_local std::vector<VendorSpawn> walkingNow;
+
     VendorSpawn const* NearestVendorOf(Player* bot, uint32 ammoSubClass, bool repair, float& dist)
     {
         FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
         std::vector<std::pair<float, VendorSpawn const*>> candidates;
-        for (VendorSpawn const& spawn : VendorSpawns())
+        walkingNow.clear();
+        walkingNow.reserve(64);
+        for (VendorSpawn const& listed : VendorSpawns())
         {
-            if (spawn.mapId != bot->GetMapId())
+            if (listed.mapId != bot->GetMapId())
                 continue;
+            VendorSpawn const* at = &listed;
+            if (listed.walks)
+            {
+                if (walkingNow.size() == walkingNow.capacity())
+                    continue;  // the reserved slots hold the pointers taken below (a map's walking vendors fit)
+                auto const range = bot->GetMap()->GetCreatureBySpawnIdStore().equal_range(listed.spawnId);
+                Creature* live = range.first != range.second ? range.first->second : nullptr;
+                if (!live || !live->IsAlive() || !live->IsInWorld())
+                    continue;
+                VendorSpawn now = listed;
+                now.x = live->GetPositionX();
+                now.y = live->GetPositionY();
+                now.z = live->GetPositionZ();
+                walkingNow.push_back(now);
+                at = &walkingNow.back();
+            }
+            VendorSpawn const& spawn = *at;
             CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(spawn.entry);
             if (!info || (repair && !(info->npcflag & UNIT_NPC_FLAG_REPAIR)))
                 continue;
