@@ -5980,6 +5980,21 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
     in.y = bot->GetPositionY();
     in.z = bot->GetPositionZ();
     in.speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    // [route23] coordinator 2026-11-09: the walk's pace is the one its legs showed, not the run speed. b372: the done
+    // hand-in stops took 1.64x their plan (9583 s for 5845 s), the pickups 1.78x, the objectives 1.52x - the bots
+    // covered 4.3-5.3 yd a second of their walking states against the 7 the plan assumed (the stops between the
+    // sight-long legs, the waits for a walk's end, the walks round the walls). The run speed scaled by the planned
+    // over the actual seconds of the hand-in and pickup stops it did (their work is a click)
+    {
+        QuestRoute::BotRoute const& done = QuestRoute::Of(counter);
+        if (done.legStops && done.legActualSec > 0.0f && done.legPlannedSec > 0.0f)
+        {
+            float const pace = done.legPlannedSec / done.legActualSec;
+            in.speed = std::max(in.speed * pace, 1.0f);
+            LOG_INFO("playerbots", "[route23] {} L{} leg pace {:.2f}: planned {:.0f} s, took {:.0f} s over {} stops",
+                      bot->GetName(), level, pace, done.legPlannedSec, done.legActualSec, done.legStops);
+        }
+    }
     in.hubRadius = GROUP_ENDER_RADIUS;
     float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
     uint32 const landmass = TravelRouteMgr::Landmass(WorldPosition(bot));

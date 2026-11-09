@@ -822,7 +822,18 @@ bool NewRpgBaseAction::CloseRouteStop(QuestRoute::BotRoute& r,
     if (s.kind == StopKind::Town && (!TownListed(towns, s.x, s.y) || bot->GetDistance2d(s.x, s.y) <= TOWN_STOP_REACHED))
         LogStopEnd(bot, r, "done", 0, "");
     else if (done && done + postponed + gone == s.quests.size())  // [routeplan] a hub, a giver: with the last
+    {
         LogStopEnd(bot, r, "done", s.kind == StopKind::Ender ? done : 0, "");
+        // [route23] a hand-in or a pickup done: its leg's planned seconds against the seconds to its quest event
+        if ((s.kind == StopKind::Ender || s.kind == StopKind::Giver) && s.leg > 0.0f)
+        {
+            uint64 const now = QuestStats::NowMs();
+            uint64 const end = r.currentDoneMs && r.currentDoneMs <= now ? r.currentDoneMs : now;
+            r.legPlannedSec += s.leg;
+            r.legActualSec += float(end - std::min(end, r.currentSinceMs)) / float(IN_MILLISECONDS);
+            ++r.legStops;
+        }
+    }
     else if (!s.quests.empty() && postponed + gone == s.quests.size())
         LogStopEnd(bot, r, "left", 0, postponed ? "postponed" : "left the log");
     else if (r.invalid)

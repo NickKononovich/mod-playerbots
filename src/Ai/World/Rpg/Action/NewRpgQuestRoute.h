@@ -181,6 +181,11 @@ namespace QuestRoute
         std::set<uint64> visitedTown;           // town spots reached under the current task list
         std::map<uint32, uint8> leftOutQuests;  // [routeplan] of the last build: quest -> its status then
         std::set<uint64> townsSeen;             // [routeplan] of the last build
+        // [route23] the legs it walked: the plan's seconds for the hand-in and pickup stops it did (their work is a
+        // click: the seconds are the leg's) against the seconds they took
+        float legPlannedSec{0.0f};
+        float legActualSec{0.0f};
+        uint32 legStops{0};
     };
     BotRoute& Of(uint32 botLow);
     // [help20] the bot's own route: its experience over its seconds (0: no route built) - what an hour of its own plan
