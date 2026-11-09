@@ -2484,7 +2484,7 @@ namespace SoloSafety
         return true;
     }
 
-    bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots)
+    bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots, bool atRestart)
     {
         who.clear();
         spots.clear();
@@ -2506,10 +2506,17 @@ namespace SoloSafety
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
-            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
-                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+            if (!mob || (!atRestart && (!mob->IsAlive() || mob->IsInCombat())) || !mob->IsHostileTo(bot) ||
+                (mob->IsAlive() && !mob->HasReactState(REACT_AGGRESSIVE)) || mob->GetCharmerOrOwnerGUID())
                 continue;
-            G3D::Vector4 const disc = AggroDisc(mob, bot);
+            G3D::Vector4 disc = AggroDisc(mob, bot);
+            if (atRestart)  // [login67] it respawns / is back at its home
+            {
+                Position const& home = mob->GetHomePosition();
+                disc.x = home.GetPositionX();
+                disc.y = home.GetPositionY();
+                disc.z = home.GetPositionZ();
+            }
             discs.push_back(disc);
             if (!InDisc(disc, here))
                 continue;

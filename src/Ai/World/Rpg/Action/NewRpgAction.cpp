@@ -1289,7 +1289,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return true;
         std::string who;
         std::vector<G3D::Vector3> spots;
-        if (!SoloSafety::StandsInReach(bot, who, spots))
+        // [login67] the reaches of its next login: the dead and fighting mobs at their homes too (the restart
+        // respawns them). b399 Rumanatol L16 rested at shutdown 4 yd from the home of the Veridian Broodling L18 it had
+        // just killed; at b400's login the Broodling stood there again, attacked before its first look, and killed it
+        if (!SoloSafety::StandsInReach(bot, who, spots, true))
             return HoldPosition(3 * IN_MILLISECONDS);
         for (G3D::Vector3 const& at : spots)
         {
