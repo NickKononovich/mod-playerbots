@@ -532,6 +532,7 @@ namespace TestHarness
         // [b32_strat_gate] who is cut off behind a closed key door (Party::doorCutMember), and the recovery: the
         // cut-off member uses its own key on the door from its side when nothing hits it.
         void TickDoorCut(Party& party, Player* leader);
+        void TickRoundWalk(Party& party, Player* leader);  // [kara6] the walk round a door
         void MemberKeyAtDoor(Party& party, Player* leader);
         void EmulateAreaTriggers(Party& party, std::vector<Player*> const& players);
         void GuideGhosts(Party& party, std::vector<Player*> const& players);

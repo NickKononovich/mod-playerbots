@@ -2330,6 +2330,7 @@ namespace TestHarness
     // healer. User: "why did they go on without the healer? This must not happen."
     void TestHarnessMgr::TickDoorCut(Party& party, Player* leader)
     {
+        TickRoundWalk(party, leader);  // [kara6]
         constexpr uint32 DOOR_CUT_CHECK_MS = 2 * IN_MILLISECONDS;
         constexpr float DOOR_CUT_DOOR_RANGE = 40.0f;
         constexpr uint32 DOOR_CUT_OTHER_MAX_MS = 2 * MINUTE * IN_MILLISECONDS;  // a door no key of the group opens
@@ -4223,7 +4224,8 @@ namespace TestHarness
         };
     }
 
-    static bool WalkRoundDoor(Player* leader, GameObject* door, G3D::Vector3 const& goal, G3D::Vector3& step)
+    static bool WalkRoundDoor(Player* leader, GameObject* door, G3D::Vector3 const& goal, G3D::Vector3& step,
+                              std::vector<G3D::Vector3>* way = nullptr)
     {
         constexpr int MAX_POLYS = 4096;  // a way round through other halls is long
         constexpr float DOOR_MARGIN = 1.0f;
@@ -4292,6 +4294,8 @@ namespace TestHarness
             points.emplace_back(straight[i * 3 + 2], straight[i * 3], straight[i * 3 + 1]);
         if (RouteThroughClosedDoor(points, std::vector<GameObject*>{door}, leader->GetPhaseMask()))
             return false;  // the only way left still runs through it
+        if (way)
+            way->assign(points.begin(), points.end());
         // the point WAYPOINT_STEP yd along the way
         float left = WAYPOINT_STEP;
         step = points.back();
@@ -4308,8 +4312,77 @@ namespace TestHarness
         return true;
     }
 
+    // [kara6] The way round a door nobody opens, once found, is the leader's walk until it is past the door's area:
+    // every waypoint asked of the leader meanwhile is the next corner of that way (no closed-door hold, no skip),
+    // and a leader left without a waypoint gets it again (TickRoundWalk). b363 kara-n segment 7b: the step was given
+    // 29 times, but the next retarget's walk met the door again - its hold, then the skip, then "target none" held
+    // the tank at the door; it never moved (183 "no aggressive target"), stalled at 415 s. The members follow the
+    // leader as on any walk.
+    namespace
+    {
+        struct RoundWalk
+        {
+            ObjectGuid door;
+            std::vector<G3D::Vector3> way;
+            size_t next = 1;
+        };
+        std::unordered_map<uint32, RoundWalk> roundWalks;  // party seq (the harness's world thread)
+        constexpr float ROUND_CORNER_REACHED = 3.0f;      // a corner this near is passed
+        constexpr float ROUND_PAST_DOOR = 25.0f;          // the walk ends this far from the door (2D)
+
+        // the corner the leader walks to now; false: no walk round (none, over, or a fight / the door opened)
+        bool RoundWalkPoint(Party& party, Player* leader, G3D::Vector3& point)
+        {
+            auto found = roundWalks.find(party.seq);
+            if (found == roundWalks.end())
+                return false;
+            RoundWalk& walk = found->second;
+            GameObject* door = leader->GetMap() ? leader->GetMap()->GetGameObject(walk.door) : nullptr;
+            auto const end = [&](char const* why)
+            {
+                LOG_INFO("playerbots", "[kara6] leader {}: the walk round {} ends: {}", leader->GetName(),
+                         door ? door->GetName() : std::string("?"), why);
+                roundWalks.erase(found);
+                return false;
+            };
+            if (!door || !leader->IsAlive() || leader->GetMap()->GetInstanceId() != party.instanceId)
+                return end("no door / leader");
+            if (leader->IsInCombat())
+                return end("the group fights");
+            if (door->GetGoState() != GO_STATE_READY)
+                return end("the door is open");
+            while (walk.next < walk.way.size() &&
+                   leader->GetExactDist2d(walk.way[walk.next].x, walk.way[walk.next].y) <= ROUND_CORNER_REACHED)
+                ++walk.next;
+            if (walk.next >= walk.way.size())
+                return end("its last corner reached");
+            if (leader->GetExactDist2d(door) >= ROUND_PAST_DOOR && walk.next >= 2)
+                return end("past the door's area");
+            point = walk.way[walk.next];
+            return true;
+        }
+    }
+
+    void TestHarnessMgr::TickRoundWalk(Party& party, Player* leader)
+    {
+        G3D::Vector3 point;
+        if (!leader || !RoundWalkPoint(party, leader, point))
+            return;
+        TestRunner::Waypoint current;
+        if (TestRunner::GetWaypoint(leader->GetGUID(), current) &&
+            G3D::Vector3(current.x - point.x, current.y - point.y, current.z - point.z).length() < 0.5f)
+            return;
+        GiveWaypoint(party, leader, point.x, point.y, point.z, false, false);
+    }
+
     void TestHarnessMgr::SetLeaderWaypoint(Party& party, Player* leader, float x, float y, float z, bool straight)
     {
+        // [kara6] on the walk round a door: its next corner, whatever else asks
+        if (G3D::Vector3 corner; RoundWalkPoint(party, leader, corner))
+        {
+            GiveWaypoint(party, leader, corner.x, corner.y, corner.z, false, false);
+            return;
+        }
         G3D::Vector3 point(x, y, z);
         ObjectGuid doorGuid;
         float walked = 0.0f;
@@ -4353,12 +4426,24 @@ namespace TestHarness
                 G3D::Vector3 goal(x, y, z);
                 if (Creature* goalMob = leader->GetMap()->GetCreature(party.target))
                     goal = G3D::Vector3(goalMob->GetPositionX(), goalMob->GetPositionY(), goalMob->GetPositionZ());
-                if (!opens && WalkRoundDoor(leader, door, goal, round))
+                std::vector<G3D::Vector3> way;
+                if (!opens && WalkRoundDoor(leader, door, goal, round, &way))
                 {
                     LOG_INFO("playerbots", "[kara5] leader {}: walks round {} {} (nobody of the group opens it) to "
                              "({:.1f},{:.1f},{:.1f}), target {}", leader->GetName(), door->GetName(), door->GetEntry(),
                              round.x, round.y, round.z, party.target.ToString());
-                    GiveWaypoint(party, leader, round.x, round.y, round.z, false, false);
+                    // [kara6] the whole way is the leader's walk until it is past the door
+                    RoundWalk& walk = roundWalks[party.seq];
+                    walk.door = door->GetGUID();
+                    walk.way = std::move(way);
+                    walk.next = 1;
+                    LOG_INFO("playerbots", "[kara6] leader {}: follows the way round {} ({} corners, {:.0f} yd)",
+                             leader->GetName(), door->GetName(), walk.way.size(),
+                             walk.way.empty() ? 0.0f : (walk.way.back() - walk.way.front()).length());
+                    if (G3D::Vector3 corner; RoundWalkPoint(party, leader, corner))
+                        GiveWaypoint(party, leader, corner.x, corner.y, corner.z, false, false);
+                    else
+                        GiveWaypoint(party, leader, round.x, round.y, round.z, false, false);
                     return;
                 }
                 if (!opens)
