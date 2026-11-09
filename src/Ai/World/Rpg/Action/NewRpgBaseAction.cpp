@@ -4800,6 +4800,70 @@ bool NewRpgBaseAction::WalkGivenUp(Player* bot, float x, float y)
     return found != spots->second.end() && found->second == bot->GetLevel();
 }
 
+namespace
+{
+    // [trip52] the trip by air: the walk to its nearest known flight master and the walk off the known node nearest
+    // the destination, each a walk it does not refuse, the flight faster than its walk there (as [taxi20] decides it
+    // flies) and its fare in its purse: true and the plan's text
+    bool FlightTripSafe(Player* bot, WorldPosition const& dest, std::string& plan)
+    {
+        TravelMgr::FlightMasterInfo const* master = sTravelMgr.GetNearestFlightMasterInfo(bot);
+        if (!master || !master->taxiNodeId || master->pos.GetMapId() != bot->GetMapId() ||
+            !bot->m_taxi.IsTaximaskNodeKnown(master->taxiNodeId))
+            return false;
+        TaxiNodesEntry const* to = nullptr;
+        float toGap = std::numeric_limits<float>::max();
+        for (uint32 i = 0; i < sTaxiNodesStore.GetNumRows(); ++i)
+        {
+            TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(i);
+            if (!node || node->map_id != dest.GetMapId() || !bot->m_taxi.IsTaximaskNodeKnown(node->ID))
+                continue;
+            float const gap = std::hypot(node->x - dest.GetPositionX(), node->y - dest.GetPositionY());
+            if (gap < toGap)
+            {
+                toGap = gap;
+                to = node;
+            }
+        }
+        if (!to || to->ID == master->taxiNodeId)
+            return false;
+        std::vector<uint32> path = sTravelNodeMap.FindKnownTaxiPath(bot, master->taxiNodeId, to->ID);
+        if (path.size() < 2)
+            return false;
+        uint32 fare = 0;
+        float flightYd = 0.0f;
+        for (size_t i = 1; i < path.size(); ++i)
+        {
+            uint32 pathId = 0, cost = 0;
+            sObjectMgr->GetTaxiPath(path[i - 1], path[i], pathId, cost);
+            fare += cost;
+            TaxiNodesEntry const* a = sTaxiNodesStore.LookupEntry(path[i - 1]);
+            TaxiNodesEntry const* b = sTaxiNodesStore.LookupEntry(path[i]);
+            if (a && b)
+                flightYd += std::hypot(a->x - b->x, a->y - b->y);
+        }
+        if (bot->GetMoney() < fare)
+            return false;
+        Leader::RouteResult const toMaster = Leader::Route(bot, master->pos);
+        if (!toMaster.found || toMaster.throughRefused)
+            return false;
+        Leader::RouteResult const off = Leader::Route(bot, G3D::Vector3(to->x, to->y, to->z),
+                                                      G3D::Vector3(dest.GetPositionX(), dest.GetPositionY(),
+                                                                   dest.GetPositionZ()));
+        if (!off.found || off.throughRefused)
+            return false;
+        float const run = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+        float const taxi = std::max(sWorld->getFloatConfig(CONFIG_TAXI_FLIGHT_SPEED), 1.0f);
+        float const fly = toMaster.length / run + flightYd / taxi + std::max(toGap, off.length) / run;
+        float const walk = Leader::WalkYd(bot, bot->GetPosition(), dest) / run;
+        if (fly >= walk)
+            return false;  // it would walk, and the walk is refused
+        plan = Acore::StringFormat("by air from {} to {} ({} c, {:.0f} s against {:.0f} s on foot)", master->pos.ToString(),
+                                   to->name[0], fare, fly, walk);
+        return true;
+    }
+}
+
 bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::string const& what)
 {
     if (WalkGivenUp(bot, x, y))  // [holds9]
@@ -4841,6 +4905,17 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
         else if (Leader::RouteResult const route = Leader::Route(bot, Position(x, y, z));
                  route.found && route.throughRefused)
         {
+            // [trip52] ... unless it goes by air, the walks to and off the flight both safe
+            std::string plan;
+            if (FlightTripSafe(bot, WorldPosition(bot->GetMapId(), x, y, z), plan))
+            {
+                LOG_INFO("playerbots", "[trip52] {} L{} trip {} at ({:.0f},{:.0f}): its walk passes a refused reach, "
+                         "taken {}",
+                         bot->GetName(), bot->GetLevel(), what, x, y, plan);
+                std::lock_guard<std::mutex> guard(lock);
+                judged[bot->GetGUID().GetCounter()][key] = {bot->GetLevel(), false};
+                return false;
+            }
             refused = true;
             LOG_INFO("playerbots", "[trip37] {} L{} TRIP_REFUSED {} at ({:.0f},{:.0f}): its only walk passes the reach "
                      "of a mob it must not fight",
