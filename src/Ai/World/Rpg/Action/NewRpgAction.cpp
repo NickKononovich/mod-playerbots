@@ -2203,8 +2203,9 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
             if (log)
             {
                 LastMovement const& last = AI_VALUE(LastMovement&, "last movement");
-                LOG_INFO("playerbots", "[quest19] {} L{} q{} hand-in walk: ender at map {} ({:.0f},{:.0f},{:.0f}) {:.0f} "
-                         "yd, nearest {:.0f} yd; walk {}; far route {} points; last move to ({:.0f},{:.0f}); status {}",
+                LOG_INFO("playerbots",
+                         "[quest19] {} L{} q{} hand-in walk: ender at map {} ({:.0f},{:.0f},{:.0f}) {:.0f} yd, nearest "
+                         "{:.0f} yd; walk {}; far route {} points; last move to ({:.0f},{:.0f}); status {}",
                          bot->GetName(), bot->GetLevel(), data.questId, data.pos.GetMapId(),
                          data.pos.GetPositionX(), data.pos.GetPositionY(), data.pos.GetPositionZ(), d, nearest,
                          walks ? "under way" : "none (" + s_moveRefusal + ")", botAI->rpgInfo.farRoute.size(),
