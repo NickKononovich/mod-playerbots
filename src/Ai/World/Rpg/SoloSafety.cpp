@@ -3215,6 +3215,35 @@ namespace SoloSafety
         // ever priced). `price` / `hp`: the chase and the bot's health with its kit (logged on the wall)
         std::vector<std::string> ranPastNames;
         std::unordered_map<uint64, float> chaseOf;  // [runpast11] each mob run past: its chase (the executor's set)
+        // [runpast60] a patrol's forecast beat (PullPlanning::PatrolForecast), once per mob and search
+        std::unordered_map<Creature*, std::vector<G3D::Vector3>> beats;
+        auto const beatOf = [&](Creature* c) -> std::vector<G3D::Vector3> const&
+        {
+            auto found = beats.find(c);
+            if (found == beats.end())
+            {
+                std::vector<G3D::Vector3> track;
+                float sampleSec = 0.0f;
+                if (c->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE ||
+                    !PullPlanning::PatrolForecast(c, track, sampleSec))
+                    track.clear();
+                found = beats.emplace(c, std::move(track)).first;
+            }
+            return found->second;
+        };
+        // [runpast60] the mob's reach covers `at` from anywhere it roams: its aggro disc (a wanderer's round its home
+        // with its wander area) where it stands, or anywhere on its patrol beat (PullModel::Reaches' reach data)
+        auto const reachCovers = [&](Creature* c, G3D::Vector3 const& at, float extra)
+        {
+            G3D::Vector4 disc = AggroDisc(c, bot);
+            disc.w += extra;
+            if (InDisc(disc, at))
+                return true;
+            for (G3D::Vector3 const& step : beatOf(c))
+                if (InDisc(G3D::Vector4(step.x, step.y, step.z, disc.w), at))
+                    return true;
+            return false;
+        };
         auto const tryRunPast = [&](Creature* mob, PullModel const& model, float& price, float& hp)
         {
             RunPast with = runPast;
@@ -3244,7 +3273,33 @@ namespace SoloSafety
                                                    legLen,
                                                along0, along1);
                 float const px = from.x + leg.x * (along / legLen), py = from.y + leg.y * (along / legLen);
-                return std::hypot(c->GetPositionX() - px, c->GetPositionY() - py) <= assistRadius;
+                if (c->CanAssistTo(chaser, bot) &&
+                    std::hypot(c->GetPositionX() - px, c->GetPositionY() - py) <= assistRadius)
+                    return true;
+                // [runpast60] ... or a roamer that comes within the assistance radius of the chase's stretch from
+                // anywhere on its round (a wanderer's area, a patrol's beat), or whose own aggro reach the stretch
+                // crosses (the bot runs into it with the chase on): sampled along the stretch at the route's step
+                constexpr float STRETCH_STEP = 4.0f;  // the route search's sample spacing, a look's cost
+                bool const roams = c->GetDefaultMovementType() == RANDOM_MOTION_TYPE ||
+                                   c->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE;
+                for (float a = along0; a <= along1; a += STRETCH_STEP)
+                {
+                    G3D::Vector3 const p(from.x + leg.x * (a / legLen), from.y + leg.y * (a / legLen),
+                                         from.z + leg.z * (a / legLen));
+                    if (reachCovers(c, p, 0.0f))
+                        return true;  // its own aggro on the running bot
+                    if (roams && c->CanAssistTo(chaser, bot))
+                    {
+                        G3D::Vector4 home = AggroDisc(c, bot);  // the wanderer's area centre and its wander
+                        float const wanderOnly = home.w - c->GetAggroRange(bot) - bot->GetCombatReach();
+                        if (std::hypot(home.x - p.x, home.y - p.y) <= assistRadius + std::max(0.0f, wanderOnly))
+                            return true;
+                        for (G3D::Vector3 const& step : beatOf(c))
+                            if (std::hypot(step.x - p.x, step.y - p.y) <= assistRadius)
+                                return true;
+                    }
+                }
+                return false;
             };
             for (size_t i = 0; i < chasers.size(); ++i)
             {
@@ -3305,7 +3360,7 @@ namespace SoloSafety
                     continue;
                 for (Creature* c : around)
                     if (c != chaser && std::find(chasers.begin(), chasers.end(), c) == chasers.end() &&
-                        !chasing.count(c->GetGUID().GetRawValue()) && c->CanAssistTo(chaser, bot) &&
+                        !chasing.count(c->GetGUID().GetRawValue()) &&
                         chaseCovers(chaser, chase.seconds, c))
                         chasers.push_back(c);  // its own chase and calls are counted in turn
             }
@@ -3347,8 +3402,13 @@ namespace SoloSafety
                 radius += mob->GetWanderDistance();
             }
             // the leg ends within sight of the bot: a reach beyond it is priced when the bot gets there
-            if (bot->GetExactDist2d(centre.GetPositionX(), centre.GetPositionY()) >
-                sPlayerbotAIConfig.SightDistance + radius)
+            // [runpast60] ... a patrol's reach by the nearest step of its beat, not where it walks now: b397 Leprithus
+            // L19 (74 yd off on its beat) was left out of the search Emdyl L14's sweep leg was walked by (run past two
+            // Rotten Ghouls, priced 300 hp vs 520); he came along his beat and the three killed it
+            float nearest = bot->GetExactDist2d(centre.GetPositionX(), centre.GetPositionY());
+            for (G3D::Vector3 const& step : beatOf(mob))
+                nearest = std::min(nearest, bot->GetExactDist2d(step.x, step.y));
+            if (nearest > sPlayerbotAIConfig.SightDistance + radius)
                 continue;
             // never walked through: orange / red con, an elite, a mob in a remembered danger zone (where it died, a
             // pack its pull judge refused). [pull9] A zone the bot stands in lies behind it, as a refused reach it
