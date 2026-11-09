@@ -1530,9 +1530,12 @@ void GuildCoordinator::AutoFive()
             for (FiveCandidate& c : pool)
                 if (!c.needsClear)
                     c.upgrade = HoldsUpgrade(*d, c.player);
-            // the dungeon must hold an upgrade or an open clear for each of the five
+            // the dungeon must hold an upgrade or an open clear for each of its dps; [five58] a tank or healer who
+            // cleared it already goes again for the next five (user 2026-11-09: the healer runs again with the next
+            // five as soon as it is out) - PickFive takes one with a clear or upgrade of its own first
             pool.erase(std::remove_if(pool.begin(), pool.end(),
-                                      [](FiveCandidate const& c) { return !c.needsClear && !c.upgrade; }),
+                                      [](FiveCandidate const& c)
+                                      { return !c.needsClear && !c.upgrade && c.role == "dps"; }),
                        pool.end());
             std::vector<FiveCandidate> five;
             // [five58] the finder's band first (the five may queue); else a five that walks in: every member of it
