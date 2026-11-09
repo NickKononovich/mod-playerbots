@@ -138,6 +138,9 @@ namespace SoloSafety
     // wanderer's reach, the nearest to the bot (its own spot when it is one); false: no such spot (the objective
     // leaves none). `who`: the mobs whose reach covers the bot's own spot ("" when none)
     bool WorkSpot(Player* bot, WorldObject* target, float range, bool sight, G3D::Vector3& at, std::string& who);
+    // [spot35] user 2026-11-09: an orange / red or elite roamer (a wanderer's home + wander distance + aggro reach,
+    // a patrol's path + aggro reach) idle and hostile whose round covers `at`: true, `who` its name and level
+    bool RoamerReaches(Player* bot, G3D::Vector3 const& at, std::string& who);
     // [deaths14] a solo bot out of a fight stands in the aggro reach of an idle hostile (any: idle, wanderer, patrol)
     // and a spot out of every reach is there: its rest waits until it stands there (NewRpgBaseAction::RestEscape)
     bool RestSpotInReach(Player* bot);

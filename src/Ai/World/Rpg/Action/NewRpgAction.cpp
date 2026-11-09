@@ -2255,6 +2255,8 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         int32 objectiveIdx = 0;
         bool reachable = false;
         size_t spent = 0;
+        std::optional<WorldPosition> roamerSpot;  // [spot35] the first spot a roamer's round covers
+        std::string roamerWho;
         for (POIInfo const& poi : poiInfo)
         {
             if (IsSpentSpot(bot, questId, poi.pos.x, poi.pos.y))  // [guild13]
@@ -2316,9 +2318,29 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                          bot->GetName(), bot->GetLevel(), questId, dx, dy);
                 continue;
             }
+            // [spot35] user 2026-11-09: no spot in the round of an orange / red or elite roamer (a wanderer's area,
+            // a patrol's path, each with its aggro reach): it walks into the bot while it fights or rests there.
+            // b386: 11 of 33 deaths "attacked, no judged pull" - Mountain Buzzard L16, Starving Dire Wolf L19, Black
+            // Bear Patriarch L16, Vultros L26, Green Recluse L22 came to the bots at their spots
+            if (std::string roamer; SoloSafety::Applies(bot) &&
+                                    SoloSafety::RoamerReaches(bot, G3D::Vector3(dx, dy, dz), roamer))
+            {
+                if (!roamerSpot)
+                    roamerSpot = WorldPosition(bot->GetMapId(), dx, dy, dz);
+                roamerWho = roamer;
+                continue;
+            }
             objectiveIdx = poi.objectiveIdx;
             reachable = true;
             break;
+        }
+        if (!reachable && roamerSpot)
+        {
+            // [spot35] every spot left lies in a roamer's round: the objective goes to the camp-help request
+            std::string const why = "every unspent spot lies in the round of " + roamerWho;
+            LOG_INFO("playerbots", "[spot35] {} L{} q{}: {}: asks for help", bot->GetName(), bot->GetLevel(),
+                     questId, why);
+            NewRpgCoop::OnCampRefused(botAI, bot, *roamerSpot, why);
         }
         if (!reachable)
         {

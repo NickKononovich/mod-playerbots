@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "WaypointMgr.h"  // [spot35]
 #include "SoloSafety.h"
 #include "SlowScope.h"  // [perf26]
 #include "PerfMonitor.h"  // [guild15]
@@ -3560,5 +3561,53 @@ namespace SoloSafety
             return;
         found->second.routeComplete = complete;
         found->second.routeThroughRefused = throughRefused;
+    }
+
+    bool RoamerReaches(Player* bot, G3D::Vector3 const& at, std::string& who)
+    {
+        who.clear();
+        if (!bot || !bot->IsInWorld())
+            return false;
+        // the look round the spot: the widest wander area of the map with its aggro reach (a search radius)
+        float const look = std::min(MaxWanderDistance(bot->GetMapId()) + sPlayerbotAIConfig.SightDistance,
+                                    bot->GetMap()->GetVisibilityRange());
+        struct NearSpot
+        {
+            float x, y, r;
+            bool operator()(Unit* u) const { return u->GetExactDist2d(x, y) <= r; }
+        } check{at.x, at.y, look};
+        std::list<Unit*> units;
+        Acore::UnitListSearcher<NearSpot> searcher(bot, units, check);
+        Cell::VisitObjects(at.x, at.y, bot->GetMap(), searcher, look);
+        uint8 const level = bot->GetLevel();
+        for (Unit* unit : units)
+        {
+            Creature* mob = unit->ToCreature();
+            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                continue;
+            MovementGeneratorType const moves = mob->GetDefaultMovementType();
+            if (moves != RANDOM_MOTION_TYPE && moves != WAYPOINT_MOTION_TYPE)
+                continue;  // a mob that stays: the pull judge and the spot's own checks price it
+            if (!IsElite(mob) && Acore::XP::GetColorCode(level, mob->GetLevel()) > XP_ORANGE)
+                continue;
+            float const reach = mob->GetAggroRange(bot) + bot->GetCombatReach();
+            bool covers = false;
+            if (moves == RANDOM_MOTION_TYPE)
+                covers = mob->GetHomePosition().GetExactDist2d(at.x, at.y) <= reach + mob->GetWanderDistance();
+            else if (WaypointPath const* path = sWaypointMgr->GetPath(mob->GetWaypointPath()))
+            {
+                for (WaypointNode const& node : path->Nodes)
+                    covers = covers || std::hypot(node.X - at.x, node.Y - at.y) <= reach;
+            }
+            else
+                covers = mob->GetExactDist2d(at.x, at.y) <= reach;
+            if (!covers)
+                continue;
+            who = Acore::StringFormat("{} L{} ({})", mob->GetName(), mob->GetLevel(),
+                                      moves == RANDOM_MOTION_TYPE ? "wanderer" : "patrol");
+            return true;
+        }
+        return false;
     }
 }
