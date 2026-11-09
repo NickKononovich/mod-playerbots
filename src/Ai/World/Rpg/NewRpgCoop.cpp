@@ -2538,8 +2538,11 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     // [help25] a blocked requester's own time is no cost of the help: alone it gains nothing at that camp, and its
     // other stops go on while the helpers walk to it (b373: 109-113 s at its route's 11.15 xp/s were most of the
     // refused prices)
-    if (aloneWins)
-        helpCost += TimeRate(req) * farthest;
+    // [help35] ... but a requester does not go on: the party's leader holds for its members behind (GROUP_WAIT,
+    // MemberNotReady) until the farthest helper arrives - its wait is a cost whether or not it wins alone. b386:
+    // Rollothan was sent 5741 yd (eta 820 s) to Maronic's camp, "value 2850, cost 1560" without Maronic's 820 s at
+    // 3.15 xp/s (2583 xp); Maronic stood 600 s in the wait, the help ended unfinished
+    helpCost += TimeRate(req) * farthest;
     // [help21] a camp request (no quest of its own: a camp in its way) is worth the quests it walls off: the
     // requester's open log quests with an objective spot within its sight of the camp. Before, 0: every camp request
     // refused (b368: 263 refusals, Salleas "value 0 xp ... cost 2061")
@@ -2577,7 +2580,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                                      QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) > 0.0f ? "" : " (grind)");
     std::string const priced =
         Acore::StringFormat("value {:.0f} xp (quest {:.0f} [help28] + {:.0f} s saved), cost {:.0f} xp ([help22] helpers {}; "
-                            "requester's wait {:.0f} s at {:.2f} xp/s)",
+                            "requester's wait {:.0f} s at {:.2f} xp/s, counted [help35])",
                             helpValue, questXp, saved, helpCost, rates, farthest, TimeRate(req));
     if (!r.human && helpCost >= helpValue)  // [help22] no value (0) is no help either
     {
