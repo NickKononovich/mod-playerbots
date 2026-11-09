@@ -4001,7 +4001,8 @@ namespace
     {
         float x, y, z;  // [guild15] z: the core's aggro check is a 3D distance (Sewer Beast under Stormwind's bridges)
         CreatureTemplate const* tmpl;
-        int16 event;  // [guild15] game_event_creature: > 0 spawned only while that event runs, < 0 only while it does not
+        int16 event;
+        float wander = 0.0f;  // [wander56] its spawn's wander distance (a wanderer reaches from anywhere in it)  // [guild15] game_event_creature: > 0 spawned only while that event runs, < 0 only while it does not
     };
 
     // [guild15] spawn guid -> its game event (GameEventMgr's own lists: index = events + event - 1; > 0 spawned only
@@ -4171,7 +4172,7 @@ namespace
                     (tmpl->unit_flags & (UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE)))
                     continue;
                 index.mobCells[MobCellKey(data.mapid, data.posX, data.posY)].push_back(
-                    {data.posX, data.posY, data.posZ, tmpl, SpawnEvent(true, spawnId)});
+                    {data.posX, data.posY, data.posZ, tmpl, SpawnEvent(true, spawnId), data.wander_distance});
             }
         });
         return index;
@@ -4507,7 +4508,7 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             // Creature::GetAggroRange: the detection range grows a yard per level the mob is above the player
             float const radius = std::clamp(tmpl->detection_range + float(int32(tmpl->maxlevel) - int32(level)), 5.0f,
                                             MAX_AGGRO_RADIUS) +
-                                 bot->GetCombatReach();
+                                 bot->GetCombatReach() + spawn.wander;  // [wander56]
             bool covers = false;
             for (size_t i = fromIndex; i < points.size() && !covers; i += 2)  // every 8 yd: within a reach
                 covers = std::hypot(points[i].x - spawn.x, points[i].y - spawn.y) <= radius;
@@ -4603,8 +4604,12 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
             if (!faction || !faction->IsHostileTo(*botFaction))
                 continue;
             // Creature::GetAggroRange: the detection range grows a yard per level the mob is above the player
+            // [wander56] a wanderer reaches from anywhere in its wander area: its spawn's wander distance on top. b397
+            // Gilduck / Aestymro L14 walked "the core's path" past the Nightbane Dark Runners L28-29 (wanderers,
+            // wander 5-10) in Brightwood Grove, every leg "safe" by their spawn points alone: 5 deaths
             float const aggro = std::clamp(tmpl->detection_range + float(int32(tmpl->maxlevel) - int32(level)),
-                                           5.0f, MAX_AGGRO_RADIUS);
+                                           5.0f, MAX_AGGRO_RADIUS) +
+                                spawn.wander;
             float const t = nearestShare(spawn.x, spawn.y);
             if (t <= 0.0f)
                 continue;
