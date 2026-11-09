@@ -173,6 +173,11 @@ bool NewRpgBaseAction::SoloSafetyStep()
 
     if (SoloSafety::WaitsToRegen(bot))
     {
+        // [supply26] nothing to eat or drink: to a vendor that sells it first (StartVendorRun's restock), as a player
+        // buys water before sitting for minutes - b375: the regeneration sit came before the vendor look, so 1260
+        // "nothing to eat or drink" sits stayed (Orton 233, Orenem 172), five restock runs in all
+        if (!bot->IsInCombat() && StartVendorRun())
+            return true;
         if (!bot->IsSitState())
         {
             bot->StopMoving();

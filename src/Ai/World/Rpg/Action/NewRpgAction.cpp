@@ -702,7 +702,14 @@ bool NewRpgBaseAction::StartVendorRun()
         vendor = NearestVendor(bot, 0, dist);
     }
     if (!vendor)
+    {
+        // [supply26] no vendor sells it a way it walks: looked again after its next money gain (the look is a scan of
+        // the map's vendors and their trips, not for every tick of its rest)
+        info.vendorVisited = true;
+        info.vendorVisitBagUsed = bagUsed;
+        info.vendorVisitMoney = bot->GetMoney();
         return false;
+    }
 
     std::string reason = sell ? "sell junk" : "";
     if (repair)  // [guild13]

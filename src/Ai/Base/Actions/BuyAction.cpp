@@ -388,8 +388,11 @@ uint32 CountBagFood(Player* bot, uint32 spellCategory)
 bool RestockFoodAction::isUseful()
 {
     // The user's own character (selfbot) never spends gold on its own.
+    // [supply26] ... and only with money it may spend on consumables: with none, Buy fails every time and the action
+    // is picked again at each trigger (b375 Jurdogs: "restock food - PREREQ / FAILED", two STUCK alerts)
     return bot->IsAlive() && !bot->IsInCombat() && !bot->InBattleground() && !bot->IsInFlight() &&
-           !bot->IsBeingTeleported() && !bot->GetVehicle() && !IsSelfBot(bot);
+           !bot->IsBeingTeleported() && !bot->GetVehicle() && !IsSelfBot(bot) &&
+           AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables)) > 0;
 }
 
 bool RestockFoodAction::Execute(Event /*event*/)
