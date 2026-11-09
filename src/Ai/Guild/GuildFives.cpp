@@ -518,6 +518,11 @@ void GuildCoordinator::LoadDungeons()
         d.mapId = entry->MapID;
         d.minLevel = entry->MinLevel;
         d.maxLevel = entry->MaxLevel;
+        d.walkMinLevel = d.minLevel;
+        if (DungeonProgressionRequirements const* access =
+                sObjectMgr->GetAccessRequirement(d.mapId, DUNGEON_DIFFICULTY_NORMAL);
+            access && access->levelMin && access->levelMin < d.minLevel)
+            d.walkMinLevel = access->levelMin;
         d.targetLevel = entry->TargetLevel;
         d.expansion = entry->ExpansionLevel;
 
@@ -727,9 +732,15 @@ GuildCoordinator::DungeonOption const* GuildCoordinator::FindDungeon(std::string
 
 std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, bool walk) const
 {
-    if (p->GetLevel() < d.minLevel || p->GetLevel() > d.maxLevel)
-        return "L" + std::to_string(p->GetLevel()) + " outside " + std::to_string(d.minLevel) + "-" +
+    // [five58] user 2026-11-09: the five gate proves a five's capacity, so the Dungeon Finder's minimum is no floor:
+    // from the instance's own entry level (RFC 8, WC / DM 10, SFK 14) a five that walks in goes (b400: the healers
+    // Guinudrond, Selalleas and Aevmae at L14 were outside every band of 15+)
+    if (p->GetLevel() < d.walkMinLevel || p->GetLevel() > d.maxLevel)
+        return "L" + std::to_string(p->GetLevel()) + " outside " + std::to_string(d.walkMinLevel) + "-" +
                std::to_string(d.maxLevel);
+    bool const belowFinder = p->GetLevel() < d.minLevel;
+    if (belowFinder)
+        walk = true;
     // [next1] the Dungeon Finder ports the group in from anywhere (UpdateFives queues a five before it walks): the
     // entrance's continent and capital are only the walk's. 2026-11-09: 19 draenei on Azuremyst (map 530) and 19 night
     // elves on Kalimdor were no candidates for Deadmines / Wailing Caverns, and Ragefire Chasm (Orgrimmar) for none.
@@ -846,7 +857,7 @@ void GuildCoordinator::PlanRoles()
 {
     std::set<std::pair<uint32, uint32>> bands;
     for (DungeonOption const& d : dungeons_)
-        bands.emplace(d.minLevel, d.maxLevel);
+        bands.emplace(d.walkMinLevel, d.maxLevel);
     for (auto const& [lo, hi] : bands)
     {
         std::vector<std::pair<PlanRow const*, Player*>> members;
@@ -1472,7 +1483,7 @@ void GuildCoordinator::AutoFive()
                         if (row.grp < 'A' || row.grp > 'C')
                             continue;
                         Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
-                        if (!p || IsHuman(p) || p->GetLevel() < d.minLevel || p->GetLevel() > d.maxLevel)
+                        if (!p || IsHuman(p) || p->GetLevel() < d.walkMinLevel || p->GetLevel() > d.maxLevel)
                             continue;
                         ++inBand;
                         std::string why;
@@ -1513,6 +1524,7 @@ void GuildCoordinator::AutoFive()
         DungeonOption const* best = nullptr;
         std::vector<FiveCandidate> bestFive;
         uint32 bestScore = 0;
+        uint32 bestLeft = UINT32_MAX;  // [five58] the fewest levels a member of the five has left in the band
         for (auto& [d, pool] : pools)
         {
             for (FiveCandidate& c : pool)
@@ -1523,7 +1535,17 @@ void GuildCoordinator::AutoFive()
                                       [](FiveCandidate const& c) { return !c.needsClear && !c.upgrade; }),
                        pool.end());
             std::vector<FiveCandidate> five;
-            if (!PickFive(pool, five))
+            // [five58] the finder's band first (the five may queue); else a five that walks in: every member of it
+            // passes the walk (same continent, no enemy capital), members below the finder's minimum among them
+            std::vector<FiveCandidate> finderPool, walkPool;
+            for (FiveCandidate const& c : pool)
+            {
+                if (c.player->GetLevel() >= d->minLevel)
+                    finderPool.push_back(c);
+                if (DungeonRefusal(*d, c.player, true).empty())
+                    walkPool.push_back(c);
+            }
+            if (!PickFive(finderPool, five) && !PickFive(walkPool, five))
             {
                 if (guardCount == 0 && lookWhy[d->contentKey].find(" -> ") == std::string::npos)
                     lookWhy[d->contentKey] += Acore::StringFormat(
@@ -1534,8 +1556,26 @@ void GuildCoordinator::AutoFive()
                                                       [](FiveCandidate const& c) { return c.needsClear; })) +
                                  uint32(std::count_if(five.begin(), five.end(),
                                                       [](FiveCandidate const& c) { return c.upgrade; }));
-            if (score <= bestScore)
+            // [five58] user rule: every member clears every dungeon at its own level - a five whose member is about to
+            // outlevel the band (a clear open or an upgrade in it) goes first, then the most clears and upgrades
+            uint32 left = UINT32_MAX;
+            std::string urgent;
+            for (FiveCandidate const& c : five)
+                if ((c.needsClear || c.upgrade) && d->maxLevel - c.player->GetLevel() < left)
+                {
+                    left = d->maxLevel - c.player->GetLevel();
+                    urgent = c.player->GetName() + " L" + std::to_string(c.player->GetLevel());
+                }
+            if (guardCount == 0)
+                lookWhy[d->contentKey] += Acore::StringFormat(" -> five of score {}, urgency {} level(s) left ({} of "
+                                                              "max {})",
+                                                              score, left, urgent, d->maxLevel);
+            if (best && (left > bestLeft || (left == bestLeft && score <= bestScore)))
+            {
+                if (guardCount == 0)
+                    lookWhy[d->contentKey] += " -> another dungeon's five is more urgent";
                 continue;
+            }
             // [next1] the five clears the dungeon by the game's numbers (FiveGate::Judge), else it waits - no level
             // floor
             std::vector<Player*> players;
@@ -1557,8 +1597,9 @@ void GuildCoordinator::AutoFive()
             LOG_INFO("playerbots", "[next1] five for {} passes the gate (leader {}): {}", d->contentKey,
                      five.front().player->GetName(), verdict.why);
             if (guardCount == 0)
-                lookWhy[d->contentKey] += " -> passes the gate (score " + std::to_string(score) + ")";
+                lookWhy[d->contentKey] += " -> passes the gate";
             bestScore = score;
+            bestLeft = left;
             best = d;
             bestFive = five;
         }

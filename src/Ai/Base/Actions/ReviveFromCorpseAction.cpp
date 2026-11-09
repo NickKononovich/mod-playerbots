@@ -8,6 +8,7 @@
 #include "GuildCoordinator.h"  // [ghost40]
 #include "ReviveFromCorpseAction.h"
 #include "BotPath.h"  // [lead109]
+#include "SelfTravelActions.h"  // [ghost58] the long route
 #include "Corpse.h"
 #include "CellImpl.h"
 #include "GridNotifiers.h"
@@ -932,11 +933,30 @@ bool SpiritHealerAction::Execute(Event /*event*/)
                                           ClosestGrave->y));
     if (moved || WalkStillOn())
         return true;
+    // [ghost58] a far graveyard the single move cannot reach (b398-b400 Orenem L15 / Brelir L16: ghosts in the Cleft of
+    // Shadow, Orgrimmar, 1626-1654 yd from graveyard 32, ~570 failed walks each, the whole run): the long navmesh route
+    // (SelfTravel::LongRoute past PathGenerator's limits), one leg at a time, as a player's ghost runs it
+    {
+        static thread_local std::unordered_map<ObjectGuid, SelfTravel::RouteWalk> graveWalks;
+        SelfTravel::RouteWalk& walk = graveWalks[bot->GetGUID()];
+        G3D::Vector3 leg;
+        if (SelfTravel::NextRouteLeg(bot, walk, G3D::Vector3(ClosestGrave->x, ClosestGrave->y, ClosestGrave->z),
+                                     INTERACTION_DISTANCE, 60.0f, leg) &&
+            bot->GetExactDist(leg.x, leg.y, leg.z) > 1.0f &&
+            MoveTo(ClosestGrave->Map, leg.x, leg.y, leg.z, false, false))
+        {
+            LogGhost(bot, Acore::StringFormat("[ghost58] walks the long route to graveyard {} ({:.0f},{:.0f}), {} "
+                                              "corners, next leg ({:.0f},{:.0f})",
+                                              ClosestGrave->ID, ClosestGrave->x, ClosestGrave->y, walk.corners.size(),
+                                              leg.x, leg.y));
+            return true;
+        }
+    }
     LogGhost(bot, Acore::StringFormat("no spirit healer in sight, the walk to graveyard {} ({:.0f},{:.0f}) {:.0f} yd "
-                                      "off failed (can move {}, rooted {})",
+                                      "off failed (can move {}, rooted {}; [ghost58] the move: {})",
                                       ClosestGrave->ID, ClosestGrave->x, ClosestGrave->y,
                                       bot->GetDistance2d(ClosestGrave->x, ClosestGrave->y), botAI->CanMove(),
-                                      bot->IsRooted()));
+                                      bot->IsRooted(), LastMoveRefusal().empty() ? "no reason" : LastMoveRefusal()));
 
     // A ghost that cannot walk there stays put: no teleport to the graveyard. A failed walk is no death: counted as one
     // it pushed every ghost past the "death count" 5 of FindCorpse / ReviveFromCorpse within a few ticks.

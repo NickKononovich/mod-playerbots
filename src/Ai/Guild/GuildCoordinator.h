@@ -620,6 +620,8 @@ private:
         uint32 mapId{0};
         uint32 minLevel{0};
         uint32 maxLevel{0};
+        // [five58] the instance's own entry level (dungeon_access_template): below the finder's band a five walks in
+        uint32 walkMinLevel{0};
         uint32 targetLevel{0};
         uint32 expansion{0};
         WorldPosition entrance{};
