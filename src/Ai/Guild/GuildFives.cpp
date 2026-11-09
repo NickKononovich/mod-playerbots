@@ -1217,7 +1217,27 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
     return true;
 }
 
+bool GuildCoordinator::InSameActiveFive(uint32 a, uint32 b) const
+{
+    std::lock_guard<std::mutex> guard(lock_);
+    for (auto const& [id, five] : fives_)
+    {
+        if (five.stage != GuildFive::Stage::Gather && five.stage != GuildFive::Stage::Run)
+            continue;
+        bool hasA = false, hasB = false;
+        for (uint32 m : five.members)
+        {
+            hasA = hasA || m == a;
+            hasB = hasB || m == b;
+        }
+        if (hasA && hasB)
+            return true;
+    }
+    return false;
+}
+
 uint8 GuildCoordinator::FiveCampReached(Player* bot, BotState& st)
+
 {
     auto const itr = fives_.find(st.fiveId);
     if (itr == fives_.end() || itr->second.stage != GuildFive::Stage::Gather)

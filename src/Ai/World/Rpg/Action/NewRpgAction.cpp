@@ -2173,12 +2173,52 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
 
     if (bot->GetDistance(data.pos) > 10.0f && !data.lastReachPOI)
     {
-        if (MoveFarTo(data.pos))
+        bool const walks = MoveFarTo(data.pos);
+        // [quest19] the hand-in walk: a line when the bot is farther from the ender than the nearest it came by a
+        // sight, or the walk returns none - the target, the walk's state, where the last move went. b363 Manue L12
+        // q1715: 804 s in DO_QUEST for Gakin in Stormwind's Mage Quarter, its kills drifting through Elwynn, no line
+        {
+            static std::mutex handLock;
+            static std::unordered_map<uint32, std::tuple<uint32, float, float>> handWalk;  // quest, nearest, logged
+            float const d = bot->GetDistance(data.pos);
+            bool log = false;
+            float nearest = d;
+            {
+                std::lock_guard<std::mutex> guard(handLock);
+                auto& [quest, best, logged] = handWalk[bot->GetGUID().GetCounter()];
+                if (quest != data.questId)
+                {
+                    quest = data.questId;
+                    best = d;
+                    logged = 0.0f;
+                }
+                best = std::min(best, d);
+                nearest = best;
+                if ((!walks || d > best + sPlayerbotAIConfig.SightDistance) && d > logged + 50.0f)
+                {
+                    logged = d;
+                    log = true;
+                }
+            }
+            if (log)
+            {
+                LastMovement const& last = AI_VALUE(LastMovement&, "last movement");
+                LOG_INFO("playerbots",
+                         "[quest19] {} L{} q{} hand-in walk: ender at map {} ({:.0f},{:.0f},{:.0f}) {:.0f} yd, nearest "
+                         "{:.0f} yd; walk {}; far route {} points; last move to ({:.0f},{:.0f}); status {}",
+                         bot->GetName(), bot->GetLevel(), data.questId, data.pos.GetMapId(),
+                         data.pos.GetPositionX(), data.pos.GetPositionY(), data.pos.GetPositionZ(), d, nearest,
+                         walks ? "under way" : "none (" + s_moveRefusal + ")", botAI->rpgInfo.farRoute.size(),
+                         last.lastMoveToX, last.lastMoveToY, botAI->rpgInfo.ToString());
+            }
+        }
+        if (walks)
             return true;
         return MoveRandomNear(10.0f);
     }
 
     // Now we are near the qoi of reward
+
     // the quest should be rewarded by SearchQuestGiverAndAcceptOrReward
     if (!data.lastReachPOI)
     {
@@ -2442,7 +2482,25 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
     // away in Loch Modan - its follow stalled at the graveyard ("stuck watchdog: follow again"), it stood among the
     // Elder Black Bears L11 and died 3 times; Sycina L11 stood 1074 s for Nelaeleas 3849 yd off
     NewRpgInfo& info = botAI->rpgInfo;
-    if (Player* member = info.groupWaitBehind ? ObjectAccessor::FindPlayer(info.groupWaitBehind) : nullptr;
+    // [wait19] coordinator 2026-11-09: only while the group has a purpose that needs them together - the co-op / help
+    // party both stand in, its leader this bot. A group with no such purpose is left by its member ([group18] /
+    // [group19]), not walked to: b363 Sehdrurmund walked to meet Cassand 4796 yd off, Sycina Ryarii 3912, Ginde Ganna
+    // 3139, Septimon Kylanor 2281, Tuihgrelfim Peny 1819 (173 maze give-ups), all from groups an earlier session left
+    ObjectGuid memberParty;
+    Player* behind = info.groupWaitBehind ? ObjectAccessor::FindPlayer(info.groupWaitBehind) : nullptr;
+    // (or a guild five the global leader formed, gathering at its entrance or heading in: coordinator 2026-11-09)
+    bool const purpose = behind && ((NewRpgCoop::PartyLeaderOf(behind->GetGUID().GetCounter(), memberParty) &&
+                                     memberParty == bot->GetGUID()) ||
+                                    sGuildCoordinator.InSameActiveFive(bot->GetGUID().GetCounter(),
+                                                                       behind->GetGUID().GetCounter()));
+    if (behind && !purpose && _meetLogged != behind->GetGUID())
+    {
+        _meetLogged = behind->GetGUID();
+        LOG_INFO("playerbots", "[wait19] {} L{} does not walk to meet {} L{} {:.0f} yd behind: no party of its holds "
+                 "it",
+                 bot->GetName(), bot->GetLevel(), behind->GetName(), behind->GetLevel(), bot->GetExactDist(behind));
+    }
+    if (Player* member = purpose ? behind : nullptr;
         member && member->IsAlive() && member->IsInWorld() && member->GetMapId() == bot->GetMapId() &&
         !bot->IsInCombat())
     {
@@ -2454,11 +2512,16 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
                      "within the group reward distance)",
                      bot->GetName(), bot->GetLevel(), member->GetName(), member->GetLevel(), bot->GetExactDist(member));
         }
-        if (MoveFarTo(meet))
+        // [wait19] the walk is a meet walk, no quest spot's: its give-up postpones no quest and asks no help
+        info.meetWalk = true;
+        bool const walks = MoveFarTo(meet);
+        info.meetWalk = false;
+        if (walks)
             return true;
     }
-    else
+    else if (!behind)
         _meetLogged.Clear();
+
     if (bot->isMoving())
         bot->StopMoving();
 

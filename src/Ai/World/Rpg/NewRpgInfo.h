@@ -136,6 +136,7 @@ struct NewRpgInfo
     // [guild15] perf: the last complete far route to moveFarPos; the next leg is planned only to a point on it
     // two sights ahead (the danger penalties are of the mobs in sight, so a local search sees the same mobs)
     std::vector<G3D::Vector3> farRoute;
+    bool meetWalk = false;  // [wait19] the walk under way is a group leader's walk to meet a member
     // END MOVE_FAR
 
     // [guild15] the way it came: the spots it walked out of combat, one per leash radius of walk (the survival run's

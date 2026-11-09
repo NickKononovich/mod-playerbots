@@ -264,6 +264,10 @@ public:
     std::string DungeonsText(uint8 level) const;  // "playerbots guild dungeons [level]": the band and why / why not
     void SetAutoFives(bool on) { autoFives_ = on; }
     bool AutoFives() const { return autoFives_; }
+    // [wait19] both are members of one five the global leader formed that gathers at its dungeon's entrance or
+    // heads into the dungeon (Gather / Run): its leader's group wait and meet walk hold for it
+    bool InSameActiveFive(uint32 a, uint32 b) const;
+
     // the dungeon leader's end of the five's run (TestHarnessMgr hook, world thread)
     void OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report);
     // map thread: the five-leader's word on a group roll of a BoP item (false: not a five's roll, the bot decides)

@@ -6,6 +6,8 @@
 
 #include "NewRpgTriggers.h"
 #include "NewRpgCoop.h"
+#include "GuildHonest.h"  // [wait19]
+#include "GuildCoordinator.h"  // [wait19] the guild fives
 #include "Creature.h"
 #include "Group.h"
 #include "ObjectAccessor.h"
@@ -100,6 +102,15 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
             ownPlan += (ownPlan.empty() ? "" : ", ") + member->GetName();
             continue;
         }
+        // [wait19] a guild member no party of this leader holds (a group an earlier session left): no wait - it
+        // leaves the group ([group18] / [group19]); b363's leaders waited and walked thousands of yards for such
+        if (ObjectGuid partyLeader; GuildHonest::IsHonestBot(bot) && GuildHonest::IsHonestBot(member) &&
+                                    !bot->GetMap()->Instanceable() &&
+                                    !(NewRpgCoop::PartyLeaderOf(member->GetGUID().GetCounter(), partyLeader) &&
+                                      partyLeader == bot->GetGUID()) &&
+                                    !sGuildCoordinator.InSameActiveFive(bot->GetGUID().GetCounter(),
+                                                                        member->GetGUID().GetCounter()))
+            continue;  // (a guild five gathering or heading in keeps its wait)
         std::string const why = MemberNotReady(member);
         if (!why.empty())
         {
