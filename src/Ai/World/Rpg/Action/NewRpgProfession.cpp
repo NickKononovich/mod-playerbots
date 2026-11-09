@@ -762,6 +762,11 @@ namespace NewRpgProfession
                 factory.InitTalentsTree(true, true, false);
             }
         }
+        // [spec71] no respec while it is a five's member: the five was formed on its talents now (its slot, the gate's
+        // numbers). b402 rfc-n five 1: Hobliir L17 was taken as a dps (arms) and unlearned into prot at Behomat right
+        // after; in the run he taunted and held the tank's mobs - 30 aggro losses, "victim Hobliir"
+        if (sGuildCoordinator.InSameActiveFive(low, low))
+            return false;
         bool const respec = NeedsRespec(bot, roleSpec);
         uint32 const respecCost = respec ? bot->resetTalentsCost() : 0;
         bool const dual = WantsDualSpec(bot) && bot->GetMoney() >= respecCost + DUAL_SPEC_COST;
