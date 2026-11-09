@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "WaypointMgr.h"  // [rise33]
 #include "ReviveFromCorpseAction.h"
 #include "BotPath.h"  // [lead109]
 #include "Corpse.h"
@@ -68,7 +69,8 @@ namespace
     {
         Full,
         Now,
-        Fixed
+        Fixed,
+        Paths  // [rise33] only the movers: a wanderer's area, a patrol's path, each with its aggro reach
     };
 
     // The smallest margin (yd) the point keeps from the reach of the living hostiles around; negative: one would come.
@@ -96,6 +98,26 @@ namespace
             MovementGeneratorType const moves = creature->GetDefaultMovementType();
             if (mode == Reach::Fixed && !fighting && (moves == RANDOM_MOTION_TYPE || moves == WAYPOINT_MOTION_TYPE))
                 continue;
+            // [rise33] the window's movers: a wanderer anywhere in its wander area, a patrol anywhere on its path,
+            // reaches the spot while the bot rises and rests there (b385 Aestymro L13 rose "safe" at Longshore
+            // between the murloc wanderers' rounds - Fixed and Now left them out - and died again within the rest)
+            if (mode == Reach::Paths)
+            {
+                if (fighting)
+                    continue;
+                if (moves == RANDOM_MOTION_TYPE)
+                    margin = std::min(margin, creature->GetHomePosition().GetExactDist(x, y, z) - reach -
+                                                  creature->GetWanderDistance());
+                else if (moves == WAYPOINT_MOTION_TYPE)
+                {
+                    if (WaypointPath const* path = sWaypointMgr->GetPath(creature->GetWaypointPath()))
+                        for (WaypointNode const& node : path->Nodes)
+                            margin = std::min(margin, std::hypot(node.X - x, node.Y - y) - reach);
+                    else
+                        margin = std::min(margin, creature->GetExactDist(x, y, z) - reach);
+                }
+                continue;
+            }
             margin = std::min(margin, creature->GetExactDist(x, y, z) - reach);
             if (mode != Reach::Full)
                 continue;
@@ -232,6 +254,17 @@ namespace
         window = (!HealerLeft(bot) || HealerSickens(bot)) &&  // [ghost14] the healer's sickness: the window first
                  SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Fixed) >= 0.0f &&
                  SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Now) >= 0.0f;
+        if (window)
+        {
+            float const paths = SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Paths);  // [rise33]
+            if (paths < 0.0f)
+            {
+                window = false;
+                LogGhost(bot, Acore::StringFormat("[rise33] no window here: a wanderer's area or a patrol's path "
+                                                  "reaches the spot ({:.0f} yd inside)",
+                                                  -paths));
+            }
+        }
         return window;
     }
 
