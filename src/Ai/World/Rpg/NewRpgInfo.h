@@ -240,6 +240,7 @@ struct NewRpgInfo
     uint8 vendorVisitBagUsed{0};
     uint32 vendorVisitMoney{0};
     bool vendorVisited{false};
+    bool vendorMissed{false};  // [vendor23] its last vendor run ended without reaching the vendor
     // [regress10] the global leader's REPAIR task: a visit to a repairer for it was made at this money (tried again
     // after a money gain); cleared when the task ends
     bool repairVisited{false};

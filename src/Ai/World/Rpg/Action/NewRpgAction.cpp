@@ -540,6 +540,7 @@ bool NewRpgBaseAction::StartVendorRun()
             // counted as a visit: tried again once the bags or the purse grow (b311: Hobliir's unreachable Exodar
             // vendor 29 yd off was walked to, given up and chosen again every few seconds)
             info.vendorVisited = true;
+            info.vendorMissed = true;  // [vendor23]
             info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
             info.vendorVisitMoney = bot->GetMoney();
         }
@@ -580,7 +581,10 @@ bool NewRpgBaseAction::StartVendorRun()
 
     bool const sell = bagsNeeded && AI_VALUE(bool, "can sell") &&
                       (!info.vendorVisited || bagUsed > info.vendorVisitBagUsed ||
-                       sGuildCoordinator.HasMarkedSale(bot)) &&  // [vendor20] the leader's marked sale is due
+                       // [vendor23] ... unless its last run missed its vendor (gone from its spawn, out of walk):
+                       // then a bag or money gain sends it again (b372 Ravelandy: 35 runs to one spot)
+                       (sGuildCoordinator.HasMarkedSale(bot) &&
+                        (!info.vendorMissed || bot->GetMoney() > info.vendorVisitMoney))) &&  // [vendor20] the leader's marked sale is due
 
                       (bagUsed >= 100 || !NewRpgCoop::InParty(bot->GetGUID().GetCounter()));
 
@@ -1569,6 +1573,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         LOG_INFO("playerbots", "[New RPG] {} finds no vendor {} at its spawn", bot->GetName(), info.vendorRunEntry);
         info.vendorRunEntry = 0;
         info.vendorVisited = true;
+        info.vendorMissed = true;  // [vendor23]
         info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
         info.vendorVisitMoney = bot->GetMoney();
     }
@@ -1638,6 +1643,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                                  AI_VALUE(uint8, "bag space"));
                         info.vendorRunEntry = 0;
                         info.vendorVisited = true;
+                        info.vendorMissed = false;  // [vendor23]
                         info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                         info.vendorVisitMoney = bot->GetMoney();
                     }
@@ -1697,6 +1703,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
             {
                 info.vendorRunEntry = 0;
                 info.vendorVisited = true;
+                info.vendorMissed = true;  // [vendor23]
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                 info.vendorVisitMoney = bot->GetMoney();
             }
@@ -1765,6 +1772,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 }
                 info.vendorRunEntry = 0;
                 info.vendorVisited = true;
+                info.vendorMissed = true;  // [vendor23]
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                 info.vendorVisitMoney = bot->GetMoney();
             }
