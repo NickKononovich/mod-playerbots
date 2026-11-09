@@ -787,6 +787,41 @@ namespace TestHarness
         return best;
     }
 
+    namespace
+    {
+        constexpr char const* KEPT_FIVES_FILE = "kept_fives.txt";  // [strat1] "<instance id>\t<starter note>" lines
+    }
+
+    void TestHarnessMgr::LoadKeptStarters()
+    {
+        if (_keptStartersLoaded)
+            return;
+        _keptStartersLoaded = true;
+        std::ifstream file(TestsDir() + KEPT_FIVES_FILE);
+        std::string line;
+        while (std::getline(file, line))
+        {
+            size_t const tab = line.find('\t');
+            if (tab == std::string::npos)
+                continue;
+            if (uint32 const id = uint32(std::strtoul(line.substr(0, tab).c_str(), nullptr, 10)))
+                _keptStarters[id].insert(line.substr(tab + 1));
+        }
+    }
+
+    void TestHarnessMgr::SaveKeptStarters()
+    {
+        // an instance the core dropped (reset, 3-day expiry, no bind left) takes its lines with it
+        for (auto itr = _keptStarters.begin(); itr != _keptStarters.end();)
+            itr = sInstanceSaveMgr->GetInstanceSave(itr->first) ? std::next(itr) : _keptStarters.erase(itr);
+        std::error_code error;
+        std::filesystem::create_directories(TestsDir(), error);
+        std::ofstream file(TestsDir() + KEPT_FIVES_FILE, std::ios::trunc);
+        for (auto const& [id, notes] : _keptStarters)
+            for (std::string const& note : notes)
+                file << id << '\t' << note << '\n';
+    }
+
     bool TestHarnessMgr::InKeptGroup(ObjectGuid guid) const
     {
         ObjectGuid const groupGuid = sCharacterCache->GetCharacterGroupGuidByGuid(guid);
@@ -842,7 +877,8 @@ namespace TestHarness
                 guids.push_back(slot.guid);
             }
             uint32 const id = bind->save->GetInstanceId();
-            seen += Acore::StringFormat("{}{} (instance {}, {} members{})", seen.empty() ? "" : ", ", character.name, id,
+            seen += Acore::StringFormat("{}{} (instance {}, {} members{})", seen.empty() ? "" : ", ", character.name,
+                                        id,
                                         guids.size(), fits && classes == wanted ? "" : ", not this comp");
             if (!fits || classes != wanted || id <= instanceId)
                 continue;
@@ -1788,9 +1824,11 @@ namespace TestHarness
                         continue;
                     // [kara3] a continue run: the bind stays (the same instance save); a member still inside goes
                     // to the entrance of that same instance (a teleport inside the map keeps the instance)
+                    // [strat1] a 5-man continue: a member inside goes on where it logged out (the core put it back
+                    // there); only one outside is ported to the entrance
                     if (party.resume)
                     {
-                        if (bot->GetMapId() == content->mapId)
+                        if (bot->GetMapId() == content->mapId && content->raid)
                         {
                             Position const& door = party.entrances[party.entranceIdx];
                             bot->TeleportTo(content->mapId, door.GetPositionX(), door.GetPositionY(),
@@ -2518,6 +2556,43 @@ namespace TestHarness
         {
             StarterTrack starter;
             starter.def = def;
+            // [strat1] a 5-man continue: a key door an earlier run of this instance opened and that is still open (the
+            // map stayed loaded, or the script saved its state) is a used starter - the doors after it (afterUsed:
+            // King's Square 175353 after 175352) come next, as in the run that opened it
+            if (party.resume && !party.content->raid)
+            {
+                LoadKeptStarters();
+                auto const kept = _keptStarters.find(map->GetInstanceId());
+                if (kept != _keptStarters.end() && def->note && kept->second.count(def->note))
+                {
+                    starter.uses = def->maxUses;
+                    LOG_INFO("playerbots", "[strat1] continue: {} - used by an earlier run of this instance",
+                             def->note);
+                    LogEvent(party, "continue_starter_done",
+                             JsonObject().Str("note", def->note).Str("by", "earlier run"));
+                }
+            }
+            if (party.resume && !party.content->raid && def->kind == StarterKind::UseItem &&
+                starter.uses < def->maxUses)
+            {
+                bool any = false;
+                bool allOpen = true;
+                for (auto const& [spawnId, go] : map->GetGameObjectBySpawnIdStore())
+                    if (go && go->isSpawned() && go->GetGoType() == GAMEOBJECT_TYPE_DOOR &&
+                        std::find(def->entries.begin(), def->entries.end(), go->GetEntry()) != def->entries.end())
+                    {
+                        any = true;
+                        allOpen &= go->GetGoState() != GO_STATE_READY;
+                    }
+                if (any && allOpen)
+                {
+                    starter.uses = def->maxUses;
+                    LOG_INFO("playerbots", "[strat1] continue: {} - the door is open already, a used starter",
+                             def->note);
+                    LogEvent(party, "continue_starter_done",
+                             JsonObject().Str("note", def->note).Str("by", "door open"));
+                }
+            }
             party.starters.push_back(starter);
         }
 
@@ -4837,8 +4912,17 @@ namespace TestHarness
                     if (!keepFive)
                         group->Disband();
                     else
+                    {
                         LOG_INFO("playerbots", "[strat1] {} keeps its group for a continue: instance {} ({})", party.id,
                                  party.instanceId, party.result);
+                        LoadKeptStarters();
+                        std::set<std::string>& used = _keptStarters[party.instanceId];
+                        for (StarterTrack const& starter : party.starters)
+                            if (starter.def && starter.def->note &&
+                                (starter.uses >= starter.def->maxUses || starter.doorRearms))
+                                used.insert(starter.def->note);
+                        SaveKeptStarters();
+                    }
                 }
 
         for (Member const& member : party.members)
@@ -5002,8 +5086,8 @@ namespace TestHarness
         for (uint32 i = 0; i < (resume ? 1u : std::max<uint32>(count, 1)); ++i)
         {
             std::string error;
-            Party* party = CreateParty(comp, content, content->level, content->ilvl - IlvlBelowContent(content->ilvl), error,
-                                       kept.empty() ? nullptr : &kept);
+            Party* party = CreateParty(comp, content, content->level, content->ilvl - IlvlBelowContent(content->ilvl),
+                                       error, kept.empty() ? nullptr : &kept);
             if (!party)
             {
                 handler->PSendSysMessage("Test harness: {}", error);

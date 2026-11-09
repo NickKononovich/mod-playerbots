@@ -749,6 +749,12 @@ namespace TestHarness
         std::vector<PoolCharacter> _pool;
         bool _poolLoaded = false;
         std::set<ObjectGuid> _inUse;
+        // [strat1] a kept five's used starters per instance id (kept_fives.txt in the tests dir): a continue goes on
+        // with the key doors its earlier runs used (the afterUsed chain), as one run would
+        std::map<uint32, std::set<std::string>> _keptStarters;
+        bool _keptStartersLoaded = false;
+        void LoadKeptStarters();
+        void SaveKeptStarters();
         SetupJob _setup;
         std::deque<Composition> _guildComps;  // [guild60] one per guild run (Party::comp points into it)
         uint32 _setupTimer = 0;
