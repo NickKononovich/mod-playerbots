@@ -5187,6 +5187,22 @@ void TravelRouteMgr::Build()
         }
     }
 
+    // [travel22] a dock without a friendly spawn by it waits at the dock itself (the transport's stop frame): the
+    // pier is where the boat stops, a creature is not needed to board (b370: [travel21]'s monster filter left
+    // 181646 Auberdine - Valaar's Berth, 177233 Feathermoon, 187038 without a pier - all three skipped). Its faction
+    // is nobody's (no hostile pier refuses the line)
+    for (size_t l = 0; l < _lines.size(); ++l)
+        for (size_t d = 0; d < _lines[l].docks.size(); ++d)
+            if (pierScore[l][d] == std::numeric_limits<float>::max())
+            {
+                Dock& dock = _lines[l].docks[d];
+                dock.pier = WorldPosition(dock.mapId, dock.x, dock.y, dock.z);
+                dock.pierFaction = 0;
+                pierScore[l][d] = 0.0f;
+                LOG_INFO("playerbots", "[travel22] transport {} dock map {} ({:.0f},{:.0f}): no friendly spawn by it - "
+                         "waits at the dock's stop",
+                         _lines[l].entry, dock.mapId, dock.x, dock.y);
+            }
     // A dock nobody stands on cannot be waited at.
     for (size_t l = 0; l < _lines.size(); ++l)
     {
@@ -5194,6 +5210,7 @@ void TravelRouteMgr::Build()
         for (size_t d = 0; d < _lines[l].docks.size(); ++d)
             if (pierScore[l][d] == std::numeric_limits<float>::max())
                 allPiers = false;
+
 
         if (!allPiers)
         {
