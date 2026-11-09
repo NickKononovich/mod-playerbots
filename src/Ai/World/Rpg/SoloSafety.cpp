@@ -2412,7 +2412,34 @@ namespace SoloSafety
         return found->second.rest && !full;
     }
 
+    namespace
+    {
+        // [deaths18] group (its guid counter) -> the target its leader's party judge engaged last, and its name
+        std::mutex partyPullLock;
+        std::unordered_map<uint32, std::pair<uint64, std::string>> partyPull;
+
+        // the group's judged pull among the mobs that hit the bot this fight (`state`: the bot's, lock held)
+        bool PartyPullHit(uint32 group, SoloBotState const& state, std::string& pulled)
+        {
+            std::lock_guard<std::mutex> guard(partyPullLock);
+            auto const found = partyPull.find(group);
+            if (found == partyPull.end() || !state.attackers.count(found->second.first))
+                return false;
+            pulled = found->second.second;
+            return true;
+        }
+    }
+
+    void NotePartyPull(Player* leader, Unit* target)
+    {
+        if (!leader || !target || !leader->GetGroup())
+            return;
+        std::lock_guard<std::mutex> guard(partyPullLock);
+        partyPull[leader->GetGroup()->GetGUID().GetCounter()] = {target->GetGUID().GetRawValue(), target->GetName()};
+    }
+
     std::string DeathContext(Player* bot)
+
     {
         std::string out = Acore::StringFormat("hp {:.0f}/{:.0f}", float(bot->GetHealth()), float(bot->GetMaxHealth()));
         std::string attackers;
@@ -2445,15 +2472,16 @@ namespace SoloSafety
         }
         // [deaths14] a co-op / help party's pulls are the party judge's (NewRpgCoop::JudgePull), not noted here: b354
         // Gilduck L11 led a help party into five Frostmane trolls and its line said "no judged pull (attacked)"
-        else if (NewRpgCoop::InParty(bot->GetGUID().GetCounter()))
-            out += "; [deaths14] a party fight (the co-op / help party judge's pull)";
-        // [deaths15] ... and an open-world group's (its leader judges with the party judge, [deaths12]): b355 Geron
-        // L11 x2 tanked Manue's group pulls of Tunnel Rats ("the party wins only at full: 5 mobs") - "no judged pull"
-        else if (Group const* group = bot->GetGroup();
-                 group && group->GetMembersCount() > 1 && !bot->GetMap()->Instanceable())
-            out += "; [deaths14] a party fight (the open-world group judge's pull)";
+        // [deaths18] coordinator 2026-11-09: a party fight only when it was the party judge's pull - the target its
+        // leader's judge engaged ([deaths17] party engages) is among the mobs that hit the bot this fight. Before,
+        // membership alone named it (InParty, any group): b359's 10 "party fights" mostly had no judged pull of their
+        // party (Guinudrond's solo walk past a Riverpaw camp among them)
+        else if (std::string pulled; bot->GetGroup() && found != states.end() &&
+                                     PartyPullHit(bot->GetGroup()->GetGUID().GetCounter(), found->second, pulled))
+            out += "; [deaths14] a party fight (the party judge's pull of " + pulled + ")";
         else
             out += "; no judged pull (attacked)";
+
         // [deaths] how its last route search saw the mobs that hit it: refused (a walk round them was searched),
         // priced (the walk may pass their reach), unseen (out of the search's range or not idle then)
         if (found != states.end() && found->second.routeMs && !found->second.attackers.empty())
@@ -3132,7 +3160,12 @@ namespace SoloSafety
                         wallJudge = true;
                         Verdict const pull = Judge(bot, mob);
                         wallJudge = false;
-                        if (pull.kind == Verdict::Kind::Win || pull.kind == Verdict::Kind::RestFirst)
+                        // [wall18] only the pull the rule is for: one mob drawn out from a pull spot, won with its
+                        // health now. b359: of 28 "pulls instead of walling", Manue's were wins only at full (ehp 113 of
+                        // 243) and Gnetlibozz's a 2-mob pack at 213 of 225 in Silver Stream Mine - it engaged the next
+                        // pack there, 4 came, it died
+                        if (pull.kind == Verdict::Kind::Win && pull.mobs == 1 && pull.pullSpot)
+
                         {
                             static std::mutex pullLogLock;
                             static std::unordered_set<uint64> pullLogged;

@@ -105,6 +105,9 @@ void RestParty(Player* leader, std::string const& why);
 // the bot is in a co-op party (its group is a co-op one; the global leader may take it out). Its own lock, never held
 // while waiting on another: callable with GuildCoordinator::lock_ held
 bool InParty(uint32 low);
+// [group18] the bot leaves its group (the world thread's leave): a group the session restored, its purpose gone
+bool LeaveStaleGroup(Player* bot, std::string const& why);
+
 
 // the global leader's side of co-op, set once by GuildCoordinator at its Load (before any bot ticks); an unset member
 // falls back to what its current API shows and to [tasks] log lines.

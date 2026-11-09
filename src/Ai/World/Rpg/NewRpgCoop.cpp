@@ -3578,6 +3578,18 @@ bool InParty(uint32 low)
     return partyLows.count(low) != 0;
 }
 
+bool LeaveStaleGroup(Player* bot, std::string const& why)
+{
+    Group* group = bot ? bot->GetGroup() : nullptr;
+    if (!group)
+        return false;
+    LOG_INFO("playerbots", "[group18] {} L{} leaves its group: {}", bot->GetName(), bot->GetLevel(), why);
+    PlayerbotWorldThreadProcessor::instance().QueueOperation(
+        std::make_unique<CoopLeaveOperation>(group->GetGUID(), bot->GetGUID(), ObjectGuid::Empty));
+    return true;
+}
+
+
 SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
 {
     SoloSafety::Verdict verdict;

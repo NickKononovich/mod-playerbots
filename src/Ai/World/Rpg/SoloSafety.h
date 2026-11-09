@@ -81,6 +81,10 @@ namespace SoloSafety
     Verdict Judge(Player* bot, Unit* target);
     // the bot engages `target` on the verdict (the fight record's prediction; its pull spot)
     void NoteEngage(Player* bot, Unit* target, Verdict const& verdict);
+    // [deaths18] a party judge's engaged pull (the leader's grind target, NewRpgCoop::JudgePull): the death line of a
+    // member names a party fight only when this target hit it
+    void NotePartyPull(Player* leader, Unit* target);
+
     // [deaths] the walk of a solo bot that approaches the target it engages from a pull spot (Verdict::pullSpot): its
     // walk to `to` near that target ends at `spot`, round the reaches in `avoid` (Leader::Route); false: no pull spot
     // applies (the target fights it already, another target, another walk)

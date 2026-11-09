@@ -10,6 +10,9 @@
 #include "GuildHonest.h"  // [wait16]
 #include "PlayerbotAIConfig.h"  // [wait16]
 #include "SoloSafety.h"  // [wait16] StandsInReach
+#include "NewRpgCoop.h"  // [group18]
+#include <mutex>          // [group18]
+#include <unordered_set>  // [group18]
 #include "CheckMountStateAction.h"
 #include "Creature.h"
 #include "EscortProtect.h"
@@ -223,6 +226,32 @@ bool FollowAction::Execute(Event /*event*/)
     // end unified transport handling
 
     bool moved = false;
+    // [group18] a group the session restored (the core keeps groups across a restart) whose purpose is gone: no
+    // co-op / help party holds the follower or its guild leader (that registry starts empty with the session), the
+    // leader is no human and stands in another zone. Looked at once per session at the follower's first follow.
+    // b359: 7 bots without a DO_QUEST all run - Ainne 3567 yd behind Kianey, Kylantino 3205, Mutil 4990, Galiver,
+    // Cassand, Gilduck, Arrengyl - each following a leader of an earlier session's help party
+    if (!target.empty() && GuildHonest::IsHonestBot(bot) && bot->GetGroup() && !bot->GetMap()->Instanceable())
+    {
+        static std::mutex staleLock;
+        static std::unordered_set<uint32> staleChecked;
+        bool first = false;
+        {
+            std::lock_guard<std::mutex> guard(staleLock);
+            first = staleChecked.insert(bot->GetGUID().GetCounter()).second;
+        }
+        if (first)
+            if (Unit* leaderUnit = AI_VALUE(Unit*, target))
+                if (Player* leader = leaderUnit->ToPlayer();
+                    leader && leader != bot && GuildHonest::IsHonestBot(leader) &&
+                    !NewRpgCoop::InParty(bot->GetGUID().GetCounter()) &&
+                    !NewRpgCoop::InParty(leader->GetGUID().GetCounter()) &&
+                    (leader->GetMapId() != bot->GetMapId() || leader->GetZoneId() != bot->GetZoneId()) &&
+                    NewRpgCoop::LeaveStaleGroup(
+                        bot, Acore::StringFormat("its leader {} is in another zone ({:.0f} yd), no party holds them",
+                                                 leader->GetName(), bot->GetExactDist2d(leader))))
+                    return true;
+    }
     // [wait16] coordinator 2026-11-09: a guild follower far from its leader (beyond its sight) and standing - its
     // follow makes no progress over that distance, the leader walks to meet it ([wait14]) - stands out of every idle
     // mob's reach (wander area, patrol beat) meanwhile, as a resting bot does (RestEscape). b355 Febineysh L8 stood
@@ -251,44 +280,10 @@ bool FollowAction::Execute(Event /*event*/)
                     return true;
                 }
         }
-    // [quest17] a guild follower hands in its complete quests where its party stands at their ender: its leader's
-    // route takes the stop ([quest16] "HAND_IN ... (for <member>)"), but a follower runs this follow, not the rpg
-    // status where [quest16] put the member's hand-in - b357: 5 such stops routed (Bierya for Arrengyl q930 / q2438),
-    // the member's hand-in never fired
-    if (!target.empty() && GuildHonest::IsHonestBot(bot) && !bot->IsInCombat() && !bot->GetMap()->Instanceable())
-        if (Unit* leader = AI_VALUE(Unit*, target); leader && leader->GetMapId() == bot->GetMapId())
-        {
-            bool complete = false;
-            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE && !complete; ++slot)
-                if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
-                    complete = bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
-            if (complete)
-                for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
-                {
-                    Creature* npc = botAI->GetCreature(guid);
-                    if (!npc || !npc->IsAlive() || !npc->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ||
-                        leader->GetExactDist2d(npc) > sPlayerbotAIConfig.SightDistance)
-                        continue;
-                    uint32 ends = 0;
-                    QuestRelationBounds const bounds =
-                        sObjectMgr->GetCreatureQuestInvolvedRelationBounds(npc->GetEntry());
-                    for (auto itr = bounds.first; itr != bounds.second && !ends; ++itr)
-                        if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
-                            ends = itr->second;
-                    if (!ends)
-                        continue;
-                    if (npc->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
-                    {
-                        LOG_INFO("playerbots", "[quest17] {} L{} hands in q{} at {} with its leader {} by it",
-                                 bot->GetName(), bot->GetLevel(), ends, npc->GetName(), leader->GetName());
-                        return botAI->DoSpecificAction("talk to quest giver",
-                                                       Event("member hand-in", npc->GetGUID()), true);
-                    }
-                    if (MoveTo(npc->GetMapId(), npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), false,
-                               false, false, true))
-                        return true;
-                }
-        }
+    // [quest17] a guild follower hands in its complete quests where its party stands at their ender ([quest18]:
+    // MemberHandIn, also from isUseful - the follow is not run while the follower stands by its leader)
+    if (MemberHandIn(true))
+        return true;
     if (!target.empty())
     {
         moved = Follow(AI_VALUE(Unit*, target));
@@ -318,6 +313,53 @@ bool FollowAction::Execute(Event /*event*/)
     return moved;
 }
 
+// [quest17] a guild follower's complete quest at an ender its leader stands by: its leader's route takes the stop
+// ([quest16] "HAND_IN ... (for <member>)"), a follower runs this follow, not the rpg status. [quest18] Asked from
+// isUseful too: within its follow distance the follow is not run at all - b359 Arrengyl stood 14-21 yd from Bierya
+// at each of its 4 hand-in stops, no hand-in. `act`: walk there / hand in; else only whether there is one
+bool FollowAction::MemberHandIn(bool act)
+{
+    Formation* formation = AI_VALUE(Formation*, "formation");
+    std::string const target = formation ? formation->GetTargetName() : std::string();
+    if (target.empty() || !GuildHonest::IsHonestBot(bot) || bot->IsInCombat() || bot->GetMap()->Instanceable())
+        return false;
+    Unit* leader = AI_VALUE(Unit*, target);
+    if (!leader || leader == bot || leader->GetMapId() != bot->GetMapId())
+        return false;
+    bool complete = false;
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE && !complete; ++slot)
+        if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+            complete = bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
+    if (!complete)
+        return false;
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
+    {
+        Creature* npc = botAI->GetCreature(guid);
+        if (!npc || !npc->IsAlive() || !npc->HasNpcFlag(UNIT_NPC_FLAG_QUESTGIVER) ||
+            leader->GetExactDist2d(npc) > sPlayerbotAIConfig.SightDistance)
+            continue;
+        uint32 ends = 0;
+        QuestRelationBounds const bounds = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(npc->GetEntry());
+        for (auto itr = bounds.first; itr != bounds.second && !ends; ++itr)
+            if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
+                ends = itr->second;
+        if (!ends)
+            continue;
+        if (!act)
+            return true;
+        if (npc->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
+        {
+            LOG_INFO("playerbots", "[quest17] {} L{} hands in q{} at {} with its leader {} by it", bot->GetName(),
+                     bot->GetLevel(), ends, npc->GetName(), leader->GetName());
+            return botAI->DoSpecificAction("talk to quest giver", Event("member hand-in", npc->GetGUID()), true);
+        }
+        if (MoveTo(npc->GetMapId(), npc->GetPositionX(), npc->GetPositionY(), npc->GetPositionZ(), false, false,
+                   false, true))
+            return true;
+    }
+    return false;
+}
+
 bool FollowAction::isUseful()
 {
     // move from group takes priority over follow as it's added and removed automatically
@@ -332,6 +374,9 @@ bool FollowAction::isUseful()
     // Following stops casts, which would cancel the mount we start when the leader rides off.
     if (CheckMountStateAction::IsCastingMount(bot))
         return false;
+
+    if (MemberHandIn(false))  // [quest18] its hand-in by its leader runs within the follow distance too
+        return true;
 
     Formation* formation = AI_VALUE(Formation*, "formation");
     if (!formation)

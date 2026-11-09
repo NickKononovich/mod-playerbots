@@ -255,7 +255,9 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
                 SoloSafety::NoteEngage(bot, unit, verdict);
             else
             {
+                SoloSafety::NotePartyPull(bot, unit);  // [deaths18] the death line's party fight
                 // [deaths17] the party's engaged pull: what its judge counted, on whom (a Win was never logged: b357's
+
                 // 13 party-fight deaths had no line of the pull they died in)
                 static std::mutex partyLogLock;
                 static std::unordered_map<uint32, ObjectGuid> partyLogged;

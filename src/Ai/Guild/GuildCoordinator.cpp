@@ -5075,9 +5075,30 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
         return;  // a human decides himself
     }
 
+    // [quest18] an item a quest in its log still needs for its hand-in (incomplete or complete, not rewarded) is
+    // never sold: the loot past the needed count stacks with the quest's own, and the sale of that stack took the
+    // quest back to incomplete. b359 Ryarii L8 q4161: complete three times, 7 Small Spider Legs sold with the 2
+    // looted after them each time ("sell: no upgrade and not in the wanted list") - 1071 s, no hand-in
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        if (uint32 const questId = looter->GetQuestSlotQuestId(slot))
+        {
+            QuestStatus const status = looter->GetQuestStatus(questId);
+            Quest const* quest = (status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_COMPLETE)
+                                     ? sObjectMgr->GetQuestTemplate(questId)
+                                     : nullptr;
+            for (uint8 i = 0; quest && i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                if (quest->RequiredItemId[i] == report.itemId && quest->RequiredItemCount[i])
+                {
+                    release();
+                    Decision(what + " → keeps: q" + std::to_string(questId) + " needs it for its hand-in");
+                    return;
+                }
+        }
+
     // [tasks] a member's gear plan holds it (a later level, an offline member): kept for that member, never
     // disenchanted or sold
     if (uint32 const planned = equipment ? PlannedFor(report.itemId) : 0)
+
     {
         if (planned == looterLow)
         {
