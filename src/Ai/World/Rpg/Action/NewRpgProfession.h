@@ -30,6 +30,8 @@ namespace NewRpgProfession
     // five, solo spec questing); a role spec its talents do not hold yet, or dual spec from its level (1000 g), is a
     // walk to its class trainer (true: the DO_PROFESSION walk started)
     bool StartRoleSpec(PlayerbotAI* botAI, Player* bot);
+    // [roles62] its talents (active spec 0) are not in the planned role spec's tree yet: an unlearn is due
+    bool NeedsRespec(Player* bot, uint32 roleSpec);
 
     // "skill:value/max,..." of the bot's planned professions (guild board), empty when it has no plan.
     std::string PlannedSkills(Player* bot);

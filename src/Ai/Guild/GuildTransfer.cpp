@@ -26,6 +26,7 @@
 // All game actions run on the world thread (the core runs these opcodes there: PROCESS_THREADUNSAFE).
 
 #include "GuildCoordinator.h"
+#include "NewRpgProfession.h"  // [roles62] NeedsRespec
 #include "QuestStats.h"  // [log28]
 
 #include <algorithm>
@@ -1375,9 +1376,16 @@ void GuildCoordinator::UpdateTransfers()
     // of equal spare the cheapest channel. Mailed or traded honestly (the core's mail / trade), one line per decision
     static std::map<std::string, std::string> goldLogged;  // want key -> decision last logged (a log cadence)
     for (auto const& [low, st] : bots_)
-        for (int kind = 0; kind < 2; ++kind)
+        for (int kind = 0; kind < 3; ++kind)
         {
-            uint32 const shortBy = kind == 0 ? st.repairShort : st.supplyGoldShort;
+            // [roles62] kind 2: the unlearn its planned role spec needs (Player::resetTalentsCost) it cannot pay -
+            // b401 Shalaeth L11 "unlearning its talents costs 10000c, it has 7922c"
+            uint32 shortBy = kind == 0 ? st.repairShort : kind == 1 ? st.supplyGoldShort : 0;
+            if (kind == 2)
+                if (Player* r = Online(low); r && r->IsAlive())
+                    if (uint32 const roleSpec = RoleSpec(low, 0);
+                        roleSpec && NewRpgProfession::NeedsRespec(r, roleSpec) && r->GetMoney() < r->resetTalentsCost())
+                        shortBy = r->resetTalentsCost() - r->GetMoney();
             if (!shortBy || !IsPlanned(low))
                 continue;
             Player* r = Online(low);
@@ -1395,14 +1403,15 @@ void GuildCoordinator::UpdateTransfers()
                 if (spare < shortBy + MAIL_POSTAGE || spare < bestSpare)
                     continue;
                 Want w;
-                w.key = (kind == 0 ? "p" : "q") + std::to_string(low);
+                w.key = (kind == 0 ? "p" : kind == 1 ? "q" : "t") + std::to_string(low);
                 w.gold = true;
                 w.from = row.low;
                 w.to = low;
                 w.money = shortBy;
-                w.purpose = kind == 0 ? "repair" : "supplies";
-                w.why = kind == 0 ? "short of the repair " + Gold(shortBy)
-                                  : "short of its " + st.supplyWhat + " " + Gold(shortBy);
+                w.purpose = kind == 0 ? "repair" : kind == 1 ? "supplies" : "role spec";
+                w.why = kind == 0   ? "short of the repair " + Gold(shortBy)
+                        : kind == 1 ? "short of its " + st.supplyWhat + " " + Gold(shortBy)
+                                    : "short of its role spec's unlearn " + Gold(shortBy);
                 Choice const c = choose(w, nullptr);
                 if (c.cost >= NONE)
                     continue;
@@ -1417,7 +1426,11 @@ void GuildCoordinator::UpdateTransfers()
             {
                 std::string const decision = Acore::StringFormat(
                     "{} -> {} {} for {} (its spare {} the richest that covers it)", Who(best.from), Who(best.to),
-                    Gold(best.money), kind == 0 ? std::string("its repair") : "its " + st.supplyWhat, Gold(bestSpare));
+                    Gold(best.money),
+                    kind == 0   ? std::string("its repair")
+                    : kind == 1 ? "its " + st.supplyWhat
+                                : std::string("its role spec's unlearn at its trainer [roles62]"),
+                    Gold(bestSpare));
                 if (goldLogged[best.key] != decision)
                 {
                     goldLogged[best.key] = decision;

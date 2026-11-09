@@ -120,8 +120,8 @@ namespace
     bool IsHuman(Player* p) { return p && (IsRealPlayer(p) || (IsSelfBot(p) && SelfBotControl::IsSuspended(p))); }
 
     // [roles59] premade spec indexes (playerbots.conf PremadeSpecName.<class>.<n>, the pve ones) a role plays; -1: the
-    // class has none. A druid tank needs bear form for PlayerbotAI::IsTank: the plan takes it only when its talents
-    // already make it one.
+    // class has none. [roles62] a druid tank is feral in the bear template (Thick Hide from 20: AiFactory gives it
+    // the "bear" strategy, the bear form a stance it takes in the fight).
     int8 RoleSpecIndex(uint8 cls, std::string const& role)
     {
         if (role == "healer")
@@ -139,6 +139,7 @@ namespace
                 case CLASS_WARRIOR:      return 2;  // prot pve
                 case CLASS_PALADIN:      return 1;  // prot pve
                 case CLASS_DEATH_KNIGHT: return 0;  // blood pve
+                case CLASS_DRUID:        return 1;  // bear pve [roles62]
                 default:                 return -1;
             }
         return -1;
@@ -803,6 +804,13 @@ bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) cons
     return true;
 }
 
+// [roles62] a feral druid the role plan made a tank is one in or out of bear form (IsTank by spec asks for the form
+// or Thick Hide: out of the form while questing it read as dps, and its five had no tank)
+static bool PlannedBearTank(Player* p, std::string const& planned)
+{
+    return planned == "tank" && p->getClass() == CLASS_DRUID && AiFactory::GetPlayerSpecTab(p) == DRUID_TAB_FERAL;
+}
+
 std::string GuildCoordinator::PlanRole(uint32 low, Player* p) const
 {
     // [five27] the plan's role holds only when the bot plays it now (its spec and strategies): b375 rfc-n five 2 had
@@ -812,7 +820,7 @@ std::string GuildCoordinator::PlanRole(uint32 low, Player* p) const
         if ((row->role == "tank" && PlayerbotAI::IsTank(p, true)) ||
             (row->role == "healer" && PlayerbotAI::IsHeal(p, true)))
             return row->role;
-    if (PlayerbotAI::IsTank(p, true))
+    if (PlayerbotAI::IsTank(p, true) || PlannedBearTank(p, RoleOf(low)))
         return "tank";
     if (PlayerbotAI::IsHeal(p, true))
         return "healer";
@@ -821,7 +829,7 @@ std::string GuildCoordinator::PlanRole(uint32 low, Player* p) const
 
 std::string GuildCoordinator::SpecRoleNow(Player* p) const
 {
-    if (PlayerbotAI::IsTank(p, true))
+    if (PlayerbotAI::IsTank(p, true) || PlannedBearTank(p, RoleOf(p->GetGUID().GetCounter())))
         return "tank";
     if (PlayerbotAI::IsHeal(p, true))
         return "healer";
@@ -918,6 +926,14 @@ void GuildCoordinator::PlanRoles()
                     std::lock_guard<std::mutex> guard(roleLock_);
                     roleAssign_[best->low] = assign;
                 }
+                // [roles62] the role spec outranks questing as a five does (b401: 10 healers assigned, all "respec at
+                // its trainer", and each kept its quest first - the fives had no healer meanwhile): the member leaves
+                // its quest now, New RPG's IDLE takes the trainer walk first (StartRoleSpec)
+                auto const stIt = bots_.find(best->low);
+                if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bestP); ai && !bestP->IsInCombat() &&
+                    SpecRoleNow(bestP) != role && ai->rpgInfo.GetStatus() != RPG_IDLE &&
+                    (stIt == bots_.end() || !stIt->second.fiveId) && !NewRpgCoop::InParty(best->low))
+                    ai->rpgInfo.ChangeToIdle();
                 --counts["dps"];
                 ++counts[role];
                 LOG_INFO("playerbots", "[roles59] {} L{} → {} ({}): band {}-{} has {} fives and {} {}s; plan role {}, "
