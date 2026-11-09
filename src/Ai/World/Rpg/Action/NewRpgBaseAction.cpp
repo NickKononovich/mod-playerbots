@@ -1382,6 +1382,8 @@ bool NewRpgBaseAction::BoardTransport(Transport* transport)
         transport->AddPassenger(bot, true);
         bot->StopMovingOnCurrentPos();
         botAI->rpgInfo.SetTripPhase(NewRpgInfo::TripPhase::Ride);
+        QuestStats::TripBoard(bot, std::string(transport->ToStaticTransport() ? "tram car " : "transport ") +
+                                       std::to_string(transport->GetEntry()));  // [log28]
         if (transport->ToStaticTransport())
             LOG_INFO("playerbots", "[tram28] {} L{} boards tram car {} at ({:.0f},{:.0f}) on map {}", bot->GetName(),
                      bot->GetLevel(), transport->GetEntry(), bot->GetPositionX(), bot->GetPositionY(),
@@ -1540,6 +1542,7 @@ bool NewRpgBaseAction::RideTransport(Transport* transport)
             {
                 transport->RemovePassenger(bot, true);
                 bot->StopMovingOnCurrentPos();
+                QuestStats::TripLand(bot);  // [log28]
                 info.ClearTrip();
                 LOG_INFO("playerbots", "[rpg] {} L{} TRIP_LEG_DONE off {}: on the land at ({:.1f},{:.1f},{:.1f}) as "
                          "the stop ended, the walk goes on from here",
@@ -1580,6 +1583,7 @@ bool NewRpgBaseAction::RideTransport(Transport* transport)
     {
         transport->RemovePassenger(bot, true);
         bot->StopMovingOnCurrentPos();
+        QuestStats::TripLand(bot);  // [log28]
         LOG_INFO("playerbots", "[rpg] {} L{} steps off {} at the stop, {:.0f} yd to the pier", bot->GetName(),
                  bot->GetLevel(), line->entry, bot->GetExactDist(exitDock->pier));
     }
@@ -1664,6 +1668,7 @@ bool NewRpgBaseAction::TravelByPortal(NewRpgInfo::Trip& trip)
         return false;
     }
 
+    QuestStats::TripBoard(bot, "portal " + std::to_string(go->GetEntry()));  // [log28]
     UseGameObjectWithGroup(go);
     return HoldPosition(5 * IN_MILLISECONDS);
 }

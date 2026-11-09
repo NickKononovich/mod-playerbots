@@ -26,6 +26,7 @@
 // All game actions run on the world thread (the core runs these opcodes there: PROCESS_THREADUNSAFE).
 
 #include "GuildCoordinator.h"
+#include "QuestStats.h"  // [log28]
 
 #include <algorithm>
 #include <cfloat>
@@ -1935,8 +1936,12 @@ void GuildCoordinator::RunTransfers(uint32 diff)
             if (!got.empty())
                 logs.push_back(Who(low) + " takes the mail of " + Who(sender) + " at a mailbox: " + got);
             if (taken)
+            {
                 LOG_INFO("playerbots", "[econ1] mail collected: {} took {} item(s) from {}", Who(low), taken,
                          Who(sender));
+                if (Player* taker = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low)))
+                    QuestStats::TownDone(low, taker->GetName(), "mail");  // [log28]
+            }
             if (full)
             {
                 LOG_INFO("playerbots", "[econ1] mail waits: {} has no bag room for the rest of its mail", Who(low));

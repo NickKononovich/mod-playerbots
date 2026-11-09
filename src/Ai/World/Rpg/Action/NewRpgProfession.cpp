@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgProfession.h"
+#include "QuestStats.h"  // [log28]
 
 #include <cfloat>
 #include <map>
@@ -611,6 +612,7 @@ namespace NewRpgProfession
         task.cost = cost;
         CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(npcEntry);
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        QuestStats::TownStart(bot, "GUILD BUY");  // [log28]
         LOG_INFO("playerbots", "[rpg] {} L{} GUILD BUY reason: {} at {} ({:.0f} yd), cost {}c, money {}c",
                  bot->GetName(), bot->GetLevel(), proto ? proto->Name1 : "?", tmpl ? tmpl->Name : "?",
                  bot->GetExactDist(pos), cost, bot->GetMoney());
@@ -802,6 +804,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         uint32 const learned = NewRpgCraft::LearnRecipes(bot, npc, data->skill, NewRpgCraft::Budget(botAI, bot));
         LOG_INFO("playerbots", "[guild70] {} L{} learned {} {} recipes at {}", bot->GetName(), bot->GetLevel(), learned,
                  SkillName(data->skill), npc->GetName());
+        QuestStats::TownDone(bot->GetGUID().GetCounter(), bot->GetName(), "training (recipes)");  // [log28]
         if (!learned)
             MarkFailed(bot, data->npcEntry, id);
     }
@@ -818,6 +821,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
                  npc->GetName(), data->spellId, maxAfter / 75, valueBefore, maxBefore,
                  bot->HasSkill(data->skill) ? bot->GetPureSkillValue(data->skill) : 0, maxAfter,
                  moneyBefore - bot->GetMoney(), bot->GetMoney());
+        QuestStats::TownDone(bot->GetGUID().GetCounter(), bot->GetName(), "training");  // [log28]
         if (!learned)
             MarkFailed(bot, data->npcEntry, id);
         // [guild70] with the rank: the recipes it can learn now
@@ -862,6 +866,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         LOG_INFO("playerbots", "[guild20] {} L{} {} {} for {} at {}: paid {}c ({}c left)", bot->GetName(),
                  bot->GetLevel(), bought ? "bought" : "could not buy", proto ? proto->Name1 : "?",
                  SkillName(data->skill), npc->GetName(), moneyBefore - bot->GetMoney(), bot->GetMoney());
+        QuestStats::TownDone(bot->GetGUID().GetCounter(), bot->GetName(), "buy");  // [log28]
         // [prof13] a buy the bags refused is no fault of this vendor (the tool waits for a slot, ToolCandidate)
         // [prof14] ... a quest item's buy (no skill: BuyQuestVendorItem) has no such wait: refused for its bags it is
         // marked failed too, so its quest is postponed ("the buy ... failed before") instead of the same buy again
