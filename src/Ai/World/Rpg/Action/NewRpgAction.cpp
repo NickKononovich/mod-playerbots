@@ -296,12 +296,22 @@ namespace
         std::sort(candidates.begin(), candidates.end(),
                   [](auto const& a, auto const& b) { return a.first < b.first; });
         bool refusedOne = false;
+        size_t repairTries = 0;
         for (auto const& [d, spawn] : candidates)
         {
             // after a refused trip only the nearer vendors of the zone the bot stands in are looked at (each look
             // searches a route): the first one outside it ends the search
-            if (refusedOne &&
-                sMapMgr->GetZoneId(PHASEMASK_NORMAL, spawn->mapId, spawn->x, spawn->y, spawn->z) != bot->GetZoneId())
+            // [repair38] ... a repairer is looked for across its map (the continent), nearest first, until one's trip
+            // is not refused: every repairer near it refused ([trip37]) left it unrepaired until its gear broke
+            constexpr size_t REPAIR_TRIES = 16;  // a search cost bound (each a route search, cached per level)
+            if (repair)
+            {
+                if (refusedOne && ++repairTries > REPAIR_TRIES)
+                    break;
+            }
+            else if (refusedOne &&
+                     sMapMgr->GetZoneId(PHASEMASK_NORMAL, spawn->mapId, spawn->x, spawn->y, spawn->z) !=
+                         bot->GetZoneId())
                 break;
             if (!NewRpgBaseAction::TripRefused(bot, spawn->x, spawn->y, spawn->z,
                                                repair ? "vendor (repair)" : "vendor"))
@@ -312,6 +322,10 @@ namespace
             refusedOne = true;
         }
         dist = FLT_MAX;
+        if (repair && refusedOne)
+            LOG_INFO("playerbots", "[repair38] {} L{}: no repairer on its map with a trip it takes ({} looked at): it "
+                     "quests on, looked again at its next level",
+                     bot->GetName(), bot->GetLevel(), std::min(repairTries, candidates.size()));
         return nullptr;
     }
 
