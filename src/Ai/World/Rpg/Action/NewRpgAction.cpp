@@ -542,7 +542,9 @@ bool NewRpgBaseAction::StartVendorRun()
     bool const bagsNeeded = freeSlots <= slotsNeeded;
 
     bool const sell = bagsNeeded && AI_VALUE(bool, "can sell") &&
-                      (!info.vendorVisited || bagUsed > info.vendorVisitBagUsed) &&
+                      (!info.vendorVisited || bagUsed > info.vendorVisitBagUsed ||
+                       sGuildCoordinator.HasMarkedSale(bot)) &&  // [vendor20] the leader's marked sale is due
+
                       (bagUsed >= 100 || !NewRpgCoop::InParty(bot->GetGUID().GetCounter()));
 
     uint32 ammoSubClass = 0;
@@ -2378,7 +2380,8 @@ bool NewRpgDoQuestAction::HandInBlocked(NewRpgInfo::DoQuest& data)
             // run would free nothing again. b367 Thamesh L11 q419: 17 yd from its ender, six runs to Gothor Brumn
             // (218-595 yd), "bags 100% -> 100%" each, the hand-in never made
             NewRpgInfo& info = botAI->rpgInfo;
-            if (!(info.vendorVisited && AI_VALUE(uint8, "bag space") <= info.vendorVisitBagUsed))
+            if (!(info.vendorVisited && AI_VALUE(uint8, "bag space") <= info.vendorVisitBagUsed) ||
+                sGuildCoordinator.HasMarkedSale(bot))  // the leader's bag relief marked what goes now
                 info.vendorVisited = false;
             else
                 LOG_INFO("playerbots", "[vendor20] {} L{} q{}: its last vendor visit at this fill freed no slot - no "

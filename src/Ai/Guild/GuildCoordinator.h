@@ -283,6 +283,9 @@ public:
     uint8 OnCampReached(Player* bot);  // 0 = not a guild run, 1 = done (-> IDLE), 2 = still at it
     bool IsHeld(Player* bot, Item* item);
     void SellMarked(PlayerbotAI* botAI);
+    // [vendor20] the global leader marked items of the bot for sale (its bag relief, unwanted gear): a vendor visit
+    // has something to sell whatever its own sale keeps
+    bool HasMarkedSale(Player* bot) const;
     void SetOrderStatus(Player* bot, std::string const& status);
     void OnLoot(Player* player, Item* item, uint32 count);
     void OnKilledByCreature(Player* killed, Creature* killer);

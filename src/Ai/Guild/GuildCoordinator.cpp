@@ -5743,6 +5743,19 @@ void GuildCoordinator::SellMarked(PlayerbotAI* botAI)
     SellAction action(botAI);
     uint32 sold = 0, gone = 0, kept = 0;
     uint32 const before = bot->GetMoney();
+    // [vendor20] coordinator 2026-11-09: one decider - what the global leader marked for sale is sold (forced past
+    // the sale's own "needed" keeps: class reagents, a skill's materials), only an item a quest in the log still needs
+    // for its hand-in stays ([quest18]). b367 Thamesh L11: "kept by SellAction 5" at every visit, the bags 100 % ->
+    // 100 %, its q419 reward never had a slot
+    std::set<uint32> questItems;
+    for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
+            if (QuestStatus const status = bot->GetQuestStatus(questId);
+                status == QUEST_STATUS_INCOMPLETE || status == QUEST_STATUS_COMPLETE)
+                if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+                    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                        if (quest->RequiredItemId[i])
+                            questItems.insert(quest->RequiredItemId[i]);
     for (uint32 low : sell)
     {
         Item* item = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(low));
@@ -5751,7 +5764,13 @@ void GuildCoordinator::SellMarked(PlayerbotAI* botAI)
             ++gone;  // the vendor sale of the bot itself or a use came first
             continue;
         }
-        action.Sell(item);
+        if (questItems.count(item->GetEntry()))
+        {
+            ++kept;
+            continue;
+        }
+        action.Sell(item, true);
+
         if (bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(low)))
             ++kept;  // SellAction keeps what a quest or a spell still needs
         else
@@ -5761,7 +5780,17 @@ void GuildCoordinator::SellMarked(PlayerbotAI* botAI)
              bot->GetName(), sold, gone, kept, bot->GetMoney() - before);
 }
 
+bool GuildCoordinator::HasMarkedSale(Player* bot) const
+{
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+        return false;
+    std::lock_guard<std::mutex> guard(lock_);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    return itr != bots_.end() && !itr->second.sell.empty();
+}
+
 void GuildCoordinator::SetOrderStatus(Player* bot, std::string const& status)
+
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
         return;
