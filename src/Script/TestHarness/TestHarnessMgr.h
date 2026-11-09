@@ -212,6 +212,7 @@ namespace TestHarness
         // [kara3] a "continue" run: the members keep their raid binds and re-enter the same instance save (its dead
         // bosses and trash stay dead - the lockout, a game mechanic), the run goes on from the next boss
         bool resume = false;
+        uint32 keptInstanceId = 0;  // [strat1] a 5-man continue: the instance its kept group holds
         std::vector<Member> members;
         ObjectGuid leader;
         ObjectGuid groupGuid;
@@ -459,8 +460,15 @@ namespace TestHarness
                                            bool horde = false) const;
 
         // parties
+        // [strat1] keep: the characters to take (a 5-man continue: the kept group, its leader in the leading slot)
         Party* CreateParty(Composition const* comp, ContentDef const* content, uint8 level, uint32 ilvl,
-                           std::string& error);
+                           std::string& error, std::vector<ObjectGuid> const* keep = nullptr);
+        // [strat1] a 5-man continue: the group an earlier run of this content kept. Its leader holds the instance
+        // bind the group enters (InstanceSaveMgr::PlayerGetDestinationInstanceId: in a group, the leader's bind).
+        bool FindKeptFive(Composition const* comp, ContentDef const* content, std::vector<ObjectGuid>& members,
+                          uint32& instanceId, std::string& error) const;
+        // [strat1] a character in a group of test characters only (a kept five waiting for its continue)
+        bool InKeptGroup(ObjectGuid guid) const;
         void TickParty(Party& party);
         void SetPhase(Party& party, Phase phase);
         bool TickLogin(Party& party);
