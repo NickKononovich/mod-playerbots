@@ -5266,7 +5266,12 @@ bool NewRpgBaseAction::RedAreaEscape()
 
 bool NewRpgBaseAction::RestEscape()
 {
-    if (bot->IsInCombat() || bot->isMoving() || !SoloSafety::Applies(bot))
+    // [rest64] a co-op / help party's member too: b400 Namwe L13 and Galiver L13 (help party, q2038, Stonesplinter camp
+    // in Loch Modan) rested and waited at (-5034,-3361), 18 yd from a Stonesplinter Seer's home (aggro 19) - Galiver
+    // "UNJUDGED fight ... status REST", both dead, then Geron L15 twice at the same spot; the party's members were
+    // never "solo" (SoloSafety::Applies), so no rest spot out of every reach was taken
+    if (bot->IsInCombat() || bot->isMoving() ||
+        !(SoloSafety::Applies(bot) || NewRpgCoop::InParty(bot->GetGUID().GetCounter())))
         return false;
     bool const hurt = bot->GetHealth() < bot->GetMaxHealth() ||
                       (bot->GetMaxPower(POWER_MANA) && bot->GetPower(POWER_MANA) < bot->GetMaxPower(POWER_MANA));
