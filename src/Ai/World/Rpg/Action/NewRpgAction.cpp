@@ -2373,9 +2373,18 @@ bool NewRpgDoQuestAction::HandInBlocked(NewRpgInfo::DoQuest& data)
         std::string const name = proto ? proto->Name1 : std::to_string(itemId);
         if (res == EQUIP_ERR_INVENTORY_FULL || res == EQUIP_ERR_BAG_FULL)
         {
-            // a free slot first: what it may sell goes to a vendor now (its visit before was at the same fill)
+            // a free slot first: what it may sell goes to a vendor now (its visit before was at the same fill).
+            // [vendor20] ... unless that visit at this fill freed nothing: the bags hold nothing a vendor takes, a new
+            // run would free nothing again. b367 Thamesh L11 q419: 17 yd from its ender, six runs to Gothor Brumn
+            // (218-595 yd), "bags 100% -> 100%" each, the hand-in never made
             NewRpgInfo& info = botAI->rpgInfo;
-            info.vendorVisited = false;
+            if (!(info.vendorVisited && AI_VALUE(uint8, "bag space") <= info.vendorVisitBagUsed))
+                info.vendorVisited = false;
+            else
+                LOG_INFO("playerbots", "[vendor20] {} L{} q{}: its last vendor visit at this fill freed no slot - no "
+                         "run again",
+                         bot->GetName(), bot->GetLevel(), questId);
+
             if (StartVendorRun())
             {
                 LOG_INFO("playerbots", "[rpg] {} L{} HANDIN_BLOCKED q{} {}: the bags hold no slot for {}, to a vendor "
