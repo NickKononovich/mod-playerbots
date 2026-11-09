@@ -4827,9 +4827,29 @@ bool NewRpgBaseAction::LoginEscape()
         float const extents[3] = {3.0f, 5.0f, 3.0f};
         float nearest[3] = {0.0f, 0.0f, 0.0f};
         dtPolyRef ref = 0;
-        if (!bot->GetTransport() && !bot->IsInWater() &&
+        // [nav28] in water at the saved spot (its swim flag is not set yet at the first look): the liquid itself
+        // says so - b377 Dekorhan's "6 yd in the air" at (6297,624,-6.7) was a swim off the Darkshore coast
+        LiquidData const liquid = bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), bot->GetPositionX(),
+                                                               bot->GetPositionY(), bot->GetPositionZ(),
+                                                               bot->GetCollisionHeight(), {});
+        bool const inLiquid = liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > bot->GetPositionZ() - 1.0f;
+        if (!bot->GetTransport() && !bot->IsInWater() && !inLiquid && !bot->IsInFlight() &&
             (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) || !ref))
+        {
             NavGap(bot, "logged in where no polygon lies under it (the saved position of its last session)");
+            // [nav28] saved in the air (a session that ended on a flight whose path the login did not resume: b377
+            // Rumanatol 91 yd over Azuremyst): it falls, as a player whose flight broke does - no hanging there
+            if (!PlayerbotAI::HasGroundSupport(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()))
+            {
+                LOG_INFO("playerbots", "[nav28] {} L{} logged in {:.0f} yd in the air (not on a flight): falls",
+                         bot->GetName(), bot->GetLevel(),
+                         bot->GetPositionZ() - bot->GetMapWaterOrGroundLevel(bot->GetPositionX(),
+                                                                             bot->GetPositionY(),
+                                                                             bot->GetPositionZ()));
+                botAI->RequestFallCheck();  // its fall runs at the next update (StartFall)
+                return true;
+            }
+        }
     }
     if (bot->IsInCombat() || !SoloSafety::Applies(bot))
         return false;  // in a fight already: the survival kit judges it (fight on or flee)
