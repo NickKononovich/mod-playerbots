@@ -290,6 +290,12 @@ public:
     // [wait19] both are members of one five the global leader formed that gathers at its dungeon's entrance or
     // heads into the dungeon (Gather / Run): its leader's group wait and meet walk hold for it
     bool InSameActiveFive(uint32 a, uint32 b) const;
+    // [roles59] the role mix the global leader planned (PlanRoles): the premade spec (playerbots.conf
+    // PremadeSpecName index) + 1 a planned member plays in talent spec `activeSpec` (0: its role spec; 1: its solo
+    // spec once it bought dual spec), 0 = no plan (the factory's own pick). Any thread.
+    uint32 RoleSpec(uint32 low, uint8 activeSpec) const;
+    // [roles59] the member's role from the role plan ("tank" / "healer" / "dps"), "" = none planned. Any thread.
+    std::string RoleOf(uint32 low) const;
 
     // the dungeon leader's end of the five's run (TestHarnessMgr hook, world thread)
     void OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report);
@@ -907,6 +913,19 @@ private:
                               double& walkTo, ObjSource& source) const;
     std::unordered_map<uint32, std::vector<uint32>> questsByMap_;  // map -> takeable quests, by min level
 
+    // [roles59] the global leader's role plan (world thread writes under roleLock_, a leaf; any thread reads)
+    struct RoleAssign
+    {
+        std::string role;   // tank / healer
+        uint8 spec{0};      // premade spec index of the role
+        uint8 solo{0};      // premade spec index of its solo (questing) spec, the second spec once bought
+    };
+    mutable std::mutex roleLock_;
+    std::unordered_map<uint32, RoleAssign> roleAssign_;
+    std::map<std::string, std::string> rolesWhy_;  // band -> its last logged plan line
+    std::string fiveLook_;                         // [five58] the last logged look line
+    void PlanRoles();                              // world thread, lock_ held
+    std::string SpecRoleNow(Player* p) const;      // tank / healer / dps by its talents now
     mutable std::mutex lock_;
     std::mutex deferredLock_;  // [lock23] a leaf: nothing is called under it
     std::vector<std::tuple<ObjectGuid, ObjectGuid, uint32>> deferredLoot_;  // player, item, count

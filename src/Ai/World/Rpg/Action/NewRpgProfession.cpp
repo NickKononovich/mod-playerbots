@@ -33,14 +33,23 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "Trainer.h"
+#include "AiFactory.h"     // [roles59] talent trees
+#include "GuildHonest.h"   // [roles59] dual spec at the trainer
+#include "PlayerbotFactory.h"
+#include "World.h"
 
 namespace
 {
     enum : uint8
     {
         TASK_TRAIN = 1,
-        TASK_BUY = 2
+        TASK_BUY = 2,
+        TASK_ROLESPEC = 5  // [roles59] the role spec at its class trainer (3 / 4: NewRpgCraft)
     };
+    // [roles59] Dual Talent Specialization's price (the class trainer's gossip BoxMoney; the user's rule: 1000 g)
+    constexpr uint32 DUAL_SPEC_COST = 1000 * GOLD;
+    // the failure key of a role spec visit
+    constexpr uint32 ROLESPEC_FAIL_ID = 0xFFFF0001;
 
     struct ProfessionPlan
     {
@@ -88,6 +97,7 @@ namespace
         std::unordered_map<uint32, std::vector<RankSpell>> ranks;     // trainer entry -> rank spells
         std::unordered_map<uint32, std::vector<NpcSpawn>> trainers;   // skill -> trainer spawns teaching it
         std::unordered_map<uint32, std::vector<NpcSpawn>> toolVendors;  // tool item -> vendor spawns selling it
+        std::unordered_map<uint32, std::vector<NpcSpawn>> classTrainers;  // [roles59] class -> its trainers' spawns
     };
 
     // The tool a profession's work needs, bought at a vendor (the game's own items).
@@ -155,6 +165,11 @@ namespace
 
                 if (tmpl->npcflag & UNIT_NPC_FLAG_TRAINER)
                 {
+                    // [roles59] a class trainer unlearns talents and sells dual spec (Creature::CanResetTalents)
+                    if (Trainer::Trainer* trainer = sObjectMgr->GetTrainer(data.id);
+                        trainer && trainer->GetTrainerType() == Trainer::Type::Class &&
+                        trainer->GetTrainerRequirement())
+                        index.classTrainers[trainer->GetTrainerRequirement()].push_back(spawn);
                     auto itr = seen.find(data.id);
                     if (itr == seen.end())
                     {
@@ -621,6 +636,126 @@ namespace NewRpgProfession
 
     bool BuyFailed(Player* bot, uint32 npcEntry, uint32 itemId) { return FailedBefore(bot, npcEntry, itemId); }
 
+    // [roles59] the talent tree the role spec fills (the druid's cat spec 3 is the feral tree)
+    uint8 RoleTree(Player* bot, uint32 roleSpec)
+    {
+        uint8 const spec = uint8(roleSpec - 1);
+        return bot->getClass() == CLASS_DRUID && spec == 3 ? 1 : spec;
+    }
+
+    bool NeedsRespec(Player* bot, uint32 roleSpec)
+    {
+        uint32 const spent = bot->CalculateTalentsPoints() - std::min(bot->CalculateTalentsPoints(),
+                                                                      bot->GetFreeTalentPoints());
+        return bot->GetActiveSpec() == 0 && spent && AiFactory::GetPlayerSpecTab(bot) != RoleTree(bot, roleSpec);
+    }
+
+    bool WantsDualSpec(Player* bot)
+    {
+        return bot->GetSpecsCount() == 1 && bot->GetLevel() >= sWorld->getIntConfig(CONFIG_MIN_DUALSPEC_LEVEL);
+    }
+
+    // [roles59] the last wait line per bot (map threads)
+    std::mutex roleLogLock;
+    std::unordered_map<uint32, std::string> roleLogged;
+    void RoleLogOnce(Player* bot, std::string const& text)
+    {
+        {
+            std::lock_guard<std::mutex> guard(roleLogLock);
+            std::string& last = roleLogged[bot->GetGUID().GetCounter()];
+            if (last == text)
+                return;
+            last = text;
+        }
+        LOG_INFO("playerbots", "[roles59] {} L{} {}", bot->GetName(), bot->GetLevel(), text);
+    }
+
+    bool StartRoleSpec(PlayerbotAI* botAI, Player* bot)
+    {
+        uint32 const low = bot->GetGUID().GetCounter();
+        uint32 const roleSpec = sGuildCoordinator.RoleSpec(low, 0);
+        if (!roleSpec || !bot->IsAlive() || bot->IsInCombat())
+            return false;
+        // two specs: the role's in a five, the solo one questing (the player's spec switch, out of combat)
+        if (bot->GetSpecsCount() > 1)
+        {
+            uint8 const want = sGuildCoordinator.InSameActiveFive(low, low) ? 0 : 1;
+            if (bot->GetActiveSpec() != want)
+            {
+                bot->ActivateSpec(want);
+                botAI->ResetStrategies();
+                LOG_INFO("playerbots", "[roles59] {} L{} switches to talent spec {} ({}): {}", bot->GetName(),
+                         bot->GetLevel(), want + 1, want ? "solo" : "its five role",
+                         want ? "no five" : "in a five");
+            }
+            if (bot->GetFreeTalentPoints())
+            {
+                PlayerbotFactory factory(bot, bot->GetLevel());
+                factory.InitTalentsTree(true, true, false);
+            }
+        }
+        bool const respec = NeedsRespec(bot, roleSpec);
+        uint32 const respecCost = respec ? bot->resetTalentsCost() : 0;
+        bool const dual = WantsDualSpec(bot) && bot->GetMoney() >= respecCost + DUAL_SPEC_COST;
+        if (respec && bot->GetMoney() < respecCost)
+        {
+            RoleLogOnce(bot, "waits for its role spec: unlearning its talents costs " + std::to_string(respecCost) +
+                                 "c, it has " + std::to_string(bot->GetMoney()) + "c");
+            return false;
+        }
+        if (!respec && !dual)
+            return false;
+        Index const& index = GetIndex();
+        auto const spawns = index.classTrainers.find(bot->getClass());
+        if (spawns == index.classTrainers.end())
+            return false;
+        std::unordered_set<NpcSpawn const*> refused;
+        while (true)
+        {
+            NpcSpawn const* best = nullptr;
+            float bestDist = FLT_MAX;
+            for (NpcSpawn const& spawn : spawns->second)
+            {
+                if (spawn.mapId != bot->GetMapId() || refused.count(&spawn) || !Friendly(bot, spawn.entry) ||
+                    FailedBefore(bot, spawn.entry, ROLESPEC_FAIL_ID))
+                    continue;
+                float const d = TripDist(bot, spawn);
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    best = &spawn;
+                }
+            }
+            if (!best || bestDist == FLT_MAX)
+            {
+                RoleLogOnce(bot, "waits for its role spec: no class trainer it can reach on its map");
+                return false;
+            }
+            CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(best->entry);
+            std::string const name = tmpl ? tmpl->Name : "?";
+            if (NewRpgBaseAction::TripRefused(bot, best->x, best->y, best->z, "class trainer " + name))
+            {
+                refused.insert(best);
+                continue;
+            }
+            NewRpgInfo::DoProfession task;
+            task.kind = TASK_ROLESPEC;
+            task.npcEntry = best->entry;
+            task.pos = WorldPosition(best->mapId, best->x, best->y, best->z);
+            task.spellId = roleSpec;
+            task.cost = respecCost + (dual ? DUAL_SPEC_COST : 0);
+            QuestStats::TownStart(bot, "ROLE SPEC");  // [log28]
+            LOG_INFO("playerbots", "[roles59] {} L{} ROLE SPEC reason: the global leader planned it {} ({}){}{} at {} "
+                     "({:.0f} yd), cost {}c, money {}c",
+                     bot->GetName(), bot->GetLevel(), sGuildCoordinator.RoleOf(low),
+                     sPlayerbotAIConfig.PremadeSpecName[bot->getClass()][roleSpec - 1],
+                     respec ? "; unlearns its talents" : "", dual ? "; buys dual spec" : "", name, bestDist,
+                     task.cost, bot->GetMoney());
+            botAI->rpgInfo.ChangeToDoProfession(task);
+            return true;
+        }
+    }
+
     uint32 NextRankCost(Player* bot)
     {
         auto plan = plans.find(bot->GetGUID().GetCounter());
@@ -705,6 +840,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         return ExecuteCraft(*data);
     uint32 const id = data->kind == TASK_TRAIN              ? data->spellId
                       : data->kind == NewRpgCraft::TASK_RECIPES ? RecipeFailId(data->skill)
+                      : data->kind == TASK_ROLESPEC              ? ROLESPEC_FAIL_ID
                                                                 : data->itemId;
 
     if (data->npc.IsEmpty())
@@ -799,6 +935,63 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
 
     bot->SetFacingToObject(npc);
     uint32 const moneyBefore = bot->GetMoney();
+    if (data->kind == TASK_ROLESPEC)  // [roles59] at its class trainer, as a player: unlearn, then dual spec
+    {
+        uint32 const roleSpec = data->spellId;
+        std::string result;
+        bool failed = false;
+        if (!npc->CanResetTalents(bot))
+        {
+            result = "not its class trainer";
+            failed = true;
+        }
+        else
+        {
+            if (NewRpgProfession::NeedsRespec(bot, roleSpec))
+            {
+                uint8 const before = AiFactory::GetPlayerSpecTab(bot);
+                if (bot->resetTalents(false))  // the core's price (Player::resetTalentsCost)
+                {
+                    PlayerbotFactory factory(bot, bot->GetLevel());
+                    factory.InitTalentsTree(true, true, false);  // its points into the role spec (RoleSpec)
+                    botAI->ResetStrategies();
+                    result = "unlearned its talents (tree " + std::to_string(before) + " -> " +
+                             std::to_string(AiFactory::GetPlayerSpecTab(bot)) + ")";
+                }
+                else
+                {
+                    result = "the trainer refused the unlearn";
+                    failed = true;
+                }
+            }
+            if (!failed && NewRpgProfession::WantsDualSpec(bot) && bot->GetMoney() >= DUAL_SPEC_COST)
+            {
+                std::string why;
+                if (GuildHonest::BuyDualSpecAtTrainer(bot, npc, &why))
+                {
+                    // spec 1: its solo spec (RoleSpec(low, 1)); spec 0 keeps the role
+                    bot->ActivateSpec(1);
+                    PlayerbotFactory factory(bot, bot->GetLevel());
+                    factory.InitTalentsTree(true, true, false);
+                    botAI->ResetStrategies();
+                    result += std::string(result.empty() ? "" : ", ") + "bought dual spec, talent spec 2 solo";
+                }
+                else
+                {
+                    result += std::string(result.empty() ? "" : ", ") + "no dual spec: " + why;
+                    failed = result.find("unlearned") == std::string::npos;
+                }
+            }
+        }
+        LOG_INFO("playerbots", "[roles59] {} L{} at {}: {}, paid {}c ({}c left)", bot->GetName(), bot->GetLevel(),
+                 npc->GetName(), result.empty() ? "nothing to do" : result, moneyBefore - bot->GetMoney(),
+                 bot->GetMoney());
+        QuestStats::TownDone(bot->GetGUID().GetCounter(), bot->GetName(), "role spec");  // [log28]
+        if (failed)
+            MarkFailed(bot, data->npcEntry, ROLESPEC_FAIL_ID);
+        info.ChangeToIdle();
+        return true;
+    }
     if (data->kind == NewRpgCraft::TASK_RECIPES)  // [guild70] recipes only
     {
         uint32 const learned = NewRpgCraft::LearnRecipes(bot, npc, data->skill, NewRpgCraft::Budget(botAI, bot));

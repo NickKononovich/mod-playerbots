@@ -26,6 +26,10 @@ namespace NewRpgProfession
 
     // Starts a DO_PROFESSION walk when the bot has a profession errand it can pay for now.
     bool StartTask(PlayerbotAI* botAI, Player* bot);
+    // [roles59] the global leader planned the bot a tank / healer role: with two specs it switches (role spec in a
+    // five, solo spec questing); a role spec its talents do not hold yet, or dual spec from its level (1000 g), is a
+    // walk to its class trainer (true: the DO_PROFESSION walk started)
+    bool StartRoleSpec(PlayerbotAI* botAI, Player* bot);
 
     // "skill:value/max,..." of the bot's planned professions (guild board), empty when it has no plan.
     std::string PlannedSkills(Player* bot);

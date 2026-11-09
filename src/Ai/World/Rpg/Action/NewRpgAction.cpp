@@ -1560,6 +1560,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         case RPG_IDLE:
         {
             BindAtInnHere();  // [regress10] its home is the town it quests from
+            // [roles59] the role the global leader planned for the fives: its spec, at the class trainer
+            if (sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) &&
+                NewRpgProfession::StartRoleSpec(botAI, bot))
+                return true;
             // A level-up makes quests that were given up on worth another try.
             if (info.lastQuestLevel != bot->GetLevel())
             {

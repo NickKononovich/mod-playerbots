@@ -1776,7 +1776,11 @@ uint32 PlayerbotFactory::InitTalentsTree(bool increment /*false*/, bool use_temp
     uint8 cls = bot->getClass();
     // [gather] a planned guild character keeps its planned spec (playerbots_random_bots "planSpec" = premade spec
     // index + 1, written with the character's plan row), never a roll
-    uint32 const plannedSpec = sRandomPlayerbotMgr.GetValue(bot->GetGUID().GetCounter(), "planSpec");
+    // [roles59] the global leader's role plan comes first: the spec of the role it assigned (talent spec 0) or the
+    // member's solo spec (talent spec 1, bought dual spec)
+    uint32 plannedSpec = sGuildCoordinator.RoleSpec(bot->GetGUID().GetCounter(), bot->GetActiveSpec());
+    if (!plannedSpec)
+        plannedSpec = sRandomPlayerbotMgr.GetValue(bot->GetGUID().GetCounter(), "planSpec");
     bool const planned = plannedSpec && plannedSpec <= MAX_SPECNO &&
                          !sPlayerbotAIConfig.PremadeSpecName[cls][plannedSpec - 1].empty();
     std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(bot);

@@ -19,6 +19,7 @@
 #include <cstring>
 #include <sstream>
 
+#include "AiFactory.h"  // [roles59] talent trees
 #include "AiObjectContext.h"
 #include "Chat.h"
 #include "DBCStores.h"
@@ -117,6 +118,58 @@ namespace
     // the user controls the character himself (no AI, or his SelfBot suspended): never commanded, waited for. A
     // character he handed to the bot (SelfBot active, UserPack bot) is a normal bot: no waiting (user 2026-11-07)
     bool IsHuman(Player* p) { return p && (IsRealPlayer(p) || (IsSelfBot(p) && SelfBotControl::IsSuspended(p))); }
+
+    // [roles59] premade spec indexes (playerbots.conf PremadeSpecName.<class>.<n>, the pve ones) a role plays; -1: the
+    // class has none. A druid tank needs bear form for PlayerbotAI::IsTank: the plan takes it only when its talents
+    // already make it one.
+    int8 RoleSpecIndex(uint8 cls, std::string const& role)
+    {
+        if (role == "healer")
+            switch (cls)
+            {
+                case CLASS_PALADIN: return 0;  // holy pve
+                case CLASS_PRIEST:  return 1;  // holy pve
+                case CLASS_SHAMAN:  return 2;  // resto pve
+                case CLASS_DRUID:   return 2;  // resto pve
+                default:            return -1;
+            }
+        if (role == "tank")
+            switch (cls)
+            {
+                case CLASS_WARRIOR:      return 2;  // prot pve
+                case CLASS_PALADIN:      return 1;  // prot pve
+                case CLASS_DEATH_KNIGHT: return 0;  // blood pve
+                default:                 return -1;
+            }
+        return -1;
+    }
+
+    // the talent tree a premade spec fills (the druid's cat spec 3 is the feral tree)
+    uint8 SpecTree(uint8 cls, uint8 spec) { return cls == CLASS_DRUID && spec == 3 ? 1 : spec; }
+
+    // its solo (questing) spec: the damage tree it levels in now, else the class's damage spec
+    uint8 SoloSpecIndex(Player* p)
+    {
+        uint8 const cls = p->getClass();
+        uint8 const tree = AiFactory::GetPlayerSpecTab(p);
+        switch (cls)
+        {
+            case CLASS_WARRIOR:      return tree <= 1 ? tree : 1;           // arms / fury
+            case CLASS_PALADIN:      return 2;                              // ret
+            case CLASS_PRIEST:       return 2;                              // shadow
+            case CLASS_SHAMAN:       return tree <= 1 ? tree : 1;           // ele / enh
+            case CLASS_DRUID:        return tree == 0 ? 0 : 3;              // balance / cat
+            case CLASS_DEATH_KNIGHT: return tree >= 1 ? tree : 2;           // frost / unholy
+            default:                 return tree;
+        }
+    }
+
+    std::string SpecName(uint8 cls, uint8 spec)
+    {
+        if (cls < MAX_CLASSES && spec < MAX_SPECNO && !sPlayerbotAIConfig.PremadeSpecName[cls][spec].empty())
+            return sPlayerbotAIConfig.PremadeSpecName[cls][spec];
+        return "spec " + std::to_string(spec);
+    }
 
     bool Equipment(ItemTemplate const* proto)
     {
@@ -755,6 +808,154 @@ std::string GuildCoordinator::PlanRole(uint32 low, Player* p) const
     return "dps";
 }
 
+std::string GuildCoordinator::SpecRoleNow(Player* p) const
+{
+    if (PlayerbotAI::IsTank(p, true))
+        return "tank";
+    if (PlayerbotAI::IsHeal(p, true))
+        return "healer";
+    return "dps";
+}
+
+uint32 GuildCoordinator::RoleSpec(uint32 low, uint8 activeSpec) const
+{
+    std::lock_guard<std::mutex> guard(roleLock_);
+    auto const itr = roleAssign_.find(low);
+    if (itr == roleAssign_.end())
+        return 0;
+    return uint32(activeSpec ? itr->second.solo : itr->second.spec) + 1;
+}
+
+std::string GuildCoordinator::RoleOf(uint32 low) const
+{
+    std::lock_guard<std::mutex> guard(roleLock_);
+    auto const itr = roleAssign_.find(low);
+    return itr == roleAssign_.end() ? "" : itr->second.role;
+}
+
+// [roles59] user direction 2026-11-09: the fives must never lack a healer or a tank. For each dungeon band the global
+// leader counts the planned members in it (A, B, C; humans aside), the fives they make (members / 5: a tank, a healer
+// and 3 dps each) and the tanks and healers they hold (a role planned earlier, else its talents now). A shortfall is
+// filled from the band's hybrids playing damage: the plan's own role first (guild_project_plan), then the most
+// points already in the role's tree (the least loss), then the highest level. Only as many as the fives need: a
+// heal or tank spec quests slower solo. The assigned member puts its talent points into the role's spec from now on
+// (PlayerbotFactory::InitTalentsTree reads RoleSpec), unlearns its talents at its class trainer for the core's price
+// (NewRpgProfession::StartRoleSpec), and from the dual spec level buys the second spec there (1000 g, the user's
+// rule): spec 1 then holds its solo spec, spec 0 the role, switched as it joins or leaves a five.
+void GuildCoordinator::PlanRoles()
+{
+    std::set<std::pair<uint32, uint32>> bands;
+    for (DungeonOption const& d : dungeons_)
+        bands.emplace(d.minLevel, d.maxLevel);
+    for (auto const& [lo, hi] : bands)
+    {
+        std::vector<std::pair<PlanRow const*, Player*>> members;
+        for (PlanRow const& row : plan_)
+        {
+            if (row.grp < 'A' || row.grp > 'C')
+                continue;
+            Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+            if (!p || !p->IsInWorld() || IsHuman(p) || p->GetLevel() < lo || p->GetLevel() > hi)
+                continue;
+            members.emplace_back(&row, p);
+        }
+        if (members.size() < 5)
+            continue;
+        uint32 const fives = uint32(members.size() / 5);
+        auto roleNow = [this](uint32 low, Player* p)
+        {
+            std::string const planned = RoleOf(low);
+            return planned.empty() ? SpecRoleNow(p) : planned;
+        };
+        std::string text;
+        uint32 dps = 0;
+        std::map<std::string, std::vector<std::string>> lists;
+        std::map<std::string, uint32> counts;
+        for (auto const& [row, p] : members)
+            ++counts[roleNow(row->low, p)];
+        for (std::string const role : {"healer", "tank"})
+        {
+            while (counts[role] < fives)
+            {
+                PlanRow const* best = nullptr;
+                Player* bestP = nullptr;
+                uint32 bestPoints = 0;
+                bool bestPlanned = false;
+                for (auto const& [row, p] : members)
+                {
+                    int8 const spec = RoleSpecIndex(p->getClass(), role);
+                    if (spec < 0 || roleNow(row->low, p) != "dps" || !RoleOf(row->low).empty())
+                        continue;
+                    std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(p);
+                    uint32 const points = tabs[SpecTree(p->getClass(), uint8(spec))];
+                    bool const planned = row->role == role;
+                    if (best && std::make_tuple(planned, points, p->GetLevel()) <=
+                                    std::make_tuple(bestPlanned, bestPoints, bestP->GetLevel()))
+                        continue;
+                    best = row;
+                    bestP = p;
+                    bestPoints = points;
+                    bestPlanned = planned;
+                }
+                if (!best)
+                    break;
+                RoleAssign assign;
+                assign.role = role;
+                assign.spec = uint8(RoleSpecIndex(bestP->getClass(), role));
+                assign.solo = SoloSpecIndex(bestP);
+                {
+                    std::lock_guard<std::mutex> guard(roleLock_);
+                    roleAssign_[best->low] = assign;
+                }
+                --counts["dps"];
+                ++counts[role];
+                LOG_INFO("playerbots", "[roles59] {} L{} → {} ({}): band {}-{} has {} fives and {} {}s; plan role {}, "
+                         "{} points in its tree, talents now {}",
+                         bestP->GetName(), bestP->GetLevel(), role, SpecName(bestP->getClass(), assign.spec), lo, hi,
+                         fives, counts[role] - 1, role, best->role, bestPoints, SpecRoleNow(bestP));
+            }
+        }
+        for (auto const& [row, p] : members)
+        {
+            std::string const role = roleNow(row->low, p);
+            if (role == "dps")
+            {
+                ++dps;
+                continue;
+            }
+            std::string entry = p->GetName() + " L" + std::to_string(p->GetLevel());
+            int8 const spec = RoleSpecIndex(p->getClass(), role);
+            if (!RoleOf(row->low).empty() && SpecRoleNow(p) != role)
+                entry += " " + SpecName(p->getClass(), uint8(spec)) + " (respec at its trainer)";
+            else if (!RoleOf(row->low).empty())
+                entry += " " + SpecName(p->getClass(), uint8(spec));
+            else
+                entry += " (its talents)";
+            lists[role].push_back(entry);
+        }
+        auto join = [](std::vector<std::string> const& v)
+        {
+            std::string out;
+            for (std::string const& s : v)
+                out += (out.empty() ? "" : ", ") + s;
+            return out;
+        };
+        text = Acore::StringFormat("{} members, {} fives; healers {} ({}), tanks {} ({}), dps {}", members.size(), fives,
+                                   lists["healer"].size(), join(lists["healer"]), lists["tank"].size(),
+                                   join(lists["tank"]), dps);
+        if (lists["healer"].size() < fives || lists["tank"].size() < fives)
+            text += Acore::StringFormat("; short: {} healers, {} tanks (no damage hybrid of a class that can left)",
+                                        lists["healer"].size() < fives ? fives - lists["healer"].size() : 0,
+                                        lists["tank"].size() < fives ? fives - lists["tank"].size() : 0);
+        std::string const key = std::to_string(lo) + "-" + std::to_string(hi);
+        if (rolesWhy_[key] != text)
+        {
+            rolesWhy_[key] = text;
+            LOG_INFO("playerbots", "[roles59] band {}: {}", key, text);
+        }
+    }
+}
+
 bool GuildCoordinator::Cleared(std::string const& contentKey, uint32 low) const
 {
     auto const itr = cleared_.find(contentKey);
@@ -1245,6 +1446,14 @@ void GuildCoordinator::AutoFive()
                          p->GetLevel(), d.name, d.minLevel, d.maxLevel);
             }
     }
+    // [roles59] the role mix first: each band's fives get their tanks and healers
+    {
+        CoordLock guard(lock_, __func__);
+        PlanRoles();
+    }
+    // [five58] user direction 2026-11-09: one line per look - each dungeon with members in its band, how many are
+    // free, their roles and why no five goes (no tank / no healer / too few dps / nothing to gain / the gate)
+    std::map<std::string, std::string> lookWhy;
     for (uint32 guardCount = 0; guardCount < 10; ++guardCount)  // one five per dungeon look, at most ten a look
     {
         // the free members of each dungeon's band (lock), their upgrades (no lock: the bots' own values)
@@ -1254,6 +1463,49 @@ void GuildCoordinator::AutoFive()
             for (DungeonOption const& d : dungeons_)
             {
                 std::vector<FiveCandidate> pool = Candidates(d, true);
+                if (guardCount == 0)
+                {
+                    uint32 inBand = 0;
+                    std::map<std::string, uint32> busy;
+                    for (PlanRow const& row : plan_)
+                    {
+                        if (row.grp < 'A' || row.grp > 'C')
+                            continue;
+                        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                        if (!p || IsHuman(p) || p->GetLevel() < d.minLevel || p->GetLevel() > d.maxLevel)
+                            continue;
+                        ++inBand;
+                        std::string why;
+                        if (!FreeForFive(row.low, p, &why))
+                            ++busy[why];
+                        else if (std::string const refusal = DungeonRefusal(d, p); !refusal.empty())
+                            ++busy[refusal];
+                    }
+                    if (inBand)
+                    {
+                        uint32 tanks = 0, healers = 0;
+                        for (FiveCandidate const& c : pool)
+                            tanks += c.role == "tank" ? 1 : 0, healers += c.role == "healer" ? 1 : 0;
+                        std::string text = Acore::StringFormat("{} in band, {} free (t{} h{} d{})", inBand, pool.size(),
+                                                               tanks, healers, pool.size() - tanks - healers);
+                        if (!busy.empty())
+                        {
+                            text += " busy:";
+                            for (auto const& [why, n] : busy)
+                                text += Acore::StringFormat(" {} {},", why, n);
+                            text.pop_back();
+                        }
+                        if (pool.size() < 5)
+                            text += " -> fewer than 5 free";
+                        else if (!tanks)
+                            text += " -> no tank";
+                        else if (!healers)
+                            text += " -> no healer";
+                        else if (pool.size() - tanks - healers < 3)
+                            text += " -> fewer than 3 dps";
+                        lookWhy[d.contentKey] = text;
+                    }
+                }
                 if (pool.size() >= 5)
                     pools.emplace_back(&d, std::move(pool));
             }
@@ -1272,7 +1524,12 @@ void GuildCoordinator::AutoFive()
                        pool.end());
             std::vector<FiveCandidate> five;
             if (!PickFive(pool, five))
+            {
+                if (guardCount == 0 && lookWhy[d->contentKey].find(" -> ") == std::string::npos)
+                    lookWhy[d->contentKey] += Acore::StringFormat(
+                        " -> {} with a clear or an upgrade to gain: no tank, healer and 3 dps among them", pool.size());
                 continue;
+            }
             uint32 const score = uint32(std::count_if(five.begin(), five.end(),
                                                       [](FiveCandidate const& c) { return c.needsClear; })) +
                                  uint32(std::count_if(five.begin(), five.end(),
@@ -1287,6 +1544,8 @@ void GuildCoordinator::AutoFive()
             FiveGate::Verdict const verdict = FiveGate::Judge(d->mapId, players);
             if (!verdict.clears)
             {
+                if (guardCount == 0)
+                    lookWhy[d->contentKey] += " -> the gate says no: " + verdict.why;
                 if (std::string& logged = gateWhy[d->contentKey]; logged != verdict.why)
                 {
                     logged = verdict.why;
@@ -1297,9 +1556,19 @@ void GuildCoordinator::AutoFive()
             }
             LOG_INFO("playerbots", "[next1] five for {} passes the gate (leader {}): {}", d->contentKey,
                      five.front().player->GetName(), verdict.why);
+            if (guardCount == 0)
+                lookWhy[d->contentKey] += " -> passes the gate (score " + std::to_string(score) + ")";
             bestScore = score;
             best = d;
             bestFive = five;
+        }
+        if (guardCount == 0)
+        {
+            std::string line;
+            for (auto const& [key, text] : lookWhy)
+                line += (line.empty() ? "" : "; ") + key + ": " + text;
+            LOG_INFO("playerbots", "[five58] look: {}{}", line.empty() ? "no planned member in any dungeon band" : line,
+                     best ? " => forms " + best->contentKey : std::string(" => no five"));
         }
         if (!best)
             return;
