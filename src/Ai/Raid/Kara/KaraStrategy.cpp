@@ -77,6 +77,13 @@ void RaidKarazhanStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     triggers.push_back(new TriggerNode("wizard of oz strawman is vulnerable to fire",
         { NextAction("wizard of oz scorch strawman", ACTION_RAID + 1) }));
 
+    // [kara6] Tinhead: a tank holds him, nobody else stands in his front (Cleave)
+    triggers.push_back(new TriggerNode("wizard of oz tinhead needs a tank",
+        { NextAction("wizard of oz tank tinhead", ACTION_RAID + 2) }));
+
+    triggers.push_back(new TriggerNode("wizard of oz in front of tinhead",
+        { NextAction("wizard of oz step behind tinhead", ACTION_EMERGENCY + 5) }));
+
     // The Curator
     triggers.push_back(new TriggerNode("the curator astral flare spawned",
         { NextAction("the curator mark astral flare", ACTION_RAID + 1) }));

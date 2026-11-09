@@ -312,6 +312,22 @@ public:
     bool IsActive() override;
 };
 
+// [kara6] The Wizard of Oz: Tinhead (Cleave 31043 on his victim and the ones beside it) needs a tank; nobody
+// else stands in front of him
+class WizardOfOzTinheadNeedsTankTrigger : public Trigger
+{
+public:
+    WizardOfOzTinheadNeedsTankTrigger(PlayerbotAI* botAI) : Trigger(botAI, "wizard of oz tinhead needs a tank") {}
+    bool IsActive() override;
+};
+
+class WizardOfOzInFrontOfTinheadTrigger : public Trigger
+{
+public:
+    WizardOfOzInFrontOfTinheadTrigger(PlayerbotAI* botAI) : Trigger(botAI, "wizard of oz in front of tinhead") {}
+    bool IsActive() override;
+};
+
 // [kara4] a Spectral Retainer (Oath of Fealty) fights the group
 class KarazhanSpectralRetainerInFightTrigger : public Trigger
 {

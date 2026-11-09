@@ -22,6 +22,31 @@ bool KarazhanBotIsNotInCombatTrigger::IsActive()
 
 bool KarazhanChessEventActiveTrigger::IsActive() { return KaraChess::Active(bot); }  // [kara3]
 
+// [kara6] b368 kara-n segment 5: the Wizard of Oz wiped twice, 22 deaths - Tinhead's Cleave 13, his melee 5,
+// Dorothee's Water Bolt 4. Tinhead walked free among the group.
+static Unit* AttackableTinhead(PlayerbotAI* botAI)
+{
+    Unit* tinhead = botAI->GetAiObjectContext()->GetValue<Unit*>("find target", "tinhead")->Get();
+    return tinhead && tinhead->IsAlive() && !tinhead->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE) ? tinhead : nullptr;
+}
+
+bool WizardOfOzTinheadNeedsTankTrigger::IsActive()
+{
+    // the assist tank holds him (the main tank the others); a group with one tank: that tank
+    if (!PlayerbotAI::IsTank(bot) || !AttackableTinhead(botAI))
+        return false;
+    return true;  // the action keeps the main tank off him while another tank lives
+}
+
+bool WizardOfOzInFrontOfTinheadTrigger::IsActive()
+{
+    if (PlayerbotAI::IsTank(bot))
+        return false;
+    Unit* tinhead = AttackableTinhead(botAI);
+    return tinhead && tinhead->GetVictim() != bot && bot->GetExactDist2d(tinhead) <= 10.0f &&
+           tinhead->HasInArc(float(M_PI) * 0.75f, bot);
+}
+
 bool KarazhanSpectralRetainerInFightTrigger::IsActive()  // [kara4]
 {
     if (!IsMechanicTrackerBot(bot, KARA_MAP_ID))

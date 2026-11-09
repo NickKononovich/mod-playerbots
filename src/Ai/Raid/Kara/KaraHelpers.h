@@ -129,6 +129,7 @@ inline std::array const OZ_TARGETS = {
     "roar",
     "strawman",
     "tinhead",
+    "the crone",  // [kara6] she comes when the four are dead (bosses_opera.cpp SummonCroneIfReady)
 };
 
 // The Curator

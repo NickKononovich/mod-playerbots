@@ -288,6 +288,60 @@ bool MoroesMarkTargetAction::Execute(Event /*event*/)
     return false;
 }
 
+// [kara6] Tinhead: the tank that holds him. b368 kara-n segment 5: 13 deaths to his Cleave (31043, his victim and
+// the ones beside it in front of him), 5 to his melee - he was on non-tanks.
+bool WizardOfOzTankTinheadAction::Execute(Event /*event*/)
+{
+    Unit* tinhead = AI_VALUE2(Unit*, "find target", "tinhead");
+    if (!tinhead || !tinhead->IsAlive() || tinhead->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE))
+        return false;
+    // the main tank takes him only when no other tank of the group lives (the trigger lets it through)
+    if (PlayerbotAI::IsMainTank(bot) && !PlayerbotAI::IsAssistTank(bot))
+    {
+        Group* group = bot->GetGroup();
+        bool otherTank = false;
+        if (group)
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource(); member && member != bot && member->IsAlive() &&
+                                                       member->GetMap() == bot->GetMap() && PlayerbotAI::IsTank(member))
+                    otherTank = true;
+        if (otherTank)
+            return false;
+    }
+    Unit* victim = tinhead->GetVictim();
+    Player* victimPlayer = victim ? victim->ToPlayer() : nullptr;
+    if (victimPlayer && victimPlayer != bot && !PlayerbotAI::IsTank(victimPlayer))
+    {
+        static constexpr std::array<char const*, 4> taunts = {"taunt", "dark command", "hand of reckoning", "growl"};
+        for (char const* taunt : taunts)
+            if (botAI->CanCastSpell(taunt, tinhead) && botAI->CastSpell(taunt, tinhead))
+            {
+                LOG_INFO("playerbots", "[kara6] oz: {} taunts Tinhead off {} ({})", bot->GetName(),
+                         victimPlayer->GetName(), taunt);
+                return true;
+            }
+    }
+    if (AI_VALUE(Unit*, "current target") == tinhead)
+        return false;
+    LOG_INFO("playerbots", "[kara6] oz: {} holds Tinhead", bot->GetName());
+    return Attack(tinhead);
+}
+
+// [kara6] out of Tinhead's front: a melee member to his back (3 yd), the others 15 yd behind him
+bool WizardOfOzStepBehindTinheadAction::Execute(Event /*event*/)
+{
+    Unit* tinhead = AI_VALUE2(Unit*, "find target", "tinhead");
+    if (!tinhead || !tinhead->IsAlive())
+        return false;
+    float const distance = botAI->IsRanged(bot) ? 15.0f : 3.0f;
+    float const angle = tinhead->GetOrientation() + float(M_PI);
+    float const x = tinhead->GetPositionX() + std::cos(angle) * distance;
+    float const y = tinhead->GetPositionY() + std::sin(angle) * distance;
+    float z = tinhead->GetPositionZ();
+    bot->UpdateAllowedPositionZ(x, y, z);
+    return MoveTo(KARA_MAP_ID, x, y, z, false, false, false, false, MovementPriority::MOVEMENT_COMBAT, true, false);
+}
+
 // [kara4] b359 kara-n 20261109-010057-10A-1 t=339-377: the Retainer's Oath of Fealty took the fury warrior, then the
 // priest (dead at 377 s); the group fought the guests round it. The skull on it: the members' focus.
 bool KarazhanMarkSpectralRetainerAction::Execute(Event /*event*/)
