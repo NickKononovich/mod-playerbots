@@ -3798,9 +3798,14 @@ void UpdateHelp()
     // the walks without the lock (a long route each): Leader::WalkYd may take the board's lock itself (RouteCosts ->
     // JudgesPulls), so none of it runs while this update holds it
     std::vector<std::pair<std::pair<uint32, std::tuple<int32, int32, int32>>, float>> walked;
+    uint32 const walkStart = getMSTime();
     for (WalkNeed const& need : needs)
         if (Player* helper = ObjectAccessor::FindPlayer(need.helper); helper && helper->IsInWorld())
             walked.emplace_back(WalkKey(helper, need.camp), Leader::WalkYd(helper, need.camp));
+    if (!needs.empty())  // [help53] its own line: the walks searched outside the lock
+        out.logs.push_back(Acore::StringFormat("[help53] {} request(s) planned, {} walk(s) searched outside the "
+                                               "board's lock in {} ms",
+                                               assignNow.size(), walked.size(), getMSTimeDiff(walkStart, getMSTime())));
     {
         std::lock_guard<std::recursive_mutex> guard(lock);
         uint32 const now = getMSTime();

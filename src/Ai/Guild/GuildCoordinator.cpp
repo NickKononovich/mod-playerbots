@@ -1741,6 +1741,10 @@ void GuildCoordinator::UpdateOrders()
             st.revalueKey = key;
             RevalueQuests(st, p);
         }
+        // [obj55] b397: 1447 "[obj47] ... not measured yet" - RevalueQuests runs when the worked quest changes, when no
+        // kill of it is measured yet; the comparison is logged at each measurement point instead
+        if (uint32 measuredQuest = 0; QuestStats::TakeObjectiveLog(p, measuredQuest) && measuredQuest)
+            LogObjectiveFormula(p, measuredQuest);
         std::vector<GuildOrder> orders;
         FiveOrder(st, row.low, p, orders);  // [guild60] a five's dungeon comes first
         // [regress10] REPAIR: the leader tracks every member's durability (b345 Ginde L5 fought on with both
@@ -2829,6 +2833,49 @@ bool GuildCoordinator::ObjectiveUnitSeconds(Player* p, uint64 key, float dps, fl
         }
     }
     return best >= 0.0;
+}
+
+void GuildCoordinator::LogObjectiveFormula(Player* p, uint32 questId)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest || p->GetQuestStatus(questId) != QUEST_STATUS_INCOMPLETE)
+        return;
+    float const dps = DpsEstimate::EstimateDps(p, nullptr, DpsEstimate::BuffContext::Solo);
+    float const speed = std::max(p->GetSpeed(MOVE_RUN), 1.0f);
+    uint32 sharers = 0;
+    for (PlanRow const& row : plan_)
+        if (Player* o = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+            o && o->IsInWorld() && o->GetMapId() == p->GetMapId())
+            if (PlayerbotAI* oai = GET_PLAYERBOT_AI(o))
+                if (auto const* d = std::get_if<NewRpgInfo::DoQuest>(&oai->rpgInfo.data); d && d->questId == questId)
+                    ++sharers;
+    std::string formula;
+    for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+    {
+        bool const item = i >= QUEST_OBJECTIVES_COUNT;
+        uint8 const k = item ? i - QUEST_OBJECTIVES_COUNT : i;
+        uint32 const need = item ? quest->RequiredItemCount[k] : quest->RequiredNpcOrGoCount[k];
+        int32 const id = item ? int32(quest->RequiredItemId[k]) : quest->RequiredNpcOrGo[k];
+        if (!need || id <= 0)
+            continue;
+        double perUnit = 0.0, walk = 0.0;
+        ObjSource src;
+        if (ObjectiveUnitSeconds(p, (uint64(item ? 1 : 0) << 32) | uint32(id), dps, speed, std::max<uint32>(sharers, 1),
+                                 perUnit, walk, src))
+            formula += Acore::StringFormat("{}{} {} from {} L{} ({:.0f} % a kill): {:.0f} s a unit",
+                                           formula.empty() ? "" : "; ", item ? "item" : "credit", id, src.entry,
+                                           src.level, src.chance * 100.0f, perUnit);
+        else
+            formula += Acore::StringFormat("{}{} {}: no source on its map", formula.empty() ? "" : "; ",
+                                           item ? "item" : "credit", id);
+    }
+    double seen = 0.0;
+    uint32 kills = 0;
+    bool const measured = QuestStats::ObservedObjective(p, questId, seen, kills);
+    LOG_INFO("playerbots", "[obj47] {} L{} q{}: formula {} ({} on it); {}", p->GetName(), p->GetLevel(), questId,
+             formula.empty() ? std::string("none") : formula, std::max<uint32>(sharers, 1),
+             measured ? Acore::StringFormat("measured {:.0f} s a unit over {} kills", seen, kills)
+                      : std::string("not measured yet"));
 }
 
 void GuildCoordinator::RevalueQuests(BotState& st, Player* p)

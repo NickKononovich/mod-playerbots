@@ -809,6 +809,8 @@ private:
     // [questvalue] its green log quests valued against the route's rate; the ones not worth it abandoned ([quest14]
     // greys: the route's grey rule, GreyQuestNeed)
     void RevalueQuests(BotState& st, Player* p);
+    // [obj55] the objective formula of `questId` beside the measured rate, logged (no decision reads it)
+    void LogObjectiveFormula(Player* p, uint32 questId);
     float GatherPace(uint32 skill) const;                              // units per minute of gathering, < 0: no data
     uint32 TrainerCap(uint32 skillLine, uint8 level) const;            // the highest rank's max skill by level
     void RecordPace(BotState& st, Player* p) const;                    // UpdateHealth: its copper per quest XP

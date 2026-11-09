@@ -41,6 +41,9 @@ namespace QuestStats
     bool ObservedObjective(Player* bot, uint32 questId, double& secondsPerUnit, uint32& kills);
     uint32 ObservedVersion(Player* bot);
     void NoteObjectiveKill(Player* bot);
+    // [obj55] a measurement point (every 10 useful kills on the worked quest): true once per point, `questId` the
+    // quest - the global leader logs its formula beside the measured rate then (a log, no decision)
+    bool TakeObjectiveLog(Player* bot, uint32& questId);
 }
 
 void AddQuestStatsScripts();

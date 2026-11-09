@@ -527,6 +527,24 @@ void QuestStats::NoteObjectiveKill(Player* bot)
         ++objectiveVersion[bot->GetGUID().GetCounter()];
 }
 
+namespace
+{
+    std::unordered_map<uint32, uint32> objectiveLogged;  // bot -> the version last logged (behind objLock)
+}
+
+bool QuestStats::TakeObjectiveLog(Player* bot, uint32& questId)
+{
+    std::lock_guard<std::mutex> guard(objLock);
+    uint32 const low = bot->GetGUID().GetCounter();
+    auto const v = objectiveVersion.find(low);
+    auto const w = objectiveWatch.find(low);
+    if (v == objectiveVersion.end() || w == objectiveWatch.end() || objectiveLogged[low] == v->second)
+        return false;
+    objectiveLogged[low] = v->second;
+    questId = w->second.questId;
+    return true;
+}
+
 bool QuestStats::ObservedObjective(Player* bot, uint32 questId, double& secondsPerUnit, uint32& kills)
 {
     std::lock_guard<std::mutex> guard(objLock);
