@@ -531,12 +531,41 @@ namespace Leader
         std::vector<Travel::RoutePenalty> penalties;
         SoloSafety::RouteCosts(walker, from, to, refuse, penalties);
         refuse.insert(refuse.end(), pullAvoid.begin(), pullAvoid.end());  // [deaths] the pull spot's walk
-        // [guild15] a refused reach the walker stands in already lies behind the walk: it walks out of it
+        // [guild15] a refused reach the walker stands in already lies behind the walk: it walks out of it.
+        // [leave33] user 2026-11-09: out by the nearest way, not on through the camp - the reach is kept, shrunk to
+        // the walker's own distance from its centre (less its combat reach, its own polygon stays open): the walk
+        // goes no deeper into it than where it stands. Dropped whole only when the destination lies in it too (the
+        // camp is the goal) or the walker stands at its centre. b385 Aestymro L13 rose in the Longshore murlocs'
+        // reach, its RECOVER walk to its hub (952 yd) went on through the camp, died again 20 yd off
+        float const reachOwn = walker->GetCombatReach();
+        uint32 shrunk = 0;
         refuse.erase(std::remove_if(refuse.begin(), refuse.end(),
-                                    [&from](G3D::Vector4 const& c)
-                                    { return (c.x - from.x) * (c.x - from.x) + (c.y - from.y) * (c.y - from.y) <=
-                                             c.w * c.w; }),
+                                    [&](G3D::Vector4& c)
+                                    {
+                                        float const inFrom = std::hypot(c.x - from.x, c.y - from.y);
+                                        if (inFrom > c.w)
+                                            return false;
+                                        if (std::hypot(c.x - to.x, c.y - to.y) <= c.w || inFrom - reachOwn <= 1.0f)
+                                            return true;
+                                        c.w = inFrom - reachOwn;
+                                        ++shrunk;
+                                        return false;
+                                    }),
                      refuse.end());
+        if (shrunk)
+        {
+            // logged once per walker and spot (5 yd): a log cadence, no decision reads it
+            thread_local std::unordered_map<uint64, uint64> leaveLogged;
+            uint64 const spot = (uint64(uint32(int32(from.x / 5.0f))) << 32) ^ uint64(uint32(int32(from.y / 5.0f)));
+            uint64& last = leaveLogged[walker->GetGUID().GetRawValue()];
+            if (last != spot)
+            {
+                last = spot;
+                LOG_INFO("playerbots", "[leave33] {} starts a walk inside {} refused reach(es) at ({:.0f},{:.0f}): "
+                         "no deeper into them than it stands",
+                         walker->GetName(), shrunk, from.x, from.y);
+            }
+        }
         // [route31] no walk cache: route28-30 held ~12 % hits (the key holds both ends to half a yard, a walker that
         // moved is a new key) and its stored walks (MBs of points per map thread) slowed every other call: b382 /
         // b384 AI 1.57-2.07 ms per tick against b377's 0.37, trivial values (invalid target, inventory items) 2x
