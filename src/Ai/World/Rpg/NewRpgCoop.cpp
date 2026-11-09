@@ -3813,6 +3813,17 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
             holders.push_back(m);
             break;
         }
+    // [holder29] a party with no tank has nobody to take the pack off the member it goes for: a healer's heals and
+    // a dps member's damage draw it as well as the leader's pull (the core's threat), so each member in the fight may
+    // hold it - the party wins only if every one of them lives through it. b378: Ellosera L14 led Feeli L11 and
+    // Almored L12 through Bloodmyst's L16-18 camps, each pull priced on Ellosera (ehp 355) alone; the packs went for
+    // Feeli (top of every killer's threat list) and Almored - 9 deaths of the three
+    bool const noTank = holders.size() == 1;
+    if (noTank)
+        for (ObjectGuid const& guid : members)
+            if (Player* m = SameMapPlayer(leader, guid);
+                m && m != leader && m->IsAlive() && leader->GetExactDist(m) <= sPlayerbotAIConfig.SightDistance)
+                holders.push_back(m);
     // the party's damage: its members in sight of the leader (each the formula's, [dps1])
     float sumDps = 0.0f;
     for (ObjectGuid const& guid : members)
@@ -3949,6 +3960,8 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         "{} mobs, {:.0f} dmg on {} over {:.0f} s at {:.1f} party dps, ehp {:.0f} now / "
         "{:.0f} full",
         verdict.mobs, damage, holder->GetName(), seconds, sumDps, verdict.ehpNow, verdict.ehpFull);
+    if (noTank && holders.size() > 1)
+        verdict.why += Acore::StringFormat(" ([holder29] no tank: priced on each of its {} members)", holders.size());
 
     return verdict;
 }
