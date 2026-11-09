@@ -4709,6 +4709,21 @@ CreatureTemplate const* NewRpgBaseAction::InDangerZone(Player* bot, float x, flo
 
 bool NewRpgBaseAction::LoginEscape()
 {
+    // [nav24] a login where the navmesh has no polygon under the bot: the alarm names the saved spot (b350
+    // Blahadrin logged in inside a 12x12 yd model footprint at (-9463,-350,60), its b349 end in Westfall - no log
+    // showed the move that put it there; the relocations without a path now log [nav24] lines)
+    if (dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery())
+    {
+        dtQueryFilter filter;
+        filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+        float const point[3] = {bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX()};
+        float const extents[3] = {3.0f, 5.0f, 3.0f};
+        float nearest[3] = {0.0f, 0.0f, 0.0f};
+        dtPolyRef ref = 0;
+        if (!bot->GetTransport() && !bot->IsInWater() &&
+            (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) || !ref))
+            NavGap(bot, "logged in where no polygon lies under it (the saved position of its last session)");
+    }
     if (bot->IsInCombat() || !SoloSafety::Applies(bot))
         return false;  // in a fight already: the survival kit judges it (fight on or flee)
     std::string who;

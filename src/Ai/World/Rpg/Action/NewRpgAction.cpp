@@ -110,6 +110,8 @@ namespace
 #include "SharedDefines.h"
 #include "Timer.h"
 #include "TravelMgr.h"
+#include "DetourNavMeshQuery.h"  // [nav24]
+#include "MapDefines.h"         // [nav24]
 #include "WaypointMovementGenerator.h"
 #include "World.h"  // [guild15] durability rates
 #include "WorldPacket.h"
@@ -2791,8 +2793,31 @@ bool NewRpgTaxiUnstallAction::Execute(Event /*event*/)
         float const y = player->GetPositionY();
         float const z = player->GetPositionZ();
         float const ground = player->GetMap()->GetHeight(player->GetPhaseMask(), x, y, z, true, GROUND_SEARCH);
-        if (ground > INVALID_HEIGHT && ground < z)
-            player->NearTeleportTo(x, y, ground, player->GetOrientation());
+        // [nav24] the set-down is the navmesh's floor under the flight (its nearest polygon below), not the first
+        // height the collision ray meets: a model's footprint has terrain under it and no polygon (b350 Blahadrin's
+        // 12x12 yd hole south of Goldshire); no polygon below: the ground as before, logged
+        float landX = x, landY = y, landZ = ground;
+        bool onMesh = false;
+        if (dtNavMeshQuery const* query = player->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery())
+        {
+            dtQueryFilter filter;
+            filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+            float const point[3] = {y, ground > INVALID_HEIGHT ? ground : z, x};
+            float const extents[3] = {10.0f, 30.0f, 10.0f};
+            float nearest[3] = {0.0f, 0.0f, 0.0f};
+            dtPolyRef ref = 0;
+            if (dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) && ref)
+            {
+                landX = nearest[2];
+                landY = nearest[0];
+                landZ = nearest[1];
+                onMesh = true;
+            }
+        }
+        LOG_INFO("playerbots", "[nav24] {} taxi stall set-down from ({:.1f},{:.1f},{:.1f}) to ({:.1f},{:.1f},{:.1f}){}",
+                 player->GetName(), x, y, z, landX, landY, landZ, onMesh ? "" : " (no polygon below: the ground)");
+        if ((onMesh || ground > INVALID_HEIGHT) && landZ < z)
+            player->NearTeleportTo(landX, landY, landZ, player->GetOrientation());
     });
 
     return recovered;
