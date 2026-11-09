@@ -46,6 +46,7 @@
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
 #include "QuestDef.h"
+#include "SoloSafety.h"  // [deaths23]
 #include "QuestStats.h"
 #include "ScriptMgr.h"
 #include "StringFormat.h"
@@ -3472,7 +3473,10 @@ bool OpenWorldGroupLeader(Player* bot, std::vector<ObjectGuid>* members)
             continue;
         if (members)
             members->push_back(m->GetGUID());
-        withMember = withMember || (m != bot && m->IsAlive() && m->IsAtGroupRewardDistance(bot));
+        // [deaths23] a member on its own New RPG plan does not come with it (SoloSafety::FightsWith): the leader of
+        // such members alone is judged as a solo bot is
+        withMember = withMember ||
+                     (m != bot && m->IsAlive() && m->IsAtGroupRewardDistance(bot) && SoloSafety::FightsWith(bot, m));
     }
     return withMember;
 }

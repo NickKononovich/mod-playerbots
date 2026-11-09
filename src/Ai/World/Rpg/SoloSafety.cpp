@@ -213,6 +213,25 @@ namespace
     std::unordered_map<uint32, SoloBotState> states;
     std::unordered_map<uint32, EntryDamage> entryDamage;  // creature entry -> what it dealt to solo bots, per second
 
+    bool PlaysOwnPlan(Player* member)
+    {
+        PlayerbotAI* memberAI = member ? GET_PLAYERBOT_AI(member) : nullptr;
+        return memberAI && !memberAI->HasGameClientMaster() &&
+               memberAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT) &&
+               !NewRpgCoop::InParty(member->GetGUID().GetCounter());
+    }
+
+    bool MemberSupports(Player* bot, Player* member)
+    {
+        if (!bot || !member)
+            return false;
+        // [deaths23] a co-op / help party fights together; one of the two in a party the other is not in does not
+        bool const botParty = NewRpgCoop::InParty(bot->GetGUID().GetCounter());
+        if (botParty != NewRpgCoop::InParty(member->GetGUID().GetCounter()))
+            return false;
+        return botParty || !PlaysOwnPlan(member);
+    }
+
     bool SoloPlayerBot(Player* bot)
     {
         if (!bot || !bot->IsInWorld() || !GET_PLAYERBOT_AI(bot))
@@ -222,15 +241,35 @@ namespace
         // [deaths3] b341: 10 of 12 deaths were grouped bots questing away from every member (the user pack's fives
         // 120-1000 yd apart, offline members): no judge, no walk round the camps, no survival kit. A bot fights alone
         // when no living member stands within the core's group reward distance (Player::IsAtGroupRewardDistance)
+        // [deaths23] ... that fights with it: a group member playing its own New RPG plan (no co-op / help party
+        // holds it, the wait13 fact) walks its own route and is no support. b372: Laaral / Dekorhan and Thokhen /
+        // Ellosera, restored groups each on its own plan within 74 yd of each other in the Cryo-Core camp (20 Sunhawk
+        // Reclaimers L16-17): neither the solo judge nor the party judge judged a pull, 8 deaths "no judged pull"
         Group* group = bot->GetGroup();
         if (!group || group->GetMembersCount() <= 1)
             return true;
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
         {
             Player* member = ref->GetSource();
-            if (member && member != bot && member->IsInWorld() && member->IsAlive() &&
-                member->IsAtGroupRewardDistance(bot))
+            if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
+                !member->IsAtGroupRewardDistance(bot))
+                continue;
+            if (MemberSupports(bot, member))
                 return false;
+            // [deaths23] one line per bot and member (a log line, no decision)
+            static std::mutex ownPlanLogLock;
+            static std::unordered_set<uint64> ownPlanLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(ownPlanLogLock);
+                fresh = ownPlanLogged.insert(uint64(bot->GetGUID().GetCounter()) << 32 |
+                                             member->GetGUID().GetCounter())
+                            .second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[deaths23] {} L{} judged as a solo bot: its group member {} ({:.0f} yd) plays "
+                         "its own plan, no co-op / help party holds both",
+                         bot->GetName(), bot->GetLevel(), member->GetName(), bot->GetExactDist(member));
         }
         return true;
     }
@@ -1203,6 +1242,8 @@ namespace
 
 namespace SoloSafety
 {
+    bool FightsWith(Player* bot, Player* member) { return MemberSupports(bot, member); }
+
     namespace
     {
         // [wall17] a judge asked by the route search for a mob on the walk (RouteCosts): it reads and writes none of
