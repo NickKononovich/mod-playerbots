@@ -7514,6 +7514,34 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
         float realSpell = float(spellTotal - record.spellAtStart);
         float realMelee = float(total - record.takenAtStart) - realSpell;
+        // [strat1] the real side holds what the template's mobs dealt, nothing else: the tank's whole intake also
+        // has the hits of attackers no sample saw (Stratholme's rat-trap critters: 30 summons on the tank, dead to
+        // the area spells between two samples), of what joined after the cap and of a dead mob's lingering spells.
+        // b370 strat-n 20261109-073702-strat-n-5A-2: the trash ratio read "landed scale 3.22 melee", Skeletal
+        // Berserker's 12 mobs were "landed 1349/s ... cost 4.69 tank hp, drain 17.74" and refused, while the 10-13
+        // mob pulls of the same run cost the tank 3-6k (about 1 tank health) with no death. Damage of the mobs that
+        // came is counted per attacker (DamageTaken::From); what came from others scales both sides down.
+        if (record.cameTaken.size() == record.came.size())
+        {
+            float fromCame = 0.0f;
+            for (size_t i = 0; i < record.came.size(); ++i)
+            {
+                uint64 const now = DamageTaken::From(tank->GetGUID(), record.came[i]);
+                if (now > record.cameTaken[i])
+                    fromCame += float(now - record.cameTaken[i]);
+            }
+            float const whole = realMelee + realSpell;
+            if (whole > 0.0f && fromCame < whole)
+            {
+                float const share = fromCame / whole;
+                LOG_INFO("playerbots",
+                         "[strat1] {}: landed measure: {:.0f} of the {:.0f} taken came from attackers outside the "
+                         "fight's record, left out of the ratio ({} mobs)",
+                         tank->GetName(), whole - fromCame, whole, record.came.size());
+                realMelee *= share;
+                realSpell *= share;
+            }
+        }
         if (templateSpell <= 0.0f)  // spells no template casts: the melee side carries them
         {
             realMelee += realSpell;
@@ -7544,11 +7572,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             add(entry.boss);  // [lead1262]
         if (singleEntry)
             add(entry.entry[oneEntry]);
-        LOG_DEBUG("playerbots",
-                  "[lead256] {}: taken {:.0f} melee / {:.0f} spell against the template's {:.0f} / {:.0f} over "
-                  "{:.1f} s ({} mobs, {} hit the tank{})",
-                  tank->GetName(), realMelee, realSpell, templateMelee, templateSpell, fightSec, record.came.size(),
-                  hitters, boss ? ", a boss: " + bossName : std::string());
+        // [strat1] at info: each fight's ratio is the evidence behind a "landed scale" that refuses packs
+        LOG_INFO("playerbots",
+                 "[lead256] {}: taken {:.0f} melee / {:.0f} spell against the template's {:.0f} / {:.0f} over "
+                 "{:.1f} s ({} mobs, {} hit the tank{})",
+                 tank->GetName(), realMelee, realSpell, templateMelee, templateSpell, fightSec, record.came.size(),
+                 hitters, boss ? ", a boss: " + bossName : std::string());
     }
 
     // [lead259] The fight is over: the tank's deepest drop in it against the drop the plan expected before the
