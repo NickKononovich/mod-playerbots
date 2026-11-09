@@ -609,7 +609,12 @@ bool FindCorpseAction::SafeSpot(Corpse* corpse, GuidVector const& hostiles, floa
                                                      true, SPOT_SNAP_RANGE);
             if (z <= INVALID_HEIGHT || std::fabs(z - corpse->GetPositionZ()) > SPOT_MAX_DZ)
                 continue;
-            float const margin = SpotMargin(botAI, bot, hostiles, x, y, z, window ? Reach::Fixed : Reach::Full);
+            // [ghost36] a window spot is one whose window can open: out of every roamer's round too ([rise33] refuses
+            // the rise inside one) - else the ghost waited there for good (b387: 157 "[rise33] no window here",
+            // Aestymro 45 at (-10244,1936), Irrua 43). With none in the corpse's ring, the spirit healer below
+            float const margin = window ? std::min(SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Fixed),
+                                                   SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Paths))
+                                        : SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Full);
             if (margin >= 0.0f)
                 candidates.push_back({margin, G3D::Vector3(x, y, z)});
         }
