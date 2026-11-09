@@ -2547,6 +2547,30 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             // for the choices (TripRefused) until the next level, and the state change uses the tick
             NoteWalkGivenUp(bot, dest, "no walk from here gets it closer (MOVE_FAR_LOOP)");
             botAI->rpgInfo.ChangeToIdle();
+            // [travel23] it stands where the navmesh has no polygon (a gameobject floor: a Deeprun Tram car, whose
+            // server model stands still mid-tunnel; a spot an earlier session left it on): no walk from here
+            // goes anywhere, every destination is given up in turn - its Hearthstone out. b372 Januel L12 at
+            // (0,1551,-69) on map 369, 26 yd over the tunnel floor: 22 STUCK / LOOP, 12 zones chosen and given up
+            if (dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery())
+            {
+                dtQueryFilter filter;
+                filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+                float const point[3] = {bot->GetPositionY(), bot->GetPositionZ(), bot->GetPositionX()};
+                float const extents[3] = {3.0f, 5.0f, 3.0f};  // the core's polygon search box round a unit, short
+                float nearest[3] = {0.0f, 0.0f, 0.0f};
+                dtPolyRef ref = 0;
+                bool const onMesh = dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) &&
+                                    ref;
+                if (!onMesh && !bot->IsInWater() && !bot->GetTransport())
+                    LOG_INFO("playerbots", "[travel23] {} L{} stands off the navmesh at ({:.0f},{:.0f},{:.0f}) map {}: "
+                             "hearths out", bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(),
+                             bot->GetPositionZ(), bot->GetMapId());
+                if (!onMesh && !bot->IsInWater() && !bot->GetTransport())
+                    HearthOut(Acore::StringFormat("off the navmesh at ({:.0f},{:.0f},{:.0f}) on map {}: no walk from "
+                                                  "here gets anywhere",
+                                                  bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                                  bot->GetMapId()));
+            }
             return true;
         }
 
