@@ -18,6 +18,7 @@
 #include "Map.h"
 #include "MapCollisionData.h"
 #include "MapMgr.h"
+#include "NewRpgBaseAction.h"  // [travel57] the walks a bot has given up
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
 #include "Playerbots.h"
@@ -5752,6 +5753,34 @@ void TravelRouteMgr::Solve(Player* bot, WorldPosition const* dest, std::vector<N
 
             if (nodes[v].pos.GetMapId() != nodes[u].pos.GetMapId() || landmass[v] != landmass[u])
                 continue;
+            // [travel57] the bot's own walk from where it stands to a dock or portal it has given up walking to at
+            // this level (refused by its judge, or MOVE_FAR_LOOP: NewRpgBaseAction::NoteWalkGivenUp) is no edge: the
+            // route through it is no route. b397 Salleas L12 walled in by the Bloodfeather harpies: its walk to the
+            // Darnassus portal (9947,2630) given up, the zone choice priced every zone off Teldrassil through it and
+            // walked the same refused walk 13 times (TRAVEL loop, 15 LOOP / STUCK alerts)
+            if (u == 0 && v >= 2 && nodes[v].pos.GetMapId() == bot->GetMapId() &&
+                NewRpgBaseAction::WalkGivenUp(bot, nodes[v].pos.GetPositionX(), nodes[v].pos.GetPositionY()))
+            {
+                // one line per bot, spot and level: a log cadence, no decision reads it
+                static std::mutex loggedLock;
+                static std::map<std::tuple<uint32, int32, int32>, uint8> logged;
+                std::tuple<uint32, int32, int32> const key{bot->GetGUID().GetCounter(),
+                                                           int32(nodes[v].pos.GetPositionX()),
+                                                           int32(nodes[v].pos.GetPositionY())};
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(loggedLock);
+                    auto& level = logged[key];
+                    fresh = level != bot->GetLevel();
+                    level = bot->GetLevel();
+                }
+                if (fresh)
+                    LOG_INFO("playerbots", "[travel57] {} L{} routes without the {} at ({:.0f},{:.0f}): its walk "
+                             "there is given up at this level",
+                             bot->GetName(), bot->GetLevel(), nodes[v].portal >= 0 ? "portal" : "dock",
+                             nodes[v].pos.GetPositionX(), nodes[v].pos.GetPositionY());
+                continue;
+            }
 
             float extra = 0.0f;
             if (inDalaran[u] != inDalaran[v])

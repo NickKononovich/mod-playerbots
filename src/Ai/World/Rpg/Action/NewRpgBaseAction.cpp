@@ -4877,6 +4877,23 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
         return false;
     if (InDangerZone(bot, x, y))
         return true;
+    // [travel57] a destination on another landmass of its map with no route there at all (every dock / portal walk
+    // of its landmass given up: [travel57] in TravelRouteMgr::Solve) is refused: TripDanger names no danger for it
+    // and the walk itself only fails there (b397 Salleas L12: GO_GRIND to five spots by q982's Darkshore giver in
+    // turn, each a MAZE / MOVE_FAR_LOOP at the Darnassus portal walk, STUCK)
+    if (TravelRouteMgr::Landmass(WorldPosition(bot)) !=
+        TravelRouteMgr::Landmass(WorldPosition(bot->GetMapId(), x, y, z)))
+    {
+        TravelRouteMgr::Leg leg;
+        float seconds = 0.0f;
+        if (!sTravelRouteMgr.FindRoute(bot, WorldPosition(bot->GetMapId(), x, y, z), leg, seconds))
+        {
+            LOG_INFO("playerbots", "[travel57] {} L{} TRIP_REFUSED {} at ({:.0f},{:.0f}): on another landmass, no "
+                     "route there (its walks to every dock and portal of its landmass given up)",
+                     bot->GetName(), bot->GetLevel(), what, x, y);
+            return true;
+        }
+    }
     static std::mutex lock;
     // bot -> destination (map, x, y) -> (the level it was judged at, refused)
     static std::unordered_map<uint32, std::map<std::tuple<uint32, int32, int32>, std::pair<uint8, bool>>> judged;
@@ -7943,6 +7960,8 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
     grindPos = WorldPosition();
 
     FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
+    uint32 const botLandmassHere = TravelRouteMgr::Landmass(WorldPosition(bot));  // [travel57]
+    std::unordered_map<uint32, bool> routeTo;  // [travel57] landmass -> a route there (this look only)
     for (QuestStartPoint const& start : GetQuestStartPoints())
     {
         if (start.mapId != bot->GetMapId() || !EventSpawnPresent(start.event))  // [guild15]
@@ -7979,6 +7998,23 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
         float const distance = bot->GetDistance2d(start.x, start.y);
         if (quest->GetMinLevel() == bestMinLevel && distance >= bestDistance)
             continue;
+        // [travel57] nor toward a giver on another landmass it has no route to (its dock / portal walks given up)
+        {
+            WorldPosition const giver(start.mapId, start.x, start.y, start.z);
+            uint32 const giverLandmass = TravelRouteMgr::Landmass(giver);
+            if (giverLandmass != botLandmassHere)
+            {
+                auto known = routeTo.find(giverLandmass);
+                if (known == routeTo.end())
+                {
+                    TravelRouteMgr::Leg leg;
+                    float seconds = 0.0f;
+                    known = routeTo.emplace(giverLandmass, sTravelRouteMgr.FindRoute(bot, giver, leg, seconds)).first;
+                }
+                if (!known->second)
+                    continue;
+            }
+        }
 
         bestMinLevel = quest->GetMinLevel();
         bestDistance = distance;
