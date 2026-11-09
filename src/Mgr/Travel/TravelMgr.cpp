@@ -5162,6 +5162,7 @@ void TravelRouteMgr::Build()
         line.periodMs = anim->TotalTime;
         line.team = TEAM_NEUTRAL;
         line.isStatic = true;
+        line.spawnId = spawnId;  // [tram28]
         auto const addStop = [&](TransportAnimationEntry const* at, uint32 from, uint32 to)
         {
             Dock dock;
