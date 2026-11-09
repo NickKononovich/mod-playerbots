@@ -489,8 +489,13 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 
     // Aboard a boat or zeppelin: stay on until it docks where the trip gets off.
     if (Transport* transport = bot->GetTransport())
+    {
         if (MotionTransport* motionTransport = transport->ToMotionTransport())
             return RideTransport(motionTransport);
+        // [tram23] ... and a tram car of a travel line: it rides to the stop and gets off at its platform
+        if (TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(transport->GetEntry()); line && line->isStatic)
+            return RideTransport(transport);
+    }
 
     // A mage in the group opens a portal to Dalaran from anywhere.
     if (!sRandomPlayerbotMgr.IsRandomBot(bot) && TravelRouteMgr::IsInDalaran(dest) &&
@@ -946,7 +951,7 @@ std::string NewRpgBaseAction::ComingStraggler(float distance)
     return "";
 }
 
-uint32 NewRpgBaseAction::BoardWalkMs(MotionTransport* transport)
+uint32 NewRpgBaseAction::BoardWalkMs(Transport* transport)
 {
     if (!transport)
         return 0;
@@ -970,7 +975,7 @@ uint32 NewRpgBaseAction::BoardWalkMs(MotionTransport* transport)
     return slowest;
 }
 
-std::string NewRpgBaseAction::StragglerInTime(MotionTransport* transport, uint32 windowMs)
+std::string NewRpgBaseAction::StragglerInTime(Transport* transport, uint32 windowMs)
 {
     Group* group = bot->GetGroup();
     if (!group || !transport)
@@ -993,7 +998,70 @@ std::string NewRpgBaseAction::StragglerInTime(MotionTransport* transport, uint32
     return "";
 }
 
-MotionTransport* NewRpgBaseAction::FindTransport(uint32 entry)
+namespace
+{
+    // [tram23] the bot rides a tram car of a travel line (no walk off it between the stops)
+    bool RidesTramLine(Player* bot)
+    {
+        Transport* transport = bot ? bot->GetTransport() : nullptr;
+        TravelRouteMgr::Line const* line = transport ? sTravelRouteMgr.GetLine(transport->GetEntry()) : nullptr;
+        return line && line->isStatic;
+    }
+}
+
+void NewRpgBaseAction::NavGap(Player* bot, std::string const& event)
+{
+    if (!bot || !bot->IsInWorld())
+        return;
+    float const x = bot->GetPositionX(), y = bot->GetPositionY(), z = bot->GetPositionZ();
+    {
+        // one alarm per bot and spot (a log line, no decision)
+        static std::mutex navGapLock;
+        static std::unordered_map<uint32, std::tuple<uint32, int32, int32, int32>> last;
+        std::tuple<uint32, int32, int32, int32> const key{bot->GetMapId(), int32(x), int32(y), int32(z)};
+        std::lock_guard<std::mutex> guard(navGapLock);
+        auto& seen = last[bot->GetGUID().GetCounter()];
+        if (seen == key)
+            return;
+        seen = key;
+    }
+    std::string cause;
+    auto const add = [&cause](std::string const& part) { cause += (cause.empty() ? "" : "; ") + part; };
+    if (Transport* transport = bot->GetTransport())
+        add(Acore::StringFormat("on transport {} ({})", transport->GetEntry(),
+                                transport->IsMotionTransport() ? "boat / zeppelin" : "tram car / elevator"));
+    else if (GameObject* car = bot->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_TRANSPORT, 30.0f))
+        add(Acore::StringFormat("by moving transport {} {:.0f} yd off, not its passenger (walked onto it or left by it)",
+                                car->GetEntry(), bot->GetExactDist(car)));
+    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot); ai && ai->rpgInfo.trip.phase != NewRpgInfo::TripPhase::None)
+        add(Acore::StringFormat("trip phase {}", uint32(ai->rpgInfo.trip.phase)));
+    float const ground = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, z + 2.0f, true, 100.0f);
+    if (ground > INVALID_HEIGHT && z - ground > 6.0f)
+        add(Acore::StringFormat("in the air {:.0f} yd over the ground (z {:.1f}): a fall not run, a knockback, a "
+                                "transport gone from under it",
+                                z - ground, ground));
+    if (bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING))
+        add("falling");
+    if (dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery())
+    {
+        dtQueryFilter steep;
+        steep.setIncludeFlags(uint16(NAV_GROUND_STEEP));
+        float const point[3] = {y, z, x};
+        float const extents[3] = {3.0f, 5.0f, 3.0f};
+        float nearest[3] = {0.0f, 0.0f, 0.0f};
+        dtPolyRef ref = 0;
+        if (dtStatusSucceed(query->findNearestPoly(point, extents, &steep, &ref, nearest)) && ref)
+            add("on a steep polygon (the route search's steep fallback)");
+    }
+    else
+        add("no navmesh loaded for the map");
+    if (cause.empty())
+        add("none of the above: a navmesh hole or an island in the tile (repair)");
+    LOG_ERROR("playerbots", "[navgap] {} L{} map {} ({:.1f},{:.1f},{:.1f}) zone {} {}; cause: {}", bot->GetName(),
+              bot->GetLevel(), bot->GetMapId(), x, y, z, bot->GetZoneId(), event, cause);
+}
+
+Transport* NewRpgBaseAction::FindTransport(uint32 entry)
 {
     for (Transport* transport : bot->GetMap()->GetAllTransports())
     {
@@ -1006,6 +1074,14 @@ MotionTransport* NewRpgBaseAction::FindTransport(uint32 entry)
             return motionTransport;
         }
     }
+    // [tram23] a grid-spawned car (the Deeprun Tram): the nearest of its entry the map shows the bot
+    if (TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(entry); line && line->isStatic)
+        if (GameObject* go = bot->FindNearestGameObject(entry, bot->GetMap()->GetVisibilityRange()))
+            if (StaticTransport* car = go->ToStaticTransport(); car && car->IsInWorld())
+            {
+                sTravelRouteMgr.Observe(car);
+                return car;
+            }
 
     return nullptr;
 }
@@ -1085,7 +1161,7 @@ bool NewRpgBaseAction::TravelByTransport(NewRpgInfo::Trip& trip)
         return false;
     }
 
-    MotionTransport* transport = FindTransport(line->entry);
+    Transport* transport = FindTransport(line->entry);
     uint32 remaining = 0;
     bool const docked = TravelRouteMgr::IsDocked(transport, dock, remaining);
 
@@ -1160,7 +1236,7 @@ bool NewRpgBaseAction::TravelByTransport(NewRpgInfo::Trip& trip)
     }
 }
 
-bool NewRpgBaseAction::BoardTransport(MotionTransport* transport)
+bool NewRpgBaseAction::BoardTransport(Transport* transport)
 {
     Map* map = bot->GetMap();
     if (map->GetTransportForPos(bot->GetPhaseMask(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
@@ -1188,7 +1264,7 @@ bool NewRpgBaseAction::BoardTransport(MotionTransport* transport)
 
 // Probes from the pier towards the middle of the transport for a deck at about pier height, using the
 // transport's own collision model.
-bool NewRpgBaseAction::FindDeckPoint(MotionTransport* transport, float& x, float& y, float& z)
+bool NewRpgBaseAction::FindDeckPoint(Transport* transport, float& x, float& y, float& z)
 {
     if (!transport->m_model)
         return false;
@@ -1232,7 +1308,7 @@ bool NewRpgBaseAction::FindDeckPoint(MotionTransport* transport, float& x, float
     return onDeck > 0;
 }
 
-bool NewRpgBaseAction::RideTransport(MotionTransport* transport)
+bool NewRpgBaseAction::RideTransport(Transport* transport)
 {
     using Phase = NewRpgInfo::TripPhase;
     NewRpgInfo& info = botAI->rpgInfo;
@@ -2155,6 +2231,8 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     }
     auto const noteIsland = [&]()
     {
+        NavGap(bot, onPolygon ? "on a navmesh island (its polygons lead nowhere)" : "off the navmesh (no polygon "
+                                                                                   "under it)");
         onIsland = true;
         std::lock_guard<std::mutex> guard(islandLock);
         searched[bot->GetGUID().GetCounter()] = {spotKey, true};
@@ -2547,10 +2625,10 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             // for the choices (TripRefused) until the next level, and the state change uses the tick
             NoteWalkGivenUp(bot, dest, "no walk from here gets it closer (MOVE_FAR_LOOP)");
             botAI->rpgInfo.ChangeToIdle();
-            // [travel23] it stands where the navmesh has no polygon (a gameobject floor: a Deeprun Tram car, whose
-            // server model stands still mid-tunnel; a spot an earlier session left it on): no walk from here
-            // goes anywhere, every destination is given up in turn - its Hearthstone out. b372 Januel L12 at
-            // (0,1551,-69) on map 369, 26 yd over the tunnel floor: 22 STUCK / LOOP, 12 zones chosen and given up
+            // [travel23] it stands where the navmesh has no polygon: no walk from here goes anywhere, every
+            // destination is given up in turn. b372 Januel L12 at (0,1551,-69) on map 369, 26 yd over the tunnel floor
+            // (the tram walked, not ridden: [tram23]). [navgap] user 2026-11-09: the alarm first (the gap is repaired
+            // at its root - the tile, the transport line); the Hearthstone only as the logged last resort after it
             if (dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery())
             {
                 dtQueryFilter filter;
@@ -2562,9 +2640,11 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 bool const onMesh = dtStatusSucceed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) &&
                                     ref;
                 if (!onMesh && !bot->IsInWater() && !bot->GetTransport())
-                    LOG_INFO("playerbots", "[travel23] {} L{} stands off the navmesh at ({:.0f},{:.0f},{:.0f}) map {}: "
-                             "hearths out", bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(),
-                             bot->GetPositionZ(), bot->GetMapId());
+                {
+                    NavGap(bot, "MOVE_FAR_LOOP: every walk given up, no polygon under it");
+                    LOG_INFO("playerbots", "[travel23] {} L{} last resort after the [navgap] alarm: its Hearthstone",
+                             bot->GetName(), bot->GetLevel());
+                }
                 if (!onMesh && !bot->IsInWater() && !bot->GetTransport())
                     HearthOut(Acore::StringFormat("off the navmesh at ({:.0f},{:.0f},{:.0f}) on map {}: no walk from "
                                                   "here gets anywhere",
@@ -2796,6 +2876,8 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             // [runpast11] on a navmesh island no walk from here reaches anything: the target is not the dead end, the
             // spot is - its Hearthstone out (b349: all 31 "dead end" postpones were Geron, Namwe and Thyllyn on
             // islands; 135 + 22 + 21 maze give-ups, every quest of their logs postponed in turn)
+            if (onIsland)
+                NavGap(bot, "on a navmesh island: no walk off it");  // [navgap] the alarm before the last resort
             if (onIsland &&
                 HearthOut(Acore::StringFormat("on a navmesh island at ({:.0f},{:.0f},{:.0f}): no walk off it",
                                               bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ())))
@@ -2813,7 +2895,10 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             // ledge over Elwynn, 20 STUCK alerts): the same ways off the island
             if (WalkOffIsland(dest, disToDest))
                 return true;
-            // [stuck12] no way off the spot it stands on: its Hearthstone out, as on an island (above)
+            // [stuck12] no way off the spot it stands on: its Hearthstone out, as on an island (above) - [navgap] only
+            // as the last resort after the alarm
+            if (onIsland)
+                NavGap(bot, "off the navmesh: no polygon it can step or fall to in sight");
             if (onIsland &&
                 HearthOut(Acore::StringFormat("off the navmesh at ({:.0f},{:.0f},{:.0f}): no polygon it can step or "
                                               "fall to in sight",
@@ -2868,7 +2953,7 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
 bool NewRpgBaseAction::MoveWorldObjectTo(ObjectGuid guid, float distance)
 {
     // never walk off a boat or zeppelin at sea
-    if (bot->GetTransport() && bot->GetTransport()->IsMotionTransport())
+    if (bot->GetTransport() && (bot->GetTransport()->IsMotionTransport() || RidesTramLine(bot)))  // [tram23]
         return false;
 
     if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
@@ -2907,7 +2992,7 @@ bool NewRpgBaseAction::MoveWorldObjectTo(ObjectGuid guid, float distance)
 bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority, WorldObject*)
 {
     // never wander off a boat or zeppelin at sea
-    if (bot->GetTransport() && bot->GetTransport()->IsMotionTransport())
+    if (bot->GetTransport() && (bot->GetTransport()->IsMotionTransport() || RidesTramLine(bot)))  // [tram23]
         return HoldPosition();
 
     if (IsWaitingForLastMove(priority))

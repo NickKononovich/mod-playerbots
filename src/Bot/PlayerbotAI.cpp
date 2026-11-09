@@ -412,6 +412,17 @@ void PlayerbotAI::GuardAirborneSpline()
     if (!HasGroundSupport(bot, start.x, start.y, start.z))
     {
         // Already in the air (a corpse revived in mid-air, a seat left above the void): a client would fall.
+        // [navgap] user 2026-11-09: the alarm, with what stood under it (a transport gone, no ground)
+        {
+            GameObject* car = bot->FindNearestGameObjectOfType(GAMEOBJECT_TYPE_TRANSPORT, 30.0f);
+            LOG_ERROR("playerbots", "[navgap] {} L{} map {} ({:.1f},{:.1f},{:.1f}) zone {} in the air at a walk's "
+                      "start: falls; cause: ground {:.1f}{}",
+                      bot->GetName(), bot->GetLevel(), bot->GetMapId(), start.x, start.y, start.z, bot->GetZoneId(),
+                      bot->GetMapWaterOrGroundLevel(start.x, start.y, start.z),
+                      car ? Acore::StringFormat(", by moving transport {} {:.0f} yd off, not its passenger",
+                                                car->GetEntry(), bot->GetExactDist(car))
+                          : std::string());
+        }
         bot->GetMotionMaster()->Clear();
         bot->StopMoving();
         StartFall();
