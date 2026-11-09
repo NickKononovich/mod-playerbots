@@ -1820,10 +1820,30 @@ public:
         return false;
     }
 
-    bool OnPlayerCanJoinLfg(Player* player, uint8 /*roles*/, std::set<uint32>& /*dungeons*/,
+    bool OnPlayerCanJoinLfg(Player* player, uint8 /*roles*/, std::set<uint32>& dungeons,
                             std::string const& /*comment*/) override
     {
-        return !player || !IsPackLow(player->GetGUID().GetCounter()) || IsHuman(player);
+        if (!player || !IsPackLow(player->GetGUID().GetCounter()) || IsHuman(player))
+            return true;
+        // [lfg25] a pack bot queues the Dungeon Finder for the dungeons it may enter (the same proven-content rule
+        // as its walk in, OnPlayerBeforeTeleport above), not never: b373 the global leader's five 1 for Ragefire
+        // Chasm (proven) was refused by the finder ("the dungeon finder did not take the five"), then disbanded
+        if (dungeons.empty())
+            return false;
+        for (uint32 id : dungeons)
+        {
+            LFGDungeonEntry const* dungeon = sLFGDungeonStore.LookupEntry(id & 0x00FFFFFF);
+            std::string why;
+            if (!dungeon || !InstanceAllowed(dungeon->MapID, uint8(dungeon->Difficulty), 0.0f, 0.0f, 0.0f, why))
+            {
+                LOG_INFO("playerbots", "[lfg25] User pack: {} may not queue the Dungeon Finder for dungeon {}: {}",
+                         player->GetName(), id, dungeon ? why : std::string("no such dungeon"));
+                return false;
+            }
+        }
+        LOG_INFO("playerbots", "[lfg25] User pack: {} queues the Dungeon Finder ({} dungeon(s), all proven)",
+                 player->GetName(), dungeons.size());
+        return true;
     }
 
     void OnPlayerJustDied(Player* player) override
