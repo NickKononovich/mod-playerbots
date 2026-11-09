@@ -2453,7 +2453,8 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
     if (behind && !purpose && _meetLogged != behind->GetGUID())
     {
         _meetLogged = behind->GetGUID();
-        LOG_INFO("playerbots", "[wait19] {} L{} does not walk to meet {} L{} {:.0f} yd behind: no party of its holds it",
+        LOG_INFO("playerbots", "[wait19] {} L{} does not walk to meet {} L{} {:.0f} yd behind: no party of its holds "
+                 "it",
                  bot->GetName(), bot->GetLevel(), behind->GetName(), behind->GetLevel(), bot->GetExactDist(behind));
     }
     if (Player* member = purpose ? behind : nullptr;
