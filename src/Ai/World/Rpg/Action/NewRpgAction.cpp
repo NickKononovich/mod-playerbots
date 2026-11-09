@@ -3050,6 +3050,34 @@ bool NewRpgDoQuestAction::BuyQuestVendorItem(uint32 questId)
             NewRpgProfession::StartBuy(botAI, bot, itemId, npc->GetEntry(), WorldPosition(npc), cost);
             return true;
         }
+        // [vendor60] no seller in sight: an item only vendors sell is bought at the nearest one on its map (b400
+        // Kylanor / Ravelandy L14 on q116 Dry Times: its kegs and casks from Barkeep Hann / Roberto Pupellyverbos,
+        // never sought - the objective walk led to no vendor)
+        uint32 npcEntry = 0;
+        WorldPosition at;
+        std::string why;
+        if (!NewRpgProfession::QuestVendor(bot, itemId, npcEntry, at, why))
+            continue;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        uint32 const cost = proto ? proto->BuyPrice : 0;
+        if (why.empty() && bot->GetMoney() < cost)
+            why = Acore::StringFormat("{} costs {}c, it has {}c", proto ? proto->Name1 : "?", cost, bot->GetMoney());
+        if (!why.empty())
+        {
+            LOG_INFO("playerbots", "[rpg] {} L{} POSTPONE q{} reason: [vendor60] its item objective is sold, not "
+                     "dropped: {}",
+                     bot->GetName(), bot->GetLevel(), questId, why);
+            NotePostpone(bot, questId, why);
+            botAI->lowPriorityQuest.insert(questId);
+            botAI->rpgInfo.ChangeToIdle();
+            return true;
+        }
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(npcEntry);
+        LOG_INFO("playerbots", "[rpg] {} L{} QUEST_BUY q{}: [vendor60] {} from {} {:.0f} yd off ({}c)", bot->GetName(),
+                 bot->GetLevel(), questId, proto ? proto->Name1 : std::to_string(itemId), tmpl ? tmpl->Name : "?",
+                 bot->GetExactDist(at), cost);
+        NewRpgProfession::StartBuy(botAI, bot, itemId, npcEntry, at, cost);
+        return true;
     }
     return false;
 }

@@ -38,6 +38,10 @@ namespace NewRpgProfession
     // (the tool purchase path: Player::BuyItemFromVendorSlot).
     void StartBuy(PlayerbotAI* botAI, Player* bot, uint32 itemId, uint32 npcEntry, WorldPosition const& pos,
                   uint32 cost);
+    // [vendor60] `itemId` is a quest item only vendors sell (no loot gives it): true with the nearest friendly vendor
+    // spawn on the bot's map whose trip it does not refuse, or true with `why` set when none can be walked to; false
+    // when it is no vendor-only item
+    bool QuestVendor(Player* bot, uint32 itemId, uint32& npcEntry, WorldPosition& pos, std::string& why);
     // [guild50] the buy failed at that vendor (gone, sold out, refused) while money and level stayed the same
     bool BuyFailed(Player* bot, uint32 npcEntry, uint32 itemId);
     // [guild50] the money the next rank of each planned primary profession costs at a trainer that can teach it now

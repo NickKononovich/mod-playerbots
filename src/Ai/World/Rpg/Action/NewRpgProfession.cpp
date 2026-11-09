@@ -18,6 +18,7 @@
 #include "Bag.h"  // [prof13]
 #include "Creature.h"
 #include "DBCStores.h"
+#include "DatabaseEnv.h"  // [vendor60] the loot tables
 #include "GuildCoordinator.h"  // [prof13] the leader's errand gate
 #include "TravelMgr.h"  // [guild15] trips to another landmass
 #include "Log.h"
@@ -98,6 +99,9 @@ namespace
         std::unordered_map<uint32, std::vector<NpcSpawn>> trainers;   // skill -> trainer spawns teaching it
         std::unordered_map<uint32, std::vector<NpcSpawn>> toolVendors;  // tool item -> vendor spawns selling it
         std::unordered_map<uint32, std::vector<NpcSpawn>> classTrainers;  // [roles59] class -> its trainers' spawns
+        // [vendor60] a quest's required item sold by vendors and dropped by nothing (no creature / gameobject /
+        // item / pickpocket / reference loot): its vendors' spawns
+        std::unordered_map<uint32, std::vector<NpcSpawn>> questVendors;
     };
 
     // The tool a profession's work needs, bought at a vendor (the game's own items).
@@ -156,12 +160,33 @@ namespace
                                  SKILL_JEWELCRAFTING, SKILL_INSCRIPTION, SKILL_FISHING})
                 tools[ToolFor(skill)] = true;
 
+            // [vendor60] the quests' required items no loot gives (q116 Dry Times: 1262 / 1941 / 1942 are sold by
+            // Barkeep Hann 274, Roberto Pupellyverbos 277 and others only)
+            std::unordered_set<uint32> questItems;
+            for (auto const& [questId, quest] : sObjectMgr->GetQuestTemplates())
+                for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                    if (quest->RequiredItemId[i])
+                        questItems.insert(quest->RequiredItemId[i]);
+            std::unordered_set<uint32> looted;
+            for (char const* table : {"creature_loot_template", "gameobject_loot_template", "item_loot_template",
+                                      "pickpocketing_loot_template", "reference_loot_template",
+                                      "skinning_loot_template", "disenchant_loot_template"})
+                if (QueryResult result = WorldDatabase.Query("SELECT DISTINCT Item FROM {} WHERE Reference = 0", table))
+                    do
+                    {
+                        looted.insert(result->Fetch()[0].Get<uint32>());
+                    } while (result->NextRow());
             for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
             {
                 CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(data.id);
                 if (!tmpl)
                     continue;
                 NpcSpawn spawn{data.id, data.mapid, data.posX, data.posY, data.posZ, 0};
+                if (tmpl->npcflag & UNIT_NPC_FLAG_VENDOR)
+                    if (VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(data.id))
+                        for (VendorItem const* item : items->m_items)
+                            if (item && !item->ExtendedCost && questItems.count(item->item) && !looted.count(item->item))
+                                index.questVendors[item->item].push_back(spawn);
 
                 if (tmpl->npcflag & UNIT_NPC_FLAG_TRAINER)
                 {
@@ -635,6 +660,49 @@ namespace NewRpgProfession
     }
 
     bool BuyFailed(Player* bot, uint32 npcEntry, uint32 itemId) { return FailedBefore(bot, npcEntry, itemId); }
+
+    bool QuestVendor(Player* bot, uint32 itemId, uint32& npcEntry, WorldPosition& pos, std::string& why)
+    {
+        Index const& index = GetIndex();
+        auto const spawns = index.questVendors.find(itemId);
+        if (spawns == index.questVendors.end())
+            return false;
+        std::unordered_set<NpcSpawn const*> refused;
+        while (true)
+        {
+            NpcSpawn const* best = nullptr;
+            float bestDist = FLT_MAX;
+            for (NpcSpawn const& spawn : spawns->second)
+            {
+                if (spawn.mapId != bot->GetMapId() || refused.count(&spawn) || !Friendly(bot, spawn.entry) ||
+                    FailedBefore(bot, spawn.entry, itemId))
+                    continue;
+                float const d = TripDist(bot, spawn);
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    best = &spawn;
+                }
+            }
+            if (!best || bestDist == FLT_MAX)
+            {
+                why = "no vendor of it the bot can reach on its map (" + std::to_string(spawns->second.size()) +
+                      " vendor spawns in all)";
+                return true;
+            }
+            CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(best->entry);
+            if (NewRpgBaseAction::TripRefused(bot, best->x, best->y, best->z,
+                                              std::string("quest vendor ") + (tmpl ? tmpl->Name : "?")))
+            {
+                refused.insert(best);
+                continue;
+            }
+            npcEntry = best->entry;
+            pos = WorldPosition(best->mapId, best->x, best->y, best->z);
+            why.clear();
+            return true;
+        }
+    }
 
     // [roles59] the talent tree the role spec fills (the druid's cat spec 3 is the feral tree)
     uint8 RoleTree(Player* bot, uint32 roleSpec)
