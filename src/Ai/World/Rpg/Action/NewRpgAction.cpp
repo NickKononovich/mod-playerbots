@@ -1299,6 +1299,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
             if (!route.found || !route.complete || route.throughRefused)  // [hold58] no walk through a wall
                 continue;
+            // [login67] a bot sitting to eat or drink stands up for it (as RestEscape does): b399 Rumanatol L16 sat
+            // eating at the shutdown 4 yd from a respawn
+            if (bot->IsSitState())
+                bot->SetStandState(UNIT_STAND_STATE_STAND);
             if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
                 continue;
             LOG_INFO("playerbots", "[login26] {} L{} the server shuts down in {} s: steps out of the reach of {} to "
