@@ -518,7 +518,7 @@ bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const&
     NoteWalkGivenUp(bot, dest, why);
     // a quest whose spot (its objective or its ender: b302 Kianey's q45 hand-in at Rolf's corpse among seven
     // Murlocs, re-chosen every look) lies there is postponed: the planner takes the next one
-    if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
+    if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data); quest && !botAI->rpgInfo.meetWalk)
     {
         if (botAI->lowPriorityQuest.insert(quest->questId).second)
         {
@@ -548,7 +548,8 @@ bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const&
     }
     // [help12] a walk that is no quest spot, refused for mobs it does not pull (the maze search, a spot among them):
     // the camp is its help request to the global leader (NewRpgCoop::OnCampRefused; a quest spot asks above)
-    if (status != RPG_DO_QUEST && SoloSafety::Applies(bot) &&
+    if (status != RPG_DO_QUEST && SoloSafety::Applies(bot) && !botAI->rpgInfo.meetWalk &&  // [wait19]
+
         (why.find("mobs it does not pull") != std::string::npos || why.find("among mobs") != std::string::npos))
         NewRpgCoop::OnCampRefused(botAI, bot, dest, why);
     // [guild14] a gather node / profession npc there: the state ends, its action marks the target failed and
@@ -2425,9 +2426,12 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         {
             LOG_DEBUG("playerbots", "[New RPG] {} gives up an unreachable destination ({},{},{},{})", bot->GetName(),
                       dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId());
-            if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
+            // [wait19] a meet walk given up is no quest's walk
+            if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
+                quest && !botAI->rpgInfo.meetWalk)
             {
                 botAI->lowPriorityQuest.insert(quest->questId);
+
                 // [wall17] coordinator 2026-11-09: a quest walk given up behind mobs it never fights ([guild12]
                 // orange / red, elites) asks for a party as a refused spot does, not a silent postpone
                 if (std::string const con = SoloSafety::ConWalls(bot); !con.empty())

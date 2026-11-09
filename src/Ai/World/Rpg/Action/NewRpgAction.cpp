@@ -2442,7 +2442,21 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
     // away in Loch Modan - its follow stalled at the graveyard ("stuck watchdog: follow again"), it stood among the
     // Elder Black Bears L11 and died 3 times; Sycina L11 stood 1074 s for Nelaeleas 3849 yd off
     NewRpgInfo& info = botAI->rpgInfo;
-    if (Player* member = info.groupWaitBehind ? ObjectAccessor::FindPlayer(info.groupWaitBehind) : nullptr;
+    // [wait19] coordinator 2026-11-09: only while the group has a purpose that needs them together - the co-op / help
+    // party both stand in, its leader this bot. A group with no such purpose is left by its member ([group18] /
+    // [group19]), not walked to: b363 Sehdrurmund walked to meet Cassand 4796 yd off, Sycina Ryarii 3912, Ginde Ganna
+    // 3139, Septimon Kylanor 2281, Tuihgrelfim Peny 1819 (173 maze give-ups), all from groups an earlier session left
+    ObjectGuid memberParty;
+    Player* behind = info.groupWaitBehind ? ObjectAccessor::FindPlayer(info.groupWaitBehind) : nullptr;
+    bool const purpose = behind && NewRpgCoop::PartyLeaderOf(behind->GetGUID().GetCounter(), memberParty) &&
+                         memberParty == bot->GetGUID();
+    if (behind && !purpose && _meetLogged != behind->GetGUID())
+    {
+        _meetLogged = behind->GetGUID();
+        LOG_INFO("playerbots", "[wait19] {} L{} does not walk to meet {} L{} {:.0f} yd behind: no party of its holds it",
+                 bot->GetName(), bot->GetLevel(), behind->GetName(), behind->GetLevel(), bot->GetExactDist(behind));
+    }
+    if (Player* member = purpose ? behind : nullptr;
         member && member->IsAlive() && member->IsInWorld() && member->GetMapId() == bot->GetMapId() &&
         !bot->IsInCombat())
     {
@@ -2454,11 +2468,16 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
                      "within the group reward distance)",
                      bot->GetName(), bot->GetLevel(), member->GetName(), member->GetLevel(), bot->GetExactDist(member));
         }
-        if (MoveFarTo(meet))
+        // [wait19] the walk is a meet walk, no quest spot's: its give-up postpones no quest and asks no help
+        info.meetWalk = true;
+        bool const walks = MoveFarTo(meet);
+        info.meetWalk = false;
+        if (walks)
             return true;
     }
-    else
+    else if (!behind)
         _meetLogged.Clear();
+
     if (bot->isMoving())
         bot->StopMoving();
 
