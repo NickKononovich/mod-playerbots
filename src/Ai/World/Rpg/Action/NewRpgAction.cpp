@@ -1714,7 +1714,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 FindBotPath(bot, object->GetPositionX(), object->GetPositionY(), object->GetPositionZ());
             float const d = (toGo.type & PATHFIND_NOPATH) || toGo.points.size() < 2 ? bot->GetExactDist(object)
                                                                                      : toGo.length;
-            noCloser = data.bestDist > 0.0f && d + MOVE_FAR_PROGRESS >= data.bestDist;
+            noCloser = data.bestDist > 0.0f && d + bot->GetCombatReach() >= data.bestDist;  // a step of its own reach
             if (noCloser)
                 LOG_INFO("playerbots", "[vendor23] {} L{} npc {} not reached: its walk ended {:.1f} yd of walk off, "
                          "no nearer than {:.1f} yd after an earlier walk - the visit ends",
