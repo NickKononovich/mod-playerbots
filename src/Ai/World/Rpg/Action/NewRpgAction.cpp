@@ -1416,13 +1416,20 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return true;
         std::string who;
         std::vector<G3D::Vector3> spots;
-        if (!SoloSafety::StandsInReach(bot, who, spots))
+        // [login67] the reaches of its next login: the dead and fighting mobs at their homes too (the restart
+        // respawns them). b399 Rumanatol L16 rested at shutdown 4 yd from the home of the Veridian Broodling L18 it had
+        // just killed; at b400's login the Broodling stood there again, attacked before its first look, and killed it
+        if (!SoloSafety::StandsInReach(bot, who, spots, true))
             return HoldPosition(3 * IN_MILLISECONDS);
         for (G3D::Vector3 const& at : spots)
         {
             Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
             if (!route.found || !route.complete || route.throughRefused)  // [hold58] no walk through a wall
                 continue;
+            // [login67] a bot sitting to eat or drink stands up for it (as RestEscape does): b399 Rumanatol L16 sat
+            // eating at the shutdown 4 yd from a respawn
+            if (bot->IsSitState())
+                bot->SetStandState(UNIT_STAND_STATE_STAND);
             if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
                 continue;
             LOG_INFO("playerbots", "[login26] {} L{} the server shuts down in {} s: steps out of the reach of {} to "
@@ -1442,7 +1449,14 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // "attacked, no judged pull" deaths, 5 had the attacker idle 5-6 yd from its home at 1-5 yd from the bot standing
     // (Ainne, Tuihgrelfim, Thyllyn x2 by the Defias and Blackwood camps) - the bot stood in its reach
     // [rest64] ... a co-op / help party's member too (it stands where the party fought: the same reaches)
-    if ((status == RPG_IDLE || status == RPG_REST) && !bot->IsInCombat() && !bot->isMoving() &&
+    // [reach66] ... and in any status (a quest's spot, a grind, a camp walk) when it stands in the reach of the mob its
+    // judge just refused: b400 Kylanor L14 (DO_QUEST q?, Elwynn murlocs) landed inside two murloc reaches off a failed
+    // walk, refused a Murloc Lurker ("loses even at full ... fought where it stands") and stood there until a Forager
+    // walked into it - the step-out ran only in IDLE
+    std::string refusedWho;
+    bool const anyStatus = status != RPG_IDLE && status != RPG_REST && !bot->IsInCombat() && !bot->isMoving() &&
+                           SoloSafety::InRefusedReach(bot, refusedWho);
+    if ((anyStatus || status == RPG_IDLE || status == RPG_REST) && !bot->IsInCombat() && !bot->isMoving() &&
         (SoloSafety::Applies(bot) || NewRpgCoop::InParty(bot->GetGUID().GetCounter())))
     {
         std::string who;
@@ -1455,9 +1469,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     continue;
                 if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
                     continue;
-                LOG_INFO("playerbots", "[deaths20] {} L{} IDLE within the reach of {}: steps out to ({:.0f},{:.0f}), "
+                LOG_INFO("playerbots", "[deaths20] {} L{} {} within the reach of {}: steps out to ({:.0f},{:.0f}), "
                          "{:.0f} yd walk",
-                         bot->GetName(), bot->GetLevel(), who, at.x, at.y, route.length);
+                         bot->GetName(), bot->GetLevel(),
+                         anyStatus ? "[reach66] status " + std::to_string(status) + ", its judge refused " + refusedWho +
+                                         ";"
+                                   : std::string("IDLE"),
+                         who, at.x, at.y, route.length);
                 return true;
             }
     }

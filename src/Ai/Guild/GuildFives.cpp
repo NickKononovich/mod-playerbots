@@ -1374,7 +1374,22 @@ void GuildCoordinator::UpdateFives()
                 ready.emplace_back(id, true);
                 requests[id] = lfg;
             }
-            else if (std::string walkWhy = FiveWalkRefusal(five); !walkWhy.empty())
+            else if (std::string walkWhy = FiveWalkRefusal(five);
+                     !walkWhy.empty() && (lfgWhy.find(" dead") != std::string::npos ||
+                                          lfgWhy.find(" offline") != std::string::npos ||
+                                          lfgWhy.find("already in the dungeon finder") != std::string::npos))
+            {
+                // [lfg68] a member the finder cannot take for now (a ghost, offline, still in the finder): the five
+                // waits for it (its member rises, logs in, leaves the queue) - no walk, no disband
+                if (std::string& logged = fiveLfgWhy[id]; logged != lfgWhy)
+                {
+                    logged = lfgWhy;
+                    LOG_INFO("playerbots", "[lfg68] five {} ({}): waits for the Dungeon Finder ({}); no walk in: {}",
+                             id, five.contentKey, lfgWhy, walkWhy);
+                }
+                continue;
+            }
+            else if (!walkWhy.empty())
             {
                 // [next1] taken in by the finder only: a walk the five cannot make ends it
                 LOG_INFO("playerbots", "[next1] five {} ({}): no Dungeon Finder ({}) and no walk in: {}", id,
@@ -1975,6 +1990,23 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
     }
     GuildFive const& five = itr->second;
     WorldPosition const& pos = five.entrance;
+    // [lfg68] a five the walk in refuses (a member on another continent, the entrance in an enemy capital: Ragefire
+    // Chasm for the Alliance) goes in by the Dungeon Finder only - no member walks to its entrance; it stands by out
+    // of combat where it is until the finder ports it. b402 five 2 (rfc-n, Alliance): "Brelir L16 GUILD reason:
+    // DUNGEON five 2 -> Ragefire Chasm entrance, 8416 yd" - its members' gather walk went to Orgrimmar while the five
+    // waited for two members' drink
+    if (five.lfgId && sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER))
+        if (std::string const walkWhy = FiveWalkRefusal(five); !walkWhy.empty())
+        {
+            if (st.fiveRefused.empty() && bot->IsInCombat())
+                return false;  // its fight first (the survival kit)
+            step.kind = GuildRunStep::BUSY;
+            step.reason = "DUNGEON five " + std::to_string(five.id) + " -> " + five.dungeon +
+                          ": waits for the Dungeon Finder (no walk in: " + walkWhy + ")";
+            if (bot->isMoving())
+                bot->StopMoving();
+            return true;
+        }
     // the solo bot walks to the entrance only on a safe walk ([guild14]); none: the five is called off
     if (bot->GetMapId() == pos.GetMapId() && bot->GetExactDist(pos) > five.entranceReach &&
         NewRpgBaseAction::TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
