@@ -5,6 +5,7 @@
  */
 
 #include "Common.h"  // math defines first (Position.h)
+#include "SlowScope.h"  // [perf26]
 #include "RouteSearch.h"
 
 #include "DetourCommon.h"
@@ -490,6 +491,7 @@ namespace Leader
 
     RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& toAsked)
     {
+        SlowScope slow("route search");  // [perf26]
         PMON_SCOPE(routeScope, PERF_MON_VALUE, "leader route search");  // [guild15]
         constexpr float ROUTE_SAMPLE_YD = 4.0f;  // PathGenerator's smooth step: the checks keep their spacing
         // [deaths] user 2026-11-08: a solo bot's walk from where it stands to the target it engages from a pull spot

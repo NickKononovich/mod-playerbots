@@ -5,6 +5,7 @@
  */
 
 #include "SoloSafety.h"
+#include "SlowScope.h"  // [perf26]
 #include "PerfMonitor.h"  // [guild15]
 
 #include "BuyAction.h"
@@ -2364,6 +2365,7 @@ namespace SoloSafety
 
     bool WorkSpot(Player* bot, WorldObject* target, float range, bool sight, G3D::Vector3& at, std::string& who)
     {
+        SlowScope slow("work spot", bot ? &bot->GetName() : nullptr);  // [perf26]
         who.clear();
         if (!bot || !target || !bot->IsAlive() || range <= 0.0f)
             return false;
@@ -2980,6 +2982,7 @@ namespace SoloSafety
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,
                     std::vector<Leader::Travel::RoutePenalty>& penalties)
     {
+        SlowScope slow("route costs");  // [perf26]
         PMON_SCOPE(costScope, PERF_MON_VALUE, "solo route costs");  // [guild15]
         Player* bot = walker ? walker->ToPlayer() : nullptr;
         if (!bot || bot->IsInCombat() || !bot->IsAlive())

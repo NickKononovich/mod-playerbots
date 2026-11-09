@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgAction.h"
+#include "SlowScope.h"  // [perf26]
 #include "BotPath.h"  // [guild12]
 #include "QuestStats.h"  // [guild90]
 #include "SmartScriptMgr.h"  // [guild15] talk-to objectives
@@ -576,6 +577,7 @@ bool NewRpgBaseAction::BindAtInnHere()
 
 bool NewRpgBaseAction::StartVendorRun()
 {
+    SlowScope slow("vendor run look", &bot->GetName());  // [perf26]
     NewRpgInfo& info = botAI->rpgInfo;
     // [regress10] the global leader's REPAIR task (single decider): its call, read once
     GuildCoordinator::RepairCall const call = sGuildCoordinator.Repair(bot);

@@ -545,8 +545,29 @@ bool NewRpgDoQuestAction::UseQuestTool(uint32 questId)
         // wanderer's reach when the item's range leaves one (SoloSafety::WorkSpot), as a player stands off the camp
         // to throw a net. b372 Aevmae L11 used q9629's item 28 yd from its target among the Blacksilt camp: a scout
         // wandering 17 yd off came, it died ("attacked, no judged pull"); 8 such solo deaths at objectives
-        if (SoloSafety::Applies(bot) && !bot->isMoving())
+        // [perf26] one search per bot, target and spot it stands on: a search that found no spot (or a spot its walk
+        // refused) is not run again every tick while nothing changed (each one is a unit scan and up to 48 sight rays)
+        struct WorkLook
         {
+            ObjectGuid target;
+            int32 x = 0, y = 0;
+        };
+        static std::mutex workLookLock;
+        static std::unordered_map<uint32, WorkLook> workLooks;
+        bool lookAgain = true;
+        {
+            std::lock_guard<std::mutex> guard(workLookLock);
+            WorkLook const& last = workLooks[bot->GetGUID().GetCounter()];
+            lookAgain = !(last.target == target->GetGUID() && last.x == int32(bot->GetPositionX()) &&
+                          last.y == int32(bot->GetPositionY()));
+        }
+        if (lookAgain && SoloSafety::Applies(bot) && !bot->isMoving())
+        {
+            {
+                std::lock_guard<std::mutex> guard(workLookLock);
+                workLooks[bot->GetGUID().GetCounter()] = {target->GetGUID(), int32(bot->GetPositionX()),
+                                                          int32(bot->GetPositionY())};
+            }
             G3D::Vector3 spot;
             std::string who;
             if (SoloSafety::WorkSpot(bot, target, stand, sightNeeded, spot, who) &&

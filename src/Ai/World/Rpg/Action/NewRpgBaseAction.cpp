@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgBaseAction.h"
+#include "SlowScope.h"  // [perf26]
 #include "BotPath.h"  // [lead109]
 #include "BroadcastHelper.h"
 #include "GuildCoordinator.h"  // [guild50] the quest reward pick
@@ -556,6 +557,7 @@ void NewRpgBaseAction::GiveUpWalkTargets(WorldPosition const& dest, std::string 
 
 bool NewRpgBaseAction::TramTrackStep()
 {
+    SlowScope slow("tram track step", &bot->GetName());  // [perf26]
     // [tram25] coordinator 2026-11-09: a bot left standing on a tram line's track off the navmesh (an earlier
     // session walked it into the tunnel: b364-b373 Januel at (0,1551,-69) over the Deeprun pit) gets off it the way a
     // player does - the next car that comes under it carries it (the core's own test of the car's model under it,
@@ -6779,6 +6781,7 @@ namespace
 // draenei grinding in Bloodmyst against Darkshore's quests
 float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts)
 {
+    SlowScope slow("grind cycle", bot ? &bot->GetName() : nullptr);  // [perf26]
     uint8 const level = bot->GetLevel();
     uint8 const gray = Acore::XP::GetGrayLevel(level);
     float const radius = sPlayerbotAIConfig.SightDistance;
