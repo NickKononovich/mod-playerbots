@@ -6584,16 +6584,14 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     std::vector<StartCandidate> starts;
     FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
     Continent const botContinent = ContinentOf(WorldPosition(bot));
+    // [zone19] why the starters of its level were left out, for the line of a bot with none left
+    uint32 outClosed = 0, outRoute = 0, outTaken = 0, outOther = 0, inBand = 0;
     for (QuestStartPoint const& start : GetQuestStartPoints())
     {
         if (!EventSpawnPresent(start.event))  // [guild15]
             continue;
         if (start.mapId != bot->GetMapId() && !continent(start.mapId))
             continue;
-        // [guild15] its own continent until the level that needs another
-        if (!ContinentOpen(botContinent, ContinentOf(WorldPosition(start.mapId, start.x, start.y, start.z)), level))
-            continue;
-
         Quest const* quest = sObjectMgr->GetQuestTemplate(start.questId);
         if (!quest || quest->GetMinLevel() > level)
             continue;
@@ -6602,9 +6600,20 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         // [guild10] down to the last level that still gives experience (green), not only the current band
         if (questLevel > level + 2 || questLevel <= Acore::XP::GetGrayLevel(level))
             continue;
+        ++inBand;
+        // [guild15] its own continent until the level that needs another
+        if (!ContinentOpen(botContinent, ContinentOf(WorldPosition(start.mapId, start.x, start.y, start.z)), level))
+        {
+            ++outClosed;
+            continue;
+        }
 
         if (bot->GetQuestStatus(start.questId) != QUEST_STATUS_NONE || botAI->lowPriorityQuest.count(start.questId))
+        {
+            ++outTaken;
             continue;
+        }
+
 
         if (start.creatureFaction && botFaction)
         {
@@ -6632,10 +6641,16 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
             }
         }
         if (travelSeconds == std::numeric_limits<float>::max())
+        {
+            ++outRoute;  // [zone19]
             continue;
+        }
 
         if (!IsQuestWorthDoing(quest) || !IsQuestCapableDoing(quest) || !bot->CanTakeQuest(quest, false))
+        {
+            ++outOther;  // [zone19]
             continue;
+        }
 
         float objectiveDistance = QUEST_UNKNOWN_DISTANCE;
         float objX = start.x, objY = start.y;  // [zone13]
@@ -6784,7 +6799,26 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
             bestZoneRate = value.Rate();
         }
     if (!bestZone)
+    {
+        // [zone19] no zone with a quest it may take now: why the starters of its band were left out (the grind for
+        // the next quest's level follows); once per level
+        static std::mutex noneLock;
+        static std::unordered_map<uint32, uint8> noneLogged;
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> guard(noneLock);
+            uint8& last = noneLogged[counter];
+            fresh = last != level;
+            last = level;
+        }
+        if (fresh)
+            LOG_INFO("playerbots", "[zone19] {} L{} has no zone with a quest it may take: {} starters of its band, "
+                     "{} on a continent closed at its level, {} no route there, {} taken / done / postponed, {} it "
+                     "cannot take",
+                     bot->GetName(), level, inBand, outClosed, outRoute, outTaken, outOther);
         return 0;
+    }
+
     // [zone13] one line per change of the best zone: the top 3 zones by rate
     {
         bool fresh = false;
@@ -6859,8 +6893,16 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
                 killXp > 0.0f && nextGrind != WorldPosition() && nextGrind.GetMapId() == bot->GetMapId()
                     ? float(missing) / killXp * killSeconds + bot->GetExactDist(nextGrind) / QUEST_TRAVEL_SPEED
                     : -1.0f;
-            if (grindSeconds >= 0.0f && grindSeconds < best->travel)
+            // [zone19] coordinator 2026-11-09: the grind wins only when it earns more experience than the best zone
+            // over the same time: the grind's `missing` xp in `grindSeconds` against that zone's quest rate (its
+            // experience per second of travel and work, ZoneValue::Rate) over the time the travel leaves of it.
+            // Before, the grind's seconds were set against the travel alone, as if the zone's quests gave nothing:
+            // b357 -> b363 the bots grinding for a quest's level went 2 -> 6 -> 12
+            float const zoneXp =
+                zones[bestZone].Rate() * std::max(0.0f, grindSeconds - zones[bestZone].travel);
+            if (grindSeconds >= 0.0f && float(missing) >= zoneXp)
             {
+
                 bool fresh = false;
                 {
                     std::lock_guard<std::mutex> guard(questNoteLock);
@@ -6870,10 +6912,11 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
                 }
                 if (fresh)
                     LOG_INFO("playerbots",
-                             "[zone] {} L{} stays: L{} for q{} here by grinding {} xp in {} s ({} xp a kill of {} s) "
-                             "beats the {} s walk to zone {} (first q{})",
+                             "[zone19] {} L{} stays: L{} for q{} here by grinding {} xp in {} s ({} xp a kill of {} "
+                             "s) beats the {} xp zone {} gives in that time after its {} s travel (first q{})",
                              bot->GetName(), level, next->GetMinLevel(), nextQuest, missing, uint32(grindSeconds),
-                             uint32(killXp), uint32(killSeconds), uint32(best->travel), bestZone, best->questId);
+                             uint32(killXp), uint32(killSeconds), uint32(zoneXp), bestZone,
+                             uint32(zones[bestZone].travel), best->questId);
                 giverPos = WorldPosition();
                 return 0;
             }
@@ -6913,9 +6956,12 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
                 route = "transport " + std::to_string(leg.lineEntry);
             else if (leg.kind == TravelRouteMgr::LegKind::Portal)
                 route = "portal " + std::to_string(leg.portalIndex);
+            LOG_INFO("playerbots", "[zone19] {} moves to {}: {} quests {} xp/h after {} s travel", bot->GetName(),
+                     zoneName(bestZone), to.quests, uint32(to.Rate() * 3600.0f), uint32(to.travel));
             LOG_INFO("playerbots",
                      "[zone] {} L{} {} -> {}: {}; there {} quests L{}-{} {} xp/h (travel {} s), route {} {} s, "
                      "first q{} giver at map {} ({},{})",
+
                      bot->GetName(), level, zoneName(hereZone), zoneName(bestZone), why, to.quests, to.minLevel,
                      to.maxLevel, uint32(to.Rate() * 3600.0f), uint32(to.travel), route, uint32(seconds), best->questId,
                      giverPos.GetMapId(), int32(giverPos.GetPositionX()), int32(giverPos.GetPositionY()));
