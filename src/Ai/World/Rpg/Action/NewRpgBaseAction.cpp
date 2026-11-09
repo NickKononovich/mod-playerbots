@@ -7906,6 +7906,20 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
     std::sort(grinds.begin(), grinds.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
     if (!grinds.empty())
         grindPos = grinds.front().second;
+    // [grind42] the spots toward this giver already found all refused at this level are not judged again (each a
+    // route search and a log line), and a look judges a bounded number of them: b389 W2 407 "TRIP_REFUSED grind
+    // spot ... its walk passes" lines, Thyllyn 137 distinct spots toward one giver 7000 yd off, every update
+    static std::mutex grindLock;
+    static std::unordered_map<uint32, std::pair<uint8, uint32>> allRefused;  // bot -> (level, giver quest)
+    {
+        std::lock_guard<std::mutex> guard(grindLock);
+        auto const found = allRefused.find(bot->GetGUID().GetCounter());
+        if (found != allRefused.end() && found->second == std::make_pair(level, bestQuest))
+            return bestQuest;  // the nearest stays the fallback; the caller's refusal check sends it to its hub
+    }
+    constexpr uint32 GRIND_SPOT_TRIES = 8;  // a search cost bound per look, not a behaviour rule
+    uint32 refused = 0;
+    bool found = false;
     for (auto const& [d, pos] : grinds)
     {
         if (d > QUEST_MAX_GIVER_DISTANCE)  // a spot that far is no grind toward this giver
@@ -7913,8 +7927,19 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
         if (!TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), "grind spot"))
         {
             grindPos = pos;
+            found = true;
             break;
         }
+        if (++refused >= GRIND_SPOT_TRIES)
+            break;
+    }
+    if (!found && refused)
+    {
+        std::lock_guard<std::mutex> guard(grindLock);
+        allRefused[bot->GetGUID().GetCounter()] = {level, bestQuest};
+        LOG_INFO("playerbots", "[grind42] {} L{} every grind spot toward q{}'s giver it looked at is refused ({}): not "
+                 "judged again until its level or that giver changes",
+                 bot->GetName(), bot->GetLevel(), bestQuest, refused);
     }
     return bestQuest;
 }
