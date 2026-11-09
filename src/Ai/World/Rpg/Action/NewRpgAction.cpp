@@ -903,9 +903,18 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     if (!bot->IsInCombat() && SoloSafety::HoldsPulls(bot) && SoloSafetyStep())
         return true;
 
+    // [deaths21] a party member under Resurrection Sickness does not follow: it holds where it rose until the aura
+    // ends (the hold below; its leader waits for it)
+    if (NewRpgCoop::IsMember(bot) && !bot->IsInCombat() && bot->HasAura(15007))
+    {
+        if (bot->isMoving())
+            bot->StopMoving();
+        return true;
+    }
     // [coop] a co-op party member goes with its party's leader; its own plan waits (NewRpgCoop.h)
     {
         NewRpgCoop::Order const coop = NewRpgCoop::Tick(botAI, bot);
+
         if (coop.kind == NewRpgCoop::Order::Kind::Follow)
         {
             if (TownTaskHere())  // [town12] the leader's route brought it to its own town stop
@@ -945,9 +954,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // b354: Laaral L14 (3 deaths, 83-151 s after its rise) and Rumanatol L13 (87 s) rose at the Blood Watch spirit
     // healer, walked out at 139 max health and 2.7 dps and died to single Elder Brown Bears L15-16. The bot stays where
     // it rose (the spirit healer's graveyard) until the aura is gone - a game mechanic's end, not a clock of its own
-    if (!bot->IsInCombat() && !NewRpgCoop::IsMember(bot) && !bot->IsInFlight() && !bot->GetTransport())
+    // [deaths21] ... a co-op / help party member too: b368 Peny L13 (help party of Guinudrond in Westfall) died twice
+    // under the sickness, 33 s and 174 s after its spirit-healer rise at 132 max health, following its party into the
+    // Riverpaw camp; its leader waits for it ("under Resurrection Sickness", NewRpgGroupNotReadyTrigger)
+    if (!bot->IsInCombat() && !bot->IsInFlight() && !bot->GetTransport())
     {
         constexpr uint32 SPELL_RESURRECTION_SICKNESS = 15007;
+
         static std::mutex sickLock;
         static std::unordered_set<uint32> sickLogged;
         uint32 const low = bot->GetGUID().GetCounter();

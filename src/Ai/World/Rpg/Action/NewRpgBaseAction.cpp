@@ -6669,9 +6669,11 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     // player's Darkshore -> Wetlands, Westfall -> Darkshore): the second pass opens it, its boats priced by the travel
     // planner as any route. b367: 9 of the 13 "[zone19] no zone" bots had 286-331 starters of their band on the
     // continent closed until Outland's level and none left on their own
+    bool openedOther = false;  // [zone21]
     for (int pass = 0; pass < 2 && starts.empty(); ++pass)
     {
         bool const otherOldWorld = pass == 1;
+        openedOther = otherOldWorld;
         outClosed = outRoute = outTaken = outOther = inBand = 0;
         for (QuestStartPoint const& start : GetQuestStartPoints())
         {
@@ -6826,6 +6828,11 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         }
     }
 
+    // [zone21] the second pass's own line: b368 logged none, the bots it opened the other continent for not named
+    if (openedOther && !starts.empty())
+        LOG_INFO("playerbots", "[zone21] {} L{} opens the old world's other continent: {} starters it may take there "
+                 "(its own holds none)",
+                 bot->GetName(), level, starts.size());
     struct ZoneValue
     {
         float xp = 0.0f;
