@@ -329,21 +329,34 @@ bool FollowAction::Execute(Event /*event*/)
 // ([quest16] "HAND_IN ... (for <member>)"), a follower runs this follow, not the rpg status. [quest18] Asked from
 // isUseful too: within its follow distance the follow is not run at all - b359 Arrengyl stood 14-21 yd from Bierya
 // at each of its 4 hand-in stops, no hand-in. `act`: walk there / hand in; else only whether there is one
+// [group23] the quests the member tried to take at a giver (the core refused it or took it): one try each
+bool FollowAction::TakeTried(uint32 questId, bool mark)
+{
+    static std::mutex triedLock;
+    static std::unordered_map<uint32, std::unordered_set<uint32>> tried;
+    std::lock_guard<std::mutex> guard(triedLock);
+    auto& mine = tried[bot->GetGUID().GetCounter()];
+    return mark ? !mine.insert(questId).second : mine.count(questId) != 0;
+}
+
 bool FollowAction::MemberHandIn(bool act)
 {
+    if (!GuildHonest::IsHonestBot(bot) || bot->IsInCombat() || bot->GetMap()->Instanceable())
+        return false;
+    // [group23] the leader: the formation's target, else the group's leader (a group follower's formation has no
+    // target name: it follows the formation's spot - the hand-in never ran for it)
     Formation* formation = AI_VALUE(Formation*, "formation");
     std::string const target = formation ? formation->GetTargetName() : std::string();
-    if (target.empty() || !GuildHonest::IsHonestBot(bot) || bot->IsInCombat() || bot->GetMap()->Instanceable())
-        return false;
-    Unit* leader = AI_VALUE(Unit*, target);
+    Unit* leader = !target.empty() ? AI_VALUE(Unit*, target)
+                   : bot->GetGroup() ? ObjectAccessor::FindPlayer(bot->GetGroup()->GetLeaderGUID())
+                                     : nullptr;
     if (!leader || leader == bot || leader->GetMapId() != bot->GetMapId())
         return false;
+    Player* const leaderPlayer = leader->ToPlayer();
     bool complete = false;
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE && !complete; ++slot)
         if (uint32 const questId = bot->GetQuestSlotQuestId(slot))
             complete = bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
-    if (!complete)
-        return false;
     for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
     {
         Creature* npc = botAI->GetCreature(guid);
@@ -351,16 +364,44 @@ bool FollowAction::MemberHandIn(bool act)
             leader->GetExactDist2d(npc) > sPlayerbotAIConfig.SightDistance)
             continue;
         uint32 ends = 0;
-        QuestRelationBounds const bounds = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(npc->GetEntry());
-        for (auto itr = bounds.first; itr != bounds.second && !ends; ++itr)
-            if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
-                ends = itr->second;
-        if (!ends)
+        if (complete)
+        {
+            QuestRelationBounds const bounds = sObjectMgr->GetCreatureQuestInvolvedRelationBounds(npc->GetEntry());
+            for (auto itr = bounds.first; itr != bounds.second && !ends; ++itr)
+                if (bot->GetQuestStatus(itr->second) == QUEST_STATUS_COMPLETE)
+                    ends = itr->second;
+        }
+        // [group23] a quest its leader took at this giver (it stands by it) that the member may take too: the
+        // member takes it there as a player of the group does (a shareable one comes by the leader's share)
+        uint32 takes = 0;
+        if (!ends && leaderPlayer && leader->GetExactDist2d(npc) <= INTERACTION_DISTANCE * 2.0f)
+        {
+            QuestRelationBounds const bounds = sObjectMgr->GetCreatureQuestRelationBounds(npc->GetEntry());
+            for (auto itr = bounds.first; itr != bounds.second && !takes; ++itr)
+                if (Quest const* quest = sObjectMgr->GetQuestTemplate(itr->second);
+                    quest && leaderPlayer->GetQuestStatus(itr->second) != QUEST_STATUS_NONE &&
+                    !leaderPlayer->GetQuestRewardStatus(itr->second) &&
+                    bot->GetQuestStatus(itr->second) == QUEST_STATUS_NONE && bot->CanTakeQuest(quest, false) &&
+                    bot->CanAddQuest(quest, false) && !TakeTried(itr->second, false))
+                    takes = itr->second;
+        }
+        if (!ends && !takes)
             continue;
         if (!act)
             return true;
         if (npc->IsWithinDistInMap(bot, INTERACTION_DISTANCE))
         {
+            if (takes)
+            {
+                LOG_INFO("playerbots", "[group23] {} L{} takes q{} at {} with its leader {}", bot->GetName(),
+                         bot->GetLevel(), takes, npc->GetName(), leader->GetName());
+                TakeTried(takes, true);  // one try per quest: the giver's own checks refuse it else (no retry)
+                WorldPacket p(CMSG_QUESTGIVER_ACCEPT_QUEST);
+                p << npc->GetGUID() << takes << uint32(0);
+                p.rpos(0);
+                bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(p);
+                return true;
+            }
             LOG_INFO("playerbots", "[quest17] {} L{} hands in q{} at {} with its leader {} by it", bot->GetName(),
                      bot->GetLevel(), ends, npc->GetName(), leader->GetName());
             return botAI->DoSpecificAction("talk to quest giver", Event("member hand-in", npc->GetGUID()), true);

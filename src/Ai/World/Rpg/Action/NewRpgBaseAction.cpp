@@ -3116,8 +3116,26 @@ bool NewRpgBaseAction::AcceptQuest(Quest const* quest, ObjectGuid guid)
     p.rpos(0);
     bot->GetSession()->HandleQuestgiverAcceptQuestOpcode(p);
 
+    // [group23] coordinator 2026-11-09: a group quests as players do - the leader shares what it takes with its
+    // party (the core's quest share, CMSG_PUSHQUESTTOPARTY: a shareable quest each member may take; the bots accept it
+    // by their "accept quest share"), the members take a quest it cannot share at the giver themselves (FollowAction).
+    // b370: every user-pack / group follower made 0 turn-ins - followers never took a quest
+    if (Group* group = bot->GetGroup(); group && group->GetLeaderGUID() == bot->GetGUID() &&
+                                         GuildHonest::IsHonestBot(bot) &&
+                                         bot->GetQuestStatus(quest->GetQuestId()) != QUEST_STATUS_NONE &&
+                                         quest->HasFlag(QUEST_FLAGS_SHARABLE))
+    {
+        WorldPacket share(CMSG_PUSHQUESTTOPARTY);
+        share << quest->GetQuestId();
+        WorldPackets::Quest::PushQuestToParty push(std::move(share));
+        push.Read();
+        bot->GetSession()->HandlePushQuestToParty(push);
+        LOG_INFO("playerbots", "[group23] {} L{} shares q{} {} with its group", bot->GetName(), bot->GetLevel(),
+                 quest->GetQuestId(), quest->GetTitle());
+    }
     return true;
 }
+
 
 bool NewRpgBaseAction::TurnInQuest(Quest const* quest, ObjectGuid guid)
 {
@@ -5992,7 +6010,17 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
                 continue;
             }
         }
-        float const xp = grey ? 0.0f : GetQuestWeight(quest, rested) * quest->XPValue(level);
+        float xp = grey ? 0.0f : GetQuestWeight(quest, rested) * quest->XPValue(level);
+        // [group23] a group leader's route weighs the group's experience: each member in its sight that holds the
+        // quest too hands it in with it (the leader's share, the members' own take at the giver)
+        if (Group* group = bot->GetGroup(); !grey && group && group->GetLeaderGUID() == bot->GetGUID())
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* m = ref->GetSource(); m && m != bot && m->GetMapId() == bot->GetMapId() &&
+                                                  m->GetExactDist2d(bot) <= sPlayerbotAIConfig.SightDistance &&
+                                                  (m->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE ||
+                                                   m->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE))
+                    xp += float(quest->XPValue(m->GetLevel()));
+
         std::vector<POIInfo> poiInfo;
         bool const spots = GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true);
         WorldPosition ender;

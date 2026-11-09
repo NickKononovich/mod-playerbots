@@ -20,6 +20,7 @@ public:
     bool isUseful() override;
     bool CanDeadFollow(Unit* target);
     bool MemberHandIn(bool act);  // [quest17] [quest18]
+    bool TakeTried(uint32 questId, bool mark);  // [group23]
 };
 
 #endif
