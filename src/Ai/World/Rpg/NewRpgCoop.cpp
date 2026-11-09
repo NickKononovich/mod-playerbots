@@ -4191,6 +4191,155 @@ void RestParty(Player* leader, std::string const& why)
                 (m->GetMaxPower(POWER_MANA) && m->GetPower(POWER_MANA) < m->GetMaxPower(POWER_MANA)))
                 SoloSafety::RequestRest(m, "the party's pull: " + why);
 }
+
+// [camp63] user / coordinator 2026-11-10: an objective camp is priced at route planning, before it is walked to - the
+// solo judge's own formula (each mob hits until the bot's damage kills it, the most dangerous per health first, as
+// JudgePull / JudgeHelp) on the static pack a pull of the spot's source draws (its engage call's assistance radius,
+// a wanderer's whole area), against the bot at full: its full health, its pet, its own heals on
+// a full mana pool. b400: 125 objective route stops left "postponed" (20106 s walked) against 14 done, 49 of them
+// after more than 120 s - the camp's mobs came into sight only at its edge ("its spot lies among mobs it does not
+// pull", the maze walls)
+bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot, std::string& why,
+                    StaticCampPrice* out)
+{
+    if (!bot || spot.GetMapId() != bot->GetMapId())
+        return false;
+    EnsureIndex();
+    float const assist = std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS));
+    std::vector<std::pair<float, float>> mobs;  // (health, damage per second on the bot)
+    uint8 top = 0;
+    uint32 serving = 0;
+    Objective obj;
+    bool const hasObj = ReadObjective(bot, questId, objectiveIdx, obj);
+    NewRpgBaseAction::ForEachHostileSpawn(
+        bot, spot.GetPositionX(), spot.GetPositionY(), assist + SoloSafety::MapWanderReach(bot->GetMapId()),
+        [&](CreatureTemplate const* tmpl, float x, float y, float wander)
+        {
+            uint8 const level = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
+            // the pack a pull of the source at the spot draws (as the judge's pull from range): the source itself and
+            // the hostile spawns its engage call reaches (the core's assistance radius; a wanderer from anywhere in
+            // its wander area). The aggro reach is not counted: the pull spot stands out of the others' reach
+            if (std::hypot(x - spot.GetPositionX(), y - spot.GetPositionY()) > assist + wander)
+                return;
+            uint8 lvl = 0;
+            float const hp = TemplateHealth(tmpl->Entry, lvl);
+            mobs.push_back({hp, TemplateMeleeDps(tmpl, level) * (1.0f - ArmorShare(bot, level))});
+            top = std::max(top, level);
+            if (hasObj && (obj.item ? std::any_of(itemSources[obj.key].begin(), itemSources[obj.key].end(),
+                                                  [tmpl](DropSource const& d)
+                                                  { return !d.chest && d.entry == tmpl->Entry; })
+                                    : (obj.key == tmpl->Entry || obj.key == tmpl->KillCredit[0] ||
+                                       obj.key == tmpl->KillCredit[1])))
+                ++serving;
+        });
+    if (mobs.empty())
+        return false;
+    float const dps = std::max(DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo), 1.0f);
+    std::sort(mobs.begin(), mobs.end(), [](auto const& a, auto const& b)
+              { return a.second / std::max(a.first, 1.0f) > b.second / std::max(b.first, 1.0f); });
+    float seconds = 0.0f, damage = 0.0f;
+    for (auto const& [hp, mobDps] : mobs)
+    {
+        seconds += hp / dps;
+        damage += mobDps * seconds;
+    }
+    float const ehpFull = float(bot->GetMaxHealth()) + PetHealth(bot, true) +
+                          SurvivalKit::HealPoints(bot, seconds, float(bot->GetMaxPower(POWER_MANA)), true);
+    if (out)
+    {
+        out->mobs = mobs;
+        out->topLevel = top;
+        out->damage = damage;
+        out->seconds = seconds;
+        out->serving = serving;
+    }
+    why = Acore::StringFormat("the camp at ({:.0f},{:.0f}) of {} static spawns (top L{}) deals {:.0f} dmg over "
+                              "{:.0f} s at {:.1f} dps, ehp {:.0f} at full",
+                              spot.GetPositionX(), spot.GetPositionY(), mobs.size(), top, damage, seconds, dps,
+                              ehpFull);
+    return damage >= ehpFull;
+}
+
+void OnStaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot,
+                      std::string const& why)
+{
+    if (!bot || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) || bot->GetGroup())
+        return;
+    Objective obj;
+    if (!ReadObjective(bot, questId, objectiveIdx, obj) || !obj.Left())
+        return;
+    StaticCampPrice price;
+    std::string again;
+    if (!StaticCampLost(bot, questId, objectiveIdx, spot, again, &price))
+        return;
+    Seek seek;
+    seek.obj = obj;
+    seek.camp.known = true;
+    seek.camp.at = spot;
+    seek.camp.topLevel = price.topLevel;
+    seek.camp.mobs = uint32(price.mobs.size());
+    seek.camp.damage = price.damage;
+    seek.camp.fightSec = price.seconds;
+    seek.camp.dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Group);
+    seek.camp.units = std::max<uint32>(price.serving, 1);
+    seek.camp.serves = price.serving > 0;
+    if (!seek.camp.serves)
+        seek.camp.pace = ComputePace(bot, obj, spot);
+    std::string seekLine, helpLine;
+    {
+        std::lock_guard<std::recursive_mutex> guard(lock);
+        Posting& me = postings[bot->GetGUID().GetCounter()];
+        if (me.guid.IsEmpty())
+        {
+            me.guid = bot->GetGUID();
+            me.name = bot->GetName();
+            me.level = bot->GetLevel();
+            me.questRate = bot->GetQuestRate(false);
+            me.questRateDf = bot->GetQuestRate(true);
+        }
+        // one seek per objective: a seek of it posted already (this camp or its live refusal) stays as it is
+        bool const seeking = std::any_of(me.seeks.begin(), me.seeks.end(),
+                                         [&obj](Seek const& s) { return s.obj.Same(obj); });
+        if (!seeking)
+        {
+            seek.bucket = BucketKey(bot->GetMapId(), bot->GetZoneId(), obj);
+            me.seeks.push_back(seek);
+            SyncBuckets(me, bot->GetGUID().GetCounter());
+            Bump(seek.bucket);  // a seeker came: the guildmates on the same quest look again (a co-op party)
+            seekLine = Acore::StringFormat("[coop] seek {} quests=q{} camp=static mobs={} units={} serves={}{} "
+                                           "reason=looks for a party: [camp63] {}",
+                                           bot->GetName(), questId, price.mobs.size(), seek.camp.units,
+                                           seek.camp.serves ? 1 : 0, Stamp(), why);
+        }
+        bool asked = me.party != 0;
+        for (auto const& [id, r] : helpRequests)
+            asked = asked || (r.requester == bot->GetGUID() && r.obj.Same(obj));
+        asked = asked || PriceRefusedLocked(bot, questId, spot);
+        if (!asked)
+        {
+            HelpRequest r;
+            r.id = nextHelp++;
+            r.requester = bot->GetGUID();
+            r.name = bot->GetName();
+            r.obj = obj;
+            r.askedAt = getMSTime();
+            r.measured = false;
+            r.topLevel = price.topLevel;
+            r.at = spot;
+            r.mobs = price.mobs;
+            r.camp = Acore::StringFormat("static camp x{} top L{}, {:.0f} dmg over {:.0f} s alone", price.mobs.size(),
+                                         price.topLevel, price.damage, price.seconds);
+            helpRequests[r.id] = r;
+            helpLine = Acore::StringFormat("[help] request {} quest=q{} request={} human=0 objective={} have={}/{} "
+                                           "camp=\"{}\"{} reason=[camp63] priced at its route's planning: {}",
+                                           r.name, questId, r.id, obj.index, obj.have, obj.need, r.camp, Stamp(), why);
+        }
+    }
+    if (!seekLine.empty())
+        LOG_INFO("playerbots", "{}", seekLine);
+    if (!helpLine.empty())
+        LOG_INFO("playerbots", "{}", helpLine);
+}
 }  // namespace NewRpgCoop
 
 float NewRpgCoopMultiplier::GetValue(Action* action)

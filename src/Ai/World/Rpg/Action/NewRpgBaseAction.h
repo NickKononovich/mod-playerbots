@@ -19,6 +19,7 @@
 #include "PlayerbotAI.h"
 #include "QuestDef.h"
 #include "TravelMgr.h"
+#include <functional>  // [camp63]
 
 class Creature;
 class GameObject;
@@ -146,6 +147,10 @@ public:
     static std::string LastResolveStats();
     // [guild90] seconds until the first spent camp of the quest respawns (spawntimesecs); 0: none pending
     static uint32 EarliestRespawn(Player* bot, uint32 questId);
+    // [camp63] the hostile spawns of the static spawn index (present now: their game event) within `radius` of (x, y)
+    // on the bot's map: template, spot, wander distance
+    static void ForEachHostileSpawn(Player* bot, float x, float y, float radius,
+                                    std::function<void(CreatureTemplate const*, float, float, float)> const& fn);
     // [qeff32] at its spot: the grind target serves an open objective of the quest, or a living source of one that no
     // other player has tapped stands within the spot's circle (another mob to grind is no reason to stay)
     static bool ObjectiveTargetHere(Player* bot, uint32 questId, Unit* grindTarget);
