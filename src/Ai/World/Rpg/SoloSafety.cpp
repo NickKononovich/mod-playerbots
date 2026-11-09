@@ -2935,6 +2935,21 @@ namespace SoloSafety
                         !bot->GetMap()->Instanceable() && GET_PLAYERBOT_AI(bot) &&
                         GET_PLAYERBOT_AI(bot)->HasStrategy("new rpg", BOT_STATE_NON_COMBAT)))
             return;
+        if (!alone)
+        {
+            // [group22] one line per bot: its walk priced for its group (a log line, no decision)
+            static std::mutex groupLogLock;
+            static std::unordered_set<uint32> groupLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(groupLogLock);
+                fresh = groupLogged.insert(bot->GetGUID().GetCounter()).second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[group22] {} L{} prices its walks for its group ({})", bot->GetName(),
+                         bot->GetLevel(),
+                         NewRpgCoop::InParty(bot->GetGUID().GetCounter()) ? "co-op / help party" : "open-world group");
+        }
 
         // the walk's first leg as far as the bot sees: the rest is planned again from there. [deaths] The leg ends up
         // to SightDistance from the bot, so a mob whose aggro reach (Creature::GetAggroRange, at most the core's

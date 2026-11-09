@@ -1688,7 +1688,7 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest)
     if (fly >= walk || bot->GetMoney() < fare)
         return false;
     LOG_INFO("playerbots", "[taxi20] {} L{} flies {} -> {} ({} nodes, {} c): {:.0f} s by air against {:.0f} s on "
-             "foot to ({:.0f},{:.0f})",
+             "foot to ({:.0f},{:.0f}) [taxi22: walks by their navmesh routes, the flight by its path points]",
              bot->GetName(), bot->GetLevel(), from->name[0], to->name[0], path.size(), fare, fly, walk,
              dest.GetPositionX(), dest.GetPositionY());
     botAI->rpgInfo.ChangeToTravelFlight(master->templateEntry, master->pos, path);
@@ -6747,8 +6747,13 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     uint8 campLevel = level;
     if (Group* group = bot->GetGroup(); group && group->GetLeaderGUID() == bot->GetGUID())
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-            if (Player* m = ref->GetSource(); m && m->GetMapId() == bot->GetMapId())
+            // [deaths23] ... of the members that come with it (an own-plan member walks its own camps)
+            if (Player* m = ref->GetSource();
+                m && m->GetMapId() == bot->GetMapId() && (m == bot || SoloSafety::FightsWith(bot, m)))
                 campLevel = std::min<uint8>(campLevel, m->GetLevel());
+    if (campLevel < level)
+        LOG_INFO("playerbots", "[group22] {} L{} chooses its zone's camps for its group's weakest member: L{}",
+                 bot->GetName(), level, campLevel);
     for (int pass = 0; pass < 2 && starts.empty(); ++pass)
     {
         bool const otherOldWorld = pass == 1;

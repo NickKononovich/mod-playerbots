@@ -2500,8 +2500,15 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
 
     float const saved = aloneWins ? std::max(0.0f, aloneSeconds - v.seconds) : 0.0f;
     float const helpValue = questXp + QuestRoute::XpPerSecond(req->GetGUID().GetCounter()) * saved;
-    std::string const priced = Acore::StringFormat("value {:.0f} xp (quest {:.0f} + {:.0f} s saved), cost {:.0f} xp",
-                                                   helpValue, questXp, saved, helpCost);
+    // [help22] the line names the rates its cost was priced with (a helper's route, else its grind rate)
+    std::string rates;
+    for (Candidate const& c : chosen)
+        rates += Acore::StringFormat("{}{} {:.2f} xp/s{}", rates.empty() ? "" : ", ", c.p->GetName(), TimeRate(c.p),
+                                     QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) > 0.0f ? "" : " (grind)");
+    std::string const priced =
+        Acore::StringFormat("value {:.0f} xp (quest {:.0f} + {:.0f} s saved), cost {:.0f} xp ([help22] helpers {}; "
+                            "requester's wait {:.0f} s at {:.2f} xp/s)",
+                            helpValue, questXp, saved, helpCost, rates, farthest, TimeRate(req));
     if (!r.human && helpCost >= helpValue)  // [help22] no value (0) is no help either
     {
         r.refusedKey = priceKey;  // [help21]
