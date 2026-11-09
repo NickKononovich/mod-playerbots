@@ -19,6 +19,7 @@ public:
     bool Execute(Event event) override;
     bool isUseful() override;
     bool CanDeadFollow(Unit* target);
+    bool MemberHandIn(bool act);  // [quest17] [quest18]
 };
 
 #endif
