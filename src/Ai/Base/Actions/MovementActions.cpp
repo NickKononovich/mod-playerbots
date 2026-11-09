@@ -5,6 +5,8 @@
  */
 
 #include "MovementActions.h"
+#include "DetourNavMeshQuery.h"  // [move28]
+#include "MapDefines.h"  // [move28] NAV_*
 #include "BotPath.h"  // [lead109]
 #include "AttackerCountValues.h"
 #include "BotMoveEvents.h"  // [b33_sp] water_drop
@@ -5016,13 +5018,36 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
         PathType const type = core.GetPathType();
         bool const complete = valid && (type & PATHFIND_NORMAL) &&
                               !(type & (PATHFIND_SHORTCUT | PATHFIND_INCOMPLETE | PATHFIND_NOPATH | PATHFIND_FARFROMPOLY));
-        if (!(type & PATHFIND_NOT_USING_PATH) && !complete)
+        // [move28] an INCOMPLETE core path is walked as far as its polygons go: its last point is kept only when a
+        // navmesh polygon lies under it (else it is the straight tail toward the destination, dropped). b377 Baridrol
+        // stood 40 STUCK at the Dolanaar inn (9898,989): every walk there "no route, the core's path is not complete
+        // (0x4)" - [nav24] refused the whole walk, not only its tail
+        Movement::PointsArray points = core.GetPath();
+        bool partial = false;
+        if (valid && (type & PATHFIND_INCOMPLETE) && !(type & (PATHFIND_SHORTCUT | PATHFIND_NOPATH)) &&
+            points.size() >= 2)
+        {
+            if (dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery())
+            {
+                dtQueryFilter filter;
+                filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+                G3D::Vector3 const& last = points.back();
+                float const point[3] = {last.y, last.z, last.x};
+                float const extents[3] = {1.5f, 3.0f, 1.5f};
+                float nearest[3] = {0.0f, 0.0f, 0.0f};
+                dtPolyRef ref = 0;
+                if (dtStatusFailed(query->findNearestPoly(point, extents, &filter, &ref, nearest)) || !ref)
+                    points.pop_back();
+            }
+            partial = points.size() >= 2;
+        }
+        if (!(type & PATHFIND_NOT_USING_PATH) && !complete && !partial)
         {
             LOG_DEBUG("playerbots", "[nav24] {} no move to ({:.1f},{:.1f},{:.1f}): no route, the core's path is not "
                       "complete (type {:#x})", bot->GetName(), x, y, z, uint32(type));
             return;
         }
-        if (complete && WalkBotPoints(bot, core.GetPath()))
+        if ((complete || partial) && WalkBotPoints(bot, points))
             return;
     }
 
