@@ -6664,7 +6664,7 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
     Continent const botContinent = ContinentOf(WorldPosition(bot));
     // [zone19] why the starters of its level were left out, for the line of a bot with none left
-    uint32 outClosed = 0, outRoute = 0, outTaken = 0, outOther = 0, inBand = 0;
+    uint32 outClosed = 0, outRoute = 0, outTaken = 0, outOther = 0, inBand = 0, outCamp = 0;
     // [zone20] a bot whose own continent holds no starter it may take now goes over to the old world's other one (a
     // player's Darkshore -> Wetlands, Westfall -> Darkshore): the second pass opens it, its boats priced by the travel
     // planner as any route. b367: 9 of the 13 "[zone19] no zone" bots had 286-331 starters of their band on the
@@ -6674,7 +6674,7 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     {
         bool const otherOldWorld = pass == 1;
         openedOther = otherOldWorld;
-        outClosed = outRoute = outTaken = outOther = inBand = 0;
+        outClosed = outRoute = outTaken = outOther = inBand = outCamp = 0;
         for (QuestStartPoint const& start : GetQuestStartPoints())
         {
             if (!EventSpawnPresent(start.event))  // [guild15]
@@ -6773,8 +6773,47 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
                 }
             }
 
+            // [zone21] coordinator 2026-11-09: the zone's value counts the mobs the bot fights there - a quest whose
+            // objective camp holds a mob it never fights solo ([guild12]: orange / red con, an elite; its spawns
+            // within the core's largest aggro reach of the objective's centre, hostile to the bot) is no quest of its
+            // solo zone rate (its co-op / help request prices it there). b368: L12 bots sent to Westfall's L13-18
+            // camps (Manue at Alexston Farmstead, Guinudrond, Peny), L14-15 to Bloodmyst's Sunhawk / Blacksilt L16-17
+            if (objKnown)
+            {
+                QuestSpawnIndex const& spawnIndex = GetQuestSpawnIndex();
+                bool walled = false;
+                for (int32 dx = -1; dx <= 1 && !walled; ++dx)
+                    for (int32 dy = -1; dy <= 1 && !walled; ++dy)
+                    {
+                        auto const cell = spawnIndex.mobCells.find(
+                            MobCellKey(start.mapId, objX + float(dx) * MAX_AGGRO_RADIUS,
+                                       objY + float(dy) * MAX_AGGRO_RADIUS));
+                        if (cell == spawnIndex.mobCells.end())
+                            continue;
+                        for (MobSpawn const& m : cell->second)
+                        {
+                            if (!SpawnPresent(m) || std::hypot(m.x - objX, m.y - objY) > MAX_AGGRO_RADIUS)
+                                continue;
+                            FactionTemplateEntry const* mobFaction = sFactionTemplateStore.LookupEntry(m.tmpl->faction);
+                            if (!mobFaction || !botFaction || !mobFaction->IsHostileTo(*botFaction))
+                                continue;
+                            bool const elite = m.tmpl->rank == CREATURE_ELITE_ELITE ||
+                                               m.tmpl->rank == CREATURE_ELITE_RAREELITE ||
+                                               m.tmpl->rank == CREATURE_ELITE_WORLDBOSS;
+                            if (elite || Acore::XP::GetColorCode(level, m.tmpl->maxlevel) <= XP_ORANGE)
+                                walled = true;
+                        }
+                    }
+                if (walled)
+                {
+                    ++outCamp;
+                    continue;
+                }
+            }
+
             // [zone13] the quest's own walk: giver -> objective -> its ender (the nearest ender spawn on the map to the
             // objective; none known: back to the giver), plus the work itself. Before, giver -> objective and back only
+
             float enderX = start.x, enderY = start.y;
             {
                 QuestSpawnIndex const& spawnIndex = GetQuestSpawnIndex();
@@ -6914,8 +6953,8 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         if (fresh)
             LOG_INFO("playerbots", "[zone19] {} L{} has no zone with a quest it may take: {} starters of its band, "
                      "{} on a continent closed at its level, {} no route there, {} taken / done / postponed, {} it "
-                     "cannot take",
-                     bot->GetName(), level, inBand, outClosed, outRoute, outTaken, outOther);
+                     "cannot take, {} in a camp it never fights solo",
+                     bot->GetName(), level, inBand, outClosed, outRoute, outTaken, outOther, outCamp);
         return 0;
     }
 
