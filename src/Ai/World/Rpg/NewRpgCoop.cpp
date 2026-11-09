@@ -4004,6 +4004,7 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
     float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
     Creature* const targetCreature = target->ToCreature();
     std::vector<Creature*> joiners;
+    uint32 modelled = 0, neighbours = 0;  // [party59] the joiners the pull model and the neighbouring fights add
     verdict.radius = 0.0f;
     {
         float const reach = MAX_AGGRO_RADIUS + std::max(assist, 0.0f) + SoloSafety::MapWanderReach(leader->GetMapId());
@@ -4011,11 +4012,49 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         Acore::AnyUnitInObjectRangeCheck check(target, reach);
         Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, units, check);
         Cell::VisitObjects(target, searcher, reach);
+        // [party59] the solo judge's pull model at the fight (the target's spot) and the members' spots in it
+        if (targetCreature)
+        {
+            std::vector<G3D::Vector3> stands;
+            for (Player* h : holders)
+                stands.emplace_back(h->GetPositionX(), h->GetPositionY(), h->GetPositionZ());
+            for (ObjectGuid const& guid : members)
+                if (Player* m = SameMapPlayer(leader, guid);
+                    m && m->IsAlive() && leader->GetExactDist(m) <= sPlayerbotAIConfig.SightDistance &&
+                    PlayerbotAI::IsRanged(m))
+                    // a ranged member fights from its spell reach of the target, on its side of it
+                    stands.push_back(
+                        G3D::Vector3(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ()) +
+                        (G3D::Vector3(m->GetPositionX(), m->GetPositionY(), m->GetPositionZ()) -
+                         G3D::Vector3(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ()))
+                                .directionOrZero() *
+                            std::min(m->GetExactDist(target), Leader::Fight::LeaderSpellReach(m)));
+            G3D::Vector3 const fight(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+            for (Creature* mob : SoloSafety::PackAt(leader, targetCreature, fight, stands))
+                if (std::find(joiners.begin(), joiners.end(), mob) == joiners.end())
+                {
+                    joiners.push_back(mob);
+                    verdict.radius = std::max(verdict.radius, mob->GetExactDist(target));
+                    ++modelled;
+                }
+        }
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
-            if (!mob || mob == target || !mob->IsAlive() || !mob->IsHostileTo(leader) || mob->GetCharmerOrOwnerGUID())
+            if (!mob || mob == target || !mob->IsAlive() || !mob->IsHostileTo(leader) || mob->GetCharmerOrOwnerGUID() ||
+                std::find(joiners.begin(), joiners.end(), mob) != joiners.end())
                 continue;
+            // [party59] a neighbouring fight within the assistance radius of the party's: its mob fights beside the
+            // party's (coordinator 2026-11-09: b397 Januel / Tuihgrelfim's two Stonesplinter Scouts, judged 2, came 4+
+            // with the camp's wanderers and Namwe's fight 30 yd off)
+            if (mob->IsInCombat() && mob->GetVictim() && !mob->GetVictim()->IsInRaidWith(leader) &&
+                mob->GetExactDist(target) <= assist)
+            {
+                joiners.push_back(mob);
+                verdict.radius = std::max(verdict.radius, mob->GetExactDist(target));
+                ++neighbours;
+                continue;
+            }
             bool const wanders = mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE;
             float const gap = wanders ? std::max(0.0f, mob->GetHomePosition().GetExactDist(target) -
                                                            mob->GetWanderDistance())
@@ -4125,6 +4164,9 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         verdict.mobs, damage, holder->GetName(), seconds, sumDps, verdict.ehpNow, verdict.ehpFull);
     if (noTank && holders.size() > 1)
         verdict.why += Acore::StringFormat(" ([holder29] no tank: priced on each of its {} members)", holders.size());
+    if (modelled || neighbours)
+        verdict.why += Acore::StringFormat(" ([party59] {} of them by the pull model, {} of a neighbouring fight)",
+                                           modelled, neighbours);
 
     return verdict;
 }

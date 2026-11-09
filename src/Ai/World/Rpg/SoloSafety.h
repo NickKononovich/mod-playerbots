@@ -48,6 +48,12 @@ namespace SoloSafety
     bool FightsWith(Player* bot, Player* member);
     // [deaths12] the largest wander distance of the map's spawns (a wanderer's reach is its home's plus it)
     float MapWanderReach(uint32 mapId);
+    // [party59] the pack a fight against `target` at `fight` brings, as the solo judge's pull model counts it (the
+    // linked pack, engage and periodic assistance calls with the wanderers' areas and patrol beats, the casters'
+    // stands, script calls, flee for help), the idle mobs whose reach covers a member's spot in `stands` too; the
+    // target itself is not in it. Judged with `bot`'s level and reach
+    std::vector<Creature*> PackAt(Player* bot, Creature* target, G3D::Vector3 const& fight,
+                                  std::vector<G3D::Vector3> const& stands);
 
     // DeathRecorder's DealDamage hook (map thread): the bot's dealt and taken damage, per fight and per attacker
     void NoteDamage(Unit* attacker, Unit* victim, uint32 damage);

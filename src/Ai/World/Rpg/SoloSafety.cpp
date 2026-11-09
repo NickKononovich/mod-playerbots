@@ -1259,6 +1259,63 @@ namespace SoloSafety
 
     float MapWanderReach(uint32 mapId) { return MaxWanderDistance(mapId); }
 
+    std::vector<Creature*> PackAt(Player* bot, Creature* target, G3D::Vector3 const& fight,
+                                  std::vector<G3D::Vector3> const& stands)
+    {
+        std::vector<Creature*> out;
+        if (!bot || !target || !target->IsInWorld())
+            return out;
+        // the idle mobs that may answer: round the fight as far as the largest reach of a call there goes (aggro or
+        // the target's script call, the assistance radius, the map's widest wander area)
+        float const assist = std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS));
+        float const range =
+            std::min(std::max(MAX_AGGRO_RADIUS, ScriptHelpOf(target).callRadius) + assist +
+                         sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS) +
+                         MaxWanderDistance(bot->GetMapId()),
+                     bot->GetMap()->GetVisibilityRange());
+        std::vector<Creature*> idle;
+        {
+            std::list<Unit*> units;
+            Acore::AnyUnitInObjectRangeCheck check(target, range);
+            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, units, check);
+            Cell::VisitObjects(target, searcher, range);
+            for (Unit* unit : units)
+            {
+                Creature* mob = unit->ToCreature();
+                if (!mob || mob == target || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                    !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                    continue;
+                idle.push_back(mob);
+            }
+        }
+        PullModel model(bot, target, idle);
+        model.Grow(&fight, nullptr);
+        // the members' own spots: an idle mob whose reach (its wander area, its patrol beat) covers where a member
+        // stands in the fight joins as well, and the pack grows from it
+        for (bool added = true; added;)
+        {
+            added = false;
+            for (Creature* c : model.idle)
+            {
+                if (model.Has(c))
+                    continue;
+                for (G3D::Vector3 const& at : stands)
+                    if (model.Reaches(c, at))
+                    {
+                        model.pack.push_back({c, true});
+                        added = true;
+                        break;
+                    }
+            }
+            if (added)
+                model.Grow(&fight, nullptr);
+        }
+        for (PullModel::Member const& m : model.pack)
+            if (m.mob != target)
+                out.push_back(m.mob);
+        return out;
+    }
+
     bool Applies(Player* bot)
     {
         if (!SoloPlayerBot(bot))
