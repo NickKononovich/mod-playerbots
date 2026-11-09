@@ -175,6 +175,7 @@ public:
     bool WalkAround(WorldPosition const& dest, BotPath const& path, float disToDest, bool deadEnd);
     // [deaths] the walk to `dest` is refused (`why`): its quest is postponed (the co-op seek asks for a party), its
     // gather node skipped, its state ended; true: the tick is used
+    void GiveUpWalkTargets(WorldPosition const& dest, std::string const& why);  // [grind25]
     bool RefusedWalk(WorldPosition const& dest, std::string const& why);
     // [holds9] a walk given up (refused, or proven out of walk: MOVE_FAR_LOOP, no route and no step): its spot is out
     // of the choices (TripRefused, the grind spot choice) until the bot's next level; one GIVE_UP line per spot

@@ -520,9 +520,37 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
     return WalkTo(dest);
 }
 
+void NewRpgBaseAction::GiveUpWalkTargets(WorldPosition const& dest, std::string const& why)
+{
+    // [grind25] the walk given up was a leg of a longer one - the walk to a trip's dock or portal, or a stretch of
+    // the state's own target (its grind spot, its camp): that target is given up too, else the next choice takes it
+    // again at once. b373 Enyssia L9 at (6064,557): "GRIND ... grind spot 3150 yd" -> its walk to the Auberdine
+    // dock refused (MAZE / MOVE_FAR_LOOP) -> IDLE -> the same grind spot, 126 STUCK
+    NewRpgInfo& info = botAI->rpgInfo;
+    std::vector<WorldPosition> targets;
+    if (info.trip.phase != NewRpgInfo::TripPhase::None || info.trip.dest != WorldPosition())
+        targets.push_back(info.trip.dest);
+    if (auto const* grind = std::get_if<NewRpgInfo::GoGrind>(&info.data))
+        targets.push_back(grind->pos);
+    if (auto const* camp = std::get_if<NewRpgInfo::GoCamp>(&info.data))
+        targets.push_back(camp->pos);
+    for (WorldPosition const& target : targets)
+        if (target != WorldPosition() && target != dest)
+        {
+            LOG_INFO("playerbots", "[grind25] {} L{} gives up ({:.0f},{:.0f}) map {} too: its walk's leg to ({:.0f},"
+                     "{:.0f}) was given up ({})",
+                     bot->GetName(), bot->GetLevel(), target.GetPositionX(), target.GetPositionY(), target.GetMapId(),
+                     dest.GetPositionX(), dest.GetPositionY(), why);
+            NoteWalkGivenUp(bot, target, why);
+        }
+    if (info.trip.phase != NewRpgInfo::TripPhase::Ride && info.trip.phase != NewRpgInfo::TripPhase::Leave)
+        info.ClearTrip();
+}
+
 bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const& why)
 {
     NewRpgStatus const status = botAI->rpgInfo.GetStatus();
+    GiveUpWalkTargets(dest, why);  // [grind25]
     // [holds9] b345 Ellosera: "MAZE no way to (-2050,-12000)" -> IDLE -> the same grind spot chosen again (its
     // TripRefused look had judged it safe at this level): the refused spot is out of the choices until the next level
     NoteWalkGivenUp(bot, dest, why);
@@ -2652,6 +2680,7 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             // again (LOOP alerts) and the caller logged a HOLD with no reason: the spot is remembered as out of walk
             // for the choices (TripRefused) until the next level, and the state change uses the tick
             NoteWalkGivenUp(bot, dest, "no walk from here gets it closer (MOVE_FAR_LOOP)");
+            GiveUpWalkTargets(dest, "no walk from here gets it closer (MOVE_FAR_LOOP)");  // [grind25]
             botAI->rpgInfo.ChangeToIdle();
             // [travel23] it stands where the navmesh has no polygon: no walk from here goes anywhere, every
             // destination is given up in turn. b372 Januel L12 at (0,1551,-69) on map 369, 26 yd over the tunnel floor
