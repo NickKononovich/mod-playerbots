@@ -119,6 +119,35 @@ bool NewRpgGroupNotReadyTrigger::IsActive()
             !NewRpgCoop::InParty(member->GetGUID().GetCounter()))
         {
             ownPlan += (ownPlan.empty() ? "" : ", ") + member->GetName();
+            // [group57] a group whose bot member plays its own plan is no group of the global leader's: no co-op /
+            // help party holds the two, no guild five - the member leaves it. Its combat still acted for the group
+            // (a tank's peel and incoming opener for the other, assists) in fights neither member's solo judge had
+            // priced: b397 Laaral L17 opened on Matis the Cruel L18 coming at Dekorhan ([lead96], [peel diag]),
+            // both died to him later; Emdyl L14 / Idunk L13 grouped across two continents all run. group43 split
+            // only a group whose member follows, and these members never run the follow
+            if (GuildHonest::IsHonestBot(bot) && GuildHonest::IsHonestBot(member) && !bot->GetMap()->Instanceable() &&
+                !NewRpgCoop::InParty(bot->GetGUID().GetCounter()) &&
+                !sGuildCoordinator.InSameActiveFive(bot->GetGUID().GetCounter(), member->GetGUID().GetCounter()))
+            {
+                static std::mutex splitLock;
+                // member -> the group its leave is queued for (one queued leave per group)
+                static std::unordered_map<uint32, ObjectGuid> splitQueued;
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(splitLock);
+                    ObjectGuid& queued = splitQueued[member->GetGUID().GetCounter()];
+                    fresh = queued != group->GetGUID();
+                    queued = group->GetGUID();
+                }
+                if (fresh)
+                    NewRpgCoop::LeaveStaleGroup(
+                        member, Acore::StringFormat("[group57] it plays its own plan, as its leader {} does ({:.0f} "
+                                                    "yd, {}): no co-op / help party or guild five holds the two",
+                                                    bot->GetName(), bot->GetExactDist2d(member),
+                                                    member->GetMapId() != bot->GetMapId() ? "another map"
+                                                    : member->GetZoneId() == bot->GetZoneId() ? "same zone"
+                                                                                              : "another zone"));
+            }
             continue;
         }
         // [wait19] a guild member no party of this leader holds (a group an earlier session left): no wait - it
