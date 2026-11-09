@@ -1002,6 +1002,31 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         if (LoginEscape())
             return true;
     }
+    // [login26] the server announced its shutdown (World::IsShuttingDown, the countdown every player sees): a bot out
+    // of a fight steps out of every idle mob's reach and stays there, as a player logs out away from a camp - its
+    // session ends there and its next login is no login inside a camp (b375: 6 deaths "logged in inside the camp",
+    // attacked before its first look: Irrua at 40 % in Amberweb Pass, Mytaeleas among the Blackwood)
+    if (sWorld->IsShuttingDown() && !bot->IsInCombat() && SoloSafety::Applies(bot))
+    {
+        if (bot->isMoving())
+            return true;
+        std::string who;
+        std::vector<G3D::Vector3> spots;
+        if (!SoloSafety::StandsInReach(bot, who, spots))
+            return HoldPosition(3 * IN_MILLISECONDS);
+        for (G3D::Vector3 const& at : spots)
+        {
+            Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+            if (!route.found || !route.complete)
+                continue;
+            if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+                continue;
+            LOG_INFO("playerbots", "[login26] {} L{} the server shuts down in {} s: steps out of the reach of {} to "
+                     "({:.0f},{:.0f})",
+                     bot->GetName(), bot->GetLevel(), sWorld->GetShutDownTimeLeft(), who, at.x, at.y);
+            return true;
+        }
+    }
     // [deaths13] hurt, out of a fight, in a wanderer's reach: the rest is taken out of every reach
     if (RestEscape())
         return true;
