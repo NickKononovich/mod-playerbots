@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgBaseAction.h"
+#include "SlowScope.h"  // [perf26]
 #include "BotPath.h"  // [lead109]
 #include "BroadcastHelper.h"
 #include "GuildCoordinator.h"  // [guild50] the quest reward pick
@@ -173,6 +174,11 @@ bool NewRpgBaseAction::SoloSafetyStep()
 
     if (SoloSafety::WaitsToRegen(bot))
     {
+        // [supply26] nothing to eat or drink: to a vendor that sells it first (StartVendorRun's restock), as a player
+        // buys water before sitting for minutes - b375: the regeneration sit came before the vendor look, so 1260
+        // "nothing to eat or drink" sits stayed (Orton 233, Orenem 172), five restock runs in all
+        if (!bot->IsInCombat() && StartVendorRun())
+            return true;
         if (!bot->IsSitState())
         {
             bot->StopMoving();
@@ -551,6 +557,7 @@ void NewRpgBaseAction::GiveUpWalkTargets(WorldPosition const& dest, std::string 
 
 bool NewRpgBaseAction::TramTrackStep()
 {
+    SlowScope slow("tram track step", &bot->GetName());  // [perf26]
     // [tram25] coordinator 2026-11-09: a bot left standing on a tram line's track off the navmesh (an earlier
     // session walked it into the tunnel: b364-b373 Januel at (0,1551,-69) over the Deeprun pit) gets off it the way a
     // player does - the next car that comes under it carries it (the core's own test of the car's model under it,
@@ -4842,6 +4849,29 @@ bool NewRpgBaseAction::LoginEscape()
                  bot->GetName(), bot->GetLevel(), who, at.x, at.y, route.length);
         return true;
     }
+    // [login26] coordinator 2026-11-09: a login inside a camp leaves at once by the safest way out, not stays: no way
+    // clear of every reach - the shortest complete one out (the reaches it crosses are the ones it stands in already;
+    // staying keeps it in all of them). b375: 6 deaths "logged in inside the camp"
+    G3D::Vector3 const* best = nullptr;
+    float bestYd = 0.0f;
+    for (G3D::Vector3 const& at : spots)
+    {
+        Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+        if (!route.found || !route.complete)
+            continue;
+        if (!best || route.length < bestYd)
+        {
+            best = &at;
+            bestYd = route.length;
+        }
+    }
+    if (best && MoveTo(bot->GetMapId(), best->x, best->y, best->z, false, false, false, true))
+    {
+        LOG_INFO("playerbots", "[login26] {} L{} logged in inside the reach of {}: no way out clear of every reach, "
+                 "leaves by the shortest one to ({:.0f},{:.0f}), {:.0f} yd",
+                 bot->GetName(), bot->GetLevel(), who, best->x, best->y, bestYd);
+        return true;
+    }
     LOG_INFO("playerbots", "[rpg] {} L{} LOGIN_ESCAPE reason: logged in within the reach of {}: no step out on a "
              "walk it takes ({} spots looked at) - stays, the survival kit judges what comes",
              bot->GetName(), bot->GetLevel(), who, spots.size());
@@ -6751,6 +6781,7 @@ namespace
 // draenei grinding in Bloodmyst against Darkshore's quests
 float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts)
 {
+    SlowScope slow("grind cycle", bot ? &bot->GetName() : nullptr);  // [perf26]
     uint8 const level = bot->GetLevel();
     uint8 const gray = Acore::XP::GetGrayLevel(level);
     float const radius = sPlayerbotAIConfig.SightDistance;

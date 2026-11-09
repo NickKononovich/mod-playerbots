@@ -144,6 +144,21 @@ namespace Leader::Dungeon
         }
     }
 
+    // [lfg26] the planned roles of the queued members, read by their map threads (the role check packet): a leaf
+    // lock of its own, written by the world thread's run updates
+    namespace
+    {
+        std::mutex plannedRolesLock;
+        std::unordered_map<ObjectGuid, uint8> plannedRoles;
+    }
+
+    uint8 DungeonRuns::PlannedLfgRoles(ObjectGuid member) const
+    {
+        std::lock_guard<std::mutex> guard(plannedRolesLock);
+        auto const found = plannedRoles.find(member);
+        return found == plannedRoles.end() ? 0 : found->second;
+    }
+
     bool DungeonRuns::CanQueue(FiveRunRequest const& request, std::string& why) const
     {
         if (!sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER))
@@ -415,6 +430,11 @@ namespace Leader::Dungeon
                 for (FiveRunMember const& member : request.members)
                     if (member.guid == request.leader)
                         role = member.role;
+                {
+                    std::lock_guard<std::mutex> guard(plannedRolesLock);  // [lfg26] before the check is sent
+                    for (FiveRunMember const& member : request.members)
+                        plannedRoles[member.guid] = LfgRoles(member.role, member.guid == request.leader);
+                }
                 sLFGMgr->JoinLfg(leader, LfgRoles(role, true), dungeons, "");
                 if (sLFGMgr->GetState(run.groupGuid) == lfg::LFG_STATE_NONE)
                 {
@@ -569,6 +589,11 @@ namespace Leader::Dungeon
 
     void DungeonRuns::End(Run& run, std::string const& result, std::string const& reason, bool lfgRefused)
     {
+        {
+            std::lock_guard<std::mutex> guard(plannedRolesLock);  // [lfg26]
+            for (FiveRunMember const& member : run.request.members)
+                plannedRoles.erase(member.guid);
+        }
         FiveRunReport report;
         report.result = result;
         report.reason = reason;

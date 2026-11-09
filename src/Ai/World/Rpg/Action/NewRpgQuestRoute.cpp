@@ -6,6 +6,7 @@
 
 #include "NewRpgQuestRoute.h"
 
+#include "SlowScope.h"  // [perf26]
 #include "GuildCoordinator.h"
 #include "Group.h"  // [town12]
 #include "Playerbots.h"  // [town12] GET_PLAYERBOT_AI
@@ -1010,6 +1011,7 @@ std::string NewRpgBaseAction::TrimRoute(QuestRoute::BotRoute& r,
 
 QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
 {
+    SlowScope slow("route build", &bot->GetName());  // [perf26]
     QuestRoute::BotRoute& r = QuestRoute::Of(bot->GetGUID().GetCounter());
     std::vector<std::pair<WorldPosition, std::string>> towns;
     sGuildCoordinator.TownStops(bot, towns);

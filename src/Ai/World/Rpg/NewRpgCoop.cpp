@@ -6,6 +6,7 @@
 
 #include "NewRpgCoop.h"
 
+#include "SlowScope.h"  // [perf26]
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -3651,6 +3652,7 @@ bool HelpChat(Player* sender, std::string const& msg, Player* receiver)
 
 void UpdateHelp()
 {
+    SlowScope slow("help update");  // [perf26]
     Out out;
     std::vector<std::pair<ObjectGuid, std::string>> replies;
     std::vector<std::pair<ObjectGuid, uint32>> whispers;
@@ -3764,6 +3766,7 @@ bool LeaveStaleGroup(Player* bot, std::string const& why)
 
 SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
 {
+    SlowScope slow("party judge", leader ? &leader->GetName() : nullptr);  // [perf26]
     SoloSafety::Verdict verdict;
     verdict.kind = SoloSafety::Verdict::Kind::Refuse;
     PlayerbotAI* botAI = leader ? GET_PLAYERBOT_AI(leader) : nullptr;

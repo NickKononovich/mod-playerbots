@@ -5,6 +5,7 @@
  */
 
 #include "LfgActions.h"
+#include "LeaderDungeonRun.h"  // [lfg26]
 #include "AiFactory.h"
 #include "ItemVisitors.h"
 #include "LFGMgr.h"
@@ -202,6 +203,18 @@ bool LfgRoleCheckAction::Execute(Event /*event*/)
 {
     if (bot->GetGroup())
     {
+        // [lfg26] a member of a guild five's queued run answers with the role the five planned for it (the run set it
+        // with UpdateRoleCheck); its own role guess sent a different set and the check failed (b375 five 1, Ragefire
+        // Chasm: "the group was not moved (role check / proposal)" 1 s after the queue)
+        if (uint8 const planned = Leader::Dungeon::DungeonRuns::Instance().PlannedLfgRoles(bot->GetGUID()))
+        {
+            LOG_INFO("playerbots", "[lfg26] {} answers the role check with its five's planned roles {}",
+                     bot->GetName(), uint32(planned));
+            WorldPacket* packet = new WorldPacket(CMSG_LFG_SET_ROLES);
+            *packet << planned;
+            bot->GetSession()->QueuePacket(packet);
+            return true;
+        }
         uint32 newRoles = GetRoles();
         // if (currentRoles == newRoles)
         //     return false;
