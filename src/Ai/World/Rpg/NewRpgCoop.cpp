@@ -3690,6 +3690,25 @@ void UpdateHelp()
                 HelpEndLocked(party, party.requester.GetCounter(), "the human left the group", false, now, out);
         }
         // the open requests: the global leader's look (a refusal is logged and answered once per reason)
+        // [help32] the pricing (AssignLocked: every candidate's walk) runs for a few requests per update, in turn by
+        // request id from where the last update stopped - a queue, no clock; the cheap drop checks run for all.
+        // b385: help update 145 ms avg, 1209 ms max over 246 updates, every open request priced every update
+        constexpr uint32 ASSIGNS_PER_UPDATE = 3;  // a cost bound per update, not a behaviour rule
+        static uint32 assignCursor = 0;          // behind the board's lock: the last request id priced
+        std::vector<uint32> assignOrder;
+        for (auto const& [id, r] : helpRequests)
+            if (!r.party)
+                assignOrder.push_back(id);
+        std::rotate(assignOrder.begin(),
+                    std::upper_bound(assignOrder.begin(), assignOrder.end(), assignCursor), assignOrder.end());
+        std::set<uint32> assignNow;
+        for (uint32 id : assignOrder)
+        {
+            if (assignNow.size() >= ASSIGNS_PER_UPDATE)
+                break;
+            assignNow.insert(id);
+            assignCursor = id;
+        }
         for (auto itr = helpRequests.begin(); itr != helpRequests.end();)
         {
             HelpRequest& r = itr->second;
@@ -3727,6 +3746,11 @@ void UpdateHelp()
                 continue;
             }
             std::string reply;
+            if (!r.human && !assignNow.count(itr->first))
+            {
+                ++itr;  // [help32] its turn comes in a later update
+                continue;
+            }
             if (AssignLocked(r, out, reply) && r.human)
                 whispers.emplace_back(r.requester, r.party);
             if (r.human && !reply.empty())
