@@ -42,6 +42,15 @@ namespace
         uint64 xpQuest = 0, xpKill = 0, xpOther = 0;
         uint32 kills = 0, useful = 0, turnIns = 0;
         double walked = 0.0;
+        // [pace23] the position samples: the moving ones (moving at both ends) against the run speed, and the
+        // seconds standing in a walking state (IDLE, GO_*, DO_QUEST, WANDER_*, DO_GATHER, DO_PROFESSION)
+        double movingYd = 0.0;
+        double movingRunYd = 0.0;  // what its run speed covers in those samples' time
+        uint64 movingMs = 0;
+        uint64 standingMs = 0;
+        uint64 walkFlagMs = 0;  // moving with the walk flag set
+        uint32 sampleMs = 0;
+        bool sampleMoving = false;
         uint32 mapId = 0;
         float x = 0.0f, y = 0.0f;
         bool hasPos = false;
@@ -73,6 +82,14 @@ namespace
                  "budget={}",
                  bot->GetName(), bot->GetLevel(), why, c.xpQuest, c.xpKill, c.xpOther, c.kills, c.useful,
                  uint64(c.walked), c.turnIns, budget.empty() ? "-" : budget);
+        // [pace23] the samples' measure of its walk: straight progress per moving second against its run, the
+        // seconds it stood in a walking state between the moves, the seconds it moved with the walk flag
+        LOG_INFO("playerbots",
+                 "[pace23] {} L{} moving {:.0f} s covered {:.0f} yd ({:.0f} % of its run); stood {:.0f} s in walking "
+                 "states; walk flag {:.0f} s",
+                 bot->GetName(), bot->GetLevel(), double(c.movingMs) / IN_MILLISECONDS, c.movingYd,
+                 c.movingRunYd > 0.0 ? 100.0 * c.movingYd / c.movingRunYd : 0.0,
+                 double(c.standingMs) / IN_MILLISECONDS, double(c.walkFlagMs) / IN_MILLISECONDS);
     }
 
     // the kill served a quest: its entry (or kill credit) is an objective of a quest in the log not yet past its
@@ -254,12 +271,36 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
     {
         std::lock_guard<std::mutex> guard(lock);
         Counters& c = counters[bot->GetGUID().GetCounter()];
+        uint32 const sampleNow = getMSTime();
+        bool const movingNow = bot->isMoving();
         if (c.hasPos && c.mapId == bot->GetMapId())
         {
             float const step = std::hypot(bot->GetPositionX() - c.x, bot->GetPositionY() - c.y);
             if (step < MAX_TICK_STEP)
                 c.walked += step;
+            // [pace23]
+            uint32 const dt = c.sampleMs ? getMSTimeDiff(c.sampleMs, sampleNow) : 0;
+            PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+            NewRpgStatus const status = ai ? ai->rpgInfo.GetStatus() : RPG_IDLE;
+            bool const walkingState = status != RPG_REST && status != RPG_TRAVEL_FLIGHT &&
+                                      status != RPG_OUTDOOR_PVP && !bot->IsInCombat() && !bot->IsInFlight();
+            if (dt && dt < 30 * IN_MILLISECONDS && step < MAX_TICK_STEP)
+            {
+                if (c.sampleMoving && movingNow)
+                {
+                    c.movingMs += dt;
+                    c.movingYd += step;
+                    c.movingRunYd += bot->GetSpeed(MOVE_RUN) * float(dt) / float(IN_MILLISECONDS);
+                    if (bot->IsWalking())
+                        c.walkFlagMs += dt;
+                }
+                else if (!c.sampleMoving && !movingNow && walkingState && !bot->IsSitState() &&
+                         !bot->IsNonMeleeSpellCast(false))
+                    c.standingMs += dt;
+            }
         }
+        c.sampleMs = sampleNow;
+        c.sampleMoving = movingNow;
         c.hasPos = true;
         c.mapId = bot->GetMapId();
         c.x = bot->GetPositionX();

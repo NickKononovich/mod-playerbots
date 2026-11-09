@@ -8418,6 +8418,35 @@ uint32 PlayerbotAI::GetReactDelay()
         Leader::Orders::IsOpen(bot->GetGUID()))
         return base * 2;
 
+    // [pace23] coordinator 2026-11-09: a questing bot out in the world looks again when its walk needs it, not 1-3 s
+    // (10-30 x base) later, nor 2-20 s in a town (the resting flag below). b372: the bots covered 4.3-5.3 yd a second
+    // of their walking states against their 7 yd/s run - every leg of a far walk (up to its sight, 100 yd, 14 s)
+    // ended in a stand until the random idle tick, and every step of a hand-in, a pickup, a vendor visit (one state
+    // change a tick) waited one; in towns (the resting flag) 2-20 s each. While it moves it sleeps until its spline
+    // nears the end its walk re-plans at (MoveFarToDirect: REPLAN_YD left), never longer than the old idle tick's top;
+    // standing between the steps of a walking / working state it looks at twice the base (its own stops - eating,
+    // a rest, a flight, a cast - keep the idle tick)
+    if (!bot->IsInCombat() && bot->GetMap() && !bot->GetMap()->Instanceable() &&
+        HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+    {
+        constexpr float REPLAN_YD = 10.0f;  // NewRpgBaseAction::MoveFarToDirect's "remaining > 10" walk on
+        NewRpgStatus const status = rpgInfo.GetStatus();
+        if (bot->isMoving() && bot->movespline && !bot->movespline->Finalized())
+        {
+            float const speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+            int32 const wake = bot->movespline->timeElapsed() - int32(REPLAN_YD / speed * IN_MILLISECONDS);
+            return std::clamp<uint32>(uint32(std::max<int32>(wake, 0)), base, base * 30);
+        }
+        // a hold it set itself (ForceToWait / HoldPosition: the "last movement" wait) is slept through to its end
+        LastMovement& last = aiObjectContext->GetValue<LastMovement&>("last movement")->Get();
+        uint32 const now = getMSTime();
+        if (!bot->isMoving() && last.msTime + uint32(last.lastdelayTime) > now)
+            return std::clamp<uint32>(last.msTime + uint32(last.lastdelayTime) - now, base, base * 30);
+        if (status != RPG_REST && status != RPG_TRAVEL_FLIGHT && status != RPG_OUTDOOR_PVP && !bot->IsSitState() &&
+            !bot->IsNonMeleeSpellCast(false) && !bot->IsInFlight())
+            return base * 2;
+    }
+
     // When not resting, return 10-30 times the base
     if (!bot->HasFlag(PLAYER_FLAGS, PLAYER_FLAGS_RESTING))
         return base * urand(10, 30);
