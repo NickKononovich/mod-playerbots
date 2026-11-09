@@ -239,6 +239,9 @@ protected:
     // [deaths13] hurt out of a fight within an idle mob's reach (a wanderer's area): the step out of every reach to
     // rest there; true when it walks
     bool RestEscape();
+    // [red63] it stands in an area red for its level (AreaTable area_level) and its walk out to its bind point / hub
+    // is refused (zone38: every way passes red areas, or mobs it must not fight): its Hearthstone; true when cast
+    bool RedAreaEscape();
 
     /* MOVEMENT RELATED */
     bool MoveFarTo(WorldPosition dest);

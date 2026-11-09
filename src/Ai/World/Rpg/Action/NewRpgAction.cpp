@@ -1431,6 +1431,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             return true;
         }
     }
+    // [red63] inside an area red for it with no walk out: out by its Hearthstone
+    if (RedAreaEscape())
+        return true;
     // [deaths13] hurt, out of a fight, in a wanderer's reach: the rest is taken out of every reach
     if (RestEscape())
         return true;
@@ -1438,7 +1441,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // steps out of every reach before it plans, as a hurt one does: its next walk starts from there. b367: of 9
     // "attacked, no judged pull" deaths, 5 had the attacker idle 5-6 yd from its home at 1-5 yd from the bot standing
     // (Ainne, Tuihgrelfim, Thyllyn x2 by the Defias and Blackwood camps) - the bot stood in its reach
-    if (status == RPG_IDLE && !bot->IsInCombat() && !bot->isMoving() && SoloSafety::Applies(bot))
+    // [rest64] ... a co-op / help party's member too (it stands where the party fought: the same reaches)
+    if ((status == RPG_IDLE || status == RPG_REST) && !bot->IsInCombat() && !bot->isMoving() &&
+        (SoloSafety::Applies(bot) || NewRpgCoop::InParty(bot->GetGUID().GetCounter())))
     {
         std::string who;
         std::vector<G3D::Vector3> spots;
