@@ -7165,6 +7165,52 @@ float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot
     return std::max(cycle, camped);
 }
 
+float NewRpgBaseAction::KillRestSeconds(Player* bot, CreatureTemplate const* t, uint8 level, float killSeconds)
+{
+    if (!bot || !t)
+        return 0.0f;
+    float const regen = GrindRegen(bot);
+    return regen > 0.0f ? GrindMobDps(bot, t, level) * killSeconds / regen : 0.0f;
+}
+
+float NewRpgBaseAction::CampMobsPerSource(Player* bot, WorldPosition const& spot, uint32 sourceEntry)
+{
+    uint8 const level = bot->GetLevel();
+    uint8 const gray = Acore::XP::GetGrayLevel(level);
+    float const radius = sPlayerbotAIConfig.SightDistance;
+    FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+    auto const& all = GrindSpawns();
+    uint32 total = 0, source = 0;
+    int32 const reach = int32(std::ceil(radius / GRIND_CELL));
+    for (int32 dx = -reach; dx <= reach; ++dx)
+        for (int32 dy = -reach; dy <= reach; ++dy)
+        {
+            auto const cell = all.find(GrindCellKey(spot.GetMapId(), spot.GetPositionX() + float(dx) * GRIND_CELL,
+                                                    spot.GetPositionY() + float(dy) * GRIND_CELL));
+            if (cell == all.end())
+                continue;
+            for (GrindSpawn const& g : cell->second)
+            {
+                if (std::hypot(g.x - spot.GetPositionX(), g.y - spot.GetPositionY()) > radius)
+                    continue;
+                if (g.entry == sourceEntry)
+                {
+                    ++source;
+                    ++total;
+                    continue;
+                }
+                if (g.maxLevel <= gray || g.minLevel > level + 1)
+                    continue;  // a grey mob does not attack it; one far above is a wall, not a fight
+                CreatureTemplate const* tm = sObjectMgr->GetCreatureTemplate(g.entry);
+                FactionTemplateEntry const* faction = tm ? sFactionTemplateStore.LookupEntry(tm->faction) : nullptr;
+                if (!tm || !faction || (own && !faction->IsHostileTo(*own)))
+                    continue;
+                ++total;
+            }
+        }
+    return source ? float(total) / float(source) : 1.0f;
+}
+
 uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
 {
     uint8 const level = bot->GetLevel();

@@ -320,6 +320,11 @@ public:
     // vendor-sold reagents its known spells use (none left of one); "" = nothing. missingReagents: those item ids
     static std::string FiveGearShort(Player* bot, std::vector<uint32>* missingReagents = nullptr);
     static float GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts);
+    // [obj57] the zone23 cycle terms for an objective source: the rest a kill of `t` costs (its damage taken over the
+    // bot's regeneration), and the hostile spawns of the bot's level in sight of `spot` per spawn of `sourceEntry`
+    // (the other mobs the bot fights on its way among them; 1 when only the source lives there)
+    static float KillRestSeconds(Player* bot, CreatureTemplate const* t, uint8 level, float killSeconds);
+    static float CampMobsPerSource(Player* bot, WorldPosition const& spot, uint32 sourceEntry);
 protected:
     // [routeplan] the stops done, postponed or dropped are cut out of the order (no new build); a hand-in that opens
     // a follow-up the bot may take: its why (the route is built again)

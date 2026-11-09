@@ -2712,8 +2712,12 @@ void GuildCoordinator::LoadQuestValue()
         for (uint32 const credit : {tmpl.Entry, tmpl.KillCredit[0], tmpl.KillCredit[1]})
             if (auto const c = credit ? creditHp.find(credit) : creditHp.end(); c != creditHp.end())
                 lower(c->second, hp);
+        // [obj57] a trigger / unselectable bunny is no source to kill (b398 q9741: "17887 L4, 2 s a unit", the
+        // credit bunny itself, measured 83 s)
+        bool const killable = !(tmpl.flags_extra & CREATURE_FLAG_EXTRA_TRIGGER) &&
+                              !(tmpl.unit_flags & (UNIT_FLAG_NOT_SELECTABLE | UNIT_FLAG_NON_ATTACKABLE));
         for (uint32 const credit : {tmpl.Entry, tmpl.KillCredit[0], tmpl.KillCredit[1]})
-            if (credit && creditHp.count(credit))
+            if (credit && creditHp.count(credit) && killable)
                 objSources_[uint64(credit)].push_back({entry, 1.0f, hp, level});  // [obj48]
         LootTemplate const* loot = tmpl.lootid ? LootTemplates_Creature.GetLootFor(tmpl.lootid) : nullptr;
         if (!loot)
@@ -2730,6 +2734,18 @@ void GuildCoordinator::LoadQuestValue()
                 }
             });
     }
+    // [obj57] gameobject sources of a quest item (a chest, a node, a crate): their loot's chance, no fight (an open)
+    for (auto const& [goEntry, goTemplate] : *sObjectMgr->GetGameObjectTemplates())
+        if (uint32 const lootId = goTemplate.GetLootId())
+            if (LootTemplate const* loot = LootTemplates_Gameobject.GetLootFor(lootId))
+                loot->VisitEntries(
+                    [&](LootStoreItem const& item, float chance)
+                    {
+                        float const p = std::min(std::abs(chance) / 100.0f, 1.0f);
+                        if (!item.reference && p > 0.0f && itemHp.count(item.itemid))
+                            objSources_[(uint64(1) << 32) | item.itemid].push_back(
+                                {goEntry | 0x80000000u, p, 0.0f, 0});
+                    });
     // [obj48] the source creatures' spawns
     {
         std::unordered_set<uint32> wanted;
@@ -2740,6 +2756,10 @@ void GuildCoordinator::LoadQuestValue()
             if (wanted.count(data.id))
                 sourceSpawns_[data.id].emplace_back(uint16(data.mapid), data.posX, data.posY,
                                                     uint32(std::max<int32>(0, data.spawntimesecs)));
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())  // [obj57] the gameobject sources
+            if (wanted.count(data.id | 0x80000000u))
+                sourceSpawns_[data.id | 0x80000000u].emplace_back(uint16(data.mapid), data.posX, data.posY,
+                                                                  uint32(std::max<int32>(0, data.spawntimesecs)));
     }
     for (auto& [questId, q] : questStatic_)
         if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
@@ -2798,30 +2818,40 @@ bool GuildCoordinator::ObjectiveUnitSeconds(Player* p, uint64 key, float dps, fl
         if (spots.empty())
             continue;
         std::sort(spots.begin(), spots.end());
-        // the camp: the spawns round the nearest one (up to 20, a look's cost)
-        size_t const n = std::min<size_t>(spots.size(), 20);
-        double spacing = 0.0, respawn = 0.0;
-        for (size_t a = 0; a < n; ++a)
+        // [obj57] the camp: the source's spawns within sight of the nearest one (zone23's look), their mean respawn
+        float const cx = std::get<1>(spots.front()), cy = std::get<2>(spots.front());
+        double respawn = 0.0;
+        uint32 count = 0;
+        for (auto const& sp : spots)
+            if (std::hypot(std::get<1>(sp) - cx, std::get<2>(sp) - cy) <= sPlayerbotAIConfig.SightDistance)
+            {
+                respawn += double(std::get<3>(sp));
+                ++count;
+            }
+        respawn /= double(std::max<uint32>(count, 1));
+        double const share = double(std::max<uint32>(sharers, 1));
+        // [obj57] b398: obj49 was 2-7x optimistic. The terms it lacked (zone23's cycle):
+        //  - the walk to the next ALIVE spawn: the camp's spawns shared among its bots (Poisson: half the root of the
+        //    area per alive spawn), not the nearest neighbour of all spawns
+        //  - the rest each kill costs (its damage taken over the bot's regeneration)
+        //  - the other hostile mobs of its level among the source's spawns, fought on the way (their share)
+        bool const object = (src.entry & 0x80000000u) != 0;
+        float const r = sPlayerbotAIConfig.SightDistance;
+        double const walkNext =
+            0.5 * std::sqrt(M_PI * double(r) * double(r) / std::max(1.0, double(count) / share)) / double(speed);
+        double fight = 0.0, rest = 0.0, others = 1.0;
+        if (!object)
         {
-            float nn = -1.0f;
-            for (size_t b = 0; b < n; ++b)
-                if (a != b)
-                {
-                    float const d = std::hypot(std::get<1>(spots[a]) - std::get<1>(spots[b]),
-                                               std::get<2>(spots[a]) - std::get<2>(spots[b]));
-                    if (nn < 0.0f || d < nn)
-                        nn = d;
-                }
-            spacing += nn > 0.0f ? nn : 0.0f;
-            respawn += double(std::get<3>(spots[a]));
+            fight = double(src.hp) / double(dps);
+            if (CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(src.entry))
+                rest = NewRpgBaseAction::KillRestSeconds(p, t, std::max<uint8>(src.level, 1), float(fight));
+            others = NewRpgBaseAction::CampMobsPerSource(p, WorldPosition(p->GetMapId(), cx, cy, p->GetPositionZ()),
+                                                         src.entry);
         }
-        spacing = n > 1 ? spacing / double(n) : 0.0;
-        respawn /= double(n);
-        // a kill takes its fight and the walk to the next spawn; the camp yields at most its n spawns per respawn
-        // time, shared among the bots working it
-        double const fight = double(src.hp) / double(dps) + spacing / double(speed);
-        double const camp = respawn * double(std::max<uint32>(sharers, 1)) / double(n);
-        double const unit = std::max(fight, camp) / double(src.chance);
+        double const cycle = others * (fight + rest) + walkNext;
+        // the camp yields at most its spawns per respawn time, shared among the bots working it
+        double const camp = respawn * share / double(std::max<uint32>(count, 1));
+        double const unit = std::max(cycle, camp) / double(src.chance);
         double const walk = double(std::get<0>(spots.front())) / double(speed);
         // the source it farms: the one whose units come soonest (the walk to it and one unit)
         if (best < 0.0 || walk + unit < best)
