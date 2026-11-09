@@ -945,6 +945,76 @@ namespace Leader::Fight
         return nullptr;
     }
 
+    // [spot70] b402 rfc-n five 1: Keenonk's "combat spot: behind the target" was refused for its walk ("the spot or its
+    // walk is in the reach of Earthborer", the spot 21.9 yd off it, reach 17 + margin 2; Ragefire Trogg 24.4 yd, 18 + 2):
+    // the leader's route in a led dungeon refuses no reach, the plain walk crossed it, every spot of the ring had that
+    // walk, and the member stayed out of the fight (member_no_action x25 in the run)
+    bool LeaderWalkRound(Player* bot, Position const& spot, Unit* fightTarget, Position& corner, std::string& round)
+    {
+        round.clear();
+        if (!Leader::LEADER_SPOT_AGGRO_GUARD || !g_leaderIdle)
+            return false;
+        Position const from = bot->GetPosition();
+        auto const blockerOn = [&](Leader::RouteResult const& route) -> Creature*
+        {
+            for (G3D::Vector3 const& point : route.points)
+            {
+                Position const at(point.x, point.y, point.z);
+                if (fightTarget)
+                {
+                    if (Creature* mob = LeaderFightAggroAt(bot, at, fightTarget))
+                        return mob;
+                    continue;
+                }
+                if (Creature* mob = IdleAround(bot, at, [&](Creature* idle)
+                    {
+                        if (!IdleMobCovers(bot, idle, at))
+                            return false;
+                        return !(IdleMobCovers(bot, idle, from) && IdleGap(idle, at) >= IdleGap(idle, from));
+                    }))
+                    return mob;
+            }
+            return nullptr;
+        };
+        std::vector<G3D::Vector4> avoid;
+        constexpr uint32 BLOCKERS_MAX = 4;  // the walk round at most this many reaches (a search's cost bound)
+        for (uint32 i = 0; i <= BLOCKERS_MAX; ++i)
+        {
+            Leader::RouteResult const route = avoid.empty() ? Leader::Route(bot, spot)
+                                                            : Leader::RouteAvoiding(bot, spot, avoid);
+            if (!route.found || !route.complete || route.throughRefused)
+                return false;
+            Creature* blocker = blockerOn(route);
+            if (!blocker)
+            {
+                if (avoid.empty())
+                    return false;  // the plain walk is clear: nothing to walk round
+                // the first corner of the walk round that is not where it stands
+                for (G3D::Vector3 const& c : route.corners)
+                    if (bot->GetExactDist(c.x, c.y, c.z) > 2.0f)
+                    {
+                        corner = Position(c.x, c.y, c.z);
+                        return true;
+                    }
+                return false;
+            }
+            if (i == BLOCKERS_MAX)
+                return false;
+            // the blocker's reach as the guard models it: its aggro range and margin, a wanderer's from its home
+            // with its wander area, the walker's own combat reach
+            Position centre = blocker->GetPosition();
+            float radius = blocker->GetAggroRange(bot) + Leader::LEADER_SPOT_AGGRO_MARGIN + bot->GetCombatReach();
+            if (blocker->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
+            {
+                centre = blocker->GetHomePosition();
+                radius += blocker->GetWanderDistance();
+            }
+            avoid.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
+            round += (round.empty() ? "" : ", ") + blocker->GetName();
+        }
+        return false;
+    }
+
     // a candidate of a spot search: 0 rejected (an unpulled mob reaches it), 1 valid on new ground (kept as the
     // fallback), 2 valid on cleared ground (taken at once)
     int LeaderCandidate(Player* bot, Position const& spot, std::optional<Position>& fallback, Unit* fightTarget)

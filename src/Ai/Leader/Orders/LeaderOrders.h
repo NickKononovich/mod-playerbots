@@ -531,6 +531,9 @@ namespace Leader
     };
     RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to);
     RouteResult Route(Unit* walker, Position const& to);  // from where the walker stands
+    // [spot70] Route from where the walker stands that also refuses `avoid` (x, y, z, radius: reaches it walks round;
+    // throughRefused when no complete walk round them exists)
+    RouteResult RouteAvoiding(Unit* walker, Position const& to, std::vector<G3D::Vector4> const& avoid);
     // [lead804] the walk's length in yards for the leader's time estimates: the route's (Route) when it has a complete
     // walk, a partial one plus the straight rest, the straight line when there is none or the map has no navmesh.
     // Cached per walker kind and pair of ends (each end binned to 5 % of the straight gap, at least 2 yd: the
