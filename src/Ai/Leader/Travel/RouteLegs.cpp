@@ -205,7 +205,21 @@ namespace Leader::Travel
         int tileX = -1;
         int tileY = -1;
         navMesh->calcTileLoc(detourPoint, &tileX, &tileY);
-        return tileX >= 0 && tileY >= 0 && !navMesh->getTileAt(tileX, tileY, 0);
+        if (tileX < 0 || tileY < 0)
+            return false;
+        if (navMesh->getTileAt(tileX, tileY, 0))
+            return false;
+        // [nav-v2] MMAP_VERSION 21 splits a grid into N x N Detour tiles (tileWidth = SIZE_OF_GRIDS / N) and writes
+        // none for an empty sub-tile. As PathGenerator::HaveTile (MMapMgr::HasGridTileAt), a point counts as on a
+        // tile when any sub-tile of its 533 yd grid is loaded; with N = 1 this is the check above.
+        int const perGrid = std::max(1, int(std::lround(SIZE_OF_GRIDS / navMesh->getParams()->tileWidth)));
+        int const gridX = tileX - tileX % perGrid;
+        int const gridY = tileY - tileY % perGrid;
+        for (int y = gridY; y < gridY + perGrid; ++y)
+            for (int x = gridX; x < gridX + perGrid; ++x)
+                if (navMesh->getTileAt(x, y, 0))
+                    return false;
+        return true;
     }
 
     namespace
