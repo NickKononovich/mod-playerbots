@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <list>
 #include <map>
+#include <mutex>
 #include <set>
 
 #include "AiFactory.h"  // [lead774] the cat's spec
@@ -1577,8 +1578,36 @@ std::string EnergizeSplitOvertakes(Player* receiver, Player* caster, Player* tan
 void Tick(LeaderGroup& group, Player* tank, std::vector<Player*> const& seats, Player* healer, bool fighting,
           LogFn const& logEvent)
 {
-    if (!tank || !tank->IsAlive())
+    if (!tank)
         return;
+    if (!tank->IsAlive())
+    {
+        // [rez27] user 2026-11-09: the group's own standard play - a dead member (the tank leader too) is raised by a
+        // living member that knows a resurrection, right after the fight; it does not release while one can.
+        // Before, the whole support tick stopped with its tank: nobody was picked to raise the dead tank, its body
+        // got no resurrection verdict and released on the old wait (b375 rfc-n five 2: Brelir dead at 321 s, his
+        // paladin healer Farret alive, the ghost in Orgrimmar, the group held 191 s). The resurrection pass runs
+        // from a living member's frame (the healer first)
+        Player* anchor = healer && healer->IsAlive() && healer->IsInWorld() ? healer : nullptr;
+        for (Player* seat : seats)
+            if (!anchor && seat && seat->IsAlive() && seat->IsInWorld() && seat->GetMap() == tank->GetMap())
+                anchor = seat;
+        if (!anchor)
+            return;  // a wipe: nobody to raise anyone, the bodies release and run back
+        static std::mutex logLock;
+        static std::set<std::pair<ObjectGuid, ObjectGuid>> logged;
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> guard(logLock);
+            fresh = logged.insert({tank->GetGUID(), anchor->GetGUID()}).second;
+        }
+        if (fresh)
+            LOG_INFO("playerbots", "[rez27] {}: the tank {} is dead, the resurrection pass runs from {} ({} alive)",
+                     group.Run().runId, tank->GetName(), anchor->GetName(),
+                     std::count_if(seats.begin(), seats.end(), [](Player* p) { return p && p->IsAlive(); }));
+        TickResurrect(group, anchor, seats, healer, fighting, logEvent);
+        return;
+    }
     uint32 const now = getMSTime() ? getMSTime() : 1;
     TickPotions(group, tank, seats, healer, fighting, logEvent, now);
     TickDispels(group, tank, seats, healer, fighting, logEvent, now);

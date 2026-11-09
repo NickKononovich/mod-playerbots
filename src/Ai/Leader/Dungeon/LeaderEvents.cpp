@@ -5,6 +5,7 @@
  */
 
 #include "Common.h"
+#include "SoloSafety.h"  // [rez27] StandsInReach
 #include "LeaderEvents.h"
 #include "LeaderBuffing.h"  // [lead1333] BuffPassSec
 
@@ -775,7 +776,57 @@ namespace Leader::Dungeon
         if (!leaderDown)
             lead.leaderDownCleared = false;
         if (!tank->IsAlive())
+        {
+            // [rez27] user 2026-11-09: a dead leader commands nothing, but the group's standard play goes on - its
+            // living members raise the dead (the leader too) right after the fight: the resurrection pass runs with
+            // the living (Support::Tick picks a living frame for a dead tank). Before, this return left the dead tank
+            // unraised and its body released on the old wait (b375 rfc-n five 2: 191 s, the ghost in Orgrimmar)
+            Map* const deadMap = tank->GetMap();
+            std::vector<Player*> living;
+            Player* livingHealer = nullptr;
+            bool livingFight = false;
+            for (ObjectGuid const& groupMember : group.MemberGuids())
+            {
+                Player* bot = ObjectAccessor::FindPlayer(groupMember);
+                if (!bot || bot == tank || bot->GetMap() != deadMap || !bot->IsAlive() || !GET_PLAYERBOT_AI(bot))
+                    continue;
+                living.push_back(bot);
+                if (!livingHealer && PlayerbotAI::IsHeal(bot))
+                    livingHealer = bot;
+                livingFight |= bot->IsInCombat() && !bot->getAttackers().empty();
+            }
+            if (!living.empty())
+            {
+                auto const deadLog = [&](Player* bot, char const* kind, JsonObject fields)
+                {
+                    fields.Str("member", bot->GetName()).Str("event", kind);
+                    Decisions().Write(group.Run(), "leader", "leader_event", bot->GetGUID(), bot->GetName(), true,
+                                      fields);
+                };
+                Leader::Support::Tick(group, tank, living, livingHealer, livingFight, deadLog);
+                // [rez27] the wait itself is safe: a living member out of a fight that stands in an idle mob's reach
+                // (an aggro disc, a wanderer's area, a patrol's beat) steps out of every reach; the resurrecter's own
+                // walk (its External order) keeps its move
+                if (!livingFight)
+                    for (Player* bot : living)
+                    {
+                        Leader::MemberEvents now;
+                        if (bot->IsInCombat() || bot->isMoving() ||
+                            (Leader::Events::Get(bot->GetGUID(), now) && now.move != Leader::MoveEvent::None))
+                            continue;
+                        std::string who;
+                        std::vector<G3D::Vector3> spots;
+                        if (!SoloSafety::StandsInReach(bot, who, spots) || spots.empty())
+                            continue;
+                        G3D::Vector3 const& out = spots.front();
+                        if (Leader::Events::SetMove(bot->GetGUID(), Leader::MoveEvent::MoveTo,
+                                                    Position(out.x, out.y, out.z), Leader::LEADER_SPOT_TOLERANCE,
+                                                    "[rez27] waits for the dead out of the reach of " + who))
+                            deadLog(bot, "MoveTo", JsonObject().Str("why", "out of the reach of " + who));
+                    }
+            }
             return;
+        }
         if (tank->GetMapId() != group.MapId())
         {
             if (!lead.outsideLogged)

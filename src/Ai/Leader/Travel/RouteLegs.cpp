@@ -201,6 +201,25 @@ namespace Leader::Travel
         dtNavMesh const* navMesh = map->GetMapCollisionData().GetMMapData().GetNavMesh();
         if (!navMesh)
             return false;  // a map without mmaps at all: the straight walk is the core's own movement
+        // [nav26] a point outside the instance's own grids is a caller's error (another map's point), not a hole:
+        // logged once per map and grid, never read as a missing tile (b375: Orgrimmar points on map 389)
+        if (!map->IsGridLoaded(point.x, point.y))
+        {
+            static std::mutex lock;
+            static std::set<std::tuple<uint32, int32, int32>> logged;
+            int32 const gridX = int32(32.0f - point.x / SIZE_OF_GRIDS);
+            int32 const gridY = int32(32.0f - point.y / SIZE_OF_GRIDS);
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(lock);
+                fresh = logged.insert({map->GetId(), gridX, gridY}).second;
+            }
+            if (fresh)
+                LOG_ERROR("playerbots", "[nav26] a point ({:.1f} {:.1f} {:.1f}) outside map {}'s own grids (grid {} {}) "
+                          "was asked for its navmesh tile: a caller paired another map's point with this map - no hole",
+                          point.x, point.y, point.z, map->GetId(), gridX, gridY);
+            return false;
+        }
         float const detourPoint[3] = {point.y, point.z, point.x};
         int tileX = -1;
         int tileY = -1;
@@ -254,6 +273,21 @@ namespace Leader::Travel
         if (startAt)
             start = *startAt;
         float const straight = (dest - start).length();
+
+        // [nav26] a destination outside an instance's own grids is another map's point (a caller's error, logged by
+        // NavTileMissing): no walk, never the straight line toward it
+        if (Map const* map = from->GetMap(); map && map->Instanceable() &&
+                                             map->GetMapCollisionData().GetMMapData().GetNavMesh() &&
+                                             !map->IsGridLoaded(dest.x, dest.y))
+        {
+            NavTileMissing(map, dest);  // its [nav26] line
+            result.reachable = false;
+            result.complete = false;
+            result.points = {start};
+            result.length = straight;
+            result.end = start;
+            return result;
+        }
 
         Movement::PointsArray points;
         G3D::Vector3 end;
@@ -396,6 +430,38 @@ namespace Leader::Travel
 
     PathResult EvaluatePath(Player* from, WorldObject* to)
     {
+        // [nav26] the target's point and the walker's map from the same frame: a target on another map (b375 the
+        // five's dead leader Brelir released to Orgrimmar's graveyard, map 1 (1177.8,-4464.2), while its members
+        // stood in Ragefire Chasm, map 389) is no walk at all - before, its map-1 point was searched on map 389's
+        // navmesh, read as three "missing" tiles (3892940 / 3892840 / 3892839) and walked straight, +826 yd
+        if (!from || !to || to->GetMapId() != from->GetMapId() || to->GetInstanceId() != from->GetInstanceId())
+        {
+            if (from && to)
+            {
+                static std::mutex lock;
+                static std::set<std::pair<ObjectGuid, ObjectGuid>> logged;
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(lock);
+                    fresh = logged.insert({from->GetGUID(), to->GetGUID()}).second;
+                }
+                if (fresh)
+                    LOG_INFO("playerbots", "[nav26] {} (map {}) asked for a walk to {} on map {} (instance {} / {}): no "
+                             "walk across maps",
+                             from->GetName(), from->GetMapId(), to->GetName(), to->GetMapId(), from->GetInstanceId(),
+                             to->GetInstanceId());
+            }
+            PathResult none;
+            none.reachable = false;
+            none.complete = false;
+            if (from)
+            {
+                G3D::Vector3 const here(from->GetPositionX(), from->GetPositionY(), from->GetPositionZ());
+                none.points = {here};
+                none.end = here;
+            }
+            return none;
+        }
         return RoutePath(from, to->GetPositionX(), to->GetPositionY(), to->GetPositionZ());
     }
 

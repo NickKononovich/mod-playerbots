@@ -309,6 +309,8 @@ public:
     // [vendor20] the global leader marked items of the bot for sale (its bag relief, unwanted gear): a vendor visit
     // has something to sell whatever its own sale keeps
     bool HasMarkedSale(Player* bot) const;
+    // [supply27] map thread: the bot's five waits for its supplies (New RPG's vendor run restocks below the line)
+    bool SupplyWanted(Player* bot) const;
     void SetOrderStatus(Player* bot, std::string const& status);
     void OnLoot(Player* player, Item* item, uint32 count);
     // [lock23] the loots a hook got while this thread held lock_: taken at the next Update, out of the lock
@@ -494,6 +496,13 @@ private:
         uint32 raidLeaderLow{0};
         uint32 fiveId{0};
         std::string fiveRefused;  // [guild60] map thread: no safe walk to the five's entrance (the five is called off)
+        // [supply27] the five's supply check: what it lacks before the five goes in ("" = supplied), its vendor run
+        // asked (the map thread yields its five step), seen started, and done (supplied or no run could be made)
+        std::string supplyShort;
+        bool supplyAsked = false;
+        bool supplyYielded = false;
+        bool supplyStarted = false;
+        bool supplyDone = false;
         // [guild80] map thread: no safe walk to the Guild Master / vault at this level (planning skips it until the
         // next level)
         std::string foundRefused;

@@ -13,6 +13,7 @@
 
 #include "GuildCoordinator.h"
 
+#include "BuyAction.h"  // [supply27] CountBagFood, RESTOCK_*
 #include <algorithm>
 #include <cctype>
 #include <cstring>
@@ -740,8 +741,12 @@ bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) cons
 
 std::string GuildCoordinator::PlanRole(uint32 low, Player* p) const
 {
+    // [five27] the plan's role holds only when the bot plays it now (its spec and strategies): b375 rfc-n five 2 had
+    // Farret, planned a healer, as its healer while he played retribution - he cast Judgement and no heal in the
+    // whole pull, the gate counted his 86 hps, the tank died at 321 s (pull 13, 5 mobs, 28 s)
     if (PlanRow const* row = Row(low))
-        if (row->role == "tank" || row->role == "healer")
+        if ((row->role == "tank" && PlayerbotAI::IsTank(p, true)) ||
+            (row->role == "healer" && PlayerbotAI::IsHeal(p, true)))
             return row->role;
     if (PlayerbotAI::IsTank(p, true))
         return "tank";
@@ -868,6 +873,8 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
             five.enchanterLow = low;
         BotState& st = bots_[low];
         st.fiveId = five.id;
+        st.supplyShort.clear();  // [supply27] a new five, or none: its supply check starts again
+        st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
         st.fiveRefused.clear();
         // the five's order comes first: the member leaves its quest now (New RPG takes the order at IDLE)
         if (PlayerbotAI* ai = p ? GET_PLAYERBOT_AI(p) : nullptr)
@@ -949,6 +956,8 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
     {
         BotState& st = bots_[low];
         st.fiveId = 0;
+        st.supplyShort.clear();  // [supply27] a new five, or none: its supply check starts again
+        st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
         st.fiveRefused.clear();
         if (st.run && st.runType == GuildOrderType::DUNGEON)
         {
@@ -1049,6 +1058,47 @@ void GuildCoordinator::UpdateFives()
                 cancel.emplace_back(id, why);
                 continue;
             }
+            // [supply27] user design: before the five queues or walks in each bot member has its supplies - drink
+            // for a mana user, food for all (BuyAction's restock line) - else it restocks at a vendor with its own
+            // money first (its New RPG vendor run; the quartermaster's trade tops it up inside, GuildTransfer c.).
+            // A member whose run was made or could not be made goes in as it is (logged)
+            bool supplied = true;
+            for (uint32 low : five.members)
+            {
+                Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+                if (!p || IsHuman(p) || !GET_PLAYERBOT_AI(p))
+                    continue;
+                BotState& st = bots_[low];
+                std::string shortOf;
+                uint32 const drink = p->GetMaxPower(POWER_MANA) ? CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK)
+                                                                : RESTOCK_FOOD_MIN;
+                uint32 const food = CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
+                if (drink < RESTOCK_FOOD_MIN)
+                    shortOf = "drink " + std::to_string(drink);
+                if (food < RESTOCK_FOOD_MIN)
+                    shortOf += (shortOf.empty() ? "" : ", ") + ("food " + std::to_string(food));
+                // [supply27] ammo (a hunter) and the vendor-sold reagents of its spells, the same way
+                if (std::string const gear = NewRpgBaseAction::FiveGearShort(p); !gear.empty())
+                    shortOf += (shortOf.empty() ? "" : ", ") + gear;
+                if (shortOf.empty() || st.supplyDone)
+                {
+                    if (!shortOf.empty() && st.supplyShort != "in: " + shortOf)
+                        LOG_INFO("playerbots", "[supply27] five {} ({}): {} goes in short of {} (its restock was made "
+                                 "or could not be made)",
+                                 id, five.contentKey, Who(low), shortOf);
+                    st.supplyShort = shortOf.empty() ? "" : "in: " + shortOf;
+                    continue;
+                }
+                supplied = false;
+                if (st.supplyShort != shortOf)
+                    LOG_INFO("playerbots", "[supply27] five {} ({}): waits for {}: short of {} (below {}), restocks "
+                             "at a vendor first",
+                             id, five.contentKey, Who(low), shortOf, RESTOCK_FOOD_MIN);
+                st.supplyShort = shortOf;
+                st.supplyAsked = true;
+            }
+            if (!supplied)
+                continue;
             if (five.arrived.size() == five.members.size())
             {
                 ready.emplace_back(id, false);
@@ -1440,6 +1490,8 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
     {
         BotState& st = bots_[low];
         st.fiveId = 0;
+        st.supplyShort.clear();  // [supply27] a new five, or none: its supply check starts again
+        st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
         st.run = false;
         st.fiveRefused.clear();
     }
@@ -1541,6 +1593,25 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
     auto const itr = fives_.find(st.fiveId);
     if (itr == fives_.end() || itr->second.stage != GuildFive::Stage::Gather || !st.fiveRefused.empty())
         return false;
+    // [supply27] its restock before the five goes in: the five step yields to New RPG's vendor run (it sees
+    // SupplyWanted); a run seen started and ended, or none started after a yield, ends the wait
+    if (st.supplyAsked && !st.supplyDone)
+    {
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+        bool const running = ai && ai->rpgInfo.vendorRunEntry;
+        if (running)
+            st.supplyStarted = true;
+        else if (st.supplyStarted || st.supplyYielded)
+        {
+            st.supplyDone = true;
+            LOG_INFO("playerbots", "[supply27] {} L{} supply run {}", bot->GetName(), bot->GetLevel(),
+                     st.supplyStarted ? "made" : "could not be made (no vendor run started)");
+        }
+        else
+            st.supplyYielded = true;
+        if (!st.supplyDone)
+            return false;
+    }
     GuildFive const& five = itr->second;
     WorldPosition const& pos = five.entrance;
     // the solo bot walks to the entrance only on a safe walk ([guild14]); none: the five is called off
@@ -1560,6 +1631,15 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
     step.reason = "DUNGEON five " + std::to_string(five.id) + " -> " + five.dungeon + " entrance, " +
                   std::to_string(uint32(bot->GetExactDist(pos))) + " yd";
     return true;
+}
+
+bool GuildCoordinator::SupplyWanted(Player* bot) const
+{
+    if (!bot)
+        return false;
+    CoordLock guard(lock_, __func__);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    return itr != bots_.end() && itr->second.fiveId && itr->second.supplyAsked && !itr->second.supplyDone;
 }
 
 bool GuildCoordinator::InSameActiveFive(uint32 a, uint32 b) const
