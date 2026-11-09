@@ -2041,9 +2041,22 @@ struct HelpRequest
     // [help21] the inputs of its last refusal by price (requester level, free helpers, its quest): priced again only
     // when one changes (b368: Ginde's request priced 112 times, Salleas' 102)
     uint64 refusedKey = 0;
+    bool priceDropped = false;  // [help36] refused by its price: dropped by UpdateHelp after its look
 };
 
 std::map<uint32, HelpRequest> helpRequests;  // behind the board's lock
+// [help36] a bot request refused by its price, by requester, quest (0: a camp) and the camp's 100-yd cell: the
+// requester's level then - no new request for it until that level changes (behind the board's lock)
+std::map<std::tuple<uint32, uint32, int32, int32>, uint8> priceRefused;
+std::tuple<uint32, uint32, int32, int32> PriceRefusedKey(Player* bot, uint32 questId, WorldPosition const& at)
+{
+    return {bot->GetGUID().GetCounter(), questId, int32(at.GetPositionX() / 100.0f), int32(at.GetPositionY() / 100.0f)};
+}
+bool PriceRefusedLocked(Player* bot, uint32 questId, WorldPosition const& at)
+{
+    auto const found = priceRefused.find(PriceRefusedKey(bot, questId, at));
+    return found != priceRefused.end() && found->second == bot->GetLevel();
+}
 uint32 nextHelp = 1;
 
 // the units of the requester's objective (a whole quest: the sum of its kill / loot objectives) and whether one is
@@ -2586,6 +2599,14 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     {
         r.refusedKey = priceKey;  // [help21]
         std::string const why = "the help costs more than it gives: " + priced;
+        // [help36] a bot's walled request no helper is worth: dropped, its quest stays postponed (the wall's own
+        // POSTPONE) and no new request for it until the requester's level changes - b387: 350 refusals for 17
+        // helps, Ganna's and Dandolar's one request each re-priced 56 times (a candidate's step changed the key)
+        r.priceDropped = true;
+        priceRefused[PriceRefusedKey(req, r.obj.questId, r.at)] = req->GetLevel();
+        out.logs.push_back(Acore::StringFormat("[help36] drop {} quest=q{} request={}{} reason=no help worth its "
+                                               "price at L{} (asked again at its next level): {}",
+                                               r.name, r.obj.questId, r.id, HelpStamp(), req->GetLevel(), priced));
 
         if (why != r.lastRefusal)
         {
@@ -3367,6 +3388,7 @@ void OnSpotRefused(PlayerbotAI* botAI, Player* bot, uint32 questId, int32 object
         bool asked = me.party != 0;
         for (auto const& [id, r] : helpRequests)
             asked = asked || (r.requester == bot->GetGUID() && r.obj.Same(obj));
+        asked = asked || PriceRefusedLocked(bot, questId, dest);  // [help36] refused by its price at this level
         if (!asked)
         {
             HelpRequest r;
@@ -3434,6 +3456,9 @@ void OnCampRefused(PlayerbotAI* botAI, Player* bot, WorldPosition const& dest, s
         for (auto const& [id, r] : helpRequests)
             if (r.requester == bot->GetGUID())
                 return;  // one open request per bot
+        if (PriceRefusedLocked(bot, 0, WorldPosition(bot->GetMapId(), v.at.GetPositionX(), v.at.GetPositionY(),
+                                                     v.at.GetPositionZ())))
+            return;  // [help36] refused by its price at this level
         HelpRequest r;
         r.id = nextHelp++;
         r.requester = bot->GetGUID();
@@ -3797,6 +3822,11 @@ void UpdateHelp()
                 whispers.emplace_back(r.requester, r.party);
             if (r.human && !reply.empty())
                 replies.emplace_back(r.requester, reply);
+            if (r.priceDropped)  // [help36]
+            {
+                itr = helpRequests.erase(itr);
+                continue;
+            }
             ++itr;
         }
         if (deferred)  // [help34] the queue at work: one line per update that left requests for later
