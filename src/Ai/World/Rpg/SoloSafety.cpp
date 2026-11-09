@@ -3261,7 +3261,7 @@ namespace SoloSafety
             float const assistRadius = model.assist;
             G3D::Vector3 const leg = to - from;
             float const legLen = std::max(std::hypot(leg.x, leg.y), 0.01f);
-            auto const chaseCovers = [&](Creature* chaser, float seconds, Creature* c)
+            auto const chaseCovers = [&](Creature* chaser, float seconds, Creature* c, bool calls)
             {
                 float const along0 = std::clamp(((chaser->GetPositionX() - from.x) * leg.x +
                                                  (chaser->GetPositionY() - from.y) * leg.y) /
@@ -3273,7 +3273,7 @@ namespace SoloSafety
                                                    legLen,
                                                along0, along1);
                 float const px = from.x + leg.x * (along / legLen), py = from.y + leg.y * (along / legLen);
-                if (c->CanAssistTo(chaser, bot) &&
+                if (calls && c->CanAssistTo(chaser, bot) &&
                     std::hypot(c->GetPositionX() - px, c->GetPositionY() - py) <= assistRadius)
                     return true;
                 // [runpast60] ... or a roamer that comes within the assistance radius of the chase's stretch from
@@ -3288,7 +3288,7 @@ namespace SoloSafety
                                          from.z + leg.z * (a / legLen));
                     if (reachCovers(c, p, 0.0f))
                         return true;  // its own aggro on the running bot
-                    if (roams && c->CanAssistTo(chaser, bot))
+                    if (calls && roams && c->CanAssistTo(chaser, bot))
                     {
                         G3D::Vector4 home = AggroDisc(c, bot);  // the wanderer's area centre and its wander
                         float const wanderOnly = home.w - c->GetAggroRange(bot) - bot->GetCombatReach();
@@ -3355,13 +3355,16 @@ namespace SoloSafety
                                                                                  : with.damage + chase.damage;
                 with.seconds = std::max(with.seconds, chase.seconds);
                 added.push_back({key, chase.damage});
-                if (assistRadius <= 0.0f || chaser->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE) ||
-                    chase.damage == std::numeric_limits<float>::max())
+                if (chase.damage == std::numeric_limits<float>::max())
                     continue;
+                // [runpast61] the chase's assistance calls only when the chaser makes them; a mob whose aggro reach the
+                // stretch crosses comes at the running bot by itself either way (its own aggro, no call)
+                bool const calls =
+                    assistRadius > 0.0f && !chaser->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE);
                 for (Creature* c : around)
                     if (c != chaser && std::find(chasers.begin(), chasers.end(), c) == chasers.end() &&
                         !chasing.count(c->GetGUID().GetRawValue()) &&
-                        chaseCovers(chaser, chase.seconds, c))
+                        chaseCovers(chaser, chase.seconds, c, calls))
                         chasers.push_back(c);  // its own chase and calls are counted in turn
             }
             price = with.damage;
