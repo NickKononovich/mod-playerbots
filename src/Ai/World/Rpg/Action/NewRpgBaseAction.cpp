@@ -2482,7 +2482,11 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                       return a->carried ? a->gap < b->gap : a->damage < b->damage;
                   });
         constexpr size_t PATH_TRIES = 16;  // search cost bound, not a behaviour rule
-        for (size_t i = 0; i < order.size() && i < PATH_TRIES && kept.empty(); ++i)
+        // [island32] every landing that leads on (within the tries), not only the first: the order put the falls
+        // first, the first leading one was a 94 yd "fall" past a jump's reach and the 2.4 yd step that also led on
+        // was never looked at (b384 / b385: 9-33 alarms at the Dolanaar inn's 17-polygon island, 2.4 yd off the
+        // main region at the same height)
+        for (size_t i = 0; i < order.size() && i < PATH_TRIES; ++i)
             if (leadsOn(*order[i]))
                 kept.push_back(*order[i]);
         if (kept.empty())
@@ -2633,10 +2637,23 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                                           "{:.0f} yd off",
                                           best->to.x, best->to.y, best->to.z, best->gap));
     }
+    // [island32] a jump's reach (the run speed over the core jump's air time from its drop): a landing past it is
+    // no jump - the least damage of those within it, else the nearest landing (refused below with the alarm)
+    float const jumpSpeed = bot->GetSpeed(MOVE_RUN);
+    auto const jumpReach = [&](Way const& way)
+    {
+        float const g = float(Movement::gravity);
+        float const air = (jumpSpeed + std::sqrt(jumpSpeed * jumpSpeed + 2.0f * g * std::max(way.drop, 0.0f))) / g;
+        return jumpSpeed * air;
+    };
     for (Way const& way : ways)
-        if (way.drop > 0.0f && way.damage < float(bot->GetHealth()) &&
+        if (way.drop > 0.0f && way.damage < float(bot->GetHealth()) && way.gap <= jumpReach(way) &&
             (!best || way.damage < best->damage || (way.damage == best->damage && way.gap < best->gap)))
             best = &way;
+    if (!best)
+        for (Way const& way : ways)
+            if (way.drop > 0.0f && way.damage < float(bot->GetHealth()) && (!best || way.gap < best->gap))
+                best = &way;
     if (!best)
     {
         Way const& first = ways.front();
@@ -2659,6 +2676,21 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
             char const* const where = onPolygon ? "on a navmesh island" : "off the navmesh";
             NavGap(bot, Acore::StringFormat("{}: the landing {:.0f} yd off is past a jump's reach ({:.0f} yd)", where,
                                             best->gap, speedXY * air));
+            // [island32] what it had to choose from: the nearest landings, each its gap, drop, step and lead-on
+            {
+                std::vector<Way const*> closeWays;
+                for (Way const& way : ways)
+                    closeWays.push_back(&way);
+                std::sort(closeWays.begin(), closeWays.end(), [](Way const* a, Way const* b) { return a->gap < b->gap; });
+                std::string list;
+                for (size_t i = 0; i < closeWays.size() && i < 4; ++i)
+                    list += Acore::StringFormat("{}({:.1f},{:.1f},{:.1f}) {:.1f} yd, drop {:.1f}, {}", list.empty() ? "" : "; ",
+                                                closeWays[i]->to.x, closeWays[i]->to.y, closeWays[i]->to.z, closeWays[i]->gap,
+                                                closeWays[i]->drop, closeWays[i]->carried ? "a step" : "no step");
+                LOG_INFO("playerbots", "[island32] {} L{} at ({:.1f},{:.1f},{:.1f}): {} landings that lead on, nearest: "
+                         "{}",
+                         bot->GetName(), bot->GetLevel(), here.x, here.y, here.z, ways.size(), list);
+            }
             logged(Acore::StringFormat("[nav24] {}: the landing ({:.1f},{:.1f},{:.1f}) {:.0f} yd off is past a jump's "
                                        "{:.0f} yd: no jump",
                                        where, best->to.x, best->to.y, best->to.z, best->gap, speedXY * air));
