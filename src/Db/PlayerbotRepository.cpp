@@ -10,6 +10,7 @@
 #include "StringFormat.h"
 #include "SoloSafety.h"  // [guild15]
 #include "NewRpgBaseAction.h"  // [guild15]
+#include "QuestStats.h"  // [qeff31]
 
 void PlayerbotRepository::Load(PlayerbotAI* botAI)
 {
@@ -46,6 +47,8 @@ void PlayerbotRepository::Load(PlayerbotAI* botAI)
                 SoloSafety::LoadMeasured(botAI->GetBot(), value);
             else if (key == "dz")  // [guild15] its death zones
                 NewRpgBaseAction::LoadDeathZones(botAI->GetBot(), value);
+            else if (key.compare(0, 2, "qa") == 0)  // [qeff31] a quest's accept time
+                QuestStats::LoadAccepted(botAI->GetBot(), key, value);
         } while (result->NextRow());
 
         botAI->GetAiObjectContext()->GetUntypedValue("outfit list");

@@ -3745,6 +3745,7 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
         if (bot->isMoving())
             bot->StopMoving();
         LogQuestObject(bot, lootable, "used: loots it");
+        NoteQuestUse(bot, questId, lootable->GetEntry());  // [qeff31]
         return AI_VALUE(LootObjectStack*, "available loot")->Add(lootable->GetGUID());
     }
 
@@ -3767,6 +3768,7 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
         bot->StopMoving();
 
     LogQuestObject(bot, nearest, "used: q" + std::to_string(questId) + " objective");
+    NoteQuestUse(bot, questId, nearest->GetEntry());  // [qeff31]
     WorldPacket use(CMSG_GAMEOBJ_USE, 8);
     use << nearest->GetGUID();
     RelayInteractPacketToGroupBots(nearest->GetGUID());
@@ -4329,6 +4331,42 @@ namespace
             }
         }
         return best ? uint32(best - now) : 0;
+    }
+
+    // [qeff32] the creature entries a still-open objective of the quest is served by (its kill target and kill
+    // credits, the creatures that drop its still-needed item, what its tool is used on)
+    std::vector<uint32> OpenObjectiveCreatures(Player* bot, Quest const* quest)
+    {
+        std::vector<uint32> entries;
+        auto const status = bot->getQuestStatusMap().find(quest->GetQuestId());
+        if (status == bot->getQuestStatusMap().end())
+            return entries;
+        QuestSpawnIndex const& index = GetQuestSpawnIndex();
+        for (uint32 objective = 0; objective < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT; ++objective)
+        {
+            std::vector<uint32> useCreatures, useObjects;
+            NewRpgQuestUse::SourceEntries(quest, objective, useCreatures, useObjects);
+            if (objective < QUEST_OBJECTIVES_COUNT)
+            {
+                if (!quest->RequiredNpcOrGoCount[objective] ||
+                    status->second.CreatureOrGOCount[objective] >= quest->RequiredNpcOrGoCount[objective])
+                    continue;
+                if (!useCreatures.empty() || !useObjects.empty())
+                    entries.insert(entries.end(), useCreatures.begin(), useCreatures.end());
+                else if (quest->RequiredNpcOrGo[objective] > 0)
+                    entries.push_back(uint32(quest->RequiredNpcOrGo[objective]));
+                continue;
+            }
+            uint32 const slot = objective - QUEST_OBJECTIVES_COUNT;
+            uint32 const item = quest->RequiredItemId[slot];
+            if (!item || status->second.ItemCount[slot] >= quest->RequiredItemCount[slot])
+                continue;
+            entries.insert(entries.end(), useCreatures.begin(), useCreatures.end());
+            auto const creatures = index.itemCreatures.find(item);
+            if (creatures != index.itemCreatures.end())
+                entries.insert(entries.end(), creatures->second.begin(), creatures->second.end());
+        }
+        return entries;
     }
 
     // [guild90] up to this many objective spots per objective go to the walk check, nearest first
@@ -6380,6 +6418,34 @@ std::string NewRpgBaseAction::LastResolveStats()
            " taken=" + std::to_string(resolveStats.taken) + " offered=" + std::to_string(resolveStats.offered);
 }
 
+bool NewRpgBaseAction::ObjectiveTargetHere(Player* bot, uint32 questId, Unit* grindTarget)
+{
+    Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+    if (!quest)
+        return grindTarget != nullptr;
+    std::vector<uint32> const entries = OpenObjectiveCreatures(bot, quest);
+    auto const serves = [&entries](Creature const* c)
+    {
+        CreatureTemplate const* t = c->GetCreatureTemplate();
+        for (uint32 entry : entries)
+            if (c->GetEntry() == entry || (t && (t->KillCredit[0] == entry || t->KillCredit[1] == entry)))
+                return true;
+        return false;
+    };
+    if (grindTarget && grindTarget->ToCreature() && serves(grindTarget->ToCreature()))
+        return true;
+    // a living source in the spot's circle no other player has tapped: the grind takes it next
+    for (uint32 entry : entries)
+    {
+        std::list<Creature*> found;
+        bot->GetCreatureListWithEntryInGrid(found, entry, SPENT_RADIUS);
+        for (Creature* c : found)
+            if (c->IsAlive() && (!c->hasLootRecipient() || c->isTappedBy(bot)))
+                return true;
+    }
+    return false;
+}
+
 uint32 NewRpgBaseAction::EarliestRespawn(Player* bot, uint32 questId)
 {
     std::lock_guard<std::mutex> guard(spentLock);
@@ -6397,9 +6463,11 @@ uint32 NewRpgBaseAction::EarliestRespawn(Player* bot, uint32 questId)
     return best ? uint32(best - now) : 0;
 }
 
-float NewRpgBaseAction::OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest)
+float NewRpgBaseAction::OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest, float* walkSeconds)
 {
     otherQuest = 0;
+    if (walkSeconds)
+        *walkSeconds = 0.0f;
     float best = -1.0f;
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
@@ -6423,6 +6491,8 @@ float NewRpgBaseAction::OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest
         {
             best = seconds;
             otherQuest = questId;
+            if (walkSeconds)
+                *walkSeconds = distance / QUEST_TRAVEL_SPEED;
         }
     }
     return best;
