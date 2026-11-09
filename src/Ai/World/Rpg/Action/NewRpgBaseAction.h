@@ -209,6 +209,11 @@ protected:
     // bind point here)
     // [hearth23] camp: the walled-in walk's target - on the stone's cooldown it asks for help with that camp
     bool HearthOut(std::string const& why, WorldPosition const* camp = nullptr);
+    // [hold58] a walled-in bot (WalledIn) is held where it waits - out of every reach, no plan - until its help
+    // arrives (a party holds it), the wall's camp is cleared or its level changes (the given-up walk is its choice
+    // again), or its Hearthstone takes it out; true from WalledHoldStep: the tick is the hold's
+    void NoteWalledHold(WorldPosition const& camp, std::string const& why);
+    bool WalledHoldStep();
     // [vendor12] the cheapest usable stack of its ammo bought straight from the vendor's list
     void BuyAmmoDirect(Creature* vendor, uint32 subClass, uint32 have);
     // [stuck12] the guild's WALK / GRIND step goes to a spot whose walk the bot gave up at this level

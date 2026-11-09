@@ -609,6 +609,127 @@ bool NewRpgBaseAction::HearthOut(std::string const& why, WorldPosition const* ca
     return botAI->DoSpecificAction("hearthstone", Event("new rpg hearth"), true);
 }
 
+namespace
+{
+    // [hold58] bot -> its walled-in hold: the refused walk's spot (its camp), why, where and at which level it began
+    struct WalledHold
+    {
+        WorldPosition camp;
+        WorldPosition at;
+        std::string why;
+        uint8 level = 0;
+    };
+    std::mutex walledHoldLock;
+    std::unordered_map<uint32, WalledHold> walledHolds;
+}
+
+void NewRpgBaseAction::NoteWalledHold(WorldPosition const& camp, std::string const& why)
+{
+    // nothing to wait for - no help asked and no Hearthstone to take it out (none, or bound where it stands): no hold
+    constexpr uint32 ITEM_HEARTHSTONE = 6948;
+    if (!NewRpgCoop::HelpAsked(bot) &&
+        (!bot->HasItemCount(ITEM_HEARTHSTONE, 1) ||
+         (bot->m_homebindMapId == bot->GetMapId() &&
+          bot->GetExactDist(bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ) <= sPlayerbotAIConfig.SightDistance)))
+        return;
+    bool fresh = false;
+    {
+        std::lock_guard<std::mutex> guard(walledHoldLock);
+        WalledHold& hold = walledHolds[bot->GetGUID().GetCounter()];
+        fresh = hold.level == 0;
+        if (fresh)
+            hold = WalledHold{camp, WorldPosition(bot), why, bot->GetLevel()};
+    }
+    if (fresh)
+        LOG_INFO("playerbots", "[hold58] {} L{} held at ({:.0f},{:.0f}): {} - no plan until its help arrives, the camp "
+                 "at ({:.0f},{:.0f}) is cleared, its level changes or its Hearthstone takes it out",
+                 bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), why, camp.GetPositionX(),
+                 camp.GetPositionY());
+}
+
+// [hold58] coordinator 2026-11-09: b397 Emdyl L14, walled in by the Rotten Ghouls and Leprithus L19 in Westfall with
+// its Hearthstone on cooldown ("waits here"), sat to REST at full health - the rest ended at once, the planner took
+// q12, q102 and a sweep from inside the walls, the sweep's leg ran past two ghouls and Leprithus joined: dead 27 s
+// later. Salleas L12 (help14 "stays for its help request") re-planned 13 far zones from inside its walls. The hold is
+// the game's: its help (a party), the wall's camp cleared (ForgetWalkGivenUp), its next level (every given-up walk
+// is its choice again) or the stone's cooldown end
+bool NewRpgBaseAction::WalledHoldStep()
+{
+    WalledHold hold;
+    {
+        std::lock_guard<std::mutex> guard(walledHoldLock);
+        auto const found = walledHolds.find(bot->GetGUID().GetCounter());
+        if (found == walledHolds.end())
+            return false;
+        hold = found->second;
+    }
+    std::string released;
+    if (!bot->IsAlive())
+        released = "it died";
+    else if (bot->GetLevel() != hold.level)
+        released = "its level changed: its given-up walks are its choices again";
+    else if (NewRpgCoop::InParty(bot->GetGUID().GetCounter()))
+        released = "its help arrived (a party holds it)";
+    else if (hold.camp.GetMapId() != bot->GetMapId() ||
+             !WalkGivenUp(bot, hold.camp.GetPositionX(), hold.camp.GetPositionY()))
+        released = "the walk its walls refused is its choice again (the camp cleared)";
+    else if (hold.at.GetMapId() != bot->GetMapId() ||
+             bot->GetExactDist(hold.at) > sPlayerbotAIConfig.SightDistance)
+        released = "it is out of its walls (its Hearthstone, a fight's run)";
+    if (!released.empty())
+    {
+        {
+            std::lock_guard<std::mutex> guard(walledHoldLock);
+            walledHolds.erase(bot->GetGUID().GetCounter());
+        }
+        LOG_INFO("playerbots", "[hold58] {} L{} hold ends: {}", bot->GetName(), bot->GetLevel(), released);
+        return false;
+    }
+    if (bot->IsInCombat() || bot->IsInFlight() || bot->GetTransport())
+        return false;
+    if (bot->IsNonMeleeSpellCast(false))
+        return true;  // its Hearthstone's cast under way
+    // its help request is its way out while the global leader serves it ([help14]): it waits out of every reach
+    if (NewRpgCoop::HelpAsked(bot))
+    {
+        if (!bot->isMoving())
+        {
+            std::string who;
+            std::vector<G3D::Vector3> spots;
+            if (SoloSafety::StandsInReach(bot, who, spots))
+                for (G3D::Vector3 const& at : spots)
+                {
+                    Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+                    if (!route.found || !route.complete || route.throughRefused)
+                        continue;
+                    if (bot->IsSitState())
+                        bot->SetStandState(UNIT_STAND_STATE_STAND);
+                    if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+                        continue;
+                    LOG_INFO("playerbots", "[hold58] {} L{} waits for its help out of the reach of {}: steps to "
+                             "({:.0f},{:.0f}), {:.0f} yd walk",
+                             bot->GetName(), bot->GetLevel(), who, at.x, at.y, route.length);
+                    return true;
+                }
+        }
+        if (bot->isMoving())
+            return true;
+        botAI->rpgInfo.ChangeToRest();
+        bot->SetStandState(UNIT_STAND_STATE_SIT);
+        return true;
+    }
+    // no help asked or served: its Hearthstone out (waited out where it is safest while on its cooldown)
+    if (HearthOut(hold.why, &hold.camp))
+        return true;
+    {
+        std::lock_guard<std::mutex> guard(walledHoldLock);
+        walledHolds.erase(bot->GetGUID().GetCounter());
+    }
+    LOG_INFO("playerbots", "[hold58] {} L{} hold ends: no help and no Hearthstone to wait for ({})", bot->GetName(),
+             bot->GetLevel(), botAI->rpgInfo.hearthNote);
+    return false;
+}
+
 bool NewRpgBaseAction::BindAtInnHere()
 {
     if (bot->IsInCombat() || !SoloSafety::Applies(bot))
@@ -1173,7 +1294,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         for (G3D::Vector3 const& at : spots)
         {
             Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
-            if (!route.found || !route.complete)
+            if (!route.found || !route.complete || route.throughRefused)  // [hold58] no walk through a wall
                 continue;
             if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
                 continue;
@@ -1255,7 +1376,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     for (G3D::Vector3 const& at : spots)
                     {
                         Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
-                        if (!route.found || !route.complete)
+                        if (!route.found || !route.complete || route.throughRefused)  // [hold58]
                             continue;
                         if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
                             continue;
@@ -1377,6 +1498,11 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         std::lock_guard<std::mutex> guard(sickLock);
         sickLogged.erase(low);
     }
+
+    // [hold58] a walled-in bot is held: no plan from inside its walls (its help, the camp cleared, its level, its
+    // Hearthstone end the hold)
+    if (WalledHoldStep())
+        return true;
 
     // [regress10] the recovery after a death comes first: before, only a far walk's MoveFarTo took it, so a quest spot
     // in reach of the corpse was fought at once (b345 Guinudrond L11 at the Silver Stream Mine)

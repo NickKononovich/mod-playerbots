@@ -921,6 +921,7 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
         std::string walledWhy;
         if (WalledIn(dest, walledWhy))
         {
+            NoteWalledHold(dest, walledWhy);  // [hold58]
             // [help14] its help request is the way out while the global leader serves it or has not judged it yet
             // (b354 Sycina L11: help asked for the q1580 camp, then hearthed 3814 yd to Darnassus at once; its helper
             // came to an empty spot and it waited 1074 s for him there); a refused request leaves the Hearthstone
