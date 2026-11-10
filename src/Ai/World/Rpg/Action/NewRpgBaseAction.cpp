@@ -94,6 +94,7 @@
 #include <limits>
 #include <functional>  // [deaths] the node stages
 #include <mutex>
+#include <shared_mutex>  // [drop74]
 #include <queue>  // [deaths] the node stages
 #include <set>
 #include <tuple>
@@ -3079,7 +3080,11 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         // [deaths] user 2026-11-08: a solo walk never goes through a pack it does not fight (b338 Sylaenas L1:
         // "complete, through a refused reach", killed by the Webwood Lurker there) and a long one goes in stages: the
         // maze search
-        if (SoloSafety::Applies(bot) && path.leaderRoute &&
+        // [party75] ... a co-op / help party leader's walk too, when every way passes a pack the party loses: the same
+        // maze search and refused-walk handling (another way, the patrol's window, else postponed with its help
+        // asked) - never walked through it
+        bool const partyWalled = path.throughRefused && NewRpgCoop::JudgesPulls(bot) && !bot->GetMap()->Instanceable();
+        if ((SoloSafety::Applies(bot) || partyWalled) && path.leaderRoute &&
             (path.throughRefused ||
              (path.type == PATHFIND_INCOMPLETE && disToDest > 2.0f * sPlayerbotAIConfig.SightDistance)))
         {
@@ -4464,18 +4469,37 @@ namespace
     // [drop71] the walk-equivalent yards a unit of `item` costs from `entry` beyond its first kill: the kills beyond
     // one its drop chance needs (100 / chance - 1) at its kill time (template health at `dps`) and the bot's run
     // speed; -1 when its chance is not named (a reference table: no cost known)
+    // [drop74] the drop chance of `item` from creature `entry` (its loot table's own entries, references aside): one
+    // read of the loot store per pair, kept in a shared read-mostly table (the loot store does not change)
+    std::shared_mutex dropChanceLock;
+    std::unordered_map<uint64, float> dropChances;
+    float DropChance(uint32 entry, uint32 item)
+    {
+        uint64 const key = (uint64(entry) << 32) | item;
+        {
+            std::shared_lock<std::shared_mutex> guard(dropChanceLock);
+            auto const found = dropChances.find(key);
+            if (found != dropChances.end())
+                return found->second;
+        }
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        LootTemplate const* loot = tmpl && tmpl->lootid ? LootTemplates_Creature.GetLootFor(tmpl->lootid) : nullptr;
+        float chance = 0.0f;
+        if (loot)
+            loot->VisitEntries([&](LootStoreItem const& e, float c)
+                               {
+                                   if (!e.reference && e.itemid == item)
+                                       chance = std::max(chance, c);
+                               });
+        std::unique_lock<std::shared_mutex> guard(dropChanceLock);
+        dropChances[key] = chance;
+        return chance;
+    }
+
     float DropCostYd(Player* bot, uint32 entry, uint32 item, float dps)
     {
         CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
-        LootTemplate const* loot = tmpl && tmpl->lootid ? LootTemplates_Creature.GetLootFor(tmpl->lootid) : nullptr;
-        if (!loot)
-            return -1.0f;
-        float chance = 0.0f;
-        loot->VisitEntries([&](LootStoreItem const& e, float c)
-                           {
-                               if (!e.reference && e.itemid == item)
-                                   chance = std::max(chance, c);
-                           });
+        float const chance = tmpl ? DropChance(entry, item) : 0.0f;
         if (chance <= 0.0f)
             return -1.0f;
         uint8 const level = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
@@ -6861,6 +6885,61 @@ void NewRpgBaseAction::ForEachSpawnReaching(uint32 mapId, float x, float y, floa
         for (MobSpawn const* m : wideHere->second)
             if (SpawnPresent(*m) && std::hypot(m->x - x, m->y - y) <= assist + m->wander)
                 fn(m->tmpl, m->x, m->y, m->wander);
+}
+
+bool NewRpgBaseAction::WorthItemSource(Player* bot, uint32 entry)
+{
+    // one answer per bot, entry, level and 200 yd cell it stands in (its sources' walks barely change within one)
+    uint64 const cell = (uint64(uint32(int32(bot->GetPositionX() / 200.0f) + 0x8000) & 0xFFFF) << 16) |
+                        (uint32(int32(bot->GetPositionY() / 200.0f) + 0x8000) & 0xFFFF);
+    uint64 const key = (uint64(entry) << 40) ^ (uint64(bot->GetLevel()) << 32) ^ cell ^
+                       (uint64(bot->GetMapId()) << 56);
+    static std::mutex worthLock;
+    static std::unordered_map<uint32, std::unordered_map<uint64, bool>> worth;
+    {
+        std::lock_guard<std::mutex> guard(worthLock);
+        auto const mine = worth.find(bot->GetGUID().GetCounter());
+        if (mine != worth.end())
+            if (auto const found = mine->second.find(key); found != mine->second.end())
+                return found->second;
+    }
+    QuestSpawnIndex const& index = GetQuestSpawnIndex();
+    float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
+    bool known = false, worthIt = false;
+    for (auto const& [questId, status] : bot->getQuestStatusMap())
+    {
+        if (status.Status != QUEST_STATUS_INCOMPLETE || worthIt)
+            continue;
+        Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
+        for (uint8 i = 0; quest && i < QUEST_ITEM_OBJECTIVES_COUNT && !worthIt; ++i)
+        {
+            uint32 const item = quest->RequiredItemId[i];
+            if (!item || status.ItemCount[i] >= quest->RequiredItemCount[i])
+                continue;
+            float const cost = DropCostYd(bot, entry, item, dps);
+            if (cost < 0.0f)
+                continue;
+            known = true;
+            // the cheapest dropper on its map: its cost plus the walk to its nearest spawn
+            float best = std::numeric_limits<float>::max();
+            if (auto const droppers = index.itemCreatures.find(item); droppers != index.itemCreatures.end())
+                for (uint32 other : droppers->second)
+                {
+                    float const otherCost = DropCostYd(bot, other, item, dps);
+                    auto const spawns = index.creatures.find(other);
+                    if (otherCost < 0.0f || spawns == index.creatures.end())
+                        continue;
+                    for (QuestSpot const& spot : spawns->second)
+                        if (spot.mapId == bot->GetMapId())
+                            best = std::min(best, otherCost + bot->GetDistance2d(spot.x, spot.y));
+                }
+            worthIt = cost <= best;
+        }
+    }
+    bool const answer = !known || worthIt;  // no known chance (a reference table): it stays a quest mob
+    std::lock_guard<std::mutex> guard(worthLock);
+    worth[bot->GetGUID().GetCounter()][key] = answer;
+    return answer;
 }
 
 bool NewRpgBaseAction::ObjectiveTargetHere(Player* bot, uint32 questId, Unit* grindTarget)

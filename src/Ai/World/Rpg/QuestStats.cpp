@@ -80,6 +80,26 @@ namespace
 
     bool Tracked(Player* player) { return player && GET_PLAYERBOT_AI(player); }
 
+    // [drop73] the last objective count known before a kill (bot, quest, objective): the rpg tick's log snapshot, or
+    // the count the last credited kill left; -1 when none is known (the kill is then counted)
+    std::mutex knownLock;
+    std::map<std::tuple<uint32, uint32, uint8>, int32> knownCounts;
+
+    int32 LastKnownCount(Player* bot, uint32 questId, uint8 objective)
+    {
+        int32 known = -1;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const c = counters.find(bot->GetGUID().GetCounter());
+            if (c != counters.end() && c->second.hasLog)
+                if (auto const snap = c->second.log.find(questId); snap != c->second.log.end())
+                    known = int32(snap->second.counts[objective]);
+        }
+        std::lock_guard<std::mutex> guard(knownLock);
+        auto const k = knownCounts.find({bot->GetGUID().GetCounter(), questId, objective});
+        return k != knownCounts.end() ? std::max(known, k->second) : known;
+    }
+
     // [qeff31] bot -> quest -> its accept time (unix ms), kept in playerbots_db_store ('qa<quest>') across sessions:
     // the triage's quest clock starts at the accept, also for a quest accepted in an earlier session (a log only)
     std::unordered_map<uint32, std::unordered_map<uint32, uint64>> acceptedAt;  // under `lock`
@@ -131,6 +151,12 @@ namespace
     // count before this kill, or it carries loot a quest in the log still needs. [qeff31] the quest it served (the
     // kill line names it: the triage's kills per objective unit counted every useful kill against the quest worked
     // then, other quests' kills too - b400 q102 "6.2 kills a unit" held Blahadrin's Fleshrippers for q22); 0: none
+    void NoteKnownCount(Player* bot, uint32 questId, uint8 objective, uint32 count)
+    {
+        std::lock_guard<std::mutex> guard(knownLock);
+        knownCounts[{bot->GetGUID().GetCounter(), questId, objective}] = int32(count);
+    }
+
     // [drop72] `chance`: the kill's chance of a unit (100 for a kill credit, the loot table's chance of the needed
     // item; 0: not named)
     uint32 ServedQuestId(Player* bot, Creature* killed, float& chance)
@@ -156,9 +182,14 @@ namespace
                 bool const match = uint32(entry) == tmpl->Entry || uint32(entry) == tmpl->KillCredit[0] ||
                                    uint32(entry) == tmpl->KillCredit[1];
                 // the credit already landed (the hook runs after it): a count still short, or just filled
+                // [drop73] ... by this kill: the count rose over the last one known (the rpg tick's log snapshot or the
+                // last credited kill). b415 Hobliir L18: 33 kills of q9669's 17522 / 17523 marked useful with both
+                // counts full (8/8) before the log - only its third objective (17683, 1) was open
                 if (match && status.CreatureOrGOCount[i] <= quest->RequiredNpcOrGoCount[i] &&
-                    status.CreatureOrGOCount[i] > 0)
+                    status.CreatureOrGOCount[i] > 0 &&
+                    int32(status.CreatureOrGOCount[i]) > LastKnownCount(bot, questId, i))
                 {
+                    NoteKnownCount(bot, questId, i, status.CreatureOrGOCount[i]);
                     chance = 100.0f;
                     return questId;
                 }

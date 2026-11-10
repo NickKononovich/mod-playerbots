@@ -154,6 +154,9 @@ public:
     // [qeff32] at its spot: the grind target serves an open objective of the quest, or a living source of one that no
     // other player has tapped stands within the spot's circle (another mob to grind is no reason to stay)
     static bool ObjectiveTargetHere(Player* bot, uint32 questId, Unit* grindTarget);
+    // [drop74] the creature drops an item a quest in the bot's log still needs at a cost a unit no worse than the
+    // cheapest reachable dropper's cost plus the walk to it (true too when its chance is not named)
+    static bool WorthItemSource(Player* bot, uint32 entry);
     // [guild90] the cheapest other quest in the log (travel at QUEST_TRAVEL_SPEED + the work left); -1: none
     // [qeff32] walkSeconds (optional): the walk alone to the chosen quest's nearest spot
     float OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest, float* walkSeconds = nullptr);
