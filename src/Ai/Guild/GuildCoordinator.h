@@ -638,8 +638,9 @@ private:
         Player* player{nullptr};
         std::string role;  // tank / healer / dps
         bool needsClear{false};
-        bool upgrade{false};
+        bool upgrade{false};  // [need106] a needed upgrade in the dungeon's loot
         bool enchanter{false};
+        uint32 repeats{0};  // [need106] its runs of the dungeon so far (a carrier with no need: the fewest first)
     };
 
     void LoadPlan();
@@ -656,7 +657,9 @@ private:
     // so the entrance's continent and an enemy capital count; else only while the finder cannot port the five.
     std::string DungeonRefusal(DungeonOption const& d, Player* p, bool walk = false) const;
     std::string FiveWalkRefusal(GuildFive const& five) const;  // [next1] a member the walk in refuses, "" = none
-    bool HoldsUpgrade(DungeonOption const& d, Player* p) const;
+    // [need106] the first boss item of the dungeon the member needs (its own spec's upgrade, not owned): its name,
+    // "" = none
+    std::string NeededUpgrade(DungeonOption const& d, Player* p) const;
     bool FreeForFive(uint32 low, Player* p, std::string* why = nullptr) const;  // lock_ held
     std::string PlanRole(uint32 low, Player* p) const;
     bool Cleared(std::string const& contentKey, uint32 low) const;  // lock_ held
@@ -927,6 +930,9 @@ private:
     std::unordered_map<std::string, std::unordered_set<uint32>> cleared_;  // content -> characters that cleared it
     // content -> members that outlevelled it uncleared (logged once; the in-band clear rule, user 2026-11-08)
     std::unordered_map<std::string, std::unordered_set<uint32>> missed_;
+    // [done106] the dungeons no member at or below their band needs (cleared or a needed upgrade): no five forms
+    std::unordered_set<std::string> guildDone_;
+    std::unordered_map<std::string, std::string> needLogged_;  // [need106] the last needs line per dungeon
     bool autoFives_{true};
     uint32 fiveTimer_{0};
     uint32 autoFiveTimer_{0};

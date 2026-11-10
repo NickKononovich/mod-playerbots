@@ -784,15 +784,19 @@ std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, 
     return "";
 }
 
-bool GuildCoordinator::HoldsUpgrade(DungeonOption const& d, Player* p) const
+// [need106] user rule 2026-11-10: a member goes (again) while the dungeon's boss loot holds an upgrade it needs - its
+// own spec's "item upgrade" (EQUIP / REPLACE) with a gain over its worn piece, one it does not own already (won or
+// bought: in its bags or bank)
+std::string GuildCoordinator::NeededUpgrade(DungeonOption const& d, Player* p) const
 {
     for (uint32 itemId : d.bossItems)
     {
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
-        if (proto && proto->RequiredLevel <= d.maxLevel && UpgradeGain(p, proto, 0) > 0.0f)
-            return true;
+        if (proto && proto->RequiredLevel <= d.maxLevel && !p->HasItemCount(itemId, 1, true) &&
+            UpgradeGain(p, proto, 0) > 0.0f)
+            return proto->Name1;
     }
-    return false;
+    return "";
 }
 
 bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) const
@@ -1051,6 +1055,11 @@ bool GuildCoordinator::PickFive(std::vector<FiveCandidate> const& pool, std::vec
                          bool const na = a.needsClear || a.upgrade, nb = b.needsClear || b.upgrade;
                          if (na != nb)
                              return na;
+                         if (na && a.needsClear != b.needsClear)
+                             return a.needsClear;  // [need106] an open clear before an upgrade
+                         // [need106] a carrier (no need of its own): the fewest repeats of the dungeon first
+                         if (!na && a.repeats != b.repeats)
+                             return a.repeats < b.repeats;
                          return a.player->GetLevel() > b.player->GetLevel();
                      });
     out.clear();
@@ -1730,6 +1739,92 @@ void GuildCoordinator::AutoFive()
         CoordLock guard(lock_, __func__);
         PlanRoles();
     }
+    // [need106] user rule 2026-11-10: every guild character clears each dungeon of its band once, and goes again only
+    // while the dungeon's loot holds an upgrade it needs. need = not cleared, or a needed upgrade (NeededUpgrade). A
+    // member below the band needs it while uncleared (it comes into the band); one above it has no need (out-levelled).
+    // [done106] a dungeon no member needs is done for the guild: no five forms for it
+    std::unordered_map<std::string, std::map<uint32, std::string>> needs;  // content -> member -> its need
+    {
+        struct Probe
+        {
+            DungeonOption const* d;
+            uint32 low;
+            Player* p;
+            bool cleared;
+            bool inBand;
+        };
+        std::vector<Probe> probes;
+        {
+            CoordLock guard(lock_, __func__);
+            for (DungeonOption const& d : dungeons_)
+                for (PlanRow const& row : plan_)
+                {
+                    if (row.grp < 'A' || row.grp > 'C')
+                        continue;
+                    Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                    if (!p || IsHuman(p) || p->GetLevel() > d.maxLevel)
+                        continue;
+                    probes.push_back({&d, row.low, p, Cleared(d.contentKey, row.low),
+                                      p->GetLevel() >= d.walkMinLevel});
+                }
+        }
+        std::unordered_map<std::string, std::pair<uint32, uint32>> band;  // content -> members in band, cleared
+        for (Probe const& probe : probes)
+        {
+            std::string need;
+            if (!probe.cleared)
+                need = "clear";
+            else if (probe.inBand)
+                if (std::string const item = NeededUpgrade(*probe.d, probe.p); !item.empty())
+                    need = "upgrade " + item;
+            if (probe.inBand)
+            {
+                ++band[probe.d->contentKey].first;
+                band[probe.d->contentKey].second += probe.cleared ? 1 : 0;
+            }
+            if (!need.empty())
+                needs[probe.d->contentKey][probe.low] = need;
+        }
+        CoordLock guard(lock_, __func__);
+        for (DungeonOption const& d : dungeons_)
+        {
+            auto const found = needs.find(d.contentKey);
+            auto const counts = band[d.contentKey];
+            std::string line = Acore::StringFormat("band {}-{}: {} in band, {} cleared, {} uncleared", d.minLevel,
+                                                   d.maxLevel, counts.first, counts.second,
+                                                   counts.first - counts.second);
+            if (found == needs.end() || found->second.empty())
+                line += "; needs: none";
+            else
+            {
+                line += Acore::StringFormat("; needs ({}):", found->second.size());
+                for (auto const& [low, need] : found->second)
+                    line += " " + Who(low) + " " + need + ",";
+                line.pop_back();
+            }
+            if (std::string& logged = needLogged_[d.contentKey]; logged != line)
+            {
+                logged = line;
+                LOG_INFO("playerbots", "[need106] {}: {}", d.contentKey, line);
+            }
+            bool const done = found == needs.end() || found->second.empty();
+            if (done && guildDone_.insert(d.contentKey).second)
+            {
+                uint32 clearedBy = 0;
+                if (auto const c = cleared_.find(d.contentKey); c != cleared_.end())
+                    for (uint32 low : c->second)
+                        if (PlanRow const* row = Row(low); row && row->grp >= 'A' && row->grp <= 'C')
+                            ++clearedBy;
+                LOG_INFO("playerbots", "[done106] {}: cleared by all {} members of band {}-{} (no member needs it: "
+                         "{} in band, every one cleared with no needed upgrade left; the rest out-levelled it)",
+                         d.contentKey, clearedBy, d.minLevel, d.maxLevel, counts.first);
+                Decision("[done106] " + d.name + " done for the guild: no member needs it");
+            }
+            else if (!done && guildDone_.erase(d.contentKey))
+                LOG_INFO("playerbots", "[done106] {}: needed again ({} members)", d.contentKey,
+                         found->second.size());
+        }
+    }
     // [five58] user direction 2026-11-09: one line per look - each dungeon with members in its band, how many are
     // free, their roles and why no five goes (no tank / no healer / too few dps / nothing to gain / the gate)
     std::map<std::string, std::string> lookWhy;
@@ -1789,6 +1884,28 @@ void GuildCoordinator::AutoFive()
                         lookWhy[d.contentKey] = text;
                     }
                 }
+                // [done106] no member needs the dungeon: no five for it
+                if (guildDone_.count(d.contentKey))
+                {
+                    if (guardCount == 0 && lookWhy.count(d.contentKey))
+                        lookWhy[d.contentKey] += " -> done for the guild: no member needs it";
+                    continue;
+                }
+                if (guardCount == 0 && lookWhy.count(d.contentKey))
+                    if (auto const n = needs.find(d.contentKey); n != needs.end())
+                    {
+                        // [need106] each member's need, in the look
+                        std::string text = " needs:";
+                        for (auto const& [low, need] : n->second)
+                            text += " " + Who(low) + " " + need + ",";
+                        text.pop_back();
+                        lookWhy[d.contentKey].insert(0, text.substr(1) + "; ");
+                    }
+                for (FiveCandidate& c : pool)
+                    for (GuildRunRecord const& rec : runs_)
+                        if (rec.contentKey == d.contentKey &&
+                            std::find(rec.members.begin(), rec.members.end(), c.low) != rec.members.end())
+                            ++c.repeats;
                 if (pool.size() >= 5)
                     pools.emplace_back(&d, std::move(pool));
             }
@@ -1799,12 +1916,14 @@ void GuildCoordinator::AutoFive()
         uint32 bestLeft = UINT32_MAX;  // [five58] the fewest levels a member of the five has left in the band
         for (auto& [d, pool] : pools)
         {
-            for (FiveCandidate& c : pool)
-                if (!c.needsClear)
-                    c.upgrade = HoldsUpgrade(*d, c.player);
-            // the dungeon must hold an upgrade or an open clear for each of its dps; [five58] a tank or healer who
-            // cleared it already goes again for the next five (user 2026-11-09: the healer runs again with the next
-            // five as soon as it is out) - PickFive takes one with a clear or upgrade of its own first
+            // [need106] the need found above: not cleared, or a needed upgrade in the loot
+            if (auto const n = needs.find(d->contentKey); n != needs.end())
+                for (FiveCandidate& c : pool)
+                    if (auto const m = n->second.find(c.low); m != n->second.end())
+                        c.upgrade = !c.needsClear && m->second != "clear";
+            // the dps slots go to members with a need (user rule 2026-11-10: no repeat for nothing to gain); a tank or
+            // healer with no need of its own goes again to carry the needy ones - PickFive takes a needy tank /
+            // healer first, else the carrier with the fewest repeats of the dungeon
             pool.erase(std::remove_if(pool.begin(), pool.end(),
                                       [](FiveCandidate const& c)
                                       { return !c.needsClear && !c.upgrade && c.role == "dps"; }),
@@ -1825,7 +1944,8 @@ void GuildCoordinator::AutoFive()
             {
                 if (guardCount == 0 && lookWhy[d->contentKey].find(" -> ") == std::string::npos)
                     lookWhy[d->contentKey] += Acore::StringFormat(
-                        " -> {} with a clear or an upgrade to gain: no tank, healer and 3 dps among them", pool.size());
+                        " -> {} with a need (dps) or to carry (tank, healer): no tank, healer and 3 dps among them",
+                        pool.size());
                 continue;
             }
             uint32 const score = uint32(std::count_if(five.begin(), five.end(),
@@ -1930,6 +2050,35 @@ void GuildCoordinator::AutoFive()
                      five.front().player->GetName(), verdict.why);
             if (guardCount == 0)
                 lookWhy[d->contentKey] += " -> passes the gate";
+            // [need106] the tank and healer: each one's own need, or why a carrier with none goes
+            {
+                std::vector<FiveCandidate> const& usedPool = fromFinder ? finderPool : walkPool;
+                std::string carry;
+                for (FiveCandidate const& c : five)
+                {
+                    if (c.role != "tank" && c.role != "healer")
+                        continue;
+                    if (c.needsClear || c.upgrade)
+                    {
+                        carry += Acore::StringFormat("; {} {}: needs it ({})", c.role, c.player->GetName(),
+                                                     c.needsClear ? "clear" : "upgrade");
+                        continue;
+                    }
+                    bool const needyFree = std::any_of(usedPool.begin(), usedPool.end(),
+                                                       [&c](FiveCandidate const& o)
+                                                       { return o.role == c.role && (o.needsClear || o.upgrade); });
+                    carry += Acore::StringFormat("; {} {}: no need of its own, carries ({} run(s) of it) - {}", c.role,
+                                                 c.player->GetName(), c.repeats,
+                                                 needyFree ? "the needy " + c.role + "'s pair did not pass the gate"
+                                                           : "no needy " + c.role + " free");
+                }
+                if (!carry.empty())
+                {
+                    if (guardCount == 0)
+                        lookWhy[d->contentKey] += " (" + carry.substr(2) + ")";
+                    LOG_INFO("playerbots", "[need106] five for {}: {}", d->contentKey, carry.substr(2));
+                }
+            }
             bestScore = score;
             bestLeft = left;
             best = d;
