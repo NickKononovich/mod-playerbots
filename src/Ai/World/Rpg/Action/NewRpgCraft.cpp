@@ -156,7 +156,8 @@ namespace
         if (!proto)
             return 0;
         if (proto->Class == ITEM_CLASS_CONSUMABLE || proto->Class == ITEM_CLASS_CONTAINER ||
-            sGuildCoordinator.IsWanted(product))
+            sGuildCoordinator.IsWanted(product) ||
+            (proto->Class == ITEM_CLASS_GLYPH && sGuildCoordinator.GlyphNeeded(product)))  // [insc145]
             return 2;
         return proto->Class == ITEM_CLASS_TRADE_GOODS ? 1 : 0;
     }
@@ -981,6 +982,11 @@ namespace NewRpgCraft
         ItemTemplate const* proto = item->GetTemplate();
         if (!proto || proto->Class == ITEM_CLASS_CONSUMABLE || proto->Class == ITEM_CLASS_CONTAINER)
             return;  // potions, food, bandages, bags: the crafter keeps and uses them
+        if (proto->Class == ITEM_CLASS_GLYPH)
+        {
+            sGuildCoordinator.OnGlyphCrafted(player, item, count);  // [insc145] to the member whose need it was
+            return;
+        }
         sGuildCoordinator.OnLoot(player, item, count);  // an upgrade for a member, the bank, sale or disenchant
     }
 }

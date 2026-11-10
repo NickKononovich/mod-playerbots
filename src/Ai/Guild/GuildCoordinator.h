@@ -310,6 +310,7 @@ public:
     // map thread
     // [guild70] the item is on the wanted list with a shortfall (a skill-up craft whose product someone needs)
     bool IsWanted(uint32 itemId) const;
+    bool GlyphNeeded(uint32 itemId) const;  // [insc145] a member waits for this glyph ([insc143] need)
     // [supply112] the crafts of a guild supply recipe this cook still owes the fives' bands (its target less what it
     // holds of the product), 0 = none (map thread: NewRpgCraft weighs them with its skill-ups)
     uint32 SupplyCrafts(Player* cook, uint32 spellId) const;
@@ -327,6 +328,8 @@ public:
     bool SupplyWanted(Player* bot) const;
     void SetOrderStatus(Player* bot, std::string const& status);
     void OnLoot(Player* player, Item* item, uint32 count);
+    // [insc145] map thread: a glyph the scribe crafted goes to the member whose need it was (held for the transfer)
+    void OnGlyphCrafted(Player* scribe, Item* item, uint32 count);
     // [lock23] the loots a hook got while this thread held lock_: taken at the next Update, out of the lock
     void DrainDeferredLoot();
     void OnKilledByCreature(Player* killed, Creature* killer);
@@ -986,6 +989,7 @@ private:
     std::set<uint32> fishers_;
     std::map<uint32, uint32> fishShort_;
     std::map<uint32, uint32> glyphNeeds_;  // [insc143] glyph item -> members who need one (the log line on change)
+    std::map<uint32, std::vector<uint32>> glyphFor_;  // [insc145] glyph item -> the members who need one
     std::unordered_map<uint32, std::vector<std::pair<uint32, std::string>>> withdraw_;  // member -> bank items for it
     uint32 deathsTotal_{0};
     std::deque<std::pair<uint32, std::string>> decisions_;

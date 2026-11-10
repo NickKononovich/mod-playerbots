@@ -233,6 +233,7 @@ bool LearnGlyphAction::Execute(Event /*event*/)
     bot->ClearUnitState(UNIT_STATE_FOLLOW);
 
     // Same packet as a client: the core casts the item spell, checks the slot type and consumes the glyph.
+    std::string const glyphName = item->GetTemplate()->Name1;  // [insc145] the item is consumed by the use
     WorldPacket packet(CMSG_USE_ITEM);
     packet << uint8(item->GetBagSlot()) << uint8(item->GetSlot()) << uint8(1) << spellId << item->GetGUID()
            << uint32(slot) << uint8(0);
@@ -240,7 +241,9 @@ bool LearnGlyphAction::Execute(Event /*event*/)
     bot->GetSession()->HandleUseItemOpcode(packet);
 
     botAI->SetNextCheckDelay(spellInfo->CalcCastTime() + sPlayerbotAIConfig.ReactDelay);
-    LOG_DEBUG("playerbots", "Bot {} casts glyph spell {} into slot {}", bot->GetName(), spellInfo->Id, slot);
+    // [insc145] the last step of the glyph chain (made by a scribe, moved by the guild's transfer)
+    LOG_INFO("playerbots", "[insc145] {} L{} uses {} in glyph slot {}", bot->GetName(), bot->GetLevel(),
+             glyphName, slot);
     return true;
 }
 

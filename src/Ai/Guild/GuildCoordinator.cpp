@@ -1617,6 +1617,13 @@ void GuildCoordinator::UpdateWanted()
                         : "no guild: the bank sleeps";
 }
 
+bool GuildCoordinator::GlyphNeeded(uint32 itemId) const
+{
+    CoordLock guard(lock_, __func__);
+    auto const need = glyphFor_.find(itemId);
+    return need != glyphFor_.end() && !need->second.empty();
+}
+
 bool GuildCoordinator::IsWanted(uint32 itemId) const
 {
     CoordLock guard(lock_, __func__);
@@ -3545,11 +3552,16 @@ void GuildCoordinator::UpdateProfessions()
     // recipe that makes it, the trainer's or the profession's own
     {
         std::map<uint32, uint32> glyphs;  // glyph item -> members who need one
+        std::map<uint32, std::vector<uint32>> glyphFor;  // [insc145] glyph item -> those members
         for (auto const& [row, m] : members)
             if (!HumanCharacter(m))
                 for (uint32 glyph : GlyphUtil::GetWantedGlyphItems(m))
                     if (GlyphUtil::NeedsGlyphItem(m, glyph))
+                    {
                         ++glyphs[glyph];
+                        glyphFor[glyph].push_back(row->low);
+                    }
+        glyphFor_ = std::move(glyphFor);
         auto const insc = glyphs.empty() ? recipesBySkill_.end() : recipesBySkill_.find(SKILL_INSCRIPTION);
         if (insc != recipesBySkill_.end())
             for (Recipe const& r : insc->second)
@@ -7284,6 +7296,46 @@ void GuildCoordinator::OnCrafted(Player* bot, uint32 spellId, uint32 before, uin
     craftsDone_.push_back({Now(), bot->GetGUID().GetCounter(), spellId, before, after});
     while (craftsDone_.size() > 40)
         craftsDone_.pop_front();
+}
+
+// [insc145] a glyph the scribe made goes to a member whose [insc143] need it was: held for it, so the transfer flow
+// (UpdateTransfers, a.: trade / mail / bank, whichever costs least) moves it and the member's LearnGlyphAction puts
+// it into its free slot. A member another made glyph of the entry is already held for is skipped; the scribe's own
+// need keeps it (its own LearnGlyphAction uses it); no member: the scribe keeps it as any crafted product
+void GuildCoordinator::OnGlyphCrafted(Player* scribe, Item* item, uint32 count)
+{
+    if (!scribe || !item || !IsPlanned(scribe->GetGUID().GetCounter()))
+        return;
+    uint32 const low = scribe->GetGUID().GetCounter();
+    uint32 const entry = item->GetEntry();
+    CoordLock guard(lock_, __func__);
+    auto const need = glyphFor_.find(entry);
+    bool const own = need != glyphFor_.end() &&
+                     std::find(need->second.begin(), need->second.end(), low) != need->second.end();
+    uint32 forLow = 0;
+    if (need != glyphFor_.end() && !own)
+        for (uint32 member : need->second)
+        {
+            bool taken = false;
+            for (auto const& [holder, st] : bots_)
+                for (HeldItem const& h : st.held)
+                    taken |= h.itemId == entry && h.forLow == member;
+            if (!taken)
+            {
+                forLow = member;
+                break;
+            }
+        }
+    if (!forLow)
+    {
+        LOG_INFO("playerbots", "[insc145] {} made {}: {}", Who(low), ItemName(entry),
+                 own ? "its own need, it uses it" : "no member waits for it, kept");
+        return;
+    }
+    BotState& st = bots_[low];
+    st.held.push_back({item->GetGUID().GetCounter(), entry, count, forLow, "glyph for " + Who(forLow)});
+    LOG_INFO("playerbots", "[insc145] {} made {}: held for {} (its premade glyph, a free slot), the transfer brings it",
+             Who(low), ItemName(entry), Who(forLow));
 }
 
 void GuildCoordinator::SendPlan(Player* player)
