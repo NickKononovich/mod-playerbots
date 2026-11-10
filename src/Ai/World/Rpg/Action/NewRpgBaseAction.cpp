@@ -474,6 +474,8 @@ namespace
 {
     // [trip52] (defined below) the trip by air; [fly97] walkRefused: no walk there, the flight at any length
     bool FlightTripSafe(Player* bot, WorldPosition const& dest, std::string& plan, bool walkRefused = false);
+    // [fly109] (defined below) a party member's own flight to the known node nearest the destination
+    bool StartMemberFlight(Player* member, WorldPosition const& dest);
 }
 
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
@@ -930,12 +932,42 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
     if (bot->GetExactDist(dest) > sPlayerbotAIConfig.SightDistance)
     {
         std::string plan;
-        if (FlightTripSafe(bot, dest, plan, true) && FlyIfFaster(dest, true))
+        // [fly109] a co-op / help party's leader (party75 sends its walled walk here): the party flies together -
+        // each member's own trip by air judged as the leader's (its flight master and landing walks refuse nothing,
+        // the nodes known to it, its fare in its own purse), else nobody flies
+        std::vector<Player*> members;
+        std::string memberWhy;
+        bool const partyLeader = !SoloSafety::Applies(bot) && NewRpgCoop::JudgesPulls(bot) && bot->GetGroup();
+        if (partyLeader)
+            for (GroupReference* ref = bot->GetGroup()->GetFirstMember(); ref && memberWhy.empty(); ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (!member || member == bot)
+                    continue;
+                std::string memberPlan;
+                if (!GET_PLAYERBOT_AI(member) || !member->IsAlive() || member->GetMap() != bot->GetMap())
+                    memberWhy = member->GetName() + " is no bot alive on its map";
+                else if (!FlightTripSafe(member, dest, memberPlan, true))
+                    memberWhy = member->GetName() + " has no safe trip by air there (its nodes, fare or walks)";
+                else
+                    members.push_back(member);
+            }
+        if (memberWhy.empty() && FlightTripSafe(bot, dest, plan, true) && FlyIfFaster(dest, true))
         {
-            LOG_INFO("playerbots", "[fly97] {} L{} flies to ({:.0f},{:.0f}): {}; {}", bot->GetName(), bot->GetLevel(),
-                     dest.GetPositionX(), dest.GetPositionY(), why, plan);
+            std::string flown;
+            for (Player* member : members)
+                if (StartMemberFlight(member, dest))
+                    flown += (flown.empty() ? "" : ", ") + member->GetName();
+            std::string const party =
+                partyLeader ? "; [fly109] its party flies with it: " + (flown.empty() ? std::string("none") : flown)
+                            : std::string();
+            LOG_INFO("playerbots", "[fly97] {} L{} flies to ({:.0f},{:.0f}): {}; {}{}", bot->GetName(), bot->GetLevel(),
+                     dest.GetPositionX(), dest.GetPositionY(), why, plan, party);
             return true;
         }
+        if (!memberWhy.empty())
+            LOG_INFO("playerbots", "[fly109] {} L{} party does not fly to ({:.0f},{:.0f}): {}", bot->GetName(),
+                     bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY(), memberWhy);
     }
     RefusedWalk(dest, why);
     // [runpast11] the walls stand round the bot, not the target: its walk out (to its bind point, else its hub) is
@@ -1868,7 +1900,10 @@ bool NewRpgBaseAction::FlyTowards(uint32 toNode)
 // Thurden in Ironforge, Namwe walked 2100+ yd back to Thelsamar
 bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
 {
-    if (!GuildHonest::IsHonestBot(bot) || !SoloSafety::Applies(bot) || dest.GetMapId() != bot->GetMapId() ||
+    // [fly109] a co-op / help party's leader flies too (its party with it: MazeWalk's [fly97])
+    bool const partyLeader = NewRpgCoop::JudgesPulls(bot) && bot->GetGroup() && !bot->GetMap()->Instanceable();
+    if (!GuildHonest::IsHonestBot(bot) || (!SoloSafety::Applies(bot) && !partyLeader) ||
+        dest.GetMapId() != bot->GetMapId() ||
         bot->GetMap()->Instanceable() || botAI->rpgInfo.GetStatus() == RPG_TRAVEL_FLIGHT)
         return false;
     static std::mutex flyLock;
@@ -5173,6 +5208,38 @@ namespace
             return false;  // it would walk, and the walk is refused
         plan = Acore::StringFormat("by air from {} to {} ({} c, {:.0f} s against {:.0f} s on foot)", master->pos.ToString(),
                                    to->name[0], fare, fly, walk);
+        return true;
+    }
+
+    // [fly109] the member's flight from its nearest known flight master to its known node nearest the destination
+    // (FlightTripSafe judged the trip): its New RPG flight status, its own fare
+    bool StartMemberFlight(Player* member, WorldPosition const& dest)
+    {
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(member);
+        TravelMgr::FlightMasterInfo const* master = sTravelMgr.GetNearestFlightMasterInfo(member);
+        if (!ai || !master || !master->taxiNodeId || member->IsInFlight() ||
+            ai->rpgInfo.GetStatus() == RPG_TRAVEL_FLIGHT)
+            return false;
+        TaxiNodesEntry const* to = nullptr;
+        float toGap = std::numeric_limits<float>::max();
+        for (uint32 i = 0; i < sTaxiNodesStore.GetNumRows(); ++i)
+        {
+            TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(i);
+            if (!node || node->map_id != dest.GetMapId() || !member->m_taxi.IsTaximaskNodeKnown(node->ID))
+                continue;
+            float const gap = std::hypot(node->x - dest.GetPositionX(), node->y - dest.GetPositionY());
+            if (gap < toGap)
+            {
+                toGap = gap;
+                to = node;
+            }
+        }
+        if (!to || to->ID == master->taxiNodeId)
+            return false;
+        std::vector<uint32> path = sTravelNodeMap.FindKnownTaxiPath(member, master->taxiNodeId, to->ID);
+        if (path.size() < 2)
+            return false;
+        ai->rpgInfo.ChangeToTravelFlight(master->templateEntry, master->pos, path);
         return true;
     }
 }

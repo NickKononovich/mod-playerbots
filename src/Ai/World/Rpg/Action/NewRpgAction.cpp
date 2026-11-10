@@ -1719,7 +1719,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     {
         NewRpgCoop::Order const coop = NewRpgCoop::Tick(botAI, bot);
 
-        if (coop.kind == NewRpgCoop::Order::Kind::Follow)
+        // [fly109] its party's leader flew past the walls with the party: its own flight runs (to its flight master,
+        // the flight, the landing), the follow resumes after it
+        bool const flying = info.GetStatus() == RPG_TRAVEL_FLIGHT || bot->IsInFlight();
+        if (coop.kind == NewRpgCoop::Order::Kind::Follow && !flying)
         {
             if (TownTaskHere())  // [town12] the leader's route brought it to its own town stop
                 return true;
