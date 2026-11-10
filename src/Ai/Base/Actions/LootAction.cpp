@@ -13,6 +13,7 @@
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
 #include "Event.h"
+#include "GuildCoordinator.h"  // [prof271] the guild's wanted materials
 #include "GuildMgr.h"
 #include "GuildTaskMgr.h"
 #include "ItemUsageValue.h"
@@ -607,8 +608,15 @@ bool StoreLootAction::Execute(Event event)
             ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", itemid);
             // [bag66] an item a quest in its log needs is useful whatever the item usage value says (b411: Jurdogs left
             // q38's items on 4 Harvest Watchers / Golems with no line - the not-useful branch's 'no free stack' skip)
-            bool const isUsefulItem = itemQuest || proto->StartQuest ||
-                                      (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH);
+            // [prof271] ... and a material the guild leader wants (the wanted list: a fisher's GATHER fish, a crafter's
+            // reagent) or its own called skill-ups need: b428 the guild fishers' catches were offered and left -
+            // 4182 of 4188 bobbers "items=0/1", 271 Lesser Sagefish School loots 0/1 (Shalaeth, bags 97 % full; a
+            // raw fish's usage is AH) - not one fish reached the guild in 6.4 h of fishing
+            bool const isUsefulItem =
+                itemQuest || proto->StartQuest ||
+                (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH) ||
+                (sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) &&
+                 (sGuildCoordinator.IsWanted(itemid) || sGuildCoordinator.NeedsForOwnCalls(bot, itemid)));
 
             if (isUsefulItem)
             {
