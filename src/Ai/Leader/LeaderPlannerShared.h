@@ -42,6 +42,9 @@ namespace PullPlanning
     // [lead205] where the patrol `mob` walks from now (its walker's forecast, PatrolTrack), one sample every
     // `sampleSec`; false: no forecast (no patrol, or it does not walk its path now)
     bool PatrolForecast(Creature* mob, std::vector<G3D::Vector3>& track, float& sampleSec);
+    // [dun172] a druid tank out of (Dire) Bear Form: the bear's stats last seen in form (the planner plans with them),
+    // false when `tank` is in form, no druid tank, or no bear of it was seen
+    bool BearStatsSeen(Player* tank, float& health, float& armor, float& dodge, float& parry);
 }
 
 // the tank's commit of a pull, posted to the leader's order registry

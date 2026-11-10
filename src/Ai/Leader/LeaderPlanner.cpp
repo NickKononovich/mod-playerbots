@@ -4106,27 +4106,53 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return tank->GetShapeshiftForm() == FORM_BEAR || tank->GetShapeshiftForm() == FORM_DIREBEAR;
     }
 
+    // [dun172] the bears seen in form, shared by every map thread and the guild's five gate (world thread)
+    std::mutex bearSeenLock;
+    std::unordered_map<uint64, BearFormStats> bearSeen;  // under bearSeenLock
+
     // The bear's stats to plan with, nullptr when `tank` is no druid tank out of form with a bear seen before.
     BearFormStats const* BearStatsOutOfForm(Player* tank)
     {
         if (!tank || tank->getClass() != CLASS_DRUID || !PlayerbotAI::IsTank(tank))
             return nullptr;
 
-        static thread_local std::unordered_map<uint64, BearFormStats> seen;  // per map thread
+        static thread_local std::unordered_map<uint64, BearFormStats> seen;  // this thread's copy (the pointer's)
         uint64 const key = tank->GetGUID().GetRawValue();
         if (InBearForm(tank))
         {
-            BearFormStats& stats = seen[key];
+            BearFormStats stats;
             stats.health = float(tank->GetMaxHealth());
             stats.armor = float(tank->GetArmor());
             stats.miss = tank->GetUnitMissChance(BASE_ATTACK);
             stats.dodge = tank->GetUnitDodgeChance();
             stats.parry = tank->GetUnitParryChance();
+            seen[key] = stats;
+            std::lock_guard<std::mutex> guard(bearSeenLock);
+            bearSeen[key] = stats;
             return nullptr;
         }
 
+        {
+            std::lock_guard<std::mutex> guard(bearSeenLock);
+            auto const shared = bearSeen.find(key);
+            if (shared == bearSeen.end())
+                return nullptr;
+            seen[key] = shared->second;
+        }
         auto const found = seen.find(key);
-        return found != seen.end() && found->second.health > float(tank->GetMaxHealth()) ? &found->second : nullptr;
+        return found->second.health > float(tank->GetMaxHealth()) ? &found->second : nullptr;
+    }
+
+    bool BearStatsSeen(Player* tank, float& health, float& armor, float& dodge, float& parry)
+    {
+        BearFormStats const* bear = BearStatsOutOfForm(tank);
+        if (!bear)
+            return false;
+        health = bear->health;
+        armor = std::max(bear->armor, float(tank->GetArmor()));
+        dodge = bear->dodge;
+        parry = bear->parry;
+        return true;
     }
 
     float PlanTankHealth(Player* tank)

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <limits>
 #include <sstream>
 
 #include "AiFactory.h"  // [roles59] talent trees
@@ -49,6 +50,7 @@
 #include "TestHarnessData.h"
 #include "LeaderDungeonRun.h"  // [guild70] the five-leader runs the dungeon (no test harness)
 #include "LeaderOrders.h"  // [run80] Leader::LedBot
+#include "LeaderPlannerShared.h"  // [dun172] the bear the planner plans with
 #include "World.h"
 #include "WorldConfig.h"
 #include "WorldPacket.h"
@@ -231,23 +233,63 @@ namespace FiveGate
         bool boss = false;
     };
 
-    // What one pull brings as the core brings it ([kara4] PackJoiners): the mob pulled, its formation
-    // (creature_formations) and the mobs of the core's engage call - within CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS of
-    // it (Creature::CallAssistance). The chain spread past that is the planner's fight estimate, not the gate's.
-    struct Pack
+    // [dun170] a spawn where the core puts it and how it moves: a wanderer anywhere on its wander disc
+    // (RANDOM_MOTION_TYPE, wander_distance), a waypoint patrol along its path (its formation leader's
+    // creature_addon / creature_template_addon path_id, waypoint_data)
+    struct Spawn
     {
-        std::vector<Mob> mobs;
-        bool boss = false;
-        float health = 0.0f;
+        uint32 guid = 0;
+        uint32 leader = 0;
+        G3D::Vector3 pos;
+        Mob mob;
+        uint32 faction = 0;     // [gate94]
+        bool noAssist = false;  // [gate94] CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE
+        float wander = 0.0f;
+        std::vector<G3D::Vector3> path;  // empty: it stands (or wanders) at its spawn point
     };
 
-    std::map<uint32, std::vector<Pack>> packsByMap;  // world thread (AutoFive, PreviewFive)
-
-    std::vector<Pack> const& Packs(uint32 mapId)
+    // [dun170] what one pull of a spawn brings as the core brings it: its formation (CreatureGroup: every member
+    // engages with the one engaged) and the mobs of its engage call (Creature::CallAssistance: within
+    // CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS of it, of a faction friendly to it, not by a mob flagged
+    // CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE; AssistDelayEvent switches the helpers' own call off: one hop)
+    struct MapSpawns
     {
-        if (auto const found = packsByMap.find(mapId); found != packsByMap.end())
+        std::vector<Spawn> spawns;
+        std::vector<std::vector<uint32>> formation;  // per spawn: the other members of its formation
+        std::vector<std::vector<uint32>> assists;    // per standing spawn: the standing spawns its call reaches
+        std::vector<std::vector<std::vector<uint32>>> pathNear;  // per patrol, per path point: the standing spawns
+                                                                 // its call reaches there
+        std::vector<std::vector<uint32>> pathAny;  // per patrol: the standing spawns whose call reaches it somewhere
+        std::vector<uint32> patrols;               // the spawns on a waypoint patrol
+        uint8 topLevel = 0;
+    };
+
+    std::map<uint32, MapSpawns> spawnsByMap;  // world thread (AutoFive, PreviewFive)
+
+    bool Patrols(Spawn const& s) { return !s.path.empty(); }
+
+    // the core's assistance rule (Acore::AnyAssistCreatureInRangeCheck / Creature::CanAssistTo): `helper` at
+    // `helperAt` answers `caller`'s call at `callerAt` within the radius (a wanderer's wander radius on top: it may
+    // stand anywhere in its disc) when it is friendly to the caller
+    bool Answers(Spawn const& caller, G3D::Vector3 const& callerAt, Spawn const& helper, G3D::Vector3 const& helperAt,
+                 float radius)
+    {
+        if (caller.noAssist || radius <= 0.0f ||
+            (helperAt - callerAt).length() > radius + caller.wander + helper.wander)
+            return false;
+        if (caller.faction == helper.faction)
+            return true;
+        FactionTemplateEntry const* a = sFactionTemplateStore.LookupEntry(caller.faction);
+        FactionTemplateEntry const* b = sFactionTemplateStore.LookupEntry(helper.faction);
+        return a && b && b->IsFriendlyTo(*a);
+    }
+
+    MapSpawns const& Spawns(uint32 mapId)
+    {
+        if (auto const found = spawnsByMap.find(mapId); found != spawnsByMap.end())
             return found->second;
-        std::vector<Pack>& packs = packsByMap[mapId];
+        MapSpawns& data = spawnsByMap[mapId];
+        std::vector<Spawn>& spawns = data.spawns;
 
         std::set<uint32> credits;
         if (QueryResult result =
@@ -256,19 +298,36 @@ namespace FiveGate
                 credits.insert(result->Fetch()[0].Get<uint32>());
             while (result->NextRow());
 
-        struct Spawn
-        {
-            uint32 guid = 0;
-            uint32 leader = 0;
-            G3D::Vector3 pos;
-            Mob mob;
-            uint32 faction = 0;     // [gate94]
-            bool noAssist = false;  // [gate94] CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE
-        };
-        std::vector<Spawn> spawns;
+        std::map<uint32, uint32> pathOf;  // spawn guid -> its waypoint path
         if (QueryResult result = WorldDatabase.Query(
-                "SELECT c.guid, c.id, c.position_x, c.position_y, c.position_z, IFNULL(f.leaderGUID, 0) "
-                "FROM creature c "
+                "SELECT c.guid, IFNULL(a.path_id, 0), IFNULL(t.path_id, 0) FROM creature c "
+                "LEFT JOIN creature_addon a ON a.guid = c.guid "
+                "LEFT JOIN creature_template_addon t ON t.entry = c.id WHERE c.map = {} AND c.MovementType = {}",
+                mapId, uint32(WAYPOINT_MOTION_TYPE)))
+            do
+            {
+                Field* f = result->Fetch();
+                if (uint32 const path = f[1].Get<uint32>() ? f[1].Get<uint32>() : f[2].Get<uint32>())
+                    pathOf[f[0].Get<uint32>()] = path;
+            } while (result->NextRow());
+        std::map<uint32, std::vector<G3D::Vector3>> paths;
+        for (auto const& [guid, path] : pathOf)
+        {
+            if (paths.count(path))
+                continue;
+            std::vector<G3D::Vector3>& points = paths[path];
+            if (QueryResult result = WorldDatabase.Query(
+                    "SELECT position_x, position_y, position_z FROM waypoint_data WHERE id = {} ORDER BY point", path))
+                do
+                {
+                    Field* f = result->Fetch();
+                    points.emplace_back(f[0].Get<float>(), f[1].Get<float>(), f[2].Get<float>());
+                } while (result->NextRow());
+        }
+
+        if (QueryResult result = WorldDatabase.Query(
+                "SELECT c.guid, c.id, c.position_x, c.position_y, c.position_z, IFNULL(f.leaderGUID, 0), "
+                "c.MovementType, c.wander_distance FROM creature c "
                 "LEFT JOIN creature_formations f ON f.memberGUID = c.guid WHERE c.map = {}",
                 mapId))
         {
@@ -291,6 +350,13 @@ namespace FiveGate
                 s.leader = f[5].Get<uint32>();
                 s.faction = tmpl->faction;
                 s.noAssist = (tmpl->flags_extra & CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE) != 0;
+                if (f[6].Get<uint8>() == RANDOM_MOTION_TYPE)
+                    s.wander = std::max(f[7].Get<float>(), 0.0f);
+                // a formation member walks its leader's path
+                if (auto const path = pathOf.find(s.leader ? s.leader : s.guid); path != pathOf.end())
+                    s.path = paths[path->second];
+                else if (auto const own = pathOf.find(s.guid); own != pathOf.end())
+                    s.path = paths[own->second];
                 s.mob.entry = tmpl->Entry;
                 s.mob.name = tmpl->Name;
                 s.mob.level = tmpl->maxlevel;
@@ -300,51 +366,65 @@ namespace FiveGate
                 s.mob.melee = ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) *
                               tmpl->DamageModifier / swing;
                 s.mob.boss = credits.count(tmpl->Entry) || tmpl->rank == CREATURE_ELITE_WORLDBOSS;
-                spawns.push_back(s);
+                data.topLevel = std::max(data.topLevel, s.mob.level);
+                spawns.push_back(std::move(s));
             } while (result->NextRow());
         }
 
-        float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
-        std::set<std::vector<uint32>> seen;
-        for (Spawn const& seed : spawns)
+        // a formation whose leader walks no path stands: its members stand with it
+        for (Spawn& s : spawns)
+            if (s.leader && s.leader != s.guid && !pathOf.count(s.leader))
+                s.path.clear();
+
+        float const radius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        size_t const n = spawns.size();
+        data.formation.assign(n, {});
+        data.assists.assign(n, {});
+        data.pathNear.assign(n, {});
+        data.pathAny.assign(n, {});
+        for (size_t i = 0; i < n; ++i)
         {
-            std::vector<size_t> members;
-            for (size_t j = 0; j < spawns.size(); ++j)
+            Spawn const& s = spawns[i];
+            for (size_t j = 0; j < n; ++j)
             {
-                Spawn const& other = spawns[j];
-                bool const formation = (seed.leader && (other.leader == seed.leader || other.guid == seed.leader)) ||
-                                       (other.leader && other.leader == seed.guid);
-                // [gate94] the core's engage call (Creature::CallAssistance / CanAssistTo): not by a mob flagged
-                // CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE, and only to a mob of a faction friendly to the caller's
-                bool assists = assist > 0.0f && !seed.noAssist && (other.pos - seed.pos).length() <= assist;
-                if (assists && seed.faction != other.faction)
-                {
-                    FactionTemplateEntry const* a = sFactionTemplateStore.LookupEntry(seed.faction);
-                    FactionTemplateEntry const* b = sFactionTemplateStore.LookupEntry(other.faction);
-                    assists = a && b && b->IsFriendlyTo(*a);
-                }
-                if (&other == &seed || formation || assists)
-                    members.push_back(j);
+                if (i == j)
+                    continue;
+                Spawn const& o = spawns[j];
+                bool const formation = (s.leader && (o.leader == s.leader || o.guid == s.leader)) ||
+                                       (o.leader && o.leader == s.guid);
+                if (formation)
+                    data.formation[i].push_back(uint32(j));
+                else if (!Patrols(s) && !Patrols(o) && Answers(s, s.pos, o, o.pos, radius))
+                    data.assists[i].push_back(uint32(j));
             }
-            std::vector<uint32> key;
-            for (size_t j : members)
-                key.push_back(spawns[j].guid);
-            std::sort(key.begin(), key.end());
-            if (!seen.insert(key).second)
+            if (!Patrols(s))
                 continue;
-            Pack pack;
-            for (size_t j : members)
+            data.patrols.push_back(uint32(i));
+            std::set<uint32> any;
+            for (G3D::Vector3 const& point : s.path)
             {
-                pack.mobs.push_back(spawns[j].mob);
-                pack.boss |= spawns[j].mob.boss;
-                pack.health += spawns[j].mob.health;
+                std::vector<uint32>& inReach = data.pathNear[i].emplace_back();
+                for (size_t j = 0; j < n; ++j)
+                {
+                    Spawn const& o = spawns[j];
+                    if (j == i || Patrols(o) ||
+                        std::find(data.formation[i].begin(), data.formation[i].end(), uint32(j)) !=
+                            data.formation[i].end())
+                        continue;
+                    if (Answers(s, point, o, o.pos, radius))
+                        inReach.push_back(uint32(j));
+                    if (Answers(o, o.pos, s, point, radius))
+                        any.insert(uint32(j));
+                }
             }
-            packs.push_back(std::move(pack));
+            data.pathAny[i].assign(any.begin(), any.end());
         }
-        LOG_INFO("playerbots", "[next1] five gate: map {} - {} hostile spawns, {} distinct pulls", mapId, spawns.size(),
-                 packs.size());
-        return packs;
+        LOG_INFO("playerbots", "[dun170] five gate: map {} - {} hostile spawns, {} of them on a waypoint patrol", mapId,
+                 n, data.patrols.size());
+        return data;
     }
+
+    uint8 TopLevel(uint32 mapId) { return Spawns(mapId).topLevel; }
 
     // The core's spell miss chance against a mob `diff` levels above the caster (3.3.5: 4 / 5 / 6 %, then +11 % per
     // level), as a factor on the damage of a mob of its own level (DpsEstimate's target)
@@ -369,13 +449,17 @@ namespace FiveGate
         std::string why;
     };
 
-    // The five: the tank first, the healer second (PickFive's order). Each pull is judged as the planner judges a pull
-    // "as it comes": the group's damage (DpsEstimate, each member against a mob of its level, the spell miss of the
-    // mobs' levels) kills the mobs one by one, weakest first; every living one lands its melee on the tank (its armor,
-    // dodge and parry); the healer's best rate (RestState::HealerThroughput) heals after its first gap. Clears when, in
-    // every pull, the tank's deepest drop leaves it one more heal gap at the pull's full rate (the planner's maxDrop)
-    // and the healer's mana covers the healing. Not counted: the mobs' spells, area damage on the group, splitting a
-    // pull.
+    // The five: the tank first, the healer second (PickFive's order). [dun170] The dungeon is pulled as its leader
+    // pulls it: one pull at a time, the cheapest pull the mobs still standing allow first (the planner's side pull /
+    // split: what one spawn's pull brings, MapSpawns), every pull from full health and mana (the leader's Rest
+    // between pulls), a waypoint patrol on its own where its walk takes it out of every standing mob's call (the
+    // planner waits a crossing patrol out or pulls it first), else with every pull its path reaches.
+    // Each pull is judged as the planner judges a pull "as it comes": the group's damage (DpsEstimate, each member
+    // against a mob of its level, the spell miss of the mobs' levels) kills the mobs one by one, weakest first; every
+    // living one lands its melee on the tank (its armor, dodge and parry; a druid tank out of form as the bear the
+    // planner plans with); the healer's best rate (RestState::HealerThroughput) heals after its first gap. Clears
+    // when, in every pull, the tank's deepest drop leaves it one more heal gap at the pull's full rate (the planner's
+    // maxDrop) and the healer's mana covers the healing. Not counted: the mobs' spells, area damage on the group.
     Verdict Judge(uint32 mapId, std::vector<Player*> const& five)
     {
         Verdict out;
@@ -417,30 +501,52 @@ namespace FiveGate
                 groupDps += d.burst;
             }
         RestState::HealerFacts const heal = RestState::HealerThroughput(healer, tank);
-        float const tankHealth = float(tank->GetMaxHealth());
-        float const avoid =
-            std::clamp((tank->GetUnitDodgeChance() + tank->GetUnitParryChance()) / 100.0f, 0.0f, 0.75f);
-        float const armor = float(tank->GetArmor());
+        // [dun172] a druid tank out of (Dire) Bear Form is judged as the bear the planner plans with
+        float tankHealth = float(tank->GetMaxHealth());
+        float armor = float(tank->GetArmor());
+        float dodge = tank->GetUnitDodgeChance();
+        float parry = tank->GetUnitParryChance();
+        bool const bear = PullPlanning::BearStatsSeen(tank, tankHealth, armor, dodge, parry);
+        float const avoid = std::clamp((dodge + parry) / 100.0f, 0.0f, 0.75f);
         float const healMana = heal.maxMana;
         float const gap = std::max(heal.gapSec, 1.5f);
         float const regenCasting =
             healer->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + AsUnderlyingType(POWER_MANA));
         float const regenFull = healer->GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER + AsUnderlyingType(POWER_MANA));
 
-        float worst = 0.0f;
-        std::string worstWhy;
-        uint32 judged = 0, failed = 0;
-        for (Pack const& pack : Packs(mapId))
+        // one pull's load (1.0: just fits) and its terms
+        struct PullLoad
         {
-            ++judged;
-            std::vector<Mob> mobs = pack.mobs;
+            float load = 0.0f;
+            float health = 0.0f;
+            float sec = 0.0f;
+            float deepest = 0.0f;
+            float gapDrop = 0.0f;
+            float dropShare = 0.0f;
+            float manaNeeded = 0.0f;
+            float fightMana = 0.0f;
+            float manaShare = 0.0f;
+            uint8 lo = 255;
+            uint8 hi = 0;
+            size_t mobs = 0;
+            std::string name;
+            bool boss = false;
+        };
+        auto const judge = [&](std::vector<Mob>& mobs, bool boss) -> PullLoad
+        {
             std::sort(mobs.begin(), mobs.end(), [](Mob const& a, Mob const& b) { return a.health < b.health; });
             auto landed = [&](Mob const& m)
             { return m.melee * (1.0f - ArmorReduction(armor, m.level)) * (1.0f - avoid); };
+            PullLoad result;
             float rate = 0.0f;
             for (Mob const& m : mobs)
+            {
                 rate += landed(m);
-            float const fightGuess = groupDps > 0.0f ? pack.health / groupDps : 0.0f;
+                result.health += m.health;
+                result.lo = std::min(result.lo, m.level);
+                result.hi = std::max(result.hi, m.level);
+            }
+            float const fightGuess = groupDps > 0.0f ? result.health / groupDps : 0.0f;
             float const startRate = rate;
             float t = 0.0f, drop = 0.0f, deepest = 0.0f, intake = 0.0f;
             for (Mob const& m : mobs)
@@ -460,42 +566,155 @@ namespace FiveGate
                 rate -= landed(m);
             }
             float const healNeeded = std::max(0.0f, intake - drop);
-            float const manaNeeded = heal.healPerMana > 0.0f ? healNeeded / heal.healPerMana : 0.0f;
-            float const dropShare = tankHealth > 0.0f ? (deepest + startRate * gap) / tankHealth : 99.0f;
+            result.manaNeeded = heal.healPerMana > 0.0f ? healNeeded / heal.healPerMana : 0.0f;
+            result.gapDrop = startRate * gap;
+            result.dropShare = tankHealth > 0.0f ? (deepest + result.gapDrop) / tankHealth : 99.0f;
             // [gate94] the healer's mana over the fight: its pool (each pull from full: the five drinks before it,
             // the leader's Rest) plus its regeneration during the fight - the core's while-casting rate (MP5, the
             // talents' share of spirit: UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER) the whole fight, and its
             // full rate (UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER) for the seconds it casts nothing past the 5-second rule
             float const castSec = heal.hps > 0.0f ? healNeeded / heal.hps : t;
             float const idleSec = std::max(0.0f, t - castSec - 5.0f);
-            float const fightMana = healMana + regenCasting * t + std::max(0.0f, regenFull - regenCasting) * idleSec;
-            float const manaShare = fightMana > 0.0f ? manaNeeded / fightMana : (healNeeded > 0.0f ? 99.0f : 0.0f);
-            float const load = std::max(dropShare, manaShare);
-            if (load > 1.0f)
-                ++failed;
-            if (load > worst)
+            result.fightMana = healMana + regenCasting * t + std::max(0.0f, regenFull - regenCasting) * idleSec;
+            result.manaShare = result.fightMana > 0.0f ? result.manaNeeded / result.fightMana
+                                                       : (healNeeded > 0.0f ? 99.0f : 0.0f);
+            result.load = std::max(result.dropShare, result.manaShare);
+            result.sec = t;
+            result.deepest = deepest;
+            result.mobs = mobs.size();
+            result.boss = boss;
+            if (!mobs.empty())
+                result.name = mobs.front().name;
+            return result;
+        };
+
+        // [dun170] the leader's pulls: what pulling spawn `i` brings of the spawns still standing (`left`)
+        MapSpawns const& map = Spawns(mapId);
+        std::vector<Spawn> const& spawns = map.spawns;
+        size_t const n = spawns.size();
+        std::vector<char> left(n, 1);
+        // a patrol whose walk takes it out of every standing mob's call somewhere is pulled on its own there
+        auto const patrolFree = [&](size_t p) -> bool
+        {
+            for (std::vector<uint32> const& inReach : map.pathNear[p])
+                if (std::none_of(inReach.begin(), inReach.end(), [&](uint32 j) { return left[j]; }))
+                    return true;
+            return false;
+        };
+        std::vector<char> apartNow(n, 0);
+        std::vector<uint32> in(n, 0);  // the pull a spawn was last added to
+        uint32 stamp = 0;
+        auto const pullOf = [&](size_t i, std::vector<uint32>& members)
+        {
+            members.clear();
+            ++stamp;
+            auto const add = [&](uint32 j)
             {
-                worst = load;
-                uint8 lo = 255, hi = 0;
-                for (Mob const& m : mobs)
+                if (left[j] && in[j] != stamp)
                 {
-                    lo = std::min(lo, m.level);
-                    hi = std::max(hi, m.level);
+                    in[j] = stamp;
+                    members.push_back(j);
                 }
-                worstWhy = Acore::StringFormat(
-                    "{}{} x{} (L{}-{}, {:.0f} hp): fight {:.0f} s, tank drop {:.0f} + one gap {:.0f} of {:.0f} hp "
-                    "({:.2f}), heal mana {:.0f} of {:.0f} ({:.0f} pool + regen) ({:.2f})",
-                    pack.boss ? "boss pull " : "", mobs.front().name, mobs.size(), lo, hi, pack.health, t, deepest,
-                    startRate * gap, tankHealth, dropShare, manaNeeded, fightMana, healMana, manaShare);
+            };
+            add(uint32(i));
+            if (Patrols(spawns[i]))
+            {
+                // taken where its walk brings the fewest
+                if (!apartNow[i])
+                {
+                    std::vector<uint32> const* fewest = nullptr;
+                    size_t fewestCount = std::numeric_limits<size_t>::max();
+                    for (std::vector<uint32> const& inReach : map.pathNear[i])
+                    {
+                        size_t const count =
+                            size_t(std::count_if(inReach.begin(), inReach.end(), [&](uint32 j) { return left[j]; }));
+                        if (count < fewestCount)
+                        {
+                            fewestCount = count;
+                            fewest = &inReach;
+                        }
+                    }
+                    if (fewest)
+                        for (uint32 j : *fewest)
+                            add(j);
+                }
             }
+            else
+            {
+                for (uint32 j : map.assists[i])
+                    add(j);
+                // a patrol that cannot be waited out joins every pull its path reaches
+                for (uint32 p : map.patrols)
+                    if (left[p] && !apartNow[p] &&
+                        std::binary_search(map.pathAny[p].begin(), map.pathAny[p].end(), uint32(i)))
+                        add(p);
+            }
+            // every member's formation engages with it
+            for (size_t k = 0; k < members.size(); ++k)
+                for (uint32 j : map.formation[members[k]])
+                    add(j);
+        };
+
+        PullLoad worst;
+        uint32 judged = 0, failed = 0, apart = 0;
+        std::vector<uint32> members;
+        std::vector<uint32> bestMembers;
+        std::vector<Mob> mobs;
+        for (;;)
+        {
+            for (uint32 p : map.patrols)
+                apartNow[p] = left[p] && patrolFree(p);
+            PullLoad best;
+            bool any = false;
+            for (size_t i = 0; i < n; ++i)
+            {
+                if (!left[i])
+                    continue;
+                pullOf(i, members);
+                mobs.clear();
+                bool boss = false;
+                for (uint32 j : members)
+                {
+                    mobs.push_back(spawns[j].mob);
+                    boss |= spawns[j].mob.boss;
+                }
+                PullLoad const load = judge(mobs, boss);
+                if (!any || load.load < best.load)
+                {
+                    any = true;
+                    best = load;
+                    bestMembers = members;
+                }
+            }
+            if (!any)
+                break;
+            ++judged;
+            if (Patrols(spawns[bestMembers.front()]) && apartNow[bestMembers.front()])
+                ++apart;
+            if (best.load > 1.0f)
+                ++failed;
+            if (best.load > worst.load)
+                worst = best;
+            for (uint32 j : bestMembers)
+                left[j] = 0;
         }
+        std::string const worstWhy =
+            worst.mobs ? Acore::StringFormat(
+                             "{}{} x{} (L{}-{}, {:.0f} hp): fight {:.0f} s, tank drop {:.0f} + one gap {:.0f} of "
+                             "{:.0f} hp ({:.2f}), heal mana {:.0f} of {:.0f} ({:.0f} pool + regen) ({:.2f})",
+                             worst.boss ? "boss pull " : "", worst.name, worst.mobs, worst.lo, worst.hi, worst.health,
+                             worst.sec, worst.deepest, worst.gapDrop, tankHealth, worst.dropShare, worst.manaNeeded,
+                             worst.fightMana, healMana, worst.manaShare)
+                       : std::string("-");
         out.clears = failed == 0 && judged > 0;
         out.why = Acore::StringFormat(
-            "{} of {} pulls over capacity; worst {:.2f}: {}; group burst dps {:.0f}, healer {} {:.0f} hps "
-            "(gap {:.1f} s, {:.1f} hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f} [mob melee from templates; "
-            "spells, area damage and splits not counted]",
-            failed, judged, worst, worstWhy.empty() ? "-" : worstWhy, groupDps, healer->GetName(), heal.hps, gap,
-            heal.healPerMana, tank->GetName(), tankHealth, armor, avoid);
+            "{} of {} pulls over capacity ([dun170] as the leader splits them, {} patrols pulled apart, each from full "
+            "after a rest); worst {:.2f}: {}; group burst dps {:.0f}, healer {} {:.0f} hps (gap {:.1f} s, {:.1f} "
+            "hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{} [mob melee from templates; spells and area "
+            "damage not counted]",
+            failed, judged, apart, worst.load, worstWhy, groupDps, healer->GetName(), heal.hps,
+            gap, heal.healPerMana, tank->GetName(), tankHealth, armor, avoid,
+            bear ? " (the bear seen in form)" : "");
         return out;
     }
 }
@@ -802,16 +1021,12 @@ std::string GuildCoordinator::NeededUpgrade(DungeonOption const& d, Player* p) c
 }
 
 // [roles108] the dungeon's mobs still give the member experience: below the level cap, and its highest spawn (the
-// gate's packs: the bosses and trash as their templates make them) above the member's grey level (Acore::XP)
+// gate's spawns: the bosses and trash as their templates make them) above the member's grey level (Acore::XP)
 bool GuildCoordinator::GivesXp(DungeonOption const& d, Player* p) const
 {
     if (p->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
         return false;
-    uint8 top = 0;
-    for (FiveGate::Pack const& pack : FiveGate::Packs(d.mapId))
-        for (FiveGate::Mob const& mob : pack.mobs)
-            top = std::max(top, mob.level);
-    return top > Acore::XP::GetGrayLevel(p->GetLevel());
+    return FiveGate::TopLevel(d.mapId) > Acore::XP::GetGrayLevel(p->GetLevel());
 }
 
 bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) const
