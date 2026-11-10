@@ -27,6 +27,7 @@
 #include "DpsEstimate.h"  // [next1] the five gate
 #include "HealthTriggers.h"  // [next1] RestState::HealerThroughput
 #include "Formulas.h"  // [roles108] Acore::XP::GetGrayLevel
+#include "NewRpgProfession.h"  // [roles118] NeedsRespec
 #include "GameTime.h"
 #include "Group.h"
 #include "LFGMgr.h"  // [next1] whether the Dungeon Finder can port a five
@@ -1004,21 +1005,36 @@ void GuildCoordinator::PlanRoles()
     {
         std::pair<PlanRow const*, Player*> best{nullptr, nullptr};
         bool bestPlanned = false;
+        uint32 bestPrice = 0;
         bestPoints = 0;
-        for (auto const& [row, p] : band.members)
+        // [roles118] coordinator 2026-11-10 (b421: Farret's unlearn had reached 5 g - the plan had flipped his role
+        // several times): the real price first - the core's unlearn cost (Player::resetTalentsCost, it rises with
+        // each reset) when its talents must go for the role, 0 when they need not - the cheapest first; then the
+        // plan's role, the points already in the role's tree, the level. A member the plan moved already this
+        // session is taken only when nobody else can fill the gap (two passes): no back and forth
+        for (bool const movedToo : {false, true})
         {
-            int8 const spec = RoleSpecIndex(p->getClass(), role);
-            if (spec < 0 || inFive(row->low) || !may(row, p))
-                continue;
-            std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(p);
-            uint32 const points = tabs[SpecTree(p->getClass(), uint8(spec))];
-            bool const planned = row->role == role;
-            if (best.first && std::make_tuple(planned, points, p->GetLevel()) <=
-                                  std::make_tuple(bestPlanned, bestPoints, best.second->GetLevel()))
-                continue;
-            best = {row, p};
-            bestPoints = points;
-            bestPlanned = planned;
+            for (auto const& [row, p] : band.members)
+            {
+                int8 const spec = RoleSpecIndex(p->getClass(), role);
+                if (spec < 0 || inFive(row->low) || !may(row, p) || (!movedToo && !RoleOf(row->low).empty()))
+                    continue;
+                std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(p);
+                uint32 const points = tabs[SpecTree(p->getClass(), uint8(spec))];
+                uint32 const price =
+                    NewRpgProfession::NeedsRespec(p, uint32(spec) + 1) ? p->resetTalentsCost() : 0;
+                bool const planned = row->role == role;
+                if (best.first &&
+                    std::make_tuple(-int64(price), planned, points, p->GetLevel()) <=
+                        std::make_tuple(-int64(bestPrice), bestPlanned, bestPoints, best.second->GetLevel()))
+                    continue;
+                best = {row, p};
+                bestPoints = points;
+                bestPlanned = planned;
+                bestPrice = price;
+            }
+            if (best.first)
+                break;
         }
         return best;
     };
