@@ -766,7 +766,8 @@ std::string NewRpgBaseAction::FiveGearShort(Player* bot, std::vector<uint32>* mi
         return "";
     std::string out;
     // ammo: the vendor run's own line (VENDOR_LOW_AMMO) for the ammo its ranged weapon fires
-    if (uint32 const sub = RequiredAmmoSubClass(bot); sub && bot->getClass() == CLASS_HUNTER)
+    // [ammo84] any class whose ranged weapon fires ammo (a warrior / rogue tank's gun, bow or crossbow is its pull)
+    if (uint32 const sub = RequiredAmmoSubClass(bot))
     {
         uint32 have = 0;
         auto const count = [&](Item* item)
@@ -893,7 +894,8 @@ bool NewRpgBaseAction::StartVendorRun()
                       (bagUsed >= 100 || !NewRpgCoop::InParty(bot->GetGUID().GetCounter()));
 
     uint32 ammoSubClass = 0;
-    if (bot->getClass() == CLASS_HUNTER)
+    // [ammo84] ... and its vendor run buys it as a hunter's does
+    if (RequiredAmmoSubClass(bot))
     {
         uint32 const subClass = RequiredAmmoSubClass(bot);
         if (subClass && AI_VALUE2(uint32, "item count", "ammo") < VENDOR_LOW_AMMO && bot->GetMoney() > 0 &&
