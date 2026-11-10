@@ -1875,7 +1875,19 @@ void GuildCoordinator::RunTransfers(uint32 diff)
             }
             if (item && t.count && t.count < item->GetCount())
             {
+                Item* const whole = item;
                 item = Split(s, item, t.count);
+                // [share103] no free slot to split the stack (the giver's bags full): a consumable share goes as the
+                // whole stack when the giver keeps at least as much of that kind as it hands over - a player trades
+                // the stack it cannot split. b417 rfc-n five 2: "trade #32 Ainne -> #50 Thyllyn refused: no free bag
+                // slot to split the stack" - the druid healer went in with 0 drinks, healed 116 in the wipe (5 dead)
+                if (!item && t.purpose == "consumable")
+                {
+                    uint8 const kind = ConsumableKind(whole->GetTemplate());
+                    uint32 const giverHas = CountKind(s, kind, s->GetLevel());
+                    if (kind && giverHas >= 2 * whole->GetCount())
+                        item = whole;
+                }
                 if (!item)
                 {
                     outcomes.push_back({t.id, false, false, 0, 0, "no free bag slot to split the stack", 0, -1});
