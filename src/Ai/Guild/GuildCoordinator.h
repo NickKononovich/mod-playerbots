@@ -306,6 +306,9 @@ public:
     // map thread
     // [guild70] the item is on the wanted list with a shortfall (a skill-up craft whose product someone needs)
     bool IsWanted(uint32 itemId) const;
+    // [supply112] the crafts of a guild supply recipe this cook still owes the fives' bands (its target less what it
+    // holds of the product), 0 = none (map thread: NewRpgCraft weighs them with its skill-ups)
+    uint32 SupplyCrafts(Player* cook, uint32 spellId) const;
     // [guild70] a crafter's skill-up reagent lies in the guild bank: it takes it out on the next BANK_WITHDRAW run
     void RequestWithdraw(Player* bot, uint32 itemId, std::string const& why);
     void OnCrafted(Player* bot, uint32 spellId, uint32 before, uint32 after);  // [guild70] the «План» tab's done
@@ -819,6 +822,28 @@ private:
     // pace)
     void JudgeSupplySource(std::vector<std::pair<PlanRow const*, Player*>> const& members);
     std::map<std::string, std::string> supplyJudged_;  // band -> its last [supply111] line
+    // [supply112] a band whose verdict is 'cook': its cook's job - the recipe, the product, the units the band's
+    // restocks take, what one unit saves against the vendor
+    struct SupplyCraft
+    {
+        std::string band;
+        uint32 lo{0}, hi{0};
+        uint32 spellId{0};
+        uint32 product{0};
+        uint32 category{0};  // RESTOCK_SPELL_CATEGORY_FOOD / _DRINK
+        uint32 target{0};    // units
+        float made{1.0f};
+        float castMin{0.0f};
+        float savedPerUnit{0.0f};  // copper: the vendor's price of its points less its own cost
+        uint32 recipeItem{0};
+        uint32 recipePrice{0};
+        std::vector<std::pair<uint32, uint32>> reagents;
+    };
+    std::unordered_map<uint32, std::vector<SupplyCraft>> supplyCrafts_;  // cook -> its jobs (lock_)
+    std::map<std::string, uint32> supplyCook_;                           // band -> its cook (kept while it can)
+    uint32 SupplyOwed(Player* cook, SupplyCraft const& job) const;       // crafts still owed
+    // lock_ held: the cook's supply jobs for its Cooking value (copper, minutes, text)
+    void SupplyWork(uint32 low, Player* p, double& value, double& minutes, std::string& text) const;
     // [questrate] the member's questing value by formula (no measurements): per quest the core's quest XP at its
     // copper per XP + the money + the reward items' price over the time it takes now (the walk to the objective area
     // and the ender, or to the giver for a quest it may take; the kills by the source's health at its EstimateDps,

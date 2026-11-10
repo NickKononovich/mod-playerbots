@@ -807,6 +807,21 @@ void GuildCoordinator::UpdateTransfers()
                 lack[{job.crafterLow, item}] = {n - have,
                                                 "craft " + ItemText(job.itemId, 1) + " for " + Who(job.forLow)};
     }
+    // [supply112] the guild cook's supply crafts: their reagents go to it (the guild fishers' fish, the looted meat)
+    for (auto const& [cookLow, jobs] : supplyCrafts_)
+    {
+        Player* c = Online(cookLow);
+        if (!c)
+            continue;
+        for (SupplyCraft const& job : jobs)
+        {
+            uint32 const owed = c->HasSpell(job.spellId) ? SupplyOwed(c, job) : 0;
+            for (auto const& [item, n] : job.reagents)
+                if (uint32 const have = c->GetItemCount(item, false); owed && have < owed * n)
+                    lack[{cookLow, item}] = {owed * n - have, "supply craft " + ItemText(job.product, owed) +
+                                                                " for band " + job.band};
+        }
+    }
     std::set<std::pair<uint32, uint32>> ownNeed, incoming;
     for (auto const& [key, need] : lack)
         ownNeed.insert(key);
@@ -1106,6 +1121,70 @@ void GuildCoordinator::UpdateTransfers()
                         Who(q->GetGUID().GetCounter()) + " shares equally: " + std::to_string(total) + " among " +
                         std::to_string(needy.size() + 1) + " [share83]";
                 wants.push_back(w);
+            }
+        }
+    }
+
+    // d. [supply112] coordinator 2026-11-10: the band's guild cook sends its cooked supply to the members of a five
+    // of its band before their run (the five gathers): each member up to a full restock (RESTOCK_FOOD_TARGET) of the
+    // kind, a drink only to a mana user; the cook keeps nothing back (its stock is the band's)
+    for (auto const& [id, five] : fives_)
+    {
+        if (five.stage != GuildFive::Stage::Gather)
+            continue;
+        for (auto const& [cookLow, jobs] : supplyCrafts_)
+        {
+            Player* c = Online(cookLow);
+            if (!c || !GET_PLAYERBOT_AI(c) || HumanCharacter(c))
+                continue;
+            for (SupplyCraft const& job : jobs)
+            {
+                std::vector<Item*> stacks;
+                ForEachBagItem(c, [&](Item* i)
+                               {
+                                   if (i->GetEntry() == job.product && !used.count(i->GetGUID().GetCounter()))
+                                       stacks.push_back(i);
+                               });
+                if (stacks.empty())
+                    continue;
+                std::map<Item*, uint32> left;
+                for (Item* i : stacks)
+                    left[i] = i->GetCount();
+                for (uint32 m : five.members)
+                {
+                    Player* p = Online(m);
+                    if (!p || m == cookLow || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) || p->GetLevel() < job.lo ||
+                        p->GetLevel() > job.hi ||
+                        (job.category == RESTOCK_SPELL_CATEGORY_DRINK && p->getPowerType() != POWER_MANA))
+                        continue;
+                    uint32 have = CountBagFood(p, job.category);
+                    for (auto const& [tid, t] : transfers_)  // its letters on the way count as its own
+                        if (t.toLow == m && t.itemId == job.product && t.mailed)
+                            have += t.count;
+                    if (have >= RESTOCK_FOOD_TARGET)
+                        continue;
+                    Item* from = nullptr;
+                    for (Item* i : stacks)
+                        if (!from || left[i] > left[from])
+                            from = i;
+                    if (!from || !left[from])
+                        break;
+                    uint32 const give = std::min(RESTOCK_FOOD_TARGET - have, left[from]);
+                    left[from] -= give;
+                    Want w;
+                    w.key = "s" + std::to_string(m) + ":" + std::to_string(job.product);
+                    w.from = cookLow;
+                    w.to = m;
+                    w.guid = from->GetGUID().GetCounter();
+                    w.itemId = job.product;
+                    w.count = give;
+                    w.purpose = "consumable";
+                    w.why = Acore::StringFormat("[supply112] the guild cook of band {} sends five {}'s {} {} before "
+                                                "its run ({} of {})",
+                                                job.band, id, Who(m), ItemText(job.product, give), have,
+                                                RESTOCK_FOOD_TARGET);
+                    wants.push_back(w);
+                }
             }
         }
     }
@@ -1915,6 +1994,21 @@ void GuildCoordinator::RunTransfers(uint32 diff)
                 name = r->GetName();
             else if (!sCharacterCache->GetCharacterNameByGuid(ObjectGuid::Create<HighGuid::Player>(t.toLow), name))
                 continue;
+            // [supply112] a share of a stack (the cook's supply to each member): split off first, as the trade does;
+            // no free slot to split it - the whole stack goes when the sender keeps at least as much again
+            if (item && t.count && t.count < item->GetCount())
+            {
+                Item* const whole = item;
+                item = Split(s, item, t.count);
+                if (!item && t.purpose == "consumable" &&
+                    s->GetItemCount(whole->GetEntry(), false) >= 2 * whole->GetCount())
+                    item = whole;
+                if (!item)
+                {
+                    outcomes.push_back({t.id, false, false, 0, 0, "no free bag slot to split the stack", 0, -1});
+                    continue;
+                }
+            }
             uint32 const before = s->GetMoney();
             std::string const err =
                 DoMail(s, box, name, item, money, t.gold ? "For the guild bank tab" : "For you: " + t.purpose);

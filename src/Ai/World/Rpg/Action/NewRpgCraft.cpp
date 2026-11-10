@@ -280,8 +280,11 @@ namespace
     {
         uint32 const value = bot->GetPureSkillValue(r.skill);
         uint32 const cap = bot->GetPureMaxSkillValue(r.skill);
-        uint8 const tier = Tier(r, value);
-        if (!tier || value >= cap || !ToolsOk(bot, r))
+        // [supply112] a guild supply recipe the global leader gave this cook (the fives' cooked food / drink): its
+        // owed crafts are worth making though they give no skill
+        uint32 const supply = sGuildCoordinator.SupplyCrafts(bot, r.spellId);
+        uint8 const tier = supply ? std::max<uint8>(Tier(r, value), 1) : Tier(r, value);
+        if (!tier || (value >= cap && !supply) || !ToolsOk(bot, r))
             return false;
         Option o;
         o.recipe = &r;
@@ -294,7 +297,7 @@ namespace
                 return false;
         }
         // the bags (and the bank) limit the crafts; vendor reagents are bought for them with the budget
-        uint32 crafts = ExpectedCrafts(r, value, cap);
+        uint32 crafts = supply ? supply : ExpectedCrafts(r, value, cap);
         double perCraft = 0;
         for (auto const& [item, n] : r.reagents)
         {
@@ -339,7 +342,7 @@ namespace
         if (!crafts && !o.buyItem)
             return false;
         o.crafts = std::max<uint32>(1, crafts);
-        o.useful = Useful(r.product);
+        o.useful = supply ? 3 : Useful(r.product);  // [supply112] the guild's supply first
         o.perPoint = perCraft * 1000.0 / std::max(1, Chance(value, r.gray, r.yellow));
         if (!o.bank.empty() && where < 2)
             return false;

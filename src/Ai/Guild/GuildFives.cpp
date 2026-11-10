@@ -1669,9 +1669,22 @@ void GuildCoordinator::UpdateFives()
                     continue;
                 BotState& st = bots_[low];
                 std::string shortOf;
-                uint32 const drink = p->GetMaxPower(POWER_MANA) ? CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK)
-                                                                : RESTOCK_FOOD_MIN;
-                uint32 const food = CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
+                uint32 drink = p->GetMaxPower(POWER_MANA) ? CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK)
+                                                          : RESTOCK_FOOD_MIN;
+                uint32 food = CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
+                // [supply112] the guild cook's letters on the way count as its own - only once sent (mailed): a
+                // planned letter not sent yet counts nothing
+                for (auto const& [tid, t] : transfers_)
+                    if (t.mailed && !t.gold && t.toLow == low)
+                        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(t.itemId);
+                            proto && proto->Class == ITEM_CLASS_CONSUMABLE)
+                        {
+                            if (proto->Spells[0].SpellCategory == RESTOCK_SPELL_CATEGORY_DRINK &&
+                                p->GetMaxPower(POWER_MANA))
+                                drink += t.count;
+                            else if (proto->Spells[0].SpellCategory == RESTOCK_SPELL_CATEGORY_FOOD)
+                                food += t.count;
+                        }
                 if (drink < RESTOCK_FOOD_MIN)
                     shortOf = "drink " + std::to_string(drink);
                 if (food < RESTOCK_FOOD_MIN)

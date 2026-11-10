@@ -1403,6 +1403,48 @@ void GuildCoordinator::UpdateWanted()
             }
     }
 
+    // [supply112] the guild cook's supply jobs: their reagents are wanted for it (the fishers' catch goes to it), worth
+    // what the cooked units save against the vendor
+    {
+        struct SupplyPart
+        {
+            uint32 cook;
+            uint32 item;
+            double amount;
+            double worth;
+            std::string label;
+        };
+        std::vector<SupplyPart> parts;
+        {
+            CoordLock guard(lock_, __func__);
+            for (auto const& [cookLow, jobs] : supplyCrafts_)
+                if (Player* c = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(cookLow)))
+                    for (SupplyCraft const& job : jobs)
+                    {
+                        uint32 const owed = c->HasSpell(job.spellId) ? SupplyOwed(c, job) : 0;
+                        uint32 units = 0;
+                        for (auto const& [item, n] : job.reagents)
+                            units += n;
+                        for (auto const& [item, n] : job.reagents)
+                            if (owed && units)
+                                parts.push_back({cookLow, item, double(owed) * n,
+                                                 double(owed) * job.made * job.savedPerUnit * n / units,
+                                                 "supply " + ItemName(job.product) + " (band " + job.band + ")"});
+                    }
+        }
+        for (SupplyPart const& part : parts)
+        {
+            std::map<uint32, double> raw;
+            ExpandReagent(part.item, part.amount, raw, &via);
+            shareWorth(raw, part.worth);
+            for (auto const& [id, amount] : raw)
+            {
+                addPart(id, amount, part.label, WHY_UPGRADE, part.cook, 0);
+                crafterNeed[part.cook][id] += amount;
+            }
+        }
+    }
+
     std::map<uint32, uint32> bank;
     GuildBankRun::CountBank(guild, bank);
     // [econ1] what lies in the members' mailboxes counts as stock too (it is theirs, taken on the next visit)
@@ -1592,6 +1634,42 @@ void GuildCoordinator::RequestWithdraw(Player* bot, uint32 itemId, std::string c
         if (item == itemId)
             return;
     list.emplace_back(itemId, why);
+}
+
+// [supply112] the nearest vendor spawn on the bot's map that sells the item for gold (npc_vendor, no extended cost)
+static bool NearestVendorOf(Player* p, uint32 itemId, uint32& npcEntry, WorldPosition& pos)
+{
+    static std::once_flag once;
+    static std::unordered_map<uint32, std::vector<std::pair<uint32, WorldPosition>>> spawns;  // item -> vendors
+    std::call_once(once, []()
+    {
+        std::unordered_map<uint32, std::vector<uint32>> byEntry;  // vendor entry -> its recipe items
+        for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
+            if (tmpl.npcflag & UNIT_NPC_FLAG_VENDOR)
+                if (VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry))
+                    for (VendorItem const* item : items->m_items)
+                        if (ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
+                            proto && proto->Class == ITEM_CLASS_RECIPE && !item->ExtendedCost)
+                            byEntry[entry].push_back(item->item);
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+            if (auto const found = byEntry.find(data.id); found != byEntry.end())
+                for (uint32 item : found->second)
+                    spawns[item].emplace_back(data.id,
+                                              WorldPosition(data.mapid, data.posX, data.posY, data.posZ));
+    });
+    auto const list = spawns.find(itemId);
+    if (list == spawns.end())
+        return false;
+    float best = FLT_MAX;
+    for (auto const& [entry, at] : list->second)
+        if (at.GetMapId() == p->GetMapId())
+            if (float const d = p->GetExactDist(at); d < best)
+            {
+                best = d;
+                npcEntry = entry;
+                pos = at;
+            }
+    return best < FLT_MAX;
 }
 
 void GuildCoordinator::UpdateOrders()
@@ -2131,6 +2209,34 @@ void GuildCoordinator::UpdateOrders()
                 orders.push_back(o);
                 break;
             }
+            // [supply112] BUY: a supply cook's recipe it has not learned, at the nearest vendor of its map that sells
+            // it, with its own money (the [recipes] use teaches it from the bags)
+            if (auto const jobs = supplyCrafts_.find(row.low); jobs != supplyCrafts_.end())
+                for (SupplyCraft const& job : jobs->second)
+                {
+                    if (!job.recipeItem || p->HasSpell(job.spellId) || p->GetItemCount(job.recipeItem, true) ||
+                        p->GetMoney() < job.recipePrice)
+                        continue;
+                    uint32 npcEntry = 0;
+                    WorldPosition pos;
+                    if (!NearestVendorOf(p, job.recipeItem, npcEntry, pos))
+                        continue;
+                    GuildOrder o;
+                    o.type = GuildOrderType::BUY;
+                    o.itemId = job.recipeItem;
+                    o.count = 1;
+                    o.npcEntry = npcEntry;
+                    o.pos = pos;
+                    o.cost = job.recipePrice;
+                    o.details = ItemName(job.recipeItem) + " for itself — the cook of band " + job.band +
+                                ", price " + Gsc(job.recipePrice);
+                    o.reason = "[supply112] the guild cook's recipe for the fives' " + ItemName(job.product) +
+                               ", with its own money";
+                    o.status = "to the vendor";
+                    o.executable = true;
+                    orders.push_back(o);
+                    break;
+                }
             // QUEST_REWARD: the choices the turn-ins will take
             if (!st.rewards.empty())
             {
@@ -3578,7 +3684,12 @@ void GuildCoordinator::UpdateProfessions()
                     reach = v + 1;
                 }
                 std::string const lag = ", lag " + std::to_string(need - skill);
-                if (reach <= skill)
+                // [supply112] what the line produces for the guild's needs: the cook's supply jobs
+                double supplyValue = 0.0, supplyMin = 0.0;
+                std::string supplyText;
+                if (line == SKILL_COOKING)
+                    SupplyWork(row->low, p, supplyValue, supplyMin, supplyText);
+                if (reach <= skill && supplyValue <= 0.0)
                 {
                     key = std::string("blocked:") + (skill >= maxSkill ? "cap" : block.substr(0, 24));
                     decision = head + lag + " — cannot level now: " +
@@ -3606,16 +3717,20 @@ void GuildCoordinator::UpdateProfessions()
                     // bandages, 56 to Roasted Boar Meat, and the call opened the profession errands (trainers, tool
                     // vendors 1000-3400 yd away): PROFESSION 13 % of all bot time. The sales stay out of the value
                     (void)sales;
-                    double const value = unlocked - vendorCost;
-                    double const minutes = craftMin + gatherMin;
+                    double const value = unlocked + supplyValue - vendorCost;
+                    double const minutes = craftMin + gatherMin + supplyMin;
                     float questPace = 0.0f;
                     std::string questWhy;
-                    char numbers[200];
+                    char numbers[320];
                     std::snprintf(numbers, sizeof(numbers),
-                                  "to %u in %.1f min (craft %.1f, gather %.1f), value %s (unlocks) [econ2]",
-                                  reach, minutes, craftMin, gatherMin, Gsc(uint64(std::max(0.0, value))).c_str());
+                                  "to %u in %.1f min (craft %.1f, gather %.1f), value %s%s (unlocks %s + supplies %s "
+                                  "- costs %s) [econ2]",
+                                  reach, minutes, craftMin, gatherMin, value < 0 ? "-" : "",
+                                  Gsc(uint64(std::fabs(value))).c_str(), Gsc(uint64(unlocked)).c_str(),
+                                  Gsc(uint64(supplyValue)).c_str(), Gsc(uint64(vendorCost)).c_str());
                     std::string const reached = std::string(numbers) +
                                                 (unlockedText.empty() ? "" : "; unlocks " + unlockedText) +
+                                                (supplyText.empty() ? "" : "; supplies [supply112]: " + supplyText) +
                                                 (block.empty() ? "" : "; next: " + block);
                     if (!QuestPace(st, p, questPace, &questWhy))
                     {
@@ -7203,7 +7318,8 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
 {
     static std::once_flag once;
     static std::unordered_set<uint32> sold;               // what a vendor sells for gold
-    static std::unordered_map<uint32, uint32> recipeItem;  // recipe spell -> its recipe item's price (vendor sold)
+    // recipe spell -> its recipe item and that item's price (vendor sold)
+    static std::unordered_map<uint32, std::pair<uint32, uint32>> recipeItem;
     std::call_once(once, []()
     {
         for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
@@ -7219,7 +7335,7 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
                         for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
                             if (learn->Effects[e].Effect == SPELL_EFFECT_LEARN_SPELL &&
                                 learn->Effects[e].TriggerSpell)
-                                recipeItem[learn->Effects[e].TriggerSpell] = proto.BuyPrice;
+                                recipeItem[learn->Effects[e].TriggerSpell] = {id, proto.BuyPrice};
     });
     auto const restores = [](ItemTemplate const* proto, float& hp, float& mana)
     {
@@ -7289,6 +7405,7 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
     }
     auto const cooking = recipesBySkill_.find(SKILL_COOKING);
 
+    std::unordered_map<uint32, std::vector<SupplyCraft>> jobs;  // [supply112] cook -> its jobs
     std::set<std::pair<uint32, uint32>> bands;
     for (DungeonOption const& d : dungeons_)
         bands.emplace(d.walkMinLevel, d.maxLevel);
@@ -7337,6 +7454,8 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
         std::string cookedText = "no cooking recipe of the level";
         float cookedPer = -1.0f;
         float cookedHp = 0.0f, cookedMana = 0.0f;
+        SupplyCraft job;
+        float jobUnitCost = 0.0f;
         if (cooking != recipesBySkill_.end())
         {
             uint32 bestLevel = 0;
@@ -7354,12 +7473,14 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
                 // its recipe: learned at the trainer / by itself (no item price), else a vendor's recipe item, else
                 // a drop (no price known: not judged)
                 float recipePrice = 0.0f;
+                uint32 recipeId = 0;
                 if (!r.trainer && !r.autoLearned)
                 {
                     auto const item = recipeItem.find(r.spellId);
                     if (item == recipeItem.end())
                         continue;
-                    recipePrice = float(item->second);
+                    recipeId = item->second.first;
+                    recipePrice = float(item->second.second);
                 }
                 float coin = 0.0f, seconds = 0.0f;
                 std::string reagents;
@@ -7405,6 +7526,17 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
                     bestLevel = proto->RequiredLevel;
                     cookedHp = hp;
                     cookedMana = mana;
+                    // [supply112] the job a 'cook' verdict gives the band's cook
+                    job = SupplyCraft();
+                    job.spellId = r.spellId;
+                    job.product = r.product;
+                    job.category = proto->Spells[0].SpellCategory;
+                    job.made = made;
+                    job.castMin = castMin;
+                    job.recipeItem = recipeId;
+                    job.recipePrice = uint32(recipePrice);
+                    job.reagents = r.reagents;
+                    jobUnitCost = coin / made;
                     if (reagents.size() >= 2)
                         reagents.resize(reagents.size() - 2);
                     cookedText = Acore::StringFormat("{} {:.3f} c/point ({:.0f} hp + {:.0f} mana; {:.1f} c a unit: "
@@ -7431,6 +7563,118 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
             supplyJudged_[key] = text;
             LOG_INFO("playerbots", "[supply111] {}", text);
         }
+
+        // [supply112] coordinator 2026-11-10 (the user: the fishers fish for the cook, the guild cook cooks for the
+        // guild): a 'cook' band gets one cook - its cook before while it still cooks, else the most Cooking skill of
+        // the members no other band holds (the guild's best cook when every one is taken). Its job: the units the
+        // band's members lack of a restock of that kind (RESTOCK_FOOD_TARGET each, a drink only for mana users)
+        if (choice != "cook")
+        {
+            if (auto const was = supplyCook_.find(key); was != supplyCook_.end())
+            {
+                LOG_INFO("playerbots", "[supply112] band {}: vendor again, {} cooks no more for it", key,
+                         Who(was->second));
+                supplyCook_.erase(was);
+            }
+            continue;
+        }
+        uint32 cookLow = 0;
+        if (auto const was = supplyCook_.find(key); was != supplyCook_.end())
+            for (auto const& [row, m] : members)
+                if (row->low == was->second && m->HasSkill(SKILL_COOKING) && !HumanCharacter(m))
+                    cookLow = row->low;
+        if (!cookLow)
+        {
+            Player* best = nullptr;
+            for (auto const& [row, m] : members)
+            {
+                if (HumanCharacter(m) || !m->HasSkill(SKILL_COOKING))
+                    continue;
+                bool taken = false;
+                for (auto const& [band, low] : supplyCook_)
+                    taken = taken || (band != key && low == row->low);
+                if (taken)
+                    continue;
+                if (!best || m->GetPureSkillValue(SKILL_COOKING) > best->GetPureSkillValue(SKILL_COOKING))
+                    best = m;
+            }
+            if (!best)
+                best = cook;
+            if (!best)
+                continue;
+            cookLow = best->GetGUID().GetCounter();
+            LOG_INFO("playerbots", "[supply112] band {}: {} (cooking {}) is its cook: {}", key, Who(cookLow),
+                     best->GetPureSkillValue(SKILL_COOKING), ItemName(job.product));
+        }
+        supplyCook_[key] = cookLow;
+        job.band = key;
+        job.lo = lo;
+        job.hi = hi;
+        job.savedPerUnit = std::max(0.0f, vendorPer * (cookedHp + cookedMana) - jobUnitCost);
+        for (auto const& [row, m] : members)
+            if (m->GetLevel() >= lo && m->GetLevel() <= hi && row->grp >= 'A' && row->grp <= 'C' &&
+                (job.category != RESTOCK_SPELL_CATEGORY_DRINK || m->GetMaxPower(POWER_MANA) > 0))
+                if (uint32 const have = CountBagFood(m, job.category); have < RESTOCK_FOOD_TARGET)
+                    job.target += RESTOCK_FOOD_TARGET - have;
+        jobs[cookLow].push_back(job);
+    }
+    supplyCrafts_ = std::move(jobs);
+}
+
+// [supply112] the crafts still owed: the job's units less what the cook holds of the product (bags and bank), less
+// what it has sent and the members have not taken yet (its letters on the way), through the recipe's yield
+uint32 GuildCoordinator::SupplyOwed(Player* cook, SupplyCraft const& job) const
+{
+    if (!cook || !job.target)
+        return 0;
+    uint32 held = cook->GetItemCount(job.product, true);
+    for (auto const& [id, t] : transfers_)
+        if (t.fromLow == cook->GetGUID().GetCounter() && t.itemId == job.product && t.mailed)
+            held += t.count;
+    if (held >= job.target)
+        return 0;
+    return uint32(std::ceil(float(job.target - held) / std::max(job.made, 1.0f)));
+}
+
+uint32 GuildCoordinator::SupplyCrafts(Player* cook, uint32 spellId) const
+{
+    if (!cook || !cook->HasSpell(spellId))
+        return 0;
+    CoordLock guard(lock_, __func__);
+    auto const jobs = supplyCrafts_.find(cook->GetGUID().GetCounter());
+    if (jobs == supplyCrafts_.end())
+        return 0;
+    uint32 owed = 0;
+    for (SupplyCraft const& job : jobs->second)
+        if (job.spellId == spellId)
+            owed += SupplyOwed(cook, job);
+    return owed;
+}
+
+// [supply112] coordinator 2026-11-10: a profession is worth what it produces for the guild's needs too, not only the
+// gear and bag crafts its skill unlocks - the cook's supply jobs at what each unit saves against the vendor, over the
+// casts they take (a recipe it has not learned yet: its BUY order comes first, no value until it knows it)
+void GuildCoordinator::SupplyWork(uint32 low, Player* p, double& value, double& minutes, std::string& text) const
+{
+    value = minutes = 0.0;
+    auto const jobs = supplyCrafts_.find(low);
+    if (jobs == supplyCrafts_.end())
+        return;
+    for (SupplyCraft const& job : jobs->second)
+    {
+        if (!p->HasSpell(job.spellId))
+        {
+            text += Acore::StringFormat("{}{}: recipe not known yet (buys {})", text.empty() ? "" : "; ",
+                                        ItemName(job.product), job.recipeItem ? ItemName(job.recipeItem) : "-");
+            continue;
+        }
+        uint32 const owed = SupplyOwed(p, job);
+        if (!owed)
+            continue;
+        value += double(owed) * job.made * job.savedPerUnit;
+        minutes += double(owed) * job.castMin;
+        text += Acore::StringFormat("{}{} x{} for band {} ({:.1f} c saved a unit)", text.empty() ? "" : "; ",
+                                    ItemName(job.product), uint32(owed * job.made), job.band, job.savedPerUnit);
     }
 }
 
