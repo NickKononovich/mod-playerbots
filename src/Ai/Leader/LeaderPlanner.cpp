@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "LeaderRest.h"  // [rest82] CountRestItems
 #include "ChooseTargetActions.h"
 
 #include <mutex>
@@ -5372,7 +5373,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                              "(no boss fight of it measured)", member->GetName(), boss->GetName(), manaLine,
                              bot->GetName(), rotationWhy);
             }
-            if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < manaLine)
+            // [rest82] a member with no drink in its bags is no mana wait (spirit regen only: the regen judge waits for
+            // none of it). b407 rfc-n five 3: "Feette at 71 % mana (needs 100 %)" held its boss pull, 0 drinks
+            if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < manaLine &&
+                Leader::Dungeon::CountRestItems(member, 59))
                 return Acore::StringFormat("{} at {:.0f} % mana (needs {:.0f} %)", member->GetName(),
                                            member->GetPowerPct(POWER_MANA), manaLine);
 

@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "LeaderRest.h"  // [rest82] CountRestItems
 #include "Common.h"
 #include "SoloSafety.h"  // [rez27] StandsInReach
 #include "LeaderEvents.h"
@@ -7599,6 +7600,23 @@ namespace Leader::Dungeon
                 }
                 if (!manaWayLive)
                     lead.manaWayLogged.erase(guid);
+                // [rest82] a Rest it cannot rest with is no Rest: no drink (a mana user) and its health full or no food
+                // in its bags - it sits on spirit regen alone, the regen judge waits for none of it, and under the Rest
+                // it stood where the fight left it while the group waited for it as "trails the group". b407 rfc-n
+                // five 1 Thokhen (0 drinks, 7 % mana) 168 s, five 3 Feette (0 drinks, 71 % mana before a boss): both
+                // runs stalled. It follows the group; its mana comes on the move
+                if (needsRest && bot->GetMaxPower(POWER_MANA) && !Leader::Dungeon::CountRestItems(bot, 59) &&
+                    (bot->GetHealthPct() >= 100.0f || !Leader::Dungeon::CountRestItems(bot, 11)))
+                {
+                    needsRest = false;
+                    if (lead.restLogged[guid] != "no drink")
+                        Decisions().Write(run, "leader", "rest_none", guid, bot->GetName(), true,
+                                          JsonObject()
+                                              .Str("member", bot->GetName())
+                                              .Real("mana", bot->GetPowerPct(POWER_MANA))
+                                              .Str("why", "no drink in its bags: it follows, spirit regen on the move")
+                                              .Str("tag", "[rest82]"));
+                }
                 {
                     // [lead76] the Rest's line vs the member's mana, logged at the Rest's start and end
                     // [lead79] logged at the Rest's start and end only (the line's text changes with the mana)
