@@ -451,8 +451,9 @@ namespace
                     disc.x = home.GetPositionX();
                     disc.y = home.GetPositionY();
                     NewRpgBaseAction::RememberDanger(bot, disc.x, disc.y, disc.w, track.entry, track.level);
-                    LOG_INFO("playerbots", "[deaths138] {} L{} lost a fight to {} L{}: its reach ({:.0f},{:.0f}) {:.0f} "
-                             "yd is a danger zone until L{} or its gear / spells change",
+                    LOG_INFO("playerbots",
+                             "[deaths138] {} L{} lost a fight to {} L{}: its reach ({:.0f},{:.0f}) {:.0f} yd is a "
+                             "danger zone until L{} or its gear / spells change",
                              bot->GetName(), bot->GetLevel(), track.name, track.level, disc.x, disc.y, disc.w,
                              std::max<uint32>(track.level, bot->GetLevel()) + 1);
                 }
