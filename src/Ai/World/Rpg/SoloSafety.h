@@ -143,11 +143,15 @@ namespace SoloSafety
     // [regress10] alive with that recovery not taken yet, or a rest asked for and not full yet: no new pull
     bool HoldsPulls(Player* bot);
     // [regress10] the idle mobs whose aggro reach (wander area, patrol beat) covers where the bot stands (`who`: their
-    // names) and the spots that leave every idle reach round it, nearest first (out of the covering reaches by its
-    // combat reach, all round; else at its sight); false when none covers it
+    // names) and the spots that leave every idle reach round it, nearest first ([deaths140] where each of 16
+    // directions leaves the union of the reaches, its combat reach past the last rim, within its sight); false when
+    // none covers it
     // [login67] atRestart: the reaches its next login meets - every mob at its home (the restart respawns the dead
     // ones and the fighting ones are back home), dead and fighting mobs too
     bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots, bool atRestart = false);
+    // [deaths140] a wait (walled-in hold, Hearthstone cooldown) found no spot out of `who`'s reaches with a clean walk:
+    // logged once per bot and set of reaches, the wait is taken where it stands. A log, no decision
+    void NoteNoWayOut(Player* bot, std::string const& who, size_t spots, char const* site);
     // [reach66] the mob its judge last refused (or would fight only at full) is alive, idle and its aggro reach
     // covers the bot where it stands: `who` names it
     bool InRefusedReach(Player* bot, std::string& who);

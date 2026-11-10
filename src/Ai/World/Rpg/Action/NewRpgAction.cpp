@@ -600,6 +600,8 @@ bool NewRpgBaseAction::HearthOut(std::string const& why, WorldPosition const* ca
                              bot->GetName(), bot->GetLevel(), who, at.x, at.y, route.length);
                     return true;
                 }
+            if (!who.empty())
+                SoloSafety::NoteNoWayOut(bot, who, spots.size(), "Hearthstone cooldown");  // [deaths140]
         }
         if (bot->isMoving())
             return true;  // its step out of the reaches
@@ -716,6 +718,8 @@ bool NewRpgBaseAction::WalledHoldStep()
                              bot->GetName(), bot->GetLevel(), who, at.x, at.y, route.length);
                     return true;
                 }
+            if (!who.empty())
+                SoloSafety::NoteNoWayOut(bot, who, spots.size(), "walled-in hold");  // [deaths140]
         }
         if (bot->isMoving())
             return true;

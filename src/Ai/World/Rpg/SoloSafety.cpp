@@ -2586,7 +2586,6 @@ namespace SoloSafety
         Cell::VisitObjects(bot, searcher, std::max(range, sight));
         G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
         std::vector<G3D::Vector4> discs;
-        float out = 0.0f;  // the yards out of the covering reaches
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
@@ -2604,25 +2603,79 @@ namespace SoloSafety
             discs.push_back(disc);
             if (!InDisc(disc, here))
                 continue;
-            out = std::max(out, disc.w - std::hypot(disc.x - here.x, disc.y - here.y));
             who += Acore::StringFormat("{}{} L{}", who.empty() ? "" : ", ", mob->GetName(), mob->GetLevel());
         }
         if (who.empty())
             return false;
-        constexpr uint32 DIRECTIONS = 8;  // the direction search's eighths all round (as the flee's maze search)
-        for (float const ring : {out + bot->GetCombatReach(), sight})
-            for (uint32 i = 0; i < DIRECTIONS; ++i)
+        // [deaths140] the spots are where each direction leaves the union of the reaches (every disc's chord along
+        // that ray solved exactly), its combat reach past the last rim, nearest first, out to its sight. Before: a
+        // ring at `out` (the deepest disc's depth, right only straight away from that disc's centre) and one at sight,
+        // eight spots each - in a camp of overlapping reaches none of them was clear or walkable and the bot sat
+        // where it stood. b428: 255 "stays for its help request" and 184 "Hearthstone ... waits here" against one
+        // "waits for its help out of the reach"; Manue L17 (Longshore), Januel L14 (Stonesplinter Valley), Ganna L17
+        // (Stendel's Pond) held and rested inside the reaches until a wanderer / patrol walked in: dead
+        float const margin = bot->GetCombatReach();
+        constexpr uint32 DIRECTIONS = 16;  // the search's directions all round (WorkSpot's: a look's cost, no rule)
+        std::vector<std::pair<float, G3D::Vector3>> found;
+        for (uint32 i = 0; i < DIRECTIONS; ++i)
+        {
+            float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+            float const dx = std::cos(angle);
+            float const dy = std::sin(angle);
+            // the yards along the ray inside each disc: [t1, t2] of |here + t d - c| <= r (2d)
+            std::vector<std::pair<float, float>> inside;
+            for (G3D::Vector4 const& d : discs)
             {
-                float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
-                float x = here.x + std::cos(angle) * ring;
-                float y = here.y + std::sin(angle) * ring;
-                float z = here.z;
-                bot->UpdateAllowedPositionZ(x, y, z);
-                G3D::Vector3 const at(x, y, z);
-                if (std::none_of(discs.begin(), discs.end(), [&at](G3D::Vector4 const& d) { return InDisc(d, at); }))
-                    spots.push_back(at);
+                float const ox = here.x - d.x;
+                float const oy = here.y - d.y;
+                float const b = ox * dx + oy * dy;
+                float const c = ox * ox + oy * oy - d.w * d.w;
+                float const disc = b * b - c;
+                if (disc <= 0.0f)
+                    continue;
+                float const root = std::sqrt(disc);
+                if (-b + root > 0.0f)
+                    inside.emplace_back(std::max(0.0f, -b - root), -b + root);
             }
+            std::sort(inside.begin(), inside.end());
+            float clearAt = 0.0f;  // the first yard of the ray past every disc it starts in or meets on the way
+            for (auto const& [t1, t2] : inside)
+                if (t1 <= clearAt + margin)
+                    clearAt = std::max(clearAt, t2);
+            float const t = clearAt + margin;
+            if (t > sight)
+                continue;  // no clear spot this way within its sight (the mobs beyond are not looked at)
+            float x = here.x + dx * t;
+            float y = here.y + dy * t;
+            float z = here.z;
+            bot->UpdateAllowedPositionZ(x, y, z);
+            G3D::Vector3 const at(x, y, z);
+            if (std::none_of(discs.begin(), discs.end(), [&at](G3D::Vector4 const& d) { return InDisc(d, at); }))
+                found.emplace_back(t, at);
+        }
+        std::sort(found.begin(), found.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+        for (auto const& [t, at] : found)
+            spots.push_back(at);
         return true;
+    }
+
+    void NoteNoWayOut(Player* bot, std::string const& who, size_t spots, char const* site)
+    {
+        if (!bot)
+            return;
+        static std::mutex noWayLock;
+        static std::unordered_map<uint32, std::string> noWayLogged;
+        {
+            std::lock_guard<std::mutex> guard(noWayLock);
+            std::string& last = noWayLogged[bot->GetGUID().GetCounter()];
+            if (last == who)
+                return;
+            last = who;
+        }
+        LOG_INFO("playerbots",
+                 "[deaths140] {} L{} {}: waits inside the reach of {} at ({:.0f},{:.0f}) - {} spot(s) out of every "
+                 "reach within its sight, none with a clean walk",
+                 bot->GetName(), bot->GetLevel(), site, who, bot->GetPositionX(), bot->GetPositionY(), spots);
     }
 
     bool WorkSpot(Player* bot, WorldObject* target, float range, bool sight, G3D::Vector3& at, std::string& who)
