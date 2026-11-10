@@ -5,6 +5,7 @@
  */
 
 #include "AggressiveTargetValue.h"
+#include "PathGenerator.h"
 #include "ANAddTactics.h"
 #include "AttackersValue.h"
 #include "CreatureGroups.h"
@@ -907,7 +908,52 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
         if (!isRouteTarget && (tall ? tallChecks++ >= MAX_TALL_PATH_CHECKS : checks++ >= MAX_PATH_CHECKS))
             continue;
 
-        if (reachability.IsReachable(bot, candidate.second))
+        // [pull98] a mob that cannot come down to the tank (its own chase path to where the tank stands is no complete
+        // navmesh walk) and that the tank cannot walk to either is no pull: pulled, it stands on its ledge, cannot reach
+        // its victim, evades and resets (the core's CanNotReachTarget). b414 rfc-n five 1: Ragefire Shamans 10 / 14 on
+        // a ledge - 117 pulls of 2-6 s with 0 kills over 25 min, "cannot come: no threat stop on it" (pathType 8),
+        // "the tank goes to its mob its melee cannot reach: stays (no walk to the spot)"; the run never reached
+        // Oggleflint. Its kill is the ranged members' while it casts on them, never a pull of its own
+        bool cannotCome = false;
+        if (PlayerbotAI::IsTank(bot) && LedRouteMap(bot) && !candidate.second->IsInCombat())
+            if (Creature* mob = candidate.second->ToCreature())
+            {
+                // the answer per mob and the tank's 5 yd cell (the paths' facts do not change while both stand)
+                thread_local std::map<std::pair<uint64, uint64>, bool> judged;
+                if (judged.size() > 4096)
+                    judged.clear();
+                uint64 const cell = (uint64(uint32(int32(bot->GetPositionX() / 5.0f))) << 32) |
+                                    uint32(int32(bot->GetPositionY() / 5.0f));
+                std::pair<uint64, uint64> const key{mob->GetGUID().GetRawValue(), cell};
+                if (auto const found = judged.find(key); found != judged.end())
+                    cannotCome = found->second;
+                else
+                {
+                PathGenerator chase(mob);
+                bool const comes = chase.CalculatePath(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                                       false) &&
+                                   chase.GetPathType() == PATHFIND_NORMAL;
+                if (!comes)
+                {
+                    Leader::RouteResult const walk = Leader::Route(bot, mob->GetPosition());
+                    bool const tankReaches =
+                        walk.found && walk.complete && !walk.points.empty() &&
+                        mob->GetExactDist(walk.points.back().x, walk.points.back().y, walk.points.back().z) <=
+                            bot->GetMeleeRange(mob) + 1.0f;
+                    cannotCome = !tankReaches;
+                    if (cannotCome)
+                    {
+                        thread_local std::set<std::pair<uint64, uint64>> logged;  // a log cadence only
+                        if (logged.insert({bot->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue()}).second)
+                            LOG_INFO("playerbots", "[pull98] {}: {} ({:.0f} yd) is no pull: it cannot come down to the "
+                                     "tank (chase path type {}) and the tank cannot walk to it",
+                                     bot->GetName(), mob->GetName(), candidate.first, uint32(chase.GetPathType()));
+                    }
+                }
+                judged[key] = cannotCome;
+                }
+            }
+        if (!cannotCome && reachability.IsReachable(bot, candidate.second))
         {
             if (PlayerbotAI::IsTank(bot))
                 TankRejects::Set(bot, rejected);
