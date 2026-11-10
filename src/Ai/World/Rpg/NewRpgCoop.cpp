@@ -16,6 +16,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <chrono>  // [camp63]
+#include <atomic>  // [camp63]
+#include <shared_mutex>  // [camp63]
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -4209,39 +4212,100 @@ void RestParty(Player* leader, std::string const& why)
 // a full mana pool. b400: 125 objective route stops left "postponed" (20106 s walked) against 14 done, 49 of them
 // after more than 120 s - the camp's mobs came into sight only at its edge ("its spot lies among mobs it does not
 // pull", the maze walls)
+// [camp63] the static pack at a spot, the same for every bot: built once per (map, spot) on its first pricing and kept
+// in a shared read-mostly table (the static spawn index does not change while the server runs); each bot prices it
+// with its own math only (its faction, armour, damage, health)
+struct CampMob
+{
+    CreatureTemplate const* tmpl;
+    uint8 level;
+    float hp;
+    float meleeDps;  // before the bot's armour
+};
+std::shared_mutex campPackLock;
+std::unordered_map<uint64, std::vector<CampMob>> campPacks;
+std::atomic<uint64> campPricings{0}, campPricingUs{0}, campBuilds{0}, campBuildUs{0};
+
+std::vector<CampMob> const& CampPackAt(uint32 mapId, float x, float y)
+{
+    uint64 const key = (uint64(mapId) << 48) ^ (uint64(uint32(int32(std::floor(x)) + 0x8000) & 0xFFFFFF) << 24) ^
+                       uint64(uint32(int32(std::floor(y)) + 0x8000) & 0xFFFFFF);
+    {
+        std::shared_lock<std::shared_mutex> guard(campPackLock);
+        auto const found = campPacks.find(key);
+        if (found != campPacks.end())
+            return found->second;
+    }
+    auto const start = std::chrono::steady_clock::now();
+    std::vector<CampMob> pack;
+    float const assist = std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS));
+    // the pack a pull of the source at the spot draws (as the judge's pull from range): the source itself and the
+    // spawns its engage call reaches (the core's assistance radius; a wanderer from anywhere in its wander area). The
+    // aggro reach is not counted: the pull spot stands out of the others' reach
+    NewRpgBaseAction::ForEachSpawnReaching(mapId, x, y, assist,
+                                           [&pack](CreatureTemplate const* tmpl, float, float, float)
+                                           {
+                                               uint8 const level =
+                                                   uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
+                                               uint8 lvl = 0;
+                                               pack.push_back({tmpl, level, TemplateHealth(tmpl->Entry, lvl),
+                                                               TemplateMeleeDps(tmpl, level)});
+                                           });
+    campBuilds += 1;
+    campBuildUs += uint64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                                start)
+                              .count());
+    std::unique_lock<std::shared_mutex> guard(campPackLock);
+    return campPacks.emplace(key, std::move(pack)).first->second;  // a pack built twice keeps the first one
+}
+
 bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot, std::string& why,
                     StaticCampPrice* out)
 {
     if (!bot || spot.GetMapId() != bot->GetMapId())
         return false;
     EnsureIndex();
-    float const assist = std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS));
+    auto const start = std::chrono::steady_clock::now();
     std::vector<std::pair<float, float>> mobs;  // (health, damage per second on the bot)
     uint8 top = 0;
     uint32 serving = 0;
     Objective obj;
     bool const hasObj = ReadObjective(bot, questId, objectiveIdx, obj);
-    NewRpgBaseAction::ForEachHostileSpawn(
-        bot, spot.GetPositionX(), spot.GetPositionY(), assist + SoloSafety::MapWanderReach(bot->GetMapId()),
-        [&](CreatureTemplate const* tmpl, float x, float y, float wander)
+    std::vector<DropSource> const* drops = nullptr;
+    if (hasObj && obj.item)
+        if (auto const found = itemSources.find(obj.key); found != itemSources.end())
+            drops = &found->second;
+    FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+    std::vector<CampMob> const& pack = CampPackAt(bot->GetMapId(), spot.GetPositionX(), spot.GetPositionY());
+    for (CampMob const& m : pack)
+    {
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(m.tmpl->faction);
+        if (!own || !faction || !faction->IsHostileTo(*own))
+            continue;
+        mobs.push_back({m.hp, m.meleeDps * (1.0f - ArmorShare(bot, m.level))});
+        top = std::max(top, m.level);
+        if (hasObj && (obj.item ? drops && std::any_of(drops->begin(), drops->end(),
+                                                      [&m](DropSource const& d)
+                                                      { return !d.chest && d.entry == m.tmpl->Entry; })
+                                : (obj.key == m.tmpl->Entry || obj.key == m.tmpl->KillCredit[0] ||
+                                   obj.key == m.tmpl->KillCredit[1])))
+            ++serving;
+    }
+    // [camp63] the pricing's own cost, measured: one line per 1000 pricings (a log, no decision)
+    uint64 const us = uint64(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+    campPricingUs += us;
+    if (uint64 const n = ++campPricings; n % 1000 == 0)
+    {
+        size_t packs = 0;
         {
-            uint8 const level = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
-            // the pack a pull of the source at the spot draws (as the judge's pull from range): the source itself and
-            // the hostile spawns its engage call reaches (the core's assistance radius; a wanderer from anywhere in
-            // its wander area). The aggro reach is not counted: the pull spot stands out of the others' reach
-            if (std::hypot(x - spot.GetPositionX(), y - spot.GetPositionY()) > assist + wander)
-                return;
-            uint8 lvl = 0;
-            float const hp = TemplateHealth(tmpl->Entry, lvl);
-            mobs.push_back({hp, TemplateMeleeDps(tmpl, level) * (1.0f - ArmorShare(bot, level))});
-            top = std::max(top, level);
-            if (hasObj && (obj.item ? std::any_of(itemSources[obj.key].begin(), itemSources[obj.key].end(),
-                                                  [tmpl](DropSource const& d)
-                                                  { return !d.chest && d.entry == tmpl->Entry; })
-                                    : (obj.key == tmpl->Entry || obj.key == tmpl->KillCredit[0] ||
-                                       obj.key == tmpl->KillCredit[1])))
-                ++serving;
-        });
+            std::shared_lock<std::shared_mutex> guard(campPackLock);
+            packs = campPacks.size();
+        }
+        LOG_INFO("playerbots", "[camp63] pricing: {} pricings, {:.1f} us each; {} packs built, {:.1f} us each, {} kept",
+                 n, double(campPricingUs.load()) / double(n), campBuilds.load(),
+                 campBuilds.load() ? double(campBuildUs.load()) / double(campBuilds.load()) : 0.0, packs);
+    }
     if (mobs.empty())
         return false;
     float const dps = std::max(DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo), 1.0f);
