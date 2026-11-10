@@ -3698,6 +3698,22 @@ bool NewRpgBaseAction::GetDalaranQuestTarget(uint32 questId, WorldPosition& pos)
 
 // A quest objective that is a game object to use (a goober, the Dalaran crystal): walk up and use it. The core
 // credits the whole group at reward distance; relaying the use lets group bots use their own copy too (#2725).
+namespace
+{
+    // [objreach67] the quest objects a bot's walk cannot bring into its interact reach (the walk-up ended no nearer:
+    // a pear in a tree, a relic on a ledge - static object, static navmesh): bot -> object guids; and its last walk-up
+    std::mutex objReachLock;
+    std::unordered_map<uint32, std::unordered_set<uint64>> objOutOfReach;
+    std::unordered_map<uint32, std::pair<uint64, float>> objLastWalk;  // bot -> (object, its distance then)
+
+    bool ObjectOutOfReach(Player* bot, GameObject* go)
+    {
+        std::lock_guard<std::mutex> guard(objReachLock);
+        auto const found = objOutOfReach.find(bot->GetGUID().GetCounter());
+        return found != objOutOfReach.end() && found->second.count(go->GetGUID().GetRawValue());
+    }
+}
+
 bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
 {
     Quest const* quest = sObjectMgr->GetQuestTemplate(questId);
@@ -3736,11 +3752,45 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
                 LogQuestObject(bot, lootable, "skipped: it lies among mobs it does not pull");
                 return false;
             }
+            // [objreach67] b406: 38.9 min of "[quest] wait ... quest object in reach" - Sand Pears and Ancient Relics
+            // 4-17 yd off, "used: walks up to it" / "skipped: the walk ... not started" in turn: each walk-up ended
+            // out of the object's interact reach (up in a tree, on a ledge), the spot stayed unspent for it. A
+            // walk-up that ended no nearer than the one before marks the object out of reach for the bot
+            uint32 const low = bot->GetGUID().GetCounter();
+            uint64 const goKey = lootable->GetGUID().GetRawValue();
+            float const gap = bot->GetDistance(lootable);
+            if (!bot->isMoving())
+            {
+                bool outOfReach = false;
+                {
+                    std::lock_guard<std::mutex> guard(objReachLock);
+                    auto const last = objLastWalk.find(low);
+                    if (last != objLastWalk.end() && last->second.first == goKey && gap >= last->second.second - 0.5f)
+                    {
+                        objOutOfReach[low].insert(goKey);
+                        objLastWalk.erase(last);
+                        outOfReach = true;
+                    }
+                }
+                if (outOfReach)
+                {
+                    LogQuestObject(bot, lootable,
+                                   Acore::StringFormat("[objreach67] skipped: out of its reach - its walk-up ends "
+                                                       "{:.1f} yd off, no nearer than the last",
+                                                       gap));
+                    return false;
+                }
+            }
             LogQuestObject(bot, lootable, "used: walks up to it");
             if (MoveWorldObjectTo(lootable->GetGUID(), 1.5f))
+            {
+                std::lock_guard<std::mutex> guard(objReachLock);
+                objLastWalk[low] = {goKey, gap};
                 return true;
+            }
+            // its own last walk is still under way (or its window open): the tick is the walk's, no random hop
             LogQuestObject(bot, lootable, "skipped: the walk to it was not started (the last walk is not done)");
-            return false;
+            return true;
         }
         if (bot->isMoving())
             bot->StopMoving();
@@ -5886,6 +5936,8 @@ GameObject* NewRpgBaseAction::FindNeededQuestObject(Player* bot)
             continue;
         if (!bot->IsWithinLOSInMap(go))
             continue;  // out of sight: the scan sees it from another step
+        if (ObjectOutOfReach(bot, go))  // [objreach67]
+            continue;
         LootObject loot(bot, go->GetGUID());
         if (loot.IsEmpty())
         {
