@@ -11,6 +11,7 @@
 // search, moved here from TestHarnessRunner.cpp unchanged). The harness calls it; Leader::Route (LeaderOrders.h) is
 // the leader's walk service on top of it.
 
+#include "Define.h"
 #include "DetourNavMeshQuery.h"
 #include "G3D/AABox.h"
 #include "G3D/Vector3.h"
@@ -45,6 +46,22 @@ namespace Leader::Travel
         float cost = 0.0f;
     };
 
+    // [perf210] what one LongRoute did: the route search's profile, and `noComplete` - no search with the same
+    // polygons open completes this walk whatever its costs (no start / end polygon, or a search that visited every
+    // polygon it reaches without the nodes running out)
+    struct LongRouteInfo
+    {
+        bool noComplete = false;
+        uint32 findPaths = 0;  // forward searches (8192 nodes)
+        uint32 reverse = 0;    // back searches after the forward one ran out of nodes
+        uint32 big = 0;        // big-pool searches (65535 nodes)
+        uint64 nodes = 0;      // nodes the searches used, summed
+        uint64 findPathUs = 0;
+        uint64 samplesUs = 0;
+        uint64 filterTests = 0;  // polygon tests against the refused discs / boxes
+        uint64 filterMemo = 0;   // ... answered from the search's memo
+    };
+
     // The long search: an own dtNavMeshQuery on the walker's map navmesh (per thread), the player filter flags
     // (+ NAV_GROUND_STEEP when steep), the corridor as corner points. False when start or end has no polygon;
     // complete: the corridor reaches the end polygon. `avoidBoxes` / `avoidDiscs`: polygons refused (closed passage
@@ -53,7 +70,8 @@ namespace Leader::Travel
     bool LongRoute(Unit* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
                    Movement::PointsArray& corners, bool& complete, std::vector<G3D::AABox> const* avoidBoxes = nullptr,
                    std::vector<G3D::Vector4> const* avoidDiscs = nullptr, float sampleStep = 0.0f,
-                   Movement::PointsArray* samples = nullptr, std::vector<RoutePenalty> const* penalties = nullptr);
+                   Movement::PointsArray* samples = nullptr, std::vector<RoutePenalty> const* penalties = nullptr,
+                   LongRouteInfo* info = nullptr);
 
     // [lead107] the point `walk` yd along `points` (its last point when the path is shorter)
     G3D::Vector3 PointOnPath(Movement::PointsArray const& points, float walk);

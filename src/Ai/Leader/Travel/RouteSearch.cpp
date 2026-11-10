@@ -14,6 +14,7 @@
 
 #include "DetourCommon.h"
 #include "DetourNavMesh.h"
+#include "DetourNode.h"  // [perf210] the node pool's count
 #include "LeaderOrders.h"
 #include "SoloSafety.h"  // [guild13]
 #include "Config.h"
@@ -27,9 +28,13 @@
 #include "Timer.h"
 #include "Unit.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <list>
+#include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -54,40 +59,198 @@ namespace Leader::Travel
         std::vector<G3D::Vector4> const* discs = nullptr;
         std::vector<RoutePenalty> const* penalties = nullptr;  // [guild13]
 
-        // [route102] the discs and penalties binned on a GRID_CELL yd grid once per search: passFilter / getCost run
-        // for every node the search expands and tested each against the whole list (b417: 200-430 ms searches with
-        // hundreds of static discs); now only the entries of the cells the polygon / step touches
-        static constexpr float GRID_CELL = 16.0f;
-        std::unordered_map<uint64, std::vector<uint32>> discGrid;
-        std::unordered_map<uint64, std::vector<uint32>> penaltyGrid;
-        static uint64 CellKey(int32 cx, int32 cy) { return (uint64(uint32(cx)) << 32) | uint32(cy); }
-        static int32 CellOf(float v) { return int32(std::floor(v / GRID_CELL)); }
-        template <typename F>
-        static void ForCells(float minX, float minY, float maxX, float maxY, F const& f)
+        // [route102] the discs and penalties binned on a grid once per search: passFilter / getCost run for every
+        // node the search expands and tested each against the whole list (b417: 200-430 ms searches with hundreds of
+        // static discs); now only the entries of the cells the polygon / step touches.
+        // [perf210] the grid is a flat array over the entries' bounds (was a hash map: a hash lookup per cell per
+        // node), a polygon / step outside those bounds tests nothing, and each polygon's verdict is kept for the
+        // search's three findPath calls (forward, back, big pool): the same answers, a fraction of the work per node
+        struct Grid
         {
-            for (int32 cx = CellOf(minX); cx <= CellOf(maxX); ++cx)
-                for (int32 cy = CellOf(minY); cy <= CellOf(maxY); ++cy)
-                    f(CellKey(cx, cy));
-        }
+            static constexpr float CELL = 16.0f;               // yd, the cells [route102] binned on
+            static constexpr uint64 DENSE_CELLS = 1ull << 18;  // a flat array up to ~1 MB of offsets, else sorted
+            static constexpr float MARGIN = 0.05f;             // yd: float rounding of the exact tests stays inside
+            float minX = 0.0f, minY = 0.0f, maxX = -1.0f, maxY = -1.0f;  // the entries' bounds; empty: maxX < minX
+            int32 c0 = 0, r0 = 0, cols = 0, rows = 0;                    // the dense array's first cell and size
+            bool dense = false;
+            std::vector<uint32> start;                     // dense: cols * rows + 1 offsets into `items`
+            std::vector<uint32> items;                     // dense: the entries of each cell, ascending
+            std::vector<std::pair<uint64, uint32>> pairs;  // sorted (cell, entry): the cells of wide bounds
+
+            static int32 CellOf(float v) { return int32(std::floor(v / CELL)); }
+            static uint64 CellKey(int32 cx, int32 cy) { return (uint64(uint32(cx)) << 32) | uint32(cy); }
+            bool Empty() const { return maxX < minX; }
+            size_t Slot(int32 cx, int32 cy) const { return size_t(cx - c0) * size_t(rows) + size_t(cy - r0); }
+
+            // `bounds(i, x0, y0, x1, y1)` of each of `count` entries; each is listed in every cell its bounds touch
+            template <typename B>
+            void Build(uint32 count, B const& bounds)
+            {
+                minX = minY = 0.0f;
+                maxX = maxY = -1.0f;
+                start.clear();
+                items.clear();
+                pairs.clear();
+                if (!count)
+                    return;
+                minX = minY = 1e30f;
+                maxX = maxY = -1e30f;
+                for (uint32 i = 0; i < count; ++i)
+                {
+                    float x0, y0, x1, y1;
+                    bounds(i, x0, y0, x1, y1);
+                    minX = std::min(minX, x0);
+                    minY = std::min(minY, y0);
+                    maxX = std::max(maxX, x1);
+                    maxY = std::max(maxY, y1);
+                }
+                c0 = CellOf(minX);
+                r0 = CellOf(minY);
+                cols = CellOf(maxX) - c0 + 1;
+                rows = CellOf(maxY) - r0 + 1;
+                minX -= MARGIN;
+                minY -= MARGIN;
+                maxX += MARGIN;
+                maxY += MARGIN;
+                dense = uint64(cols) * uint64(rows) <= DENSE_CELLS;
+                if (!dense)
+                {
+                    for (uint32 i = 0; i < count; ++i)
+                    {
+                        float x0, y0, x1, y1;
+                        bounds(i, x0, y0, x1, y1);
+                        for (int32 cx = CellOf(x0); cx <= CellOf(x1); ++cx)
+                            for (int32 cy = CellOf(y0); cy <= CellOf(y1); ++cy)
+                                pairs.emplace_back(CellKey(cx, cy), i);
+                    }
+                    std::sort(pairs.begin(), pairs.end());
+                    return;
+                }
+                start.assign(size_t(cols) * size_t(rows) + 1, 0);
+                for (uint32 i = 0; i < count; ++i)
+                {
+                    float x0, y0, x1, y1;
+                    bounds(i, x0, y0, x1, y1);
+                    for (int32 cx = CellOf(x0); cx <= CellOf(x1); ++cx)
+                        for (int32 cy = CellOf(y0); cy <= CellOf(y1); ++cy)
+                            ++start[Slot(cx, cy) + 1];
+                }
+                for (size_t c = 1; c < start.size(); ++c)
+                    start[c] += start[c - 1];
+                items.assign(start.back(), 0);
+                std::vector<uint32> fill(start.begin(), start.end() - 1);
+                for (uint32 i = 0; i < count; ++i)
+                {
+                    float x0, y0, x1, y1;
+                    bounds(i, x0, y0, x1, y1);
+                    for (int32 cx = CellOf(x0); cx <= CellOf(x1); ++cx)
+                        for (int32 cy = CellOf(y0); cy <= CellOf(y1); ++cy)
+                            items[fill[Slot(cx, cy)]++] = i;
+                }
+            }
+
+            // [route102]'s candidates of (x0, y0)-(x1, y1) in its order (cells x then y, a cell's entries ascending),
+            // each once; none when the box misses every entry's bounds (no exact test can pass there)
+            void Near(float x0, float y0, float x1, float y1, std::vector<uint32>& out, std::vector<uint32>& mark,
+                      uint32& stamp) const
+            {
+                out.clear();
+                if (Empty() || x1 < minX || x0 > maxX || y1 < minY || y0 > maxY)
+                    return;
+                if (++stamp == 0)
+                {
+                    std::fill(mark.begin(), mark.end(), 0);
+                    stamp = 1;
+                }
+                int32 const cx0 = CellOf(x0), cx1 = CellOf(x1), cy0 = CellOf(y0), cy1 = CellOf(y1);
+                bool const single = cx0 == cx1 && cy0 == cy1;  // a cell lists an entry once
+                auto const take = [&](uint32 i)
+                {
+                    if (single)
+                        out.push_back(i);
+                    else if (mark[i] != stamp)
+                    {
+                        mark[i] = stamp;
+                        out.push_back(i);
+                    }
+                };
+                for (int32 cx = cx0; cx <= cx1; ++cx)
+                    for (int32 cy = cy0; cy <= cy1; ++cy)
+                    {
+                        if (dense)
+                        {
+                            if (cx < c0 || cx >= c0 + cols || cy < r0 || cy >= r0 + rows)
+                                continue;
+                            size_t const c = Slot(cx, cy);
+                            for (uint32 k = start[c]; k < start[c + 1]; ++k)
+                                take(items[k]);
+                            continue;
+                        }
+                        uint64 const key = CellKey(cx, cy);
+                        auto it = std::lower_bound(pairs.begin(), pairs.end(), std::make_pair(key, uint32(0)));
+                        for (; it != pairs.end() && it->first == key; ++it)
+                            take(it->second);
+                    }
+            }
+        };
+        Grid discGrid;
+        Grid penaltyGrid;
+        // per-search scratch (a filter lives for one LongRoute on one thread)
+        mutable std::vector<uint32> nearScratch;
+        mutable std::vector<uint32> discMark;
+        mutable std::vector<uint32> penaltyMark;
+        mutable uint32 discStamp = 0;
+        mutable uint32 penaltyStamp = 0;
+        // [perf210] polygon -> refused by the discs / boxes (open addressing; 0 = an empty slot, refs are never 0)
+        mutable std::vector<dtPolyRef> memoRef;
+        mutable std::vector<uint8> memoRefused;
+        mutable size_t memoCount = 0;
+        mutable uint64 tests = 0;
+        mutable uint64 memoHits = 0;
+
         void BuildGrids()
         {
-            discGrid.clear();
-            penaltyGrid.clear();
-            if (discs)
-                for (uint32 i = 0; i < discs->size(); ++i)
-                {
-                    G3D::Vector4 const& d = (*discs)[i];
-                    ForCells(d.x - d.w, d.y - d.w, d.x + d.w, d.y + d.w,
-                             [&](uint64 key) { discGrid[key].push_back(i); });
-                }
-            if (penalties)
-                for (uint32 i = 0; i < penalties->size(); ++i)
-                {
-                    RoutePenalty const& d = (*penalties)[i];
-                    ForCells(d.x - d.r, d.y - d.r, d.x + d.r, d.y + d.r,
-                             [&](uint64 key) { penaltyGrid[key].push_back(i); });
-                }
+            uint32 const discCount = discs ? uint32(discs->size()) : 0;
+            discGrid.Build(discCount,
+                           [&](uint32 i, float& x0, float& y0, float& x1, float& y1)
+                           {
+                               G3D::Vector4 const& d = (*discs)[i];
+                               x0 = d.x - d.w;
+                               y0 = d.y - d.w;
+                               x1 = d.x + d.w;
+                               y1 = d.y + d.w;
+                           });
+            uint32 const penaltyCount = penalties ? uint32(penalties->size()) : 0;
+            penaltyGrid.Build(penaltyCount,
+                              [&](uint32 i, float& x0, float& y0, float& x1, float& y1)
+                              {
+                                  RoutePenalty const& d = (*penalties)[i];
+                                  x0 = d.x - d.r;
+                                  y0 = d.y - d.r;
+                                  x1 = d.x + d.r;
+                                  y1 = d.y + d.r;
+                              });
+            discMark.assign(discCount, 0);
+            penaltyMark.assign(penaltyCount, 0);
+            discStamp = penaltyStamp = 0;
+            memoRef.clear();
+            memoRefused.clear();
+            memoCount = 0;
+            if (discCount || (boxes && !boxes->empty()))
+            {
+                memoRef.assign(4096, 0);
+                memoRefused.assign(4096, 0);
+            }
         }
+
+        static size_t MemoSlot(dtPolyRef ref, size_t mask)
+        {
+            uint64 h = uint64(ref) * 0x9E3779B97F4A7C15ull;
+            return size_t(h >> 20) & mask;
+        }
+
+        // the disc / box part of passFilter, uncached
+        bool Refused(dtMeshTile const* tile, dtPoly const* poly) const;
 
         // [guild13] an edge from outside a penalty disc into it pays the disc's cost once (Detour: (y, z, x))
         float getCost(float const* pa, float const* pb, dtPolyRef const prevRef, dtMeshTile const* prevTile,
@@ -98,37 +261,18 @@ namespace Leader::Travel
                                                 nextTile, nextPoly);
             if (!penalties)
                 return cost;
+            // [route102] the penalties whose cells the step's bounds touch, each once ([perf210]: none when the step
+            // misses all their bounds - most steps of a long search)
+            penaltyGrid.Near(std::min(pa[2], pb[2]), std::min(pa[0], pb[0]), std::max(pa[2], pb[2]),
+                             std::max(pa[0], pb[0]), nearScratch, penaltyMark, penaltyStamp);
+            if (nearScratch.empty())
+                return cost;
             // [guild13] the step pa -> pb (Detour's portal midpoints, a polygon apart: outdoors 20-50 yd) enters the
             // disc where its segment comes within the radius, not only where pb lies inside
             float const sx = pb[2] - pa[2];
             float const sy = pb[0] - pa[0];
             float const lengthSq = sx * sx + sy * sy;
-            // [route102] the penalties whose cells the step's bounds touch, each once
-            thread_local std::vector<uint32> nearPen;
-            thread_local std::vector<uint32> seenMark;
-            thread_local uint32 mark = 0;
-            nearPen.clear();
-            if (++mark == 0)
-            {
-                std::fill(seenMark.begin(), seenMark.end(), 0);
-                mark = 1;
-            }
-            if (seenMark.size() < penalties->size())
-                seenMark.resize(penalties->size(), 0);
-            ForCells(std::min(pa[2], pb[2]), std::min(pa[0], pb[0]), std::max(pa[2], pb[2]), std::max(pa[0], pb[0]),
-                     [&](uint64 key)
-                     {
-                         auto const found = penaltyGrid.find(key);
-                         if (found == penaltyGrid.end())
-                             return;
-                         for (uint32 i : found->second)
-                             if (seenMark[i] != mark)
-                             {
-                                 seenMark[i] = mark;
-                                 nearPen.push_back(i);
-                             }
-                     });
-            for (uint32 const penIndex : nearPen)
+            for (uint32 const penIndex : nearScratch)
             {
                 RoutePenalty const& disc = (*penalties)[penIndex];
                 if (std::fabs(pb[1] - disc.z) > 10.0f && std::fabs(pa[1] - disc.z) > 10.0f)
@@ -151,7 +295,59 @@ namespace Leader::Travel
         {
             if (!dtQueryFilter::passFilter(ref, tile, poly))
                 return false;
-            if (discs && !discs->empty() && tile && poly && poly->vertCount > 0)
+            if (memoRef.empty() || !tile || !poly || poly->vertCount == 0)
+                return true;
+            // [perf210] the verdict depends on the polygon alone: each is judged once per search
+            ++tests;
+            size_t const mask = memoRef.size() - 1;
+            size_t slot = MemoSlot(ref, mask);
+            while (memoRef[slot] && memoRef[slot] != ref)
+                slot = (slot + 1) & mask;
+            if (memoRef[slot] == ref)
+            {
+                ++memoHits;
+                return !memoRefused[slot];
+            }
+            bool const refused = Refused(tile, poly);
+            memoRef[slot] = ref;
+            memoRefused[slot] = refused ? 1 : 0;
+            if (++memoCount * 2 > memoRef.size())  // half full: double, re-placed
+            {
+                std::vector<dtPolyRef> previousRef(memoRef.size() * 2, 0);
+                std::vector<uint8> previousRefused(memoRef.size() * 2, 0);
+                previousRef.swap(memoRef);
+                previousRefused.swap(memoRefused);
+                size_t const wide = memoRef.size() - 1;
+                for (size_t i = 0; i < previousRef.size(); ++i)
+                    if (previousRef[i])
+                    {
+                        size_t s = MemoSlot(previousRef[i], wide);
+                        while (memoRef[s])
+                            s = (s + 1) & wide;
+                        memoRef[s] = previousRef[i];
+                        memoRefused[s] = previousRefused[i];
+                    }
+            }
+            return !refused;
+        }
+    };
+
+    bool DoorAvoidFilter::Refused(dtMeshTile const* tile, dtPoly const* poly) const
+    {
+        if (discs && !discs->empty())
+        {
+            // [route102] the discs whose cells the polygon's bounds touch, each once
+            float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
+            for (uint8 index = 0; index < poly->vertCount; ++index)
+            {
+                float const* vertex = &tile->verts[size_t(poly->verts[index]) * 3];
+                minX = std::min(minX, vertex[2]);
+                maxX = std::max(maxX, vertex[2]);
+                minY = std::min(minY, vertex[0]);
+                maxY = std::max(maxY, vertex[0]);
+            }
+            discGrid.Near(minX, minY, maxX, maxY, nearScratch, discMark, discStamp);
+            if (!nearScratch.empty())
             {
                 G3D::Vector3 centre(0.0f, 0.0f, 0.0f);
                 for (uint8 index = 0; index < poly->vertCount; ++index)
@@ -160,48 +356,14 @@ namespace Leader::Travel
                     centre += G3D::Vector3(vertex[2], vertex[0], vertex[1]);  // Detour stores (y, z, x)
                 }
                 centre /= float(poly->vertCount);
-                // [route102] the discs whose cells the polygon's bounds touch, each once
-                float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
-                for (uint8 index = 0; index < poly->vertCount; ++index)
-                {
-                    float const* vertex = &tile->verts[size_t(poly->verts[index]) * 3];
-                    minX = std::min(minX, vertex[2]);
-                    maxX = std::max(maxX, vertex[2]);
-                    minY = std::min(minY, vertex[0]);
-                    maxY = std::max(maxY, vertex[0]);
-                }
-                thread_local std::vector<uint32> nearDiscs;
-                thread_local std::vector<uint32> discMark;
-                thread_local uint32 discStamp = 0;
-                nearDiscs.clear();
-                if (++discStamp == 0)
-                {
-                    std::fill(discMark.begin(), discMark.end(), 0);
-                    discStamp = 1;
-                }
-                if (discMark.size() < discs->size())
-                    discMark.resize(discs->size(), 0);
-                ForCells(minX, minY, maxX, maxY,
-                         [&](uint64 key)
-                         {
-                             auto const found = discGrid.find(key);
-                             if (found == discGrid.end())
-                                 return;
-                             for (uint32 i : found->second)
-                                 if (discMark[i] != discStamp)
-                                 {
-                                     discMark[i] = discStamp;
-                                     nearDiscs.push_back(i);
-                                 }
-                         });
-                for (uint32 const di : nearDiscs)
+                for (uint32 const di : nearScratch)
                 {
                     G3D::Vector4 const& disc = (*discs)[di];
                     if (std::fabs(centre.z - disc.z) > 10.0f)
                         continue;
                     if ((centre.x - disc.x) * (centre.x - disc.x) + (centre.y - disc.y) * (centre.y - disc.y) <=
                         disc.w * disc.w)
-                        return false;
+                        return true;
                     // [guild13] a large polygon that only overlaps the disc: one of its edges comes within the radius
                     // (a solo bot's search, the one that carries penalties; the harness's discs keep the centre test)
                     for (uint8 index = 0; penalties && index < poly->vertCount; ++index)
@@ -218,29 +380,29 @@ namespace Leader::Travel
                         float const dx = ax + ex * t;
                         float const dy = ay + ey * t;
                         if (dx * dx + dy * dy <= disc.w * disc.w)
-                            return false;
+                            return true;
                     }
                 }
             }
-            if (!boxes || boxes->empty() || !tile || !poly || poly->vertCount == 0)
-                return true;
-            // Detour stores (y, z, x).
-            G3D::Vector3 low(1e9f, 1e9f, 1e9f);
-            G3D::Vector3 high(-1e9f, -1e9f, -1e9f);
-            for (uint8 index = 0; index < poly->vertCount; ++index)
-            {
-                float const* vertex = &tile->verts[size_t(poly->verts[index]) * 3];
-                G3D::Vector3 const point(vertex[2], vertex[0], vertex[1]);
-                low = low.min(point);
-                high = high.max(point);
-            }
-            for (G3D::AABox const& box : *boxes)
-                if (high.x >= box.low().x && low.x <= box.high().x && high.y >= box.low().y &&
-                    low.y <= box.high().y && high.z >= box.low().z && low.z <= box.high().z)
-                    return false;
-            return true;
         }
-    };
+        if (!boxes || boxes->empty())
+            return false;
+        // Detour stores (y, z, x).
+        G3D::Vector3 low(1e9f, 1e9f, 1e9f);
+        G3D::Vector3 high(-1e9f, -1e9f, -1e9f);
+        for (uint8 index = 0; index < poly->vertCount; ++index)
+        {
+            float const* vertex = &tile->verts[size_t(poly->verts[index]) * 3];
+            G3D::Vector3 const point(vertex[2], vertex[0], vertex[1]);
+            low = low.min(point);
+            high = high.max(point);
+        }
+        for (G3D::AABox const& box : *boxes)
+            if (high.x >= box.low().x && low.x <= box.high().x && high.y >= box.low().y && low.y <= box.high().y &&
+                high.z >= box.low().z && low.z <= box.high().z)
+                return true;
+        return false;
+    }
 
     // [lead147] the floor of a tall column: of the polygons in it, the highest whose closest point lies at most the
     // tile's walkable climb above the point (the floor under a walker), the ones the point stands over first; with
@@ -289,9 +451,11 @@ namespace Leader::Travel
     bool LongRoute(Unit* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
                    Movement::PointsArray& corners, bool& complete, std::vector<G3D::AABox> const* avoidBoxes,
                    std::vector<G3D::Vector4> const* avoidDiscs, float sampleStep, Movement::PointsArray* samples,
-                   std::vector<RoutePenalty> const* penalties)
+                   std::vector<RoutePenalty> const* penalties, LongRouteInfo* info)
     {
         complete = false;
+        if (info)
+            *info = LongRouteInfo{};
         dtNavMesh const* navMesh = owner->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
         if (!navMesh)
             return false;
@@ -340,17 +504,59 @@ namespace Leader::Travel
         float endNearest[3];
         dtPolyRef const startRef = nearestPoly(startPoint, startNearest);
         dtPolyRef const endRef = nearestPoly(endPoint, endNearest);
+        // [perf210] what the search did, for the route search's profile (and its pass-3 skip: `noComplete`)
+        auto const timeNow = []() { return std::chrono::steady_clock::now(); };
+        auto const micros = [](std::chrono::steady_clock::time_point since)
+        {
+            return uint64(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - since)
+                    .count());
+        };
+        auto const noteFilter = [&]()
+        {
+            if (info)
+            {
+                info->filterTests = filter.tests;
+                info->filterMemo = filter.memoHits;
+            }
+        };
         if (!startRef || !endRef)
+        {
+            if (info)
+                info->noComplete = true;  // the same polygons open: no start / end polygon whatever the costs
+            noteFilter();
             return false;
+        }
 
-        std::vector<dtPolyRef> polys(LONG_ROUTE_MAX_POLYS);
+        // [perf210] the corridors in per-thread buffers (three 16 KB vectors per call before)
+        thread_local std::vector<dtPolyRef> polys(LONG_ROUTE_MAX_POLYS);
+        thread_local std::vector<dtPolyRef> back(LONG_ROUTE_MAX_POLYS);
+        thread_local std::vector<dtPolyRef> wide(LONG_ROUTE_MAX_POLYS);
+        thread_local std::vector<float> straight(size_t(LONG_ROUTE_MAX_CORNERS) * 3);
         int polyCount = 0;
+        auto const searchStart = timeNow();
         dtStatus const status = query->findPath(startRef, endRef, startNearest, endNearest, &filter, polys.data(),
                                                 &polyCount, LONG_ROUTE_MAX_POLYS);
+        if (info)
+        {
+            ++info->findPaths;
+            if (dtNodePool const* pool = query->getNodePool())
+                info->nodes += uint64(pool->getNodeCount());
+        }
         if (dtStatusFailed(status) || polyCount <= 0)
+        {
+            if (info)
+                info->findPathUs += micros(searchStart);
+            noteFilter();
             return false;
+        }
 
         complete = polys[size_t(polyCount - 1)] == endRef;
+        // [perf210] a search that visited every polygon it reaches without the nodes running out: the end is not
+        // among them, so no search with these polygons open (any costs, any pool) completes this walk
+        if (info && !complete && !dtStatusDetail(status, DT_OUT_OF_NODES) &&
+            !dtStatusDetail(status, DT_BUFFER_TOO_SMALL))
+            info->noComplete = true;
         // The search ran out of nodes: the same search from dest back to the start (SelfTravel::LongRoute's
         // reverse fallback; Wailing Caverns wave 2: the A* from the cliff top floods the plateau towards the goal
         // below and spends its pool, from the goal it leaves the basin at once). Only a complete corridor back to
@@ -358,11 +564,16 @@ namespace Leader::Travel
         // exhausted its part of the navmesh without the nodes running out has no way there in either direction.
         if (!complete && ROUTE_LONG_REVERSE && dtStatusDetail(status, DT_OUT_OF_NODES))
         {
-            std::vector<dtPolyRef> back(LONG_ROUTE_MAX_POLYS);
             int backCount = 0;
             bool usable = dtStatusSucceed(query->findPath(endRef, startRef, endNearest, startNearest, &filter,
                                                           back.data(), &backCount, LONG_ROUTE_MAX_POLYS)) &&
                           backCount > 0 && back[size_t(backCount - 1)] == startRef;
+            if (info)
+            {
+                ++info->reverse;
+                if (dtNodePool const* pool = query->getNodePool())
+                    info->nodes += uint64(pool->getNodeCount());
+            }
             for (int index = 0; usable && index < backCount; ++index)
             {
                 dtMeshTile const* tile = nullptr;
@@ -381,23 +592,38 @@ namespace Leader::Travel
         if (!complete && ROUTE_LONG_BIG_POOL && dtStatusDetail(status, DT_OUT_OF_NODES))
         {
             thread_local std::unique_ptr<dtNavMeshQuery, NavMeshQueryFree> big(dtAllocNavMeshQuery());
-            std::vector<dtPolyRef> wide(LONG_ROUTE_MAX_POLYS);
             int wideCount = 0;
-            if (big && dtStatusSucceed(big->init(navMesh, LONG_ROUTE_BIG_NODES)) &&
-                dtStatusSucceed(big->findPath(startRef, endRef, startNearest, endNearest, &filter, wide.data(),
-                                              &wideCount, LONG_ROUTE_MAX_POLYS)) &&
-                wideCount > 0 && wide[size_t(wideCount - 1)] == endRef)
+            dtStatus wideStatus = DT_FAILURE;
+            if (big && dtStatusSucceed(big->init(navMesh, LONG_ROUTE_BIG_NODES)))
+            {
+                wideStatus = big->findPath(startRef, endRef, startNearest, endNearest, &filter, wide.data(), &wideCount,
+                                           LONG_ROUTE_MAX_POLYS);
+                if (info)
+                {
+                    ++info->big;
+                    if (dtNodePool const* pool = big->getNodePool())
+                        info->nodes += uint64(pool->getNodeCount());
+                }
+            }
+            if (dtStatusSucceed(wideStatus) && wideCount > 0 && wide[size_t(wideCount - 1)] == endRef)
             {
                 polys.swap(wide);
                 polyCount = wideCount;
                 complete = true;
             }
+            // [perf210] the big pool visited every polygon it reaches without running out: no way there with these
+            // polygons open (nor a ground walk back, Detour's ground links being two-way - the back search's rule)
+            else if (info && dtStatusSucceed(wideStatus) && wideCount > 0 &&
+                     !dtStatusDetail(wideStatus, DT_OUT_OF_NODES) && !dtStatusDetail(wideStatus, DT_BUFFER_TOO_SMALL))
+                info->noComplete = true;
         }
+        if (info)
+            info->findPathUs += micros(searchStart);
+        noteFilter();
         float target[3] = {endNearest[0], endNearest[1], endNearest[2]};
         if (!complete)
             query->closestPointOnPoly(polys[size_t(polyCount - 1)], endNearest, target, nullptr);
 
-        std::vector<float> straight(size_t(LONG_ROUTE_MAX_CORNERS) * 3);
         int cornerCount = 0;
         if (dtStatusFailed(query->findStraightPath(startNearest, target, polys.data(), polyCount, straight.data(),
                                                    nullptr, nullptr, &cornerCount, LONG_ROUTE_MAX_CORNERS)) ||
@@ -416,7 +642,41 @@ namespace Leader::Travel
             // snap finds no floor) and the walker's spline went through the rock. Each sample takes the detail height
             // of the corridor polygon under it (the corridor in order: a cursor), else of the nearer of the cursor's
             // polygon and the next (a point on their shared edge)
+            auto const samplesStart = timeNow();
             samples->clear();
+            // [perf210] the corridor's polygons looked up once, with their bounds: a sample outside a ground
+            // polygon's bounds is not in it (dtPointInPolygon finds no crossing there), so its height is not asked.
+            // A sample on no ground polygon from the cursor on (an off-mesh link's stretch) scanned the rest of the
+            // corridor with a lookup, a vertex copy and a point-in-polygon test per polygon
+            struct CorridorPoly
+            {
+                bool usable = false;
+                bool offMesh = false;
+                float maxX = 0.0f, minZ = 0.0f, maxZ = 0.0f;  // Detour (x, z): the game's y and x
+            };
+            constexpr float BOUND_MARGIN = 0.05f;  // yd past the bounds: float rounding of the crossing test
+            thread_local std::vector<CorridorPoly> corridor;
+            corridor.assign(size_t(polyCount), CorridorPoly{});
+            for (int index = 0; index < polyCount; ++index)
+            {
+                dtMeshTile const* tile = nullptr;
+                dtPoly const* poly = nullptr;
+                if (dtStatusFailed(navMesh->getTileAndPolyByRef(polys[size_t(index)], &tile, &poly)) || !poly)
+                    continue;
+                CorridorPoly& c = corridor[size_t(index)];
+                c.usable = true;
+                c.offMesh = poly->getType() == DT_POLYTYPE_OFFMESH_CONNECTION;
+                c.maxX = -1e30f;
+                c.minZ = 1e30f;
+                c.maxZ = -1e30f;
+                for (uint8 v = 0; v < poly->vertCount; ++v)
+                {
+                    float const* vertex = &tile->verts[size_t(poly->verts[v]) * 3];
+                    c.maxX = std::max(c.maxX, vertex[0]);
+                    c.minZ = std::min(c.minZ, vertex[2]);
+                    c.maxZ = std::max(c.maxZ, vertex[2]);
+                }
+            }
             size_t cursor = 0;
             auto const onSurface = [&](G3D::Vector3& point)
             {
@@ -424,10 +684,11 @@ namespace Leader::Travel
                 for (bool const offMesh : {false, true})
                     for (size_t index = cursor; index < size_t(polyCount); ++index)
                     {
-                        dtMeshTile const* tile = nullptr;
-                        dtPoly const* poly = nullptr;
-                        if (dtStatusFailed(navMesh->getTileAndPolyByRef(polys[index], &tile, &poly)) || !poly ||
-                            (poly->getType() == DT_POLYTYPE_OFFMESH_CONNECTION) != offMesh)
+                        CorridorPoly const& c = corridor[index];
+                        if (!c.usable || c.offMesh != offMesh)
+                            continue;
+                        if (!offMesh &&
+                            (position[2] < c.minZ || position[2] >= c.maxZ || position[0] >= c.maxX + BOUND_MARGIN))
                             continue;
                         float height = 0.0f;
                         if (dtStatusSucceed(query->getPolyHeight(polys[index], position, &height)))
@@ -469,6 +730,8 @@ namespace Leader::Travel
                 onSurface(corner);
                 samples->push_back(corner);
             }
+            if (info)
+                info->samplesUs += micros(samplesStart);
         }
         return true;
     }
@@ -568,6 +831,122 @@ namespace Leader
     {
         // [spot70] the extra reaches one RouteAvoiding call refuses (this thread, for that call only)
         thread_local std::vector<G3D::Vector4> const* extraAvoid = nullptr;
+
+        // [perf210] the route search's profile: one per top-level search (the [static39] search round the unseen
+        // spawns runs inside it and is counted with it; a search a judge asks inside RouteCosts is that judge's
+        // cost), summed per minute into the [perf210] line. A log, no decision reads it
+        struct SearchProfile
+        {
+            uint32 depth = 0;
+            uint64 pullUs = 0, costsUs = 0, findPathUs = 0, samplesUs = 0, openAirUs = 0, staticUs = 0, zoneUs = 0;
+            uint64 longRoutes = 0, findPaths = 0, reverse = 0, big = 0, nodes = 0;
+            uint64 filterTests = 0, filterMemo = 0;
+            uint64 pass3Skipped = 0, passesReused = 0, costsReused = 0, staticSearches = 0;
+
+            void Add(SearchProfile const& o)
+            {
+                pullUs += o.pullUs;
+                costsUs += o.costsUs;
+                findPathUs += o.findPathUs;
+                samplesUs += o.samplesUs;
+                openAirUs += o.openAirUs;
+                staticUs += o.staticUs;
+                zoneUs += o.zoneUs;
+                longRoutes += o.longRoutes;
+                findPaths += o.findPaths;
+                reverse += o.reverse;
+                big += o.big;
+                nodes += o.nodes;
+                filterTests += o.filterTests;
+                filterMemo += o.filterMemo;
+                pass3Skipped += o.pass3Skipped;
+                passesReused += o.passesReused;
+                costsReused += o.costsReused;
+                staticSearches += o.staticSearches;
+            }
+        };
+        thread_local SearchProfile routeProfile;
+
+        uint64 MicrosSince(std::chrono::steady_clock::time_point since)
+        {
+            return uint64(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - since)
+                    .count());
+        }
+
+        // the searches of the last minute, all map threads: each one's time, and the stages summed
+        void NoteSearch(uint64 totalUs, SearchProfile const& one)
+        {
+            constexpr uint32 WINDOW_MS = MINUTE * IN_MILLISECONDS;  // a log cadence
+            static std::mutex lock;
+            static std::vector<uint32> times;
+            static SearchProfile sum;
+            static uint64 sumUs = 0;
+            static uint32 windowStart = 0;
+            std::lock_guard<std::mutex> guard(lock);
+            uint32 const now = getMSTime();
+            if (!windowStart)
+                windowStart = now;
+            times.push_back(uint32(std::min<uint64>(totalUs, std::numeric_limits<uint32>::max())));
+            sum.Add(one);
+            sumUs += totalUs;
+            uint32 const elapsed = getMSTimeDiff(windowStart, now);
+            if (elapsed < WINDOW_MS)
+                return;
+            std::sort(times.begin(), times.end());
+            auto const at = [&](float share)
+            { return float(times[size_t(share * float(times.size() - 1))]) / 1000.0f; };
+            double const total = std::max<double>(double(sumUs), 1.0);
+            auto const pct = [&](uint64 us) { return 100.0 * double(us) / total; };
+            uint64 const staged =
+                sum.pullUs + sum.costsUs + sum.findPathUs + sum.samplesUs + sum.openAirUs + sum.staticUs + sum.zoneUs;
+            LOG_INFO(
+                "playerbots",
+                "[perf210] route searches in {} s: {} (ms p50 {:.1f} / p95 {:.1f} / max {:.1f}, {:.0f} ms in all); "
+                "time: route costs {:.0f} %, pull walk {:.0f} %, findPath {:.0f} % ({} long routes: {} forward / "
+                "{} back / {} big pool, {:.0f} nodes per long route), samples {:.0f} %, open air {:.0f} %, unseen "
+                "spawns {:.0f} %, areas {:.0f} %, rest {:.0f} %; saved: {} pass-3 searches, {} passes and {} "
+                "route costs of the {} unseen-spawn searches reused; filter memo {:.0f} % of {} polygon tests",
+                elapsed / IN_MILLISECONDS, times.size(), at(0.5f), at(0.95f), float(times.back()) / 1000.0f,
+                double(sumUs) / 1000.0, pct(sum.costsUs), pct(sum.pullUs), pct(sum.findPathUs), sum.longRoutes,
+                sum.findPaths, sum.reverse, sum.big, sum.longRoutes ? double(sum.nodes) / double(sum.longRoutes) : 0.0,
+                pct(sum.samplesUs), pct(sum.openAirUs), pct(sum.staticUs), pct(sum.zoneUs),
+                staged < sumUs ? pct(sumUs - staged) : 0.0, sum.pass3Skipped, sum.passesReused, sum.costsReused,
+                sum.staticSearches, sum.filterTests ? 100.0 * double(sum.filterMemo) / double(sum.filterTests) : 0.0,
+                sum.filterTests);
+            times.clear();
+            sum = SearchProfile{};
+            sumUs = 0;
+            windowStart = now;
+        }
+
+        // [perf210] one search pass's walk (no reach refused: [guild13]'s priced pass or the bare one): the same
+        // inputs give the same walk, so the [static39] search round the unseen spawns reuses the top search's
+        struct PassMemo
+        {
+            bool valid = false;
+            bool found = false;  // LongRoute's answer with a walk
+            bool complete = false;
+            bool openAir = false;
+            bool noComplete = false;
+            Movement::PointsArray tried;
+            Movement::PointsArray triedSurface;
+        };
+
+        // [perf210] what a top search hands the [static39] search it starts (same walker, from, destination, tick):
+        // its pull walk, RouteCosts' answer and its unrefused passes - the inner search computed them again
+        struct SearchPrep
+        {
+            Unit* walker = nullptr;
+            G3D::Vector3 from;
+            G3D::Vector3 toAsked;
+            G3D::Vector3 to;
+            std::vector<G3D::Vector4> pullAvoid;
+            std::vector<G3D::Vector4> costRefuse;
+            std::vector<Travel::RoutePenalty> penalties;
+            PassMemo passes[2][2];  // [priced][steep]
+        };
+        thread_local SearchPrep const* handedPrep = nullptr;
     }
 
     std::string RouteResult::Describe() const
@@ -652,24 +1031,58 @@ namespace Leader
 
     RouteResult RouteSearchUncached(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& toAsked)
     {
+        // [perf210] the [static39] search this one's caller started, handed what it computed already (taken here, so
+        // a search a judge asks further down does not see it)
+        SearchPrep const* prep = handedPrep;
+        handedPrep = nullptr;
+        if (prep && (prep->walker != walker || prep->from != from || prep->toAsked != toAsked))
+            prep = nullptr;
+        // [perf210] the profile: the top search and its [static39] search are counted (one line per minute)
+        bool const top = routeProfile.depth == 0;
+        bool const record = top || prep;
+        struct DepthScope
+        {
+            bool top;
+            std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+            DepthScope(bool isTop) : top(isTop) { ++routeProfile.depth; }
+            ~DepthScope()
+            {
+                --routeProfile.depth;
+                if (!top)
+                    return;
+                NoteSearch(MicrosSince(start), routeProfile);
+                routeProfile = SearchProfile{};
+            }
+        } depthScope(top);
         // [perf26] [patrol101] the walker named: a slow search is its bot's (b417's 5.4 s tick had 100 unnamed
-        // 200-430 ms searches in one health window)
+        // 200-430 ms searches in one health window). [perf210] The top search only: the searches inside it are in its
+        // time (the [static39] one doubled the lines and their sum)
         std::string const walkerName = walker ? walker->GetName() : std::string("-");
-        SlowScope slow("route search", &walkerName);
+        std::optional<SlowScope> slow;
+        if (top)
+            slow.emplace("route search", &walkerName);
         PMON_SCOPE(routeScope, PERF_MON_VALUE, "leader route search");  // [guild15]
         constexpr float ROUTE_SAMPLE_YD = 4.0f;  // PathGenerator's smooth step: the checks keep their spacing
         // [deaths] user 2026-11-08: a solo bot's walk from where it stands to the target it engages from a pull spot
         // (SoloSafety::Verdict::pullSpot) ends at that spot, round the reaches of the idle mobs the pull must not wake
         G3D::Vector3 to = toAsked;
         std::vector<G3D::Vector4> pullAvoid;
-        if (Player* bot = walker ? walker->ToPlayer() : nullptr)
+        if (prep)
+        {
+            to = prep->to;
+            pullAvoid = prep->pullAvoid;
+        }
+        else if (Player* bot = walker ? walker->ToPlayer() : nullptr)
             if (bot->GetExactDist(from.x, from.y, from.z) <= bot->GetCombatReach())
             {
+                auto const pullStart = std::chrono::steady_clock::now();
                 G3D::Vector3 spot;
                 if (SoloSafety::PullWalk(bot, toAsked, spot, pullAvoid))
                     to = spot;
                 else
                     pullAvoid.clear();
+                if (record)
+                    routeProfile.pullUs += MicrosSince(pullStart);
             }
         RouteResult result;
         result.source = "long route";
@@ -689,9 +1102,24 @@ namespace Leader
         Movement::PointsArray surface;  // [lead147] the walk on the navmesh's detail height
         // [guild13] a solo questing bot walks round the idle mobs: their reach costs the fight it would start
         // (penalties), a mob it must not fight (orange / red, elite) is refused while a complete walk round exists
-        std::vector<G3D::Vector4> refuse;
+        // [perf210] the [static39] search takes the top search's RouteCosts (same walker, walk and tick: the same
+        // mobs priced the same; its state was written by that call and is noted again by this search's NoteRoute)
+        std::vector<G3D::Vector4> costRefuse;
         std::vector<Travel::RoutePenalty> penalties;
-        SoloSafety::RouteCosts(walker, from, to, refuse, penalties);
+        if (prep)
+        {
+            costRefuse = prep->costRefuse;
+            penalties = prep->penalties;
+            ++routeProfile.costsReused;
+        }
+        else
+        {
+            auto const costsStart = std::chrono::steady_clock::now();
+            SoloSafety::RouteCosts(walker, from, to, costRefuse, penalties);
+            if (record)
+                routeProfile.costsUs += MicrosSince(costsStart);
+        }
+        std::vector<G3D::Vector4> refuse = costRefuse;
         refuse.insert(refuse.end(), pullAvoid.begin(), pullAvoid.end());  // [deaths] the pull spot's walk
         // [static39] the walk's stretch beyond the walker's sight priced from the spawn index (a search before found
         // it through them): their reaches are refused as RouteCosts refuses the live ones it sees
@@ -740,29 +1168,64 @@ namespace Leader
         // [route31] no walk cache: route28-30 held ~12 % hits (the key holds both ends to half a yard, a walker that
         // moved is a new key) and its stored walks (MBs of points per map thread) slowed every other call: b382 /
         // b384 AI 1.57-2.07 ms per tick against b377's 0.37, trivial values (invalid target, inventory items) 2x
-        auto const search = [&](std::vector<G3D::Vector4> const* refused,
-                                std::vector<Travel::RoutePenalty> const* priced)
+        // [perf210] the unrefused passes' walks, for a [static39] search this one starts
+        PassMemo passMemo[2][2];          // [priced][steep]
+        bool proven[2] = {false, false};  // the last pass, per steep: no walk of it can be complete ([perf210])
+        auto const search =
+            [&](std::vector<G3D::Vector4> const* refused, std::vector<Travel::RoutePenalty> const* priced)
         {
+            proven[0] = proven[1] = false;
             for (bool const steep : {false, true})
             {
-                Movement::PointsArray tried;
-                Movement::PointsArray triedSurface;
-                bool complete = false;
-                if (!Travel::LongRoute(walker, from, to, steep, tried, complete, nullptr, refused, ROUTE_SAMPLE_YD,
-                                       &triedSurface, priced) ||
-                    tried.empty())
+                PassMemo own;
+                PassMemo const* reused = !refused && prep ? &prep->passes[priced ? 1 : 0][steep ? 1 : 0] : nullptr;
+                if (reused && reused->valid)
+                {
+                    own = *reused;
+                    ++routeProfile.passesReused;
+                }
+                else
+                {
+                    Travel::LongRouteInfo info;
+                    bool const found = Travel::LongRoute(walker, from, to, steep, own.tried, own.complete, nullptr,
+                                                         refused, ROUTE_SAMPLE_YD, &own.triedSurface, priced, &info);
+                    own.valid = true;
+                    own.found = found && !own.tried.empty();
+                    own.noComplete = info.noComplete;
+                    if (record)
+                    {
+                        ++routeProfile.longRoutes;
+                        routeProfile.findPaths += info.findPaths;
+                        routeProfile.reverse += info.reverse;
+                        routeProfile.big += info.big;
+                        routeProfile.nodes += info.nodes;
+                        routeProfile.findPathUs += info.findPathUs;
+                        routeProfile.samplesUs += info.samplesUs;
+                        routeProfile.filterTests += info.filterTests;
+                        routeProfile.filterMemo += info.filterMemo;
+                    }
+                    // [deaths3] a walk with a stretch over open air is no walk (b341 Alnia L8 at Teldrassil: "route
+                    // complete (558 yd): its leg drops through open air", then WALK_FAIL loops and STUCK)
+                    if (own.found)
+                    {
+                        auto const airStart = std::chrono::steady_clock::now();
+                        own.openAir = OverOpenAir(walker, own.triedSurface.empty() ? own.tried : own.triedSurface);
+                        if (record)
+                            routeProfile.openAirUs += MicrosSince(airStart);
+                    }
+                    if (!refused)
+                        passMemo[priced ? 1 : 0][steep ? 1 : 0] = own;
+                }
+                proven[steep ? 1 : 0] = own.noComplete;
+                if (!own.found || own.openAir)
                     continue;
-                // [deaths3] a walk with a stretch over open air is no walk (b341 Alnia L8 at Teldrassil: "route
-                // complete (558 yd): its leg drops through open air", then WALK_FAIL loops and STUCK)
-                if (OverOpenAir(walker, triedSurface.empty() ? tried : triedSurface))
+                if (result.found && !own.complete)
                     continue;
-                if (result.found && !complete)
-                    continue;
-                corners = tried;
-                surface = triedSurface;
+                corners = own.tried;
+                surface = own.triedSurface;
                 result.found = true;
-                result.complete = complete;
-                if (complete)
+                result.complete = own.complete;
+                if (own.complete)
                     break;
             }
         };
@@ -789,7 +1252,18 @@ namespace Leader
                 pricedSurface = surface;
             }
         }
-        if (!result.complete)
+        // [perf210] the priced pass opens the same polygons as the bare one (penalties only cost): when it proved, for
+        // both steep filters, that no walk there is complete, the bare pass's walk is partial too and is dropped for
+        // the priced one below - not searched (an unreachable destination searched both passes to the big pool)
+        bool const bareIsPartial =
+            !result.complete && !penalties.empty() && proven[0] && proven[1] && pricedResult.found;
+        if (bareIsPartial)
+        {
+            result.found = false;
+            if (record)
+                ++routeProfile.pass3Skipped;
+        }
+        else if (!result.complete)
         {
             result.found = false;
             search(nullptr, nullptr);
@@ -842,7 +1316,10 @@ namespace Leader
                    (result.points[beyond] - from).length() <= sPlayerbotAIConfig.SightDistance)
                 ++beyond;
             std::vector<G3D::Vector3> const walk(result.points.begin(), result.points.end());
+            auto const staticStart = std::chrono::steady_clock::now();
             std::vector<G3D::Vector4> const discs = NewRpgBaseAction::StaticDangerDiscs(bot, walk, beyond);
+            if (record)
+                routeProfile.staticUs += MicrosSince(staticStart);
             // the destination's own reaches are its goal's (the walk ends there), not refused
             std::vector<G3D::Vector4> kept;
             for (G3D::Vector4 const& d : discs)
@@ -851,7 +1328,23 @@ namespace Leader
             if (!kept.empty())
             {
                 staticRefuse = kept;
+                // [perf210] the search round them gets what this one computed (the same walker, walk and tick)
+                SearchPrep handed;
+                handed.walker = walker;
+                handed.from = from;
+                handed.toAsked = toAsked;
+                handed.to = to;
+                handed.pullAvoid = std::move(pullAvoid);
+                handed.costRefuse = std::move(costRefuse);
+                handed.penalties = std::move(penalties);
+                for (int priced = 0; priced < 2; ++priced)
+                    for (int steep = 0; steep < 2; ++steep)
+                        handed.passes[priced][steep] = std::move(passMemo[priced][steep]);
+                handedPrep = &handed;
+                if (record)
+                    ++routeProfile.staticSearches;
                 RouteResult again = Route(walker, from, toAsked);
+                handedPrep = nullptr;
                 staticRefuse.clear();
                 if (!again.found)
                     again.refusedArea = true;  // [loop70] no way round the spawns it must not fight
@@ -876,6 +1369,17 @@ namespace Leader
         if (walker->IsPlayer() && SoloSafety::Applies(walker->ToPlayer()) && result.points.size() >= 2)
         {
             Player* bot = walker->ToPlayer();
+            auto const zoneStart = std::chrono::steady_clock::now();
+            struct ZoneTime
+            {
+                bool record;
+                std::chrono::steady_clock::time_point start;
+                ~ZoneTime()
+                {
+                    if (record)
+                        routeProfile.zoneUs += MicrosSince(start);
+                }
+            } zoneTime{record, zoneStart};
             uint32 const phase = bot->GetPhaseMask();
             uint32 const fromArea = map->GetAreaId(phase, from.x, from.y, from.z);
             uint32 const toArea = map->GetAreaId(phase, to.x, to.y, to.z);
