@@ -6558,7 +6558,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                     case ITEM_SUBCLASS_WEAPON_GUN:
                     case ITEM_SUBCLASS_WEAPON_BOW:
                     case ITEM_SUBCLASS_WEAPON_CROSSBOW:
-                        ids.push_back(SPELL_SHOOT);
+                        // [ammo84] its ammo in the bags, else no Shoot (SPELL_FAILED_NO_AMMO)
+                        if (uint32 const ammo = tank->GetUInt32Value(PLAYER_AMMO_ID); ammo && tank->HasItemCount(ammo, 1))
+                            ids.push_back(SPELL_SHOOT);
                         break;
                     case ITEM_SUBCLASS_WEAPON_THROWN:
                         ids.push_back(SPELL_THROW);

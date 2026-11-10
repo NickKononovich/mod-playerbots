@@ -2099,16 +2099,12 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
     if (five.lfgId && sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER))
         if (std::string walkWhy = FiveWalkRefusal(five); !walkWhy.empty() || finderTakes)
         {
-            if (walkWhy.empty())
-                walkWhy = "the finder takes the five from where it stands";
-            if (st.fiveRefused.empty() && bot->IsInCombat())
-                return false;  // its fight first (the survival kit)
-            step.kind = GuildRunStep::BUSY;
-            step.reason = "DUNGEON five " + std::to_string(five.id) + " -> " + five.dungeon +
-                          ": waits for the Dungeon Finder (no walk in: " + walkWhy + ")";
-            if (bot->isMoving())
-                bot->StopMoving();
-            return true;
+            // [lfg89] coordinator 2026-11-10: the finder ports the five from anywhere - its members quest (and
+            // restock) on until the proposal comes, then accept it (lfg74 holds the answer through a fight). b411: five
+            // 1's members (Dandolar, Thelengyl, Kianey ...) stood 98 % of their time idle by lfg68's stand-by; IDLE /
+            // WAIT 3.56 h against b406's 1.59 h. No step: New RPG's own plan goes on (never the walk to the entrance)
+            (void)walkWhy;
+            return false;
         }
     // the solo bot walks to the entrance only on a safe walk ([guild14]); none: the five is called off
     if (bot->GetMapId() == pos.GetMapId() && bot->GetExactDist(pos) > five.entranceReach &&

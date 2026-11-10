@@ -766,7 +766,8 @@ std::string NewRpgBaseAction::FiveGearShort(Player* bot, std::vector<uint32>* mi
         return "";
     std::string out;
     // ammo: the vendor run's own line (VENDOR_LOW_AMMO) for the ammo its ranged weapon fires
-    if (uint32 const sub = RequiredAmmoSubClass(bot); sub && bot->getClass() == CLASS_HUNTER)
+    // [ammo84] any class whose ranged weapon fires ammo (a warrior / rogue tank's gun, bow or crossbow is its pull)
+    if (uint32 const sub = RequiredAmmoSubClass(bot))
     {
         uint32 have = 0;
         auto const count = [&](Item* item)
@@ -893,7 +894,8 @@ bool NewRpgBaseAction::StartVendorRun()
                       (bagUsed >= 100 || !NewRpgCoop::InParty(bot->GetGUID().GetCounter()));
 
     uint32 ammoSubClass = 0;
-    if (bot->getClass() == CLASS_HUNTER)
+    // [ammo84] ... and its vendor run buys it as a hunter's does
+    if (RequiredAmmoSubClass(bot))
     {
         uint32 const subClass = RequiredAmmoSubClass(bot);
         if (subClass && AI_VALUE2(uint32, "item count", "ammo") < VENDOR_LOW_AMMO && bot->GetMoney() > 0 &&
@@ -2960,6 +2962,18 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     // [timers] no stay time at the spot: it is left when its objective is done (the completed check above), when
     // nothing at it is left to do (the spent-spot check below: no mob it pulls, no quest object, no fight, no rest)
     // or when the quest is postponed (no walk, unsupported, all camps spent and another quest cheaper than the respawn)
+
+    // [spot88] its objective spot lies in the reach of a mob its judge refused (a camp of mobs it must not fight): the
+    // walk there is refused as one through those mobs - its quest postponed and a help party asked where mobs wall it
+    // (RefusedWalk), not a stand inside the camp. b410 Mutil L16 on q2038 stood at its objective spot among Gradok /
+    // Thragomm / Haren Swifthoof L19-21 (its route "complete, through a refused reach"), the patrol walked in, dead
+    if (std::string refusedWho; !bot->IsInCombat() && SoloSafety::InRefusedReach(bot, refusedWho))
+    {
+        LOG_INFO("playerbots", "[spot88] {} L{} q{}: its objective spot lies in the reach of {} its judge refused: "
+                 "postponed",
+                 bot->GetName(), bot->GetLevel(), questId, refusedWho);
+        return RefusedWalk(data.pos, "its objective spot lies in the reach of " + refusedWho + " (refused)");
+    }
 
     // objects to use for the quest (#2725)
     if (UseQuestGameObject(questId))

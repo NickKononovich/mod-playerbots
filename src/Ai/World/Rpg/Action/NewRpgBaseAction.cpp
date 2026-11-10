@@ -14,6 +14,10 @@
 #include "Creature.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
+#include "WaypointMgr.h"  // [patrol86] patrol beats in the spawn index
+#include "CellImpl.h"  // [red85] the guards round a login spot
+#include "GridNotifiers.h"
+#include "GridNotifiersImpl.h"
 #include "GameObject.h"
 #include "GameObjectData.h"
 #include "GameObjectModel.h"
@@ -4069,6 +4073,7 @@ namespace
         CreatureTemplate const* tmpl;
         int16 event;
         float wander = 0.0f;  // [wander56] its spawn's wander distance (a wanderer reaches from anywhere in it)  // [guild15] game_event_creature: > 0 spawned only while that event runs, < 0 only while it does not
+        bool beat = false;    // [patrol86] a node of a patrol's beat (its spawn counted once: not in camp counts)
     };
 
     // [guild15] spawn guid -> its game event (GameEventMgr's own lists: index = events + event - 1; > 0 spawned only
@@ -4231,6 +4236,8 @@ namespace
                     entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
                 }
 
+            uint32 const indexStart = getMSTime();  // [patrol86] its cost, logged once
+            size_t spawnsIndexed = 0, beatNodes = 0, beatPatrols = 0;
             for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
             {
                 CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(data.id);
@@ -4239,7 +4246,28 @@ namespace
                     continue;
                 index.mobCells[MobCellKey(data.mapid, data.posX, data.posY)].push_back(
                     {data.posX, data.posY, data.posZ, tmpl, SpawnEvent(true, spawnId), data.wander_distance});
+                ++spawnsIndexed;
+                // [patrol86] a patrol reaches from anywhere on its beat: each node of its waypoint path (creature_addon
+                // path_id) stands in the index as a spawn point of its own, priced as the spawn is. b410 Laaral L18
+                // (Alliance): static39 found "a way round" the Mor'shan guards' spawn points, the Barrens Guards and
+                // Horde Elites came along their beats - 3 deaths; Orenem, Ellosera the same road
+                if (data.movementType == WAYPOINT_MOTION_TYPE)
+                    if (CreatureAddon const* addon = sObjectMgr->GetCreatureAddon(spawnId); addon && addon->path_id)
+                        if (WaypointPath const* path = sWaypointMgr->GetPath(addon->path_id))
+                            for (WaypointNode const& node : path->Nodes)
+                            {
+                                beatNodes += 1;
+                                beatPatrols += &node == &path->Nodes.front() ? 1 : 0;
+                                MobSpawn beat{node.X, node.Y, node.Z, tmpl, SpawnEvent(true, spawnId)};
+                                beat.beat = true;
+                                index.mobCells[MobCellKey(data.mapid, node.X, node.Y)].push_back(beat);
+                            }
             }
+            LOG_INFO("playerbots", "[patrol86] static spawn index: {} spawns, {} patrol beat nodes of {} patrols ({:.1f} "
+                     "% more points), built in {} ms",
+                     spawnsIndexed, beatNodes, beatPatrols,
+                     spawnsIndexed ? 100.0 * double(beatNodes) / double(spawnsIndexed) : 0.0,
+                     getMSTimeDiff(indexStart, getMSTime()));
         });
         return index;
     }
@@ -5034,16 +5062,7 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
         {
             AreaTableEntry const* area = sAreaTableStore.LookupEntry(map->GetAreaId(phase, ax, ay, az));
             AreaTableEntry const* zone = area && area->zone ? sAreaTableStore.LookupEntry(area->zone) : nullptr;
-            // [red78] ... and a subzone the other faction holds (its guards L40-65: Mor'shan Rampart, Crossroads,
-            // Astranaar for the Horde): b406 Orenem L15 (Alliance) died to Barrens Guards L40 at the Mor'shan Rampart
-            // and to Horde Elites L65 at the Mor'shan Base Camp. The subzone's own team only (a zone's team marks the
-            // whole territory: the Barrens is Horde's, its Wailing Caverns the Alliance's dungeon too)
-            if (area && area->zone && area->team && area->team != ownTeam && area->team != AREATEAM_ANY)
-            {
-                if (name)
-                    *name = Acore::StringFormat("{} (held by the other faction)", area->area_name[0]);
-                return true;
-            }
+            (void)ownTeam;
             for (AreaTableEntry const* a : {area, zone})
                 if (a && a->area_level > 0 &&
                     Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(a->area_level, 255))) == XP_RED)
@@ -5367,6 +5386,20 @@ bool NewRpgBaseAction::LoginEscape()
         if ((zone->flags & AREA_FLAG_CAPITAL) && zone->team && zone->team != own && zone->team != AREATEAM_ANY &&
             HearthOut(std::string("[cleft62] logged in in the enemy capital ") + zone->area_name[0]))
             return true;
+        // [red85] ... or in a zone or subzone the other faction holds: b410 Alnia L16 / Dekorhan L16 (Alliance) logged
+        // in at (1347,-4382) by Orgrimmar's gate in Durotar and died to an Orgrimmar Grunt L75 before their first walk
+        // [red85] user 2026-11-10: by the fact, not the zone - a hostile guard (CREATURE_FLAG_EXTRA_GUARD: an Orgrimmar
+        // Grunt, a Barrens Guard, a Horde Elite) whose aggro reach covers its login spot
+        std::list<Unit*> nearbyUnits;
+        Acore::AnyUnitInObjectRangeCheck nearCheck(bot, MAX_AGGRO_RADIUS);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> nearSearcher(bot, nearbyUnits, nearCheck);
+        Cell::VisitObjects(bot, nearSearcher, MAX_AGGRO_RADIUS);
+        for (Unit* unit : nearbyUnits)
+            if (Creature* guard = unit->ToCreature();
+                guard && guard->IsAlive() && guard->IsGuard() && guard->IsHostileTo(bot) &&
+                guard->IsWithinDistInMap(bot, guard->GetAggroRange(bot) + bot->GetCombatReach()) &&
+                HearthOut(std::string("[red85] logged in in the reach of the guard ") + guard->GetName()))
+                return true;
     }
     std::string who;
     std::vector<G3D::Vector3> spots;
@@ -6694,7 +6727,7 @@ void NewRpgBaseAction::ForEachSpawnReaching(uint32 mapId, float x, float y, floa
             if (cell == index.mobCells.end())
                 continue;
             for (MobSpawn const& m : cell->second)
-                if (m.wander <= MAX_AGGRO_RADIUS && SpawnPresent(m) &&
+                if (!m.beat && m.wander <= MAX_AGGRO_RADIUS && SpawnPresent(m) &&
                     std::hypot(m.x - x, m.y - y) <= assist + m.wander)
                     fn(m.tmpl, m.x, m.y, m.wander);
         }

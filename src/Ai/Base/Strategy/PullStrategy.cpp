@@ -842,6 +842,19 @@ bool PullStrategy::CanDoPullAction(Unit* target)
     {
         return false;
     }
+    // [ammo84] a gun / bow / crossbow shoots only with its ammo in the bags (SPELL_FAILED_NO_AMMO): no ranged pull
+    // without it. b410 rfc-n five 2: Brelir (warrior tank, Hand of Argus Crossfire, no bolts) - the planner's lone-mob
+    // pull "at range" 13 times, each "shoot ... check 75 (no ammo)", "pull end: nothing came"; the run stalled at 0/4
+    if (GetPullActionName() == "shoot")
+        if (Item* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
+            if (ItemTemplate const* proto = ranged->GetTemplate();
+                proto->SubClass == ITEM_SUBCLASS_WEAPON_GUN || proto->SubClass == ITEM_SUBCLASS_WEAPON_BOW ||
+                proto->SubClass == ITEM_SUBCLASS_WEAPON_CROSSBOW)
+            {
+                uint32 const ammo = bot->GetUInt32Value(PLAYER_AMMO_ID);
+                if (!ammo || !bot->HasItemCount(ammo, 1))
+                    return false;
+            }
 
     std::string const spellName = GetSpellName();
     if (spellName.empty())

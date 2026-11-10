@@ -184,6 +184,12 @@ namespace
         // the committed leg's: its set, its points, the mobs its RUN_PAST lines named
         std::unordered_map<uint64, float> pendingRunPast;
         std::unordered_map<uint64, float> legRunPast;
+        // [runpast87] the keep-walking chase it took last: priced damage and seconds, its health and the fight's taken
+        // damage then - the death line sets the measured beside the priced (a log for the chase model, no decision)
+        float runPastPriced = 0.0f;
+        float runPastSec = 0.0f;
+        float runPastHp = 0.0f;
+        uint64 runPastTakenAt = 0;
         std::vector<G3D::Vector3> legPoints;
         std::vector<G3D::Vector3> legSearched;  // [runpast15] the searched walk the leg was cut from
         std::unordered_set<uint64> legNamed;
@@ -301,6 +307,16 @@ namespace
         if (!state.open)
             return;
         state.open = false;
+        // [runpast87] the chase it kept walking under, priced against what it took (the chase model's calibration
+        // data; no decision reads it)
+        if (state.runPastPriced > 0.0f)
+        {
+            LOG_INFO("playerbots", "[runpast87] {} L{} run-past chase priced {:.0f} dmg over {:.0f} s against hp {:.0f}: "
+                     "took {} ({})",
+                     bot->GetName(), bot->GetLevel(), state.runPastPriced, state.runPastSec, state.runPastHp,
+                     state.taken - std::min(state.taken, state.runPastTakenAt), died ? "died" : "lived");
+            state.runPastPriced = 0.0f;
+        }
         float const seconds =
             float(getMSTimeDiff(state.firstMs, state.lastMs)) / float(IN_MILLISECONDS) + SwingSec(bot);
         // [guild15] its damage over the part it fought: up to the run / reset; a run before two of its swings
@@ -2781,6 +2797,12 @@ namespace SoloSafety
         else
             out += "; no judged pull (attacked)";
 
+        // [runpast87] the chase it kept walking under: priced against what it took since
+        if (found != states.end() && found->second.runPastPriced > 0.0f)
+            out += Acore::StringFormat("; [runpast87] its run-past chase priced {:.0f} dmg over {:.0f} s against hp {:.0f}, "
+                                       "took {} since",
+                                       found->second.runPastPriced, found->second.runPastSec, found->second.runPastHp,
+                                       found->second.taken - found->second.runPastTakenAt);
         // [deaths] how its last route search saw the mobs that hit it: refused (a walk round them was searched),
         // priced (the walk may pass their reach), unseen (out of the search's range or not idle then)
         if (found != states.end() && found->second.routeMs && !found->second.attackers.empty())
@@ -3132,6 +3154,7 @@ namespace SoloSafety
             state.legRunPast.clear();
             state.legPoints.clear();
             state.legNamed.clear();
+            state.runPastPriced = 0.0f;  // [runpast87]
             return false;
         }
         // every attacker one the leg priced; their chases still to come survived
@@ -3208,6 +3231,13 @@ namespace SoloSafety
         float const hp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, left.seconds, mana, true, true);
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        if (state.runPastPriced <= 0.0f)  // [runpast87] the chase's price at its start
+        {
+            state.runPastPriced = left.damage;
+            state.runPastSec = left.seconds;
+            state.runPastHp = hp;
+            state.runPastTakenAt = state.taken;
+        }
         for (Creature* mob : chasers)
             if (state.legNamed.insert(mob->GetGUID().GetRawValue()).second)
                 line += Acore::StringFormat("{}{} keeps walking past {} L{} (chase priced {:.0f}, hp {:.0f})",

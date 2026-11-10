@@ -1858,7 +1858,8 @@ void GuildCoordinator::UpdateOrders()
                                                         SPELL_AURA_OBS_MOD_POWER)); });
                 st.supplyWhat += st.supplyWhat.empty() ? "drink" : " and drink";
             }
-            if (p->getClass() == CLASS_HUNTER)
+            // [ammo84] any class whose ranged weapon fires ammo (a warrior / rogue's gun is its pull)
+            if (true)
                 if (Item* ranged = p->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED))
                 {
                     uint32 const sub = ranged->GetTemplate()->SubClass;
