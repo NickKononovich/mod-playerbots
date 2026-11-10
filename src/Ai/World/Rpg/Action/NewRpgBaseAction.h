@@ -279,7 +279,9 @@ protected:
     bool UseDalaranCrystal(uint32 entry);
     bool TeleportByDalaranEnvoy();
     bool FlyTowards(uint32 toNode);
-    bool FlyIfFaster(WorldPosition const& dest);  // [taxi20]
+    // [taxi20]; [fly97] walkRefused: its walk there is refused (no route, a dead end) - the flight is its way, at any
+    // length, when the walks to and off it are safe (FlightTripSafe)
+    bool FlyIfFaster(WorldPosition const& dest, bool walkRefused = false);
     bool UseGameObjectWithGroup(GameObject* go);
     void GossipTeleportToDalaran(Player* player, Creature* envoy);
     bool HasDalaranTeleportQuest(Player* player);
