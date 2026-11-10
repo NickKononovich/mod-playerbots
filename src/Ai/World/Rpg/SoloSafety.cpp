@@ -3708,21 +3708,111 @@ namespace SoloSafety
                 buildAround();
                 PullModel model(bot, mob, around);
                 model.Links();
-                std::vector<RouteFoe> foes;
-                uint32 above = 0;
-                for (PullModel::Member const& m : model.pack)
+                // [deaths141] coordinator 2026-11-10: a mob whose reach the leg crosses is priced with the pack the
+                // judge sees when the walk meets it (PullModel::Grow from that spot: the wanderers and patrols whose
+                // reach covers it, the engage and periodic assistance calls, a caster's stand, a flee for help), not
+                // its linked pack alone. b428: Ganna L17 walked "complete" into Stendel's Pond (the Riverpaws priced
+                // as their linked mobs), the judge there saw 5-6 and refused, it stood inside the reaches until they
+                // came; Febineysh L14 at The Loch, Relara / Salleas L14 at Bathran's Haunt the same. The leg's first
+                // point in the reach is the fight spot (the mob aggroes there and comes to the walker)
+                bool priced = false;
                 {
-                    foes.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});  // [dps1] no measurement
-                    above += m.mob->GetLevel() > level ? 1 : 0;
+                    G3D::Vector3 const ab = to - from;
+                    float const ox = from.x - centre.GetPositionX();
+                    float const oy = from.y - centre.GetPositionY();
+                    float const qa = ab.x * ab.x + ab.y * ab.y;
+                    float const qb = ox * ab.x + oy * ab.y;
+                    float const qc = ox * ox + oy * oy - radius * radius;
+                    float const disc = qb * qb - qa * qc;
+                    float meetAt = -1.0f;  // the leg's share where it first stands in the reach
+                    if (qc <= 0.0f)
+                        meetAt = 0.0f;  // it starts inside
+                    else if (qa > 0.0f && disc >= 0.0f)
+                    {
+                        float const s0 = (-qb - std::sqrt(disc)) / qa;
+                        if (s0 >= 0.0f && s0 <= 1.0f)
+                            meetAt = s0;
+                    }
+                    if (meetAt >= 0.0f)
+                    {
+                        G3D::Vector3 const meet = from + ab * meetAt;
+                        // the verdict per walker and level, spawn, the side the walk meets it from (an eighth round
+                        // its reach: a look's resolution) and the idle mobs whose reach or assistance radius can take
+                        // part (a death or a respawn there is another pack): the Grow runs once for them, its cost
+                        // measured
+                        float const side = std::atan2(meet.y - centre.GetPositionY(), meet.x - centre.GetPositionX());
+                        uint64 const octant =
+                            uint64(int32(std::floor((side + float(M_PI)) / (float(M_PI) / 4.0f))) & 7);
+                        uint64 campKey = 0;  // the mobs that can take part
+                        for (Creature* c : around)
+                        {
+                            G3D::Vector4 const cd = AggroDisc(c, bot);
+                            if (std::hypot(cd.x - centre.GetPositionX(), cd.y - centre.GetPositionY()) <=
+                                radius + cd.w + model.assist)
+                                campKey += uint64(c->GetSpawnId()) * 2654435761ull;  // order-free
+                        }
+                        uint64 const key =
+                            ((uint64(bot->GetGUID().GetCounter()) * 1000003ull + level) * 1000003ull +
+                             mob->GetSpawnId()) * 1000003ull + octant * 4099ull + campKey;
+                        thread_local std::unordered_map<uint64, std::pair<RouteWall::Why, uint32>> grownCache;
+                        static std::atomic<uint64> growCalls{0}, growCached{0}, growUs{0};
+                        if (auto const found = grownCache.find(key); found != grownCache.end())
+                        {
+                            why = found->second.first;
+                            wallPack = found->second.second;
+                            priced = true;
+                            ++growCached;
+                        }
+                        else
+                        {
+                            auto const start = std::chrono::steady_clock::now();
+                            model.Grow(&meet, nullptr);
+                            std::vector<RouteFoe> grown;
+                            uint32 grownAbove = 0;
+                            for (PullModel::Member const& m : model.pack)
+                            {
+                                grown.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});
+                                grownAbove += m.mob->GetLevel() > level ? 1 : 0;
+                            }
+                            std::sort(grown.begin() + 1, grown.end(), [](RouteFoe const& x, RouteFoe const& y)
+                                      { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
+                            if (grownAbove >= 2)
+                                why = RouteWall::Why::Above;
+                            else if (LosesAtFull(bot, own, grown, petHealth))
+                                why = RouteWall::Why::Loses;
+                            wallPack = uint32(grown.size());
+                            if (grownCache.size() > 65536)
+                                grownCache.clear();
+                            grownCache[key] = {why, wallPack};
+                            priced = true;
+                            growUs += uint64(std::chrono::duration_cast<std::chrono::microseconds>(
+                                                 std::chrono::steady_clock::now() - start)
+                                                 .count());
+                            if (uint64 const n = ++growCalls; n % 200 == 0)
+                                LOG_INFO("playerbots", "[deaths141] route packs: {} grown, {} answered from the cache, "
+                                         "{:.1f} us each grown",
+                                         n, growCached.load(), double(growUs.load()) / double(n));
+                        }
+                    }
                 }
-                // the judge's kill order: the mob met first, then the most damage per health
-                std::sort(foes.begin() + 1, foes.end(), [](RouteFoe const& x, RouteFoe const& y)
-                          { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
-                if (above >= 2)
-                    why = RouteWall::Why::Above;
-                else if (LosesAtFull(bot, own, foes, petHealth))
-                    why = RouteWall::Why::Loses;
-                wallPack = uint32(foes.size());
+                if (!priced)  // a mob off the leg: its linked pack, as before
+                {
+                    std::vector<RouteFoe> foes;
+                    uint32 above = 0;
+                    for (PullModel::Member const& m : model.pack)
+                    {
+                        foes.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});  // [dps1]
+                        above += m.mob->GetLevel() > level ? 1 : 0;
+                    }
+                    // the judge's kill order: the mob met first, then the most damage per health
+                    std::sort(foes.begin() + 1, foes.end(), [](RouteFoe const& x, RouteFoe const& y)
+                              { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
+                    if (above >= 2)
+                        why = RouteWall::Why::Above;
+                    else if (LosesAtFull(bot, own, foes, petHealth))
+                        why = RouteWall::Why::Loses;
+                    wallPack = uint32(foes.size());
+                }
                 // [wall17] coordinator 2026-11-09: the linked pack priced where the mob stands is not the pull a
                 // player makes - the pull judge draws it out from a pull spot (SoloSafety::Judge). A mob at the bot's
                 // level band (not [guild12]'s orange / red) whose reach crosses the leg is judged so before it walls
