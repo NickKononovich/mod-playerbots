@@ -57,6 +57,10 @@ ItemUsage ItemUsageValue::Calculate()
             if (IsItemNeededForSkill(proto) &&
                 (sGuildCoordinator.NeedsForOwnCalls(bot, proto->ItemId) || sGuildCoordinator.IsWanted(proto->ItemId)))
                 needItem = true;
+            // [ench158] a tool of a profession it has (Runed Copper Rod, a Mining Pick: TotemCategory) is no reagent
+            // and never on a call's list - it was sold as "no upgrade and not in the wanted list" after its craft
+            if (proto->TotemCategory && proto->Class != ITEM_CLASS_WEAPON && IsItemNeededForSkill(proto))
+                needItem = true;
         }
         else if (IsItemNeededForSkill(proto))
             needItem = true;
