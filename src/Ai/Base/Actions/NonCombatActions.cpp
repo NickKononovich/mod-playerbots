@@ -13,6 +13,7 @@
 #include "Playerbots.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "TravelMgr.h"  // [ride133] the trip's exit stop
 
 #include <unordered_map>
 
@@ -43,6 +44,23 @@ bool PatrolKeepsStanding(Player* bot, char const* what)
 constexpr uint32 BG_WS_SPELL_WARSONG_FLAG = 23333;
 constexpr uint32 BG_WS_SPELL_SILVERWING_FLAG = 23335;
 constexpr uint32 BG_EY_NETHERSTORM_FLAG_SPELL = 34976;
+
+// [ride133] aboard a transport docked at the stop its trip gets off at: stepping off wins over a sit-down (the bot
+// drinks on the pier). b426 Bhogagnuth L13 rode Deeprun Tram car 176083 for 1497 s (one way is 63 s): at every stop it
+// sat down to drink ("mana 38 % < 50 %"), the stop ended under it, the car took it back
+bool AtTripExitStop(Player* bot, PlayerbotAI* botAI)
+{
+    Transport* transport = bot->GetTransport();
+    if (!transport || !botAI)
+        return false;
+    NewRpgInfo::Trip const& trip = botAI->rpgInfo.trip;
+    TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(transport->GetEntry());
+    if (!line || trip.phase != NewRpgInfo::TripPhase::Ride || trip.leg.lineEntry != line->entry ||
+        trip.leg.toDock >= line->docks.size())
+        return false;
+    uint32 remaining = 0;
+    return TravelRouteMgr::IsDocked(transport, line->docks[trip.leg.toDock], remaining);
+}
 
 bool IsDisallowedFoodState(Player* bot)
 {
@@ -111,7 +129,7 @@ bool DrinkAction::isUseful()
 {
     // Between waves and phases the bot is out of combat but the encounter is still running. Non-mana classes never.
     if (!UseItemAction::isUseful() || AI_VALUE(bool, "encounter in progress") || !bot->GetMaxPower(POWER_MANA) ||
-        RestState::IsDrinking(bot))
+        RestState::IsDrinking(bot) || AtTripExitStop(bot, botAI))
         return false;
 
     // [b46_patrol] not in a patrol's way, the last-resort drink either (the patrol's first hit stands it up)
@@ -173,7 +191,8 @@ bool EatAction::Execute(Event event)
 
 bool EatAction::isUseful()
 {
-    if (!UseItemAction::isUseful() || AI_VALUE(bool, "encounter in progress") || RestState::IsEating(bot))
+    if (!UseItemAction::isUseful() || AI_VALUE(bool, "encounter in progress") || RestState::IsEating(bot) ||
+        AtTripExitStop(bot, botAI))  // [ride133]
         return false;
 
     if (PatrolKeepsStanding(bot, "eat"))  // [b46_patrol]
