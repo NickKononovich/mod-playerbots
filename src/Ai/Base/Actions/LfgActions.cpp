@@ -5,9 +5,9 @@
  */
 
 #include "LfgActions.h"
-#include <unordered_map>
 #include "LeaderDungeonRun.h"  // [lfg26]
 #include "AiFactory.h"
+#include "Group.h"  // [diag250]
 #include "ItemVisitors.h"
 #include "LFGMgr.h"
 #include "Opcodes.h"
@@ -237,97 +237,108 @@ bool LfgRoleCheckAction::Execute(Event /*event*/)
 
 bool LfgAcceptAction::Execute(Event event)
 {
-    // The Dungeon Finder teleport fails from a moving boat or zeppelin: keep the proposal, answer it ashore.
-    if (Transport* transport = bot->GetTransport(); transport && transport->IsMotionTransport())
-    {
-        if (!event.getPacket().empty())
-        {
-            WorldPacket p(event.getPacket());
-            uint32 dungeonId = 0;
-            uint8 state = 0;
-            uint32 proposalId = 0;
-            p >> dungeonId >> state >> proposalId;
-            if (proposalId)
-                botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(proposalId);
-        }
-
-        return false;
-    }
-
+    // [diag250] the Dungeon Finder proposal is answered "yes" at once, in a fight, dead or on a boat too: the leader
+    // queued the five and its decision is final. A member that cannot be ported when the last "yes" comes (the core's
+    // TeleportPlayer: in combat, dead, falling, on a transport) stays outside the five's dungeon: it asks for the port
+    // itself (CMSG_LFG_TELEPORT, the client's "teleport into the dungeon") once it can. b428 fives 11 / 17 / 22 / 40 /
+    // 49 never started (members silent for up to 5.9 h): their members held the answer in their questing fights
+    // ([lfg74]: Feette, a hunter, 25 s "in a fight" with 0 attackers), the last "yes" ported the members out of
+    // combat (five 22: Geron and Thamesh stood in Ragefire Chasm) and left the others outside for good - nobody asked
+    // for the port again, the run waits for all five on the map.
     uint32 id = AI_VALUE(uint32, "lfg proposal");
-
-    // [lfg74] a fight (or its death) holds the answer, it declines nothing: the proposal stays stored and is accepted
-    // once the fight is over, within the core's proposal time (LFG_TIME_PROPOSAL). b406 five 2 (rfc-n, Laaral):
-    // queued 1 s after five 1, "the group was not moved (role check / proposal)" within 2 s - a member fighting on
-    // its way answered the proposal "no" and the core dropped the five from the queue
-    auto const holds = [this](uint32 proposal)
-    {
-        if (!bot->IsInCombat() && !bot->isDead())
-            return false;
-        botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(proposal);
-        thread_local std::unordered_map<uint64, uint32> heldLogged;  // a log cadence, no decision reads it
-        if (uint32& last = heldLogged[bot->GetGUID().GetRawValue()]; last != proposal)
-        {
-            last = proposal;
-            LOG_INFO("playerbots", "[lfg74] {} holds its Dungeon Finder answer for proposal {}: {}", bot->GetName(),
-                     proposal, bot->isDead() ? "dead" : "in a fight");
-        }
-        return true;
-    };
-    // Try accept if already stored
-    if (id)
-    {
-        if (holds(id))
-            return false;
-
-        botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(0);
-        bot->ClearUnitState(UNIT_STATE_ALL_STATE);
-
-        WorldPacket* packet = new WorldPacket(CMSG_LFG_PROPOSAL_RESULT);
-        *packet << id << true;
-        bot->GetSession()->QueuePacket(packet);
-
-        if (RandomPlayerbotMgr::instance().IsRandomBot(bot) && !bot->GetGroup())
-        {
-            RandomPlayerbotMgr::instance().Refresh(bot);
-            botAI->ResetStrategies();
-        }
-
-        botAI->Reset();
-        return true;
-    }
-
-    // If we get the proposal packet, accept immediately
     if (!event.getPacket().empty())
     {
         WorldPacket p(event.getPacket());
-        uint32 dungeonId;
-        uint8 state;
-        p >> dungeonId >> state >> id;
+        uint32 dungeonId = 0;
+        uint8 state = 0;
+        uint32 proposalId = 0;
+        p >> dungeonId >> state >> proposalId;
+        if (proposalId)
+            id = proposalId;
+    }
+    if (!id)
+        return false;
 
-        if (id)
+    auto const why = [this]() -> char const*
+    {
+        if (!bot->IsAlive())
+            return "dead";
+        if (bot->IsInCombat())
+            return "in a fight";
+        if (Transport* transport = bot->GetTransport(); transport && transport->IsMotionTransport())
+            return "on a moving transport";
+        if (bot->IsBeingTeleported())
+            return "being teleported";
+        if (bot->IsFalling() || bot->GetVehicle())
+            return "falling / on a vehicle";
+        return nullptr;
+    };
+
+    if (id != _answered)
+    {
+        char const* const blocked = why();
+        _answered = id;
+        _portAsked = false;
+        LOG_INFO("playerbots", "[diag250] {} accepts the Dungeon Finder proposal {}{}", bot->GetName(), id,
+                 blocked ? std::string(" (port later: ") + blocked + ")" : std::string());
+        if (!blocked)
         {
-            if (holds(id))
-                return false;
-
-            botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(0);
             bot->ClearUnitState(UNIT_STATE_ALL_STATE);
-
-            WorldPacket* packet = new WorldPacket(CMSG_LFG_PROPOSAL_RESULT);
-            *packet << id << true;
-            bot->GetSession()->QueuePacket(packet);
-
             if (RandomPlayerbotMgr::instance().IsRandomBot(bot) && !bot->GetGroup())
             {
                 RandomPlayerbotMgr::instance().Refresh(bot);
                 botAI->ResetStrategies();
             }
-
             botAI->Reset();
-            return true;
         }
+        WorldPacket* packet = new WorldPacket(CMSG_LFG_PROPOSAL_RESULT);
+        *packet << id << true;
+        bot->GetSession()->QueuePacket(packet);
+        // kept: the follow-up below sees the proposal through (the late port, or its end)
+        botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(id);
+        return true;
     }
 
+    // the answer is given: the core's later updates of the same proposal are not answered again; the proposal stays
+    // stored (a Reset() in between cleared it, the update packet brings it back) until the port or its end
+    botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(id);
+    LfgState const state = sLFGMgr->GetState(bot->GetGUID());
+    if (state == LFG_STATE_PROPOSAL || state == LFG_STATE_ROLECHECK)
+        return false;
+
+    Group* group = bot->GetGroup();
+    if (state == LFG_STATE_DUNGEON && group && group->isLFGGroup())
+    {
+        uint32 const mapId = sLFGMgr->GetDungeonMapId(group->GetGUID());
+        if (!mapId || bot->GetMapId() == mapId)
+        {
+            botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(0);
+            return false;
+        }
+        if (char const* const blocked = why())
+        {
+            if (_portWaitLogged != id)
+            {
+                _portWaitLogged = id;
+                LOG_INFO("playerbots", "[diag250] {} waits to be ported into its Dungeon Finder dungeon (map {}): {}",
+                         bot->GetName(), mapId, blocked);
+            }
+            return false;
+        }
+        if (!_portAsked)
+            LOG_INFO("playerbots", "[diag250] {} was left outside by the Dungeon Finder port: asks for the port into "
+                     "map {} itself", bot->GetName(), mapId);
+        _portAsked = true;
+        WorldPacket* packet = new WorldPacket(CMSG_LFG_TELEPORT);
+        *packet << false;
+        bot->GetSession()->QueuePacket(packet);
+        return true;
+    }
+
+    // the proposal ended without a port for this bot (another member declined, the time ran out, the queue left)
+    LOG_INFO("playerbots", "[diag250] {} accepted the Dungeon Finder proposal {}, but it ended without the port "
+             "(lfg state {})", bot->GetName(), id, uint32(state));
+    botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(0);
     return false;
 }
 

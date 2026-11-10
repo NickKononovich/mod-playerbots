@@ -531,6 +531,11 @@ private:
         uint32 anchorAt{0};
         bool stuckAlerted{false};
         std::string stuckKey;
+        // [diag252] a fight without progress: the time its foes' health last fell (or the fight began), their
+        // summed health at the last sample, alerted once per such stretch
+        uint32 combatAnchorAt{0};
+        uint64 combatFoesHp{0};
+        bool combatAlerted{false};
         std::string waitReason;
         uint32 skillSum{0};         // [guild15] its profession skills at the last health sample (crafting = progress)
         uint32 casts{0};            // [econ2] its smelt casts (NextStep): a cast is progress, a skill-up or not

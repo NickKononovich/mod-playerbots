@@ -52,6 +52,7 @@
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "Pet.h"  // [diag252]
 #include "Player.h"
 #include "PlayerScript.h"
 #include "PlayerbotAI.h"
@@ -64,6 +65,7 @@
 #include "ScriptMgr.h"
 #include "SelfBotControl.h"
 #include "SellAction.h"
+#include "SpellAuras.h"  // [diag253]
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StatsWeightCalculator.h"
@@ -81,6 +83,7 @@ namespace
     constexpr uint32 SPELL_DISENCHANT = 13262;
     constexpr size_t ADDON_LINE_MAX = 240;  // the client drops longer addon messages
     constexpr uint32 STUCK_SECONDS = 60;     // user rule: no movement beyond combat reach for 60 s
+    constexpr uint32 SPELL_RESURRECTION_SICKNESS = 15007;  // [diag253]
     constexpr uint32 SKILL_STEP_MAX = 75;    // Spell::EffectLearnSkill: a profession rank's cap = step x 75
     constexpr size_t TASKS_SENT_MAX = 8;     // OT lines per bot (the addon line budget)
     uint32 const CRAFT_LINES[] = {164, 165, 171, 197, 202, 333, 755, 773, 185, 129};
@@ -954,6 +957,11 @@ std::string GuildCoordinator::WaitReason(Player* bot, PlayerbotAI* botAI, BotSta
         return "casting / crafting";
     if (bot->getStandState() == UNIT_STAND_STATE_SIT)
         return "resting (sits)";
+    // [diag253] the New RPG holds a sick bot where it rose until the aura ends ([deaths14] "waits out Resurrection
+    // Sickness", its RECOVER line): a game mechanic's end
+    if (Aura const* sickness = bot->GetAura(SPELL_RESURRECTION_SICKNESS))
+        return "waits out Resurrection Sickness (" +
+               std::to_string(std::max(0, sickness->GetDuration()) / IN_MILLISECONDS) + " s left)";
     NewRpgInfo& info = botAI->rpgInfo;
     NewRpgStatus const status = info.GetStatus();
     if (status == RPG_REST)
@@ -964,7 +972,7 @@ std::string GuildCoordinator::WaitReason(Player* bot, PlayerbotAI* botAI, BotSta
         return "group leader waits for a member (its GROUP_WAIT line)";
     if (info.trip.phase == NewRpgInfo::TripPhase::Wait || info.trip.phase == NewRpgInfo::TripPhase::Ride ||
         info.trip.phase == NewRpgInfo::TripPhase::Board)
-        return "waiting for boat / zeppelin";
+        return "waiting for boat / zeppelin / tram";
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
         if (quest->lastReachPOI)
             return "waiting for quest mob respawn q" + std::to_string(quest->questId);
@@ -6827,6 +6835,55 @@ void GuildCoordinator::UpdateHealth()
         bool const casted = st.casts != st.castsSeen ||
                             (NewRpgFishing::IsFishing(p) && p->GetCurrentSpell(CURRENT_CHANNELED_SPELL));
         st.castsSeen = st.casts;
+        // [diag252] a fight that makes no progress: b424 Peny L16 (solo holy paladin, Redridge) logged nothing for
+        // 1.96 h after "[deaths14] engages Redridge Mongrel" - no kill, no NewRpg tick (its [qstat] logout: QUEST 13 s,
+        // COMBAT 0, kills 0), no STUCK alert: a bot in combat was never checked. A solo bot outside an instance whose
+        // foes' (attackers', its own and its pet's victims') summed health has not fallen for STUCK_SECONDS is alerted
+        // once, with its foes, as STUCK_COMBAT. A diagnostic only, no decision reads it
+        if (ai && !IsRealPlayer(p) && p->IsInCombat() && !p->GetGroup() && !p->GetMap()->Instanceable())
+        {
+            std::vector<Unit*> foes(p->getAttackers().begin(), p->getAttackers().end());
+            for (Unit* victim : {p->GetVictim(), p->GetPet() ? p->GetPet()->GetVictim() : nullptr})
+                if (victim && std::find(foes.begin(), foes.end(), victim) == foes.end())
+                    foes.push_back(victim);
+            uint64 foesHp = 0;
+            for (Unit* foe : foes)
+                foesHp += foe->GetHealth();
+            if (!st.combatAnchorAt || foesHp < st.combatFoesHp)
+            {
+                st.combatAnchorAt = now;
+                st.combatAlerted = false;
+            }
+            st.combatFoesHp = foesHp;
+            if (!st.combatAlerted && now - st.combatAnchorAt >= STUCK_SECONDS)
+            {
+                st.combatAlerted = true;
+                std::ostringstream foesText;
+                for (Unit* foe : foes)
+                    foesText << (foe == foes.front() ? "" : "; ") << foe->GetName() << " L" << uint32(foe->GetLevel())
+                             << " " << uint32(foe->GetHealthPct()) << " % hp " << int32(p->GetExactDist(foe))
+                             << " yd" << (foe->GetVictim() == p ? " on it" : "")
+                             << (foe->IsCreature() && foe->ToCreature()->IsInEvadeMode() ? " evading" : "");
+                AreaTableEntry const* zone = sAreaTableStore.LookupEntry(p->GetZoneId());
+                std::ostringstream out;
+                out << "STUCK_COMBAT #" << row.num << " " << p->GetName() << " L" << uint32(p->GetLevel())
+                    << " at map " << p->GetMapId() << " (" << int32(p->GetPositionX()) << ","
+                    << int32(p->GetPositionY()) << ") " << (zone ? zone->area_name[0] : "?") << ": "
+                    << (now - st.combatAnchorAt) << " s in combat, its foes' health not falling; hp "
+                    << uint32(p->GetHealthPct()) << " %, mana " << uint32(p->GetPowerPct(POWER_MANA)) << " %; foes "
+                    << foes.size() << " (" << (foes.empty() ? "none: in combat with no attacker or target"
+                                                            : foesText.str())
+                    << "), engine " << (ai && ai->GetState() == BOT_STATE_COMBAT ? "combat" : "non-combat")
+                    << ", status=" << StatusName(p, ai) << ", last action=" << LastAction(ai);
+                Alert(out.str());
+            }
+        }
+        else
+        {
+            st.combatAnchorAt = 0;
+            st.combatAlerted = false;
+        }
+
         // stuck: out of combat, alive, not moved beyond its combat reach for 60 s, no legitimate wait
         float const reach = std::max(p->GetCombatReach(), 1.5f);
         if (p->IsInCombat() || !st.anchorAt || st.mapId != p->GetMapId() || skillRose || casted || moneyMoved ||
@@ -6841,14 +6898,18 @@ void GuildCoordinator::UpdateHealth()
             st.stillWhy.clear();  // [ui11]
             continue;
         }
-        if (now - st.anchorAt < STUCK_SECONDS)
-            continue;
+        // [diag253] a legitimate wait (Resurrection Sickness, a flight, a boat / zeppelin / tram, a rest, ...) is no
+        // stuck time: the anchor moves on with it, the 60 s count from the wait's end. b424 Dekorhan L17: "STUCK 440 s"
+        // right after its 416 s sickness wait ([deaths14] RECOVER) and its rest to full - the waits were counted
         std::string const wait = WaitReason(p, ai, st);
         if (!wait.empty())
         {
+            st.anchorAt = now;
             st.stillWhy = "waits: " + wait;  // [ui11] BotControl: why it stands
             continue;
         }
+        if (now - st.anchorAt < STUCK_SECONDS)
+            continue;
         ++stuck;
         std::string const status = StatusName(p, ai);
         std::string const order = ActiveTask(st.orders);

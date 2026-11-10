@@ -31,6 +31,11 @@ public:
 
     bool Execute(Event event) override;
     bool isUseful() override { return true; }
+
+private:
+    uint32 _answered = 0;        // [diag250] the proposal this bot said "yes" to
+    uint32 _portWaitLogged = 0;  // [diag250] the proposal whose "waits to be ported" line was logged
+    bool _portAsked = false;     // [diag250] the late port was asked for (its line logged once)
 };
 
 class LfgRoleCheckAction : public LfgJoinAction

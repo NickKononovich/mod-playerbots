@@ -15,6 +15,7 @@
 #include "GameTime.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "LeaderDungeonRun.h"  // [diag251]
 #include "Log.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
@@ -699,6 +700,12 @@ namespace
             std::string const rpg = RpgStrategy();
             MapEntry const* map = sMapStore.LookupEntry(bot->GetMapId());
             bool const inDungeon = map && map->IsDungeon();
+            // [diag251] a member of a guild five queued for the Dungeon Finder keeps the run's strategies (the run
+            // turned off its rpg / grind / quest play). Put back here on the next tick, the members quested and fought
+            // on while queued: their answers waited for those fights and the port left the fighting ones outside (b428
+            // fives 11 / 17 / 22 / 40 / 49: "User pack: Rumanatol plays as leader" right after the queue)
+            if (!inDungeon && Leader::Dungeon::DungeonRuns::Instance().PlannedLfgRoles(bot->GetGUID()))
+                return;
             bool ok = true;
             if (leader)
                 ok = botAI->HasStrategy("grind", BOT_STATE_NON_COMBAT) &&
