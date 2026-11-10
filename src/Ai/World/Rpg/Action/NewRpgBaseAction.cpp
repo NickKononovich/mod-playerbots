@@ -4060,6 +4060,7 @@ namespace
         CreatureTemplate const* tmpl;
         int16 event;
         float wander = 0.0f;  // [wander56] its spawn's wander distance (a wanderer reaches from anywhere in it)  // [guild15] game_event_creature: > 0 spawned only while that event runs, < 0 only while it does not
+        bool beat = false;    // [patrol86] a node of a patrol's beat (its spawn counted once: not in camp counts)
     };
 
     // [guild15] spawn guid -> its game event (GameEventMgr's own lists: index = events + event - 1; > 0 spawned only
@@ -4238,8 +4239,11 @@ namespace
                     if (CreatureAddon const* addon = sObjectMgr->GetCreatureAddon(spawnId); addon && addon->path_id)
                         if (WaypointPath const* path = sWaypointMgr->GetPath(addon->path_id))
                             for (WaypointNode const& node : path->Nodes)
-                                index.mobCells[MobCellKey(data.mapid, node.X, node.Y)].push_back(
-                                    {node.X, node.Y, node.Z, tmpl, SpawnEvent(true, spawnId), 0.0f});
+                            {
+                                MobSpawn beat{node.X, node.Y, node.Z, tmpl, SpawnEvent(true, spawnId)};
+                                beat.beat = true;
+                                index.mobCells[MobCellKey(data.mapid, node.X, node.Y)].push_back(beat);
+                            }
             }
         });
         return index;
@@ -6693,7 +6697,7 @@ void NewRpgBaseAction::ForEachSpawnReaching(uint32 mapId, float x, float y, floa
             if (cell == index.mobCells.end())
                 continue;
             for (MobSpawn const& m : cell->second)
-                if (m.wander <= MAX_AGGRO_RADIUS && SpawnPresent(m) &&
+                if (!m.beat && m.wander <= MAX_AGGRO_RADIUS && SpawnPresent(m) &&
                     std::hypot(m.x - x, m.y - y) <= assist + m.wander)
                     fn(m.tmpl, m.x, m.y, m.wander);
         }
