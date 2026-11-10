@@ -814,6 +814,11 @@ private:
     std::string TasksText(BotState const& st) const;
     // [tasks] profession vs questing, decided by the global leader only (world thread)
     void UpdateProfessions();
+    // [supply111] lock_ held: per dungeon band, the fives' food / drink by game math - the vendor's price per restored
+    // point against the cooked supply's (its recipe, its reagents, the cook's and the fisher's time at their quest
+    // pace)
+    void JudgeSupplySource(std::vector<std::pair<PlanRow const*, Player*>> const& members);
+    std::map<std::string, std::string> supplyJudged_;  // band -> its last [supply111] line
     // [questrate] the member's questing value by formula (no measurements): per quest the core's quest XP at its
     // copper per XP + the money + the reward items' price over the time it takes now (the walk to the objective area
     // and the ender, or to the giver for a quest it may take; the kills by the source's health at its EstimateDps,

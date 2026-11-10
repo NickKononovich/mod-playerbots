@@ -129,6 +129,8 @@ public:
     bool Gatherable(uint32 itemId, uint32* skill = nullptr, int32* reqSkill = nullptr) const;
     // [fish14] the places that yield the item (read-only after Load, any thread)
     std::vector<GatherPlace const*> PlacesFor(uint32 itemId) const;
+    // [supply111] the bot's best rate (units per hour, by formula) of the item over its open-world places, 0 = none
+    float BestRate(uint32 itemId, Player* bot) const;
     // the reagent comes from a crafter's conversion of a raw material (pigment <- herb, gem <- ore): the cheapest one
     // by raw per unit; disenchant mats return raw 0 (spare items only)
     GatherConversion const* ConversionFor(uint32 itemId) const;

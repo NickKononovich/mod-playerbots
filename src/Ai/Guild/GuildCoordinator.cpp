@@ -3246,6 +3246,7 @@ void GuildCoordinator::UpdateProfessions()
         }
         fishShort_ = std::move(shortBy);
     }
+    JudgeSupplySource(members);
     // what the plan wants crafted that no guild crafter can make yet (nobody knows the recipe)
     struct Need
     {
@@ -7185,6 +7186,253 @@ public:
                  go->GetMapId());
     }
 };
+
+// [supply111] coordinator 2026-11-10: the guild's supply source by game math, not a fixed choice. Per dungeon band
+// (its fives' members), the food and drink a restock buys at a vendor against the cooked food / drink of the band's
+// level, each priced per restored point:
+// - restored: the item's spell, as the core restores it - SPELL_AURA_MOD_REGEN / MOD_POWER_REGEN give their amount
+//   per 5 s (Player::RegenerateHealth: amount x 2 s / 5 s per 2 s tick) over the aura's duration, OBS_MOD_HEALTH /
+//   OBS_MOD_POWER their amount per amplitude;
+// - vendor: BuyPrice over BuyCount of the best item of the level a vendor sells for gold;
+// - cooked: the recipe item's price shared over the band's restocks, the reagents a vendor sells at their price, a
+//   fished one at the fisher's time per catch (its best rate by the gathering plan's formula) and a looted one free
+//   (it drops while questing), the cast at the cook's time; time at the quest pace (copper per minute by formula,
+//   QuestPace) of the guild's best cook and best fisher.
+// The cheaper source per point is the band's; logged on change.
+void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, Player*>> const& members)
+{
+    static std::once_flag once;
+    static std::unordered_set<uint32> sold;               // what a vendor sells for gold
+    static std::unordered_map<uint32, uint32> recipeItem;  // recipe spell -> its recipe item's price (vendor sold)
+    std::call_once(once, []()
+    {
+        for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
+            if (tmpl.npcflag & UNIT_NPC_FLAG_VENDOR)
+                if (VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry))
+                    for (VendorItem const* item : items->m_items)
+                        if (item && !item->ExtendedCost)
+                            sold.insert(item->item);
+        for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
+            if (proto.Class == ITEM_CLASS_RECIPE && sold.count(id))
+                for (auto const& spell : proto.Spells)
+                    if (SpellInfo const* learn = spell.SpellId > 0 ? sSpellMgr->GetSpellInfo(spell.SpellId) : nullptr)
+                        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+                            if (learn->Effects[e].Effect == SPELL_EFFECT_LEARN_SPELL &&
+                                learn->Effects[e].TriggerSpell)
+                                recipeItem[learn->Effects[e].TriggerSpell] = proto.BuyPrice;
+    });
+    auto const restores = [](ItemTemplate const* proto, float& hp, float& mana)
+    {
+        hp = mana = 0.0f;
+        SpellInfo const* spell = proto ? sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId) : nullptr;
+        if (!spell)
+            return;
+        float const duration = float(std::max(spell->GetMaxDuration(), 0));
+        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+        {
+            SpellEffectInfo const& effect = spell->Effects[e];
+            float const amount = float(effect.CalcValue());
+            float const amplitude = float(effect.Amplitude);
+            switch (effect.ApplyAuraName)
+            {
+                case SPELL_AURA_MOD_REGEN:
+                    hp += amount * duration / 5000.0f;
+                    break;
+                case SPELL_AURA_MOD_POWER_REGEN:
+                    if (effect.MiscValue == POWER_MANA)
+                        mana += amount * duration / 5000.0f;
+                    break;
+                case SPELL_AURA_OBS_MOD_HEALTH:
+                    if (amplitude > 0.0f)
+                        hp += amount * duration / amplitude;
+                    break;
+                case SPELL_AURA_OBS_MOD_POWER:
+                    if (amplitude > 0.0f && effect.MiscValue == POWER_MANA)
+                        mana += amount * duration / amplitude;
+                    break;
+                default:
+                    break;
+            }
+        }
+    };
+    auto const supplyItem = [](ItemTemplate const& proto, uint32 category)
+    {
+        return proto.Class == ITEM_CLASS_CONSUMABLE && proto.Spells[0].SpellCategory == category;
+    };
+
+    // the guild's best cook and best fisher (the most skill), their quest pace
+    Player* cook = nullptr;
+    Player* fisher = nullptr;
+    float cookPace = -1.0f, fisherPace = -1.0f;
+    for (auto const& [row, m] : members)
+    {
+        if (HumanCharacter(m))
+            continue;
+        auto const st = bots_.find(row->low);
+        if (st == bots_.end())
+            continue;
+        float pace = 0.0f;
+        if (m->HasSkill(SKILL_COOKING) &&
+            (!cook || m->GetPureSkillValue(SKILL_COOKING) > cook->GetPureSkillValue(SKILL_COOKING)) &&
+            QuestPace(st->second, m, pace))
+        {
+            cook = m;
+            cookPace = pace;
+        }
+        if (fishers_.count(row->low) && m->HasSkill(SKILL_FISHING) &&
+            (!fisher || m->GetPureSkillValue(SKILL_FISHING) > fisher->GetPureSkillValue(SKILL_FISHING)) &&
+            QuestPace(st->second, m, pace))
+        {
+            fisher = m;
+            fisherPace = pace;
+        }
+    }
+    auto const cooking = recipesBySkill_.find(SKILL_COOKING);
+
+    std::set<std::pair<uint32, uint32>> bands;
+    for (DungeonOption const& d : dungeons_)
+        bands.emplace(d.walkMinLevel, d.maxLevel);
+    for (auto const& [lo, hi] : bands)
+    {
+        uint32 inBand = 0;
+        uint8 level = 0;
+        for (auto const& [row, m] : members)
+            if (m->GetLevel() >= lo && m->GetLevel() <= hi && row->grp >= 'A' && row->grp <= 'C')
+            {
+                ++inBand;
+                level = std::max<uint8>(level, m->GetLevel());
+            }
+        if (!inBand)
+            continue;
+        // the vendor's best food and drink of the band's top level, per restored point
+        auto const vendorBest = [&](uint32 category, bool health, std::string& name) -> float
+        {
+            float bestPer = -1.0f;
+            uint32 bestLevel = 0;
+            for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
+            {
+                if (!proto.BuyPrice || proto.RequiredLevel > level || !sold.count(id) || !supplyItem(proto, category))
+                    continue;
+                float hp = 0.0f, mana = 0.0f;
+                restores(&proto, hp, mana);
+                float const points = health ? hp : mana;
+                if (points <= 0.0f)
+                    continue;
+                float const per = float(proto.BuyPrice) / float(std::max<uint32>(1, proto.BuyCount)) / points;
+                if (bestPer < 0.0f || proto.RequiredLevel > bestLevel ||
+                    (proto.RequiredLevel == bestLevel && per < bestPer))
+                {
+                    bestPer = per;
+                    bestLevel = proto.RequiredLevel;
+                    name = proto.Name1;
+                }
+            }
+            return bestPer;
+        };
+        std::string foodName, drinkName;
+        float const foodPer = vendorBest(RESTOCK_SPELL_CATEGORY_FOOD, true, foodName);
+        float const drinkPer = vendorBest(RESTOCK_SPELL_CATEGORY_DRINK, false, drinkName);
+
+        // the cooked food / drink of the band's level: the cheapest per point of those with the highest level
+        std::string cookedText = "no cooking recipe of the level";
+        float cookedPer = -1.0f;
+        float cookedHp = 0.0f, cookedMana = 0.0f;
+        if (cooking != recipesBySkill_.end())
+        {
+            uint32 bestLevel = 0;
+            for (Recipe const& r : cooking->second)
+            {
+                ItemTemplate const* proto = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr;
+                if (!proto || proto->RequiredLevel > level ||
+                    !(supplyItem(*proto, RESTOCK_SPELL_CATEGORY_FOOD) ||
+                      supplyItem(*proto, RESTOCK_SPELL_CATEGORY_DRINK)))
+                    continue;
+                float hp = 0.0f, mana = 0.0f;
+                restores(proto, hp, mana);
+                if (hp + mana <= 0.0f)
+                    continue;
+                // its recipe: learned at the trainer / by itself (no item price), else a vendor's recipe item, else
+                // a drop (no price known: not judged)
+                float recipePrice = 0.0f;
+                if (!r.trainer && !r.autoLearned)
+                {
+                    auto const item = recipeItem.find(r.spellId);
+                    if (item == recipeItem.end())
+                        continue;
+                    recipePrice = float(item->second);
+                }
+                float coin = 0.0f, seconds = 0.0f;
+                std::string reagents;
+                bool priced = true;
+                for (auto const& [item, n] : r.reagents)
+                {
+                    ItemTemplate const* reagent = sObjectMgr->GetItemTemplate(item);
+                    uint32 skill = 0;
+                    if (reagent && sold.count(item) && reagent->BuyPrice)
+                    {
+                        coin += float(n) * float(reagent->BuyPrice) / float(std::max<uint32>(1, reagent->BuyCount));
+                        reagents += Acore::StringFormat("{} x{} bought, ", reagent->Name1, n);
+                    }
+                    else if (sGuildGatherPlan.Gatherable(item, &skill) && skill == SKILL_FISHING)
+                    {
+                        float const rate = fisher ? sGuildGatherPlan.BestRate(item, fisher) : 0.0f;
+                        if (rate <= 0.0f || fisherPace < 0.0f)
+                        {
+                            priced = false;
+                            break;
+                        }
+                        seconds += float(n) * 3600.0f / rate;
+                        coin += float(n) * 60.0f / rate * fisherPace;  // the fisher's minutes per catch at its pace
+                        reagents += Acore::StringFormat("{} x{} fished ({:.0f}/h), ", reagent ? reagent->Name1 : "?",
+                                                        n, rate);
+                    }
+                    else
+                        reagents += Acore::StringFormat("{} x{} looted, ", reagent ? reagent->Name1 : "?", n);
+                }
+                if (!priced || cookPace < 0.0f)
+                    continue;
+                SpellInfo const* craft = sSpellMgr->GetSpellInfo(r.spellId);
+                float const castMin = craft ? float(craft->CalcCastTime()) / 60000.0f : 0.0f;
+                coin += castMin * cookPace;
+                float const made = std::max(r.made, 1.0f);
+                float const units = float(inBand * RESTOCK_FOOD_TARGET);
+                float const unit = coin / made + recipePrice / units;
+                float const per = unit / (hp + mana);
+                if (cookedPer < 0.0f || proto->RequiredLevel > bestLevel ||
+                    (proto->RequiredLevel == bestLevel && per < cookedPer))
+                {
+                    cookedPer = per;
+                    bestLevel = proto->RequiredLevel;
+                    cookedHp = hp;
+                    cookedMana = mana;
+                    if (reagents.size() >= 2)
+                        reagents.resize(reagents.size() - 2);
+                    cookedText = Acore::StringFormat("{} {:.3f} c/point ({:.0f} hp + {:.0f} mana; {:.1f} c a unit: "
+                                                     "recipe {:.0f} c over {:.0f} restocks, {}, cast {:.1f} s at the "
+                                                     "cook's {:.0f} c/min)",
+                                                     proto->Name1, per, hp, mana, unit, recipePrice, units, reagents,
+                                                     castMin * 60.0f, cookPace);
+                }
+            }
+        }
+        // the vendor's price for the same points: food for its health, drink for its mana (a cooked item that restores
+        // both replaces both)
+        float vendorPer = -1.0f;
+        if (cookedPer >= 0.0f && foodPer > 0.0f && (cookedMana <= 0.0f || drinkPer > 0.0f))
+            vendorPer = (cookedHp * foodPer + cookedMana * std::max(drinkPer, 0.0f)) / (cookedHp + cookedMana);
+        std::string const choice = cookedPer >= 0.0f && vendorPer > 0.0f && cookedPer < vendorPer ? "cook" : "vendor";
+        std::string const key = std::to_string(lo) + "-" + std::to_string(hi);
+        std::string const text = Acore::StringFormat(
+            "band {} ({} members, L{}): vendor {} {:.3f} c/hp, {} {:.3f} c/mana; cooked {} -> {} (cook {}, fisher {})",
+            key, inBand, uint32(level), foodName.empty() ? "-" : foodName, foodPer, drinkName.empty() ? "-" : drinkName,
+            drinkPer, cookedText, choice, cook ? cook->GetName() : "none", fisher ? fisher->GetName() : "none");
+        if (supplyJudged_[key] != text)
+        {
+            supplyJudged_[key] = text;
+            LOG_INFO("playerbots", "[supply111] {}", text);
+        }
+    }
+}
 
 void AddGuildCoordinatorScripts()
 {

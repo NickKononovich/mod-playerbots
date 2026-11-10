@@ -1389,3 +1389,14 @@ void GuildGatherPlan::LogStock(std::map<uint32, std::pair<uint32, uint32>> const
                  nh.first, nh.second, nh.first > nh.second ? nh.first - nh.second : 0, source);
     }
 }
+
+float GuildGatherPlan::BestRate(uint32 itemId, Player* bot) const
+{
+    float best = 0.0f;
+    if (!loaded_ || !bot)
+        return best;
+    for (GatherPlace const* place : PlacesFor(itemId))
+        if (place && !place->instance)
+            best = std::max(best, Rate(*place, itemId, bot, 0));
+    return best;
+}
