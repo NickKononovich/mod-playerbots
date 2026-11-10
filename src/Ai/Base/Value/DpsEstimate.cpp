@@ -2514,6 +2514,7 @@ void RecordFight(Player* bot, FightSample const& sample)
     // disengage, logged 3.7-4.7 dps against 18.9); its hits after the run are in the window.
     float leadSec = 0.0f;
     bool const fled = !strcmp(sample.outcome, "fled");
+    float staleSec = 0.0f;  // [dps233]
     if (f.firstDealtMs && f.raw)
     {
         SpecRotation const* rotation = RotationOf(bot);
@@ -2529,6 +2530,14 @@ void RecordFight(Player* bot, FightSample const& sample)
             if (takenBefore < getMSTimeDiff(f.firstDealtMs, f.firstTakenMs))
                 before = std::max(before, float(takenBefore) / float(IN_MILLISECONDS));
         }
+        // [dps233] its hits span more than the fight SoloSafety closes: the first ones came from a fight it never
+        // closed (their formula and casts with them): b426-b429 273 fights measured over windows of up to 233 s for
+        // 5-20 s fights (Orton L16 arcane 1.5 dps over 228.9 s against SoloSafety's 28.1); one global cooldown of
+        // slack for the pull's first hit
+        float const spanSec = float(getMSTimeDiff(f.firstDealtMs, f.lastDealtMs)) / float(IN_MILLISECONDS);
+        float const slackSec = float(GCD_MAX_MS) / float(IN_MILLISECONDS);
+        if (spanSec > sample.fightSec + before + slackSec)
+            staleSec = spanSec - sample.fightSec;
         float const idle = fled ? 0.0f : std::max(0.0f, sample.fightSec - sample.activeSec);
         float const window =
             float(getMSTimeDiff(f.firstDealtMs, f.lastDealtMs)) / float(IN_MILLISECONDS) + before - idle;
@@ -2539,6 +2548,8 @@ void RecordFight(Player* bot, FightSample const& sample)
         }
     }
     std::string why = sample.invalidWhy;
+    if (why.empty() && staleSec > 0.0f)
+        why = Acore::StringFormat("its hits from {:.1f} s before the fight", staleSec);
     // [dpscal] the time it fought covers one pass of the rotation (was the fight's length: b337 Laaral L13 attacked
     // 5.3 s of an 89.9 s fight and passed)
     if (why.empty() && active < sample.cycleSec)
