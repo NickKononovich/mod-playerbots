@@ -1615,8 +1615,15 @@ void GuildCoordinator::UpdateOrders()
                     stock[w.itemId] = {w.need, w.have};
                     unitValue[w.itemId] = w.unitValue;
                 }
+            // [fish110] the fish the fives' cooked supplies need (UpdateProfessions): the guild's fishers bring it
+            for (auto const& [item, n] : fishShort_)
+                if (n && sGuildGatherPlan.Gatherable(item))
+                {
+                    shortfall[item] = std::max(shortfall[item], n);
+                    stock.try_emplace(item, n, 0);
+                }
             for (PlanRow const& row : plan_)
-                if (row.grp == 'B' || row.grp == 'C')
+                if (row.grp == 'B' || row.grp == 'C' || fishers_.count(row.low))
                     if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
                         p && p->IsInWorld() && !HumanCharacter(p))
                     {
@@ -1632,7 +1639,12 @@ void GuildCoordinator::UpdateOrders()
                         }
                     }
         }
-        sGuildGatherPlan.Assign(shortfall, gatherers, questPace, unitValue, questWhy);
+        std::set<uint32> fishers;
+        {
+            CoordLock guard(lock_, __func__);
+            fishers = fishers_;
+        }
+        sGuildGatherPlan.Assign(shortfall, gatherers, questPace, unitValue, questWhy, fishers);
         if (gatherStockCalls_++ % GATHER_STOCK_LOG_EVERY == 0)  // a log cadence, no decision
             sGuildGatherPlan.LogStock(stock);
     }
@@ -3136,6 +3148,104 @@ void GuildCoordinator::UpdateProfessions()
     };
 
     CoordLock guard(lock_, __func__);
+    // [fish110] user 2026-11-10: the guild needs two fishers. Before, every member with Fishing in its plan (50 of 75)
+    // got the trainer and the pole calls, and none fished: the gathering plan fishes only for a wanted shortfall, and
+    // no fish was ever wanted (cooking, the fish's only use, beat questing for nobody - it unlocks no guild need).
+    // Two members hold Fishing as their guild role: the ones online with the most Fishing skill, then the highest
+    // level (a fisher stays one while online and in the plan); only they get the Fishing calls (the trainer, the
+    // pole: their own gold), and the gathering plan sends them to fish what the fives' cooked supplies need
+    {
+        constexpr size_t GUILD_FISHERS = 2;  // the user's number
+        std::set<uint32> next;
+        for (uint32 low : fishers_)
+            for (auto const& [row, m] : members)
+                if (row->low == low && !HumanCharacter(m) && plansLine(*row, m, SKILL_FISHING))
+                    next.insert(low);
+        std::vector<std::pair<PlanRow const*, Player*>> candidates;
+        for (auto const& [row, m] : members)
+            if (!next.count(row->low) && !HumanCharacter(m) && plansLine(*row, m, SKILL_FISHING))
+                candidates.emplace_back(row, m);
+        std::stable_sort(candidates.begin(), candidates.end(),
+                         [](auto const& a, auto const& b)
+                         {
+                             auto const fishing = [](Player* p)
+                             { return p->HasSkill(SKILL_FISHING) ? p->GetPureSkillValue(SKILL_FISHING) : 0u; };
+                             uint32 const sa = fishing(a.second);
+                             uint32 const sb = fishing(b.second);
+                             if (sa != sb)
+                                 return sa > sb;
+                             return a.second->GetLevel() > b.second->GetLevel();
+                         });
+        for (auto const& [row, m] : candidates)
+        {
+            if (next.size() >= GUILD_FISHERS)
+                break;
+            next.insert(row->low);
+            LOG_INFO("playerbots", "[fish110] {} L{} is a guild fisher: fishing {}/{} (the most skill, then level, of "
+                     "{} members with Fishing planned)",
+                     Who(row->low), m->GetLevel(), m->HasSkill(SKILL_FISHING) ? m->GetPureSkillValue(SKILL_FISHING) : 0,
+                     m->HasSkill(SKILL_FISHING) ? m->GetPureMaxSkillValue(SKILL_FISHING) : 0, candidates.size());
+        }
+        fishers_ = std::move(next);
+
+        // the raw fish of the cooked foods / drinks the members eat: per member the best fish food of its level (the
+        // highest required level it meets), a restock (RESTOCK_FOOD_TARGET) each, through the recipe's yield, less
+        // what the guild's members already hold of the fish and of the cooked item
+        std::map<uint32, uint32> shortBy;
+        if (auto const cooking = recipesBySkill_.find(SKILL_COOKING); cooking != recipesBySkill_.end())
+        {
+            struct FishFood
+            {
+                Recipe const* recipe;
+                ItemTemplate const* product;
+                uint32 fish;
+                uint32 perCraft;
+            };
+            std::vector<FishFood> foods;
+            for (Recipe const& r : cooking->second)
+            {
+                ItemTemplate const* proto = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr;
+                if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
+                    (proto->Spells[0].SpellCategory != RESTOCK_SPELL_CATEGORY_FOOD &&
+                     proto->Spells[0].SpellCategory != RESTOCK_SPELL_CATEGORY_DRINK))
+                    continue;
+                for (auto const& [item, n] : r.reagents)
+                {
+                    uint32 skill = 0;
+                    if (sGuildGatherPlan.Gatherable(item, &skill) && skill == SKILL_FISHING)
+                        foods.push_back({&r, proto, item, n});
+                }
+            }
+            std::map<uint32, float> units;  // fish -> units the members' restocks take
+            for (auto const& [row, m] : members)
+            {
+                FishFood const* best = nullptr;
+                for (FishFood const& f : foods)
+                    if (f.product->RequiredLevel <= m->GetLevel() &&
+                        (!best || f.product->RequiredLevel > best->product->RequiredLevel))
+                        best = &f;
+                if (best)
+                    units[best->fish] += float(RESTOCK_FOOD_TARGET) * float(best->perCraft) /
+                                         std::max(best->recipe->made, 1.0f);
+            }
+            for (auto const& [fish, n] : units)
+            {
+                uint32 held = 0;
+                for (auto const& [row, m] : members)
+                    held += m->GetItemCount(fish, true);
+                if (uint32 const need = uint32(std::ceil(n)); need > held)
+                    shortBy[fish] = need - held;
+            }
+        }
+        if (shortBy != fishShort_)
+        {
+            std::string text;
+            for (auto const& [fish, n] : shortBy)
+                text += (text.empty() ? "" : ", ") + ItemName(fish) + " ×" + std::to_string(n);
+            LOG_INFO("playerbots", "[fish110] the fives' cooked supplies need: {}", text.empty() ? "no fish" : text);
+        }
+        fishShort_ = std::move(shortBy);
+    }
     // what the plan wants crafted that no guild crafter can make yet (nobody knows the recipe)
     struct Need
     {
@@ -3653,7 +3763,13 @@ void GuildCoordinator::UpdateProfessions()
                     pick.reason = std::move(reason);
                     picks.push_back(pick);
                 };
-                if (!has && cap)
+                if (line == SKILL_FISHING && !fishers_.count(row->low))
+                {
+                    // [fish110] the guild's fishing is its two fishers' role: no trainer or pole call for the others
+                    key = "notfisher";
+                    decision = head + " — not one of the guild's 2 fishers: no call [fish110]";
+                }
+                else if (!has && cap)
                 {
                     call(std::string("learn ") + name,
                          "in the gatherer plan, the trainer teaches at L" + std::to_string(level));

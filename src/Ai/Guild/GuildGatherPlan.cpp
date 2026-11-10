@@ -1051,7 +1051,8 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                                                       std::vector<Player*> const& gatherers,
                                                       std::map<uint32, float> const& questPace,
                                                       std::map<uint32, float> const& unitValue,
-                                                      std::map<uint32, std::string> const& questWhy)
+                                                      std::map<uint32, std::string> const& questWhy,
+                                                      std::set<uint32> const& roleFishers)
 {
     std::vector<GatherAssignment> out;
     if (!loaded_)
@@ -1208,7 +1209,11 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                     float const workHours = share / rate;
                     float const effective = share / (workHours + o.travel / 3600.0f);
                     float const value = effective * valueOf(item) / 60.0f;
-                    bool const worth = quest >= 0.0f && value > quest;
+                    // [fish110] user 2026-11-10: a guild fisher's fishing is its guild role - it levels Fishing and
+                    // brings the fives' cooked supplies their fish
+                    bool const fisher =
+                        place.kind == GatherKind::FISH && roleFishers.count(bot->GetGUID().GetCounter());
+                    bool const worth = fisher || (quest >= 0.0f && value > quest);
                     if (worthPhase && !worth)
                         continue;
                     float const before = already > 0.0f ? left / already : FLT_MAX;
@@ -1263,8 +1268,11 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                 : Acore::StringFormat("gathering {:.1f} c/min ({:.1f} c/unit) {} quests {:.1f} c/min ({})",
                                       a.valuePerMin, valueOf(a.itemId), a.worth ? ">" : "≤", a.questPerMin,
                                       qw == questWhy.end() ? std::string("formula") : qw->second);
-        a.why = Acore::StringFormat("short {}, here {:.1f}/h, walk {:.0f} s, bots at the spot {}; {}", a.need,
-                                    a.ratePerHour, a.travelSec, a.worth ? placeLoad[a.placeId - 1] : 0, pace);
+        a.why = Acore::StringFormat("short {}, here {:.1f}/h, walk {:.0f} s, bots at the spot {}; {}{}", a.need,
+                                    a.ratePerHour, a.travelSec, a.worth ? placeLoad[a.placeId - 1] : 0, pace,
+                                    a.kind == GatherKind::FISH && roleFishers.count(a.botLow)
+                                        ? "; [fish110] a guild fisher: its role"
+                                        : "");
     }
 
     std::lock_guard<std::mutex> guard(lock_);

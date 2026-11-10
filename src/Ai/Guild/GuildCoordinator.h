@@ -943,6 +943,9 @@ private:
     uint32 gatherStockCalls_{0};  // [gather] UpdateOrders calls: the stock line every GATHER_STOCK_LOG_EVERY
     static constexpr uint32 GATHER_STOCK_LOG_EVERY = 10;
     std::vector<WantedItem> wanted_;
+    // [fish110] the guild's two fishers (user 2026-11-10) and the raw fish the fives' cooked supplies need
+    std::set<uint32> fishers_;
+    std::map<uint32, uint32> fishShort_;
     std::unordered_map<uint32, std::vector<std::pair<uint32, std::string>>> withdraw_;  // member -> bank items for it
     uint32 deathsTotal_{0};
     std::deque<std::pair<uint32, std::string>> decisions_;
