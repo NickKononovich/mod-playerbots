@@ -26,6 +26,7 @@
 // All game actions run on the world thread (the core runs these opcodes there: PROCESS_THREADUNSAFE).
 
 #include "GuildCoordinator.h"
+#include "BuyAction.h"  // [share92] RESTOCK_FOOD_MIN
 #include "NewRpgProfession.h"  // [roles62] NeedsRespec
 #include "QuestStats.h"  // [log28]
 
@@ -1027,8 +1028,14 @@ void GuildCoordinator::UpdateTransfers()
             for (uint32 m : five.members)
             {
                 Player* p = Online(m);
+                // [share92] inside the dungeon (the five's run: its members stand together at its start, they met
+                // nowhere before - lfg89 has them quest apart until the port) a member below the restock line
+                // (RESTOCK_FOOD_MIN) is topped up, not only one that ran out
+                uint32 const line = five.stage == GuildFive::Stage::Run && p && p->GetMap()->IsDungeon()
+                                        ? RESTOCK_FOOD_MIN
+                                        : 1;
                 if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
-                    (kind == DRINK && p->getPowerType() != POWER_MANA) || CountKind(p, kind, p->GetLevel()))
+                    (kind == DRINK && p->getPowerType() != POWER_MANA) || CountKind(p, kind, p->GetLevel()) >= line)
                     continue;
                 needy.push_back(p);
                 level = std::min<uint8>(level, p->GetLevel());
@@ -1064,7 +1071,11 @@ void GuildCoordinator::UpdateTransfers()
                                    total += i->GetCount();
                                }
                            });
-            uint32 const share = total / uint32(needy.size() + 1);  // the quartermaster keeps an equal share
+            // the giver keeps an equal share; [share92] inside the dungeon it keeps its own restock line and shares
+            // only what lies above it (no member is pushed below the line that made another needy: no ping-pong)
+            bool const inRun = five.stage == GuildFive::Stage::Run && q->GetMap()->IsDungeon();
+            uint32 const share = inRun ? (total > RESTOCK_FOOD_MIN ? (total - RESTOCK_FOOD_MIN) / uint32(needy.size()) : 0)
+                                       : total / uint32(needy.size() + 1);
             if (!share)
                 continue;
             std::sort(stacks.begin(), stacks.end(), [](Item* a, Item* b) { return a->GetCount() > b->GetCount(); });
