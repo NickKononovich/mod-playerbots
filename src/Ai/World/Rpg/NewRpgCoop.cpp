@@ -4297,16 +4297,20 @@ bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPositi
     {
         float const pullReach = PlayerbotAI::IsRanged(bot) ? Leader::Fight::LeaderSpellReach(bot)
                                                            : reachOf(*source) + bot->GetCombatReach();
-        constexpr uint32 DIRECTIONS = 12;  // the ring's directions round the source (a look's cost, no rule)
-        for (uint32 i = 0; i < DIRECTIONS && !pullSpot; ++i)
-        {
-            float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
-            float const px = source->x + std::cos(angle) * pullReach;
-            float const py = source->y + std::sin(angle) * pullReach;
-            pullSpot = std::none_of(hostile.begin(), hostile.end(),
-                                    [&](CampMob const* m)
-                                    { return m != source && std::hypot(m->x - px, m->y - py) <= reachOf(*m); });
-        }
+        // [camp63] b410: q12 / q3524 left out "fought where it stands" that b406's bots did (18 progress on q12):
+        // one 12-point ring at the full pull reach missed the spots the live pull search finds nearer the source.
+        // Rings at the whole reach, three quarters and half of it, 16 directions (a look's cost, no rule)
+        constexpr uint32 DIRECTIONS = 16;
+        for (float const share : {1.0f, 0.75f, 0.5f})
+            for (uint32 i = 0; i < DIRECTIONS && !pullSpot; ++i)
+            {
+                float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                float const px = source->x + std::cos(angle) * pullReach * share;
+                float const py = source->y + std::sin(angle) * pullReach * share;
+                pullSpot = std::none_of(hostile.begin(), hostile.end(),
+                                        [&](CampMob const* m)
+                                        { return m != source && std::hypot(m->x - px, m->y - py) <= reachOf(*m); });
+            }
     }
     for (CampMob const* mp : hostile)
     {
