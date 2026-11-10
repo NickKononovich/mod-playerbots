@@ -2506,6 +2506,13 @@ void GuildCoordinator::ClassifyTask(GuildOrder& o)
             if (auto const t = transfers_.find(o.transferId);
                 t != transfers_.end() && t->second.channel == Transfer::MAIL)
                 o.place = GuildTaskPlace::MAILBOX;
+            // [supply91] the supply gold of a five's member is the five's wait: the sender goes to its mailbox now
+            // (URGENT), not at its next town visit. b411: Hobliir's 31 s 50 c for Thokhen (five 1) stood "waits town
+            // Astranaar" 40 min, five 1's members idle until logout
+            if (auto const t = transfers_.find(o.transferId);
+                t != transfers_.end() && t->second.gold && t->second.purpose == "supplies")
+                if (auto const to = bots_.find(t->second.toLow); to != bots_.end() && to->second.fiveId)
+                    o.priority = GuildTaskPriority::URGENT;
             break;
         default:
             break;

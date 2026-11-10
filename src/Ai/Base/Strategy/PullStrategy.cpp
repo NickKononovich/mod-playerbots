@@ -851,8 +851,14 @@ bool PullStrategy::CanDoPullAction(Unit* target)
                 proto->SubClass == ITEM_SUBCLASS_WEAPON_GUN || proto->SubClass == ITEM_SUBCLASS_WEAPON_BOW ||
                 proto->SubClass == ITEM_SUBCLASS_WEAPON_CROSSBOW)
             {
+                // [ammo90] ... of the weapon's own kind: arrows for a bow / crossbow, bullets for a gun. b411 Ganna
+                // (warrior tank, Fine Longbow) had Light Shot (bullets) set as its ammo: "shoot (3018) check 75" 1107
+                // times, rfc-n five 2 stalled at 2/4 on "pull end: nothing came"
                 uint32 const ammo = bot->GetUInt32Value(PLAYER_AMMO_ID);
-                if (!ammo || !bot->HasItemCount(ammo, 1))
+                ItemTemplate const* ammoProto = ammo ? sObjectMgr->GetItemTemplate(ammo) : nullptr;
+                uint32 const wanted =
+                    proto->SubClass == ITEM_SUBCLASS_WEAPON_GUN ? ITEM_SUBCLASS_BULLET : ITEM_SUBCLASS_ARROW;
+                if (!ammoProto || ammoProto->SubClass != wanted || !bot->HasItemCount(ammo, 1))
                     return false;
             }
 
