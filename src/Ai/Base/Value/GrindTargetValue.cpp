@@ -433,7 +433,10 @@ bool GrindTargetValue::needForQuest(Unit* target)
     {
         if (uint32 lootId = data->lootid)
         {
-            if (LootTemplates_Creature.HaveQuestLootForPlayer(lootId, bot))
+            // [drop74] ... and the creature is a dropper worth killing for it: b415 Kylanor took Murloc Lurkers
+            // (Murloc Eye at 0.0226 %) as quest mobs for q38 - 34 kills, no eye - while Coastrunners drop it at 30 %
+            if (LootTemplates_Creature.HaveQuestLootForPlayer(lootId, bot) &&
+                NewRpgBaseAction::WorthItemSource(bot, target->GetEntry()))
             {
                 return true;
             }

@@ -32,6 +32,7 @@ namespace
         out.end = end;
         out.leaderRoute = true;
         out.throughRefused = route.found && route.throughRefused;  // [deaths]
+        out.refusedArea = !route.found && route.refusedArea;       // [loop70]
         out.type = !route.found ? PATHFIND_NOPATH : route.complete ? PATHFIND_NORMAL : PATHFIND_INCOMPLETE;
         out.points.assign(route.points.begin(), route.points.end());
         out.length = route.length;

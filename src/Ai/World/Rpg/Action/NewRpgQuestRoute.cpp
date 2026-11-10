@@ -6,6 +6,7 @@
 
 #include "NewRpgQuestRoute.h"
 #include "SoloSafety.h"  // [walk68]
+#include "BotPath.h"    // [walk68]
 
 #include "SlowScope.h"  // [perf26]
 #include "GuildCoordinator.h"
@@ -1139,9 +1140,23 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
             if (priced && (z == INVALID_HEIGHT || z == VMAP_INVALID_HEIGHT_VALUE))
                 z = std::max(bot->GetMap()->GetHeight(next.x, next.y, MAX_HEIGHT),
                              bot->GetMap()->GetWaterLevel(next.x, next.y));
+            // [walk68] b410: TripRefused (built for town trips: DangerOnWay on the straight stages between travel nodes
+            // of a far walk) postponed 161 stops in 20 min - givers and objectives a median 5.4 km off that the live
+            // walk reaches round those mobs; quests per hour fell 113 -> 59. The stop is refused only by the walk's own
+            // verdict, the one MoveFarTo acts on at once: a walk given up at this level, or the route search's refusal
+            // of every way (an area red for it, an enemy capital, static spawns it must not fight with no way round)
+            bool refused = false;
             if (priced && !next.quests.empty() && z != INVALID_HEIGHT && z != VMAP_INVALID_HEIGHT_VALUE &&
-                bot->GetExactDist2d(next.x, next.y) > sPlayerbotAIConfig.SightDistance &&
-                TripRefused(bot, next.x, next.y, z, "route stop"))
+                bot->GetExactDist2d(next.x, next.y) > sPlayerbotAIConfig.SightDistance)
+            {
+                refused = WalkGivenUp(bot, next.x, next.y);
+                if (!refused)
+                {
+                    BotPath const walk = FindBotPath(bot, next.x, next.y, z);
+                    refused = walk.leaderRoute && walk.refusedArea;
+                }
+            }
+            if (refused)
             {
                 std::string const kind = next.kind == StopKind::Objective ? "objective"
                                          : next.kind == StopKind::Giver   ? "giver"
@@ -1155,7 +1170,7 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
                     quests += " q" + std::to_string(q);
                 }
                 LOG_INFO("playerbots", "[walk68] {} L{} postpones{}: its walk to the {} stop at ({:.0f},{:.0f}) "
-                         "{:.0f} yd is refused (TripRefused) - the route is built again",
+                         "{:.0f} yd is refused (given up, or every way refused) - the route is built again",
                          bot->GetName(), bot->GetLevel(), quests, kind, next.x, next.y,
                          bot->GetExactDist2d(next.x, next.y));
                 r.invalid = true;
