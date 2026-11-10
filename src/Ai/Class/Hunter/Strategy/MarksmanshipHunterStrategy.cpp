@@ -27,10 +27,14 @@ std::vector<NextAction> MarksmanshipHunterStrategy::getDefaultActions()
         // [b31_deep] Multi-Shot fills the shared Aimed/Multi 10 s cooldown (category 85) while Aimed Shot is not
         // castable (wowsims mm.apl: Aimed > Multi > Steady); with Aimed known the shared cooldown keeps it second
         NextAction("multi-shot", 5.35f),
-        // [lead105] wowsims 3.3.5 MM APL: Arcane Shot is not cast (hidden); Steady Shot is the filler
+        // [lead105] wowsims 3.3.5 MM APL: Arcane Shot is not cast (hidden) once Steady Shot is the filler
         // Silencing Shot is held for enemy casts (the "silencing shot" trigger and the group interrupt
         // rotation); spent as a filler it was on cooldown whenever a caster started a cast.
         NextAction("steady shot", 5.2f),
+        // [dps230] below Steady Shot (learned at L50) Arcane Shot is the only shot between the cooldowns: L14-20
+        // marksmen cast none (b426-b429: 0 a fight against the formula's 8.9 dps of it, 0.78 of the ideal); Steady
+        // Shot above it keeps it out of the L50+ rotation (wowsims mm.apl) but for the shot on the move
+        NextAction("arcane shot", 5.15f),
         NextAction("auto shot", 5.1f)
     };
 }
