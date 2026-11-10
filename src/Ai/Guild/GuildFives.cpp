@@ -1517,6 +1517,44 @@ void GuildCoordinator::UpdateFives()
                      p->GetMap()->GetMapName(), lfg ? "the Dungeon Finder's teleport out" : "back where it entered");
         }
     }
+    // [group132] a planned bot with no five of its own left in a five's old group - a Dungeon Finder group, or one
+    // whose leader is no longer its member - leaves it: a grouped bot that does not lead gets "follow" in place of New
+    // RPG (AiFactory) and follows nobody. b424/b425: Keenonk, Ainne, Dandolar, Kylanor, Mytaeleas, Blahadrin logged
+    // in into LFG groups whose leaders (Colian, Ravelandy, Farret) had left them, IDLE for the whole run (Keenonk 4682
+    // s at (-592,-2127)). A co-op party (an ordinary group its leader is in) and a group with a human stay as they are
+    {
+        std::vector<ObjectGuid> loose;
+        {
+            CoordLock guard(lock_, __func__);
+            for (PlanRow const& row : plan_)
+                if (auto const st = bots_.find(row.low); st == bots_.end() || !st->second.fiveId)
+                    loose.push_back(ObjectGuid::Create<HighGuid::Player>(row.low));
+        }
+        for (ObjectGuid const& guid : loose)
+        {
+            Player* p = ObjectAccessor::FindConnectedPlayer(guid);
+            Group* group = p ? p->GetGroup() : nullptr;
+            PlayerbotAI* botAI = p ? GET_PLAYERBOT_AI(p) : nullptr;
+            if (!group || !botAI || IsHuman(p) || !p->IsInWorld() || p->IsBeingTeleported() || p->IsInCombat() ||
+                p->GetMap()->IsDungeon() || Leader::LedBot(p) || group->isRaidGroup() || group->isBGGroup() ||
+                group->isBFGroup())
+                continue;
+            bool const leaderGone = !group->IsMember(group->GetLeaderGUID());
+            if (!group->isLFGGroup() && !leaderGone)
+                continue;
+            bool human = false;
+            for (GroupReference* ref = group->GetFirstMember(); ref && !human; ref = ref->next())
+                human = IsHuman(ref->GetSource());
+            if (human)
+                continue;
+            std::string const why = group->isLFGGroup() ? "a Dungeon Finder group with no five" : "its leader left it";
+            LOG_INFO("playerbots", "[group132] {} L{} leaves group {} ({}, {} members): {}", p->GetName(),
+                     p->GetLevel(), group->GetGUID().GetCounter(), group->isLFGGroup() ? "LFG" : "party",
+                     group->GetMembersCount(), why);
+            group->RemoveMember(p->GetGUID());
+            botAI->ResetStrategies(false);
+        }
+    }
     std::vector<std::pair<uint32, std::string>> cancel;
     // [guild70] fives the five-leader takes in now: (id, by the Dungeon Finder)
     std::vector<std::pair<uint32, bool>> ready;
