@@ -75,6 +75,12 @@ void ArcaneMageStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     // [rot604] before Arcane Missiles / Arcane Blast: Fireball over Frostbolt where it deals more (above the Frostbolt
     // default 5.2, below Arcane Missiles 5.5)
     triggers.push_back(new TriggerNode("fireball over frostbolt", { NextAction("fireball", ACTION_DEFAULT + 0.25f) }));
+    // [dps231] before Arcane Blast: that filler over Arcane Missiles (5.5) where it deals more, below Arcane Blast
+    // (5.6)
+    triggers.push_back(
+        new TriggerNode("fireball over arcane missiles", { NextAction("fireball", ACTION_DEFAULT + 0.55f) }));
+    triggers.push_back(
+        new TriggerNode("frostbolt over arcane missiles", { NextAction("frostbolt", ACTION_DEFAULT + 0.55f) }));
 
     // Custom tier set bonuses ([setbonus-rot], SetBonusTriggers.h, C:/WoW/SET_BONUS_SPELLS.md).
     triggers.push_back(new TriggerNode("set bonus arcane barrage", { NextAction("arcane barrage", 14.9f) }));

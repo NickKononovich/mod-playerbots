@@ -300,6 +300,24 @@ public:
     bool IsActive() override;
 };
 
+// [dps231] Arcane before Arcane Blast (L64): its filler (the stronger of Fireball / Frostbolt, the rule above) over
+// Arcane Missiles where it deals more per second (DpsEstimate::FillerDps, the core's numbers with talents and gear);
+// DpsEstimate picks the arcane filler by the same rule (Script::BestFiller). b426-b429 Orton L16: Arcane Missiles
+// 11.3 dps in the formula against Fireball's 17.5-22.1 (the ideal), Arcane Missiles cast in every fight.
+class FillerOverArcaneMissilesTrigger : public Trigger
+{
+public:
+    FillerOverArcaneMissilesTrigger(PlayerbotAI* botAI, std::string const& filler)
+        : Trigger(botAI, filler + " over arcane missiles"), filler(filler)
+    {
+    }
+    std::string const GetTargetName() override { return "current target"; }
+    bool IsActive() override;
+
+private:
+    std::string const filler;
+};
+
 // [rot603] Fire Blast off cooldown where one cast deals at least the filler's damage in its global cooldown
 // (DpsEstimate::CastPays): Fire and Frost while levelling (user 2026-11-08), not only on the move
 class FireBlastPaysTrigger : public Trigger

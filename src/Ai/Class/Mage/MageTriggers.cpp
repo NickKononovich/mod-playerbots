@@ -475,6 +475,18 @@ bool FireballOverFrostboltTrigger::IsActive()
            DpsEstimate::FillerDps(bot, target, fireball) > DpsEstimate::FillerDps(bot, target, frostbolt);
 }
 
+bool FillerOverArcaneMissilesTrigger::IsActive()
+{
+    Unit* target = GetTarget();
+    if (!target || !target->IsAlive() || AI_VALUE2(uint32, "spell id", "arcane blast"))
+        return false;
+    uint32 const missiles = AI_VALUE2(uint32, "spell id", "arcane missiles");
+    uint32 const id = AI_VALUE2(uint32, "spell id", filler);
+    if (!missiles || !id || MageFillerId(botAI, bot, target) != id)
+        return false;
+    return DpsEstimate::FillerDps(bot, target, id) > DpsEstimate::FillerDps(bot, target, missiles);
+}
+
 bool FireBlastPaysTrigger::IsActive()
 {
     Unit* target = GetTarget();

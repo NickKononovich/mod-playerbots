@@ -310,12 +310,13 @@ std::vector<SpecRotation> const& Rotations()
         // Missiles, Frostbolt; Fireball, Frostbolt; Frostbolt, Fireball. Arcane Barrage only on the move (below the
         // filler). [rot604] Arcane and Frost cast Fireball over Frostbolt where it deals more ("fireball over
         // frostbolt": Fireball rank 2 at L6-7 against Frostbolt rank 1; b338 L1-9 frost ideal / formula 1.06).
-        // [rot603] Fire Blast where it pays for Fire and Frost ("fire blast pays", user 2026-11-08)
+        // [rot603] Fire Blast where it pays for Fire and Frost ("fire blast pays", user 2026-11-08). [dps231] Before
+        // Arcane Blast, Arcane Missiles only where it beats that filler ("fireball / frostbolt over arcane missiles")
         {CLASS_MAGE,
          0,
          true,
          {{"Arcane Blast", Kind::Filler},
-          {"Arcane Missiles", Kind::Filler},
+          {"Arcane Missiles", Kind::Filler, Script::BestFiller},
           {"Fireball", Kind::Filler, Script::BestFiller},
           {"Frostbolt", Kind::Filler, Script::BestFiller}}},
         {CLASS_MAGE,

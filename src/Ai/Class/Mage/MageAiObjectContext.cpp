@@ -125,6 +125,10 @@ public:
         creators["fire blast fight end"] = &MageTriggerFactoryInternal::fire_blast_fight_end;  // [rot251]
         creators["fire blast pays"] = &MageTriggerFactoryInternal::fire_blast_pays;                // [rot603]
         creators["fireball over frostbolt"] = &MageTriggerFactoryInternal::fireball_over_frostbolt;  // [rot604]
+        creators["fireball over arcane missiles"] =
+            &MageTriggerFactoryInternal::fireball_over_arcane_missiles;  // [dps231]
+        creators["frostbolt over arcane missiles"] =
+            &MageTriggerFactoryInternal::frostbolt_over_arcane_missiles;  // [dps231]
         creators["scorch fight end"] = &MageTriggerFactoryInternal::scorch_fight_end;  // [rot251]
         creators["arcane blast 4 stacks and mana at or below 25"] =
             &MageTriggerFactoryInternal::arcane_blast_4_stacks_and_conserve_mana;
@@ -202,6 +206,14 @@ private:
     static Trigger* fire_blast_fight_end(PlayerbotAI* botAI) { return new FireBlastFightEndTrigger(botAI); }
     static Trigger* fire_blast_pays(PlayerbotAI* botAI) { return new FireBlastPaysTrigger(botAI); }
     static Trigger* fireball_over_frostbolt(PlayerbotAI* botAI) { return new FireballOverFrostboltTrigger(botAI); }
+    static Trigger* fireball_over_arcane_missiles(PlayerbotAI* botAI)
+    {
+        return new FillerOverArcaneMissilesTrigger(botAI, "fireball");
+    }
+    static Trigger* frostbolt_over_arcane_missiles(PlayerbotAI* botAI)
+    {
+        return new FillerOverArcaneMissilesTrigger(botAI, "frostbolt");
+    }
     static Trigger* scorch_fight_end(PlayerbotAI* botAI) { return new ScorchFightEndTrigger(botAI); }
     static Trigger* arcane_blast_4_stacks_and_conserve_mana(PlayerbotAI* botAI)
     {
