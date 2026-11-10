@@ -643,6 +643,26 @@ namespace Leader::Dungeon
             sLFGMgr->LeaveLfg(run.groupGuid);
         for (FiveRunMember const& member : request.members)
             SelfTravel::ClearPortalGoal(member.guid);
+        // [run80] the run is over: its bot members inside the dungeon leave it as players do (the Dungeon Finder's
+        // teleport out, else back where they entered) before the group goes. b406 rfc-n five 4 ended "stalled" at 1/4
+        // with its members inside; unled, 4 of them fought Taragaman's room on their own - Manue, Thelengyl,
+        // Rumanatol, Dekorhan dead
+        for (FiveRunMember const& member : request.members)
+        {
+            if (member.human)
+                continue;
+            Player* p = ObjectAccessor::FindConnectedPlayer(member.guid);
+            // a member still fighting leaves once its fight is over (the global leader's look, GuildFives [run80])
+            if (!p || !p->IsInWorld() || p->IsBeingTeleported() || !p->GetMap()->IsDungeon() || p->IsInCombat())
+                continue;
+            bool const lfg = p->GetGroup() && p->GetGroup()->isLFGGroup();
+            if (lfg)
+                sLFGMgr->TeleportPlayer(p, true);
+            else
+                p->TeleportToEntryPoint();
+            LOG_INFO("playerbots", "[run80] five {} run {}: {} leaves {} ({})", request.fiveId, run.id, p->GetName(),
+                     p->GetMap()->GetMapName(), lfg ? "the Dungeon Finder's teleport out" : "back where it entered");
+        }
         if (disband && !run.groupGuid.IsEmpty())
             if (Group* group = sGroupMgr->GetGroupByGUID(run.groupGuid.GetCounter()))
                 group->Disband();

@@ -46,6 +46,7 @@
 #include "StatsWeightCalculator.h"
 #include "TestHarnessData.h"
 #include "LeaderDungeonRun.h"  // [guild70] the five-leader runs the dungeon (no test harness)
+#include "LeaderOrders.h"  // [run80] Leader::LedBot
 #include "World.h"
 #include "WorldConfig.h"
 #include "WorldPacket.h"
@@ -1253,6 +1254,32 @@ void GuildCoordinator::UpdateFives()
             LOG_INFO("playerbots", "[cleft62] {} L{} leaves {} for the server's shutdown ({})", p->GetName(),
                      p->GetLevel(), p->GetMap()->GetMapName(), lfg ? "the Dungeon Finder's teleport out" :
                                                                       "back where it entered");
+        }
+    }
+    // [run80] a planned bot inside a dungeon instance with no five of its own (its run ended while it fought, a
+    // restored login) leaves it once out of combat: no unled member fights a dungeon's packs on its own (b406 rfc-n
+    // five 4: 4 deaths in Taragaman's room after the run had ended "stalled")
+    {
+        std::vector<ObjectGuid> stray;
+        {
+            CoordLock guard(lock_, __func__);
+            for (PlanRow const& row : plan_)
+                if (auto const st = bots_.find(row.low); st == bots_.end() || !st->second.fiveId)
+                    stray.push_back(ObjectGuid::Create<HighGuid::Player>(row.low));
+        }
+        for (ObjectGuid const& guid : stray)
+        {
+            Player* p = ObjectAccessor::FindConnectedPlayer(guid);
+            if (!p || IsHuman(p) || !GET_PLAYERBOT_AI(p) || !p->IsInWorld() || p->IsBeingTeleported() ||
+                !p->GetMap()->IsDungeon() || p->IsInCombat() || !p->IsAlive() || Leader::LedBot(p))
+                continue;  // a led bot is some run's (a harness test, a five's): its leader holds it there
+            bool const lfg = p->GetGroup() && p->GetGroup()->isLFGGroup();
+            if (lfg)
+                sLFGMgr->TeleportPlayer(p, true);
+            else
+                p->TeleportToEntryPoint();
+            LOG_INFO("playerbots", "[run80] {} L{} leaves {}: no five holds it there ({})", p->GetName(), p->GetLevel(),
+                     p->GetMap()->GetMapName(), lfg ? "the Dungeon Finder's teleport out" : "back where it entered");
         }
     }
     std::vector<std::pair<uint32, std::string>> cancel;
