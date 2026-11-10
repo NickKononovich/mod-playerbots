@@ -1831,16 +1831,29 @@ void GuildCoordinator::UpdateOrders()
             constexpr uint32 AMMO_ROUNDS = 1000;   // a hunter's quiver load
             constexpr uint32 LOW_AMMO = 100;       // the vendor run's low-ammo line
             float need = 0.0f;
-            if (CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD) == 0)
+            // [supply76] a five's member before it goes in: the restock its supply check asks (below RESTOCK_FOOD_MIN:
+            // up to RESTOCK_FOOD_TARGET), not only an empty bag. b406 rfc-n five 4: Feette (BM hunter, 11 drinks, 35 s)
+            // reached Jazzik for "buy drink", bought ammo only (its consumable budget kept its money for its repair and
+            // ranks), went in "short of drink 11", ran dry at pull 20 and held the Taragaman pull 18 times
+            bool const fiveRestock = st.fiveId && !st.supplyShort.empty();
+            uint32 const foodHave = CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
+            uint32 const drinkHave = CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
+            auto const units = [&](uint32 have) -> uint32
             {
-                need += SUPPLY_STACK * cachedPrice(0, [&]() {
+                if (fiveRestock && have < RESTOCK_FOOD_MIN)
+                    return RESTOCK_FOOD_TARGET - have;
+                return have == 0 ? SUPPLY_STACK : 0;
+            };
+            if (uint32 const n = units(foodHave))
+            {
+                need += n * cachedPrice(0, [&]() {
                             return unitPrice(consumable(RESTOCK_SPELL_CATEGORY_FOOD, SPELL_AURA_MOD_REGEN,
                                                         SPELL_AURA_OBS_MOD_HEALTH)); });
                 st.supplyWhat += "food";
             }
-            if (p->GetMaxPower(POWER_MANA) > 0 && CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK) == 0)
+            if (uint32 const n = p->GetMaxPower(POWER_MANA) > 0 ? units(drinkHave) : 0)
             {
-                need += SUPPLY_STACK * cachedPrice(1, [&]() {
+                need += n * cachedPrice(1, [&]() {
                             return unitPrice(consumable(RESTOCK_SPELL_CATEGORY_DRINK, SPELL_AURA_MOD_POWER_REGEN,
                                                         SPELL_AURA_OBS_MOD_POWER)); });
                 st.supplyWhat += st.supplyWhat.empty() ? "drink" : " and drink";
@@ -1865,8 +1878,13 @@ void GuildCoordinator::UpdateOrders()
                     }
                 }
             uint32 const needCopper = uint32(std::ceil(need));
-            if (needCopper && p->GetMoney() < needCopper)
-                st.supplyGoldShort = needCopper - p->GetMoney();
+            // [supply76] against the money it may spend on consumables (its budget keeps its repair and ranks back)
+            uint32 const spendable =
+                GET_PLAYERBOT_AI(p)->GetAiObjectContext()
+                    ->GetValue<uint32>("free money for", std::to_string(uint32(NeedMoneyFor::consumables)))
+                    ->Get();
+            if (needCopper && spendable < needCopper)
+                st.supplyGoldShort = needCopper - spendable;
         }
         st.repairShort = 0;
         if (repairNeed.any)
