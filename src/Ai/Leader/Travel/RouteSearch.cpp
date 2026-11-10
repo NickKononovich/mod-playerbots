@@ -928,6 +928,7 @@ namespace Leader
             bool found = false;  // LongRoute's answer with a walk
             bool complete = false;
             bool openAir = false;
+            G3D::Vector3 openAirAt;  // [nav163] the first sample over open air
             bool noComplete = false;
             Movement::PointsArray tried;
             Movement::PointsArray triedSurface;
@@ -956,7 +957,7 @@ namespace Leader
 
     // [deaths3] a stretch of the walk that descends more than PlayerbotAI's GROUND_SUPPORT_DROP with no ground or
     // liquid under a point of it (PlayerbotAI::HasGroundSupport every GROUND_SAMPLE_STEP, the spline guard's sampling)
-    static bool OverOpenAir(Unit* walker, Movement::PointsArray const& points)
+    static bool OverOpenAir(Unit* walker, Movement::PointsArray const& points, G3D::Vector3* where = nullptr)
     {
         constexpr float SUPPORT_DROP = 6.0f;  // PlayerbotAI.cpp GROUND_SUPPORT_DROP
         constexpr float SAMPLE_STEP = 2.0f;   // PlayerbotAI.cpp GROUND_SAMPLE_STEP
@@ -971,7 +972,11 @@ namespace Leader
             {
                 G3D::Vector3 const point = from + (to - from) * (at / gap);
                 if (!PlayerbotAI::HasGroundSupport(walker, point.x, point.y, point.z))
+                {
+                    if (where)
+                        *where = point;
                     return true;
+                }
             }
         }
         return false;
@@ -1171,6 +1176,13 @@ namespace Leader
         // [perf210] the unrefused passes' walks, for a [static39] search this one starts
         PassMemo passMemo[2][2];          // [priced][steep]
         bool proven[2] = {false, false};  // the last pass, per steep: no walk of it can be complete ([perf210])
+        // [nav163] the passes of a search that ends with no walk: how many LongRoute found one, how many of those were
+        // dropped for a stretch over open air (and where), for the line below
+        struct NoWalk
+        {
+            uint32 passes = 0, found = 0, openAir = 0;
+            G3D::Vector3 openAirAt;
+        } noWalk;
         auto const search =
             [&](std::vector<G3D::Vector4> const* refused, std::vector<Travel::RoutePenalty> const* priced)
         {
@@ -1209,7 +1221,8 @@ namespace Leader
                     if (own.found)
                     {
                         auto const airStart = std::chrono::steady_clock::now();
-                        own.openAir = OverOpenAir(walker, own.triedSurface.empty() ? own.tried : own.triedSurface);
+                        own.openAir = OverOpenAir(walker, own.triedSurface.empty() ? own.tried : own.triedSurface,
+                                                  &own.openAirAt);
                         if (record)
                             routeProfile.openAirUs += MicrosSince(airStart);
                     }
@@ -1217,6 +1230,14 @@ namespace Leader
                         passMemo[priced ? 1 : 0][steep ? 1 : 0] = own;
                 }
                 proven[steep ? 1 : 0] = own.noComplete;
+                ++noWalk.passes;  // [nav163]
+                if (own.found)
+                    ++noWalk.found;
+                if (own.found && own.openAir)
+                {
+                    ++noWalk.openAir;
+                    noWalk.openAirAt = own.openAirAt;
+                }
                 if (!own.found || own.openAir)
                     continue;
                 if (result.found && !own.complete)
@@ -1277,7 +1298,26 @@ namespace Leader
         }
         SoloSafety::NoteRoute(walker, result.complete, result.found && !roundRefused);
         if (!result.found)
+        {
+            // [nav163] b428 Relara, Bierya, Sycina on Darnassus' upper terrace: "no route (type 0x8)" to the Rut'theran
+            // trigger 151 times while the search from the trigger back found a complete walk and the navmesh joins
+            // both ends (one region, a 175-polygon corridor): the line says which pass failed. One line per walker and
+            // destination (a log cadence, no decision reads it)
+            thread_local std::unordered_map<uint64, uint64> noWalkLogged;
+            uint64 const destKey = (uint64(uint32(int32(toAsked.x))) << 32) | uint32(int32(toAsked.y));
+            uint64& last = noWalkLogged[walker->GetGUID().GetRawValue()];
+            if (last != destKey && walker->IsPlayer())
+            {
+                last = destKey;
+                LOG_INFO("playerbots",
+                         "[nav163] {} no walk from ({:.1f},{:.1f},{:.1f}) to ({:.1f},{:.1f},{:.1f}) map {}: {} passes, "
+                         "{} found a walk, {} of them dropped over open air (last at ({:.1f},{:.1f},{:.1f}))",
+                         walker->GetName(), from.x, from.y, from.z, toAsked.x, toAsked.y, toAsked.z, map->GetId(),
+                         noWalk.passes, noWalk.found, noWalk.openAir, noWalk.openAirAt.x, noWalk.openAirAt.y,
+                         noWalk.openAirAt.z);
+            }
             return result;
+        }
         result.throughRefused = !roundRefused;
         if (corners.size() == 1)
         {

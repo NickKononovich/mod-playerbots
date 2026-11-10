@@ -2298,44 +2298,58 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                  bot->GetMapId(), dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), how);
         return true;
     };
+    PathGenerator core(bot);
+    core.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false);
+    PathType const coreType = core.GetPathType();
+    auto const walkCore = [&]()
     {
-        PathGenerator core(bot);
-        core.CalculatePath(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), false);
         Movement::PointsArray points = core.GetPath();
         G3D::Vector3 const coreEnd = core.GetActualEndPosition();
-        PathType const coreType = core.GetPathType();
-        if ((coreType & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) &&
-            !(coreType & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH | PATHFIND_SHORTCUT)) && points.size() >= 2 &&
-            dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f < disToDest && firstLegCarried(points) &&
-            SafeLeg(points) && WalkBotPoints(bot, points))
-        {
-            float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(core.getPathLength()), 0.0f,
-                                           float(sPlayerbotAIConfig.MaxWaitForMove));
-            AI_VALUE(LastMovement&, "last movement")
-                .Set(bot->GetMapId(), coreEnd.x, coreEnd.y, coreEnd.z, bot->GetOrientation(), delay,
-                     MovementPriority::MOVEMENT_NORMAL);
-            return logged(Acore::StringFormat("no route out from here: walks the core's path ({:.0f} yd)",
-                                              core.getPathLength()));
-        }
-    }
-    BotPath back = FindBotPath(bot, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
-                               bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-    if (back.type == PATHFIND_NORMAL && back.points.size() >= 2)
+        if (!(coreType & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) ||
+            (coreType & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH | PATHFIND_SHORTCUT)) || points.size() < 2 ||
+            dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f >= disToDest || !firstLegCarried(points) ||
+            !SafeLeg(points) || !WalkBotPoints(bot, points))
+            return false;
+        float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(core.getPathLength()), 0.0f,
+                                       float(sPlayerbotAIConfig.MaxWaitForMove));
+        AI_VALUE(LastMovement&, "last movement")
+            .Set(bot->GetMapId(), coreEnd.x, coreEnd.y, coreEnd.z, bot->GetOrientation(), delay,
+                 MovementPriority::MOVEMENT_NORMAL);
+        return logged(Acore::StringFormat("no route out from here: walks the core's path ({:.0f} yd)",
+                                          core.getPathLength()));
+    };
+    auto const walkBack = [&]()
     {
+        BotPath back = FindBotPath(bot, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(),
+                                   bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        if (back.type != PATHFIND_NORMAL || back.points.size() < 2)
+            return false;
         std::reverse(back.points.begin(), back.points.end());
-        if (firstLegCarried(back.points) && SafeLeg(back.points) && WalkBotPoints(bot, back.points))
-        {
-            float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(back.length), 0.0f,
-                                           float(sPlayerbotAIConfig.MaxWaitForMove));
-            G3D::Vector3 const& end = back.points.back();
-            AI_VALUE(LastMovement&, "last movement")
-                .Set(bot->GetMapId(), end.x, end.y, end.z, bot->GetOrientation(), delay,
-                     MovementPriority::MOVEMENT_NORMAL);
-            return logged(Acore::StringFormat("no way out from here: walks the route found from the destination "
-                                              "back ({:.0f} yd)",
-                                              back.length));
-        }
+        if (!firstLegCarried(back.points) || !SafeLeg(back.points) || !WalkBotPoints(bot, back.points))
+            return false;
+        float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(back.length), 0.0f,
+                                       float(sPlayerbotAIConfig.MaxWaitForMove));
+        G3D::Vector3 const& end = back.points.back();
+        AI_VALUE(LastMovement&, "last movement")
+            .Set(bot->GetMapId(), end.x, end.y, end.z, bot->GetOrientation(), delay,
+                 MovementPriority::MOVEMENT_NORMAL);
+        return logged(Acore::StringFormat("no way out from here: walks the route found from the destination "
+                                          "back ({:.0f} yd)",
+                                          back.length));
+    };
+    // [nav163] the core's path first only when it reaches the destination (PATHFIND_NORMAL); a partial one (its
+    // 74 / 148 polygon cap: it ends where the straight line is shortest, often a dead end) after the complete route
+    // from the destination back. b428 Relara L15, Bierya L15, Sycina L16 on Darnassus' upper terrace (9590-9680,
+    // 2480-2580, z 1355-1360), the only way down a stair at its west end: the route back walked them 80 yd west to
+    // the stair, the next walk took the core's partial path 102 yd east to the terrace's dead end where they had
+    // stood, MOVE_FAR_LOOP gave the Rut'theran trigger up - 151 WALK_FAIL, every quest off Teldrassil given up
+    if (coreType & PATHFIND_NORMAL)
+    {
+        if (walkCore() || walkBack())
+            return true;
     }
+    else if (walkBack() || walkCore())
+        return true;
     // the nearest polygon: the core's search box (PathGenerator::GetPolyByLocation, 3 yd round, 50 yd tall), widened
     // round the bot up to its sight
     dtNavMeshQuery const* query = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery();
