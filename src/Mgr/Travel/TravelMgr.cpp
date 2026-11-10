@@ -5253,6 +5253,12 @@ void TravelRouteMgr::Build()
                 if (FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(creatureTemplate->faction);
                     faction && faction->IsHostileToPlayers())
                     continue;
+                // [tram131] a critter is nobody's pier either: it roams where no player stands. The Deeprun Tram's
+                // Ironforge stops of cars 176082 / 176083 / 176084 took a Deeprun Rat down in the track pit
+                // ((-43,-6), (-47,42), z -13.8) - the bots waited on the pit's floor, 4.2 yd under the docked car's
+                // deck at z -9.7, every boarding leg refused ([nav24] 49 in b424), the stop missed
+                if (creatureTemplate->type == CREATURE_TYPE_CRITTER)
+                    continue;
 
 
                 float const score = distance - (IsDockMaster(creatureTemplate->SubName) ? DOCK_MASTER_BONUS : 0.0f);
