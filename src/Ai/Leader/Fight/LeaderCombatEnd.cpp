@@ -70,6 +70,7 @@
 #include "SmartScriptMgr.h"
 #include "Spell.h"
 #include "SpellAuras.h"
+#include "SpellAuraEffects.h"  // [fight105] AuraEffect
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StuckWatchdog.h"
@@ -129,6 +130,35 @@ namespace Leader::Fight
         Creature* creature = other->ToCreature();
         if (!other->IsAlive() || (creature && creature->IsInEvadeMode()))
             return RefFight::None;
+        // [fight105] b417 rfc-n five 4 (20261110-064015) 430 s: the Ragefire Shaman of pull 15 on the tank, 42 yd
+        // off, between its casts, no complete path to its victim; the hunter's Serpent Sting and the warlock's
+        // Immolate ticking on it (96 -> 80 %), the hunter's Auto Shot on it. "Nothing attacks, a mob reachable"
+        // counted the group out of combat: pull 15 ended after 3 s and the same fight came back at 442 s as pull 16,
+        // "unplanned: Rumanatol" (the healer's totems put it in the tank's combat - no cast of its own on a mob).
+        // A mob the group's unit hits - its cast or auto-repeat shot on it, or its damage over time ticking on it -
+        // is in the fight
+        if (owner && owner->IsAlive())
+        {
+            for (CurrentSpellTypes const type :
+                 {CURRENT_GENERIC_SPELL, CURRENT_CHANNELED_SPELL, CURRENT_AUTOREPEAT_SPELL})
+                if (Spell const* spell = owner->GetCurrentSpell(type);
+                    spell && spell->m_targets.GetUnitTarget() == other && !spell->GetSpellInfo()->IsPositive())
+                    return RefFight::Attacks;
+            for (AuraType const type : {SPELL_AURA_PERIODIC_DAMAGE, SPELL_AURA_PERIODIC_LEECH,
+                                        SPELL_AURA_PERIODIC_DAMAGE_PERCENT})
+                for (AuraEffect const* effect : other->GetAuraEffectsByType(type))
+                    if (effect->GetCasterGUID() == owner->GetGUID())
+                    {
+                        thread_local std::set<std::pair<uint64, uint64>> hitLogged;
+                        if (hitLogged.size() > 4096)
+                            hitLogged.clear();
+                        if (hitLogged.insert({other->GetGUID().GetRawValue(), owner->GetGUID().GetRawValue()}).second)
+                            LOG_INFO("playerbots", "[fight105] {}: {}'s {} ticks on {}: the fight is on, no phantom "
+                                     "combat", leader->GetName(), owner->GetName(),
+                                     effect->GetSpellInfo()->SpellName[0], other->GetName());
+                        return RefFight::Attacks;
+                    }
+        }
         if (Unit* victim = other->GetVictim())
         {
             if (other->IsWithinMeleeRange(victim) || other->HasUnitState(UNIT_STATE_CASTING))
