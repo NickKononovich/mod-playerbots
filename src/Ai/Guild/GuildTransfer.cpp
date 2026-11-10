@@ -1017,16 +1017,16 @@ void GuildCoordinator::UpdateTransfers()
     {
         if (five.stage == GuildFive::Stage::Done)
             continue;
-        Player* q = Online(five.quartermasterLow);
-        if (!q || !GET_PLAYERBOT_AI(q))
-            continue;
         for (uint8 kind : {FOOD, DRINK})
         {
+            // [share83] the giver is the member of the five holding the most of it (the quartermaster first on a tie),
+            // not the quartermaster alone: b406 the warrior quartermasters held no drink, and the hunters ran dry
+            // beside mages and warlocks with spare stacks (rfc-n five 4: Feette 0 drinks, 18 Taragaman holds)
             std::vector<Player*> needy;
-            uint8 level = q->GetLevel();
+            uint8 level = 255;
             for (uint32 m : five.members)
             {
-                Player* p = m == five.quartermasterLow ? nullptr : Online(m);
+                Player* p = Online(m);
                 if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
                     (kind == DRINK && p->getPowerType() != POWER_MANA) || CountKind(p, kind, p->GetLevel()))
                     continue;
@@ -1034,6 +1034,23 @@ void GuildCoordinator::UpdateTransfers()
                 level = std::min<uint8>(level, p->GetLevel());
             }
             if (needy.empty())
+                continue;
+            Player* q = nullptr;
+            uint32 qHas = 0;
+            for (uint32 m : five.members)
+            {
+                Player* p = Online(m);
+                if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
+                    std::find(needy.begin(), needy.end(), p) != needy.end())
+                    continue;
+                uint32 const has = CountKind(p, kind, level);
+                if (has > qHas || (has == qHas && has && m == five.quartermasterLow))
+                {
+                    q = p;
+                    qHas = has;
+                }
+            }
+            if (!q)
                 continue;
             std::vector<Item*> stacks;
             uint32 total = 0;
@@ -1067,15 +1084,16 @@ void GuildCoordinator::UpdateTransfers()
                 Want w;
                 w.key = "c" + std::to_string(p->GetGUID().GetCounter()) + ":" + std::to_string(kind);
                 w.tradeOnly = true;
-                w.from = five.quartermasterLow;
+                w.from = q->GetGUID().GetCounter();
                 w.to = p->GetGUID().GetCounter();
                 w.guid = from->GetGUID().GetCounter();
                 w.itemId = from->GetEntry();
                 w.count = give;
                 w.purpose = "consumable";
-                w.why = std::string(kind == FOOD ? "food" : "drink") + " ran out; the five's quartermaster " +
-                        std::to_string(id) + " shares equally: " + std::to_string(total) + " among " +
-                        std::to_string(needy.size() + 1);
+                w.why = std::string(kind == FOOD ? "food" : "drink") + " ran out; five " + std::to_string(id) + "'s " +
+                        (q->GetGUID().GetCounter() == five.quartermasterLow ? "quartermaster" : "member") + " " +
+                        Who(q->GetGUID().GetCounter()) + " shares equally: " + std::to_string(total) + " among " +
+                        std::to_string(needy.size() + 1) + " [share83]";
                 wants.push_back(w);
             }
         }
