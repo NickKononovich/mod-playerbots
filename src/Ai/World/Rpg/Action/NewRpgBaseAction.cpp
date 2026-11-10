@@ -3056,7 +3056,11 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         // [deaths] user 2026-11-08: a solo walk never goes through a pack it does not fight (b338 Sylaenas L1:
         // "complete, through a refused reach", killed by the Webwood Lurker there) and a long one goes in stages: the
         // maze search
-        if (SoloSafety::Applies(bot) && path.leaderRoute &&
+        // [party75] ... a co-op / help party leader's walk too, when every way passes a pack the party loses: the same
+        // maze search and refused-walk handling (another way, the patrol's window, else postponed with its help
+        // asked) - never walked through it
+        bool const partyWalled = path.throughRefused && NewRpgCoop::JudgesPulls(bot) && !bot->GetMap()->Instanceable();
+        if ((SoloSafety::Applies(bot) || partyWalled) && path.leaderRoute &&
             (path.throughRefused ||
              (path.type == PATHFIND_INCOMPLETE && disToDest > 2.0f * sPlayerbotAIConfig.SightDistance)))
         {

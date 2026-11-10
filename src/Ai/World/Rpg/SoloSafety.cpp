@@ -52,6 +52,8 @@
 #include <algorithm>
 #include <cmath>
 #include <mutex>
+#include <atomic>  // [party75]
+#include <chrono>  // [party75]
 #include <limits>
 #include <map>
 #include <set>
@@ -3548,10 +3550,50 @@ namespace SoloSafety
                 float const t = std::clamp((c - a).dot(ab) / std::max(ab.squaredLength(), 0.01f), 0.0f, 1.0f);
                 if ((a + ab * t - c).squaredLength() <= radius * radius)
                 {
-                    wallJudge = true;
-                    Verdict const party = NewRpgCoop::JudgePull(bot, mob);
-                    wallJudge = false;
-                    if (party.kind == Verdict::Kind::Refuse && party.mobs > 0)
+                    // [party75] the verdict per mob spawn and party (its leader, members and their levels): the
+                    // judge runs once for them, its cost measured (a line per 200 judged)
+                    uint64 partyKey = bot->GetGUID().GetCounter();
+                    if (Group* group = bot->GetGroup())
+                        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                            if (Player* m = ref->GetSource())
+                                partyKey = partyKey * 1000003ull + (uint64(m->GetGUID().GetCounter()) << 8) +
+                                           m->GetLevel();
+                    uint64 const judgeKey = partyKey * 1000003ull + mob->GetSpawnId();
+                    thread_local std::unordered_map<uint64, std::pair<bool, uint32>> judged;  // key -> (lost, mobs)
+                    static std::atomic<uint64> judgeCalls{0}, judgeCached{0}, judgeUs{0};
+                    bool lostPack = false;
+                    uint32 lostMobs = 0;
+                    std::string lostWhy;
+                    if (auto const found = judged.find(judgeKey); found != judged.end())
+                    {
+                        lostPack = found->second.first;
+                        lostMobs = found->second.second;
+                        ++judgeCached;
+                    }
+                    else
+                    {
+                        auto const start = std::chrono::steady_clock::now();
+                        wallJudge = true;
+                        Verdict const party = NewRpgCoop::JudgePull(bot, mob);
+                        wallJudge = false;
+                        judgeUs += uint64(std::chrono::duration_cast<std::chrono::microseconds>(
+                                              std::chrono::steady_clock::now() - start)
+                                              .count());
+                        lostPack = party.kind == Verdict::Kind::Refuse && party.mobs > 0;
+                        lostMobs = party.mobs;
+                        lostWhy = party.why;
+                        if (judged.size() > 65536)
+                            judged.clear();
+                        judged[judgeKey] = {lostPack, lostMobs};
+                        if (uint64 const n = ++judgeCalls; n % 200 == 0)
+                            LOG_INFO("playerbots", "[party75] judge: {} judged, {} answered from the cache, {:.1f} us "
+                                     "each judged",
+                                     n, judgeCached.load(), double(judgeUs.load()) / double(n));
+                    }
+                    Verdict party;
+                    party.mobs = lostMobs;
+                    party.why = lostWhy.empty() ? std::string("the party loses its pack (judged before)") : lostWhy;
+                    if (lostPack)
                     {
                         why = RouteWall::Why::Loses;
                         wallPack = party.mobs;
