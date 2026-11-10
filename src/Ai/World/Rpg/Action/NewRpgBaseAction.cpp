@@ -469,6 +469,12 @@ bool NewRpgBaseAction::TameFirstPet()
     return bot->CastSpell(beast, SPELL_TAME_BEAST, false) == SPELL_CAST_OK;
 }
 
+namespace
+{
+    // [trip52] (defined below) the trip by air; [fly97] walkRefused: no walk there, the flight at any length
+    bool FlightTripSafe(Player* bot, WorldPosition const& dest, std::string& plan, bool walkRefused = false);
+}
+
 bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
 {
     // [holds9] the refusal read after this call (LastMoveRefusal) is this call's: s_moveRefusal is thread-wide and
@@ -916,6 +922,20 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
                                                 : "its walk there ends in a dead end (maze search)";
     LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {}{}{}", bot->GetName(), bot->GetLevel(),
              goal.x, goal.y, why, walls.empty() ? "" : "; walls: ", walls);
+    // [fly97] a far destination with no walk there (a dead end, every way through mobs it must not fight): the flight
+    // from its nearest flight master to the known node nearest it, as a player flies past the zone it cannot cross
+    // (b414 Thokhen L18 / Feette L19 in Ashenvale: 36 "dead end (maze search)" postpones, every quest walk to
+    // Astranaar refused, the bots stood). The walks to the flight master and off the landing are its own
+    if (bot->GetExactDist(dest) > sPlayerbotAIConfig.SightDistance)
+    {
+        std::string plan;
+        if (FlightTripSafe(bot, dest, plan, true) && FlyIfFaster(dest, true))
+        {
+            LOG_INFO("playerbots", "[fly97] {} L{} flies to ({:.0f},{:.0f}): {}; {}", bot->GetName(), bot->GetLevel(),
+                     dest.GetPositionX(), dest.GetPositionY(), why, plan);
+            return true;
+        }
+    }
     RefusedWalk(dest, why);
     // [runpast11] the walls stand round the bot, not the target: its walk out (to its bind point, else its hub) is
     // walled too - its Hearthstone out (b349 Hobliir L12 among the Blacksilt murlocs, Lyleria L9 among the Ashenvale
@@ -1845,7 +1865,7 @@ bool NewRpgBaseAction::FlyTowards(uint32 toNode)
 // run speed (no walk is shorter) - and it holds the fare (each hop's TaxiPath price). Decided once per destination.
 // b367: the q6391 / q6388 / q6392 chain (meant to be flown) was walked; Keenonk and Namwe stood STUCK at Gryth
 // Thurden in Ironforge, Namwe walked 2100+ yd back to Thelsamar
-bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest)
+bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
 {
     if (!GuildHonest::IsHonestBot(bot) || !SoloSafety::Applies(bot) || dest.GetMapId() != bot->GetMapId() ||
         bot->GetMap()->Instanceable() || botAI->rpgInfo.GetStatus() == RPG_TRAVEL_FLIGHT)
@@ -1857,7 +1877,7 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest)
     {
         std::lock_guard<std::mutex> guard(flyLock);
         auto& last = decided[bot->GetGUID().GetCounter()];
-        if (last == key)
+        if (last == key && !walkRefused)
             return false;
         last = key;
     }
@@ -1922,7 +1942,7 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest)
     float const offLanding = std::max(toGap, Leader::WalkYd(bot, landing, dest));
     float const fly = toMaster / run + flightYd / taxi + hopDelay + offLanding / run;
     float const walk = Leader::WalkYd(bot, bot->GetPosition(), dest) / run;
-    if (fly >= walk || bot->GetMoney() < fare)
+    if ((fly >= walk && !walkRefused) || bot->GetMoney() < fare)
         return false;
     LOG_INFO("playerbots", "[taxi20] {} L{} flies {} -> {} ({} nodes, {} c): {:.0f} s by air against {:.0f} s on "
              "foot to ({:.0f},{:.0f}) [taxi22: walks by their navmesh routes, the flight by its path points]",
@@ -4980,7 +5000,7 @@ namespace
     // [trip52] the trip by air: the walk to its nearest known flight master and the walk off the known node nearest
     // the destination, each a walk it does not refuse, the flight faster than its walk there (as [taxi20] decides it
     // flies) and its fare in its purse: true and the plan's text
-    bool FlightTripSafe(Player* bot, WorldPosition const& dest, std::string& plan)
+    bool FlightTripSafe(Player* bot, WorldPosition const& dest, std::string& plan, bool walkRefused)
     {
         TravelMgr::FlightMasterInfo const* master = sTravelMgr.GetNearestFlightMasterInfo(bot);
         if (!master || !master->taxiNodeId || master->pos.GetMapId() != bot->GetMapId() ||
@@ -5031,7 +5051,7 @@ namespace
         float const taxi = std::max(sWorld->getFloatConfig(CONFIG_TAXI_FLIGHT_SPEED), 1.0f);
         float const fly = toMaster.length / run + flightYd / taxi + std::max(toGap, off.length) / run;
         float const walk = Leader::WalkYd(bot, bot->GetPosition(), dest) / run;
-        if (fly >= walk)
+        if (fly >= walk && !walkRefused)  // [fly97] no walk there: the flight at any length
             return false;  // it would walk, and the walk is refused
         plan = Acore::StringFormat("by air from {} to {} ({} c, {:.0f} s against {:.0f} s on foot)", master->pos.ToString(),
                                    to->name[0], fare, fly, walk);
