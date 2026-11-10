@@ -8288,6 +8288,7 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     Continent const botContinent = ContinentOf(WorldPosition(bot));
     // [zone19] why the starters of its level were left out, for the line of a bot with none left
     uint32 outClosed = 0, outRoute = 0, outTaken = 0, outOther = 0, inBand = 0, outCamp = 0;
+    uint32 outHostile = 0;  // [zone161] a giver of the other faction (the line left them uncounted)
     // [zone20] a bot whose own continent holds no starter it may take now goes over to the old world's other one (a
     // player's Darkshore -> Wetlands, Westfall -> Darkshore): the second pass opens it, its boats priced by the travel
     // planner as any route. b367: 9 of the 13 "[zone19] no zone" bots had 286-331 starters of their band on the
@@ -8309,7 +8310,7 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     {
         bool const otherOldWorld = pass == 1;
         openedOther = otherOldWorld;
-        outClosed = outRoute = outTaken = outOther = inBand = outCamp = 0;
+        outClosed = outRoute = outTaken = outOther = inBand = outCamp = outHostile = 0;
         for (QuestStartPoint const& start : GetQuestStartPoints())
         {
             if (!EventSpawnPresent(start.event))  // [guild15]
@@ -8347,7 +8348,10 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
             {
                 FactionTemplateEntry const* giverFaction = sFactionTemplateStore.LookupEntry(start.creatureFaction);
                 if (giverFaction && giverFaction->IsHostileTo(*botFaction))
+                {
+                    ++outHostile;  // [zone161]
                     continue;
+                }
             }
 
             WorldPosition const giver(start.mapId, start.x, start.y, start.z);
@@ -8588,8 +8592,8 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         if (fresh)
             LOG_INFO("playerbots", "[zone19] {} L{} has no zone with a quest it may take: {} starters of its band, "
                      "{} on a continent closed at its level, {} no route there, {} taken / done / postponed, {} it "
-                     "cannot take, {} in a camp it never fights solo",
-                     bot->GetName(), level, inBand, outClosed, outRoute, outTaken, outOther, outCamp);
+                     "cannot take, {} in a camp it never fights solo, {} of a hostile giver",
+                     bot->GetName(), level, inBand, outClosed, outRoute, outTaken, outOther, outCamp, outHostile);
         return 0;
     }
 

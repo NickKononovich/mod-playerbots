@@ -5726,6 +5726,8 @@ void TravelRouteMgr::Solve(Player* bot, WorldPosition const* dest, std::vector<N
     prev.assign(count, -1);
     prevKind.assign(count, LegKind::Walk);
     std::vector<bool> done(count, false);
+    // [zone161] a node the bot reaches from where it stands by walks alone (no ride, no portal before it)
+    std::vector<bool> afoot(count, false);
     cost[0] = 0.0f;
 
     for (;;)
@@ -5739,6 +5741,7 @@ void TravelRouteMgr::Solve(Player* bot, WorldPosition const* dest, std::vector<N
             break;
 
         done[u] = true;
+        afoot[u] = u == 0 || (prevKind[u] == LegKind::Walk && prev[u] >= 0 && afoot[prev[u]]);
         if (u == 1)
             break;
 
@@ -5763,8 +5766,13 @@ void TravelRouteMgr::Solve(Player* bot, WorldPosition const* dest, std::vector<N
             // this level (refused by its judge, or MOVE_FAR_LOOP: NewRpgBaseAction::NoteWalkGivenUp) is no edge: the
             // route through it is no route. b397 Salleas L12 walled in by the Bloodfeather harpies: its walk to the
             // Darnassus portal (9947,2630) given up, the zone choice priced every zone off Teldrassil through it and
-            // walked the same refused walk 13 times (TRAVEL loop, 15 LOOP / STUCK alerts)
-            if (u == 0 && v >= 2 && nodes[v].pos.GetMapId() == bot->GetMapId() &&
+            // walked the same refused walk 13 times (TRAVEL loop, 15 LOOP / STUCK alerts).
+            // [zone161] ... from any node it walks to first, not only from its own spot: the walk through another node
+            // of its landmass is the same walk. b428 Relara L15 in Darnassus at (9676,2550): its walk to the
+            // Rut'theran trigger (9947,2630) given up, the route went bot -> the trigger 542 exit (9945,2617), 13 yd
+            // off -> the given-up trigger, and the zone choice priced five Eastern Kingdoms zones through it: five
+            // more walks given up the same way, then "no zone with a quest it may take" and a REST loop
+            if (afoot[u] && v >= 2 && nodes[v].pos.GetMapId() == bot->GetMapId() &&
                 NewRpgBaseAction::WalkGivenUp(bot, nodes[v].pos.GetPositionX(), nodes[v].pos.GetPositionY()))
             {
                 // one line per bot, spot and level: a log cadence, no decision reads it
