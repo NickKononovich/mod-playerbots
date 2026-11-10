@@ -55,6 +55,64 @@ namespace
         return guid.IsItem() ? "item" : "other";
     }
 
+    // [bag66] b406: 20 quest items left on corpses "no bag room" (items 23859, 24043 ...). The item it destroys to
+    // make room: of its bags' items (never equipped ones) that are no quest item, no item a quest in its log needs,
+    // no container, ammunition or consumable (its food, drink, potions), the grey one of the lowest vendor value, else
+    // the lowest vendor value of all (its count counted); a game action (destroy), logged
+    bool MakeRoomFor(Player* bot, uint32 itemId, uint32 questId)
+    {
+        auto const needed = [bot](ItemTemplate const* proto)
+        {
+            if (proto->Class == ITEM_CLASS_QUEST || proto->StartQuest || proto->Class == ITEM_CLASS_CONTAINER ||
+                proto->Class == ITEM_CLASS_PROJECTILE || proto->Class == ITEM_CLASS_QUIVER ||
+                proto->Class == ITEM_CLASS_CONSUMABLE || proto->Class == ITEM_CLASS_KEY)
+                return true;
+            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+                if (Quest const* quest = sObjectMgr->GetQuestTemplate(bot->GetQuestSlotQuestId(slot)))
+                {
+                    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                        if (quest->RequiredItemId[i] == proto->ItemId)
+                            return true;
+                    for (uint8 i = 0; i < QUEST_SOURCE_ITEM_IDS_COUNT; ++i)
+                        if (quest->ItemDrop[i] == proto->ItemId)
+                            return true;
+                }
+            return false;
+        };
+        Item* worst = nullptr;
+        bool worstGrey = false;
+        uint64 worstValue = 0;
+        auto const consider = [&](Item* item)
+        {
+            if (!item)
+                return;
+            ItemTemplate const* proto = item->GetTemplate();
+            if (!proto || needed(proto))
+                return;
+            bool const grey = proto->Quality == ITEM_QUALITY_POOR;
+            uint64 const value = uint64(proto->SellPrice) * item->GetCount();
+            if (!worst || (grey && !worstGrey) || (grey == worstGrey && value < worstValue))
+            {
+                worst = item;
+                worstGrey = grey;
+                worstValue = value;
+            }
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            if (Bag* container = bot->GetBagByPos(bag))
+                for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
+                    consider(container->GetItemByPos(uint8(slot)));
+        if (!worst)
+            return false;
+        LOG_INFO("playerbots", "[bag66] {} destroys {} x{} ({}, {} c) to loot quest item {} for q{} t={}",
+                 bot->GetName(), worst->GetTemplate()->Name1, worst->GetCount(),
+                 worstGrey ? "grey" : "its lowest vendor value", worstValue, itemId, questId, QuestStats::NowMs());
+        bot->DestroyItem(worst->GetBagSlot(), worst->GetSlot(), true);
+        return true;
+    }
+
     // seconds since the bot opened this loot (0 when it was not seen opening it)
     float LootSeconds(Player* bot, ObjectGuid guid)
     {
@@ -553,6 +611,11 @@ bool StoreLootAction::Execute(Event event)
             if (isUsefulItem)
             {
                 ItemPosCountVec dest;
+                // [bag66] a quest item never stays on the corpse for want of room: the lowest-value item of its bags
+                // (a grey one first) makes way for it
+                if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount) != EQUIP_ERR_OK &&
+                    itemQuest && MakeRoomFor(bot, itemid, itemQuest))
+                    dest.clear();
                 if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount) != EQUIP_ERR_OK)
                 {
                     leave("no bag room");
