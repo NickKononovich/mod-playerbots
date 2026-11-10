@@ -7576,7 +7576,8 @@ class GuildCoordinatorPlayerScript : public PlayerScript
 {
 public:
     GuildCoordinatorPlayerScript()
-        : PlayerScript("GuildCoordinatorPlayerScript", {PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_PLAYER_JUST_DIED,
+        : PlayerScript("GuildCoordinatorPlayerScript", {PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM,
+                                                         PLAYERHOOK_ON_PLAYER_JUST_DIED,
                                                          PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE,
                                                          PLAYERHOOK_ON_CREATE_ITEM})
     {
@@ -7584,6 +7585,17 @@ public:
 
     void OnPlayerLootItem(Player* player, Item* item, uint32 count, ObjectGuid /*lootguid*/) override
     {
+        sGuildCoordinator.OnLoot(player, item, count);
+    }
+
+    // [loot159] an item won by a group roll is stored by Group::CountTheRoll, not by the loot window: no
+    // OnPlayerLootItem. Every green / blue of a five went past the coordinator (the five's report "loot: none" on all
+    // 36 b428 RFC runs while the members held 20+ RFC boss blues; spare BoP never disenchanted, BoE never routed)
+    void OnPlayerGroupRollRewardItem(Player* player, Item* item, uint32 count, RollVote vote, Roll* /*roll*/) override
+    {
+        if (player && item)
+            LOG_INFO("playerbots", "[loot159] {} wins {} x{} by roll ({})", player->GetName(),
+                     item->GetTemplate()->Name1, count, vote == NEED ? "need" : "greed");
         sGuildCoordinator.OnLoot(player, item, count);
     }
 
