@@ -61,6 +61,23 @@ ItemUsage ItemUsageValue::Calculate()
             // and never on a call's list - it was sold as "no upgrade and not in the wanted list" after its craft
             if (proto->TotemCategory && proto->Class != ITEM_CLASS_WEAPON && IsItemNeededForSkill(proto))
                 needItem = true;
+            // [prof270] ... and the weapon-class tools: a Fishing Pole (subclass FISHING_POLE: no TotemCategory, the
+            // fishing cast needs it in hand), a Mining Pick / Skinning Knife (TotemCategory 165 / 166). b429 Shalaeth
+            // (a guild fisher, Fishing 225) sold its pole at Gubber Blump right after its fishing ([fish14] put it
+            // away), then gave its fishing task back "no Fishing Pole"; b426-b429: 47 members bought 113 Mining Picks
+            // and 52 Skinning Knives (Pherua 5 picks) - each sold again after its use; DB: 0 of 50 members with
+            // Fishing hold a pole, Mining 26 of 41 a pick, Skinning 11 of 17 a knife. Kept while held (the leader's
+            // tool call buys one: KEEP, never SKILL - an equipped pole is no bag stack), an equip upgrade stays the
+            // gear plan's
+            if (proto->Class == ITEM_CLASS_WEAPON && bot->GetItemCount(proto->ItemId, true) &&
+                ((proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE && bot->HasSkill(SKILL_FISHING)) ||
+                 (proto->TotemCategory && IsItemNeededForSkill(proto))))
+            {
+                ItemUsage const equip = QueryItemUsageForEquip(proto, randomPropertyId);
+                if (equip == ITEM_USAGE_EQUIP || equip == ITEM_USAGE_REPLACE)
+                    return equip;
+                return ITEM_USAGE_KEEP;
+            }
         }
         else if (IsItemNeededForSkill(proto))
             needItem = true;
