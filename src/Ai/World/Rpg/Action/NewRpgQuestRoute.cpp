@@ -5,6 +5,7 @@
  */
 
 #include "NewRpgQuestRoute.h"
+#include "SoloSafety.h"  // [walk68]
 
 #include "SlowScope.h"  // [perf26]
 #include "GuildCoordinator.h"
@@ -1123,7 +1124,44 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
                  RouteHead(bot, "plan"), r.plan.stops.size(), uint32(r.plan.eta), uint32(r.plan.walkYd),
                  uint32(r.plan.xp), logQuests, r.plan.takes, in.leftOut, in.offers.size(), r.plan.measured,
                  r.plan.walkRatio, r.plan.fightPerYd * 100.0f, r.plan.earlierHandIns, why, stops);
-
+        // [walk68] the plan's next stop is a walk priced before it is walked (TripRefused: an orange / red or elite
+        // roamer's round at the stop, a walk through a reach it must never fight - the route search with the static
+        // spawns beyond sight; its answer kept per stop and level): a refused one is postponed now and the route built
+        // again, not found refused after the walk. b406: 19 objective stops (6809 s) ended "every way there passes
+        // mobs it does not pull", 40 giver / hand-in stops (15.4k s) left postponed, Orenem L15's 4211 yd giver walk
+        // closed a MOVE_FAR_LOOP after 499 s
+        if (SoloSafety::Applies(bot) && !r.plan.stops.empty())
+        {
+            Stop const& next = r.plan.stops.front();
+            bool const priced =
+                next.kind == StopKind::Objective || next.kind == StopKind::Giver || next.kind == StopKind::Ender;
+            float z = next.z;
+            if (priced && (z == INVALID_HEIGHT || z == VMAP_INVALID_HEIGHT_VALUE))
+                z = std::max(bot->GetMap()->GetHeight(next.x, next.y, MAX_HEIGHT),
+                             bot->GetMap()->GetWaterLevel(next.x, next.y));
+            if (priced && !next.quests.empty() && z != INVALID_HEIGHT && z != VMAP_INVALID_HEIGHT_VALUE &&
+                bot->GetExactDist2d(next.x, next.y) > sPlayerbotAIConfig.SightDistance &&
+                TripRefused(bot, next.x, next.y, z, "route stop"))
+            {
+                std::string const kind = next.kind == StopKind::Objective ? "objective"
+                                         : next.kind == StopKind::Giver   ? "giver"
+                                                                          : "hand-in";
+                std::string const reason = "[walk68] its walk to the " + kind + " stop is refused at planning";
+                std::string quests;
+                for (uint32 q : next.quests)
+                {
+                    botAI->lowPriorityQuest.insert(q);
+                    NotePostpone(bot, q, reason);
+                    quests += " q" + std::to_string(q);
+                }
+                LOG_INFO("playerbots", "[walk68] {} L{} postpones{}: its walk to the {} stop at ({:.0f},{:.0f}) "
+                         "{:.0f} yd is refused (TripRefused) - the route is built again",
+                         bot->GetName(), bot->GetLevel(), quests, kind, next.x, next.y,
+                         bot->GetExactDist2d(next.x, next.y));
+                r.invalid = true;
+                r.invalidWhy = reason;
+            }
+        }
     }
     // a town stop it stands at is visited: the guild's NextStep runs its task there
     while (!r.plan.stops.empty() && r.plan.stops.front().kind == StopKind::Town &&
