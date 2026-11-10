@@ -1376,6 +1376,81 @@ void GuildCoordinator::UpdateFives()
             // for a mana user, food for all (BuyAction's restock line) - else it restocks at a vendor with its own
             // money first (its New RPG vendor run; the quartermaster's trade tops it up inside, GuildTransfer c.).
             // A member whose run was made or could not be made goes in as it is (logged)
+            // [supply100] coordinator 2026-11-10: the five's pooled supplies decide, not each member's. Inside the
+            // dungeon share92 tops every member up from the one holding most (they stand together at the run's
+            // start), the mages give water, the healer heals what food would. The five goes in when its mana users
+            // hold, together, the restock line each (RESTOCK_FOOD_MIN x mana users); a short member's own vendor
+            // run or supply gold never holds a five that the pool carries. b415: no five entered in 20 min - the
+            // waits lasted up to ~1290 s (Ellosera, five 4, "the guild's supply gold is on its way"), ~1050 s
+            // (Dekorhan, five 10), ~810 s (Selalleas, five 10), ~330 s (Mutil, five 1)
+            {
+                uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0;
+                for (uint32 low : five.members)
+                {
+                    Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+                    if (!p || !p->IsInWorld())
+                        continue;
+                    if (p->GetMaxPower(POWER_MANA))
+                    {
+                        ++manaUsers;
+                        drinks += CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
+                    }
+                    food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
+                    mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
+                }
+                bool const pooled = mages || drinks >= manaUsers * RESTOCK_FOOD_MIN;
+                std::string const poolText = Acore::StringFormat("pool {} drinks for {} mana users (line {} each){}, "
+                                                                 "{} food",
+                                                                 drinks, manaUsers, RESTOCK_FOOD_MIN,
+                                                                 mages ? ", a mage conjures water" : "", food);
+                if (pooled || five.poolGoesIn)
+                {
+                    if (!five.poolGoesIn)
+                    {
+                        LOG_INFO("playerbots", "[supply100] five {} ({}): its supplies pooled carry the run: {}; goes "
+                                 "in, topped up inside",
+                                 id, five.contentKey, poolText);
+                        five.poolGoesIn = true;
+                    }
+                    for (uint32 low : five.members)
+                        bots_[low].supplyDone = true;  // no member's own restock holds it
+                }
+            }
+            // [supply100] coordinator 2026-11-10: the five's pooled supplies decide, not each member's. Inside the
+            // dungeon share92 tops every member up from the one holding most (they stand together at the run's
+            // start), the mages give water, the healer heals what food would. The five goes in when its mana users
+            // hold, together, the restock line each (RESTOCK_FOOD_MIN x mana users), or a mage conjures water; a
+            // short member's own vendor run or supply gold never holds a five that the pool carries. b415: no five
+            // entered in 20 min - waits up to ~1290 s (Ellosera, five 4, "the guild's supply gold is on its way"),
+            // ~1050 s (Dekorhan, five 10), ~810 s (Selalleas, five 10), ~330 s (Mutil, five 1)
+            {
+                uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0;
+                for (uint32 low : five.members)
+                {
+                    Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+                    if (!p || !p->IsInWorld())
+                        continue;
+                    if (p->GetMaxPower(POWER_MANA))
+                    {
+                        ++manaUsers;
+                        drinks += CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
+                    }
+                    food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
+                    mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
+                }
+                bool const pooled = mages || drinks >= manaUsers * RESTOCK_FOOD_MIN;
+                if ((pooled || five.poolGoesIn) && !five.poolGoesIn)
+                {
+                    LOG_INFO("playerbots", "[supply100] five {} ({}): its supplies pooled carry the run: {} drinks for {} "
+                             "mana users (line {} each){}, {} food; goes in, topped up inside",
+                             id, five.contentKey, drinks, manaUsers, RESTOCK_FOOD_MIN,
+                             mages ? ", a mage conjures water" : "", food);
+                    five.poolGoesIn = true;
+                }
+                if (five.poolGoesIn)
+                    for (uint32 low : five.members)
+                        bots_[low].supplyDone = true;  // no member's own restock or supply gold holds it
+            }
             bool supplied = true;
             for (uint32 low : five.members)
             {
@@ -1398,7 +1473,8 @@ void GuildCoordinator::UpdateFives()
                 // with the guild's supply gold planned for it ([gold41] / [supply76]: a member's spare money covers
                 // it) waits for that gold; once its money rose since the run (the gold arrived) its restock runs
                 // again. b406 rfc-n five 4: Feette went in "short of drink 11" and ran dry at pull 20
-                if (!shortOf.empty() && st.supplyDone)
+                // [supply100] the pool carried the five: nothing of a member's own holds it
+                if (!shortOf.empty() && st.supplyDone && !five.poolGoesIn)
                 {
                     // [supply79] waited for on a fact: a planned gold transfer of its supplies to it (the transfers
                     // plan, GuildTransfer: a member whose spare money covers it, its channel open) whose sender is
@@ -1435,6 +1511,9 @@ void GuildCoordinator::UpdateFives()
                         supplied = false;
                         continue;
                     }
+                    // [supply100] the supply gold is no wait of the five's: its gold comes by mail, the member restocks
+                    // with it after the run (b415: Ellosera waited ~1290 s for it)
+                    donor = false;
                     if (donor)
                     {
                         if (st.supplyShort != "gold: " + shortOf)
