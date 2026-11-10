@@ -1344,6 +1344,46 @@ void GuildCoordinator::UpdateFives()
                 // [supply27] ammo (a hunter) and the vendor-sold reagents of its spells, the same way
                 if (std::string const gear = NewRpgBaseAction::FiveGearShort(p); !gear.empty())
                     shortOf += (shortOf.empty() ? "" : ", ") + gear;
+                // [supply79] coordinator 2026-11-10: no five goes in short. After its supply run, a member still short
+                // with the guild's supply gold planned for it ([gold41] / [supply76]: a member's spare money covers
+                // it) waits for that gold; once its money rose since the run (the gold arrived) its restock runs
+                // again. b406 rfc-n five 4: Feette went in "short of drink 11" and ran dry at pull 20
+                if (!shortOf.empty() && st.supplyDone)
+                {
+                    bool donor = false;
+                    if (st.supplyGoldShort)
+                        for (PlanRow const& row : plan_)
+                            if (Player* d = row.low == low ? nullptr
+                                                           : ObjectAccessor::FindConnectedPlayer(
+                                                                 ObjectGuid::Create<HighGuid::Player>(row.low));
+                                d && GET_PLAYERBOT_AI(d) && !IsHuman(d) &&
+                                FoundingFreeMoney(d) >= st.supplyGoldShort)
+                            {
+                                donor = true;
+                                break;
+                            }
+                    if (p->GetMoney() > st.supplyMoneyAt)
+                    {
+                        LOG_INFO("playerbots", "[supply79] five {} ({}): {} got money since its supply run ({} -> {} c): "
+                                 "restocks again, short of {}",
+                                 id, five.contentKey, Who(low), st.supplyMoneyAt, p->GetMoney(), shortOf);
+                        st.supplyAsked = true;
+                        st.supplyDone = st.supplyStarted = st.supplyYielded = false;
+                        st.supplyShort = shortOf;
+                        supplied = false;
+                        continue;
+                    }
+                    if (donor)
+                    {
+                        if (st.supplyShort != "gold: " + shortOf)
+                            LOG_INFO("playerbots", "[supply79] five {} ({}): waits for {}: short of {}, the guild's supply "
+                                     "gold ({} c) is on its way",
+                                     id, five.contentKey, Who(low), shortOf, st.supplyGoldShort);
+                        st.supplyShort = "gold: " + shortOf;
+                        supplied = false;
+                        continue;
+                    }
+                }
                 if (shortOf.empty() || st.supplyDone)
                 {
                     if (!shortOf.empty() && st.supplyShort != "in: " + shortOf)
@@ -1994,6 +2034,7 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
         else if (st.supplyStarted || st.supplyYielded)
         {
             st.supplyDone = true;
+            st.supplyMoneyAt = bot->GetMoney();  // [supply79]
             LOG_INFO("playerbots", "[supply27] {} L{} supply run {}", bot->GetName(), bot->GetLevel(),
                      st.supplyStarted ? "made" : "could not be made (no vendor run started)");
         }

@@ -509,6 +509,7 @@ private:
         bool supplyYielded = false;
         bool supplyStarted = false;
         bool supplyDone = false;
+        uint32 supplyMoneyAt = 0;  // [supply79] its money when its supply run ended (a gold arrival shows against it)
         // [guild80] map thread: no safe walk to the Guild Master / vault at this level (planning skips it until the
         // next level)
         std::string foundRefused;
