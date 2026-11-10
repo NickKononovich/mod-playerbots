@@ -1385,6 +1385,7 @@ void GuildCoordinator::UpdateFives()
             // (Dekorhan, five 10), ~810 s (Selalleas, five 10), ~330 s (Mutil, five 1)
             {
                 uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0;
+                std::string noRoom;  // [supply104] a short member the pool cannot reach: no free bag slot
                 for (uint32 low : five.members)
                 {
                     Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
@@ -1393,12 +1394,25 @@ void GuildCoordinator::UpdateFives()
                     if (p->GetMaxPower(POWER_MANA))
                     {
                         ++manaUsers;
-                        drinks += CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
+                        uint32 const own = CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
+                        drinks += own;
+                        // [supply104] the hand-over must be possible: a member below the line takes a stack only
+                        // into a free slot (the giver's side: share103 hands the whole stack when it cannot split)
+                        if (own < RESTOCK_FOOD_MIN && !p->GetFreeInventorySpace())
+                            noRoom += (noRoom.empty() ? "" : ", ") + p->GetName();
                     }
                     food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
                     mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
                 }
-                bool const pooled = mages || drinks >= manaUsers * RESTOCK_FOOD_MIN;
+                bool const pooled = noRoom.empty() && (mages || drinks >= manaUsers * RESTOCK_FOOD_MIN);
+                if (!noRoom.empty() && !five.poolGoesIn)
+                    if (std::string& logged = fiveLfgWhy[id + 1000000]; logged != noRoom)
+                    {
+                        logged = noRoom;
+                        LOG_INFO("playerbots", "[supply104] five {} ({}): the pool cannot reach {}: no free bag slot for "
+                                 "a stack - restocks or frees a slot first",
+                                 id, five.contentKey, noRoom);
+                    }
                 std::string const poolText = Acore::StringFormat("pool {} drinks for {} mana users (line {} each){}, "
                                                                  "{} food",
                                                                  drinks, manaUsers, RESTOCK_FOOD_MIN,
