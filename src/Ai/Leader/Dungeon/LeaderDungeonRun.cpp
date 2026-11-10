@@ -29,6 +29,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 namespace Leader::Dungeon
 {
@@ -151,6 +152,13 @@ namespace Leader::Dungeon
     {
         std::mutex plannedRolesLock;
         std::unordered_map<ObjectGuid, uint8> plannedRoles;
+        std::unordered_set<ObjectGuid> runMembers;  // [dun178] under plannedRolesLock
+    }
+
+    bool DungeonRuns::OwnsMember(ObjectGuid member) const
+    {
+        std::lock_guard<std::mutex> guard(plannedRolesLock);
+        return runMembers.count(member) != 0;
     }
 
     uint8 DungeonRuns::PlannedLfgRoles(ObjectGuid member) const
@@ -238,6 +246,11 @@ namespace Leader::Dungeon
         LOG_INFO("playerbots", "[guild70] five {} run {}: {} ({}), the five-leader {} leads, in by {}", request.fiveId,
                  run.id, request.name, request.contentKey, request.leader.ToString(), run.entry);
         runs_[request.fiveId] = run;
+        {
+            std::lock_guard<std::mutex> guard(plannedRolesLock);  // [dun178]
+            for (FiveRunMember const& member : request.members)
+                runMembers.insert(member.guid);
+        }
         return run.id;
     }
 
@@ -636,11 +649,6 @@ namespace Leader::Dungeon
 
     void DungeonRuns::End(Run& run, std::string const& result, std::string const& reason, bool lfgRefused)
     {
-        {
-            std::lock_guard<std::mutex> guard(plannedRolesLock);  // [lfg26]
-            for (FiveRunMember const& member : run.request.members)
-                plannedRoles.erase(member.guid);
-        }
         FiveRunReport report;
         report.result = result;
         report.reason = reason;
@@ -654,6 +662,16 @@ namespace Leader::Dungeon
     void DungeonRuns::Release(Run& run, bool disband)
     {
         FiveRunRequest const& request = run.request;
+        {
+            // [lfg26] [dun178] on every end, the clearing's too: the planned roles of a cleared run stayed and kept
+            // its members out of their own play ([diag251]) after it
+            std::lock_guard<std::mutex> guard(plannedRolesLock);
+            for (FiveRunMember const& member : request.members)
+            {
+                plannedRoles.erase(member.guid);
+                runMembers.erase(member.guid);
+            }
+        }
         if (run.queued && sLFGMgr->GetState(run.groupGuid) != lfg::LFG_STATE_NONE &&
             sLFGMgr->GetState(run.groupGuid) != lfg::LFG_STATE_DUNGEON &&
             sLFGMgr->GetState(run.groupGuid) != lfg::LFG_STATE_FINISHED_DUNGEON)

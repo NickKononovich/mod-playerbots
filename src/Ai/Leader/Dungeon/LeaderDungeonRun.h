@@ -127,6 +127,9 @@ namespace Leader::Dungeon
         bool LfgRefused(uint32 fiveId) const { return lfgRefused_.count(fiveId) != 0; }
         // [lfg26] the Dungeon Finder roles a member of a five's queued run was planned for (0: none, no such run)
         uint8 PlannedLfgRoles(ObjectGuid member) const;
+        // [dun178] a member of a five's run from its start to its release: the run's leader owns its strategies
+        // (read by other threads)
+        bool OwnsMember(ObjectGuid member) const;
         void ForgetFive(uint32 fiveId) { lfgRefused_.erase(fiveId); }
 
         // the run starts (members online; for the walk: standing at the entrance); "" with `error`

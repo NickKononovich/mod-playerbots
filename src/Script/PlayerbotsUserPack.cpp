@@ -704,7 +704,11 @@ namespace
             // turned off its rpg / grind / quest play). Put back here on the next tick, the members quested and fought
             // on while queued: their answers waited for those fights and the port left the fighting ones outside (b428
             // fives 11 / 17 / 22 / 40 / 49: "User pack: Rumanatol plays as leader" right after the queue)
-            if (!inDungeon && Leader::Dungeon::DungeonRuns::Instance().PlannedLfgRoles(bot->GetGUID()))
+            // [dun178] inside too, for the whole run: its leader owns its members' strategies (the run turned off
+            // grind, rpg, travel and quest play and gave "instance portal"). b428: 27617 "plays as leader (in a
+            // dungeon)" passes put grind back and took "instance portal" off the five's members, run after run
+            Leader::Dungeon::DungeonRuns const& runs = Leader::Dungeon::DungeonRuns::Instance();
+            if (runs.OwnsMember(bot->GetGUID()) || (!inDungeon && runs.PlannedLfgRoles(bot->GetGUID())))
                 return;
             bool ok = true;
             if (leader)
