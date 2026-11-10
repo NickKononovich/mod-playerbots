@@ -1387,7 +1387,15 @@ void GuildCoordinator::UpdateFives()
                             if (!t.gold || t.toLow != low || t.purpose != "supplies" || t.tradeRefused)
                                 continue;
                             Player* d = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(t.fromLow));
-                            if (d && d->GetMoney() >= t.money)
+                            // [supply91] ... and the sender can send it now: not inside a dungeon, not a member of a
+                            // five that runs (its own run holds it), alive
+                            auto const ds = d ? bots_.find(t.fromLow) : bots_.end();
+                            bool const senderHeld =
+                                d && (d->GetMap()->Instanceable() || !d->IsAlive() ||
+                                      (ds != bots_.end() && ds->second.fiveId &&
+                                       fives_.count(ds->second.fiveId) &&
+                                       fives_.at(ds->second.fiveId).stage == GuildFive::Stage::Run));
+                            if (d && d->GetMoney() >= t.money && !senderHeld)
                             {
                                 donor = true;
                                 break;
