@@ -2775,6 +2775,9 @@ namespace SoloSafety
         else if (std::string pulled; bot->GetGroup() && found != states.end() &&
                                      PartyPullHit(bot->GetGroup()->GetGUID().GetCounter(), found->second, pulled))
             out += "; [deaths14] a party fight (the party judge's pull of " + pulled + ")";
+        // [deaths78] a led dungeon run's fight is its leader's pull (b406: 9 RFC deaths logged "no judged pull")
+        else if (bot->GetMap() && bot->GetMap()->IsDungeon() && Leader::LedBot(bot))
+            out += "; [deaths78] a led dungeon fight (the dungeon leader's pull)";
         else
             out += "; no judged pull (attacked)";
 

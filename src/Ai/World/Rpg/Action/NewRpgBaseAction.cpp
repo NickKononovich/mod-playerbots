@@ -5009,10 +5009,21 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
     {
         Map* map = bot->GetMap();
         uint32 const phase = bot->GetPhaseMask();
+        uint32 const ownTeam = bot->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
         auto const redAt = [&](float ax, float ay, float az, std::string* name) -> bool
         {
             AreaTableEntry const* area = sAreaTableStore.LookupEntry(map->GetAreaId(phase, ax, ay, az));
             AreaTableEntry const* zone = area && area->zone ? sAreaTableStore.LookupEntry(area->zone) : nullptr;
+            // [red78] ... and a subzone the other faction holds (its guards L40-65: Mor'shan Rampart, Crossroads,
+            // Astranaar for the Horde): b406 Orenem L15 (Alliance) died to Barrens Guards L40 at the Mor'shan Rampart
+            // and to Horde Elites L65 at the Mor'shan Base Camp. The subzone's own team only (a zone's team marks the
+            // whole territory: the Barrens is Horde's, its Wailing Caverns the Alliance's dungeon too)
+            if (area && area->zone && area->team && area->team != ownTeam && area->team != AREATEAM_ANY)
+            {
+                if (name)
+                    *name = Acore::StringFormat("{} (held by the other faction)", area->area_name[0]);
+                return true;
+            }
             for (AreaTableEntry const* a : {area, zone})
                 if (a && a->area_level > 0 &&
                     Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(a->area_level, 255))) == XP_RED)
