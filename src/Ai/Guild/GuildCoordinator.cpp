@@ -28,6 +28,7 @@
 #include "Formulas.h"
 #include "GameObject.h"  // [questrate] chest places
 #include "GameTime.h"
+#include "GlyphActions.h"  // [insc143] the members' premade glyphs
 #include "Group.h"
 #include "Guild.h"
 #include "GuildBankRun.h"
@@ -3494,6 +3495,36 @@ void GuildCoordinator::UpdateProfessions()
             if (count)
                 needs.push_back({next->skillLine, next->reqSkill, next->spellId, next->itemId, count, 0, false,
                                  "bag " + std::to_string(nextSlots) + " slots ×" + std::to_string(count)});
+        }
+    }
+    // [insc143] glyphs: b426-b429 the 7 scribes stayed at Inscription 1/75 all run - the line unlocked nothing (the
+    // needs were gear crafts and bags only), so its skill-ups never beat questing ("unlocks 0c", value = -costs) and
+    // no scribe was called to them. A glyph of a member's premade list that it can use now and has a slot for
+    // (GlyphUtil::NeedsGlyphItem: class, required level, slot type, not in its bags) is a need of the Inscription
+    // recipe that makes it, the trainer's or the profession's own
+    {
+        std::map<uint32, uint32> glyphs;  // glyph item -> members who need one
+        for (auto const& [row, m] : members)
+            if (!HumanCharacter(m))
+                for (uint32 glyph : GlyphUtil::GetWantedGlyphItems(m))
+                    if (GlyphUtil::NeedsGlyphItem(m, glyph))
+                        ++glyphs[glyph];
+        auto const insc = glyphs.empty() ? recipesBySkill_.end() : recipesBySkill_.find(SKILL_INSCRIPTION);
+        if (insc != recipesBySkill_.end())
+            for (Recipe const& r : insc->second)
+                if (auto const g = glyphs.find(r.product); g != glyphs.end() && (r.trainer || r.autoLearned))
+                    needs.push_back({SKILL_INSCRIPTION, r.reqSkill, r.spellId, r.product, g->second, 0, false,
+                                     "glyph for " + std::to_string(g->second) + " member" +
+                                         (g->second > 1 ? "s" : "")});
+        if (glyphs != glyphNeeds_)
+        {
+            std::string text;
+            for (auto const& [glyph, n] : glyphs)
+                if (text.size() < 300)
+                    text += (text.empty() ? "" : ", ") + ItemName(glyph) + " ×" + std::to_string(n);
+            LOG_INFO("playerbots", "[insc143] the members' glyph needs ({} glyphs): {}", glyphs.size(),
+                     text.empty() ? "none" : text);
+            glyphNeeds_ = std::move(glyphs);
         }
     }
     // each need goes to the member of that profession closest to it (the highest skill; BoP: the member itself)

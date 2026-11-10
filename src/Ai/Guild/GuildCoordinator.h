@@ -982,6 +982,7 @@ private:
     // [fish110] the guild's two fishers (user 2026-11-10) and the raw fish the fives' cooked supplies need
     std::set<uint32> fishers_;
     std::map<uint32, uint32> fishShort_;
+    std::map<uint32, uint32> glyphNeeds_;  // [insc143] glyph item -> members who need one (the log line on change)
     std::unordered_map<uint32, std::vector<std::pair<uint32, std::string>>> withdraw_;  // member -> bank items for it
     uint32 deathsTotal_{0};
     std::deque<std::pair<uint32, std::string>> decisions_;
