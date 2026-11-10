@@ -734,6 +734,15 @@ bool NewRpgBaseAction::BindAtInnHere()
 {
     if (bot->IsInCombat() || !SoloSafety::Applies(bot))
         return false;
+    // [red73] no home in a zone red for it: its Hearthstone is its way out of such a place (b406 Gilduck L14, bound at
+    // Darkshire (area level 25) in Duskwood, hearthed out of Brightwood Grove into Darkshire - "its bind point is
+    // here" - and walked back through the Grove to his Westfall quests: 5 deaths to the Nightbane Dark Runners)
+    if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetAreaId()))
+        if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(bot->GetZoneId() ? bot->GetZoneId() : area->ID))
+            for (AreaTableEntry const* a : {area, zone})
+                if (a->area_level > 0 &&
+                    Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(a->area_level, 255))) == XP_RED)
+                    return false;
     for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
     {
         Creature* innkeeper = bot->GetNPCIfCanInteractWith(guid, UNIT_NPC_FLAG_INNKEEPER);
