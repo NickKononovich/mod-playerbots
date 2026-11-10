@@ -57,6 +57,10 @@ namespace NewRpgCraft
     uint32 RecipeSkill(uint32 spellId);
     uint32 RecipeFocus(uint32 spellId);
     bool FocusNear(Player* bot, uint32 focusId);
+    // [supply113] Basic Campfire, the cook's own fire (its reagents and tools by its SpellInfo)
+    constexpr uint32 SPELL_BASIC_CAMPFIRE = 818;
+    bool CanLightFire(Player* bot, uint32 focusId);
+    bool LightFire(Player* bot, uint32 focusId);  // cast it now; false: no fire lit
 }
 
 #endif

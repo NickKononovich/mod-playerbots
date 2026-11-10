@@ -1643,13 +1643,30 @@ static bool NearestVendorOf(Player* p, uint32 itemId, uint32& npcEntry, WorldPos
     static std::unordered_map<uint32, std::vector<std::pair<uint32, WorldPosition>>> spawns;  // item -> vendors
     std::call_once(once, []()
     {
+        // [supply113] and the cook's own fire: Basic Campfire's reagents and tools
+        std::unordered_set<uint32> fireItems;
+        if (SpellInfo const* fire = sSpellMgr->GetSpellInfo(NewRpgCraft::SPELL_BASIC_CAMPFIRE))
+        {
+            for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+                if (fire->Reagent[i] > 0)
+                    fireItems.insert(uint32(fire->Reagent[i]));
+            for (uint32 totem : fire->Totem)
+                if (totem)
+                    fireItems.insert(totem);
+            std::unordered_set<uint32> categories(fire->TotemCategory.begin(), fire->TotemCategory.end());
+            categories.erase(0);
+            for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
+                if (proto.TotemCategory && categories.count(proto.TotemCategory))
+                    fireItems.insert(id);
+        }
         std::unordered_map<uint32, std::vector<uint32>> byEntry;  // vendor entry -> its recipe items
         for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
             if (tmpl.npcflag & UNIT_NPC_FLAG_VENDOR)
                 if (VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry))
                     for (VendorItem const* item : items->m_items)
                         if (ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
-                            proto && proto->Class == ITEM_CLASS_RECIPE && !item->ExtendedCost)
+                            proto && (proto->Class == ITEM_CLASS_RECIPE || fireItems.count(item->item)) &&
+                            !item->ExtendedCost)
                             byEntry[entry].push_back(item->item);
         for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
             if (auto const found = byEntry.find(data.id); found != byEntry.end())
@@ -2236,6 +2253,60 @@ void GuildCoordinator::UpdateOrders()
                     o.executable = true;
                     orders.push_back(o);
                     break;
+                }
+            // [supply113] BUY: the supply cook's own fire - Basic Campfire's reagent and tool it lacks (its spell's
+            // SpellInfo), one lot at the nearest vendor of its map, with its own money
+            if (auto const jobs = supplyCrafts_.find(row.low); jobs != supplyCrafts_.end() && !jobs->second.empty() &&
+                p->HasSpell(NewRpgCraft::SPELL_BASIC_CAMPFIRE))
+                if (SpellInfo const* fire = sSpellMgr->GetSpellInfo(NewRpgCraft::SPELL_BASIC_CAMPFIRE))
+                {
+                    std::vector<uint32> lack;
+                    for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+                        if (fire->Reagent[i] > 0 && !p->HasItemCount(uint32(fire->Reagent[i]), fire->ReagentCount[i]))
+                            lack.push_back(uint32(fire->Reagent[i]));
+                    for (uint32 totem : fire->Totem)
+                        if (totem && !p->HasItemCount(totem, 1))
+                            lack.push_back(totem);
+                    // a tool by its kind: the cheapest item of that kind a vendor sells
+                    for (uint32 category : fire->TotemCategory)
+                        if (category && !p->HasItemTotemCategory(category))
+                        {
+                            uint32 best = 0;
+                            for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
+                                if (proto.TotemCategory == category && proto.BuyPrice &&
+                                    (!best || proto.BuyPrice < sObjectMgr->GetItemTemplate(best)->BuyPrice))
+                                {
+                                    uint32 npc = 0;
+                                    WorldPosition at;
+                                    if (NearestVendorOf(p, id, npc, at))
+                                        best = id;
+                                }
+                            if (best)
+                                lack.push_back(best);
+                        }
+                    for (uint32 item : lack)
+                    {
+                        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+                        uint32 npcEntry = 0;
+                        WorldPosition pos;
+                        if (!proto || p->GetMoney() < proto->BuyPrice || !NearestVendorOf(p, item, npcEntry, pos))
+                            continue;
+                        GuildOrder o;
+                        o.type = GuildOrderType::BUY;
+                        o.itemId = item;
+                        o.count = 1;
+                        o.npcEntry = npcEntry;
+                        o.pos = pos;
+                        o.cost = proto->BuyPrice;
+                        o.details = ItemName(item) + " for itself — the guild cook's Basic Campfire, price " +
+                                    Gsc(proto->BuyPrice);
+                        o.reason = "[supply113] the cook lights its own fire where no cooking fire stands, with its "
+                                   "own money";
+                        o.status = "to the vendor";
+                        o.executable = true;
+                        orders.push_back(o);
+                        break;
+                    }
                 }
             // QUEST_REWARD: the choices the turn-ins will take
             if (!st.rewards.empty())

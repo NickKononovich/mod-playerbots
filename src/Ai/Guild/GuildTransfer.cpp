@@ -1126,8 +1126,9 @@ void GuildCoordinator::UpdateTransfers()
     }
 
     // d. [supply112] coordinator 2026-11-10: the band's guild cook sends its cooked supply to the members of a five
-    // of its band before their run (the five gathers): each member up to a full restock (RESTOCK_FOOD_TARGET) of the
-    // kind, a drink only to a mana user; the cook keeps nothing back (its stock is the band's)
+    // of its band before their run: from the five's forming on (Stage::Gather - [supply113] a finder five stays in it
+    // while it quests until the port, it never stands at the entrance; mail reaches it anywhere), each member up to a
+    // full restock (RESTOCK_FOOD_TARGET) of the kind, a drink only to a mana user; the cook keeps nothing back
     for (auto const& [id, five] : fives_)
     {
         if (five.stage != GuildFive::Stage::Gather)

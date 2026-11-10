@@ -291,7 +291,8 @@ namespace
         o.tier = tier;
         o.value = value;
         o.cap = cap;
-        if (r.focus && !NewRpgCraft::FocusNear(bot, r.focus))
+        // [supply113] ... or the fire it lights itself (Basic Campfire)
+        if (r.focus && !NewRpgCraft::FocusNear(bot, r.focus) && !NewRpgCraft::CanLightFire(bot, r.focus))
         {
             if (!where || !(o.focus = FocusInSight(bot, r.focus)))
                 return false;
@@ -462,6 +463,46 @@ namespace NewRpgCraft
         Acore::GameObjectSearcher<Acore::GameObjectFocusCheck> searcher(bot, go, check);
         Cell::VisitObjects(bot, searcher, bot->GetVisibilityRange());
         return go != nullptr;
+    }
+
+    // [supply113] a cook lights its own fire as a player does: Basic Campfire (its spell's own reagents and tools,
+    // SpellInfo), when the fire it makes is the focus the recipe needs (the summoned object's spellFocus)
+    bool CanLightFire(Player* bot, uint32 focusId)
+    {
+        SpellInfo const* fire = sSpellMgr->GetSpellInfo(SPELL_BASIC_CAMPFIRE);
+        if (!fire || !focusId || !bot->HasSpell(SPELL_BASIC_CAMPFIRE) || bot->HasSpellCooldown(SPELL_BASIC_CAMPFIRE))
+            return false;
+        bool makesFocus = false;
+        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+            if (GameObjectTemplate const* go =
+                    fire->Effects[e].MiscValue > 0
+                        ? sObjectMgr->GetGameObjectTemplate(uint32(fire->Effects[e].MiscValue))
+                        : nullptr;
+                go && go->type == GAMEOBJECT_TYPE_SPELL_FOCUS && go->spellFocus.focusId == focusId)
+                makesFocus = true;
+        if (!makesFocus)
+            return false;
+        for (uint8 i = 0; i < MAX_SPELL_REAGENTS; ++i)
+            if (fire->Reagent[i] > 0 && fire->ReagentCount[i] > 0 &&
+                !bot->HasItemCount(uint32(fire->Reagent[i]), fire->ReagentCount[i]))
+                return false;
+        for (uint32 totem : fire->Totem)
+            if (totem && !bot->HasItemCount(totem, 1))
+                return false;
+        for (uint32 category : fire->TotemCategory)  // the tool by its kind (Flint and Tinder)
+            if (category && !bot->HasItemTotemCategory(category))
+                return false;
+        return true;
+    }
+
+    bool LightFire(Player* bot, uint32 focusId)
+    {
+        if (FocusNear(bot, focusId) || !CanLightFire(bot, focusId) || bot->IsNonMeleeSpellCast(false))
+            return false;
+        bool const lit = bot->CastSpell(bot, SPELL_BASIC_CAMPFIRE, false) == SPELL_CAST_OK;
+        LOG_INFO("playerbots", "[supply113] {} L{} {} a Basic Campfire to cook", bot->GetName(), bot->GetLevel(),
+                 lit ? "lights" : "could not light");
+        return lit;
     }
 
     uint32 Budget(PlayerbotAI* botAI, Player* bot)
@@ -819,6 +860,10 @@ bool NewRpgDoProfessionAction::ExecuteCraft(NewRpgInfo::DoProfession& data)
         info.ChangeToIdle();
         return true;
     }
+    // [supply113] no fire here for a cooking recipe: the cook lights its own first (the next tick crafts)
+    if (uint32 const focus = NewRpgCraft::RecipeFocus(spell); focus && !NewRpgCraft::FocusNear(bot, focus) &&
+        NewRpgCraft::LightFire(bot, focus))
+        return true;
     uint32 const skill = NewRpgCraft::RecipeSkill(spell);
     data.skill = skill;
     data.skillBefore = bot->HasSkill(skill) ? bot->GetPureSkillValue(skill) : 0;
