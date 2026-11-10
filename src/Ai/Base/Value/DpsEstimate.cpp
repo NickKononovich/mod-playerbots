@@ -344,13 +344,15 @@ std::vector<SpecRotation> const& Rotations()
           {"Curse of Agony", Kind::Dot},
           {"Immolate", Kind::Dot},
           {"Shadow Bolt", Kind::Filler}}},
-        // DemonologyWarlockStrategy: Corruption, Immolate, Shadow Bolt before Incinerate (Molten Core only); no Curse
-        // of Agony (WarlockCurseOfAgonyStrategy is Affliction's)
+        // DemonologyWarlockStrategy: Corruption, Immolate, Shadow Bolt before Incinerate (Molten Core only); [dps235]
+        // Curse of Agony too: AiFactory gives Demonology the "curse of agony" strategy (b426-b429: 0.9-1.0 casts a
+        // fight against a formula that had none)
         {CLASS_WARLOCK,
          1,
          true,
          {{"Corruption", Kind::Dot},
           {"Immolate", Kind::Dot},
+          {"Curse of Agony", Kind::Dot},
           {"Shadow Bolt", Kind::Filler},
           {"Incinerate", Kind::Filler}}},
         // DestructionWarlockStrategy [rot410]: no Corruption (the wowsims destro APL never casts it); [rot601] Immolate
