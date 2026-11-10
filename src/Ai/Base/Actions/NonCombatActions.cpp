@@ -13,6 +13,7 @@
 #include "Playerbots.h"
 #include "StringFormat.h"
 #include "Timer.h"
+#include "Transport.h"  // [ride133]
 #include "TravelMgr.h"  // [ride133] the trip's exit stop
 
 #include <unordered_map>
