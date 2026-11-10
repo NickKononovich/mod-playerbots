@@ -1704,7 +1704,8 @@ void GuildCoordinator::AutoFive()
                 if (DungeonRefusal(*d, c.player, true).empty())
                     walkPool.push_back(c);
             }
-            if (!PickFive(finderPool, five) && !PickFive(walkPool, five))
+            bool const fromFinder = PickFive(finderPool, five);
+            if (!fromFinder && !PickFive(walkPool, five))
             {
                 if (guardCount == 0 && lookWhy[d->contentKey].find(" -> ") == std::string::npos)
                     lookWhy[d->contentKey] += Acore::StringFormat(
@@ -1740,7 +1741,61 @@ void GuildCoordinator::AutoFive()
             std::vector<Player*> players;
             for (FiveCandidate const& c : five)
                 players.push_back(c.player);
-            FiveGate::Verdict const verdict = FiveGate::Judge(d->mapId, players);
+            FiveGate::Verdict verdict = FiveGate::Judge(d->mapId, players);
+            // [gate93] the gate judges the five PickFive took (its tank and healer by level); another tank / healer of
+            // the same pool may carry the dungeon (a healer's mana pool, a tank's armor): each pair is judged, the
+            // first that clears is the five. b411: dm-n "13 of 167 pulls over capacity; worst 2.35: ... heal mana 993
+            // of 422" on Aestymro (paladin, 422 mana) with Ganna, sfk-n "14 of 103 ... heal mana 3824 of 422" -
+            // the healer and tank PickFive happened to put first
+            if (!verdict.clears)
+            {
+                std::vector<FiveCandidate> const& usedPool = fromFinder ? finderPool : walkPool;
+                std::vector<FiveCandidate const*> tanks, healers;
+                for (FiveCandidate const& c : usedPool)
+                for (FiveCandidate const& c : usedPool)
+                {
+                    if (c.role == "tank")
+                        tanks.push_back(&c);
+                    else if (c.role == "healer")
+                        healers.push_back(&c);
+                }
+                auto const byLevel = [](FiveCandidate const* a, FiveCandidate const* b)
+                { return a->player->GetLevel() > b->player->GetLevel(); };
+                std::stable_sort(tanks.begin(), tanks.end(), byLevel);
+                std::stable_sort(healers.begin(), healers.end(), byLevel);
+                constexpr size_t PAIRS_SIDE = 4;  // the look's cost bound: the 4 highest of each role (16 judges)
+                if (tanks.size() > PAIRS_SIDE)
+                    tanks.resize(PAIRS_SIDE);
+                if (healers.size() > PAIRS_SIDE)
+                    healers.resize(PAIRS_SIDE);
+                bool found = false;
+                for (FiveCandidate const* t : tanks)
+                {
+                    for (FiveCandidate const* h : healers)
+                    {
+                        if (t->low == five[0].low && h->low == five[1].low)
+                            continue;  // the pair judged above
+                        std::vector<Player*> alt = players;
+                        alt[0] = t->player;
+                        alt[1] = h->player;
+                        FiveGate::Verdict const altVerdict = FiveGate::Judge(d->mapId, alt);
+                        if (!altVerdict.clears)
+                            continue;
+                        LOG_INFO("playerbots", "[gate93] five for {}: {} / {} did not clear ({}); {} tank, {} healer "
+                                 "clear: {}",
+                                 d->contentKey, five[0].player->GetName(), five[1].player->GetName(), verdict.why,
+                                 t->player->GetName(), h->player->GetName(), altVerdict.why);
+                        five[0] = *t;
+                        five[1] = *h;
+                        players = alt;
+                        verdict = altVerdict;
+                        found = true;
+                        break;
+                    }
+                    if (found)
+                        break;
+                }
+            }
             if (!verdict.clears)
             {
                 if (guardCount == 0)
