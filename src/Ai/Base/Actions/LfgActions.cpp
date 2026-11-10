@@ -5,6 +5,7 @@
  */
 
 #include "LfgActions.h"
+#include <unordered_map>
 #include "LeaderDungeonRun.h"  // [lfg26]
 #include "AiFactory.h"
 #include "ItemVisitors.h"
@@ -255,16 +256,29 @@ bool LfgAcceptAction::Execute(Event event)
 
     uint32 id = AI_VALUE(uint32, "lfg proposal");
 
+    // [lfg74] a fight (or its death) holds the answer, it declines nothing: the proposal stays stored and is accepted
+    // once the fight is over, within the core's proposal time (LFG_TIME_PROPOSAL). b406 five 2 (rfc-n, Laaral):
+    // queued 1 s after five 1, "the group was not moved (role check / proposal)" within 2 s - a member fighting on
+    // its way answered the proposal "no" and the core dropped the five from the queue
+    auto const holds = [this](uint32 proposal)
+    {
+        if (!bot->IsInCombat() && !bot->isDead())
+            return false;
+        botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(proposal);
+        thread_local std::unordered_map<uint64, uint32> heldLogged;  // a log cadence, no decision reads it
+        if (uint32& last = heldLogged[bot->GetGUID().GetRawValue()]; last != proposal)
+        {
+            last = proposal;
+            LOG_INFO("playerbots", "[lfg74] {} holds its Dungeon Finder answer for proposal {}: {}", bot->GetName(),
+                     proposal, bot->isDead() ? "dead" : "in a fight");
+        }
+        return true;
+    };
     // Try accept if already stored
     if (id)
     {
-        if (bot->IsInCombat() || bot->isDead())
-        {
-            WorldPacket* packet = new WorldPacket(CMSG_LFG_PROPOSAL_RESULT);
-            *packet << id << false;
-            bot->GetSession()->QueuePacket(packet);
-            return true;
-        }
+        if (holds(id))
+            return false;
 
         botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(0);
         bot->ClearUnitState(UNIT_STATE_ALL_STATE);
@@ -293,13 +307,8 @@ bool LfgAcceptAction::Execute(Event event)
 
         if (id)
         {
-            if (bot->IsInCombat() || bot->isDead())
-            {
-                WorldPacket* packet = new WorldPacket(CMSG_LFG_PROPOSAL_RESULT);
-                *packet << id << false;
-                bot->GetSession()->QueuePacket(packet);
-                return true;
-            }
+            if (holds(id))
+                return false;
 
             botAI->GetAiObjectContext()->GetValue<uint32>("lfg proposal")->Set(0);
             bot->ClearUnitState(UNIT_STATE_ALL_STATE);

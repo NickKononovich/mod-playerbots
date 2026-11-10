@@ -14,7 +14,8 @@ class PlayerbotAI;
 class LfgProposalActiveTrigger : public Trigger
 {
 public:
-    LfgProposalActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "lfg proposal active", 40 * IN_MILLISECONDS) {}
+    // [lfg74] looked at every second: a held answer goes out when its fight ends, within the proposal's time
+    LfgProposalActiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "lfg proposal active", 1 * IN_MILLISECONDS) {}
 
     bool IsActive() override;
 };
