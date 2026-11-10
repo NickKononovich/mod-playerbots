@@ -891,86 +891,161 @@ std::string GuildCoordinator::RoleOf(uint32 low) const
 // rule): spec 1 then holds its solo spec, spec 0 the role, switched as it joins or leaves a five.
 void GuildCoordinator::PlanRoles()
 {
-    std::set<std::pair<uint32, uint32>> bands;
-    for (DungeonOption const& d : dungeons_)
-        bands.emplace(d.walkMinLevel, d.maxLevel);
-    for (auto const& [lo, hi] : bands)
+    struct Band
     {
+        uint32 lo = 0;
+        uint32 hi = 0;
         std::vector<std::pair<PlanRow const*, Player*>> members;
-        for (PlanRow const& row : plan_)
+        uint32 fives = 0;
+        uint32 healTarget = 0;
+    };
+    std::vector<Band> bands;
+    {
+        std::set<std::pair<uint32, uint32>> keys;
+        for (DungeonOption const& d : dungeons_)
+            keys.emplace(d.walkMinLevel, d.maxLevel);
+        for (auto const& [lo, hi] : keys)
         {
-            if (row.grp < 'A' || row.grp > 'C')
+            Band band;
+            band.lo = lo;
+            band.hi = hi;
+            for (PlanRow const& row : plan_)
+            {
+                if (row.grp < 'A' || row.grp > 'C')
+                    continue;
+                Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                if (!p || !p->IsInWorld() || IsHuman(p) || p->GetLevel() < lo || p->GetLevel() > hi)
+                    continue;
+                band.members.emplace_back(&row, p);
+            }
+            if (band.members.size() < 5)
                 continue;
-            Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
-            if (!p || !p->IsInWorld() || IsHuman(p) || p->GetLevel() < lo || p->GetLevel() > hi)
-                continue;
-            members.emplace_back(&row, p);
+            band.fives = uint32(band.members.size() / 5);
+            // [roles107] user 2026-11-10: a spare healer per band, so one healer is not chained into every five -
+            // when the band has members past its full fives (the spare takes none of a five's 3 dps)
+            band.healTarget = band.fives + (band.members.size() > band.fives * 5 ? 1 : 0);
+            bands.push_back(std::move(band));
         }
-        if (members.size() < 5)
-            continue;
-        uint32 const fives = uint32(members.size() / 5);
-        auto roleNow = [this](uint32 low, Player* p)
+    }
+    auto roleNow = [this](uint32 low, Player* p)
+    {
+        std::string const planned = RoleOf(low);
+        return planned.empty() ? SpecRoleNow(p) : planned;
+    };
+    auto count = [&roleNow](Band const& band, std::string const& role)
+    {
+        uint32 n = 0;
+        for (auto const& [row, p] : band.members)
+            n += roleNow(row->low, p) == role ? 1 : 0;
+        return n;
+    };
+    // the user's rule: no respec inside a five
+    auto inFive = [this](uint32 low)
+    {
+        auto const st = bots_.find(low);
+        return st != bots_.end() && st->second.fiveId;
+    };
+    auto assign = [&](Band const& band, PlanRow const* row, Player* p, std::string const& role, uint32 points,
+                      std::string const& from)
+    {
+        uint32 const before = count(band, role);
+        RoleAssign a;
+        a.role = role;
+        a.spec = uint8(RoleSpecIndex(p->getClass(), role));
+        a.solo = SoloSpecIndex(p);
         {
-            std::string const planned = RoleOf(low);
-            return planned.empty() ? SpecRoleNow(p) : planned;
-        };
-        std::string text;
-        uint32 dps = 0;
-        std::map<std::string, std::vector<std::string>> lists;
-        std::map<std::string, uint32> counts;
-        for (auto const& [row, p] : members)
-            ++counts[roleNow(row->low, p)];
+            std::lock_guard<std::mutex> guard(roleLock_);
+            roleAssign_[row->low] = a;
+        }
+        // [roles62] the role spec outranks questing as a five does (b401: 10 healers assigned, all "respec at its
+        // trainer", and each kept its quest first - the fives had no healer meanwhile): the member leaves its quest
+        // now, New RPG's IDLE takes the trainer walk first (StartRoleSpec)
+        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p); ai && !p->IsInCombat() && SpecRoleNow(p) != role &&
+            ai->rpgInfo.GetStatus() != RPG_IDLE && !inFive(row->low) && !NewRpgCoop::InParty(row->low))
+            ai->rpgInfo.ChangeToIdle();
+        LOG_INFO("playerbots", "[roles59] {} L{} → {} ({}): band {}-{} has {} fives and {} {}s (target {}); {}; plan "
+                 "role {}, {} points in its tree, talents now {}",
+                 p->GetName(), p->GetLevel(), role, SpecName(p->getClass(), a.spec), band.lo, band.hi, band.fives,
+                 before, role, role == "healer" ? band.healTarget : band.fives, from, row->role, points,
+                 SpecRoleNow(p));
+    };
+    // the best member to take a role: the plan's own role first (guild_project_plan), then the most points already in
+    // the role's tree (the least loss), then the highest level
+    auto pick = [&](Band const& band, std::string const& role, std::function<bool(PlanRow const*, Player*)> const& may,
+                    uint32& bestPoints) -> std::pair<PlanRow const*, Player*>
+    {
+        std::pair<PlanRow const*, Player*> best{nullptr, nullptr};
+        bool bestPlanned = false;
+        bestPoints = 0;
+        for (auto const& [row, p] : band.members)
+        {
+            int8 const spec = RoleSpecIndex(p->getClass(), role);
+            if (spec < 0 || inFive(row->low) || !may(row, p))
+                continue;
+            std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(p);
+            uint32 const points = tabs[SpecTree(p->getClass(), uint8(spec))];
+            bool const planned = row->role == role;
+            if (best.first && std::make_tuple(planned, points, p->GetLevel()) <=
+                                  std::make_tuple(bestPlanned, bestPoints, best.second->GetLevel()))
+                continue;
+            best = {row, p};
+            bestPoints = points;
+            bestPlanned = planned;
+        }
+        return best;
+    };
+
+    for (Band const& band : bands)
+    {
+        // [roles107] user 2026-11-10 (b420 band 17-32: 12 members, 2 fives, 5 tanks, 1 healer, "short: 1 healers"):
+        // the plan only filled shortfalls and never took a surplus back. Tanks = the band's fives; a surplus tank of
+        // a class that heals (paladin, druid) becomes a healer while the band is short of healers - only one whose
+        // every other band keeps its own tanks, never one inside a five
+        while (count(band, "healer") < band.healTarget && count(band, "tank") > band.fives)
+        {
+            uint32 points = 0;
+            auto const [row, p] = pick(
+                band, "healer",
+                [&](PlanRow const* r, Player* m)
+                {
+                    if (roleNow(r->low, m) != "tank")
+                        return false;
+                    for (Band const& other : bands)
+                        if (&other != &band && m->GetLevel() >= other.lo && m->GetLevel() <= other.hi &&
+                            count(other, "tank") <= other.fives)
+                            return false;
+                    return true;
+                },
+                points);
+            if (!row)
+                break;
+            assign(band, row, p, "healer", points,
+                   Acore::StringFormat("[roles107] a surplus tank ({} tanks for {} fives) moves to heal",
+                                       count(band, "tank"), band.fives));
+        }
+        // the shortfalls from the band's hybrids playing damage: healers to their target, tanks to the fives
         for (std::string const role : {"healer", "tank"})
         {
-            while (counts[role] < fives)
+            uint32 const target = role == "healer" ? band.healTarget : band.fives;
+            while (count(band, role) < target)
             {
-                PlanRow const* best = nullptr;
-                Player* bestP = nullptr;
-                uint32 bestPoints = 0;
-                bool bestPlanned = false;
-                for (auto const& [row, p] : members)
-                {
-                    int8 const spec = RoleSpecIndex(p->getClass(), role);
-                    if (spec < 0 || roleNow(row->low, p) != "dps" || !RoleOf(row->low).empty())
-                        continue;
-                    std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(p);
-                    uint32 const points = tabs[SpecTree(p->getClass(), uint8(spec))];
-                    bool const planned = row->role == role;
-                    if (best && std::make_tuple(planned, points, p->GetLevel()) <=
-                                    std::make_tuple(bestPlanned, bestPoints, bestP->GetLevel()))
-                        continue;
-                    best = row;
-                    bestP = p;
-                    bestPoints = points;
-                    bestPlanned = planned;
-                }
-                if (!best)
+                uint32 points = 0;
+                auto const [row, p] = pick(band, role,
+                                           [&](PlanRow const* r, Player* m)
+                                           { return roleNow(r->low, m) == "dps" && RoleOf(r->low).empty(); },
+                                           points);
+                if (!row)
                     break;
-                RoleAssign assign;
-                assign.role = role;
-                assign.spec = uint8(RoleSpecIndex(bestP->getClass(), role));
-                assign.solo = SoloSpecIndex(bestP);
-                {
-                    std::lock_guard<std::mutex> guard(roleLock_);
-                    roleAssign_[best->low] = assign;
-                }
-                // [roles62] the role spec outranks questing as a five does (b401: 10 healers assigned, all "respec at
-                // its trainer", and each kept its quest first - the fives had no healer meanwhile): the member leaves
-                // its quest now, New RPG's IDLE takes the trainer walk first (StartRoleSpec)
-                auto const stIt = bots_.find(best->low);
-                if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bestP); ai && !bestP->IsInCombat() &&
-                    SpecRoleNow(bestP) != role && ai->rpgInfo.GetStatus() != RPG_IDLE &&
-                    (stIt == bots_.end() || !stIt->second.fiveId) && !NewRpgCoop::InParty(best->low))
-                    ai->rpgInfo.ChangeToIdle();
-                --counts["dps"];
-                ++counts[role];
-                LOG_INFO("playerbots", "[roles59] {} L{} → {} ({}): band {}-{} has {} fives and {} {}s; plan role {}, "
-                         "{} points in its tree, talents now {}",
-                         bestP->GetName(), bestP->GetLevel(), role, SpecName(bestP->getClass(), assign.spec), lo, hi,
-                         fives, counts[role] - 1, role, best->role, bestPoints, SpecRoleNow(bestP));
+                assign(band, row, p, role, points, "a damage hybrid takes the role");
             }
         }
-        for (auto const& [row, p] : members)
+    }
+
+    for (Band const& band : bands)
+    {
+        uint32 dps = 0;
+        std::map<std::string, std::vector<std::string>> lists;
+        for (auto const& [row, p] : band.members)
         {
             std::string const role = roleNow(row->low, p);
             if (role == "dps")
@@ -995,14 +1070,23 @@ void GuildCoordinator::PlanRoles()
                 out += (out.empty() ? "" : ", ") + s;
             return out;
         };
-        text = Acore::StringFormat("{} members, {} fives; healers {} ({}), tanks {} ({}), dps {}", members.size(), fives,
-                                   lists["healer"].size(), join(lists["healer"]), lists["tank"].size(),
-                                   join(lists["tank"]), dps);
-        if (lists["healer"].size() < fives || lists["tank"].size() < fives)
-            text += Acore::StringFormat("; short: {} healers, {} tanks (no damage hybrid of a class that can left)",
-                                        lists["healer"].size() < fives ? fives - lists["healer"].size() : 0,
-                                        lists["tank"].size() < fives ? fives - lists["tank"].size() : 0);
-        std::string const key = std::to_string(lo) + "-" + std::to_string(hi);
+        std::string text = Acore::StringFormat("{} members, {} fives; healers {} of target {} ({}), tanks {} ({}), "
+                                               "dps {}",
+                                               band.members.size(), band.fives, lists["healer"].size(),
+                                               band.healTarget, join(lists["healer"]), lists["tank"].size(),
+                                               join(lists["tank"]), dps);
+        if (lists["healer"].size() < band.healTarget || lists["tank"].size() < band.fives)
+            text += Acore::StringFormat("; short: {} healers, {} tanks (no free tank or damage hybrid of a class that "
+                                        "can left)",
+                                        lists["healer"].size() < band.healTarget
+                                            ? band.healTarget - lists["healer"].size()
+                                            : 0,
+                                        lists["tank"].size() < band.fives ? band.fives - lists["tank"].size() : 0);
+        if (lists["tank"].size() > band.fives)
+            text += Acore::StringFormat("; {} tanks over the fives (no healer class among them, or held by a five or "
+                                        "another band)",
+                                        lists["tank"].size() - band.fives);
+        std::string const key = std::to_string(band.lo) + "-" + std::to_string(band.hi);
         if (rolesWhy_[key] != text)
         {
             rolesWhy_[key] = text;
