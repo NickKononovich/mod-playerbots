@@ -1346,6 +1346,31 @@ namespace Leader::Dungeon
                     for (auto const& [member, info] : formation->GetMembers())
                         if (member && member != patrol && member->IsInWorld() && check(member))
                             walkers.push_back(member);
+                // [dun176] each walker's engage call where it walks into the fight (Creature::CallAssistance, the
+                // core's Acore::AnyAssistCreatureInRangeCheck within CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS) brings
+                // the idle mobs walking with it: b424 rfc-n five5 pull 7 judged "3 mobs" with one Ragefire Trogg
+                // walker taken along, 8 came and the five wiped
+                if (float const assistRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+                    assistRadius > 0.0f)
+                {
+                    std::list<Creature*> helpers;
+                    for (Creature* walker : walkers)
+                    {
+                        if (walker->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE))
+                            continue;
+                        std::list<Creature*> found;
+                        Acore::AnyAssistCreatureInRangeCheck assists(walker, tank, assistRadius);
+                        Acore::CreatureListSearcher<Acore::AnyAssistCreatureInRangeCheck> searcher(walker, found,
+                                                                                                    assists);
+                        Cell::VisitObjects(walker, searcher, assistRadius);
+                        for (Creature* helper : found)
+                            if (helper && check(helper) &&
+                                std::find(walkers.begin(), walkers.end(), helper) == walkers.end() &&
+                                std::find(helpers.begin(), helpers.end(), helper) == helpers.end())
+                                helpers.push_back(helper);
+                    }
+                    walkers.splice(walkers.end(), helpers);
+                }
                 std::vector<ObjectGuid> combined = LeaderPullMobs(lead.commit, lead.commitMob);
                 combined.insert(combined.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
                 for (Creature* walker : walkers)

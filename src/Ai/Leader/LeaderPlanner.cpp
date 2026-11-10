@@ -21,6 +21,7 @@
 #include "EscortProtect.h"  // [b36_ohb] EscortWalksIntoPack
 #include "EstimatedLifetimeValue.h"
 #include "Event.h"
+#include "GridNotifiers.h"  // [dun176] AnyAssistCreatureInRangeCheck
 #include "Group.h"
 #include "HealthTriggers.h"
 #include "InstanceScript.h"
@@ -10681,6 +10682,51 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     pack = atSpot;
                     overlaps = atSpotOverlaps;
                     walksBack = false;
+                }
+            }
+
+            // [dun176] fought where it stands, the mover walks into the fight: it comes, with what its engage call
+            // there brings (Creature::CallAssistance: the core's Acore::AnyAssistCreatureInRangeCheck round it),
+            // counted and held to the same gate, else no engage here. b424 rfc-n five5 pull 7 ("wanderer Ragefire
+            // Trogg (2 yd) can reach the fight spot ... fought where it stands", 2 planned, 8 came) and b428 five31
+            // pull 14 (3 planned) were taken with the mover uncounted and wiped
+            if (!walksBack && intruder.mob && intruder.mob->IsAlive())
+            {
+                std::vector<Unit*> together = pack;
+                auto const join = [&together](Unit* mob)
+                {
+                    if (std::find(together.begin(), together.end(), mob) == together.end())
+                        together.push_back(mob);
+                };
+                join(intruder.mob);
+                float const assistRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+                if (assistRadius > 0.0f && !intruder.mob->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE))
+                {
+                    Acore::AnyAssistCreatureInRangeCheck answers(intruder.mob, bot, assistRadius);
+                    for (ObjectGuid const& guid : possible)
+                        if (Creature* helper = botAI->GetCreature(guid);
+                            helper && IsIdleEnemy(bot, helper) && answers(helper))
+                            join(helper);
+                }
+                if (together.size() > pack.size())
+                {
+                    PackEstimate const togetherEstimate = EstimatePack(together, bot, groupDps, estimateMode);
+                    OverloadTerms togetherTerms;
+                    CarefulOverload(bot, togetherEstimate, strength, support, kit, measured, &togetherTerms);
+                    packSizes += Acore::StringFormat(", with {} walking in {}", intruder.mob->GetName(),
+                                                     togetherEstimate.mobs);
+                    if (!planFits(togetherEstimate, togetherTerms.Max(comfort)))
+                    {
+                        LOG_INFO("playerbots",
+                                 "[dun176] {}: {} not engaged where it stands: {} walks into the fight, {} mobs "
+                                 "over the gate ({:.2f})",
+                                 bot->GetName(), candidate->GetName(), FightIntruderNote(intruder),
+                                 togetherEstimate.mobs, togetherTerms.Max(comfort));
+                        return false;
+                    }
+                    pack = together;
+                    estimate = togetherEstimate;
+                    terms = togetherTerms;
                 }
             }
 
