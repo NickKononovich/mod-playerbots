@@ -6454,31 +6454,43 @@ std::string NewRpgBaseAction::LastResolveStats()
            " taken=" + std::to_string(resolveStats.taken) + " offered=" + std::to_string(resolveStats.offered);
 }
 
-void NewRpgBaseAction::ForEachHostileSpawn(Player* bot, float x, float y, float radius,
-                                           std::function<void(CreatureTemplate const*, float, float, float)> const& fn)
+void NewRpgBaseAction::ForEachSpawnReaching(uint32 mapId, float x, float y, float assist,
+                                            std::function<void(CreatureTemplate const*, float, float, float)> const& fn)
 {
     QuestSpawnIndex const& index = GetQuestSpawnIndex();
-    FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
-    if (!own)
-        return;
-    int32 const cells = int32(std::ceil(radius / MAX_AGGRO_RADIUS));
+    // [camp63] b405 froze 60 s in here: the scan ran over every cell within assist + the map's widest wander distance
+    // (one spawn with a huge wander area made it thousands of cells, per spot, per quest, per route build). Now the
+    // cells within assist + MAX_AGGRO_RADIUS hold every spawn whose own wander is up to MAX_AGGRO_RADIUS; the few
+    // with a wider wander area are kept in one list per map (built once from the read-only index) and looked at alone
+    static std::once_flag built;
+    static std::unordered_map<uint32, std::vector<MobSpawn const*>> wide;
+    std::call_once(built,
+                   [&index]
+                   {
+                       for (auto const& [key, cell] : index.mobCells)
+                           for (MobSpawn const& m : cell)
+                               if (m.wander > MAX_AGGRO_RADIUS)
+                                   wide[uint32(key >> 32)].push_back(&m);
+                   });
+    float const scanReach = assist + MAX_AGGRO_RADIUS;
+    int32 const cells = int32(std::ceil(scanReach / MAX_AGGRO_RADIUS));
     for (int32 dx = -cells; dx <= cells; ++dx)
         for (int32 dy = -cells; dy <= cells; ++dy)
         {
             auto const cell = index.mobCells.find(
-                MobCellKey(bot->GetMapId(), x + float(dx) * MAX_AGGRO_RADIUS, y + float(dy) * MAX_AGGRO_RADIUS));
+                MobCellKey(mapId, x + float(dx) * MAX_AGGRO_RADIUS, y + float(dy) * MAX_AGGRO_RADIUS));
             if (cell == index.mobCells.end())
                 continue;
             for (MobSpawn const& m : cell->second)
-            {
-                if (!SpawnPresent(m) || std::hypot(m.x - x, m.y - y) > radius)
-                    continue;
-                FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(m.tmpl->faction);
-                if (!faction || !faction->IsHostileTo(*own))
-                    continue;
-                fn(m.tmpl, m.x, m.y, m.wander);
-            }
+                if (m.wander <= MAX_AGGRO_RADIUS && SpawnPresent(m) &&
+                    std::hypot(m.x - x, m.y - y) <= assist + m.wander)
+                    fn(m.tmpl, m.x, m.y, m.wander);
         }
+    auto const wideHere = wide.find(mapId);
+    if (wideHere != wide.end())
+        for (MobSpawn const* m : wideHere->second)
+            if (SpawnPresent(*m) && std::hypot(m->x - x, m->y - y) <= assist + m->wander)
+                fn(m->tmpl, m->x, m->y, m->wander);
 }
 
 bool NewRpgBaseAction::ObjectiveTargetHere(Player* bot, uint32 questId, Unit* grindTarget)
