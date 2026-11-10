@@ -11495,6 +11495,20 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             fallback = found = tryPlan(bossWalkWakes, false, CAREFUL_FALLBACK_OVERLOAD, false, false);
             fallbackCost = false;
         }
+        // [lead117] b421 rfc-n five 16 (20261110-083457) pull 31, 5 deaths: "no safe pull: Searing Blade Cultist as
+        // it comes: 5 mobs, cost 4.41 tank hp, overload 2.53" - then Taragaman "pulled where he stands; the walk wakes
+        // Searing Blade Enforcer: it joins his fight", and the boss came with that whole pack. The walk to the boss
+        // wakes it whatever the plan: its pack apart from the boss is less than the boss's fight on top of it, so it
+        // is planned first at any overload (the leader's readiness lines still hold the pull until the group is up)
+        if (!found)
+        {
+            fallbackCost = true;
+            fallback = found = tryPlan(bossWalkWakes, false, std::numeric_limits<float>::max(), false, false);
+            fallbackCost = false;
+            if (found)
+                LOG_INFO("playerbots", "[lead117] {}: the walk to {} wakes {}: its pack first, apart from the boss",
+                         bot->GetName(), target->GetName(), bossWalkWakes->GetName());
+        }
         if (found)
             _planReason = Acore::StringFormat("the walk to {} wakes {}, taken first; ", target->GetName(),
                                               bossWalkWakes->GetName()) +
