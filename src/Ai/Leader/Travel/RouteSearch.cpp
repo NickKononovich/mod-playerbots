@@ -515,7 +515,10 @@ namespace Leader
 
     RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& toAsked)
     {
-        SlowScope slow("route search");  // [perf26]
+        // [perf26] [patrol101] the walker named: a slow search is its bot's (b417's 5.4 s tick had 100 unnamed
+        // 200-430 ms searches in one health window)
+        std::string const walkerName = walker ? walker->GetName() : std::string("-");
+        SlowScope slow("route search", &walkerName);
         PMON_SCOPE(routeScope, PERF_MON_VALUE, "leader route search");  // [guild15]
         constexpr float ROUTE_SAMPLE_YD = 4.0f;  // PathGenerator's smooth step: the checks keep their spacing
         // [deaths] user 2026-11-08: a solo bot's walk from where it stands to the target it engages from a pull spot
