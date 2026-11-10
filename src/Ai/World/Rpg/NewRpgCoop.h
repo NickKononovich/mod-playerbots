@@ -122,6 +122,9 @@ struct StaticCampPrice
 };
 bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot, std::string& why,
                     StaticCampPrice* out = nullptr);
+// [static69] the static pack a walk past the spawn at (x, y) wakes (it and what its engage call reaches) is lost by the
+// bot even at full (the same judge math, the cached pack)
+bool StaticPackLostAt(Player* bot, float x, float y, uint32* mobsOut = nullptr);
 // [camp63] such a camp goes to the co-op seek (guildmates on the same objective) and the camp-help request at once,
 // never walked to first; one seek / request per objective as the live refusal posts them
 void OnStaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot,

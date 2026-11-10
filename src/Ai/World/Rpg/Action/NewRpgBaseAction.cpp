@@ -4623,8 +4623,9 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             bool const elite = tmpl->rank == CREATURE_ELITE_ELITE || tmpl->rank == CREATURE_ELITE_RAREELITE ||
                                tmpl->rank == CREATURE_ELITE_WORLDBOSS;
             XPColorChar const color = Acore::XP::GetColorCode(level, tmpl->maxlevel);
-            if (!elite && color != XP_RED && color != XP_ORANGE)
-                continue;
+            bool const never = elite || color == XP_RED || color == XP_ORANGE;
+            if (!never && color == XP_GRAY)
+                continue;  // [static69] a grey mob of its own: no pack to price
             if (!SpawnPresent(spawn))
                 continue;
             FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(tmpl->faction);
@@ -4637,6 +4638,12 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             bool covers = false;
             for (size_t i = fromIndex; i < points.size() && !covers; i += 2)  // every 8 yd: within a reach
                 covers = std::hypot(points[i].x - spawn.x, points[i].y - spawn.y) <= radius;
+            // [static69] a mob of its own band the walk passes beyond its sight: the pack its aggro wakes (it and
+            // what its engage call reaches: the cached static pack) priced with the judge's math at full - a lost
+            // one is refused as the live search refuses a pack that "loses at full" in sight. b406: 98 "loses at
+            // full" and 203 "pack above its level" maze walls met only on arrival
+            if (covers && !never && !NewRpgCoop::StaticPackLostAt(bot, spawn.x, spawn.y))
+                continue;
             if (covers)
                 discs.emplace_back(spawn.x, spawn.y, spawn.z, radius);
         }
