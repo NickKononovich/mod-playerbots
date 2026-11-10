@@ -260,6 +260,8 @@ namespace FiveGate
             uint32 leader = 0;
             G3D::Vector3 pos;
             Mob mob;
+            uint32 faction = 0;     // [gate94]
+            bool noAssist = false;  // [gate94] CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE
         };
         std::vector<Spawn> spawns;
         if (QueryResult result = WorldDatabase.Query(
@@ -285,6 +287,8 @@ namespace FiveGate
                 s.guid = f[0].Get<uint32>();
                 s.pos = G3D::Vector3(f[2].Get<float>(), f[3].Get<float>(), f[4].Get<float>());
                 s.leader = f[5].Get<uint32>();
+                s.faction = tmpl->faction;
+                s.noAssist = (tmpl->flags_extra & CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE) != 0;
                 s.mob.entry = tmpl->Entry;
                 s.mob.name = tmpl->Name;
                 s.mob.level = tmpl->maxlevel;
@@ -308,7 +312,16 @@ namespace FiveGate
                 Spawn const& other = spawns[j];
                 bool const formation = (seed.leader && (other.leader == seed.leader || other.guid == seed.leader)) ||
                                        (other.leader && other.leader == seed.guid);
-                if (&other == &seed || formation || (assist > 0.0f && (other.pos - seed.pos).length() <= assist))
+                // [gate94] the core's engage call (Creature::CallAssistance / CanAssistTo): not by a mob flagged
+                // CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE, and only to a mob of a faction friendly to the caller's
+                bool assists = assist > 0.0f && !seed.noAssist && (other.pos - seed.pos).length() <= assist;
+                if (assists && seed.faction != other.faction)
+                {
+                    FactionTemplateEntry const* a = sFactionTemplateStore.LookupEntry(seed.faction);
+                    FactionTemplateEntry const* b = sFactionTemplateStore.LookupEntry(other.faction);
+                    assists = a && b && b->IsFriendlyTo(*a);
+                }
+                if (&other == &seed || formation || assists)
                     members.push_back(j);
             }
             std::vector<uint32> key;
@@ -408,6 +421,9 @@ namespace FiveGate
         float const armor = float(tank->GetArmor());
         float const healMana = heal.maxMana;
         float const gap = std::max(heal.gapSec, 1.5f);
+        float const regenCasting =
+            healer->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + AsUnderlyingType(POWER_MANA));
+        float const regenFull = healer->GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER + AsUnderlyingType(POWER_MANA));
 
         float worst = 0.0f;
         std::string worstWhy;
@@ -444,7 +460,14 @@ namespace FiveGate
             float const healNeeded = std::max(0.0f, intake - drop);
             float const manaNeeded = heal.healPerMana > 0.0f ? healNeeded / heal.healPerMana : 0.0f;
             float const dropShare = tankHealth > 0.0f ? (deepest + startRate * gap) / tankHealth : 99.0f;
-            float const manaShare = healMana > 0.0f ? manaNeeded / healMana : (healNeeded > 0.0f ? 99.0f : 0.0f);
+            // [gate94] the healer's mana over the fight: its pool (each pull from full: the five drinks before it,
+            // the leader's Rest) plus its regeneration during the fight - the core's while-casting rate (MP5, the
+            // talents' share of spirit: UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER) the whole fight, and its
+            // full rate (UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER) for the seconds it casts nothing past the 5-second rule
+            float const castSec = heal.hps > 0.0f ? healNeeded / heal.hps : t;
+            float const idleSec = std::max(0.0f, t - castSec - 5.0f);
+            float const fightMana = healMana + regenCasting * t + std::max(0.0f, regenFull - regenCasting) * idleSec;
+            float const manaShare = fightMana > 0.0f ? manaNeeded / fightMana : (healNeeded > 0.0f ? 99.0f : 0.0f);
             float const load = std::max(dropShare, manaShare);
             if (load > 1.0f)
                 ++failed;
@@ -459,9 +482,9 @@ namespace FiveGate
                 }
                 worstWhy = Acore::StringFormat(
                     "{}{} x{} (L{}-{}, {:.0f} hp): fight {:.0f} s, tank drop {:.0f} + one gap {:.0f} of {:.0f} hp "
-                    "({:.2f}), heal mana {:.0f} of {:.0f} ({:.2f})",
+                    "({:.2f}), heal mana {:.0f} of {:.0f} ({:.0f} pool + regen) ({:.2f})",
                     pack.boss ? "boss pull " : "", mobs.front().name, mobs.size(), lo, hi, pack.health, t, deepest,
-                    startRate * gap, tankHealth, dropShare, manaNeeded, healMana, manaShare);
+                    startRate * gap, tankHealth, dropShare, manaNeeded, fightMana, healMana, manaShare);
             }
         }
         out.clears = failed == 0 && judged > 0;
@@ -1762,7 +1785,9 @@ void GuildCoordinator::AutoFive()
                 auto const byLevel = [](FiveCandidate const* a, FiveCandidate const* b)
                 { return a->player->GetLevel() > b->player->GetLevel(); };
                 std::stable_sort(tanks.begin(), tanks.end(), byLevel);
-                std::stable_sort(healers.begin(), healers.end(), byLevel);
+                // [gate94] healers by their mana pool (the gate's binding term), not by level
+                std::stable_sort(healers.begin(), healers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
+                                 { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
                 constexpr size_t PAIRS_SIDE = 4;  // the look's cost bound: the 4 highest of each role (16 judges)
                 if (tanks.size() > PAIRS_SIDE)
                     tanks.resize(PAIRS_SIDE);
