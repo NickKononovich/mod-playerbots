@@ -183,6 +183,7 @@ struct GuildFive
     std::map<uint32, uint32> deaths;      // member -> deaths in the run
     bool forced{false};                   // formed by the command
     bool humanAlerted{false};
+    bool poolGoesIn{false};  // [supply100] its pooled supplies carried it: no member's restock holds it
     // the five-leader's roll decisions: (loot source guid, item) -> (member who needs it, 0: none; disenchant)
     std::map<std::pair<uint64, uint32>, std::pair<uint32, bool>> rolls;
 };
