@@ -641,6 +641,7 @@ private:
         bool upgrade{false};  // [need106] a needed upgrade in the dungeon's loot
         bool enchanter{false};
         uint32 repeats{0};  // [need106] its runs of the dungeon so far (a carrier with no need: the fewest first)
+        bool xp{false};      // [roles108] a healer the dungeon still gives experience (no other need)
     };
 
     void LoadPlan();
@@ -660,6 +661,7 @@ private:
     // [need106] the first boss item of the dungeon the member needs (its own spec's upgrade, not owned): its name,
     // "" = none
     std::string NeededUpgrade(DungeonOption const& d, Player* p) const;
+    bool GivesXp(DungeonOption const& d, Player* p) const;  // [roles108] its mobs give the member experience
     bool FreeForFive(uint32 low, Player* p, std::string* why = nullptr) const;  // lock_ held
     std::string PlanRole(uint32 low, Player* p) const;
     bool Cleared(std::string const& contentKey, uint32 low) const;  // lock_ held
@@ -909,6 +911,7 @@ private:
     mutable std::mutex roleLock_;
     std::unordered_map<uint32, RoleAssign> roleAssign_;
     std::map<std::string, std::string> rolesWhy_;  // band -> its last logged plan line
+    std::unordered_map<uint32, std::string> rosterLogged_;  // [roles108] member -> its last [roster] line
     std::string fiveLook_;                         // [five58] the last logged look line
     std::unordered_set<uint32> shutdownOut_;       // [cleft62] members sent out of their dungeon for the shutdown
     // [lfg69] dungeon -> member -> the level it was refused at (its walk to the entrance, the finder): left out of

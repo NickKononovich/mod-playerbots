@@ -26,6 +26,7 @@
 #include "DatabaseEnv.h"
 #include "DpsEstimate.h"  // [next1] the five gate
 #include "HealthTriggers.h"  // [next1] RestState::HealerThroughput
+#include "Formulas.h"  // [roles108] Acore::XP::GetGrayLevel
 #include "GameTime.h"
 #include "Group.h"
 #include "LFGMgr.h"  // [next1] whether the Dungeon Finder can port a five
@@ -799,6 +800,19 @@ std::string GuildCoordinator::NeededUpgrade(DungeonOption const& d, Player* p) c
     return "";
 }
 
+// [roles108] the dungeon's mobs still give the member experience: below the level cap, and its highest spawn (the
+// gate's packs: the bosses and trash as their templates make them) above the member's grey level (Acore::XP)
+bool GuildCoordinator::GivesXp(DungeonOption const& d, Player* p) const
+{
+    if (p->GetLevel() >= sWorld->getIntConfig(CONFIG_MAX_PLAYER_LEVEL))
+        return false;
+    uint8 top = 0;
+    for (FiveGate::Pack const& pack : FiveGate::Packs(d.mapId))
+        for (FiveGate::Mob const& mob : pack.mobs)
+            top = std::max(top, mob.level);
+    return top > Acore::XP::GetGrayLevel(p->GetLevel());
+}
+
 bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) const
 {
     auto refuse = [why](char const* text)
@@ -889,6 +903,10 @@ std::string GuildCoordinator::RoleOf(uint32 low) const
 // (PlayerbotFactory::InitTalentsTree reads RoleSpec), unlearns its talents at its class trainer for the core's price
 // (NewRpgProfession::StartRoleSpec), and from the dual spec level buys the second spec there (1000 g, the user's
 // rule): spec 1 then holds its solo spec, spec 0 the role, switched as it joins or leaves a five.
+// [roles108] user design 2026-11-10: the raid roster per 25 members (2-3 tanks, 5-6 healers: the upper ends)
+static constexpr uint32 RAID_TANKS_PER_25 = 3;
+static constexpr uint32 RAID_HEALERS_PER_25 = 6;
+
 void GuildCoordinator::PlanRoles()
 {
     struct Band
@@ -898,6 +916,7 @@ void GuildCoordinator::PlanRoles()
         std::vector<std::pair<PlanRow const*, Player*>> members;
         uint32 fives = 0;
         uint32 healTarget = 0;
+        uint32 tankTarget = 0;  // [roles108]
     };
     std::vector<Band> bands;
     {
@@ -920,10 +939,19 @@ void GuildCoordinator::PlanRoles()
             }
             if (band.members.size() < 5)
                 continue;
-            band.fives = uint32(band.members.size() / 5);
-            // [roles107] user 2026-11-10: a spare healer per band, so one healer is not chained into every five -
-            // when the band has members past its full fives (the spare takes none of a five's 3 dps)
-            band.healTarget = band.fives + (band.members.size() > band.fives * 5 ? 1 : 0);
+            uint32 const n = uint32(band.members.size());
+            band.fives = n / 5;
+            // [roles108] user design 2026-11-10: the standing roster is sized for raids - 2-3 tanks and 5-6 healers per
+            // 25 members, kept at every level (each band its share: its members x 3 / 25 tanks, x 6 / 25 healers,
+            // rounded up). Tanks: that share, at most the band's fives
+            band.tankTarget = std::min(band.fives, (n * RAID_TANKS_PER_25 + 24) / 25);
+            // [roles107] a spare healer per band, so one healer is not chained into every five - when the band has
+            // members past its full fives; [roles108] at least the band's raid share, and never so many that its fives
+            // lack their 3 dps
+            uint32 const spare = n > band.fives * 5 ? 1 : 0;
+            uint32 const dpsRoom = n - band.tankTarget - 3 * band.fives;
+            band.healTarget = std::min(std::max(band.fives + spare, (n * RAID_HEALERS_PER_25 + 24) / 25),
+                                       std::max(dpsRoom, band.fives));
             bands.push_back(std::move(band));
         }
     }
@@ -966,7 +994,7 @@ void GuildCoordinator::PlanRoles()
         LOG_INFO("playerbots", "[roles59] {} L{} → {} ({}): band {}-{} has {} fives and {} {}s (target {}); {}; plan "
                  "role {}, {} points in its tree, talents now {}",
                  p->GetName(), p->GetLevel(), role, SpecName(p->getClass(), a.spec), band.lo, band.hi, band.fives,
-                 before, role, role == "healer" ? band.healTarget : band.fives, from, row->role, points,
+                 before, role, role == "healer" ? band.healTarget : band.tankTarget, from, row->role, points,
                  SpecRoleNow(p));
     };
     // the best member to take a role: the plan's own role first (guild_project_plan), then the most points already in
@@ -1001,7 +1029,7 @@ void GuildCoordinator::PlanRoles()
         // the plan only filled shortfalls and never took a surplus back. Tanks = the band's fives; a surplus tank of
         // a class that heals (paladin, druid) becomes a healer while the band is short of healers - only one whose
         // every other band keeps its own tanks, never one inside a five
-        while (count(band, "healer") < band.healTarget && count(band, "tank") > band.fives)
+        while (count(band, "healer") < band.healTarget && count(band, "tank") > band.tankTarget)
         {
             uint32 points = 0;
             auto const [row, p] = pick(
@@ -1012,7 +1040,7 @@ void GuildCoordinator::PlanRoles()
                         return false;
                     for (Band const& other : bands)
                         if (&other != &band && m->GetLevel() >= other.lo && m->GetLevel() <= other.hi &&
-                            count(other, "tank") <= other.fives)
+                            count(other, "tank") <= other.tankTarget)
                             return false;
                     return true;
                 },
@@ -1020,13 +1048,37 @@ void GuildCoordinator::PlanRoles()
             if (!row)
                 break;
             assign(band, row, p, "healer", points,
-                   Acore::StringFormat("[roles107] a surplus tank ({} tanks for {} fives) moves to heal",
-                                       count(band, "tank"), band.fives));
+                   Acore::StringFormat("[roles107] a surplus tank ({} tanks for a target of {}) moves to heal",
+                                       count(band, "tank"), band.tankTarget));
+        }
+        // [roles108] and the other way: a surplus healer of a class that tanks (paladin, druid) tanks while the band
+        // is short of tanks
+        while (count(band, "tank") < band.tankTarget && count(band, "healer") > band.healTarget)
+        {
+            uint32 points = 0;
+            auto const [row, p] = pick(
+                band, "tank",
+                [&](PlanRow const* r, Player* m)
+                {
+                    if (roleNow(r->low, m) != "healer")
+                        return false;
+                    for (Band const& other : bands)
+                        if (&other != &band && m->GetLevel() >= other.lo && m->GetLevel() <= other.hi &&
+                            count(other, "healer") <= other.healTarget)
+                            return false;
+                    return true;
+                },
+                points);
+            if (!row)
+                break;
+            assign(band, row, p, "tank", points,
+                   Acore::StringFormat("[roles108] a surplus healer ({} healers for a target of {}) moves to tank",
+                                       count(band, "healer"), band.healTarget));
         }
         // the shortfalls from the band's hybrids playing damage: healers to their target, tanks to the fives
         for (std::string const role : {"healer", "tank"})
         {
-            uint32 const target = role == "healer" ? band.healTarget : band.fives;
+            uint32 const target = role == "healer" ? band.healTarget : band.tankTarget;
             while (count(band, role) < target)
             {
                 uint32 points = 0;
@@ -1070,28 +1122,77 @@ void GuildCoordinator::PlanRoles()
                 out += (out.empty() ? "" : ", ") + s;
             return out;
         };
-        std::string text = Acore::StringFormat("{} members, {} fives; healers {} of target {} ({}), tanks {} ({}), "
-                                               "dps {}",
+        std::string text = Acore::StringFormat("{} members, {} fives; healers {} of target {} ({}), tanks {} of "
+                                               "target {} ({}), dps {}",
                                                band.members.size(), band.fives, lists["healer"].size(),
                                                band.healTarget, join(lists["healer"]), lists["tank"].size(),
-                                               join(lists["tank"]), dps);
-        if (lists["healer"].size() < band.healTarget || lists["tank"].size() < band.fives)
+                                               band.tankTarget, join(lists["tank"]), dps);
+        if (lists["healer"].size() < band.healTarget || lists["tank"].size() < band.tankTarget)
             text += Acore::StringFormat("; short: {} healers, {} tanks (no free tank or damage hybrid of a class that "
                                         "can left)",
                                         lists["healer"].size() < band.healTarget
                                             ? band.healTarget - lists["healer"].size()
                                             : 0,
-                                        lists["tank"].size() < band.fives ? band.fives - lists["tank"].size() : 0);
-        if (lists["tank"].size() > band.fives)
-            text += Acore::StringFormat("; {} tanks over the fives (no healer class among them, or held by a five or "
+                                        lists["tank"].size() < band.tankTarget ? band.tankTarget - lists["tank"].size()
+                                                                               : 0);
+        if (lists["tank"].size() > band.tankTarget)
+            text += Acore::StringFormat("; {} tanks over the target (no healer class among them, or held by a five or "
                                         "another band)",
-                                        lists["tank"].size() - band.fives);
+                                        lists["tank"].size() - band.tankTarget);
         std::string const key = std::to_string(band.lo) + "-" + std::to_string(band.hi);
         if (rolesWhy_[key] != text)
         {
             rolesWhy_[key] = text;
             LOG_INFO("playerbots", "[roles59] band {}: {}", key, text);
         }
+    }
+
+    // [roles108] user design 2026-11-10: the global leader's roster - per member what it can play (its class), what
+    // it plays now (its talents), its planned role and spec, its dual spec - the facts the roles are planned from.
+    // One line per member when its facts change; the guild's totals against the raid roster
+    uint32 total = 0;
+    std::map<std::string, uint32> guildRoles;
+    for (PlanRow const& row : plan_)
+    {
+        if (row.grp < 'A' || row.grp > 'C')
+            continue;
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+        if (!p || !p->IsInWorld() || IsHuman(p))
+            continue;
+        ++total;
+        std::string const role = roleNow(row.low, p);
+        ++guildRoles[role];
+        uint8 const cls = p->getClass();
+        std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(p);
+        std::string const planned = RoleOf(row.low);
+        std::string line = Acore::StringFormat(
+            "{} L{} class {}: can heal {}, can tank {}; talents now tree {} ({}/{}/{} points, plays {}); role {}{}",
+            Who(row.low), p->GetLevel(), uint32(cls), RoleSpecIndex(cls, "healer") >= 0 ? "yes" : "no",
+            RoleSpecIndex(cls, "tank") >= 0 ? "yes" : "no", uint32(AiFactory::GetPlayerSpecTab(p)), tabs[0], tabs[1],
+            tabs[2], SpecRoleNow(p), role, planned.empty() ? " (its talents)" : " (planned)");
+        {
+            std::lock_guard<std::mutex> guard(roleLock_);
+            if (auto const a = roleAssign_.find(row.low); a != roleAssign_.end())
+                line += Acore::StringFormat(", role spec {}, solo spec {}", SpecName(cls, a->second.spec),
+                                            SpecName(cls, a->second.solo));
+        }
+        line += p->GetSpecsCount() > 1
+                    ? Acore::StringFormat("; dual spec yes (active spec {} of 2)", uint32(p->GetActiveSpec()) + 1)
+                    : std::string("; dual spec no");
+        if (std::string& logged = rosterLogged_[row.low]; logged != line)
+        {
+            logged = line;
+            LOG_INFO("playerbots", "[roster] {}", line);
+        }
+    }
+    std::string const guildText = Acore::StringFormat(
+        "{} members: healers {} of the raid roster's {}, tanks {} of {}, dps {}", total, guildRoles["healer"],
+        (total * RAID_HEALERS_PER_25 + 24) / 25, guildRoles["tank"], (total * RAID_TANKS_PER_25 + 24) / 25,
+        guildRoles["dps"]);
+    if (rolesWhy_["guild"] != guildText)
+    {
+        rolesWhy_["guild"] = guildText;
+        LOG_INFO("playerbots", "[roles59] guild: {}", guildText);
     }
 }
 
@@ -1136,11 +1237,13 @@ bool GuildCoordinator::PickFive(std::vector<FiveCandidate> const& pool, std::vec
     std::stable_sort(sorted.begin(), sorted.end(),
                      [](FiveCandidate const& a, FiveCandidate const& b)
                      {
-                         bool const na = a.needsClear || a.upgrade, nb = b.needsClear || b.upgrade;
-                         if (na != nb)
-                             return na;
-                         if (na && a.needsClear != b.needsClear)
-                             return a.needsClear;  // [need106] an open clear before an upgrade
+                         // [need106] [roles108] an open clear, then a needed upgrade, then (a healer) the
+                         // dungeon's experience, then no need at all
+                         auto const rank = [](FiveCandidate const& c)
+                         { return c.needsClear ? 0 : c.upgrade ? 1 : c.xp ? 2 : 3; };
+                         if (rank(a) != rank(b))
+                             return rank(a) < rank(b);
+                         bool const na = rank(a) < 3;
                          // [need106] a carrier (no need of its own): the fewest repeats of the dungeon first
                          if (!na && a.repeats != b.repeats)
                              return a.repeats < b.repeats;
@@ -1836,6 +1939,7 @@ void GuildCoordinator::AutoFive()
             Player* p;
             bool cleared;
             bool inBand;
+            bool healer;  // [roles108]
         };
         std::vector<Probe> probes;
         {
@@ -1849,7 +1953,7 @@ void GuildCoordinator::AutoFive()
                     if (!p || IsHuman(p) || p->GetLevel() > d.maxLevel)
                         continue;
                     probes.push_back({&d, row.low, p, Cleared(d.contentKey, row.low),
-                                      p->GetLevel() >= d.walkMinLevel});
+                                      p->GetLevel() >= d.walkMinLevel, PlanRole(row.low, p) == "healer"});
                 }
         }
         std::unordered_map<std::string, std::pair<uint32, uint32>> band;  // content -> members in band, cleared
@@ -1861,6 +1965,10 @@ void GuildCoordinator::AutoFive()
             else if (probe.inBand)
                 if (std::string const item = NeededUpgrade(*probe.d, probe.p); !item.empty())
                     need = "upgrade " + item;
+            // [roles108] user design 2026-11-10: a healer levels in dungeons (a heal spec kills slowly outside) - an
+            // in-band dungeon whose mobs still give it experience is a need of its own
+            if (need.empty() && probe.healer && probe.inBand && GivesXp(*probe.d, probe.p))
+                need = "xp";
             if (probe.inBand)
             {
                 ++band[probe.d->contentKey].first;
@@ -2004,7 +2112,10 @@ void GuildCoordinator::AutoFive()
             if (auto const n = needs.find(d->contentKey); n != needs.end())
                 for (FiveCandidate& c : pool)
                     if (auto const m = n->second.find(c.low); m != n->second.end())
-                        c.upgrade = !c.needsClear && m->second != "clear";
+                    {
+                        c.upgrade = !c.needsClear && m->second.rfind("upgrade ", 0) == 0;
+                        c.xp = m->second == "xp";  // [roles108]
+                    }
             // the dps slots go to members with a need (user rule 2026-11-10: no repeat for nothing to gain); a tank or
             // healer with no need of its own goes again to carry the needy ones - PickFive takes a needy tank /
             // healer first, else the carrier with the fewest repeats of the dungeon
@@ -2142,15 +2253,15 @@ void GuildCoordinator::AutoFive()
                 {
                     if (c.role != "tank" && c.role != "healer")
                         continue;
-                    if (c.needsClear || c.upgrade)
+                    if (c.needsClear || c.upgrade || c.xp)
                     {
                         carry += Acore::StringFormat("; {} {}: needs it ({})", c.role, c.player->GetName(),
-                                                     c.needsClear ? "clear" : "upgrade");
+                                                     c.needsClear ? "clear" : c.upgrade ? "upgrade" : "xp");
                         continue;
                     }
-                    bool const needyFree = std::any_of(usedPool.begin(), usedPool.end(),
-                                                       [&c](FiveCandidate const& o)
-                                                       { return o.role == c.role && (o.needsClear || o.upgrade); });
+                    bool const needyFree =
+                        std::any_of(usedPool.begin(), usedPool.end(), [&c](FiveCandidate const& o)
+                                    { return o.role == c.role && (o.needsClear || o.upgrade || o.xp); });
                     carry += Acore::StringFormat("; {} {}: no need of its own, carries ({} run(s) of it) - {}", c.role,
                                                  c.player->GetName(), c.repeats,
                                                  needyFree ? "the needy " + c.role + "'s pair did not pass the gate"
