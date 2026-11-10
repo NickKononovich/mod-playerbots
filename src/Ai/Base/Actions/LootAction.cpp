@@ -605,7 +605,9 @@ bool StoreLootAction::Execute(Event event)
         if (!IsRealPlayer(botAI->GetMaster()) && AI_VALUE(uint8, "bag space") > 80)
         {
             ItemUsage usage = AI_VALUE2(ItemUsage, "item usage", itemid);
-            bool const isUsefulItem = proto->StartQuest ||
+            // [bag66] an item a quest in its log needs is useful whatever the item usage value says (b411: Jurdogs left
+            // q38's items on 4 Harvest Watchers / Golems with no line - the not-useful branch's 'no free stack' skip)
+            bool const isUsefulItem = itemQuest || proto->StartQuest ||
                                       (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH);
 
             if (isUsefulItem)
