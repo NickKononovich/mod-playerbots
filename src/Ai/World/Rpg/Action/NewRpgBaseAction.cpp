@@ -5347,6 +5347,16 @@ bool NewRpgBaseAction::LoginEscape()
         if ((zone->flags & AREA_FLAG_CAPITAL) && zone->team && zone->team != own && zone->team != AREATEAM_ANY &&
             HearthOut(std::string("[cleft62] logged in in the enemy capital ") + zone->area_name[0]))
             return true;
+        // [red85] ... or in a zone or subzone the other faction holds: b410 Alnia L16 / Dekorhan L16 (Alliance) logged
+        // in at (1347,-4382) by Orgrimmar's gate in Durotar and died to an Orgrimmar Grunt L75 before their first walk
+        AreaTableEntry const* area = sAreaTableStore.LookupEntry(bot->GetAreaId());
+        bool const enemyArea = area && area->zone && area->team && area->team != own && area->team != AREATEAM_ANY;
+        // a zone the other faction holds (AreaTable team: Durotar, the Barrens, Mulgore ... for the Alliance)
+        bool const enemyHome = zone->team && zone->team != own && zone->team != AREATEAM_ANY;
+        if ((enemyArea || enemyHome) &&
+            HearthOut(std::string("[red85] logged in in ") + (enemyArea ? area->area_name[0] : zone->area_name[0]) +
+                      ", held by the other faction"))
+            return true;
     }
     std::string who;
     std::vector<G3D::Vector3> spots;
