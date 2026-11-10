@@ -526,6 +526,9 @@ namespace Leader
         // [guild15] a solo walker's route that passes the reach of a mob (pack) it must not fight: no complete walk
         // round it exists (the destination lies inside the camp)
         bool throughRefused = false;
+        // [loop70] no walk because every way passes an area red for it ([zone38], an enemy capital [cap65]) or the
+        // static spawns it must not fight ([static39] / [static69] with no way round): a refusal, not a navmesh gap
+        bool refusedArea = false;
         std::string source;
         std::string Describe() const;  // "long route, complete" / "long route, partial" / "long route, none"
     };

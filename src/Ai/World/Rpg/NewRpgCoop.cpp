@@ -4307,16 +4307,20 @@ bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPositi
     {
         float const pullReach = PlayerbotAI::IsRanged(bot) ? Leader::Fight::LeaderSpellReach(bot)
                                                            : reachOf(*source) + bot->GetCombatReach();
-        constexpr uint32 DIRECTIONS = 12;  // the ring's directions round the source (a look's cost, no rule)
-        for (uint32 i = 0; i < DIRECTIONS && !pullSpot; ++i)
-        {
-            float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
-            float const px = source->x + std::cos(angle) * pullReach;
-            float const py = source->y + std::sin(angle) * pullReach;
-            pullSpot = std::none_of(hostile.begin(), hostile.end(),
-                                    [&](CampMob const* m)
-                                    { return m != source && std::hypot(m->x - px, m->y - py) <= reachOf(*m); });
-        }
+        // [camp63] b410: q12 / q3524 left out "fought where it stands" that b406's bots did (18 progress on q12):
+        // one 12-point ring at the full pull reach missed the spots the live pull search finds nearer the source.
+        // Rings at the whole reach, three quarters and half of it, 16 directions (a look's cost, no rule)
+        constexpr uint32 DIRECTIONS = 16;
+        for (float const share : {1.0f, 0.75f, 0.5f})
+            for (uint32 i = 0; i < DIRECTIONS && !pullSpot; ++i)
+            {
+                float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+                float const px = source->x + std::cos(angle) * pullReach * share;
+                float const py = source->y + std::sin(angle) * pullReach * share;
+                pullSpot = std::none_of(hostile.begin(), hostile.end(),
+                                        [&](CampMob const* m)
+                                        { return m != source && std::hypot(m->x - px, m->y - py) <= reachOf(*m); });
+            }
     }
     for (CampMob const* mp : hostile)
     {
@@ -4379,6 +4383,50 @@ bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPositi
                               pullSpot ? "pulled from outside the others' reach" : "fought where it stands", damage,
                               seconds, dps, ehpFull);
     return damage >= ehpFull;
+}
+
+bool StaticPackLostAt(Player* bot, float x, float y, uint32* mobsOut)
+{
+    if (!bot)
+        return false;
+    auto const start = std::chrono::steady_clock::now();
+    float const assist = std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS));
+    FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+    std::vector<CampMob> const& pack = CampPackAt(bot->GetMapId(), x, y);
+    // the pack a walk past the spawn wakes: it and the spawns its engage call reaches (the assistance radius, a
+    // wanderer from anywhere in its area)
+    std::vector<std::pair<float, float>> mobs;
+    for (CampMob const& m : pack)
+    {
+        if (m.dist > assist + m.wander)
+            continue;
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(m.tmpl->faction);
+        if (!own || !faction || !faction->IsHostileTo(*own))
+            continue;
+        mobs.push_back({m.hp, m.meleeDps * (1.0f - ArmorShare(bot, m.level))});
+    }
+    bool lost = false;
+    if (!mobs.empty())
+    {
+        float const dps = std::max(DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo), 1.0f);
+        std::sort(mobs.begin(), mobs.end(), [](auto const& a, auto const& b)
+                  { return a.second / std::max(a.first, 1.0f) > b.second / std::max(b.first, 1.0f); });
+        float seconds = 0.0f, damage = 0.0f;
+        for (auto const& [hp, mobDps] : mobs)
+        {
+            seconds += hp / dps;
+            damage += mobDps * seconds;
+        }
+        float const ehpFull = float(bot->GetMaxHealth()) + PetHealth(bot, true) +
+                              SurvivalKit::HealPoints(bot, seconds, float(bot->GetMaxPower(POWER_MANA)), true);
+        lost = damage >= ehpFull;
+    }
+    if (mobsOut)
+        *mobsOut = uint32(mobs.size());
+    campPricingUs += uint64(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+    ++campPricings;
+    return lost;
 }
 
 void OnStaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot,

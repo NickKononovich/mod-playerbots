@@ -3145,6 +3145,19 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         }
         else
         {
+            // [loop70] no route because every way passes an area red for it, an enemy capital or static spawns it
+            // must not fight: a refused walk (its quest postponed, its help asked), not a navmesh gap - the core's
+            // path fallback walked it on toward the refused area a leg at a time and back (b406 Orenem L15: a 4211 yd
+            // giver walk past Fallen Sky Lake, area level 26 - three "walks the core's path" legs, a MOVE_FAR_LOOP
+            // after 499 s)
+            if (SoloSafety::Applies(bot) && path.refusedArea)
+            {
+                LOG_INFO("playerbots", "[loop70] {} L{} walk to ({:.0f},{:.0f}) {:.0f} yd refused: every way passes "
+                         "an area or static spawns it must not walk through",
+                         bot->GetName(), bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY(), disToDest);
+                RefusedWalk(dest, "every way there passes an area or spawns it must not walk through (route search)");
+                return false;
+            }
             NoteWalkFailure(dest, Acore::StringFormat("no route (type {:#x})", uint32(type)));
             NoteFarSearchFailed();  // [guild15]
             // [guild14] the bot stands off the navmesh (PathGenerator's shortcut, NOT_USING_PATH: b303 Manue L7 on a
@@ -4623,8 +4636,9 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             bool const elite = tmpl->rank == CREATURE_ELITE_ELITE || tmpl->rank == CREATURE_ELITE_RAREELITE ||
                                tmpl->rank == CREATURE_ELITE_WORLDBOSS;
             XPColorChar const color = Acore::XP::GetColorCode(level, tmpl->maxlevel);
-            if (!elite && color != XP_RED && color != XP_ORANGE)
-                continue;
+            bool const never = elite || color == XP_RED || color == XP_ORANGE;
+            if (!never && color == XP_GRAY)
+                continue;  // [static69] a grey mob of its own: no pack to price
             if (!SpawnPresent(spawn))
                 continue;
             FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(tmpl->faction);
@@ -4637,6 +4651,12 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             bool covers = false;
             for (size_t i = fromIndex; i < points.size() && !covers; i += 2)  // every 8 yd: within a reach
                 covers = std::hypot(points[i].x - spawn.x, points[i].y - spawn.y) <= radius;
+            // [static69] a mob of its own band the walk passes beyond its sight: the pack its aggro wakes (it and
+            // what its engage call reaches: the cached static pack) priced with the judge's math at full - a lost
+            // one is refused as the live search refuses a pack that "loses at full" in sight. b406: 98 "loses at
+            // full" and 203 "pack above its level" maze walls met only on arrival
+            if (covers && !never && !NewRpgCoop::StaticPackLostAt(bot, spawn.x, spawn.y))
+                continue;
             if (covers)
                 discs.emplace_back(spawn.x, spawn.y, spawn.z, radius);
         }

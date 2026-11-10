@@ -713,6 +713,8 @@ namespace Leader
                 staticRefuse = kept;
                 RouteResult again = Route(walker, from, toAsked);
                 staticRefuse.clear();
+                if (!again.found)
+                    again.refusedArea = true;  // [loop70] no way round the spawns it must not fight
                 thread_local std::unordered_map<uint64, size_t> staticLogged;  // a log cadence, no decision reads it
                 size_t& last = staticLogged[bot->GetGUID().GetRawValue()];
                 if (last != kept.size())
@@ -766,6 +768,7 @@ namespace Leader
                              p.y);
                 }
                 result.found = false;
+                result.refusedArea = true;  // [loop70]
                 result.complete = false;
                 result.points.clear();
                 result.corners.clear();
