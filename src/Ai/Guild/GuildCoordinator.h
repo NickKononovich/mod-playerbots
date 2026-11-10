@@ -817,6 +817,8 @@ private:
     void ClassifyTask(GuildOrder& o);
     // [tasks] a member whose gear plan (now or later) holds this item, 0: none (lock_ held): no disenchant / sale
     uint32 PlannedFor(uint32 itemId) const;
+    // [ench155] the enchanter's own soulbound greens / blues nobody can take: onto its disenchant list (lock_ held)
+    void AddOwnDisenchants(BotState& st, Player* p);
     static bool TownReady(Player* bot, GuildOrder const& o);
     void LogTaskChanges(uint32 low, BotState& st, std::vector<GuildOrder> const& now);
     std::string TasksText(BotState const& st) const;

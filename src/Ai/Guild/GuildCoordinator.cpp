@@ -2027,6 +2027,8 @@ void GuildCoordinator::UpdateOrders()
         }
         FoundingOrders(st, row.low, p, orders);  // [guild80] found / sign / join the guild, buy the bank tab
         TransferOrders(row.low, p, orders);       // [guild81] trade / mail to a member, gold for the bank tab
+        if (!HumanCharacter(p) && p->HasSkill(SKILL_ENCHANTING) && p->HasSpell(SPELL_DISENCHANT))
+            AddOwnDisenchants(st, p);  // [ench155]
         if (!st.disenchant.empty())
         {
             GuildOrder o;
@@ -2805,6 +2807,44 @@ uint32 GuildCoordinator::PlannedFor(uint32 itemId) const
                 if (g.itemId == itemId)
                     return low;
     return 0;
+}
+
+// [ench155] lock_ held. The enchanter's own soulbound greens / blues in its bags (a quest reward, a BoP drop, the
+// piece an upgrade replaced): no member can take them (soulbound), so its own Disenchant makes them the guild's mats
+// instead of a vendor sale. Not one it wears better (GuildGear::Evaluate), not one a gear plan holds, not one its
+// skill cannot disenchant yet (RequiredDisenchantSkill). OnLoot skips soulbound items, so this bag look is their path.
+void GuildCoordinator::AddOwnDisenchants(BotState& st, Player* p)
+{
+    uint32 const skill = p->GetPureSkillValue(SKILL_ENCHANTING);
+    auto const look = [&](Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || !item->IsSoulBound() || !proto->DisenchantID || proto->Quality < ITEM_QUALITY_UNCOMMON ||
+            proto->Quality > ITEM_QUALITY_RARE ||
+            (proto->Class != ITEM_CLASS_ARMOR && proto->Class != ITEM_CLASS_WEAPON) ||
+            proto->RequiredDisenchantSkill < 0 || uint32(proto->RequiredDisenchantSkill) > skill)
+            return;
+        uint32 const guid = item->GetGUID().GetCounter();
+        if (std::find(st.disenchant.begin(), st.disenchant.end(), guid) != st.disenchant.end() ||
+            std::any_of(st.held.begin(), st.held.end(), [&](HeldItem const& h) { return h.itemGuidLow == guid; }) ||
+            PlannedFor(proto->ItemId))
+            return;
+        StatsWeightCalculator calc(p);
+        calc.SetItemSetBonus(false);
+        calc.SetOverflowPenalty(false);
+        GuildGear::Eval ev;
+        if (GuildGear::Evaluate(p, calc, proto, ev) && ev.gain > 0.0f)
+            return;  // it wears it (the bot's own equip takes it)
+        st.disenchant.push_back(guid);
+        LOG_INFO("playerbots", "[ench155] {} L{} will disenchant its own {} (soulbound, skill {}, needs {})",
+                 p->GetName(), p->GetLevel(), proto->Name1, skill, proto->RequiredDisenchantSkill);
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        look(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+        if (Bag* bag = p->GetBagByPos(b))
+            for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                look(bag->GetItemByPos(uint8(j)));
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -5283,6 +5323,27 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                         pick.why = "in the wanted list (" + w.forWhom + ")";
                         break;
                     }
+        // [ench154] an enchanter quester: a green it can disenchant itself (the reward is soulbound, only its own
+        // Disenchant turns it into the guild's enchanting mats - user rule: greens nobody wears are disenchanted, not
+        // sold); among them the one the core makes the most mats of (RequiredDisenchantSkill: the higher band)
+        if (best < 0.0f && m->HasSkill(SKILL_ENCHANTING) && m->HasSpell(SPELL_DISENCHANT))
+        {
+            int32 bestReq = -1;
+            for (uint8 i = 0; i < quest->GetRewChoiceItemsCount(); ++i)
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(quest->RewardChoiceItemId[i]);
+                    proto && proto->DisenchantID && proto->Quality >= ITEM_QUALITY_UNCOMMON &&
+                    (proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON) &&
+                    proto->RequiredDisenchantSkill <= int32(m->GetPureSkillValue(SKILL_ENCHANTING)) &&
+                    proto->RequiredDisenchantSkill > bestReq)
+                {
+                    best = 0.0f;
+                    bestReq = proto->RequiredDisenchantSkill;
+                    pick.index = i;
+                    pick.itemId = proto->ItemId;
+                    pick.why = "an upgrade for nobody: the enchanter disenchants it (skill " +
+                               std::to_string(m->GetPureSkillValue(SKILL_ENCHANTING)) + ") [ench154]";
+                }
+        }
         if (best < 0.0f)
         {
             uint32 price = 0;
@@ -5749,28 +5810,38 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
                      std::to_string(looter->GetPureSkillValue(SKILL_ENCHANTING)) + ")");
             return;
         }
+        // [ench153] to the guild's enchanter by the transfer flow (trade / mail / bank, GuildTransfer: whichever costs
+        // least), a guild bank or not - b426-b428: 5 greens sold "enchanter #6 Emdyl exists, no bank" while all five
+        // enchanters stood at skill 1-2. The enchanter the skill-up is worth most to: the lowest skill (Disenchant's
+        // skill-up chance falls from its yellow rank to its gray one, SkillLineAbility 13262: 20 / 60)
         uint32 enchanter = 0;
+        uint32 enchanterSkill = 0;
         for (PlanRow const& row : plan_)
             if (Player* m = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low)))
-                if (m->HasSkill(SKILL_ENCHANTING) && m->GetPureSkillValue(SKILL_ENCHANTING) >= req)
+                if (GET_PLAYERBOT_AI(m) && m->HasSkill(SKILL_ENCHANTING) && m->HasSpell(SPELL_DISENCHANT) &&
+                    m->GetPureSkillValue(SKILL_ENCHANTING) >= req &&
+                    (!enchanter || m->GetPureSkillValue(SKILL_ENCHANTING) < enchanterSkill))
                 {
                     enchanter = row.low;
-                    break;
+                    enchanterSkill = m->GetPureSkillValue(SKILL_ENCHANTING);
                 }
-        if (enchanter && GuildBankRun::BankState(looter, true).empty())
+        if (enchanter)
         {
-            if (held != st.held.end())
+            if (held == st.held.end())
             {
-                held->forLow = enchanter;
-                held->purpose = "disenchant " + Who(enchanter);
+                st.held.push_back({report.itemGuidLow, report.itemId, report.count, 0, "pending"});
+                held = std::prev(st.held.end());
             }
-            Decision(what + " → bank for the enchanter " + Who(enchanter));
+            held->forLow = enchanter;
+            held->purpose = "disenchant " + Who(enchanter);
+            Decision(what + " → to the enchanter " + Who(enchanter) + " (skill " + std::to_string(enchanterSkill) +
+                     ") to disenchant [ench153]");
             return;
         }
         release();
         st.sell.push_back(report.itemGuidLow);
-        Decision(what + " → sell: an upgrade for nobody, " +
-                 (enchanter ? "enchanter " + Who(enchanter) + " exists, no bank" : std::string("no enchanter")));
+        Decision(what + " → sell: an upgrade for nobody, no enchanter of skill " + std::to_string(req) +
+                 " [ench153]");
         return;
     }
     release();
@@ -5835,6 +5906,25 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
         {
             case GuildOrderType::DISENCHANT:
             {
+                // [ench151] Disenchant has a cast time and breaks on movement: a walking or fighting bot keeps its list
+                // (CastSpell refused the cast while it moved and the item was dropped from the list: b428 Emdyl's
+                // Warrior's Tunic "dropped DISENCHANT ... ended before its start", never disenchanted)
+                // (a sitting bot eats or drinks: it disenchants once it stands up)
+                if (!st.disenchant.empty() && (bot->IsInCombat() || bot->IsNonMeleeSpellCast(false) ||
+                                               bot->HasUnitState(UNIT_STATE_IN_FLIGHT) || bot->IsFlying() ||
+                                               !bot->IsStandState()))
+                    continue;
+                if (!st.disenchant.empty() && (bot->isMoving() || bot->IsMounted()))
+                {
+                    bot->StopMoving();
+                    if (bot->IsMounted())
+                        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+                    step.kind = GuildRunStep::BUSY;
+                    step.reason = "stops to disenchant";
+                    LOG_INFO("playerbots", "[ench151] {} L{} stops to disenchant {} items", bot->GetName(),
+                             bot->GetLevel(), st.disenchant.size());
+                    return step;
+                }
                 while (!st.disenchant.empty())
                 {
                     Item* item = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(st.disenchant.back()));
@@ -5848,13 +5938,22 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                                  bot->GetName(), item->GetTemplate()->Name1, Who(planned));
                         continue;
                     }
-                    if (item && !bot->IsNonMeleeSpellCast(false) && botAI->CastSpell(SPELL_DISENCHANT, bot, item))
+                    if (!item)
+                        continue;
+                    uint32 const skill = bot->GetPureSkillValue(SKILL_ENCHANTING);
+                    if (botAI->CastSpell(SPELL_DISENCHANT, bot, item))
                     {
+                        LOG_INFO("playerbots", "[ench151] {} L{} disenchants {} (skill {}/{})", bot->GetName(),
+                                 bot->GetLevel(), item->GetTemplate()->Name1, skill,
+                                 bot->GetPureMaxSkillValue(SKILL_ENCHANTING));
                         step.kind = GuildRunStep::BUSY;
                         step.reason = "disenchant " + item->GetTemplate()->Name1;
                         started(order);
                         return step;
                     }
+                    LOG_INFO("playerbots", "[ench151] {} L{} could not disenchant {} (skill {}, needs {}): dropped",
+                             bot->GetName(), bot->GetLevel(), item->GetTemplate()->Name1, skill,
+                             item->GetTemplate()->RequiredDisenchantSkill);
                 }
                 continue;
             }
@@ -6318,6 +6417,11 @@ bool GuildCoordinator::IsHeld(Player* bot, Item* item)
     for (HeldItem const& h : itr->second.held)
         if (h.itemGuidLow == item->GetGUID().GetCounter())
             return true;
+    // [ench152] an item on the enchanter's disenchant list: no vendor sale before the cast (an unbound green is
+    // ITEM_USAGE_VENDOR / AH for the enchanter's own usage value)
+    if (std::find(itr->second.disenchant.begin(), itr->second.disenchant.end(), item->GetGUID().GetCounter()) !=
+        itr->second.disenchant.end())
+        return true;
     // [recipes] a recipe item on its way to the member who learns it, or one it learns itself: no sale
     if (TransferHolds(item->GetGUID().GetCounter()) ||
         std::any_of(recipeLearn_.begin(), recipeLearn_.end(),
