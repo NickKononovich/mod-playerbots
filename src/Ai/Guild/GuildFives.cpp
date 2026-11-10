@@ -1377,18 +1377,22 @@ void GuildCoordinator::UpdateFives()
                 // again. b406 rfc-n five 4: Feette went in "short of drink 11" and ran dry at pull 20
                 if (!shortOf.empty() && st.supplyDone)
                 {
+                    // [supply79] waited for on a fact: a planned gold transfer of its supplies to it (the transfers
+                    // plan, GuildTransfer: a member whose spare money covers it, its channel open) whose sender is
+                    // online and still has the money; none, or refused, and it goes in as it is
                     bool donor = false;
                     if (st.supplyGoldShort)
-                        for (PlanRow const& row : plan_)
-                            if (Player* d = row.low == low ? nullptr
-                                                           : ObjectAccessor::FindConnectedPlayer(
-                                                                 ObjectGuid::Create<HighGuid::Player>(row.low));
-                                d && GET_PLAYERBOT_AI(d) && !IsHuman(d) &&
-                                FoundingFreeMoney(d) >= st.supplyGoldShort)
+                        for (auto const& [tid, t] : transfers_)
+                        {
+                            if (!t.gold || t.toLow != low || t.purpose != "supplies" || t.tradeRefused)
+                                continue;
+                            Player* d = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(t.fromLow));
+                            if (d && d->GetMoney() >= t.money)
                             {
                                 donor = true;
                                 break;
                             }
+                        }
                     if (p->GetMoney() > st.supplyMoneyAt)
                     {
                         LOG_INFO("playerbots", "[supply79] five {} ({}): {} got money since its supply run ({} -> {} c): "
