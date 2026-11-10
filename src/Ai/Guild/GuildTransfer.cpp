@@ -1547,6 +1547,67 @@ void GuildCoordinator::UpdateTransfers()
                 }
                 wants.push_back(best);
             }
+            // [respec116] b421: Farret (L18, planned healer) "unlearning its talents costs 50000c, it has 5652c" -
+            // its earlier resets raised the core's price (Player::resetTalentsCost) to 5 g and no member's spare
+            // covered the 4 g 43 s alone, so no gold went and it stayed a tank all run (314 roster lines "respec at
+            // its trainer"). The user's priority is the healer roster: a role spec's unlearn no single member covers
+            // is shared by the richest members, each its spare less the postage, when together they cover it
+            else if (kind == 2)
+            {
+                std::vector<std::pair<uint32, uint32>> donors;  // (spare, member)
+                for (PlanRow const& row : plan_)
+                {
+                    Player* s = row.low == low ? nullptr : Online(row.low);
+                    if (!s || !GET_PLAYERBOT_AI(s) || HumanCharacter(s) || !canWalk(s))
+                        continue;
+                    if (uint32 const spare = FoundingFreeMoney(s); spare > MAIL_POSTAGE)
+                        donors.emplace_back(spare, row.low);
+                }
+                std::sort(donors.rbegin(), donors.rend());
+                std::vector<Want> shares;
+                uint32 left = shortBy;
+                // the shares already sent (in its mailbox, not taken yet) count: no second round for them
+                for (auto const& [tid, t] : transfers_)
+                    if (t.gold && t.mailed && t.toLow == low && t.purpose == "role spec")
+                        left -= std::min(left, t.money);
+                for (auto const& [spare, from] : donors)
+                {
+                    if (!left)
+                        break;
+                    Want w;
+                    w.key = "t" + std::to_string(low) + ":" + std::to_string(from);
+                    w.gold = true;
+                    w.from = from;
+                    w.to = low;
+                    w.money = std::min(left, spare - MAIL_POSTAGE);
+                    w.purpose = "role spec";
+                    w.why = "a share of its role spec's unlearn " + Gold(shortBy) + " [respec116]";
+                    if (choose(w, nullptr).cost >= NONE)
+                        continue;
+                    left -= w.money;
+                    shares.push_back(std::move(w));
+                }
+                std::string decision;
+                if (left)
+                    decision = Acore::StringFormat("{} short of its role spec's unlearn {}: the members' spare money "
+                                                   "together covers {} - no gold goes",
+                                                   Who(low), Gold(shortBy), Gold(shortBy - left));
+                else
+                {
+                    decision = Acore::StringFormat("{} gets its role spec's unlearn {} from {} members:", Who(low),
+                                                   Gold(shortBy), shares.size());
+                    for (Want const& w : shares)
+                        decision += " " + Who(w.from) + " " + Gold(w.money) + ",";
+                    decision.pop_back();
+                    for (Want& w : shares)
+                        wants.push_back(std::move(w));
+                }
+                if (goldLogged["t" + std::to_string(low)] != decision)
+                {
+                    goldLogged["t" + std::to_string(low)] = decision;
+                    LOG_INFO("playerbots", "[respec116] the global leader: {}", decision);
+                }
+            }
         }
 
     // e. [recipes] user 2026-11-08 (Eraelor held Recipe: Brilliant Smallfish): every recipe item in a member's bags
