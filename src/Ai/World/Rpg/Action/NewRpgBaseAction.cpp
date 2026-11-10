@@ -4398,8 +4398,34 @@ namespace
         return best ? uint32(best - now) : 0;
     }
 
+    // [drop71] the walk-equivalent yards a unit of `item` costs from `entry` beyond its first kill: the kills beyond
+    // one its drop chance needs (100 / chance - 1) at its kill time (template health at `dps`) and the bot's run
+    // speed; -1 when its chance is not named (a reference table: no cost known)
+    float DropCostYd(Player* bot, uint32 entry, uint32 item, float dps)
+    {
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        LootTemplate const* loot = tmpl && tmpl->lootid ? LootTemplates_Creature.GetLootFor(tmpl->lootid) : nullptr;
+        if (!loot)
+            return -1.0f;
+        float chance = 0.0f;
+        loot->VisitEntries([&](LootStoreItem const& e, float c)
+                           {
+                               if (!e.reference && e.itemid == item)
+                                   chance = std::max(chance, c);
+                           });
+        if (chance <= 0.0f)
+            return -1.0f;
+        uint8 const level = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
+        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, tmpl->unit_class);
+        float const killSec = stats ? float(stats->GenerateHealth(tmpl)) / std::max(dps, 1.0f) : 0.0f;
+        return std::max(0.0f, 100.0f / chance - 1.0f) * killSec * bot->GetSpeed(MOVE_RUN);
+    }
+
     // [qeff32] the creature entries a still-open objective of the quest is served by (its kill target and kill
     // credits, the creatures that drop its still-needed item, what its tool is used on)
+    // [drop72] ... for an item: only the droppers worth staying for - one whose drop cost a unit is above another
+    // source's cost plus the walk to that source's nearest spawn is no reason to stay at its spot (it counts spent
+    // for the item; the spot search, ranked the same way by drop71, takes the better source)
     std::vector<uint32> OpenObjectiveCreatures(Player* bot, Quest const* quest)
     {
         std::vector<uint32> entries;
@@ -4428,8 +4454,30 @@ namespace
                 continue;
             entries.insert(entries.end(), useCreatures.begin(), useCreatures.end());
             auto const creatures = index.itemCreatures.find(item);
-            if (creatures != index.itemCreatures.end())
-                entries.insert(entries.end(), creatures->second.begin(), creatures->second.end());
+            if (creatures == index.itemCreatures.end())
+                continue;
+            float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
+            std::vector<std::pair<uint32, float>> costs;  // entry -> its drop cost (-1: unknown)
+            float best = std::numeric_limits<float>::max();  // the cheapest source's cost plus its walk
+            for (uint32 entry : creatures->second)
+            {
+                float const cost = DropCostYd(bot, entry, item, dps);
+                costs.push_back({entry, cost});
+                if (cost < 0.0f)
+                    continue;
+                auto const spawns = index.creatures.find(entry);
+                if (spawns == index.creatures.end())
+                    continue;
+                float nearest = std::numeric_limits<float>::max();
+                for (QuestSpot const& spot : spawns->second)
+                    if (spot.mapId == bot->GetMapId())
+                        nearest = std::min(nearest, bot->GetDistance2d(spot.x, spot.y));
+                if (nearest != std::numeric_limits<float>::max())
+                    best = std::min(best, cost + nearest);
+            }
+            for (auto const& [entry, cost] : costs)
+                if (cost < 0.0f || cost <= best)
+                    entries.push_back(entry);
         }
         return entries;
     }
@@ -6084,25 +6132,8 @@ bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector
                 if (!spot->object && spot->entry)
                     entries.insert(spot->entry);
             for (uint32 entry : entries)
-            {
-                CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
-                LootTemplate const* loot =
-                    tmpl && tmpl->lootid ? LootTemplates_Creature.GetLootFor(tmpl->lootid) : nullptr;
-                if (!loot)
-                    continue;
-                float chance = 0.0f;
-                loot->VisitEntries([&](LootStoreItem const& e, float c)
-                                   {
-                                       if (!e.reference && e.itemid == item)
-                                           chance = std::max(chance, c);
-                                   });
-                if (chance <= 0.0f)
-                    continue;  // a share the walk above did not name (a reference): ranked by its walk alone
-                uint8 const level = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
-                CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, tmpl->unit_class);
-                float const killSec = stats ? float(stats->GenerateHealth(tmpl)) / dps : 0.0f;
-                costYd[entry] = std::max(0.0f, 100.0f / chance - 1.0f) * killSec * bot->GetSpeed(MOVE_RUN);
-            }
+                if (float const cost = DropCostYd(bot, entry, item, dps); cost >= 0.0f)
+                    costYd[entry] = cost;
         }
         sourceCostYd = costYd.empty() ? nullptr : &costYd;
         int const found = NearestSafeSpot(bot, questId, spots, int32(objective), poiInfo, blocker);
