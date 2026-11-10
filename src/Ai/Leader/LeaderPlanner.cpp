@@ -8175,7 +8175,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (!track.deaths && notProving.empty())
         {
             ++entry.cleanFights;
-            entry.cost = std::max(entry.cost, planned->second.cost * k);
+            // [dun174] what the fight really cost the tank (its intake in tank healths), not the plan's estimate:
+            // b428 rfc-n Ravelandy "fight of 2 mobs ... k 9.26 ... proven cost 38.12" (a 4.1 plan of which 2 mobs
+            // came) proved 38 tank healths against a healer pool of 2-4, and 8-mob packs of cost 4.2 were "taken"
+            uint64 const taken = DamageTaken::Total(tank->GetGUID());
+            float const realCost = taken > planned->second.takenAtStart && tank->GetMaxHealth()
+                                       ? float(taken - planned->second.takenAtStart) / float(tank->GetMaxHealth())
+                                       : 0.0f;
+            entry.cost = std::max(entry.cost, realCost * k);
             entry.ranged = std::max(entry.ranged, track.peakRanged);
             if (float(track.peakMobs) * headroom > entry.mobs)
             {
@@ -9748,12 +9755,17 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
 
         return !why;
     };
-    auto const provenFits = [&proven, &weakAoeFits, this](PackEstimate const& estimate)
+    auto const provenFits = [&proven, &weakAoeFits, &support, this](PackEstimate const& estimate)
     {
         // [b45_weakoff] off: strat-h 092306 wiped on a 10-mob "weak" pack (aoe estimate far above measured)
         if (false && weakAoeFits(estimate))  // [b44_packs]
             return true;
         if (!ProvenFits(estimate, proven))
+            return false;
+        // [dun174] the proof lifts the size and hold limits, never the tank's drop or the healers' mana (TankCarries):
+        // b428 rfc-n five47 "pull_combine: 8 mobs with Voidwalker Minion (fits)" at cost 4.2 tank hp and five42 a
+        // pull together "overload 2.35, fits" were taken on the proof alone and wiped
+        if (!TankCarries(estimate, support))
             return false;
         uint32 const now = getMSTime();
         static thread_local uint32 provenLogMs = 0;  // per map thread
