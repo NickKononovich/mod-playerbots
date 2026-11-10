@@ -1009,6 +1009,14 @@ namespace Leader::Fight
                 centre = blocker->GetHomePosition();
                 radius += blocker->GetWanderDistance();
             }
+            // [spot77] the spot itself is clear of the reach (the guard said so): the disc stops short of it, else
+            // the route search drops a disc its destination lies in and the walk round was never searched (b406 rfc-n
+            // five 1: 62 walk-only rejects, 2 walks round)
+            float const toSpot = std::hypot(centre.GetPositionX() - spot.GetPositionX(),
+                                            centre.GetPositionY() - spot.GetPositionY());
+            radius = std::min(radius, toSpot - 0.5f);
+            if (radius <= 0.5f)
+                return false;
             avoid.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
             round += (round.empty() ? "" : ", ") + blocker->GetName();
         }

@@ -1328,12 +1328,31 @@ namespace Leader::Dungeon
                     judgeBlockingPack(bot, mob);  // [lead76]
                     // [spot70] the spot itself clear, only its walk in a reach: the member walks round the reaches
                     // to the walk's first corner (judged again from there), not "stays"
-                    if (mob && !noPath && member != tank->GetGUID() && reject.rfind("the spot or its walk", 0) == 0 &&
-                        !(fightTarget ? LeaderFightAggroAt(bot, spot, fightTarget) : LeaderAggroAt(bot, spot)))
+                    if (mob && !noPath && member != tank->GetGUID() && reject.rfind("the spot or its walk", 0) == 0)
                     {
+                        Creature* const atSpot =
+                            fightTarget ? LeaderFightAggroAt(bot, spot, fightTarget) : LeaderAggroAt(bot, spot);
                         Position corner;
                         std::string round;
-                        if (LeaderWalkRound(bot, spot, fightTarget, corner, round))
+                        bool const walked = !atSpot && LeaderWalkRound(bot, spot, fightTarget, corner, round);
+                        // [spot77] why no walk round, once per member and reason (b406: 62 walk-only rejects, 2 walks)
+                        if (!walked)
+                        {
+                            thread_local std::map<ObjectGuid, std::string> noRoundLogged;
+                            std::string const key = atSpot ? "spot in " + atSpot->GetName() : "no route round " + round;
+                            if (std::string& last = noRoundLogged[member]; last != key)
+                            {
+                                last = key;
+                                Decisions().Write(run, "leader", "spot_walk_round_none", member, bot->GetName(), false,
+                                                  JsonObject()
+                                                      .Str("member", bot->GetName())
+                                                      .Str("why", why)
+                                                      .Str("blocker", mob->GetName())
+                                                      .Str("result", key)
+                                                      .Str("tag", "[spot77]"));
+                            }
+                        }
+                        if (walked)
                         {
                             std::string const walkWhy = why + ": walks round " + round;
                             if (Leader::Events::SetMove(member, Leader::MoveEvent::MoveTo, corner, 1.5f, walkWhy))
