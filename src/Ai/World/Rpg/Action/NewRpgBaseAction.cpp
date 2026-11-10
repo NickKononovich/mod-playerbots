@@ -3818,6 +3818,7 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
         return false;
 
     GameObject* nearest = nullptr;
+    GameObject* locked = nullptr;  // [quest130] the objective's object, not selectable yet
     for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
     {
         int32 const required = quest->RequiredNpcOrGo[i];
@@ -3826,9 +3827,44 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
 
         // [guild90] spawned ones only: a used (despawned) nearest one hid the rest
         GameObject* go = bot->FindNearestGameObject(static_cast<uint32>(-required), QUEST_OBJECT_RANGE, true);
-        if (go && go->isSpawned() && !go->HasGameObjectFlag(GO_FLAG_IN_USE) &&
-            (!nearest || bot->GetDistance(go) < bot->GetDistance(nearest)))
-            nearest = go;
+        if (!go || !go->isSpawned() || go->HasGameObjectFlag(GO_FLAG_IN_USE))
+            continue;
+        GameObject*& slot = go->HasGameObjectFlag(GO_FLAG_NOT_SELECTABLE) ? locked : nearest;
+        if (!slot || bot->GetDistance(go) < bot->GetDistance(slot))
+            slot = go;
+    }
+    // [quest130] the objective's object is locked until the quest's own switches are used: b424 q9740 The Sun Gate,
+    // its gate not selectable while a channeler stands within 60 yd, each channeler sent off by one of the four
+    // Sunhawk Portal Controllers (goobers whose quest field is 9740). Hobliir, Colian and Brelir clicked the locked
+    // gate for 2 h, 0 turn-ins. A goober of the quest (its template's quest field: usable only on the quest) in reach
+    // is used first; with none the locked object is used as before
+    if (!nearest && locked)
+    {
+        static std::unordered_map<uint32, std::vector<uint32>> const switches = []
+        {
+            std::unordered_map<uint32, std::vector<uint32>> byQuest;
+            for (auto const& [entry, goTemplate] : *sObjectMgr->GetGameObjectTemplates())
+                if (goTemplate.type == GAMEOBJECT_TYPE_GOOBER && goTemplate.goober.questId > 0)
+                    byQuest[uint32(goTemplate.goober.questId)].push_back(entry);
+            return byQuest;
+        }();
+        if (auto const found = switches.find(questId); found != switches.end())
+            for (uint32 const entry : found->second)
+            {
+                if (entry == locked->GetEntry())
+                    continue;
+                GameObject* go = bot->FindNearestGameObject(entry, QUEST_OBJECT_RANGE, true);
+                if (go && go->isSpawned() && !go->HasGameObjectFlag(GO_FLAG_IN_USE) &&
+                    !go->HasGameObjectFlag(GO_FLAG_NOT_SELECTABLE) && go->GetGoState() == GO_STATE_READY &&
+                    (!nearest || bot->GetDistance(go) < bot->GetDistance(nearest)))
+                    nearest = go;
+            }
+        if (nearest)
+            LogQuestObject(bot, nearest,
+                           Acore::StringFormat("[quest130] q{}: {} is locked, its switch first", questId,
+                                               locked->GetName()));
+        else
+            nearest = locked;
     }
 
     if (!nearest)
