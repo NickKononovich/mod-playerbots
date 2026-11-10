@@ -288,6 +288,10 @@ public:
     bool PreviewFive(std::string const& contentKey, std::vector<std::pair<uint32, std::string>>& members,
                      std::string& verdict, std::string& error);
     bool AutoFives() const { return autoFives_; }
+    // [drain114] before a server switch: no new five forms and no formed five starts (queues / walks in); the fives
+    // already started run to their result
+    void SetDrain(bool on);
+    bool Drain() const { return drain_; }
     // [wait19] both are members of one five the global leader formed that gathers at its dungeon's entrance or
     // heads into the dungeon (Gather / Run): its leader's group wait and meet walk hold for it
     bool InSameActiveFive(uint32 a, uint32 b) const;
@@ -967,6 +971,8 @@ private:
     std::unordered_set<std::string> guildDone_;
     std::unordered_map<std::string, std::string> needLogged_;  // [need106] the last needs line per dungeon
     bool autoFives_{true};
+    bool drain_{false};          // [drain114]
+    std::string drainLogged_;      // [drain114] the last held-fives line
     uint32 fiveTimer_{0};
     uint32 autoFiveTimer_{0};
     uint32 raidLeader_[3]{0, 0, 0};  // A, B, C (indexed by grp - 'A')

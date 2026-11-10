@@ -463,8 +463,20 @@ public:
         return true;
     }
 
-    static bool HandleGuildFivesCommand(ChatHandler* handler, char const* /*args*/)
+    // [drain114] playerbots guild fives [drain on|off]: the fives; drain - no new five, no formed five starts, the
+    // started ones run to their result (before a server switch)
+    static bool HandleGuildFivesCommand(ChatHandler* handler, char const* args)
     {
+        std::vector<std::string> const tokens = SplitArgs(args);
+        if (!tokens.empty() && tokens[0] == "drain")
+        {
+            if (tokens.size() < 2 || (tokens[1] != "on" && tokens[1] != "off"))
+            {
+                handler->PSendSysMessage("Usage: playerbots guild fives drain on|off");
+                return false;
+            }
+            sGuildCoordinator.SetDrain(tokens[1] == "on");
+        }
         handler->PSendSysMessage("{}", sGuildCoordinator.FivesText());
         return true;
     }

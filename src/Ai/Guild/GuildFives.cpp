@@ -1845,6 +1845,28 @@ void GuildCoordinator::UpdateFives()
     for (auto const& [id, why] : cancel)
         DisbandFive(id, why);
 
+    // [drain114] draining for a server switch: a formed five does not start (no queue, no walk in) - it waits; the
+    // fives already in the finder / the dungeon run on
+    if (drain_)
+    {
+        std::string held;
+        for (auto const& [id, viaLfg] : ready)
+            held += (held.empty() ? "" : ", ") + std::to_string(id);
+        CoordLock guard(lock_, __func__);
+        uint32 running = 0;
+        for (auto const& [id, five] : fives_)
+            running += five.stage == GuildFive::Stage::Run ? 1 : 0;
+        std::string const line = Acore::StringFormat("draining: {} five(s) running to their result, start held for "
+                                                     "{}",
+                                                     running, held.empty() ? "none" : "fives " + held);
+        if (drainLogged_ != line)
+        {
+            drainLogged_ = line;
+            LOG_INFO("playerbots", "[drain114] {}", line);
+        }
+        ready.clear();
+    }
+
     for (auto const& [id, viaLfg] : ready)
     {
         std::vector<ObjectGuid> members;
@@ -1938,7 +1960,7 @@ bool GuildCoordinator::PreviewFive(std::string const& contentKey, std::vector<st
 
 void GuildCoordinator::AutoFive()
 {
-    if (!autoFives_)
+    if (!autoFives_ || drain_)  // [drain114] draining: no new five
         return;
     // a dungeon counts only when cleared in its own band: a member above the band with it uncleared has missed it
     {
@@ -2356,6 +2378,8 @@ void GuildCoordinator::AutoFive()
 std::string GuildCoordinator::FormFiveCommand(Player* issuer, std::string const& contentKey,
                                               std::vector<std::string> const& names, bool withIssuer)
 {
+    if (drain_)  // [drain114]
+        return "the fives drain (playerbots guild fives drain off first): no new five";
     DungeonOption const* d = FindDungeon(contentKey);
     if (!d)
         return "no dungeon '" + contentKey + "' (playerbots guild dungeons)";
@@ -2802,11 +2826,26 @@ void GuildCoordinator::SendFives(Player* player) const
     }
 }
 
+void GuildCoordinator::SetDrain(bool on)
+{
+    CoordLock guard(lock_, __func__);
+    if (drain_ == on)
+        return;
+    drain_ = on;
+    drainLogged_.clear();
+    uint32 running = 0, formed = 0;
+    for (auto const& [id, five] : fives_)
+        (five.stage == GuildFive::Stage::Run ? running : formed) += 1;
+    LOG_INFO("playerbots", "[drain114] drain {}: {} five(s) running, {} formed and not started{}", on ? "on" : "off",
+             running, formed, on ? " (held until the drain ends)" : " (they start now)");
+}
+
 std::string GuildCoordinator::FivesText() const
 {
     CoordLock guard(lock_, __func__);
     std::ostringstream out;
-    out << "fives: " << fives_.size() << ", auto " << (autoFives_ ? "on" : "off") << ", runs recorded " << runs_.size();
+    out << "fives: " << fives_.size() << ", auto " << (autoFives_ ? "on" : "off") << ", drain "
+        << (drain_ ? "on" : "off") << ", runs recorded " << runs_.size();
     for (auto const& [id, five] : fives_)
     {
         out << "\n  " << id << " " << five.contentKey << " " << five.dungeon << " stage "
