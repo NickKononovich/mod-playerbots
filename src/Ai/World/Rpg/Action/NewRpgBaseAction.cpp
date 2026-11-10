@@ -5723,12 +5723,19 @@ bool NewRpgBaseAction::RedAreaEscape()
         jLevel = bot->GetLevel();
         refused = !(walk.points.size() >= 2 && !walk.throughRefused && walk.type != PATHFIND_NOPATH);
     }
-    if (!refused)
-        return false;  // a walk out it takes: its plan leaves the area
-    std::string const why = Acore::StringFormat("[red63] stands in {} (area level {}, red for L{}) and its walk out to "
-                                                "({:.0f},{:.0f}) is refused",
-                                                area->area_name[0], area->area_level, bot->GetLevel(),
-                                                out.GetPositionX(), out.GetPositionY());
+    // [red134] a walk out that is not refused still crosses the red area's wanderers, judged mob by mob: b426 Gilduck
+    // L14 rose at its corpse by Darkshire (area level 25) and walked out through Brightwood Grove to his Westfall
+    // quests - 5 deaths to Nightbane Dark Runners and Black Ravagers L24-28, all "attacked, no judged pull" (b406 the
+    // same 5). Its Hearthstone or a flight comes first, as a player leaves a zone far above it; the walk only without
+    std::string const why =
+        refused ? Acore::StringFormat("[red63] stands in {} (area level {}, red for L{}) and its walk out to "
+                                      "({:.0f},{:.0f}) is refused",
+                                      area->area_name[0], area->area_level, bot->GetLevel(), out.GetPositionX(),
+                                      out.GetPositionY())
+                : Acore::StringFormat("[red134] stands in {} (area level {}, red for L{}): its walk out to ({:.0f},"
+                                      "{:.0f}) crosses the area",
+                                      area->area_name[0], area->area_level, bot->GetLevel(), out.GetPositionX(),
+                                      out.GetPositionY());
     if (HearthOut(why, nullptr))
         return true;
     // [red73] no Hearthstone way out (bound here, none, on its cooldown): a flight from the town's flight master to its
