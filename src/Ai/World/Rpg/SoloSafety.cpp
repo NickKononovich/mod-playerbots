@@ -1403,6 +1403,43 @@ namespace SoloSafety
                 track.swingSec = SwingSec(mob);
                 track.name = mob->GetName();
                 track.level = mob->GetLevel();
+                // [deaths139] an attacker past the judged count: how it came, for the triage's add classes (b426-b428:
+                // "adds: judged 1, came 2-8" 38 deaths, 19 of them at the Cryo-Core's Sunhawk Reclaimers - wanderers
+                // 8-20 yd apart; the log held nothing of where the add stood or what it was doing). A log, no decision
+                if (state.engaged && state.attackers.size() > state.engage.mobs)
+                {
+                    G3D::Vector3 const& fight = state.engage.fightAt;
+                    Position const& home = mob->GetHomePosition();
+                    float nearestAttacker = -1.0f;
+                    std::string nearestName = "-";
+                    for (auto const& [raw, other] : state.attackers)
+                        if (raw != mob->GetGUID().GetRawValue())
+                            if (Creature* c = ObjectAccessor::GetCreature(*bot, ObjectGuid(raw)))
+                                if (float const d = c->GetExactDist2d(mob);
+                                    nearestAttacker < 0.0f || d < nearestAttacker)
+                                {
+                                    nearestAttacker = d;
+                                    nearestName = c->GetName();
+                                }
+                    MovementGeneratorType const type = mob->GetDefaultMovementType();
+                    float const reach = mob->GetAggroRange(bot) + bot->GetCombatReach() +
+                                        (type == RANDOM_MOTION_TYPE ? mob->GetWanderDistance() : 0.0f);
+                    float const homeGap = home.GetExactDist2d(fight.x, fight.y);
+                    LOG_INFO("playerbots",
+                             "[deaths139] {} L{} add {} L{} joins its judged fight on {} (attacker {} of {} judged, "
+                             "{:.1f} s in): {}, home ({:.0f},{:.0f}) {:.0f} yd from the fight spot (reach {:.0f}: {}), "
+                             "now {:.0f} yd from the bot, {:.0f} yd from {} (an attacker), its victim {}",
+                             bot->GetName(), bot->GetLevel(), track.name, track.level, state.engage.targetName,
+                             state.attackers.size(), state.engage.mobs,
+                             float(getMSTimeDiff(state.firstMs, now)) / IN_MILLISECONDS,
+                             type == RANDOM_MOTION_TYPE     ? "wanderer"
+                             : type == WAYPOINT_MOTION_TYPE ? "patrol"
+                                                            : "idle",
+                             home.GetPositionX(), home.GetPositionY(), homeGap, reach,
+                             homeGap <= reach ? "covers it" : "short of it", mob->GetExactDist2d(bot),
+                             nearestAttacker, nearestName,
+                             mob->GetVictim() ? mob->GetVictim()->GetName() : std::string("none"));
+                }
             }
             track.lastMs = now;
             track.damage += taken;
