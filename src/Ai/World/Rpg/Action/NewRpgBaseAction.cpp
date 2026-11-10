@@ -4665,8 +4665,13 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
                                tmpl->rank == CREATURE_ELITE_WORLDBOSS;
             XPColorChar const color = Acore::XP::GetColorCode(level, tmpl->maxlevel);
             bool const never = elite || color == XP_RED || color == XP_ORANGE;
-            if (!never && color == XP_GRAY)
-                continue;  // [static69] a grey mob of its own: no pack to price
+            // [static69] b411: the static pricing of same-level packs on the way over-refused - the live search runs
+            // past a pack it survives ([runpast11]) or pulls one mob of it ([wall17]), the static one refused the
+            // pack's whole reach: [trip37] "only walk passes the reach of a mob it must not fight" 66 in 10 QUEST-h
+            // against 9 in b406's 19, static39 "no way round" up 35 % per QUEST-hour. Only the mobs it never fights
+            // are refused beyond sight again, until the static price has the run past and the single pull too
+            if (!never)
+                continue;
             if (!SpawnPresent(spawn))
                 continue;
             FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(tmpl->faction);
@@ -4679,12 +4684,6 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             bool covers = false;
             for (size_t i = fromIndex; i < points.size() && !covers; i += 2)  // every 8 yd: within a reach
                 covers = std::hypot(points[i].x - spawn.x, points[i].y - spawn.y) <= radius;
-            // [static69] a mob of its own band the walk passes beyond its sight: the pack its aggro wakes (it and
-            // what its engage call reaches: the cached static pack) priced with the judge's math at full - a lost
-            // one is refused as the live search refuses a pack that "loses at full" in sight. b406: 98 "loses at
-            // full" and 203 "pack above its level" maze walls met only on arrival
-            if (covers && !never && !NewRpgCoop::StaticPackLostAt(bot, spawn.x, spawn.y))
-                continue;
             if (covers)
                 discs.emplace_back(spawn.x, spawn.y, spawn.z, radius);
         }
