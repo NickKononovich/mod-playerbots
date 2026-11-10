@@ -3533,6 +3533,44 @@ namespace SoloSafety
                     why = RouteWall::Why::None;
                 }
             }
+            // [party75] coordinator 2026-11-10: a co-op / help party leader's walk is priced as a solo walk is, with
+            // the party's capacity: a mob of its band whose reach crosses the leg is judged by the party judge
+            // (NewRpgCoop::JudgePull: its pack on each member, the party's damage and heals); a pack the party loses
+            // walls the walk like a solo bot's lost pack (the search goes round it, else the maze), a pack it wins
+            // stays a priced fight on the way. Before, a party walk refused only the mobs it never fights and walked
+            // into every pack whose fight cost less than the detour (b415 Hobliir L18 with Selalleas: 33 pulls of the
+            // Myst Spinners / Leechers on the 879 yd walk to q9669's single 17683)
+            if (why == RouteWall::Why::None && !alone && !wallJudge && NewRpgCoop::JudgesPulls(bot))
+            {
+                G3D::Vector3 const a(from.x, from.y, 0.0f);
+                G3D::Vector3 const ab = G3D::Vector3(to.x, to.y, 0.0f) - a;
+                G3D::Vector3 const c(centre.GetPositionX(), centre.GetPositionY(), 0.0f);
+                float const t = std::clamp((c - a).dot(ab) / std::max(ab.squaredLength(), 0.01f), 0.0f, 1.0f);
+                if ((a + ab * t - c).squaredLength() <= radius * radius)
+                {
+                    wallJudge = true;
+                    Verdict const party = NewRpgCoop::JudgePull(bot, mob);
+                    wallJudge = false;
+                    if (party.kind == Verdict::Kind::Refuse && party.mobs > 0)
+                    {
+                        why = RouteWall::Why::Loses;
+                        wallPack = party.mobs;
+                        static std::mutex partyLogLock;  // one line per mob and leader: a log cadence
+                        static std::unordered_set<uint64> partyLogged;
+                        bool fresh = false;
+                        {
+                            std::lock_guard<std::mutex> guard(partyLogLock);
+                            if (partyLogged.size() > 65536)
+                                partyLogged.clear();
+                            fresh = partyLogged.insert(mob->GetGUID().GetCounter() * 1000003ull +
+                                                       bot->GetGUID().GetCounter()).second;
+                        }
+                        if (fresh)
+                            LOG_INFO("playerbots", "[party75] {} L{} walls its party's walk at {} L{}: {}",
+                                     bot->GetName(), bot->GetLevel(), mob->GetName(), mob->GetLevel(), party.why);
+                    }
+                }
+            }
             bool const never = why != RouteWall::Why::None;
             if (never)
                 walls.push_back({mob->GetEntry(), mob->GetLevel(), why, wallPack,
