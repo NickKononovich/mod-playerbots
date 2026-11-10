@@ -92,7 +92,9 @@ public:
     // the killer: DangerOnWay reports it, so objectives and walks there are skipped
     static void RecordDeath(Player* bot, Creature* killer);
     // [guild13] a spot the bot keeps away from until it is above `level`: a pack its pull judge refused (SoloSafety)
-    static void RememberDanger(Player* bot, float x, float y, float radius, uint32 entry, uint8 level);
+    // [deaths143] restClears: the zone of a fight lost for mana to a mob not orange / red: cleared by a full rest
+    static void RememberDanger(Player* bot, float x, float y, float radius, uint32 entry, uint8 level,
+                               bool restClears = false);
     // [guild15] the zones of the pulls its judge refused (not where it died) are judged again: after a repair
     static void ForgetRefusals(Player* bot);
     // [guild13] the spot lies in one of the bot's remembered danger zones (a death or a refused pack): its creature

@@ -437,6 +437,37 @@ namespace
             // in the fight right after a lost one; Orton L16 fled the Dark Iron Sappers at Stonewrought Dam, rested
             // to full 31 yd off, walked back into the same Sapper's reach (idle, aggro 19) and died; Rumanatol L18 the
             // same with the Fouled Water Spirit at The Foul Pool. A patrol's reach moves along its path: no disc for it
+            // [deaths143] user 2026-11-11: a loss that came from mana (it closed the fight unable to cast any mana
+            // spell it knows) against a mob not orange / red for it is a zone its rest to full health and mana clears
+            // (NewRpgBaseAction::RememberDanger restClears); a loss with mana left, or to an orange / red mob, keeps
+            // the rule above
+            bool outOfMana = false;
+            if ((died || state.fleeing) && !bot->GetMap()->Instanceable() && bot->GetMaxPower(POWER_MANA) > 0)
+            {
+                uint32 const mana = bot->GetPower(POWER_MANA);
+                uint32 cheapest = std::numeric_limits<uint32>::max();
+                for (auto const& [spellId, known] : bot->GetSpellMap())
+                {
+                    if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                        continue;
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+                    if (!info || info->IsPassive() || info->PowerType != POWER_MANA)
+                        continue;
+                    bool acts = false;  // a spell that fights or heals: damage, a heal, an aura on a foe or itself
+                    for (SpellEffectInfo const& effect : info->GetEffects())
+                        acts = acts || effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE ||
+                               effect.Effect == SPELL_EFFECT_HEAL || effect.Effect == SPELL_EFFECT_WEAPON_DAMAGE ||
+                               effect.Effect == SPELL_EFFECT_NORMALIZED_WEAPON_DMG ||
+                               effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE ||
+                               effect.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL;
+                    if (!acts)
+                        continue;
+                    int32 const cost = info->CalcPowerCost(bot, info->GetSchoolMask());
+                    if (cost > 0)
+                        cheapest = std::min(cheapest, uint32(cost));
+                }
+                outOfMana = cheapest != std::numeric_limits<uint32>::max() && mana < cheapest;
+            }
             if ((died || state.fleeing) && !bot->GetMap()->Instanceable())
                 for (auto const& [guid, track] : state.attackers)
                 {
@@ -450,12 +481,18 @@ namespace
                     Position const& home = mob->GetHomePosition();  // where it stands again once it evades
                     disc.x = home.GetPositionX();
                     disc.y = home.GetPositionY();
-                    NewRpgBaseAction::RememberDanger(bot, disc.x, disc.y, disc.w, track.entry, track.level);
+                    bool const restClears =
+                        outOfMana && Acore::XP::GetColorCode(bot->GetLevel(), track.level) > XP_ORANGE;
+                    NewRpgBaseAction::RememberDanger(bot, disc.x, disc.y, disc.w, track.entry, track.level,
+                                                     restClears);
                     LOG_INFO("playerbots",
                              "[deaths138] {} L{} lost a fight to {} L{}: its reach ({:.0f},{:.0f}) {:.0f} yd is a "
-                             "danger zone until L{} or its gear / spells change",
+                             "danger zone until {}",
                              bot->GetName(), bot->GetLevel(), track.name, track.level, disc.x, disc.y, disc.w,
-                             std::max<uint32>(track.level, bot->GetLevel()) + 1);
+                             restClears ? std::string("its rest to full health and mana ([deaths143] out of mana, "
+                                                      "the mob not orange / red)")
+                                        : Acore::StringFormat("L{} or its gear / spells change",
+                                                              std::max<uint32>(track.level, bot->GetLevel()) + 1));
                 }
         }
         // [guild80] a run / reset closes with a rest to full (WantsRest drops a rest asked for in combat: b319

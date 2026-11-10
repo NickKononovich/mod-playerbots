@@ -4810,9 +4810,26 @@ namespace
         uint8 level;
         float radius;
         bool refused = false;  // [guild15] a refused pull's zone, not a death's
+        bool restClears = false;  // [deaths143] a fight lost for mana to a mob not orange / red for it
     };
     std::mutex deathZonesLock;
     std::unordered_map<uint32, std::vector<DeathZone>> deathZones;
+
+    // [deaths143] user 2026-11-11: at full health and mana, out of a fight, the zones of the fights it lost for mana
+    // are gone (the loss was its mana, now full). Caller holds deathZonesLock
+    void ClearRestedZones(Player* bot, std::vector<DeathZone>& list)
+    {
+        if (bot->IsInCombat() || bot->GetHealth() < bot->GetMaxHealth() ||
+            bot->GetPower(POWER_MANA) < bot->GetMaxPower(POWER_MANA))
+            return;
+        size_t const before = list.size();
+        list.erase(std::remove_if(list.begin(), list.end(), [](DeathZone const& zone) { return zone.restClears; }),
+                   list.end());
+        if (before != list.size())
+            LOG_INFO("playerbots", "[deaths143] {} L{} rested to full health and mana: {} zone(s) of fights lost "
+                     "for mana cleared",
+                     bot->GetName(), bot->GetLevel(), before - list.size());
+    }
 
     float SegmentDistSq(float px, float py, float fromX, float fromY, float toX, float toY)
     {
@@ -4936,6 +4953,7 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
             list.erase(std::remove_if(list.begin(), list.end(),
                                       [level](DeathZone const& zone) { return level > zone.level; }),
                        list.end());
+            ClearRestedZones(bot, list);  // [deaths143]
             for (DeathZone const& zone : list)
             {
                 if (zone.mapId != mapId)
@@ -5503,18 +5521,23 @@ void NewRpgBaseAction::ForgetRefusedZones(Player* bot)
                  bot->GetName(), bot->GetLevel(), dropped);
 }
 
-void NewRpgBaseAction::RememberDanger(Player* bot, float x, float y, float radius, uint32 entry, uint8 level)
+void NewRpgBaseAction::RememberDanger(Player* bot, float x, float y, float radius, uint32 entry, uint8 level,
+                                      bool restClears)
 {
     if (!bot)
         return;
     std::lock_guard<std::mutex> guard(deathZonesLock);
     auto& list = deathZones[bot->GetGUID().GetCounter()];
-    for (DeathZone const& zone : list)
+    for (DeathZone& zone : list)
         if (zone.mapId == bot->GetMapId() && zone.entry == entry &&
             SegmentDistSq(zone.killerX, zone.killerY, x, y, x, y) <= zone.radius * zone.radius)
+        {
+            zone.restClears = zone.restClears && restClears;  // [deaths143] a loss that is not mana's keeps it
             return;
+        }
     // [danger29] in force until the bot outlevels the pack or itself at the refusal (a pack below its level was void)
-    list.push_back({bot->GetMapId(), x, y, x, y, entry, uint8(std::max<uint32>(level, bot->GetLevel())), radius, true});
+    list.push_back({bot->GetMapId(), x, y, x, y, entry, uint8(std::max<uint32>(level, bot->GetLevel())), radius, true,
+                    restClears});
 }
 
 void NewRpgBaseAction::ForgetRefusals(Player* bot)
@@ -5552,6 +5575,7 @@ CreatureTemplate const* NewRpgBaseAction::InDangerZone(Player* bot, float x, flo
     auto const zones = deathZones.find(bot->GetGUID().GetCounter());
     if (zones == deathZones.end())
         return nullptr;
+    ClearRestedZones(bot, zones->second);  // [deaths143]
     for (DeathZone const& zone : zones->second)
     {
         if (zone.mapId != bot->GetMapId() || level > zone.level)
@@ -5826,6 +5850,7 @@ bool NewRpgBaseAction::InDeathZone(Player* bot, float x, float y)
     auto const zones = deathZones.find(bot->GetGUID().GetCounter());
     if (zones == deathZones.end())
         return false;
+    ClearRestedZones(bot, zones->second);  // [deaths143]
     for (DeathZone const& zone : zones->second)
     {
         if (zone.refused || zone.mapId != bot->GetMapId() || level > zone.level)
@@ -5847,6 +5872,7 @@ bool NewRpgBaseAction::SameDangerZone(Player* bot, float ax, float ay, float bx,
     auto const zones = deathZones.find(bot->GetGUID().GetCounter());
     if (zones == deathZones.end())
         return false;
+    ClearRestedZones(bot, zones->second);  // [deaths143]
     for (DeathZone const& zone : zones->second)
     {
         if (zone.mapId != bot->GetMapId() || level > zone.level)
@@ -5872,6 +5898,7 @@ void NewRpgBaseAction::DangerDiscs(Player* bot, float x, float y, float range, s
     auto const zones = deathZones.find(bot->GetGUID().GetCounter());
     if (zones == deathZones.end())
         return;
+    ClearRestedZones(bot, zones->second);  // [deaths143]
     for (DeathZone const& zone : zones->second)
     {
         if (zone.mapId != bot->GetMapId() || level > zone.level)
