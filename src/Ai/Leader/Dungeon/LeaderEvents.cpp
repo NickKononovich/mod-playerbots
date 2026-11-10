@@ -11001,7 +11001,25 @@ namespace Leader::Dungeon
                                  .Raw("threat", overThreat && lead.stopProjection.count(guid)
                                                     ? lead.stopProjection[guid]
                                                     : std::string("null")));  // [lead246]
-                if (!looseVictim && !looseOn.empty() && bot != healer && !lead.looseIsTarget &&
+                // [lead1600] ... only while the tank can take it back (the same facts as the victim's stop: a pick-up
+                // in its taunt's reach and sight, or the tank under the walk to it): a loose mob the tank cannot take
+                // (a caster on a ledge out of its walk and taunt) is the damage dealers' to kill. b406 rfc-n five 1
+                // pull 18: a Ragefire Shaman 28-35 yd off and 7 yd up cast on Dandolar and Thokhen 14-28 s, every
+                // other member told "loose on a member until the tank has it"; 5 deaths
+                bool firstTakenBack = false;
+                if (!looseOn.empty())
+                {
+                    Unit* const firstLoose = looseOn.begin()->second;
+                    float const takeReach = LeaderTauntReach(tank);
+                    Leader::MemberEvents tankEvents;
+                    firstTakenBack =
+                        (!lead.tankCannotTake && takeReach > 0.0f && tank->GetExactDist(firstLoose) <= takeReach &&
+                         tank->IsWithinLOSInMap(firstLoose)) ||
+                        (Leader::Events::Get(tank->GetGUID(), tankEvents) &&
+                         tankEvents.move == Leader::MoveEvent::MoveTo &&
+                         tankEvents.moveWhy.rfind("aggro loss: the tank goes to", 0) == 0);
+                }
+                if (!looseVictim && !looseOn.empty() && bot != healer && !lead.looseIsTarget && firstTakenBack &&
                     Leader::Events::SetDontAttack(guid, looseOn.begin()->second->GetGUID()))
                     logEvent(bot, "DontAttack", JsonObject().Str("mob", looseOn.begin()->second->GetName())
                                                     .Str("why", "loose on a member until the tank has it"));

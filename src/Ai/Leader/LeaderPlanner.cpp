@@ -5473,6 +5473,30 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
     // The pack's mobs that stand off and cast or shoot (a caster, a SmartAI ranged attack: KeepsRange): what a pull
     // round a corner brings into melee. A pack without them gains nothing from it.
+    // [lead1600] a caster / shooter of the pack the tank's walk does not reach where it stands (a ledge, a drop: the
+    // leader's route to it is partial or none, or ends beyond its melee reach): it stays up there and casts on the
+    // group. b406 rfc-n five 1 pull 18: a Ragefire Shaman 28-35 yd off and 7 yd up ("cannotReach") sat on Dandolar and
+    // Thokhen while its Troggs went to the healer - 5 deaths. Named for the plan's reason
+    Unit* UnreachableCaster(Player* tank, std::vector<Unit*> const& pack)
+    {
+        if (!tank)
+            return nullptr;
+        for (Unit* mob : pack)
+        {
+            Creature* creature = mob ? mob->ToCreature() : nullptr;
+            if (!creature || !(MobRoles::IsCaster(mob) || KeepsRange(creature)))
+                continue;
+            Leader::RouteResult const route = Leader::Route(tank, mob->GetPosition());
+            bool const reaches =
+                route.found && route.complete && !route.points.empty() &&
+                mob->GetExactDist(route.points.back().x, route.points.back().y, route.points.back().z) <=
+                    tank->GetMeleeRange(mob) + 1.0f;
+            if (!reaches)
+                return mob;
+        }
+        return nullptr;
+    }
+
     uint32 CountRanged(std::vector<Unit*> const& pack)
     {
         uint32 ranged = 0;
@@ -10802,7 +10826,13 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             uint32 const cornerAll = std::max<uint32>(cost.cornerMobs + cost.restMobs, 1);
             float const cornerPerMob = cost.cornerSec / float(cornerAll);
             float const standPerMob = cost.standSec / float(std::max<uint32>(cost.standMobs, 1));
-            bool const stand = standPerMob <= cornerPerMob;
+            // [lead1600] the pack where it stands holds a caster the tank cannot reach: the corner brings it down
+            Unit* const upThere = UnreachableCaster(bot, chosenPack);
+            bool const stand = standPerMob <= cornerPerMob && !upThere;
+            std::string const upNote =
+                upThere && standPerMob <= cornerPerMob
+                    ? Acore::StringFormat("; [lead1600] {} where it stands is out of the tank's reach", upThere->GetName())
+                    : std::string();
             cornerNote = Acore::StringFormat(
                 "corner {} mobs {:.0f} s (+ rest {} mobs {:.0f} s; {:.1f} s per mob) vs where it stands {} mobs {:.0f} "
                 "s{} ({:.1f} s per mob; healing over the healers {:.0f} s, ranged tools hold {} of {}; the corner's "
@@ -10810,6 +10840,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 cost.cornerMobs, cost.cornerSec - cost.restSec, cost.restMobs, cost.restSec, cornerPerMob,
                 cost.standMobs, cost.standSec, _planPullBack ? " pulled back" : "", standPerMob, cost.lossSec,
                 cost.held, cost.ranged, cost.cornerLossSec, damageNote, stand ? "no corner" : "the corner");
+            cornerNote += upNote;
             LOG_DEBUG("playerbots", "[lead206] {}: {}: {}", bot->GetName(), candidate->GetName(), cornerNote);
             if (stand)
             {
