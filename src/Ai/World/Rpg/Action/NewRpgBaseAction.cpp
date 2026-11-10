@@ -5701,6 +5701,11 @@ bool NewRpgBaseAction::LoginEscape()
 // answered "no route" (not a wall: WalledIn and its Hearthstone never ran), so each stood until a wanderer walked in
 bool NewRpgBaseAction::RedAreaEscape()
 {
+    // [red135] its flight out is planned (TRAVEL_FLIGHT): the flight's own action walks to the master and takes it.
+    // b428 Guinudrond L14 stood in Darkshire 2.8 h: this escape re-planned the flight every tick (4628 "[red73] ...
+    // flies out") and returned true before the TRAVEL_FLIGHT action ever ran, walked 0 yd
+    if (botAI->rpgInfo.GetStatus() == RPG_TRAVEL_FLIGHT)
+        return false;
     if (bot->IsInCombat() || !bot->IsAlive() || bot->isMoving() || bot->IsInFlight() || bot->GetTransport() ||
         !SoloSafety::Applies(bot) || bot->GetMap()->Instanceable())
         return false;
