@@ -60,6 +60,7 @@ namespace
         uint32 yellow{0};  // SkillLineAbility TrivialSkillLineRankLow
         uint32 gray{0};    // TrivialSkillLineRankHigh
         uint32 product{0};
+        uint32 enchant{0};  // [ench156] SPELL_EFFECT_ENCHANT_ITEM: the permanent enchantment it puts on an item
         uint32 focus{0};   // SpellFocusObject (forge, anvil, cooking fire)
         std::array<uint32, 2> totem{};
         std::array<uint32, 2> totemCategory{};
@@ -80,6 +81,7 @@ namespace
         std::unordered_map<uint32, std::vector<uint32>> bySkill;    // skill line -> recipe spells
         std::unordered_map<uint32, std::vector<Spawn>> vendors;     // reagent -> vendor spawns (gold, unlimited)
         std::unordered_map<uint32, std::vector<Spawn>> foci;        // focus id -> gameobject spawns
+        std::unordered_set<uint32> tools;                           // [ench157] products a recipe needs as its tool
     };
 
     Index index;
@@ -275,6 +277,74 @@ namespace
         }
     };
 
+    // [ench156] the item an enchant goes on: a worn piece with no permanent enchantment first (its own gain), then a
+    // worn one that already has this enchantment, then a soulbound piece in the bags (no member can take it: it goes to
+    // the vendor or the bot's own Disenchant). A worn piece with another enchantment is never overwritten: which of two
+    // enchantments is better is no fact the recipe gives. The fit is the core's own (Item::IsFitToSpellRequirements).
+    Item* EnchantTarget(Player* bot, CraftRecipe const& r, bool* emptySlot = nullptr)
+    {
+        SpellInfo const* info = r.enchant ? sSpellMgr->GetSpellInfo(r.spellId) : nullptr;
+        if (!info)
+            return nullptr;
+        Item* same = nullptr;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        {
+            Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+            if (!item || !item->IsFitToSpellRequirements(info))
+                continue;
+            uint32 const current = item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT);
+            if (!current)
+            {
+                if (emptySlot)
+                    *emptySlot = true;
+                return item;
+            }
+            if (current == r.enchant && !same)
+                same = item;
+        }
+        if (same)
+            return same;
+        auto const fits = [&](Item* item)
+        {
+            if (!item || !item->IsSoulBound() || !item->IsFitToSpellRequirements(info))
+                return false;
+            uint32 const current = item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT);
+            return !current || current == r.enchant;
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot); fits(item))
+                return item;
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            if (Bag* bag = bot->GetBagByPos(b))
+                for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                    if (Item* item = bag->GetItemByPos(uint8(j)); fits(item))
+                        return item;
+        return nullptr;
+    }
+
+    // [ench157] the recipe makes a tool (Totem / TotemCategory) that a known recipe of its line, one that still gives
+    // skill, needs and the bot has none of
+    bool MissingTool(Player* bot, CraftRecipe const& r, uint32 value)
+    {
+        if (!r.product || !index.tools.count(r.product) || bot->HasItemCount(r.product, 1, true))
+            return false;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(r.product);
+        auto const list = index.bySkill.find(r.skill);
+        if (!proto || list == index.bySkill.end())
+            return false;
+        for (uint32 spell : list->second)
+        {
+            CraftRecipe const& other = index.recipes.at(spell);
+            if (other.spellId == r.spellId || !bot->HasSpell(spell) || !Tier(other, value) || ToolsOk(bot, other))
+                continue;
+            if (std::find(other.totem.begin(), other.totem.end(), r.product) != other.totem.end() ||
+                (proto->TotemCategory && std::find(other.totemCategory.begin(), other.totemCategory.end(),
+                                                   proto->TotemCategory) != other.totemCategory.end()))
+                return true;
+        }
+        return false;
+    }
+
     // where = 0: only what the bot can cast where it stands; 1: also vendor reagents and a forge in sight;
     // 2: also the guild bank
     bool Evaluate(Player* bot, CraftRecipe const& r, uint8 where, uint32 budget, std::map<uint32, uint32>& bank,
@@ -285,8 +355,15 @@ namespace
         // [supply112] a guild supply recipe the global leader gave this cook (the fives' cooked food / drink): its
         // owed crafts are worth making though they give no skill
         uint32 const supply = sGuildCoordinator.SupplyCrafts(bot, r.spellId);
-        uint8 const tier = supply ? std::max<uint8>(Tier(r, value), 1) : Tier(r, value);
+        // [ench157] a tool a skill-up recipe of this line lacks (Runed Copper Rod for Enchant Bracer - Minor Health):
+        // made once, gray or not - without it that recipe gives no skill at all
+        bool const tool = !supply && MissingTool(bot, r, value);
+        uint8 const tier = supply || tool ? std::max<uint8>(Tier(r, value), 1) : Tier(r, value);
         if (!tier || (value >= cap && !supply) || !ToolsOk(bot, r))
+            return false;
+        // [ench156] an enchant needs an item to go on (EnchantTarget: no other enchantment overwritten)
+        bool emptySlot = false;
+        if (r.enchant && !EnchantTarget(bot, r, &emptySlot))
             return false;
         Option o;
         o.recipe = &r;
@@ -300,7 +377,7 @@ namespace
                 return false;
         }
         // the bags (and the bank) limit the crafts; vendor reagents are bought for them with the budget
-        uint32 crafts = supply ? supply : ExpectedCrafts(r, value, cap);
+        uint32 crafts = supply ? supply : tool ? 1 : ExpectedCrafts(r, value, cap);
         double perCraft = 0;
         for (auto const& [item, n] : r.reagents)
         {
@@ -345,7 +422,9 @@ namespace
         if (!crafts && !o.buyItem)
             return false;
         o.crafts = std::max<uint32>(1, crafts);
-        o.useful = supply ? 3 : Useful(r.product);  // [supply112] the guild's supply first
+        // [supply112] the guild's supply first; [ench157] a missing tool before the recipes it unlocks; [ench156] an
+        // enchant on a worn piece without one is of use to the bot itself
+        o.useful = supply || tool ? 3 : r.enchant ? (emptySlot ? 2 : 0) : Useful(r.product);
         o.perPoint = perCraft * 1000.0 / std::max(1, Chance(value, r.gray, r.yellow));
         if (!o.bank.empty() && where < 2)
             return false;
@@ -501,7 +580,7 @@ namespace NewRpgCraft
         if (loaded)
             return;
         std::unordered_set<uint32> const lines(std::begin(CRAFT_SKILLS), std::end(CRAFT_SKILLS));
-        std::unordered_set<uint32> reagents, foci;
+        std::unordered_set<uint32> reagents, foci, toolItems, toolCategories;
         for (uint32 i = 0; i < sSkillLineAbilityStore.GetNumRows(); ++i)
         {
             SkillLineAbilityEntry const* ability = sSkillLineAbilityStore.LookupEntry(i);
@@ -521,8 +600,13 @@ namespace NewRpgCraft
                      info->Effects[e].Effect == SPELL_EFFECT_CREATE_ITEM_2) &&
                     info->Effects[e].ItemType)
                     r.product = info->Effects[e].ItemType;
-            if (!r.product)
-                continue;  // enchants on items, prospecting, milling: no product to make for skill here
+            // [ench156] an enchant on an item is a skill-up recipe too (Enchant Bracer - Minor Health: Enchanting
+            // orange to 70); its item is picked at the cast (EnchantTarget)
+            for (uint8 e = 0; e < MAX_SPELL_EFFECTS && !r.product && !r.enchant; ++e)
+                if (info->Effects[e].Effect == SPELL_EFFECT_ENCHANT_ITEM && info->Effects[e].MiscValue > 0)
+                    r.enchant = uint32(info->Effects[e].MiscValue);
+            if (!r.product && !r.enchant)
+                continue;  // prospecting, milling: no product to make for skill here
             for (uint8 k = 0; k < MAX_SPELL_REAGENTS; ++k)
                 if (info->Reagent[k] > 0 && info->ReagentCount[k] > 0)
                     r.reagents.emplace_back(uint32(info->Reagent[k]), info->ReagentCount[k]);
@@ -533,6 +617,12 @@ namespace NewRpgCraft
             r.totemCategory = {info->TotemCategory[0], info->TotemCategory[1]};
             for (auto const& [item, n] : r.reagents)
                 reagents.insert(item);
+            for (uint32 t : r.totem)  // [ench157]
+                if (t)
+                    toolItems.insert(t);
+            for (uint32 c : r.totemCategory)
+                if (c)
+                    toolCategories.insert(c);
             if (r.focus)
                 foci.insert(r.focus);
             index.bySkill[r.skill].push_back(r.spellId);
@@ -557,6 +647,12 @@ namespace NewRpgCraft
                 index.vendors[item->item].push_back(spawn);
             }
         }
+        // [ench157] the recipe products that are a recipe's tool, by item or by its totem category
+        for (auto const& [spellId, r] : index.recipes)
+            if (ItemTemplate const* proto = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr;
+                proto && (toolItems.count(r.product) ||
+                          (proto->TotemCategory && toolCategories.count(proto->TotemCategory))))
+                index.tools.insert(r.product);
         size_t focusSpawns = 0;
         for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
         {
@@ -581,6 +677,12 @@ namespace NewRpgCraft
     {
         auto const itr = index.recipes.find(spellId);
         return itr == index.recipes.end() ? 0 : itr->second.skill;
+    }
+
+    Item* EnchantTargetFor(Player* bot, uint32 spellId)
+    {
+        auto const itr = index.recipes.find(spellId);
+        return itr == index.recipes.end() || !itr->second.enchant ? nullptr : EnchantTarget(bot, itr->second);
     }
 
     uint32 RecipeFocus(uint32 spellId)
@@ -1056,7 +1158,13 @@ bool NewRpgDoProfessionAction::ExecuteCraft(NewRpgInfo::DoProfession& data)
     data.skillBefore = bot->HasSkill(skill) ? bot->GetPureSkillValue(skill) : 0;
     data.spellId = spell;
     data.castSpell = spell;
-    if (!botAI->CastSpell(spell, bot))
+    // [ench156] an enchant goes on the item EnchantTarget picks
+    Item* target = NewRpgCraft::EnchantTargetFor(bot, spell);
+    if (target)
+        LOG_INFO("playerbots", "[ench156] {} L{} enchants its {} with {} (skill {}/{})", bot->GetName(),
+                 bot->GetLevel(), target->GetTemplate()->Name1, NewRpgCraft::RecipeName(spell), data.skillBefore,
+                 bot->GetPureMaxSkillValue(skill));
+    if (!botAI->CastSpell(spell, bot, target))
     {
         LOG_INFO("playerbots", "[guild70] {} cannot cast {} here (tool, focus, bags?)", bot->GetName(),
                  NewRpgCraft::RecipeName(spell));

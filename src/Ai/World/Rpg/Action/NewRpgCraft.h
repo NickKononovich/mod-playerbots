@@ -56,6 +56,8 @@ namespace NewRpgCraft
     std::string RecipeName(uint32 spellId);
     uint32 RecipeSkill(uint32 spellId);
     uint32 RecipeFocus(uint32 spellId);
+    // [ench156] the item an enchanting recipe goes on (a worn piece without an enchantment, ...), nullptr = none
+    Item* EnchantTargetFor(Player* bot, uint32 spellId);
     bool FocusNear(Player* bot, uint32 focusId);
     // [supply113] Basic Campfire, the cook's own fire (its reagents and tools by its SpellInfo)
     constexpr uint32 SPELL_BASIC_CAMPFIRE = 818;
