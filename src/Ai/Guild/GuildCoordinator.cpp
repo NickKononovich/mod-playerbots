@@ -633,6 +633,7 @@ void GuildCoordinator::LoadRecipes()
 
     // trainer recipes: spell -> (skill rank, level); a trainer spell that teaches another spell stands for that one
     std::unordered_map<uint32, std::pair<uint32, uint32>> trainerReq;
+    std::unordered_map<uint32, uint32> trainerFee;  // [prof272] taught spell -> the lowest MoneyCost
     if (QueryResult result = WorldDatabase.Query(
             "SELECT SpellId, ReqSkillLine, ReqSkillRank, ReqLevel, MoneyCost FROM trainer_spell"))
     {
@@ -682,6 +683,9 @@ void GuildCoordinator::LoadRecipes()
             uint32 const rank = f[2].Get<uint32>(), level = f[3].Get<uint8>();
             if (!req.first || rank < req.first)
                 req = {rank, level};
+            // [prof272] the recipe's fee: the lowest of its trainers
+            if (auto const fee = trainerFee.find(spellId); fee == trainerFee.end() || f[4].Get<uint32>() < fee->second)
+                trainerFee[spellId] = f[4].Get<uint32>();
         } while (result->NextRow());
     }
 
@@ -715,6 +719,8 @@ void GuildCoordinator::LoadRecipes()
             recipe.trainer = true;
             recipe.reqSkill = trainer->second.first;
             recipe.reqLevel = trainer->second.second;
+            if (auto const fee = trainerFee.find(ability->Spell); fee != trainerFee.end())
+                recipe.price = fee->second;
         }
         for (uint8 r = 0; r < MAX_SPELL_REAGENTS; ++r)
             if (info->Reagent[r] > 0 && info->ReagentCount[r] > 0)
@@ -1860,6 +1866,7 @@ void GuildCoordinator::UpdateOrders()
             RevalueQuests(st, p);
         }
         std::vector<GuildOrder> orders;
+        std::vector<GuildOrder> trainCalls;  // [prof272] the runnable TRAIN calls, put after the others
         FiveOrder(st, row.low, p, orders);  // [guild60] a five's dungeon comes first
         // [regress10] REPAIR: the leader tracks every member's durability (b345 Ginde L5 fought on with both
         // weapons at 0: the repair was only a side effect of a vendor run for bags or ammo, dropped by other states).
@@ -2140,6 +2147,7 @@ void GuildCoordinator::UpdateOrders()
                 o.details = pick.details;
                 o.reason = pick.reason;
                 o.pos = pick.pos;  // [econ2] TRAIN: its trainer's town (ClassifyTask), the call waits for the visit
+                o.spellId = pick.spellId;  // [prof273] a recipe call's taught spell (its own task key)
                 // GATHER runs as DO_GATHER here; TRAIN / BUY / CRAFT through the profession executor in town
                 o.executable = pick.kind == GuildProfessionKind::GATHER;
                 o.status = pick.kind == GuildProfessionKind::GATHER ? "gathers itself"
@@ -2151,6 +2159,43 @@ void GuildCoordinator::UpdateOrders()
                     o.pos = pick.pos;
                     o.executable = true;
                     o.status = "smelts at the town forge on its next visit";
+                }
+                // [prof272] a TRAIN call (a rank, a recipe, a tool) the bot's money pays: a convenient town task as
+                // the smelt - its trainer's / vendor's town is a stop of its route (TownStops), the executor learns /
+                // buys there (ProfessionCall due). Before, it stayed "on its next town visit" (executable false: no
+                // town stop) and ran only when a walk happened to end in that town: b426-b429 160 tool / rank /
+                // recipe calls, 2 learned at the planned trainer, 104 Mining Pick / Skinning Knife calls dropped
+                // unrun, no Cooking recipe learned for the cook
+                else if (pick.kind == GuildProfessionKind::TRAIN && pick.pos != WorldPosition())
+                {
+                    std::string const taskKey = TaskKey(o);
+                    auto const tried = st.trainDue.find(taskKey);
+                    if (tried != st.trainDue.end() && tried->second != p->GetLevel())
+                        st.trainDue.erase(tried);
+                    // it stood in that town with the call runnable and left it with the call still standing: the
+                    // executor had its chance there (the trainer / vendor did not do it at this money and level)
+                    auto const before = std::find_if(st.orders.begin(), st.orders.end(), [&](GuildOrder const& x)
+                                                     { return x.type == o.type && TaskKey(x) == taskKey; });
+                    if (before != st.orders.end() && before->executable && !before->waitsTown &&
+                        before->townArea && !TownReady(p, *before) && !st.trainDue.count(taskKey))
+                    {
+                        st.trainDue[taskKey] = p->GetLevel();
+                        LOG_INFO("playerbots",
+                                 "[prof272] {} L{} left {} with its TRAIN call {} still standing: no town stop for it "
+                                 "until its next level",
+                                 Who(row.low), p->GetLevel(), before->townName, o.details);
+                    }
+                    if (st.trainDue.count(taskKey))
+                        o.status = "its trainer / vendor visit at this level did not do it: waits for its next level";
+                    else if (p->GetMoney() < pick.cost)
+                        o.status = "waits for its money: " + Gsc(pick.cost) + " (has " + Gsc(p->GetMoney()) + ")";
+                    else if (pick.itemId && !FreeBagSlots(p))
+                        o.status = "waits for a free bag slot for the tool";
+                    else
+                    {
+                        trainCalls.push_back(o);
+                        continue;
+                    }
                 }
                 orders.push_back(o);
             }
@@ -2370,6 +2415,13 @@ void GuildCoordinator::UpdateOrders()
         }
         for (GuildOrder const& ext : st.external)
             orders.push_back(ext);
+        // [prof272] the runnable TRAIN calls last: the first executable order decides an URGENT interrupt (below)
+        for (GuildOrder& t : trainCalls)
+        {
+            t.executable = true;
+            t.status = "trains on its route's stop in the trainer's town ([prof272])";
+            orders.push_back(std::move(t));
+        }
         GuildOrder quest;
         quest.details = "its own leader";
         quest.reason = "nothing more useful to do";
@@ -3421,66 +3473,52 @@ void GuildCoordinator::UpdateProfessions()
                      m->HasSkill(SKILL_FISHING) ? m->GetPureMaxSkillValue(SKILL_FISHING) : 0, candidates.size());
         }
         fishers_ = std::move(next);
-
-        // the raw fish of the cooked foods / drinks the members eat: per member the best fish food of its level (the
-        // highest required level it meets), a restock (RESTOCK_FOOD_TARGET) each, through the recipe's yield, less
-        // what the guild's members already hold of the fish and of the cooked item
+    }
+    JudgeSupplySource(members);
+    // [prof275] the raw fish the guild cooks' supply jobs take (their owed crafts, through the recipe's yield), less
+    // what the members hold of it: the fishers fish for the cook. Before, the need was every member's best fish food
+    // of its level whoever cooked it - b428 "Raw Bristle Whisker Catfish ×1440, Raw Sagefish ×560" while every
+    // band's job was Goblin Deviled Clams: 6.4 h of fishing for a fish no cook used
+    {
         std::map<uint32, uint32> shortBy;
-        if (auto const cooking = recipesBySkill_.find(SKILL_COOKING); cooking != recipesBySkill_.end())
+        std::map<uint32, uint32> owedFish;
+        for (auto const& [cookLow, jobs] : supplyCrafts_)
         {
-            struct FishFood
+            Player* c = nullptr;
+            for (auto const& [row, m] : members)
+                if (row->low == cookLow)
+                    c = m;
+            if (!c)
+                continue;
+            for (SupplyCraft const& job : jobs)
             {
-                Recipe const* recipe;
-                ItemTemplate const* product;
-                uint32 fish;
-                uint32 perCraft;
-            };
-            std::vector<FishFood> foods;
-            for (Recipe const& r : cooking->second)
-            {
-                ItemTemplate const* proto = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr;
-                if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
-                    (proto->Spells[0].SpellCategory != RESTOCK_SPELL_CATEGORY_FOOD &&
-                     proto->Spells[0].SpellCategory != RESTOCK_SPELL_CATEGORY_DRINK))
-                    continue;
-                for (auto const& [item, n] : r.reagents)
+                uint32 const crafts = SupplyOwed(c, job);
+                for (auto const& [item, n] : job.reagents)
                 {
                     uint32 skill = 0;
                     if (sGuildGatherPlan.Gatherable(item, &skill) && skill == SKILL_FISHING)
-                        foods.push_back({&r, proto, item, n});
+                        owedFish[item] += crafts * n;
                 }
             }
-            std::map<uint32, float> units;  // fish -> units the members' restocks take
+        }
+        for (auto const& [fish, n] : owedFish)
+        {
+            uint32 held = 0;
             for (auto const& [row, m] : members)
-            {
-                FishFood const* best = nullptr;
-                for (FishFood const& f : foods)
-                    if (f.product->RequiredLevel <= m->GetLevel() &&
-                        (!best || f.product->RequiredLevel > best->product->RequiredLevel))
-                        best = &f;
-                if (best)
-                    units[best->fish] += float(RESTOCK_FOOD_TARGET) * float(best->perCraft) /
-                                         std::max(best->recipe->made, 1.0f);
-            }
-            for (auto const& [fish, n] : units)
-            {
-                uint32 held = 0;
-                for (auto const& [row, m] : members)
-                    held += m->GetItemCount(fish, true);
-                if (uint32 const need = uint32(std::ceil(n)); need > held)
-                    shortBy[fish] = need - held;
-            }
+                held += m->GetItemCount(fish, true);
+            if (n > held)
+                shortBy[fish] = n - held;
         }
         if (shortBy != fishShort_)
         {
             std::string text;
             for (auto const& [fish, n] : shortBy)
                 text += (text.empty() ? "" : ", ") + ItemName(fish) + " ×" + std::to_string(n);
-            LOG_INFO("playerbots", "[fish110] the fives' cooked supplies need: {}", text.empty() ? "no fish" : text);
+            LOG_INFO("playerbots", "[fish110] the guild cooks' supply jobs need: {} [prof275]",
+                     text.empty() ? "no fish" : text);
         }
         fishShort_ = std::move(shortBy);
     }
-    JudgeSupplySource(members);
     // what the plan wants crafted that no guild crafter can make yet (nobody knows the recipe)
     struct Need
     {
@@ -3630,6 +3668,23 @@ void GuildCoordinator::UpdateProfessions()
         return best;
     };
 
+    // [prof272] the trainer's fees of a TRAIN call: the first rank of a line (Apprentice), a recipe it teaches
+    auto const firstRankFee = [&](uint32 line) -> uint32
+    {
+        if (auto const ranks = trainerRanks_.find(line); ranks != trainerRanks_.end())
+            for (TrainerRank const& r : ranks->second)
+                if (r.maxSkill == SKILL_STEP_MAX)
+                    return r.price;
+        return 0;
+    };
+    auto const recipeFee = [&](uint32 line, uint32 spellId) -> uint32
+    {
+        if (auto const list = recipesBySkill_.find(line); list != recipesBySkill_.end())
+            for (Recipe const& r : list->second)
+                if (r.spellId == spellId)
+                    return r.price;
+        return 0;
+    };
     for (auto const& [row, p] : members)
     {
         if (HumanCharacter(p))
@@ -3703,11 +3758,13 @@ void GuildCoordinator::UpdateProfessions()
             }
             std::string key;
             std::string decision;
-            auto const train = [&](std::string details, std::string reason)
+            auto const train = [&](std::string details, std::string reason, uint32 cost = 0, uint32 spellId = 0)
             {
                 ProfessionPick pick;
                 pick.kind = GuildProfessionKind::TRAIN;
                 pick.skillLine = line;
+                pick.cost = cost;
+                pick.spellId = spellId;
                 // [econ2] its nearest trainer's town: learned on its next visit there (ProfessionCall)
                 if (auto const spots = trainerSpots_.find(line); spots != trainerSpots_.end())
                     if (NpcSpot const* n = NearestSpot(p, row->low, spots->second))
@@ -3718,9 +3775,10 @@ void GuildCoordinator::UpdateProfessions()
             };
             if (!has)
             {
-                train(std::string("learn ") + SkillShort(line), "in the plan, not learned; trainer rank at L" +
-                                                                    std::to_string(level) + " to " +
-                                                                    std::to_string(cap));
+                train(std::string("learn ") + SkillShort(line),
+                      "in the plan, not learned; trainer rank at L" + std::to_string(level) + " to " +
+                          std::to_string(cap),
+                      firstRankFee(line));
                 key = "learn";
                 decision = head + " — not learned: TRAIN at the trainer on the next town visit";
             }
@@ -3740,14 +3798,26 @@ void GuildCoordinator::UpdateProfessions()
                 if (rank && skill >= rank->reqSkill)
                     train("rank to " + std::to_string(rank->maxSkill),
                           "skill " + std::to_string(skill) + " ≥ " + std::to_string(rank->reqSkill) + ", level ≥ " +
-                              std::to_string(rank->reqLevel));
+                              std::to_string(rank->reqLevel),
+                          rank->price);
                 // a planned recipe its skill already allows: learned at the trainer
                 for (Need const* n : lineNeeds)
                     if (n->reqSkill <= skill && !p->HasSpell(n->spellId))
                     {
-                        train("recipe " + ItemName(n->itemId), n->label);
+                        train("recipe " + ItemName(n->itemId), n->label, recipeFee(line, n->spellId), n->spellId);
                         break;
                     }
+                // [prof274] the guild cook's supply recipe a trainer teaches (no recipe item to buy): learned there
+                if (line == SKILL_COOKING)
+                    if (auto const jobs = supplyCrafts_.find(row->low); jobs != supplyCrafts_.end())
+                        for (SupplyCraft const& job : jobs->second)
+                            if (!job.recipeItem && !p->HasSpell(job.spellId))
+                            {
+                                train("recipe " + ItemName(job.product),
+                                      "[prof274] the guild cook's supply recipe for band " + job.band,
+                                      recipeFee(line, job.spellId), job.spellId);
+                                break;
+                            }
 
                 // the skill-up walk from its skill up to the need (within its rank's cap)
                 auto const list = recipesBySkill_.find(line);
@@ -4102,12 +4172,15 @@ void GuildCoordinator::UpdateProfessions()
                 }
                 std::string key;
                 std::string decision;
-                auto const call = [&](std::string details, std::string reason, uint32 tool = 0)
+                auto const call = [&](std::string details, std::string reason, uint32 tool = 0, uint32 fee = 0)
                 {
                     ProfessionPick pick;
                     pick.kind = GuildProfessionKind::TRAIN;
                     pick.skillLine = line;
                     pick.itemId = tool;  // [econ2] a tool buy: the tool's item (ProfessionErrand)
+                    // [prof272] the fee: the tool's price, else the rank's
+                    ItemTemplate const* toolProto = tool ? sObjectMgr->GetItemTemplate(tool) : nullptr;
+                    pick.cost = toolProto ? toolProto->BuyPrice : fee;
                     // [econ2] the town of its nearest trainer (of the nearest tool vendor): its next visit there
                     auto const& lists = tool ? toolVendors_ : trainerSpots_;
                     if (auto const spots = lists.find(tool ? tool : line); spots != lists.end())
@@ -4126,7 +4199,8 @@ void GuildCoordinator::UpdateProfessions()
                 else if (!has && cap)
                 {
                     call(std::string("learn ") + name,
-                         "in the gatherer plan, the trainer teaches at L" + std::to_string(level));
+                         "in the gatherer plan, the trainer teaches at L" + std::to_string(level), 0,
+                         firstRankFee(line));
                     key = "learn";
                     decision = head + " — not learned: TRAIN at the trainer";
                 }
@@ -4139,9 +4213,10 @@ void GuildCoordinator::UpdateProfessions()
                                 rank = &r;
                     if (rank && skill >= rank->reqSkill)
                     {
-                        call("rank to " + std::to_string(rank->maxSkill), "skill " + std::to_string(skill) +
-                                                                              " at the rank cap, level ≥ " +
-                                                                              std::to_string(rank->reqLevel));
+                        call("rank to " + std::to_string(rank->maxSkill),
+                             "skill " + std::to_string(skill) + " at the rank cap, level ≥ " +
+                                 std::to_string(rank->reqLevel),
+                             0, rank->price);
                         key = "rank";
                         decision = head + " — rank cap: TRAIN rank to " + std::to_string(rank->maxSkill);
                     }
@@ -4191,6 +4266,8 @@ void GuildCoordinator::UpdateProfessions()
                         pick.pos = n->spot.pos;
                 pick.details = ItemName(pick.itemId);
                 pick.reason = std::string("its called ") + SkillShort(line) + " crafts need it";
+                if (ItemTemplate const* toolProto = sObjectMgr->GetItemTemplate(pick.itemId))
+                    pick.cost = toolProto->BuyPrice;  // [prof272]
                 picks.push_back(pick);
             }
         }
@@ -4284,6 +4361,22 @@ GuildProfessionKind GuildCoordinator::ProfessionCall(Player* bot, uint32* skillL
     if (skillLine)
         *skillLine = due->skillLine;
     return due->profession;
+}
+
+std::vector<uint32> GuildCoordinator::CalledRecipes(Player* bot, uint32 skillLine) const
+{
+    std::vector<uint32> out;
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+        return out;
+    CoordLock guard(lock_, __func__);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end())
+        return out;
+    for (GuildOrder const& o : itr->second.orders)
+        if (o.type == GuildOrderType::PROFESSION && o.profession == GuildProfessionKind::TRAIN &&
+            o.skillLine == skillLine && o.spellId && !bot->HasSpell(o.spellId))
+            out.push_back(o.spellId);
+    return out;
 }
 
 bool GuildCoordinator::ProfessionErrand(Player* bot, uint32 skillLine, bool tool, WorldPosition const& npc)
@@ -7857,6 +7950,49 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
         float const foodPer = vendorBest(RESTOCK_SPELL_CATEGORY_FOOD, true, foodName);
         float const drinkPer = vendorBest(RESTOCK_SPELL_CATEGORY_DRINK, false, drinkName);
 
+        std::string const key = std::to_string(lo) + "-" + std::to_string(hi);
+        // [prof274] the band's cook first - its cook before while it still cooks, else the most Cooking skill of the
+        // members no other band holds (the guild's best cook when every one is taken) - and only a recipe that cook
+        // can learn (its skill reaches the recipe's: trainer_spell ReqSkillRank / the recipe item's
+        // RequiredSkillRank) with looted reagents the guild's members hold: b428 every band's job was Goblin Deviled
+        // Clams (Cooking 125, Tangy Clam Meat) for cooks of 65 / 74 / 93 while no member held a Tangy Clam Meat -
+        // never learned, never cooked, the fives ate vendor food
+        Player* bandCook = nullptr;
+        if (auto const was = supplyCook_.find(key); was != supplyCook_.end())
+            for (auto const& [row, m] : members)
+                if (row->low == was->second && m->HasSkill(SKILL_COOKING) && !HumanCharacter(m))
+                    bandCook = m;
+        if (!bandCook)
+        {
+            for (auto const& [row, m] : members)
+            {
+                if (HumanCharacter(m) || !m->HasSkill(SKILL_COOKING))
+                    continue;
+                bool taken = false;
+                for (auto const& [band, low] : supplyCook_)
+                    taken = taken || (band != key && low == row->low);
+                if (taken)
+                    continue;
+                if (!bandCook || m->GetPureSkillValue(SKILL_COOKING) > bandCook->GetPureSkillValue(SKILL_COOKING))
+                    bandCook = m;
+            }
+            if (!bandCook)
+                bandCook = cook;
+        }
+        uint32 const cookSkill = bandCook ? bandCook->GetPureSkillValue(SKILL_COOKING) : 0;
+        std::map<uint32, uint32> guildStock;  // looted reagent -> what the members hold (bags + bank)
+        auto const stock = [&](uint32 item)
+        {
+            auto it = guildStock.find(item);
+            if (it == guildStock.end())
+            {
+                uint32 n = 0;
+                for (auto const& [row, m] : members)
+                    n += m->GetItemCount(item, true);
+                it = guildStock.emplace(item, n).first;
+            }
+            return it->second;
+        };
         // the cooked food / drink of the band's level: the cheapest per point of those with the highest level
         std::string cookedText = "no cooking recipe of the level";
         float cookedPer = -1.0f;
@@ -7881,6 +8017,7 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
                 // a drop (no price known: not judged)
                 float recipePrice = 0.0f;
                 uint32 recipeId = 0;
+                uint32 reqSkill = r.reqSkill;
                 if (!r.trainer && !r.autoLearned)
                 {
                     auto const item = recipeItem.find(r.spellId);
@@ -7888,7 +8025,12 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
                         continue;
                     recipeId = item->second.first;
                     recipePrice = float(item->second.second);
+                    if (ItemTemplate const* recipeProto = sObjectMgr->GetItemTemplate(recipeId))
+                        reqSkill = std::max(reqSkill, recipeProto->RequiredSkillRank);
                 }
+                // [prof274] a recipe the band's cook knows or its skill can learn
+                if (!bandCook || (!bandCook->HasSpell(r.spellId) && reqSkill > cookSkill))
+                    continue;
                 float coin = 0.0f, seconds = 0.0f;
                 std::string reagents;
                 bool priced = true;
@@ -7915,7 +8057,17 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
                                                         n, rate);
                     }
                     else
-                        reagents += Acore::StringFormat("{} x{} looted, ", reagent ? reagent->Name1 : "?", n);
+                    {
+                        // [prof274] a looted reagent the members hold (the transfer brings it to the cook)
+                        uint32 const held = stock(item);
+                        if (held < n)
+                        {
+                            priced = false;
+                            break;
+                        }
+                        reagents += Acore::StringFormat("{} x{} looted (members hold {}), ",
+                                                        reagent ? reagent->Name1 : "?", n, held);
+                    }
                 }
                 if (!priced || cookPace < 0.0f)
                     continue;
@@ -7960,7 +8112,6 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
         if (cookedPer >= 0.0f && foodPer > 0.0f && (cookedMana <= 0.0f || drinkPer > 0.0f))
             vendorPer = (cookedHp * foodPer + cookedMana * std::max(drinkPer, 0.0f)) / (cookedHp + cookedMana);
         std::string const choice = cookedPer >= 0.0f && vendorPer > 0.0f && cookedPer < vendorPer ? "cook" : "vendor";
-        std::string const key = std::to_string(lo) + "-" + std::to_string(hi);
         std::string const text = Acore::StringFormat(
             "band {} ({} members, L{}): vendor {} {:.3f} c/hp, {} {:.3f} c/mana; cooked {} -> {} (cook {}, fisher {})",
             key, inBand, uint32(level), foodName.empty() ? "-" : foodName, foodPer, drinkName.empty() ? "-" : drinkName,
@@ -7985,34 +8136,12 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
             }
             continue;
         }
-        uint32 cookLow = 0;
-        if (auto const was = supplyCook_.find(key); was != supplyCook_.end())
-            for (auto const& [row, m] : members)
-                if (row->low == was->second && m->HasSkill(SKILL_COOKING) && !HumanCharacter(m))
-                    cookLow = row->low;
-        if (!cookLow)
-        {
-            Player* best = nullptr;
-            for (auto const& [row, m] : members)
-            {
-                if (HumanCharacter(m) || !m->HasSkill(SKILL_COOKING))
-                    continue;
-                bool taken = false;
-                for (auto const& [band, low] : supplyCook_)
-                    taken = taken || (band != key && low == row->low);
-                if (taken)
-                    continue;
-                if (!best || m->GetPureSkillValue(SKILL_COOKING) > best->GetPureSkillValue(SKILL_COOKING))
-                    best = m;
-            }
-            if (!best)
-                best = cook;
-            if (!best)
-                continue;
-            cookLow = best->GetGUID().GetCounter();
-            LOG_INFO("playerbots", "[supply112] band {}: {} (cooking {}) is its cook: {}", key, Who(cookLow),
-                     best->GetPureSkillValue(SKILL_COOKING), ItemName(job.product));
-        }
+        if (!bandCook)
+            continue;
+        uint32 const cookLow = bandCook->GetGUID().GetCounter();
+        if (auto const was = supplyCook_.find(key); was == supplyCook_.end() || was->second != cookLow)
+            LOG_INFO("playerbots", "[supply112] band {}: {} (cooking {}) is its cook: {} [prof274]", key, Who(cookLow),
+                     cookSkill, ItemName(job.product));
         supplyCook_[key] = cookLow;
         job.band = key;
         job.lo = lo;
@@ -8071,8 +8200,10 @@ void GuildCoordinator::SupplyWork(uint32 low, Player* p, double& value, double& 
     {
         if (!p->HasSpell(job.spellId))
         {
-            text += Acore::StringFormat("{}{}: recipe not known yet (buys {})", text.empty() ? "" : "; ",
-                                        ItemName(job.product), job.recipeItem ? ItemName(job.recipeItem) : "-");
+            text += Acore::StringFormat("{}{}: recipe not known yet ({})", text.empty() ? "" : "; ",
+                                        ItemName(job.product),
+                                        job.recipeItem ? "buys " + ItemName(job.recipeItem)
+                                                       : std::string("learns it at a trainer [prof274]"));
             continue;
         }
         uint32 const owed = SupplyOwed(p, job);

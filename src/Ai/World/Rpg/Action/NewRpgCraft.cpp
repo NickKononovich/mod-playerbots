@@ -774,13 +774,17 @@ namespace NewRpgCraft
         if (!trainer || !bot->HasSkill(skill) || !trainer->IsTrainerValidForPlayer(bot))
             return false;
         uint32 const value = bot->GetPureSkillValue(skill);
+        std::vector<uint32> const called = sGuildCoordinator.CalledRecipes(bot, skill);  // [prof273]
         bool found = false;
         for (Trainer::Spell const& spell : trainer->GetSpells())
         {
             if (spell.ReqSkillLine != skill || (found && spell.MoneyCost >= cost))
                 continue;
             auto const recipe = index.recipes.find(TaughtSpell(spell.SpellId));
-            if (recipe == index.recipes.end() || !Tier(recipe->second, value) || !trainer->CanTeachSpell(bot, &spell))
+            bool const isCalled =
+                std::find(called.begin(), called.end(), TaughtSpell(spell.SpellId)) != called.end();
+            if ((!isCalled && (recipe == index.recipes.end() || !Tier(recipe->second, value))) ||
+                !trainer->CanTeachSpell(bot, &spell))
                 continue;
             cost = spell.MoneyCost;
             found = true;
@@ -794,16 +798,27 @@ namespace NewRpgCraft
         if (!trainer || !bot->HasSkill(skill) || !trainer->IsTrainerValidForPlayer(bot))
             return 0;
         uint32 const value = bot->GetPureSkillValue(skill);
+        // [prof273] ... and the recipes the global leader called it to learn (a planned craft, the guild cook's
+        // supply recipe) whatever skill they give: b428 the cook's Goblin Deviled Clams and the planned crafts'
+        // trainer recipes were never taught - only a skill-up recipe passed here
+        std::vector<uint32> const called = sGuildCoordinator.CalledRecipes(bot, skill);
         std::vector<std::pair<uint32, uint32>> list;  // (cost, trainer spell)
         for (Trainer::Spell const& spell : trainer->GetSpells())
         {
             if (spell.ReqSkillLine != skill)
                 continue;
             auto const recipe = index.recipes.find(TaughtSpell(spell.SpellId));
+            bool const isCalled =
+                std::find(called.begin(), called.end(), TaughtSpell(spell.SpellId)) != called.end();
             // a recipe that still gives skill now or later (green and gray ones give none any more)
-            if (recipe == index.recipes.end() || value >= (recipe->second.yellow + recipe->second.gray) / 2 ||
+            if ((!isCalled && (recipe == index.recipes.end() ||
+                               value >= (recipe->second.yellow + recipe->second.gray) / 2)) ||
                 !trainer->CanTeachSpell(bot, &spell))
                 continue;
+            if (isCalled)
+                LOG_INFO("playerbots", "[prof273] {} L{} at {}: the called recipe {} ({}c) is on its learn list",
+                         bot->GetName(), bot->GetLevel(), npc->GetName(), RecipeName(TaughtSpell(spell.SpellId)),
+                         spell.MoneyCost);
             list.emplace_back(spell.MoneyCost, spell.SpellId);
         }
         std::sort(list.begin(), list.end());

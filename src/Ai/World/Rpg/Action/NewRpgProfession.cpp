@@ -457,8 +457,12 @@ namespace
     bool RecipeCandidate(Player* bot, uint32 skill, bool sameZone, uint32 budget, Candidate& best,
                          std::unordered_set<NpcSpawn const*> const& skip)
     {
-        if (!bot->HasSkill(skill) || bot->GetPureSkillValue(skill) >= bot->GetPureMaxSkillValue(skill) ||
-            NewRpgCraft::HasSkillUpRecipe(bot, skill))
+        // [prof273] a recipe the global leader called it to learn is a trip of its own (TeachesSkillUpRecipe takes
+        // it too): a skill-up recipe in hand or a capped skill no longer hides it
+        if (!bot->HasSkill(skill) ||
+            ((bot->GetPureSkillValue(skill) >= bot->GetPureMaxSkillValue(skill) ||
+              NewRpgCraft::HasSkillUpRecipe(bot, skill)) &&
+             sGuildCoordinator.CalledRecipes(bot, skill).empty()))
             return false;
         Index const& index = GetIndex();
         auto spawns = index.trainers.find(skill);
@@ -507,7 +511,11 @@ namespace
                              SKILL_ENGINEERING, SKILL_ENCHANTING, SKILL_JEWELCRAFTING, SKILL_INSCRIPTION,
                              SKILL_COOKING, SKILL_FIRST_AID, SKILL_MINING})
             if (bot->HasSkill(skill))
+            {
                 key = key * 1000003 + bot->GetPureSkillValue(skill);
+                for (uint32 spell : sGuildCoordinator.CalledRecipes(bot, skill))  // [prof273] a new recipe call
+                    key = key * 1000003 + spell;
+            }
         return key;
     }
 

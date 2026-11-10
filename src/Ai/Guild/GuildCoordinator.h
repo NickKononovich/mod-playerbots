@@ -344,6 +344,10 @@ public:
     // [econ2] ... and only once the call can run where the bot stands: TRAIN in the town of the trainer the leader
     // planned for it (its next visit there), CRAFT / BUY in a town (rest area); NONE while it only waits
     GuildProfessionKind ProfessionCall(Player* bot, uint32* skillLine = nullptr);
+    // [prof273] map thread: the recipes of this skill line the global leader called the bot to learn at a trainer
+    // (a planned craft's recipe, the guild cook's supply recipe) - the trainer executor learns them whether they
+    // still give skill or not
+    std::vector<uint32> CalledRecipes(Player* bot, uint32 skillLine) const;
     // [econ2] map thread, for the profession executors' errands (NewRpgProfession train / tool / recipe trips): the
     // global leader called this errand for this skill line (TRAIN, a tool = TRAIN "tool"), the npc stands in the town
     // the bot is in now, and a bought tool has a free bag slot. The executors pick only errands this allows
@@ -449,6 +453,7 @@ private:
         uint32 gray{0};          // TrivialSkillLineRankHigh
         bool trainer{false};
         bool autoLearned{false};
+        uint32 price{0};  // [prof272] the trainer's fee (the lowest trainer_spell MoneyCost)
         std::vector<std::pair<uint32, uint32>> reagents;
         uint32 product{0};  // [guild70] the created item
         float made{1.0f};
@@ -541,6 +546,9 @@ private:
         uint32 casts{0};            // [econ2] its smelt casts (NextStep): a cast is progress, a skill-up or not
         uint32 castsSeen{0};        // [econ2] casts at the last health sample
         std::string profGate;       // [econ2] the last logged state of its profession call (ready / waits)
+        // [prof272] a runnable TRAIN call still standing when the bot left its trainer's town (TaskKey -> its level
+        // then): the executor had its chance there; no town stop again until its next level
+        std::map<std::string, uint8> trainDue;
         std::deque<uint32> deaths;  // game time
         bool deathOpen{false};      // dead since the last DEATH alert
         uint64 xpTotal{0};
@@ -603,6 +611,10 @@ private:
                               // [econ2] TRAIN: the trainer (the pole vendor) it learns at on its next visit there
         std::string details;
         std::string reason;
+        // [prof272] TRAIN: the trainer's fee (trainer_spell MoneyCost) or the tool's price (BuyPrice), its trip runs
+        // once its money pays it; a recipe call's taught spell (the trainer executor learns it)
+        uint32 cost{0};
+        uint32 spellId{0};
     };
     struct TrainerRank
     {
