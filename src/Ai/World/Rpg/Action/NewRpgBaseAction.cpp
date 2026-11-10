@@ -4223,6 +4223,8 @@ namespace
                     entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
                 }
 
+            uint32 const indexStart = getMSTime();  // [patrol86] its cost, logged once
+            size_t spawnsIndexed = 0, beatNodes = 0, beatPatrols = 0;
             for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
             {
                 CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(data.id);
@@ -4231,6 +4233,7 @@ namespace
                     continue;
                 index.mobCells[MobCellKey(data.mapid, data.posX, data.posY)].push_back(
                     {data.posX, data.posY, data.posZ, tmpl, SpawnEvent(true, spawnId), data.wander_distance});
+                ++spawnsIndexed;
                 // [patrol86] a patrol reaches from anywhere on its beat: each node of its waypoint path (creature_addon
                 // path_id) stands in the index as a spawn point of its own, priced as the spawn is. b410 Laaral L18
                 // (Alliance): static39 found "a way round" the Mor'shan guards' spawn points, the Barrens Guards and
@@ -4240,11 +4243,18 @@ namespace
                         if (WaypointPath const* path = sWaypointMgr->GetPath(addon->path_id))
                             for (WaypointNode const& node : path->Nodes)
                             {
+                                beatNodes += 1;
+                                beatPatrols += &node == &path->Nodes.front() ? 1 : 0;
                                 MobSpawn beat{node.X, node.Y, node.Z, tmpl, SpawnEvent(true, spawnId)};
                                 beat.beat = true;
                                 index.mobCells[MobCellKey(data.mapid, node.X, node.Y)].push_back(beat);
                             }
             }
+            LOG_INFO("playerbots", "[patrol86] static spawn index: {} spawns, {} patrol beat nodes of {} patrols ({:.1f} "
+                     "% more points), built in {} ms",
+                     spawnsIndexed, beatNodes, beatPatrols,
+                     spawnsIndexed ? 100.0 * double(beatNodes) / double(spawnsIndexed) : 0.0,
+                     getMSTimeDiff(indexStart, getMSTime()));
         });
         return index;
     }
