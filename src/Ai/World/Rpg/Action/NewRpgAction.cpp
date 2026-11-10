@@ -88,6 +88,7 @@ namespace
 #include "MapMgr.h"  // [guild14]
 #include "MotionMaster.h"
 #include "GuildCoordinator.h"  // [guild30]
+#include "GuildHonest.h"       // [group115]
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
@@ -1351,6 +1352,20 @@ void NewRpgBaseAction::NoteQuestUse(Player* bot, uint32 questId, uint32 entry)
              QuestStats::NowMs());
 }
 
+// [group115] one leave per member and group: the leave is queued to the world thread, the member still shows the group
+// until it runs
+static bool LeaveOnce(Player* bot, Group* group)
+{
+    static std::mutex lock;
+    static std::unordered_map<uint32, ObjectGuid> asked;  // member -> the group it asked to leave
+    std::lock_guard<std::mutex> guard(lock);
+    ObjectGuid& last = asked[bot->GetGUID().GetCounter()];
+    if (last == group->GetGUID())
+        return false;
+    last = group->GetGUID();
+    return true;
+}
+
 bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 {
     NewRpgInfo& info = botAI->rpgInfo;
@@ -1715,6 +1730,24 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             bot->StopMoving();
         return true;
     }
+    // [group115] b421: Dekorhan 11 deaths, Alnia 4 in the Bloodmyst camps (Amberweb Pass, the Foul Pool) - both in
+    // Brelir's group the session restored, each playing its own New RPG plan, and as group members attacking the
+    // group's target (Brelir's Webbed Creature, 335 yd off) through the camps. [group43]'s check of a restored group
+    // runs in the follow action, which a member on its own plan never runs. A member playing its own plan in a group
+    // no co-op / help party and no active five holds leaves that group (an honest bot, outside an instance)
+    if (Group* group = bot->GetGroup();
+        group && group->GetLeaderGUID() != bot->GetGUID() && GuildHonest::IsHonestBot(bot) &&
+        !bot->GetMap()->Instanceable() && !bot->IsInCombat())
+        if (Player* leader = ObjectAccessor::FindPlayer(group->GetLeaderGUID());
+            leader && GuildHonest::IsHonestBot(leader) && !NewRpgCoop::InParty(bot->GetGUID().GetCounter()) &&
+            !NewRpgCoop::InParty(leader->GetGUID().GetCounter()) &&
+            !sGuildCoordinator.InSameActiveFive(bot->GetGUID().GetCounter(), leader->GetGUID().GetCounter()) &&
+            LeaveOnce(bot, group) &&
+            NewRpgCoop::LeaveStaleGroup(
+                bot, Acore::StringFormat("[group115] a group no party or five holds while it plays its own plan "
+                                         "(its leader {} {:.0f} yd)",
+                                         leader->GetName(), bot->GetExactDist2d(leader))))
+            return true;
     // [coop] a co-op party member goes with its party's leader; its own plan waits (NewRpgCoop.h)
     {
         NewRpgCoop::Order const coop = NewRpgCoop::Tick(botAI, bot);

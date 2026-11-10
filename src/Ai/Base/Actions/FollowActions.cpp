@@ -252,20 +252,28 @@ bool FollowAction::Execute(Event /*event*/)
                     bot, Acore::StringFormat("[group19] its party's leader is not its group's leader {} ({:.0f} yd)",
                                              leader->GetName(), bot->GetExactDist2d(leader))))
                 return true;
+            // [group115] b421: Dekorhan 11 deaths in the Bloodmyst camps (Amberweb Pass, the Foul Pool), 5 under
+            // Resurrection Sickness, attacking Brelir's Webbed Creature 300+ yd off: their RFC five's group outlived
+            // the five - the five ended, the check below had run once at login (the group was the five's then) and
+            // never again. The check runs once per session and again whenever what held the group ends (its five,
+            // its party): a fact change, no timer
+            bool const held = NewRpgCoop::InParty(low) || NewRpgCoop::InParty(leader->GetGUID().GetCounter()) ||
+                              sGuildCoordinator.InSameActiveFive(low, leader->GetGUID().GetCounter());
             static std::mutex staleLock;
-            static std::unordered_set<uint32> staleChecked;
+            static std::unordered_map<uint32, bool> staleHeld;  // member -> held at its last look
             bool first = false;
             {
                 std::lock_guard<std::mutex> guard(staleLock);
-                first = staleChecked.insert(low).second;
+                auto const [itr, inserted] = staleHeld.try_emplace(low, held);
+                first = inserted || (itr->second && !held);
+                itr->second = held;
             }
             // [group43] ... in its leader's zone too: a restored group no party holds is no plan of the global
             // leader's, and its member runs no New RPG of its own (AiFactory gives "new rpg" to a group's leader
             // only) - no sickness hold, no login escape, no rest out of reach. b390: Bami (in Kianey's), Peny
             // (Guinudrond's), Feette, Mytaeleas, Nelaeleas never logged a status all run; Bami 13 deaths, most under
             // Resurrection Sickness following its leader into the Westfall camps
-            if (first && !NewRpgCoop::InParty(low) && !NewRpgCoop::InParty(leader->GetGUID().GetCounter()) &&
-                !sGuildCoordinator.InSameActiveFive(low, leader->GetGUID().GetCounter()) &&
+            if (first && !held &&
                 NewRpgCoop::LeaveStaleGroup(
                     bot, Acore::StringFormat("[group43] a restored group no party holds (its leader {} {:.0f} yd, {})",
                                              leader->GetName(), bot->GetExactDist2d(leader),
