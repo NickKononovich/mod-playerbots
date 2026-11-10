@@ -4123,6 +4123,11 @@ namespace
         std::unordered_map<uint32, std::vector<uint32>> itemCreatures;
         // [guild12] the spawns of creatures that can be attacked, binned per map (MobCellKey)
         std::unordered_map<uint64, std::vector<MobSpawn>> mobCells;
+        // [patrol95] the patrols' beat nodes, apart: read only by the refused-reach passes (StaticDangerDiscs and the
+        // trip's danger walk), thinned to one node per BEAT_NODE_STEP yd of the path - b414 had 138533 nodes in
+        // mobCells beside 129052 spawns (+107 %), every static pass (camp pricing, static69's packs) read them twice:
+        // route search 3748 slow calls (223 s) against b411's 2162 (150 s), route costs 2023 slow calls (67 s) against 59
+        std::unordered_map<uint64, std::vector<MobSpawn>> beatCells;
         std::unordered_map<uint32, std::vector<QuestSpot>> creatures;  // creature entry -> spawns
         std::unordered_map<uint32, std::vector<QuestSpot>> objects;    // object entry -> spawns
         std::unordered_map<uint32, std::vector<QuestSpot>> triggers;   // quest id -> explore area triggers
@@ -4241,14 +4246,24 @@ namespace
                 if (data.movementType == WAYPOINT_MOTION_TYPE)
                     if (CreatureAddon const* addon = sObjectMgr->GetCreatureAddon(spawnId); addon && addon->path_id)
                         if (WaypointPath const* path = sWaypointMgr->GetPath(addon->path_id))
+                        {
+                            // a node every BEAT_NODE_STEP yd of the beat: the reach of the smallest aggro disc
+                            // (5 yd, Creature::GetAggroRange's floor) over twice covers the path between them
+                            constexpr float BEAT_NODE_STEP = 10.0f;
+                            float lastX = data.posX, lastY = data.posY;
+                            ++beatPatrols;
                             for (WaypointNode const& node : path->Nodes)
                             {
-                                beatNodes += 1;
-                                beatPatrols += &node == &path->Nodes.front() ? 1 : 0;
+                                if (std::hypot(node.X - lastX, node.Y - lastY) < BEAT_NODE_STEP)
+                                    continue;
+                                lastX = node.X;
+                                lastY = node.Y;
+                                ++beatNodes;
                                 MobSpawn beat{node.X, node.Y, node.Z, tmpl, SpawnEvent(true, spawnId)};
                                 beat.beat = true;
-                                index.mobCells[MobCellKey(data.mapid, node.X, node.Y)].push_back(beat);
+                                index.beatCells[MobCellKey(data.mapid, node.X, node.Y)].push_back(beat);
                             }
+                        }
             }
             LOG_INFO("playerbots", "[patrol86] static spawn index: {} spawns, {} patrol beat nodes of {} patrols ({:.1f} "
                      "% more points), built in {} ms",
@@ -4641,9 +4656,10 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             for (int32 oy = -1; oy <= 1; ++oy)
                 cells.insert(MobCellKey(mapId, points[i].x + ox * MAX_AGGRO_RADIUS, points[i].y + oy * MAX_AGGRO_RADIUS));
     for (uint64 const cell : cells)
+      for (auto const* cellMap : {&index.mobCells, &index.beatCells})  // [patrol95] the spawns, then the beats
     {
-        auto const spawns = index.mobCells.find(cell);
-        if (spawns == index.mobCells.end())
+        auto const spawns = cellMap->find(cell);
+        if (spawns == cellMap->end())
             continue;
         for (MobSpawn const& spawn : spawns->second)
         {
@@ -4741,9 +4757,10 @@ CreatureTemplate const* NewRpgBaseAction::DangerOnWay(Player* bot, float fromX, 
     }
 
     for (uint64 const cell : cells)
+      for (auto const* cellMap : {&index.mobCells, &index.beatCells})  // [patrol95] the spawns, then the beats
     {
-        auto const spawns = index.mobCells.find(cell);
-        if (spawns == index.mobCells.end())
+        auto const spawns = cellMap->find(cell);
+        if (spawns == cellMap->end())
             continue;
         for (MobSpawn const& spawn : spawns->second)
         {
@@ -5042,6 +5059,12 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
         {
             AreaTableEntry const* area = sAreaTableStore.LookupEntry(map->GetAreaId(phase, ax, ay, az));
             AreaTableEntry const* zone = area && area->zone ? sAreaTableStore.LookupEntry(area->zone) : nullptr;
+            // [red96] a town (AREA_FLAG_TOWN: an inn, its guards) of the bot's faction or of both is no red zone,
+            // whatever its zone's level: b414 Selalleas L15's repair walks to Astranaar (area level 20, Ashenvale)
+            // were refused 39 looks in turn with Windshear Crag / Stonetalon Peak / Silverwind Refuge / Nijel's Point,
+            // while five 6 waited for it
+            if (area && (area->flags & AREA_FLAG_TOWN) && (!area->team || area->team == ownTeam))
+                return false;
             (void)ownTeam;
             for (AreaTableEntry const* a : {area, zone})
                 if (a && a->area_level > 0 &&
@@ -5057,11 +5080,11 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
         if (map && redAt(x, y, z, &where) && !redAt(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
                                                     nullptr))
         {
-            thread_local std::unordered_map<uint64, std::string> redLogged;  // a log cadence, no decision reads it
-            std::string const key = what + where;
-            if (std::string& last = redLogged[bot->GetGUID().GetRawValue()]; last != key)
+            // [red96] one line per bot, destination area and level (the vendor searches look at the same far vendors
+            // every look): a log cadence, no decision reads it
+            thread_local std::set<std::tuple<uint64, std::string, uint8>> redLogged;
+            if (redLogged.insert({bot->GetGUID().GetRawValue(), what + where, bot->GetLevel()}).second)
             {
-                last = key;
                 LOG_INFO("playerbots", "[red73] {} L{} TRIP_REFUSED {} at ({:.0f},{:.0f}): it lies in {}, red for it",
                          bot->GetName(), bot->GetLevel(), what, x, y, where);
             }
