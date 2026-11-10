@@ -6,6 +6,7 @@
 
 #include "Common.h"
 #include "LeaderPlan.h"
+#include "LeaderRest.h"  // [rest75] CountRestItems
 
 #include "AggressiveTargetValue.h"
 #include "AiObjectContext.h"
@@ -193,8 +194,15 @@ namespace Leader::Dungeon
                 // arcane 46 s of wand a run). The leader's Rest is its own decision by the game's math (the line:
                 // the next fight's mana at the member's rate against its drink): a member under it, out of combat
                 // and still below its line, rests - not ready until it stands at its line
+                // [rest75] ... only while it has something to rest with: a member with no drink (a mana user) and no
+                // food sits on spirit regen alone, which the regen judge does not wait for ("no drink in the bags,
+                // spirit regen only - not waited for"). b406 rfc-n five 4: Feette (BM hunter, 48.7 % mana, 0 drinks)
+                // held the Taragaman pull 18 times "rests below its line" while the regen judge let it go - the run
+                // stalled at 1/4
+                bool const hasRest = (bot->GetMaxPower(POWER_MANA) && Leader::Dungeon::CountRestItems(bot, 59)) ||
+                                     Leader::Dungeon::CountRestItems(bot, 11);
                 if (!bot->IsInCombat() && RestState::LeaderRests(bot) && !MemberFull(bot) &&
-                    RestState::BelowOwnLine(bot))
+                    RestState::BelowOwnLine(bot) && hasRest)
                     return member.name + " rests below its line [lead1453]";
                 // [lead1131] b238 5D-4 414.6 s / 5D-12 374.5 s / 5E-13 411.6 s: the warlock's pet died in the fight,
                 // the engage went, the warlock stood casting its summon (691 / 688, its "no pet" trigger) and the
