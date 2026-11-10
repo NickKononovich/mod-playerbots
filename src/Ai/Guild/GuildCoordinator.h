@@ -601,6 +601,7 @@ private:
         uint32 reqLevel{0};
         uint32 reqSkill{0};
         uint32 maxSkill{0};
+        uint32 price{0};  // [insc144] the trainer's fee (trainer_spell MoneyCost)
     };
 
     struct LootReport

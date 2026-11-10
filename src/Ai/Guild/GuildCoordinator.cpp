@@ -630,7 +630,8 @@ void GuildCoordinator::LoadRecipes()
 
     // trainer recipes: spell -> (skill rank, level); a trainer spell that teaches another spell stands for that one
     std::unordered_map<uint32, std::pair<uint32, uint32>> trainerReq;
-    if (QueryResult result = WorldDatabase.Query("SELECT SpellId, ReqSkillLine, ReqSkillRank, ReqLevel FROM trainer_spell"))
+    if (QueryResult result = WorldDatabase.Query(
+            "SELECT SpellId, ReqSkillLine, ReqSkillRank, ReqLevel, MoneyCost FROM trainer_spell"))
     {
         do
         {
@@ -667,9 +668,9 @@ void GuildCoordinator::LoadRecipes()
                                                        [&](TrainerRank const& r) { return r.maxSkill == maxSkill; });
                         uint32 const level = f[3].Get<uint8>(), req = f[2].Get<uint32>();
                         if (same == ranks.end())
-                            ranks.push_back({level, req, maxSkill});
+                            ranks.push_back({level, req, maxSkill, f[4].Get<uint32>()});
                         else if (level < same->reqLevel)
-                            *same = {level, req, maxSkill};
+                            *same = {level, req, maxSkill, f[4].Get<uint32>()};
                     }
             }
             if (!f[1].Get<uint32>())
@@ -3547,6 +3548,28 @@ void GuildCoordinator::UpdateProfessions()
             assigned[{best, n.line}].push_back(&n);
     }
 
+    // [insc144] a raw material the guild's gatherers bring for a crafter: units per minute, the measured pace of the
+    // gathering skill (DO_GATHER) or, none measured yet, the best formula rate (GuildGatherPlan::BestRate, per hour)
+    // of a member whose skill reaches it. b426-b429: Herbalism had no measured pace - no herb was ever wanted, so
+    // nobody was sent to gather - and the walks stopped at the first herb ("no gathering pace measured")
+    std::map<uint32, float> guildPace;
+    auto const gatherPace = [&](uint32 rawItem, uint32 gatherSkill, uint32 reqSkill, Player* only)
+    {
+        float const measured = GatherPace(gatherSkill);
+        if (measured > 0.0f)
+            return measured;
+        if (!only)
+            if (auto const known = guildPace.find(rawItem); known != guildPace.end())
+                return known->second;
+        float best = 0.0f;
+        for (auto const& [gatherRow, g] : members)
+            if ((!only || g == only) && g->HasSkill(gatherSkill) && g->GetPureSkillValue(gatherSkill) >= reqSkill)
+                best = std::max(best, sGuildGatherPlan.BestRate(rawItem, g) / 60.0f);
+        if (!only)
+            guildPace[rawItem] = best;
+        return best;
+    };
+
     for (auto const& [row, p] : members)
     {
         if (HumanCharacter(p))
@@ -3687,7 +3710,27 @@ void GuildCoordinator::UpdateProfessions()
                 bool held = false;
                 std::string block;
                 uint32 reach = skill;
-                uint32 const top = std::min(need, maxSkill);
+                // [insc144] what other members hold of a material: theirs by the transfer once the line is called
+                std::map<uint32, double> others;
+                auto const othersAvail = [&](uint32 item) -> double&
+                {
+                    auto it = others.find(item);
+                    if (it == others.end())
+                    {
+                        double n = 0;
+                        for (auto const& [otherRow, other] : members)
+                            if (other != p)
+                                n += other->GetItemCount(item, false);
+                        it = others.emplace(item, n).first;
+                    }
+                    return it->second;
+                };
+                bool fromGuild = false;
+                std::string guildText;
+                // [insc144] the walk runs to the need through the trainer ranks its level allows (their fees are
+                // costs): b426-b429 it stopped at the held rank's cap (Inscription 75) while the needs it is valued
+                // by lie past it (the glyphs from 80), so the line never valued what it unlocks
+                uint32 const top = need;
                 for (uint32 v = std::max<uint32>(1, skill); v < top; ++v)
                 {
                     if (list == recipesBySkill_.end() || skillPlan == skillPlan_.end() ||
@@ -3704,7 +3747,7 @@ void GuildCoordinator::UpdateProfessions()
                         break;
                     }
                     double const crafts = 1000.0 / chance;
-                    std::map<uint32, double> take;
+                    std::map<uint32, double> take, takeOthers;
                     double cost = 0, gmin = 0;
                     std::string why;
                     for (auto const& [item, n] : r.reagents)
@@ -3743,7 +3786,7 @@ void GuildCoordinator::UpdateProfessions()
                             if (src != gatherSource_.end() && p->HasSkill(src->second.first) &&
                                 p->GetPureSkillValue(src->second.first) >= src->second.second)
                             {
-                                float const pace = GatherPace(src->second.first);
+                                float const pace = gatherPace(rawItem, src->second.first, src->second.second, p);
                                 if (pace > 0.0f)
                                 {
                                     gmin += units / pace;
@@ -3758,13 +3801,34 @@ void GuildCoordinator::UpdateProfessions()
                                       SkillShort(src->second.first) + ")";
                                 break;
                             }
-                            uint32 others = 0;
-                            for (auto const& [otherRow, other] : members)
-                                if (other != p)
-                                    others += other->GetItemCount(rawItem, false);
+                            // [insc144] b426-b429 a scribe without Herbalism stopped here ("waits for the transfer"
+                            // / "others gather it") - but a material is wanted and sent only for a line the leader
+                            // calls, and the line was called only past this point: nobody ever sent or gathered the
+                            // herbs (sold as "not in the wanted list"). What other members hold comes by the
+                            // transfer, the rest the guild's gatherers bring at their pace
+                            double const fromOthers =
+                                std::clamp(othersAvail(rawItem) - takeOthers[rawItem], 0.0, units);
+                            takeOthers[rawItem] += fromOthers;
+                            units -= fromOthers;
+                            fromGuild = true;
+                            if (guildText.empty())
+                                guildText = ItemName(rawItem);
+                            if (units <= 0)
+                                continue;
+                            if (src != gatherSource_.end())
+                                if (float const pace = gatherPace(rawItem, src->second.first, src->second.second,
+                                                                  nullptr);
+                                    pace > 0.0f)
+                                {
+                                    gmin += units / pace;
+                                    continue;
+                                }
                             why = ItemName(rawItem) + " ×" + std::to_string(uint32(std::ceil(units))) + ": " +
-                                  (others ? "guild members hold " + std::to_string(others) + " — waits for the transfer"
-                                          : std::string("others gather it (wanted list)"));
+                                  (src != gatherSource_.end()
+                                       ? std::string("no member gatherer reaches it (") +
+                                             SkillShort(src->second.first) + " " +
+                                             std::to_string(src->second.second) + ")"
+                                       : std::string("neither held nor gathered in the guild"));
                             break;
                         }
                         if (!why.empty())
@@ -3777,6 +3841,8 @@ void GuildCoordinator::UpdateProfessions()
                     }
                     for (auto const& [item, n] : take)
                         pool[item] -= n;
+                    for (auto const& [item, n] : takeOthers)
+                        others[item] -= n;
                     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(r.spellId))
                         craftMin += crafts * info->CalcCastTime() / double(MINUTE * IN_MILLISECONDS);
                     if (ItemTemplate const* product = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr)
@@ -3785,6 +3851,12 @@ void GuildCoordinator::UpdateProfessions()
                     gatherMin += gmin;
                     reach = v + 1;
                 }
+                // [insc144] the fees of the ranks the walk passes (the rank's cap less one step is the cap it lifts)
+                if (auto const ranks = trainerRanks_.find(line); ranks != trainerRanks_.end())
+                    for (TrainerRank const& tr : ranks->second)
+                        if (tr.reqLevel <= level && tr.maxSkill > maxSkill && tr.maxSkill > SKILL_STEP_MAX &&
+                            reach > tr.maxSkill - SKILL_STEP_MAX)
+                            vendorCost += tr.price;
                 std::string const lag = ", lag " + std::to_string(need - skill);
                 // [supply112] what the line produces for the guild's needs: the cook's supply jobs
                 double supplyValue = 0.0, supplyMin = 0.0;
@@ -3833,6 +3905,8 @@ void GuildCoordinator::UpdateProfessions()
                     std::string const reached = std::string(numbers) +
                                                 (unlockedText.empty() ? "" : "; unlocks " + unlockedText) +
                                                 (supplyText.empty() ? "" : "; supplies [supply112]: " + supplyText) +
+                                                (guildText.empty() ? ""
+                                                                   : "; from the guild: " + guildText + " [insc144]") +
                                                 (block.empty() ? "" : "; next: " + block);
                     if (!QuestPace(st, p, questPace, &questWhy))
                     {
@@ -3858,14 +3932,16 @@ void GuildCoordinator::UpdateProfessions()
                             picks.push_back(pick);
                         };
                         std::string kinds;
-                        if (held || (!gatherItem && !buyItem))
+                        // [insc144] at its rank cap the TRAIN call comes first: nothing to craft or buy before it
+                        bool const below = skill < maxSkill;
+                        if (below && (held || fromGuild || (!gatherItem && !buyItem)))
                         {
                             add(GuildProfessionKind::CRAFT, 0, 0,
                                 std::string(SkillShort(line)) + " " + std::to_string(skill) + "→" +
                                     std::to_string(reach) + ": crafts from what it has");
                             kinds += "craft";
                         }
-                        if (buyItem)
+                        if (below && buyItem)
                         {
                             add(GuildProfessionKind::BUY, buyItem, buyUnits,
                                 ItemName(buyItem) + " ×" + std::to_string(uint32(std::ceil(buyUnits))) + " for " +
