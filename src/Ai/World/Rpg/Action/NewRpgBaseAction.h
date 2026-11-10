@@ -19,6 +19,7 @@
 #include "PlayerbotAI.h"
 #include "QuestDef.h"
 #include "TravelMgr.h"
+#include <functional>  // [camp63]
 
 class Creature;
 class GameObject;
@@ -146,8 +147,16 @@ public:
     static std::string LastResolveStats();
     // [guild90] seconds until the first spent camp of the quest respawns (spawntimesecs); 0: none pending
     static uint32 EarliestRespawn(Player* bot, uint32 questId);
+    // [camp63] the spawns of the static spawn index (present now: their game event) on the map whose own position or
+    // wander area comes within `assist` of (x, y): template, spot, wander distance (any faction; bounded scan)
+    static void ForEachSpawnReaching(uint32 mapId, float x, float y, float assist,
+                                     std::function<void(CreatureTemplate const*, float, float, float)> const& fn);
+    // [qeff32] at its spot: the grind target serves an open objective of the quest, or a living source of one that no
+    // other player has tapped stands within the spot's circle (another mob to grind is no reason to stay)
+    static bool ObjectiveTargetHere(Player* bot, uint32 questId, Unit* grindTarget);
     // [guild90] the cheapest other quest in the log (travel at QUEST_TRAVEL_SPEED + the work left); -1: none
-    float OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest);
+    // [qeff32] walkSeconds (optional): the walk alone to the chosen quest's nearest spot
+    float OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest, float* walkSeconds = nullptr);
     // [guild12] a timed quest: the walk to its nearest ender at the bot's run speed fits its time
     static bool TimedQuestFits(Player* bot, Quest const* quest);
     // [guild13] the spawn (with its floor's height) of the quest's ender nearest the bot on its map
@@ -187,6 +196,11 @@ public:
     // of the choices (TripRefused, the grind spot choice) until the bot's next level; one GIVE_UP line per spot
     static void NoteWalkGivenUp(Player* bot, WorldPosition const& dest, std::string const& why);
     static bool WalkGivenUp(Player* bot, float x, float y);
+    // [qeff31] the triage's wait and use lines: "[quest] wait <bot> q<N>: <why>" / "... ends after N s: <why>"
+    // (questId 0 ends the wait), "[quest] use <bot> q<N> object <entry> starts" / "... ends" (questId 0 checks the
+    // use under way for its end); log state only
+    static void NoteQuestWait(Player* bot, uint32 questId, std::string const& why);
+    static void NoteQuestUse(Player* bot, uint32 questId, uint32 entry);
     // [help12] the camp that walled the walk is cleared: the spot is its choice again
     static void ForgetWalkGivenUp(Player* bot, WorldPosition const& dest);
     // [holds9] a GO_GRIND / GO_CAMP tick: the far walk to `pos`, else a nudge, else the walk given up or a HOLD with

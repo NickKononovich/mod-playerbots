@@ -6,6 +6,9 @@
 
 #include "LootAction.h"
 #include "QuestStats.h"  // [log28]
+#include "ObjectMgr.h"  // [qeff31]
+#include <mutex>          // [qeff31]
+#include <unordered_map>  // [qeff31]
 
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
@@ -20,6 +23,108 @@
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "UseItemAction.h"
+
+namespace
+{
+    // [qeff31] the loot lines: when each bot opened its loot (guid, ms), the quest an item serves, the corpse's name
+    std::mutex lootLogLock;
+    std::unordered_map<uint32, std::pair<ObjectGuid, uint32>> lootOpened;
+
+    uint32 QuestOfItem(Player* bot, uint32 itemId)
+    {
+        for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            if (Quest const* quest = sObjectMgr->GetQuestTemplate(bot->GetQuestSlotQuestId(slot)))
+                for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                    if (quest->RequiredItemId[i] == itemId)
+                        return quest->GetQuestId();
+        return 0;
+    }
+
+    std::string LootSourceName(ObjectGuid guid)
+    {
+        if (guid.IsCreatureOrVehicle())
+        {
+            CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(guid.GetEntry());
+            return Acore::StringFormat("corpse {} {}", guid.GetEntry(), t ? t->Name : "?");
+        }
+        if (guid.IsGameObject())
+        {
+            GameObjectTemplate const* t = sObjectMgr->GetGameObjectTemplate(guid.GetEntry());
+            return Acore::StringFormat("object {} {}", guid.GetEntry(), t ? t->name : "?");
+        }
+        return guid.IsItem() ? "item" : "other";
+    }
+
+    // [bag66] b406: 20 quest items left on corpses "no bag room" (items 23859, 24043 ...). The item it destroys to
+    // make room: of its bags' items (never equipped ones) that are no quest item, no item a quest in its log needs,
+    // no container, ammunition or consumable (its food, drink, potions), the grey one of the lowest vendor value, else
+    // the lowest vendor value of all (its count counted); a game action (destroy), logged
+    bool MakeRoomFor(Player* bot, uint32 itemId, uint32 questId)
+    {
+        auto const needed = [bot](ItemTemplate const* proto)
+        {
+            if (proto->Class == ITEM_CLASS_QUEST || proto->StartQuest || proto->Class == ITEM_CLASS_CONTAINER ||
+                proto->Class == ITEM_CLASS_PROJECTILE || proto->Class == ITEM_CLASS_QUIVER ||
+                proto->Class == ITEM_CLASS_CONSUMABLE || proto->Class == ITEM_CLASS_KEY)
+                return true;
+            for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+                if (Quest const* quest = sObjectMgr->GetQuestTemplate(bot->GetQuestSlotQuestId(slot)))
+                {
+                    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+                        if (quest->RequiredItemId[i] == proto->ItemId)
+                            return true;
+                    for (uint8 i = 0; i < QUEST_SOURCE_ITEM_IDS_COUNT; ++i)
+                        if (quest->ItemDrop[i] == proto->ItemId)
+                            return true;
+                }
+            return false;
+        };
+        Item* worst = nullptr;
+        bool worstGrey = false;
+        uint64 worstValue = 0;
+        auto const consider = [&](Item* item)
+        {
+            if (!item)
+                return;
+            ItemTemplate const* proto = item->GetTemplate();
+            if (!proto || needed(proto))
+                return;
+            bool const grey = proto->Quality == ITEM_QUALITY_POOR;
+            uint64 const value = uint64(proto->SellPrice) * item->GetCount();
+            if (!worst || (grey && !worstGrey) || (grey == worstGrey && value < worstValue))
+            {
+                worst = item;
+                worstGrey = grey;
+                worstValue = value;
+            }
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            consider(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+            if (Bag* container = bot->GetBagByPos(bag))
+                for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
+                    consider(container->GetItemByPos(uint8(slot)));
+        if (!worst)
+            return false;
+        LOG_INFO("playerbots", "[bag66] {} destroys {} x{} ({}, {} c) to loot quest item {} for q{} t={}",
+                 bot->GetName(), worst->GetTemplate()->Name1, worst->GetCount(),
+                 worstGrey ? "grey" : "its lowest vendor value", worstValue, itemId, questId, QuestStats::NowMs());
+        bot->DestroyItem(worst->GetBagSlot(), worst->GetSlot(), true);
+        return true;
+    }
+
+    // seconds since the bot opened this loot (0 when it was not seen opening it)
+    float LootSeconds(Player* bot, ObjectGuid guid)
+    {
+        std::lock_guard<std::mutex> guard(lootLogLock);
+        auto const found = lootOpened.find(bot->GetGUID().GetCounter());
+        if (found == lootOpened.end() || found->second.first != guid)
+            return 0.0f;
+        float const seconds = float(getMSTimeDiff(found->second.second, getMSTime())) / float(IN_MILLISECONDS);
+        lootOpened.erase(found);
+        return seconds;
+    }
+}
 
 bool LootAction::Execute(Event /*event*/)
 {
@@ -104,7 +209,11 @@ bool OpenLootAction::Execute(Event /*event*/)
 
     bool const result = DoLoot(lootObject);
     if (result)
+    {
         availableLoot->BeginLoot(lootObject.guid);
+        std::lock_guard<std::mutex> guard(lootLogLock);  // [qeff31] the loot's start
+        lootOpened[bot->GetGUID().GetCounter()] = {lootObject.guid, getMSTime()};
+    }
     else if (!lootObject.IsEmpty() && !wasMoving && !wasMounted)
     {
         availableLoot->DeferLoot(lootObject.guid);
@@ -409,6 +518,9 @@ bool StoreLootAction::Execute(Event event)
     ObjectGuid currentLoot = bot->GetLootGUID();
     if (loot_type == LOOT_NONE)
     {
+        // [qeff31] the loot window did not open for it (another's tap, a group's roll, gone)
+        LOG_INFO("playerbots", "[loot] {} finds no loot on {} ({:.1f} s) t={}", bot->GetName(), LootSourceName(guid),
+                 LootSeconds(bot, guid), QuestStats::NowMs());
         availableLoot->RetryLoot(guid);
         if (AI_VALUE(LootObject, "loot target").guid == guid)
             context->GetValue<LootObject>("loot target")->Set(LootObject());
@@ -441,6 +553,10 @@ bool StoreLootAction::Execute(Event event)
         // bot->GetSession()->HandleLootMoneyOpcode(packet);
     }
 
+    // [qeff31] the quest items offered and taken, and why one was left
+    uint32 lootQuest = 0;
+    uint32 questOffered = 0, questTaken = 0;
+    std::string questLeft;
     for (uint8 i = 0; i < items; ++i)
     {
         uint32 itemid;
@@ -456,11 +572,30 @@ bool StoreLootAction::Execute(Event event)
         p.read_skip<uint32>();  // randomPropertyId
         p >> lootslot_type;     // 0 = can get, 1 = look only, 2 = master get
 
+        uint32 const itemQuest = QuestOfItem(bot, itemid);  // [qeff31]
+        if (itemQuest)
+        {
+            ++questOffered;
+            lootQuest = itemQuest;
+        }
+        auto const leave = [&](char const* why)
+        {
+            if (itemQuest)
+                questLeft += Acore::StringFormat("{}item {} {}", questLeft.empty() ? "" : ", ", itemid, why);
+        };
         if (lootslot_type != LOOT_SLOT_TYPE_ALLOW_LOOT && lootslot_type != LOOT_SLOT_TYPE_OWNER)
+        {
+            leave(lootslot_type == LOOT_SLOT_TYPE_ROLL_ONGOING ? "under a group roll"
+                  : lootslot_type == LOOT_SLOT_TYPE_MASTER     ? "for the master looter"
+                                                               : "look only");
             continue;
+        }
 
         if (loot_type != LOOT_SKINNING && !IsLootAllowed(itemid, botAI))
+        {
+            leave("not allowed by its loot strategy");
             continue;
+        }
 
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemid);
         if (!proto)
@@ -476,8 +611,16 @@ bool StoreLootAction::Execute(Event event)
             if (isUsefulItem)
             {
                 ItemPosCountVec dest;
+                // [bag66] a quest item never stays on the corpse for want of room: the lowest-value item of its bags
+                // (a grey one first) makes way for it
+                if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount) != EQUIP_ERR_OK &&
+                    itemQuest && MakeRoomFor(bot, itemid, itemQuest))
+                    dest.clear();
                 if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount) != EQUIP_ERR_OK)
+                {
+                    leave("no bag room");
                     continue;
+                }
             }
             else
             {
@@ -520,6 +663,8 @@ bool StoreLootAction::Execute(Event event)
         // bot->GetSession()->HandleAutostoreLootItemOpcode(packet);
         botAI->SetNextCheckDelay(sPlayerbotAIConfig.LootDelay);
         ++autostored;
+        if (itemQuest)
+            ++questTaken;
 
         if (proto->Quality > ITEM_QUALITY_NORMAL && !urand(0, 50) &&
             botAI->HasStrategy("emote", BOT_STATE_NON_COMBAT) && sPlayerbotAIConfig.RandomBotEmote)
@@ -531,6 +676,12 @@ bool StoreLootAction::Execute(Event event)
 
         BroadcastHelper::BroadcastLootingItem(botAI, bot, proto);
     }
+
+    // [qeff31] one line per loot: what it was, the quest its items serve, how long it took from its open
+    LOG_INFO("playerbots", "[loot] {} loots {} q{} ({:.1f} s) items={}/{} quest_items={}/{}{}{} t={}",
+             bot->GetName(), LootSourceName(guid), lootQuest, LootSeconds(bot, guid), uint32(autostored),
+             uint32(items), questTaken, questOffered, questLeft.empty() ? "" : "; left: ", questLeft,
+             QuestStats::NowMs());
 
     // Nothing storable: defer instead of reopening the window in a loop.
     if (autostored == 0 && guid.IsGameObject())

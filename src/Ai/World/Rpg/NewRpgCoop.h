@@ -45,6 +45,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>  // [camp63]
 
 #include "Define.h"
 #include "Multiplier.h"
@@ -109,6 +110,22 @@ bool InParty(uint32 low);
 bool LeaveStaleGroup(Player* bot, std::string const& why);
 // [group19] the leader of the co-op / help party that holds the bot (false: none)
 bool PartyLeaderOf(uint32 low, ObjectGuid& leader);
+// [camp63] an objective camp priced at route planning from the static spawns (the solo judge's formula against the
+// bot at full): true when it loses even at full (`why` the numbers); `out` the camp's mobs and price
+struct StaticCampPrice
+{
+    std::vector<std::pair<float, float>> mobs;  // (health, damage per second on the bot)
+    uint8 topLevel = 0;
+    float damage = 0.0f;
+    float seconds = 0.0f;
+    uint32 serving = 0;  // its spawns that serve the objective
+};
+bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot, std::string& why,
+                    StaticCampPrice* out = nullptr);
+// [camp63] such a camp goes to the co-op seek (guildmates on the same objective) and the camp-help request at once,
+// never walked to first; one seek / request per objective as the live refusal posts them
+void OnStaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot,
+                      std::string const& why);
 
 
 

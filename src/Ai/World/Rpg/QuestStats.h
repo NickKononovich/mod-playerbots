@@ -35,6 +35,9 @@ namespace QuestStats
     void TownDone(uint32 low, std::string const& name, char const* errand);
     void TripBoard(Player* bot, std::string const& what);
     void TripLand(Player* bot);
+    // [qeff31] a stored accept time ('qa<quest>' of playerbots_db_store, read at login): the session's first tick
+    // logs "[quest] open <bot> L<n> q<id> ... accepted_t=<unix ms|unknown>" per open quest
+    void LoadAccepted(Player* bot, std::string const& key, std::string const& value);
 }
 
 void AddQuestStatsScripts();

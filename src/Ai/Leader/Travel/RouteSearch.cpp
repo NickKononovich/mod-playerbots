@@ -500,6 +500,19 @@ namespace Leader
         return false;
     }
 
+    // [cap65] the area (or its zone) is the other faction's capital (AREA_FLAG_CAPITAL, the other team's)
+    bool EnemyCapitalArea(Player* bot, AreaTableEntry const* entry)
+    {
+        AreaTableEntry const* zone = entry;
+        if (zone && zone->zone)
+            if (AreaTableEntry const* parent = sAreaTableStore.LookupEntry(zone->zone))
+                zone = parent;
+        if (!zone || !(zone->flags & AREA_FLAG_CAPITAL) || !zone->team || zone->team == AREATEAM_ANY)
+            return false;
+        uint32 const own = bot->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
+        return zone->team != own;
+    }
+
     RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& toAsked)
     {
         SlowScope slow("route search");  // [perf26]
@@ -732,9 +745,15 @@ namespace Leader
                 if (!area || area == fromArea || area == toArea)
                     continue;
                 AreaTableEntry const* entry = sAreaTableStore.LookupEntry(area);
-                if (!entry || entry->area_level <= 0)
+                if (!entry)
                     continue;
-                if (Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(entry->area_level, 255))) != XP_RED)
+                bool const red = entry->area_level > 0 &&
+                                 Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(entry->area_level, 255))) ==
+                                     XP_RED;
+                // [cap65] ... or an area of the other faction's capital (its guards L75 everywhere, out of the
+                // search's sight until met): b400 Feette L19 (Alliance) walked from Durotar into Orgrimmar's north on
+                // its way to Ashenvale and stood there walled by Orgrimmar Grunts L75 - 31 dead-end postpones
+                if (!red && !EnemyCapitalArea(bot, entry))
                     continue;
                 thread_local std::unordered_map<uint64, uint32> zoneLogged;  // a log cadence, no decision reads it
                 uint32& last = zoneLogged[bot->GetGUID().GetRawValue()];

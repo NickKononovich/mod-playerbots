@@ -16,6 +16,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <chrono>  // [camp63]
+#include <atomic>  // [camp63]
+#include <shared_mutex>  // [camp63]
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -4200,6 +4203,263 @@ void RestParty(Player* leader, std::string const& why)
             if (m->GetHealth() < m->GetMaxHealth() ||
                 (m->GetMaxPower(POWER_MANA) && m->GetPower(POWER_MANA) < m->GetMaxPower(POWER_MANA)))
                 SoloSafety::RequestRest(m, "the party's pull: " + why);
+}
+
+// [camp63] user / coordinator 2026-11-10: an objective camp is priced at route planning, before it is walked to - the
+// solo judge's own formula (each mob hits until the bot's damage kills it, the most dangerous per health first, as
+// JudgePull / JudgeHelp) on the static pack a pull of the spot's source draws (its engage call's assistance radius,
+// a wanderer's whole area), against the bot at full: its full health, its pet, its own heals on
+// a full mana pool. b400: 125 objective route stops left "postponed" (20106 s walked) against 14 done, 49 of them
+// after more than 120 s - the camp's mobs came into sight only at its edge ("its spot lies among mobs it does not
+// pull", the maze walls)
+// [camp63] the static pack at a spot, the same for every bot: built once per (map, spot) on its first pricing and kept
+// in a shared read-mostly table (the static spawn index does not change while the server runs); each bot prices it
+// with its own math only (its faction, armour, damage, health)
+struct CampMob
+{
+    CreatureTemplate const* tmpl;
+    uint8 level;
+    float hp;
+    float meleeDps;  // before the bot's armour
+    float dist;      // [camp63] from the spot
+    float wander;
+    float x, y;      // [camp63] its spawn
+};
+std::shared_mutex campPackLock;
+std::unordered_map<uint64, std::vector<CampMob>> campPacks;
+std::atomic<uint64> campPricings{0}, campPricingUs{0}, campBuilds{0}, campBuildUs{0};
+
+std::vector<CampMob> const& CampPackAt(uint32 mapId, float x, float y)
+{
+    uint64 const key = (uint64(mapId) << 48) ^ (uint64(uint32(int32(std::floor(x)) + 0x8000) & 0xFFFFFF) << 24) ^
+                       uint64(uint32(int32(std::floor(y)) + 0x8000) & 0xFFFFFF);
+    {
+        std::shared_lock<std::shared_mutex> guard(campPackLock);
+        auto const found = campPacks.find(key);
+        if (found != campPacks.end())
+            return found->second;
+    }
+    auto const start = std::chrono::steady_clock::now();
+    std::vector<CampMob> pack;
+    float const assist = std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS));
+    // every spawn that may reach the spot: within the largest aggro reach or the assistance radius, a wanderer from
+    // anywhere in its wander area (each bot keeps the ones its own level's reach brings: StaticCampLost)
+    NewRpgBaseAction::ForEachSpawnReaching(
+        mapId, x, y, std::max(assist, float(MAX_AGGRO_RADIUS)),
+        [&pack, x, y](CreatureTemplate const* tmpl, float sx, float sy, float wander)
+        {
+            uint8 const level = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
+            uint8 lvl = 0;
+            pack.push_back({tmpl, level, TemplateHealth(tmpl->Entry, lvl), TemplateMeleeDps(tmpl, level),
+                            std::hypot(sx - x, sy - y), wander, sx, sy});
+        });
+    campBuilds += 1;
+    campBuildUs += uint64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                                start)
+                              .count());
+    std::unique_lock<std::shared_mutex> guard(campPackLock);
+    return campPacks.emplace(key, std::move(pack)).first->second;  // a pack built twice keeps the first one
+}
+
+bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot, std::string& why,
+                    StaticCampPrice* out)
+{
+    if (!bot || spot.GetMapId() != bot->GetMapId())
+        return false;
+    EnsureIndex();
+    auto const start = std::chrono::steady_clock::now();
+    std::vector<std::pair<float, float>> mobs;  // (health, damage per second on the bot)
+    uint8 top = 0;
+    uint32 serving = 0;
+    Objective obj;
+    bool const hasObj = ReadObjective(bot, questId, objectiveIdx, obj);
+    std::vector<DropSource> const* drops = nullptr;
+    if (hasObj && obj.item)
+        if (auto const found = itemSources.find(obj.key); found != itemSources.end())
+            drops = &found->second;
+    FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+    std::vector<CampMob> const& pack = CampPackAt(bot->GetMapId(), spot.GetPositionX(), spot.GetPositionY());
+    float const assist = std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS));
+    float const rate = sWorld->getRate(RATE_CREATURE_AGGRO);
+    auto const reachOf = [&](CampMob const& m)
+    {
+        return std::clamp(m.tmpl->detection_range - (float(m.level) - float(bot->GetLevel())), 5.0f,
+                          float(MAX_AGGRO_RADIUS)) *
+                   rate +
+               m.wander;
+    };
+    // [camp63] as the live judge does ([pullplan]): a pull of the spot's source from a spot outside every other
+    // mob's reach (its spell reach for a ranged bot, the source's aggro edge for a body pull) draws only the source
+    // and what its engage call reaches; with no such spot the fight is where the bot stands, among them
+    std::vector<CampMob const*> hostile;
+    CampMob const* source = nullptr;
+    for (CampMob const& m : pack)
+    {
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(m.tmpl->faction);
+        if (!own || !faction || !faction->IsHostileTo(*own))
+            continue;
+        hostile.push_back(&m);
+        if (m.dist < 1.0f && (!source || m.dist < source->dist))
+            source = &m;
+    }
+    bool pullSpot = false;
+    if (source)
+    {
+        float const pullReach = PlayerbotAI::IsRanged(bot) ? Leader::Fight::LeaderSpellReach(bot)
+                                                           : reachOf(*source) + bot->GetCombatReach();
+        constexpr uint32 DIRECTIONS = 12;  // the ring's directions round the source (a look's cost, no rule)
+        for (uint32 i = 0; i < DIRECTIONS && !pullSpot; ++i)
+        {
+            float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+            float const px = source->x + std::cos(angle) * pullReach;
+            float const py = source->y + std::sin(angle) * pullReach;
+            pullSpot = std::none_of(hostile.begin(), hostile.end(),
+                                    [&](CampMob const* m)
+                                    { return m != source && std::hypot(m->x - px, m->y - py) <= reachOf(*m); });
+        }
+    }
+    for (CampMob const* mp : hostile)
+    {
+        CampMob const& m = *mp;
+        // [camp63] the bot at the spot, as its judge prices a spot among mobs ("fought where it stands": b406 27
+        // stops / 10234 s "its spot lies among mobs it does not pull", none left out by the pull-only pack): the
+        // spawns whose aggro reach at the bot's level (detection range less the level gap, the core's aggro rate,
+        // the wander area) covers the spot, and those the engage calls reach (the assistance radius)
+        if (pullSpot ? (&m != source && std::hypot(m.x - source->x, m.y - source->y) > assist + m.wander)
+                     : (m.dist > reachOf(m) && m.dist > assist + m.wander))
+            continue;
+        mobs.push_back({m.hp, m.meleeDps * (1.0f - ArmorShare(bot, m.level))});
+        top = std::max(top, m.level);
+        if (hasObj && (obj.item ? drops && std::any_of(drops->begin(), drops->end(),
+                                                      [&m](DropSource const& d)
+                                                      { return !d.chest && d.entry == m.tmpl->Entry; })
+                                : (obj.key == m.tmpl->Entry || obj.key == m.tmpl->KillCredit[0] ||
+                                   obj.key == m.tmpl->KillCredit[1])))
+            ++serving;
+    }
+    // [camp63] the pricing's own cost, measured: one line per 1000 pricings (a log, no decision)
+    uint64 const us = uint64(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count());
+    campPricingUs += us;
+    if (uint64 const n = ++campPricings; n % 1000 == 0)
+    {
+        size_t packs = 0;
+        {
+            std::shared_lock<std::shared_mutex> guard(campPackLock);
+            packs = campPacks.size();
+        }
+        LOG_INFO("playerbots", "[camp63] pricing: {} pricings, {:.1f} us each; {} packs built, {:.1f} us each, {} kept",
+                 n, double(campPricingUs.load()) / double(n), campBuilds.load(),
+                 campBuilds.load() ? double(campBuildUs.load()) / double(campBuilds.load()) : 0.0, packs);
+    }
+    if (mobs.empty())
+        return false;
+    float const dps = std::max(DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo), 1.0f);
+    std::sort(mobs.begin(), mobs.end(), [](auto const& a, auto const& b)
+              { return a.second / std::max(a.first, 1.0f) > b.second / std::max(b.first, 1.0f); });
+    float seconds = 0.0f, damage = 0.0f;
+    for (auto const& [hp, mobDps] : mobs)
+    {
+        seconds += hp / dps;
+        damage += mobDps * seconds;
+    }
+    float const ehpFull = float(bot->GetMaxHealth()) + PetHealth(bot, true) +
+                          SurvivalKit::HealPoints(bot, seconds, float(bot->GetMaxPower(POWER_MANA)), true);
+    if (out)
+    {
+        out->mobs = mobs;
+        out->topLevel = top;
+        out->damage = damage;
+        out->seconds = seconds;
+        out->serving = serving;
+    }
+    why = Acore::StringFormat("the camp at ({:.0f},{:.0f}) of {} static spawns (top L{}, {}) deals {:.0f} dmg over "
+                              "{:.0f} s at {:.1f} dps, ehp {:.0f} at full",
+                              spot.GetPositionX(), spot.GetPositionY(), mobs.size(), top,
+                              pullSpot ? "pulled from outside the others' reach" : "fought where it stands", damage,
+                              seconds, dps, ehpFull);
+    return damage >= ehpFull;
+}
+
+void OnStaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosition const& spot,
+                      std::string const& why)
+{
+    if (!bot || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) || bot->GetGroup())
+        return;
+    Objective obj;
+    if (!ReadObjective(bot, questId, objectiveIdx, obj) || !obj.Left())
+        return;
+    StaticCampPrice price;
+    std::string again;
+    if (!StaticCampLost(bot, questId, objectiveIdx, spot, again, &price))
+        return;
+    Seek seek;
+    seek.obj = obj;
+    seek.camp.known = true;
+    seek.camp.at = spot;
+    seek.camp.topLevel = price.topLevel;
+    seek.camp.mobs = uint32(price.mobs.size());
+    seek.camp.damage = price.damage;
+    seek.camp.fightSec = price.seconds;
+    seek.camp.dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Group);
+    seek.camp.units = std::max<uint32>(price.serving, 1);
+    seek.camp.serves = price.serving > 0;
+    if (!seek.camp.serves)
+        seek.camp.pace = ComputePace(bot, obj, spot);
+    std::string seekLine, helpLine;
+    {
+        std::lock_guard<std::recursive_mutex> guard(lock);
+        Posting& me = postings[bot->GetGUID().GetCounter()];
+        if (me.guid.IsEmpty())
+        {
+            me.guid = bot->GetGUID();
+            me.name = bot->GetName();
+            me.level = bot->GetLevel();
+            me.questRate = bot->GetQuestRate(false);
+            me.questRateDf = bot->GetQuestRate(true);
+        }
+        // one seek per objective: a seek of it posted already (this camp or its live refusal) stays as it is
+        bool const seeking = std::any_of(me.seeks.begin(), me.seeks.end(),
+                                         [&obj](Seek const& s) { return s.obj.Same(obj); });
+        if (!seeking)
+        {
+            seek.bucket = BucketKey(bot->GetMapId(), bot->GetZoneId(), obj);
+            me.seeks.push_back(seek);
+            SyncBuckets(me, bot->GetGUID().GetCounter());
+            Bump(seek.bucket);  // a seeker came: the guildmates on the same quest look again (a co-op party)
+            seekLine = Acore::StringFormat("[coop] seek {} quests=q{} camp=static mobs={} units={} serves={}{} "
+                                           "reason=looks for a party: [camp63] {}",
+                                           bot->GetName(), questId, price.mobs.size(), seek.camp.units,
+                                           seek.camp.serves ? 1 : 0, Stamp(), why);
+        }
+        bool asked = me.party != 0;
+        for (auto const& [id, r] : helpRequests)
+            asked = asked || (r.requester == bot->GetGUID() && r.obj.Same(obj));
+        asked = asked || PriceRefusedLocked(bot, questId, spot);
+        if (!asked)
+        {
+            HelpRequest r;
+            r.id = nextHelp++;
+            r.requester = bot->GetGUID();
+            r.name = bot->GetName();
+            r.obj = obj;
+            r.askedAt = getMSTime();
+            r.measured = false;
+            r.topLevel = price.topLevel;
+            r.at = spot;
+            r.mobs = price.mobs;
+            r.camp = Acore::StringFormat("static camp x{} top L{}, {:.0f} dmg over {:.0f} s alone", price.mobs.size(),
+                                         price.topLevel, price.damage, price.seconds);
+            helpRequests[r.id] = r;
+            helpLine = Acore::StringFormat("[help] request {} quest=q{} request={} human=0 objective={} have={}/{} "
+                                           "camp=\"{}\"{} reason=[camp63] priced at its route's planning: {}",
+                                           r.name, questId, r.id, obj.index, obj.have, obj.need, r.camp, Stamp(), why);
+        }
+    }
+    if (!seekLine.empty())
+        LOG_INFO("playerbots", "{}", seekLine);
+    if (!helpLine.empty())
+        LOG_INFO("playerbots", "{}", helpLine);
 }
 }  // namespace NewRpgCoop
 
