@@ -975,6 +975,7 @@ struct Cast
     float tickMs = 0.0f;      // between its ticks (0: no periodic part)
     float durationMs = 0.0f;  // its periodic part's duration
     float castMs = 0.0f;      // till it lands (its cast time with pushback; 0 for an instant)
+    float firstSec = 0.0f;    // [dps232] a fresh fight: the earliest it can go (a reactive strike's first avoid)
 };
 
 float ThreatOf(Player* bot, SpellInfo const* info, float damage, float hits)
@@ -1685,6 +1686,40 @@ float PushbackHitsPerSec(Player* bot, Unit* target, BuffContext ctx, float lifeS
     return rate;
 }
 
+// [dps232] Revenge (CasterAuraState AURA_STATE_DEFENSE) goes only within REACTIVE_TIMER_START (5 s) of a dodge,
+// parry or block of the bot's (Unit::ProcDamageAndSpellFor; a rogue's dodge and a hunter's parry set other states):
+// the avoids per second of the target's swings on it (Unit::RollMeleeOutcomeAgainst: its chances less 0.04 % per
+// weapon skill point of the attacker over the bot's level), the target attacking it (a fresh solo mob or a tank's
+// target too). No target: a mob of its level on its base attack time. 0: it never goes. The formula had it on its
+// cooldown: b426-b429 L16-20 protection 1.2-1.9 Revenges a 18-26 s fight against a formula that cast one every 5 s
+// (Revenge 19-31 dps of a 42-57 formula, the spec at 0.65 of it); wowsims procs it on the avoids, Rawr's 0.73 Revenge
+// a 6 s cycle is a raid boss on a level 80 tank's ~50 % avoidance
+float DefenseProcsPerSec(Player* bot, Unit* target, BuffContext ctx)
+{
+    uint32 attackMs = BASE_ATTACK_TIME;
+    float shift = 0.0f;
+    if (target && target != bot)
+    {
+        if (!target->CanHaveThreatList())
+            return 0.0f;
+        Unit* victim = target->GetVictim();
+        if (victim ? victim != bot : ctx != BuffContext::Solo && !PlayerbotAI::IsTank(bot))
+            return 0.0f;
+        attackMs = target->GetAttackTime(BASE_ATTACK);
+        if (!attackMs)
+            return 0.0f;
+        int32 const skillDiff =
+            int32(target->GetWeaponSkillValue(BASE_ATTACK, bot)) - int32(bot->Unit::GetMaxSkillValueForLevel(target));
+        shift = float(skillDiff) * SKILL_BONUS_PCT;
+    }
+    float pct = std::max(0.0f, bot->GetUnitBlockChance() - shift);
+    if (bot->getClass() != CLASS_ROGUE)
+        pct += std::max(0.0f, bot->GetUnitDodgeChance() - shift);
+    if (bot->getClass() != CLASS_HUNTER)
+        pct += std::max(0.0f, bot->GetUnitParryChance() - shift);
+    return std::clamp(pct, 0.0f, 100.0f) / 100.0f * float(IN_MILLISECONDS) / float(attackMs);
+}
+
 // `lifeSec` > 0: the fight's length (a solo bot on a fresh mob); 0: the steady state
 Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, bool ideal)
 {
@@ -1938,6 +1973,19 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             }
             if (!ReadCast(m, bot, readId, ability, cast))
                 continue;
+            // [dps232] a reactive strike: its cooldown and then the wait for an avoid when none came in the last
+            // window (avoids at `procs` a second, memoryless); a fresh mob's: its run into melee and the first avoid
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(readId);
+                info && info->CasterAuraState == AURA_STATE_DEFENSE && cast.kind == Kind::Cooldown)
+            {
+                float const procs = DefenseProcsPerSec(bot, m.standIn ? nullptr : target, ctx);
+                if (procs <= 0.0f)
+                    continue;
+                float const windowSec = float(REACTIVE_TIMER_START) / float(IN_MILLISECONDS);
+                cast.periodSec += std::exp(-procs * windowSec) / procs;
+                if (lifeSec > 0.0f && !m.standIn)
+                    cast.firstSec = MeleeArrivalSec(target, bot) + 1.0f / procs;
+            }
             if (ability.kind == Kind::Judgement)
             {
                 judged = true;
@@ -1980,7 +2028,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
                 case Kind::Cooldown:
                     if (finite && cast.kind == Kind::Cooldown && cast.periodSec > 0.0f)
                     {
-                        float const landSec = lifeSec - cast.executeSec;
+                        float const landSec = lifeSec - cast.firstSec - cast.executeSec;
                         if (landSec >= 0.0f)
                             spend(cast, affordable(cast, (std::floor(landSec / cast.periodSec) + 1.0f) / lifeSec));
                         break;
