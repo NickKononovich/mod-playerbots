@@ -4213,6 +4213,7 @@ struct CampMob
     float meleeDps;  // before the bot's armour
     float dist;      // [camp63] from the spot
     float wander;
+    float x, y;      // [camp63] its spawn
 };
 std::shared_mutex campPackLock;
 std::unordered_map<uint64, std::vector<CampMob>> campPacks;
@@ -4240,7 +4241,7 @@ std::vector<CampMob> const& CampPackAt(uint32 mapId, float x, float y)
             uint8 const level = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
             uint8 lvl = 0;
             pack.push_back({tmpl, level, TemplateHealth(tmpl->Entry, lvl), TemplateMeleeDps(tmpl, level),
-                            std::hypot(sx - x, sy - y), wander});
+                            std::hypot(sx - x, sy - y), wander, sx, sy});
         });
     campBuilds += 1;
     campBuildUs += uint64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
@@ -4270,20 +4271,52 @@ bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPositi
     std::vector<CampMob> const& pack = CampPackAt(bot->GetMapId(), spot.GetPositionX(), spot.GetPositionY());
     float const assist = std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS));
     float const rate = sWorld->getRate(RATE_CREATURE_AGGRO);
+    auto const reachOf = [&](CampMob const& m)
+    {
+        return std::clamp(m.tmpl->detection_range - (float(m.level) - float(bot->GetLevel())), 5.0f,
+                          float(MAX_AGGRO_RADIUS)) *
+                   rate +
+               m.wander;
+    };
+    // [camp63] as the live judge does ([pullplan]): a pull of the spot's source from a spot outside every other
+    // mob's reach (its spell reach for a ranged bot, the source's aggro edge for a body pull) draws only the source
+    // and what its engage call reaches; with no such spot the fight is where the bot stands, among them
+    std::vector<CampMob const*> hostile;
+    CampMob const* source = nullptr;
     for (CampMob const& m : pack)
     {
         FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(m.tmpl->faction);
         if (!own || !faction || !faction->IsHostileTo(*own))
             continue;
+        hostile.push_back(&m);
+        if (m.dist < 1.0f && (!source || m.dist < source->dist))
+            source = &m;
+    }
+    bool pullSpot = false;
+    if (source)
+    {
+        float const pullReach = PlayerbotAI::IsRanged(bot) ? Leader::Fight::LeaderSpellReach(bot)
+                                                           : reachOf(*source) + bot->GetCombatReach();
+        constexpr uint32 DIRECTIONS = 12;  // the ring's directions round the source (a look's cost, no rule)
+        for (uint32 i = 0; i < DIRECTIONS && !pullSpot; ++i)
+        {
+            float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
+            float const px = source->x + std::cos(angle) * pullReach;
+            float const py = source->y + std::sin(angle) * pullReach;
+            pullSpot = std::none_of(hostile.begin(), hostile.end(),
+                                    [&](CampMob const* m)
+                                    { return m != source && std::hypot(m->x - px, m->y - py) <= reachOf(*m); });
+        }
+    }
+    for (CampMob const* mp : hostile)
+    {
+        CampMob const& m = *mp;
         // [camp63] the bot at the spot, as its judge prices a spot among mobs ("fought where it stands": b406 27
         // stops / 10234 s "its spot lies among mobs it does not pull", none left out by the pull-only pack): the
         // spawns whose aggro reach at the bot's level (detection range less the level gap, the core's aggro rate,
         // the wander area) covers the spot, and those the engage calls reach (the assistance radius)
-        float const reach = std::clamp(m.tmpl->detection_range - (float(m.level) - float(bot->GetLevel())), 5.0f,
-                                       float(MAX_AGGRO_RADIUS)) *
-                                rate +
-                            m.wander;
-        if (m.dist > reach && m.dist > assist + m.wander)
+        if (pullSpot ? (&m != source && std::hypot(m.x - source->x, m.y - source->y) > assist + m.wander)
+                     : (m.dist > reachOf(m) && m.dist > assist + m.wander))
             continue;
         mobs.push_back({m.hp, m.meleeDps * (1.0f - ArmorShare(bot, m.level))});
         top = std::max(top, m.level);
@@ -4330,10 +4363,11 @@ bool StaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPositi
         out->seconds = seconds;
         out->serving = serving;
     }
-    why = Acore::StringFormat("the camp at ({:.0f},{:.0f}) of {} static spawns (top L{}) deals {:.0f} dmg over "
+    why = Acore::StringFormat("the camp at ({:.0f},{:.0f}) of {} static spawns (top L{}, {}) deals {:.0f} dmg over "
                               "{:.0f} s at {:.1f} dps, ehp {:.0f} at full",
-                              spot.GetPositionX(), spot.GetPositionY(), mobs.size(), top, damage, seconds, dps,
-                              ehpFull);
+                              spot.GetPositionX(), spot.GetPositionY(), mobs.size(), top,
+                              pullSpot ? "pulled from outside the others' reach" : "fought where it stands", damage,
+                              seconds, dps, ehpFull);
     return damage >= ehpFull;
 }
 
