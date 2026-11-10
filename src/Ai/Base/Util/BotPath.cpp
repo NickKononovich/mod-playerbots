@@ -65,10 +65,10 @@ BotPath FindBotPath(Unit* owner, float x, float y, float z)
 BotPath FindBotPath(Unit* owner, float fromX, float fromY, float fromZ, float x, float y, float z)
 {
     bool const route = UsesLeaderRoute(owner);
+    Leader::RouteResult found;
     if (route && Acore::IsValidMapCoord(fromX, fromY, fromZ) && Acore::IsValidMapCoord(x, y, z))
     {
-        Leader::RouteResult const found =
-            Leader::Route(owner, G3D::Vector3(fromX, fromY, fromZ), G3D::Vector3(x, y, z));
+        found = Leader::Route(owner, G3D::Vector3(fromX, fromY, fromZ), G3D::Vector3(x, y, z));
         if (found.found)
             return FromRoute(owner, found, G3D::Vector3(x, y, z));
     }
@@ -78,7 +78,15 @@ BotPath FindBotPath(Unit* owner, float fromX, float fromY, float fromZ, float x,
     // PathGenerator's shortcut; anything else is the route's "no walk"
     if (!route || (path->GetPathType() & PATHFIND_NOT_USING_PATH) || !valid)
         return FromGenerator(owner, std::move(path), valid);
-    BotPath none = FromRoute(owner, Leader::RouteResult(), G3D::Vector3(x, y, z));
+    // [nav142] the route's own "no walk" keeps why it found none: its refusal of an area red for the walker / an
+    // enemy capital / static spawns it must not fight ([zone38], [static39] -> refusedArea). A default result here
+    // dropped it, so [loop70]'s refused walk never fired and the caller took the core's unpriced path toward the
+    // refused area: b428 Relara L14 and Salleas L14 on q866's 6400 yd giver walk to Ratchet, "[zone38] refuses ...
+    // Maestra's Post (area level 19)", then "no route out from here: walks the core's path" leg after leg down the
+    // Ashenvale coast into Bathran's Haunt (Forsaken L18-20), "dead end of its route", dead there 5 times
+    Leader::RouteResult refused;
+    refused.refusedArea = found.refusedArea;
+    BotPath none = FromRoute(owner, refused, G3D::Vector3(x, y, z));
     return none;
 }
 
