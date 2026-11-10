@@ -753,13 +753,7 @@ namespace Leader
                 // [cap65] ... or an area of the other faction's capital (its guards L75 everywhere, out of the
                 // search's sight until met): b400 Feette L19 (Alliance) walked from Durotar into Orgrimmar's north on
                 // its way to Ashenvale and stood there walled by Orgrimmar Grunts L75 - 31 dead-end postpones
-                // [red85] ... or a subzone the other faction holds (its guards L40-65): b410 Laaral L18 (Alliance)
-                // walked the Barrens -> Ashenvale road for q991 through The Mor'shan Rampart / Base Camp (AreaTable
-                // team Horde), 3 deaths to Barrens Guards and Horde Elites; Orenem, Ellosera the same road
-                uint32 const ownTeam = bot->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
-                bool const enemyHeld =
-                    entry->zone && entry->team && entry->team != ownTeam && entry->team != AREATEAM_ANY;
-                if (!red && !EnemyCapitalArea(bot, entry) && !enemyHeld)
+                if (!red && !EnemyCapitalArea(bot, entry))
                     continue;
                 thread_local std::unordered_map<uint64, uint32> zoneLogged;  // a log cadence, no decision reads it
                 uint32& last = zoneLogged[bot->GetGUID().GetRawValue()];
