@@ -12505,7 +12505,20 @@ namespace Leader::Dungeon
                                           .Str("verdict", "cannot come: no threat stop on it")
                                           .Str("victim", victim->GetName())
                                           .Real("victimDistance", mob->GetExactDist(victim))
-                                          .Num("pathType", int64(chase.GetPathType())));
+                                          .Num("pathType", int64(chase.GetPathType()))
+                                          // [nav99] where the mob and its victim stand, and what moves the mob: the
+                                          // offline core-path reproduction needs the runtime positions (b414: the
+                                          // ledge Shamans' NOPATH, no navmesh within 9 yd of the estimated spot)
+                                          .Real("mobX", mob->GetPositionX())
+                                          .Real("mobY", mob->GetPositionY())
+                                          .Real("mobZ", mob->GetPositionZ())
+                                          .Real("victimX", victim->GetPositionX())
+                                          .Real("victimY", victim->GetPositionY())
+                                          .Real("victimZ", victim->GetPositionZ())
+                                          .Num("motion",
+                                               int64(mob->GetMotionMaster()->GetCurrentMovementGeneratorType()))
+                                          .Bool("feared", mob->HasUnitState(UNIT_STATE_FLEEING))
+                                          .Bool("confused", mob->HasUnitState(UNIT_STATE_CONFUSED)));
             }
             lead.harmlessMobs = harmless;
             // [lead1350] b257 rfc-h 5D-4 (20261105-111926) 749-784 s, a 17 s in-fight deadlock: a wandering Searing
