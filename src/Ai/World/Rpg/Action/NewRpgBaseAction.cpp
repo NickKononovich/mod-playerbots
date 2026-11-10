@@ -4878,6 +4878,42 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
         return false;
     if (InDangerZone(bot, x, y))
         return true;
+    // [red73] a destination in a zone red for it (the zone's or the area's own level, AreaTable area_level): no trip
+    // there, from outside it. b393 Gilduck L14 walked to Darkshire for q116 Dry Times (its Bottle of Moonshine at
+    // Barkeep Hann): bound there, dead 5x in b406 to Brightwood Grove's Nightbane Dark Runners L28 between the town and
+    // its Westfall quests. zone38 judged only the areas the walk passes, never the destination's own
+    {
+        Map* map = bot->GetMap();
+        uint32 const phase = bot->GetPhaseMask();
+        auto const redAt = [&](float ax, float ay, float az, std::string* name) -> bool
+        {
+            AreaTableEntry const* area = sAreaTableStore.LookupEntry(map->GetAreaId(phase, ax, ay, az));
+            AreaTableEntry const* zone = area && area->zone ? sAreaTableStore.LookupEntry(area->zone) : nullptr;
+            for (AreaTableEntry const* a : {area, zone})
+                if (a && a->area_level > 0 &&
+                    Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(a->area_level, 255))) == XP_RED)
+                {
+                    if (name)
+                        *name = Acore::StringFormat("{} (level {})", a->area_name[0], a->area_level);
+                    return true;
+                }
+            return false;
+        };
+        std::string where;
+        if (map && redAt(x, y, z, &where) && !redAt(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                                                    nullptr))
+        {
+            thread_local std::unordered_map<uint64, std::string> redLogged;  // a log cadence, no decision reads it
+            std::string const key = what + where;
+            if (std::string& last = redLogged[bot->GetGUID().GetRawValue()]; last != key)
+            {
+                last = key;
+                LOG_INFO("playerbots", "[red73] {} L{} TRIP_REFUSED {} at ({:.0f},{:.0f}): it lies in {}, red for it",
+                         bot->GetName(), bot->GetLevel(), what, x, y, where);
+            }
+            return true;
+        }
+    }
     // [travel57] a destination on another landmass of its map with no route there at all (every dock / portal walk
     // of its landmass given up: [travel57] in TravelRouteMgr::Solve) is refused: TripDanger names no danger for it
     // and the walk itself only fails there (b397 Salleas L12: GO_GRIND to five spots by q982's Darkshore giver in
@@ -5261,7 +5297,46 @@ bool NewRpgBaseAction::RedAreaEscape()
                                                 "({:.0f},{:.0f}) is refused",
                                                 area->area_name[0], area->area_level, bot->GetLevel(),
                                                 out.GetPositionX(), out.GetPositionY());
-    return HearthOut(why, nullptr);
+    if (HearthOut(why, nullptr))
+        return true;
+    // [red73] no Hearthstone way out (bound here, none, on its cooldown): a flight from the town's flight master to its
+    // nearest known node outside every area red for it, as a player leaves (b406 Gilduck L14 in Darkshire, bound
+    // there, every walk out through Brightwood Grove)
+    TravelMgr::FlightMasterInfo const* master = sTravelMgr.GetNearestFlightMasterInfo(bot);
+    if (!master || !master->taxiNodeId || master->pos.GetMapId() != bot->GetMapId())
+        return false;
+    uint32 bestNode = 0;
+    float bestYd = 0.0f;
+    for (uint32 node = 1; node < sTaxiNodesStore.GetNumRows(); ++node)
+    {
+        TaxiNodesEntry const* entry = sTaxiNodesStore.LookupEntry(node);
+        if (!entry || node == master->taxiNodeId || entry->map_id != bot->GetMapId() ||
+            !bot->m_taxi.IsTaximaskNodeKnown(node))
+            continue;
+        uint32 const nodeArea = bot->GetMap()->GetAreaId(bot->GetPhaseMask(), entry->x, entry->y, entry->z);
+        AreaTableEntry const* at = sAreaTableStore.LookupEntry(nodeArea);
+        AreaTableEntry const* atZone = at && at->zone ? sAreaTableStore.LookupEntry(at->zone) : nullptr;
+        bool red = false;
+        for (AreaTableEntry const* a : {at, atZone})
+            if (a && a->area_level > 0 &&
+                Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(a->area_level, 255))) == XP_RED)
+                red = true;
+        if (red)
+            continue;
+        float const yd = std::hypot(entry->x - bot->GetPositionX(), entry->y - bot->GetPositionY());
+        if (!bestNode || yd < bestYd)
+        {
+            bestNode = node;
+            bestYd = yd;
+        }
+    }
+    if (!bestNode)
+        return false;
+    if (!FlyTowards(bestNode))
+        return false;
+    LOG_INFO("playerbots", "[red73] {} L{} {}: flies out from the flight master of node {} to known node {} ({:.0f} yd)",
+             bot->GetName(), bot->GetLevel(), why, master->taxiNodeId, bestNode, bestYd);
+    return true;
 }
 
 bool NewRpgBaseAction::RestEscape()
