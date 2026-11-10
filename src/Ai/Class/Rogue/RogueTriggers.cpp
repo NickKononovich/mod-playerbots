@@ -13,6 +13,7 @@
 #include "ServerFacade.h"
 #include "StringFormat.h"  // [rot51]
 #include "TargetValue.h"
+#include "EstimatedLifetimeValue.h"  // [dps234] ExpectedLifetime
 
 namespace
 {
@@ -43,7 +44,10 @@ constexpr float SND_MIN_LIFETIME_S = 6.0f;
 constexpr float COLD_BLOOD_FIGHT_END_S = 5.0f;
 constexpr uint32 FINISHER_ENERGY = 35;
 
-// Whether the current target lives minSeconds more at the group's damage (true when it cannot be told)
+// Whether the current target lives minSeconds more (true when it cannot be told). [dps234] ExpectedLifetime: its
+// observed health loss, else the group's damage by the share of the members on it. Was the whole group's damage on
+// it: a guild rogue questing alone, grouped with its five far away, read its mob dead in 2-4 s and never cast Slice
+// and Dice (b426-b429: 1 cast in 896 solo fights, 2-point Slice and Dice in every dungeon fight)
 bool TargetLivesFor(PlayerbotAI* botAI, float minSeconds)
 {
     AiObjectContext* context = botAI->GetAiObjectContext();
@@ -51,8 +55,7 @@ bool TargetLivesFor(PlayerbotAI* botAI, float minSeconds)
     if (!target || !target->IsAlive())
         return true;
 
-    float const groupDps = context->GetValue<float>("estimated group dps")->Get();
-    return groupDps <= 0.0f || target->GetHealth() / groupDps >= minSeconds;
+    return ExpectedLifetime(botAI, target) >= minSeconds;
 }
 }
 
