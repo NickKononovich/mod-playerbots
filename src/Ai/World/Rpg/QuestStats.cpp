@@ -131,8 +131,11 @@ namespace
     // count before this kill, or it carries loot a quest in the log still needs. [qeff31] the quest it served (the
     // kill line names it: the triage's kills per objective unit counted every useful kill against the quest worked
     // then, other quests' kills too - b400 q102 "6.2 kills a unit" held Blahadrin's Fleshrippers for q22); 0: none
-    uint32 ServedQuestId(Player* bot, Creature* killed)
+    // [drop72] `chance`: the kill's chance of a unit (100 for a kill credit, the loot table's chance of the needed
+    // item; 0: not named)
+    uint32 ServedQuestId(Player* bot, Creature* killed, float& chance)
     {
+        chance = 0.0f;
         CreatureTemplate const* tmpl = killed->GetCreatureTemplate();
         if (!tmpl)
             return 0;
@@ -155,17 +158,23 @@ namespace
                 // the credit already landed (the hook runs after it): a count still short, or just filled
                 if (match && status.CreatureOrGOCount[i] <= quest->RequiredNpcOrGoCount[i] &&
                     status.CreatureOrGOCount[i] > 0)
+                {
+                    chance = 100.0f;
                     return questId;
+                }
             }
             for (uint8 i = 0; loot && !lootQuest && i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
             {
                 uint32 const item = quest->RequiredItemId[i];
                 if (!item || status.ItemCount[i] >= quest->RequiredItemCount[i])
                     continue;
-                loot->VisitEntries([&](LootStoreItem const& e, float /*chance*/)
+                loot->VisitEntries([&](LootStoreItem const& e, float c)
                                    {
                                        if (!e.reference && e.itemid == item)
+                                       {
                                            lootQuest = questId;
+                                           chance = std::max(chance, c);
+                                       }
                                    });
             }
         }
@@ -232,7 +241,8 @@ namespace
         {
             if (!Tracked(player) || !killed)
                 return;
-            uint32 const servedQuest = ServedQuestId(player, killed);
+            float chance = 0.0f;
+            uint32 const servedQuest = ServedQuestId(player, killed, chance);
             bool const served = servedQuest != 0;
             uint64 xp = 0;
             {
@@ -249,7 +259,8 @@ namespace
             QuestStats::LogEvent(player, "kill", servedQuest == UINT32_MAX ? 0 : servedQuest,
                                  "entry=" + std::to_string(killed->GetEntry()) + " L" +
                                      std::to_string(killed->GetLevel()) + " useful=" + (served ? "1" : "0") +
-                                     " xp=" + std::to_string(xp));
+                                     " xp=" + std::to_string(xp) +
+                                     (served ? Acore::StringFormat(" chance={:.4g}", chance) : std::string()));
         }
 
         void OnPlayerCompleteQuest(Player* player, Quest const* quest) override

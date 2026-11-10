@@ -4085,6 +4085,7 @@ namespace
         uint32 respawn = 0;  // [guild90] the spawn's respawn time (spawntimesecs), 0 for enders and triggers
         ObjectGuid::LowType spawnId = 0;  // [flit] the spawn, for the map's own respawn clock (0: a trigger, a POI)
         bool object = false;              // [flit] a game object spawn
+        uint32 entry = 0;                 // [drop71] the spawn's creature / object entry (0: a POI, an ender)
     };
 
     struct MobSpawn  // [guild12]
@@ -4175,10 +4176,11 @@ namespace
         {
             for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
                 index.creatures[data.id].push_back(
-                    {data.mapid, data.posX, data.posY, data.posZ, data.spawntimesecs, spawnId, false});
+                    {data.mapid, data.posX, data.posY, data.posZ, data.spawntimesecs, spawnId, false, data.id});
             for (auto const& [spawnId, data] : sObjectMgr->GetAllGOData())
                 index.objects[data.id].push_back({data.mapid, data.posX, data.posY, data.posZ,
-                                                  uint32(std::max<int32>(0, data.spawntimesecs)), spawnId, true});
+                                                  uint32(std::max<int32>(0, data.spawntimesecs)), spawnId, true,
+                                                  data.id});
 
             for (auto const& [entry, questId] : *sObjectMgr->GetCreatureQuestInvolvedRelationMap())
             {
@@ -4459,8 +4461,34 @@ namespace
         return best ? uint32(best - now) : 0;
     }
 
+    // [drop71] the walk-equivalent yards a unit of `item` costs from `entry` beyond its first kill: the kills beyond
+    // one its drop chance needs (100 / chance - 1) at its kill time (template health at `dps`) and the bot's run
+    // speed; -1 when its chance is not named (a reference table: no cost known)
+    float DropCostYd(Player* bot, uint32 entry, uint32 item, float dps)
+    {
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        LootTemplate const* loot = tmpl && tmpl->lootid ? LootTemplates_Creature.GetLootFor(tmpl->lootid) : nullptr;
+        if (!loot)
+            return -1.0f;
+        float chance = 0.0f;
+        loot->VisitEntries([&](LootStoreItem const& e, float c)
+                           {
+                               if (!e.reference && e.itemid == item)
+                                   chance = std::max(chance, c);
+                           });
+        if (chance <= 0.0f)
+            return -1.0f;
+        uint8 const level = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
+        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, tmpl->unit_class);
+        float const killSec = stats ? float(stats->GenerateHealth(tmpl)) / std::max(dps, 1.0f) : 0.0f;
+        return std::max(0.0f, 100.0f / chance - 1.0f) * killSec * bot->GetSpeed(MOVE_RUN);
+    }
+
     // [qeff32] the creature entries a still-open objective of the quest is served by (its kill target and kill
     // credits, the creatures that drop its still-needed item, what its tool is used on)
+    // [drop72] ... for an item: only the droppers worth staying for - one whose drop cost a unit is above another
+    // source's cost plus the walk to that source's nearest spawn is no reason to stay at its spot (it counts spent
+    // for the item; the spot search, ranked the same way by drop71, takes the better source)
     std::vector<uint32> OpenObjectiveCreatures(Player* bot, Quest const* quest)
     {
         std::vector<uint32> entries;
@@ -4489,8 +4517,30 @@ namespace
                 continue;
             entries.insert(entries.end(), useCreatures.begin(), useCreatures.end());
             auto const creatures = index.itemCreatures.find(item);
-            if (creatures != index.itemCreatures.end())
-                entries.insert(entries.end(), creatures->second.begin(), creatures->second.end());
+            if (creatures == index.itemCreatures.end())
+                continue;
+            float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
+            std::vector<std::pair<uint32, float>> costs;  // entry -> its drop cost (-1: unknown)
+            float best = std::numeric_limits<float>::max();  // the cheapest source's cost plus its walk
+            for (uint32 entry : creatures->second)
+            {
+                float const cost = DropCostYd(bot, entry, item, dps);
+                costs.push_back({entry, cost});
+                if (cost < 0.0f)
+                    continue;
+                auto const spawns = index.creatures.find(entry);
+                if (spawns == index.creatures.end())
+                    continue;
+                float nearest = std::numeric_limits<float>::max();
+                for (QuestSpot const& spot : spawns->second)
+                    if (spot.mapId == bot->GetMapId())
+                        nearest = std::min(nearest, bot->GetDistance2d(spot.x, spot.y));
+                if (nearest != std::numeric_limits<float>::max())
+                    best = std::min(best, cost + nearest);
+            }
+            for (auto const& [entry, cost] : costs)
+                if (cost < 0.0f || cost <= best)
+                    entries.push_back(entry);
         }
         return entries;
     }
@@ -4501,16 +4551,30 @@ namespace
     // [guild90] the spent ones are skipped (IsSpentSpot: seen empty, until their respawn) and up to
     // MAX_SPOT_CANDIDATES camps are taken (b317 Eraelor q919: 33 Timberling Sprout spawns, one spot, spent, POSTPONE).
     // 0: none on this map, 1: found, 2: every unspent spot on this map has such a mob (`blocker`), 3: all spent
+    // [drop71] the resolve's item objective: the extra walk-equivalent yards per objective unit of each source entry
+    // (its drop chance in the loot tables: the kills beyond one a unit costs, at the kill's time, at the walk speed)
+    thread_local std::unordered_map<uint32, float> const* sourceCostYd = nullptr;
+
     int NearestSafeSpot(Player* bot, uint32 questId, std::vector<QuestSpot const*> const& spots, int32 objectiveIdx,
                         std::vector<POIInfo>& poiInfo, CreatureTemplate const*& blocker)
     {
         std::vector<std::pair<float, QuestSpot const*>> onMap;
+        std::unordered_map<QuestSpot const*, float> rank;  // [drop71] the walk plus the source's drop cost
         for (QuestSpot const* spot : spots)
             if (spot->mapId == bot->GetMapId())
-                onMap.push_back({bot->GetDistance2d(spot->x, spot->y), spot});
+            {
+                float const distance = bot->GetDistance2d(spot->x, spot->y);
+                onMap.push_back({distance, spot});
+                float extra = 0.0f;
+                if (sourceCostYd)
+                    if (auto const found = sourceCostYd->find(spot->entry); found != sourceCostYd->end())
+                        extra = found->second;
+                rank[spot] = distance + extra;
+            }
         if (onMap.empty())
             return 0;
-        std::sort(onMap.begin(), onMap.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+        std::sort(onMap.begin(), onMap.end(),
+                  [&rank](auto const& a, auto const& b) { return rank[a.second] < rank[b.second]; });
         size_t const first = poiInfo.size();
         size_t spent = 0;
         bool blocked = false;
@@ -6270,7 +6334,26 @@ bool NewRpgBaseAction::GetQuestPOIPosAndObjectiveIdx(uint32 questId, std::vector
                 spots.swap(inside);
             break;
         }
+        // [drop71] an item objective's sources ranked by what a unit really costs there: b414 Gilduck L14 swept the
+        // Murloc Lurkers (creature 732: Murloc Eye at 0.0226 %, ~4400 kills a unit) for q38 - 23 kills, nothing -
+        // the nearest dropper, while Murloc Coastrunners drop it at 30 %. Each source's spots take the extra kills a
+        // unit costs (100 / chance - 1, at its kill time and the walk speed) on top of their walk
+        std::unordered_map<uint32, float> costYd;
+        if (objective >= QUEST_OBJECTIVES_COUNT && objective < QUEST_OBJECTIVES_COUNT + QUEST_ITEM_OBJECTIVES_COUNT)
+        {
+            uint32 const item = quest->RequiredItemId[objective - QUEST_OBJECTIVES_COUNT];
+            float const dps = std::max(DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo), 1.0f);
+            std::unordered_set<uint32> entries;
+            for (QuestSpot const* spot : spots)
+                if (!spot->object && spot->entry)
+                    entries.insert(spot->entry);
+            for (uint32 entry : entries)
+                if (float const cost = DropCostYd(bot, entry, item, dps); cost >= 0.0f)
+                    costYd[entry] = cost;
+        }
+        sourceCostYd = costYd.empty() ? nullptr : &costYd;
         int const found = NearestSafeSpot(bot, questId, spots, int32(objective), poiInfo, blocker);
+        sourceCostYd = nullptr;
         if (found)
             resolved.insert(int32(objective));
         if (found == 3)
