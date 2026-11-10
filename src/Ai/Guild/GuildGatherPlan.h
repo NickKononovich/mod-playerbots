@@ -134,6 +134,8 @@ public:
     // the reagent comes from a crafter's conversion of a raw material (pigment <- herb, gem <- ore): the cheapest one
     // by raw per unit; disenchant mats return raw 0 (spare items only)
     GatherConversion const* ConversionFor(uint32 itemId) const;
+    // [insc142] every conversion that yields the reagent, best first (read-only after Load, any thread; nullptr: none)
+    std::vector<GatherConversion> const* Conversions(uint32 itemId) const;
     // for GuildCoordinator::ExpandReagent: the raw per unit of a milled / prospected reagent (nullptr: none)
     std::vector<std::pair<uint32, float>> const* ConvertedFrom(uint32 itemId) const;
     // the expected disenchant mats of a spare item (empty: cannot be disenchanted)

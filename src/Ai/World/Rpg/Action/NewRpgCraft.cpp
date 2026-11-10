@@ -28,6 +28,7 @@
 #include "GridNotifiersImpl.h"
 #include "GuildBankRun.h"
 #include "GuildCoordinator.h"
+#include "GuildGatherPlan.h"  // [insc142] the milling / prospecting conversions
 #include "Item.h"
 #include "Log.h"
 #include "Map.h"
@@ -43,6 +44,7 @@
 #include "SpellMgr.h"
 #include "Trainer.h"
 #include "World.h"
+#include "WorldSession.h"  // [insc142] the conversion loot release
 
 namespace
 {
@@ -348,6 +350,137 @@ namespace
         if (!o.bank.empty() && where < 2)
             return false;
         out = o;
+        return true;
+    }
+
+    // [insc142] Spell::CheckCast (SPELL_EFFECT_MILLING / PROSPECTING): one cast takes one bag stack of five
+    constexpr uint32 CONVERSION_STACK = 5;
+
+    // a conversion cast (Milling, Prospecting) the bot can make for a reagent it crafts with
+    struct ConversionCast
+    {
+        uint32 spellId{0};
+        uint32 raw{0};      // the herb / ore
+        uint32 product{0};  // the pigment / gem it is cast for
+        uint32 skillLine{0};
+        Item* stack{nullptr};  // the bag stack it is cast on (nullptr: the stack lies in the guild bank)
+    };
+
+    Item* ConversionStack(Player* bot, uint32 raw)
+    {
+        auto const fits = [&](Item* item)
+        { return item && item->GetEntry() == raw && item->GetCount() >= CONVERSION_STACK; };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (Item* item = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot); fits(item))
+                return item;
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            if (Bag* bag = bot->GetBagByPos(b))
+                for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                    if (Item* item = bag->GetItemByPos(uint8(j)); fits(item))
+                        return item;
+        return nullptr;
+    }
+
+    // [insc142] the 3.3.5 chain herb -> pigment (Milling) -> ink -> scroll / glyph: the pigments come only from the
+    // scribe's own Milling, so the crafts never had their reagent (b426-b429: 7 scribes at Inscription 1/75 with
+    // herbs in the guild). A conversion is cast for a reagent of a known recipe that still gives skill, or of a known
+    // recipe making such a reagent (the inks), on a raw its skill can convert (the raw's RequiredSkillRank, the
+    // core's check); a raw that is itself a reagent of such a recipe (an alchemist's herb) is kept for that recipe.
+    // `bank`: also a stack in the guild bank (the cast then waits for the withdraw)
+    bool PickConversion(Player* bot, ConversionCast& out, std::map<uint32, uint32> const* bank, uint64 fp)
+    {
+        std::unordered_set<uint32> wanted, direct;
+        std::vector<CraftRecipe const*> known;
+        for (uint32 skill : CRAFT_SKILLS)
+        {
+            auto const list = index.bySkill.find(skill);
+            if (list == index.bySkill.end() || !bot->HasSkill(skill))
+                continue;
+            uint32 const value = bot->GetPureSkillValue(skill);
+            uint32 const cap = bot->GetPureMaxSkillValue(skill);
+            for (uint32 spell : list->second)
+            {
+                if (!bot->HasSpell(spell))
+                    continue;
+                CraftRecipe const& r = index.recipes.at(spell);
+                known.push_back(&r);
+                if (!Tier(r, value) || value >= cap)
+                    continue;
+                for (auto const& [item, n] : r.reagents)
+                {
+                    wanted.insert(item);
+                    direct.insert(item);
+                }
+            }
+        }
+        if (wanted.empty())
+            return false;
+        for (CraftRecipe const* r : known)
+            if (direct.count(r->product))
+                for (auto const& [item, n] : r->reagents)
+                    wanted.insert(item);
+        ConversionCast fromBank;
+        for (uint32 item : wanted)
+        {
+            std::vector<GatherConversion> const* list = sGuildGatherPlan.Conversions(item);
+            if (!list)
+                continue;
+            for (GatherConversion const& c : *list)
+            {
+                if (!c.raw || direct.count(c.raw) || !bot->HasSpell(c.spellId) || !bot->HasSkill(c.skillLine) ||
+                    bot->GetPureSkillValue(c.skillLine) < c.reqSkill || RefusedBefore(bot, c.spellId, fp))
+                    continue;
+                if (Item* stack = ConversionStack(bot, c.raw))
+                {
+                    out = {c.spellId, c.raw, item, c.skillLine, stack};
+                    return true;
+                }
+                if (bank && !fromBank.raw)
+                    if (auto const held = bank->find(c.raw); held != bank->end() && held->second >= CONVERSION_STACK)
+                        fromBank = {c.spellId, c.raw, item, c.skillLine, nullptr};
+            }
+        }
+        if (!fromBank.raw)
+            return false;
+        out = fromBank;
+        return true;
+    }
+
+    std::string ItemName(uint32 item)
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+        return proto ? proto->Name1 : std::to_string(item);
+    }
+
+    // [insc142] the loot window a conversion opened (SendLoot on the item, LOOT_MILLING / LOOT_PROSPECTING): taken
+    // as the client's loot-all does, then released - the release is where the core destroys the five raws
+    // (WorldSession::DoLootRelease); a new cast first would release it unlooted and lose the pigments
+    bool TakeConversionLoot(Player* bot)
+    {
+        ObjectGuid const guid = bot->GetLootGUID();
+        if (!guid.IsItem())
+            return false;
+        Item* item = bot->GetItemByGuid(guid);
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || !(proto->Flags & (ITEM_FLAG_IS_PROSPECTABLE | ITEM_FLAG_IS_MILLABLE)))
+            return false;
+        std::string got;
+        for (uint8 slot = 0; slot < item->loot.items.size(); ++slot)
+        {
+            LootItem const& li = item->loot.items[slot];
+            uint32 const id = li.itemid;
+            uint32 const count = li.count;
+            if (li.is_looted)
+                continue;
+            InventoryResult msg = EQUIP_ERR_OK;
+            bool const stored = bot->StoreLootItem(slot, &item->loot, msg) != nullptr && msg == EQUIP_ERR_OK;
+            got += (got.empty() ? "" : ", ") + ItemName(id) + " ×" + std::to_string(count) +
+                   (stored ? "" : " (no room: left)");
+        }
+        LOG_INFO("playerbots", "[insc142] {} L{} takes the {} loot of {}: {}", bot->GetName(), bot->GetLevel(),
+                 proto->HasFlag(ITEM_FLAG_IS_MILLABLE) ? "milling" : "prospecting", proto->Name1,
+                 got.empty() ? "nothing" : got);
+        bot->GetSession()->DoLootRelease(guid);
         return true;
     }
 
@@ -669,6 +802,32 @@ namespace NewRpgCraft
                          bot->GetName(), bot->GetLevel(), proto ? proto->Name1 : std::to_string(item),
                          RecipeName(banked.recipe->spellId), banked.value);
             }
+        // [insc142] no recipe has its reagents yet: the conversion that makes one (Milling a herb stack into
+        // pigments), from its bags here or from the guild bank through the withdraw run
+        if (ConversionCast conv; !now.recipe && PickConversion(bot, conv, bankOk ? &bank : nullptr, fp))
+        {
+            uint32 const value = bot->GetPureSkillValue(conv.skillLine);
+            if (!conv.stack)
+            {
+                sGuildCoordinator.RequestWithdraw(bot, conv.raw,
+                                                  RecipeName(conv.spellId) + " for " + ItemName(conv.product));
+                LOG_INFO("playerbots", "[insc142] {} L{} asks the guild bank for {} ×{} to cast {} for {} (skill {})",
+                         bot->GetName(), bot->GetLevel(), ItemName(conv.raw), CONVERSION_STACK,
+                         RecipeName(conv.spellId), ItemName(conv.product), value);
+                return nothing();
+            }
+            NewRpgInfo::DoProfession task;
+            task.kind = TASK_CRAFT;
+            task.skill = conv.skillLine;
+            task.spellId = conv.spellId;
+            task.pos = WorldPosition(bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            LOG_INFO("playerbots", "[insc142] {} L{} CONVERT reason: {} on {} ×{} for {} (skill {}/{}), here",
+                     bot->GetName(), bot->GetLevel(), RecipeName(conv.spellId), ItemName(conv.raw),
+                     bot->GetItemCount(conv.raw, false), ItemName(conv.product), value,
+                     bot->GetPureMaxSkillValue(conv.skillLine));
+            botAI->rpgInfo.ChangeToDoProfession(task);
+            return true;
+        }
         if (!now.recipe)
             return nothing();
 
@@ -841,6 +1000,34 @@ bool NewRpgDoProfessionAction::ExecuteCraft(NewRpgInfo::DoProfession& data)
     {
         bot->StopMoving();
         return true;
+    }
+    // [insc142] the loot of the last conversion first, then the next conversion the crafts wait for
+    if (TakeConversionLoot(bot))
+        return true;
+    {
+        uint64 const fp = Fingerprint(bot);
+        if (ConversionCast conv; PickConversion(bot, conv, nullptr, fp))
+        {
+            data.skill = conv.skillLine;
+            data.skillBefore = bot->GetPureSkillValue(conv.skillLine);
+            data.castSpell = conv.spellId;
+            if (botAI->CastSpell(conv.spellId, bot, conv.stack))
+            {
+                LOG_INFO("playerbots", "[insc142] {} L{} casts {} on {} ×{} for {} (skill {})", bot->GetName(),
+                         bot->GetLevel(), NewRpgCraft::RecipeName(conv.spellId), ItemName(conv.raw),
+                         conv.stack->GetCount(), ItemName(conv.product), data.skillBefore);
+                return true;
+            }
+            LOG_INFO("playerbots", "[insc142] {} cannot cast {} on {} here", bot->GetName(),
+                     NewRpgCraft::RecipeName(conv.spellId), ItemName(conv.raw));
+            data.castSpell = 0;
+            std::lock_guard<std::mutex> guard(lookLock);
+            auto& entry = refused[bot->GetGUID().GetCounter()];
+            if (entry.first != fp)
+                entry = {fp, {}};
+            entry.second.insert(conv.spellId);
+            return true;  // the next tick crafts what it has, or ends the visit
+        }
     }
     uint32 const spell = NewRpgCraft::PickHere(bot);
     if (!spell)

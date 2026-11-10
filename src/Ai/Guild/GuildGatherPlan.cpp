@@ -833,6 +833,12 @@ GatherConversion const* GuildGatherPlan::ConversionFor(uint32 itemId) const
     return itr == conversions_.end() || itr->second.empty() ? nullptr : &itr->second.front();
 }
 
+std::vector<GatherConversion> const* GuildGatherPlan::Conversions(uint32 itemId) const
+{
+    auto const itr = conversions_.find(itemId);
+    return itr == conversions_.end() ? nullptr : &itr->second;
+}
+
 std::vector<std::pair<uint32, float>> const* GuildGatherPlan::ConvertedFrom(uint32 itemId) const
 {
     auto const itr = convertedFrom_.find(itemId);
