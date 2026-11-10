@@ -3149,6 +3149,50 @@ namespace SoloSafety
             left.seconds = std::max(left.seconds, chase.seconds);
             chasers.push_back(mob);
         }
+        // [runpast81] user rule 2026-11-10: the chase is priced on the pack the judge counts - each chaser and every
+        // mob its fight brings (PackAt: the linked pack, assistance calls with the wanderers' areas and patrol beats,
+        // flee-for-help helpers, script calls), each mob's chase until it leashes, summed against its health now; a
+        // pack chase it does not live through is no run-past (the fight from its spot, or the kit's escape). b406
+        // Rollothan L11 kept walking past a Defias Smuggler priced alone ("chase priced 157, hp 496") that its judge had
+        // counted as 5 (4 above); the patrol and its fleeing friends came, dead
+        if (!chasers.empty() && left.damage != std::numeric_limits<float>::max())
+        {
+            std::unordered_set<uint64> counted;
+            for (Creature* mob : chasers)
+                counted.insert(mob->GetGUID().GetRawValue());
+            uint32 joiners = 0;
+            G3D::Vector3 const fight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+            std::vector<G3D::Vector3> const stands{fight};
+            for (Creature* mob : std::vector<Creature*>(chasers))
+                for (Creature* join : PackAt(bot, mob, fight, stands))
+                {
+                    if (!join || !join->IsAlive() || !counted.insert(join->GetGUID().GetRawValue()).second)
+                        continue;
+                    RunPast const chase = RunPastChase(bot, join);
+                    if (chase.damage == std::numeric_limits<float>::max())
+                    {
+                        left.damage = chase.damage;
+                        break;
+                    }
+                    left.damage += chase.damage;
+                    left.seconds = std::max(left.seconds, chase.seconds);
+                    ++joiners;
+                }
+            if (joiners && !SurvivesRunPast(bot, left.damage, left.seconds))
+            {
+                thread_local std::unordered_map<uint64, uint64> refusedLogged;  // a log cadence only
+                uint64 const key = chasers.front()->GetGUID().GetRawValue() * 31 + joiners;
+                if (uint64& last = refusedLogged[bot->GetGUID().GetRawValue()]; last != key)
+                {
+                    last = key;
+                    LOG_INFO("playerbots", "[runpast81] {} L{} no run-past: {} chaser(s) and {} mob(s) their fight brings, "
+                         "{:.0f} dmg over {:.0f} s against hp {:.0f}",
+                         bot->GetName(), bot->GetLevel(), chasers.size(), joiners, left.damage, left.seconds,
+                         float(bot->GetHealth()));
+                }
+                return false;
+            }
+        }
         if (chasers.empty() || !SurvivesRunPast(bot, left.damage, left.seconds))
             return false;  // nothing chases, or the kit's turn (it does not live through the chase now)
         // one attacker the judge beats here for less damage than its chase: the fight is the cheaper way
