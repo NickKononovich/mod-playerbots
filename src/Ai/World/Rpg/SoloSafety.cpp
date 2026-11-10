@@ -303,6 +303,8 @@ namespace
         return false;
     }
 
+    G3D::Vector4 AggroDisc(Creature* mob, Player* bot);  // [deaths138] below
+
     // a closed fight goes into the bot's and the entries' measurements (caller holds the lock)
     void CloseFight(Player* bot, SoloBotState& state, bool died)
     {
@@ -428,6 +430,32 @@ namespace
                                  "more", bot->GetName(), bot->GetLevel(), track.name, track.level,
                                  died ? "died" : "disengaged", int32(track.level) - int32(bot->GetLevel()));
                     }
+            // [deaths138] the reach of every mob that hit it in a fight it lost is a danger zone, as a refused pull's
+            // (NewRpgBaseAction::RememberDanger): kept away from until it outlevels the mob or its gear / spells /
+            // talents change. The lost-to record only stopped a pull of that entry - the walk back to its objective,
+            // its rest spot and its sweep still crossed the same mob's reach. b428: 18 of 119 open-world deaths came
+            // in the fight right after a lost one; Orton L16 fled the Dark Iron Sappers at Stonewrought Dam, rested
+            // to full 31 yd off, walked back into the same Sapper's reach (idle, aggro 19) and died; Rumanatol L18 the
+            // same with the Fouled Water Spirit at The Foul Pool. A patrol's reach moves along its path: no disc for it
+            if ((died || state.fleeing) && !bot->GetMap()->Instanceable())
+                for (auto const& [guid, track] : state.attackers)
+                {
+                    if (!track.entry || !track.damage)
+                        continue;
+                    Creature* mob = ObjectAccessor::GetCreature(*bot, ObjectGuid(guid));
+                    if (!mob || !mob->IsAlive() || !mob->IsHostileTo(bot) ||
+                        mob->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE || mob->GetCharmerOrOwnerGUID())
+                        continue;
+                    G3D::Vector4 disc = AggroDisc(mob, bot);
+                    Position const& home = mob->GetHomePosition();  // where it stands again once it evades
+                    disc.x = home.GetPositionX();
+                    disc.y = home.GetPositionY();
+                    NewRpgBaseAction::RememberDanger(bot, disc.x, disc.y, disc.w, track.entry, track.level);
+                    LOG_INFO("playerbots", "[deaths138] {} L{} lost a fight to {} L{}: its reach ({:.0f},{:.0f}) {:.0f} "
+                             "yd is a danger zone until L{} or its gear / spells change",
+                             bot->GetName(), bot->GetLevel(), track.name, track.level, disc.x, disc.y, disc.w,
+                             std::max<uint32>(track.level, bot->GetLevel()) + 1);
+                }
         }
         // [guild80] a run / reset closes with a rest to full (WantsRest drops a rest asked for in combat: b319
         // Ravelandy L8 went questing at hp 53 after a run and died to the same Prowler)
