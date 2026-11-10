@@ -6,6 +6,7 @@
 
 #include "WaypointMgr.h"  // [rise33]
 #include "GuildCoordinator.h"  // [ghost40]
+#include "GuildHonest.h"  // [grave136]
 #include "ReviveFromCorpseAction.h"
 #include "BotPath.h"  // [lead109]
 #include "SelfTravelActions.h"  // [ghost58] the long route
@@ -712,7 +713,11 @@ GraveyardStruct const* SpiritHealerAction::GetGrave(bool startZone)
                 return ClosestGrave;
         }
     }
-    else if (startZone && AI_VALUE(uint8, "durability"))
+    // [grave136] a guild bot's travel target is no plan of its own (New RPG plans it): the stale one - b428 Feeli L16
+    // (Alliance), 10 deaths in an hour in Ashenvale, took the graveyard by its old target, Ragefire Chasm's Orgrimmar:
+    // its ghost walked 2000 yd to Razor Hill's graveyard 850, rose there and died to Orgrimmar Grunts L75 three times.
+    // It takes its own nearest graveyard
+    else if (startZone && AI_VALUE(uint8, "durability") && !GuildHonest::IsHonestBot(bot))
     {
         TravelTarget* travelTarget = AI_VALUE(TravelTarget*, "travel target");
 
