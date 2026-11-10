@@ -6559,8 +6559,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                     case ITEM_SUBCLASS_WEAPON_BOW:
                     case ITEM_SUBCLASS_WEAPON_CROSSBOW:
                         // [ammo84] its ammo in the bags, else no Shoot (SPELL_FAILED_NO_AMMO)
+                        // [ammo90] of the weapon's own kind (arrows / bullets)
                         if (uint32 const ammo = tank->GetUInt32Value(PLAYER_AMMO_ID); ammo && tank->HasItemCount(ammo, 1))
-                            ids.push_back(SPELL_SHOOT);
+                            if (ItemTemplate const* ammoProto = sObjectMgr->GetItemTemplate(ammo);
+                                ammoProto && ammoProto->SubClass == (ranged->GetTemplate()->SubClass ==
+                                                                            ITEM_SUBCLASS_WEAPON_GUN
+                                                                        ? ITEM_SUBCLASS_BULLET
+                                                                        : ITEM_SUBCLASS_ARROW))
+                                ids.push_back(SPELL_SHOOT);
                         break;
                     case ITEM_SUBCLASS_WEAPON_THROWN:
                         ids.push_back(SPELL_THROW);

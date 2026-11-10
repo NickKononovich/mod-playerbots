@@ -403,6 +403,10 @@ void NewRpgBaseAction::BuyAmmoDirect(Creature* vendor, uint32 subClass, uint32 h
             bought += stack;
         }
     }
+    // [ammo90] the ammo it bought is the ammo it fires (PLAYER_AMMO_ID), as a player drags it to the ammo slot: b411
+    // Ganna's Fine Longbow had Light Shot (bullets) set, every Shoot failed (no ammo)
+    if (bought && best && bot->GetUInt32Value(PLAYER_AMMO_ID) != best->ItemId)
+        bot->SetAmmo(best->ItemId);
     LOG_INFO("playerbots", "[vendor12] {} L{} ammo at {}: had {}, bought {} of {}{}", bot->GetName(), bot->GetLevel(),
              vendor->GetName(), have, bought, best ? best->Name1 : std::string("-"), why.empty() ? "" : " - " + why);
 }
@@ -769,6 +773,27 @@ std::string NewRpgBaseAction::FiveGearShort(Player* bot, std::vector<uint32>* mi
     // [ammo84] any class whose ranged weapon fires ammo (a warrior / rogue tank's gun, bow or crossbow is its pull)
     if (uint32 const sub = RequiredAmmoSubClass(bot))
     {
+        // [ammo90] the ammo slot holds the kind its weapon fires when its bags have it
+        if (ItemTemplate const* set = sObjectMgr->GetItemTemplate(bot->GetUInt32Value(PLAYER_AMMO_ID));
+            !set || set->SubClass != sub || !bot->HasItemCount(set->ItemId, 1))
+        {
+            uint32 fit = 0;
+            auto const look = [&](Item* item)
+            {
+                ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+                if (!fit && proto && proto->Class == ITEM_CLASS_PROJECTILE && proto->SubClass == sub &&
+                    bot->CanUseItem(proto) == EQUIP_ERR_OK)
+                    fit = proto->ItemId;
+            };
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                look(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+            for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+                if (Bag* container = bot->GetBagByPos(bag))
+                    for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
+                        look(container->GetItemByPos(uint8(slot)));
+            if (fit)
+                bot->SetAmmo(fit);
+        }
         uint32 have = 0;
         auto const count = [&](Item* item)
         {
