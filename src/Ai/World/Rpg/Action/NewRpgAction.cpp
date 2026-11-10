@@ -2963,6 +2963,18 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
     // nothing at it is left to do (the spent-spot check below: no mob it pulls, no quest object, no fight, no rest)
     // or when the quest is postponed (no walk, unsupported, all camps spent and another quest cheaper than the respawn)
 
+    // [spot88] its objective spot lies in the reach of a mob its judge refused (a camp of mobs it must not fight): the
+    // walk there is refused as one through those mobs - its quest postponed and a help party asked where mobs wall it
+    // (RefusedWalk), not a stand inside the camp. b410 Mutil L16 on q2038 stood at its objective spot among Gradok /
+    // Thragomm / Haren Swifthoof L19-21 (its route "complete, through a refused reach"), the patrol walked in, dead
+    if (std::string refusedWho; !bot->IsInCombat() && SoloSafety::InRefusedReach(bot, refusedWho))
+    {
+        LOG_INFO("playerbots", "[spot88] {} L{} q{}: its objective spot lies in the reach of {} its judge refused: "
+                 "postponed",
+                 bot->GetName(), bot->GetLevel(), questId, refusedWho);
+        return RefusedWalk(data.pos, "its objective spot lies in the reach of " + refusedWho + " (refused)");
+    }
+
     // objects to use for the quest (#2725)
     if (UseQuestGameObject(questId))
         return true;
