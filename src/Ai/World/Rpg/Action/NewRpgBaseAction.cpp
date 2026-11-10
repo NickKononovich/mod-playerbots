@@ -1494,30 +1494,10 @@ bool NewRpgBaseAction::FindDeckPoint(Transport* transport, float& x, float& y, f
     {
         float const px = startX + dx / length * travelled;
         float const py = startY + dy / length * travelled;
-        // [tram129] every surface of the model under the probe, top down: the deck is the one nearest the pier's
-        // height. The first hit alone was the roof of a covered car - b424: 49 refusals at the Deeprun Tram's
-        // Ironforge stop, the boarding leg aimed at the car's roof at z -9.7 from the platform at z -13.9 ([nav24]
-        // "a climbing straight leg ... +4.2 yd: no navmesh polygon"), the stop missed, the next car waited for
-        constexpr uint32 DECK_SURFACES = 8;     // search bound, not a behaviour rule
-        constexpr float DECK_RAY_RESTART = 0.05f;  // the next probe starts just under the surface found
-        float top = startZ + DECK_RAY_ABOVE;
-        float const bottom = startZ + DECK_RAY_ABOVE - DECK_RAY_LENGTH;
-        bool hit = false;
-        float deckZ = 0.0f;
-        for (uint32 surface = 0; surface < DECK_SURFACES && top > bottom; ++surface)
-        {
-            G3D::Ray const ray(G3D::Vector3(px, py, top), G3D::Vector3(0.0f, 0.0f, -1.0f));
-            float distance = top - bottom;
-            if (!transport->m_model->intersectRay(ray, distance, false, bot->GetPhaseMask(),
-                                                  VMAP::ModelIgnoreFlags::Nothing))
-                break;
-            float const surfaceZ = top - distance;
-            if (!hit || std::fabs(surfaceZ - startZ) < std::fabs(deckZ - startZ))
-                deckZ = surfaceZ;
-            hit = true;
-            top = surfaceZ - DECK_RAY_RESTART;
-        }
-        if (!hit)
+        G3D::Ray const ray(G3D::Vector3(px, py, startZ + DECK_RAY_ABOVE), G3D::Vector3(0.0f, 0.0f, -1.0f));
+        float distance = DECK_RAY_LENGTH;
+        if (!transport->m_model->intersectRay(ray, distance, false, bot->GetPhaseMask(),
+                                              VMAP::ModelIgnoreFlags::Nothing))
         {
             if (onDeck)
                 break;
@@ -1525,6 +1505,7 @@ bool NewRpgBaseAction::FindDeckPoint(Transport* transport, float& x, float& y, f
             continue;
         }
 
+        float const deckZ = startZ + DECK_RAY_ABOVE - distance;
         if (std::fabs(deckZ - startZ) > DECK_MAX_STEP)
             continue;
 
