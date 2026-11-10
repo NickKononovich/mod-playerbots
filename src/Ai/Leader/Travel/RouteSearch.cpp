@@ -6,6 +6,7 @@
 
 #include "NewRpgBaseAction.h"  // [static39]
 #include "Formulas.h"  // [zone38]
+#include "GameTime.h"  // [route102]
 #include "DBCStores.h"  // [zone38]
 #include "Common.h"  // math defines first (Position.h)
 #include "SlowScope.h"  // [perf26]
@@ -53,6 +54,41 @@ namespace Leader::Travel
         std::vector<G3D::Vector4> const* discs = nullptr;
         std::vector<RoutePenalty> const* penalties = nullptr;  // [guild13]
 
+        // [route102] the discs and penalties binned on a GRID_CELL yd grid once per search: passFilter / getCost run
+        // for every node the search expands and tested each against the whole list (b417: 200-430 ms searches with
+        // hundreds of static discs); now only the entries of the cells the polygon / step touches
+        static constexpr float GRID_CELL = 16.0f;
+        std::unordered_map<uint64, std::vector<uint32>> discGrid;
+        std::unordered_map<uint64, std::vector<uint32>> penaltyGrid;
+        static uint64 CellKey(int32 cx, int32 cy) { return (uint64(uint32(cx)) << 32) | uint32(cy); }
+        static int32 CellOf(float v) { return int32(std::floor(v / GRID_CELL)); }
+        template <typename F>
+        static void ForCells(float minX, float minY, float maxX, float maxY, F const& f)
+        {
+            for (int32 cx = CellOf(minX); cx <= CellOf(maxX); ++cx)
+                for (int32 cy = CellOf(minY); cy <= CellOf(maxY); ++cy)
+                    f(CellKey(cx, cy));
+        }
+        void BuildGrids()
+        {
+            discGrid.clear();
+            penaltyGrid.clear();
+            if (discs)
+                for (uint32 i = 0; i < discs->size(); ++i)
+                {
+                    G3D::Vector4 const& d = (*discs)[i];
+                    ForCells(d.x - d.w, d.y - d.w, d.x + d.w, d.y + d.w,
+                             [&](uint64 key) { discGrid[key].push_back(i); });
+                }
+            if (penalties)
+                for (uint32 i = 0; i < penalties->size(); ++i)
+                {
+                    RoutePenalty const& d = (*penalties)[i];
+                    ForCells(d.x - d.r, d.y - d.r, d.x + d.r, d.y + d.r,
+                             [&](uint64 key) { penaltyGrid[key].push_back(i); });
+                }
+        }
+
         // [guild13] an edge from outside a penalty disc into it pays the disc's cost once (Detour: (y, z, x))
         float getCost(float const* pa, float const* pb, dtPolyRef const prevRef, dtMeshTile const* prevTile,
                       dtPoly const* prevPoly, dtPolyRef const curRef, dtMeshTile const* curTile, dtPoly const* curPoly,
@@ -67,8 +103,34 @@ namespace Leader::Travel
             float const sx = pb[2] - pa[2];
             float const sy = pb[0] - pa[0];
             float const lengthSq = sx * sx + sy * sy;
-            for (RoutePenalty const& disc : *penalties)
+            // [route102] the penalties whose cells the step's bounds touch, each once
+            thread_local std::vector<uint32> nearPen;
+            thread_local std::vector<uint32> seenMark;
+            thread_local uint32 mark = 0;
+            nearPen.clear();
+            if (++mark == 0)
             {
+                std::fill(seenMark.begin(), seenMark.end(), 0);
+                mark = 1;
+            }
+            if (seenMark.size() < penalties->size())
+                seenMark.resize(penalties->size(), 0);
+            ForCells(std::min(pa[2], pb[2]), std::min(pa[0], pb[0]), std::max(pa[2], pb[2]), std::max(pa[0], pb[0]),
+                     [&](uint64 key)
+                     {
+                         auto const found = penaltyGrid.find(key);
+                         if (found == penaltyGrid.end())
+                             return;
+                         for (uint32 i : found->second)
+                             if (seenMark[i] != mark)
+                             {
+                                 seenMark[i] = mark;
+                                 nearPen.push_back(i);
+                             }
+                     });
+            for (uint32 const penIndex : nearPen)
+            {
+                RoutePenalty const& disc = (*penalties)[penIndex];
                 if (std::fabs(pb[1] - disc.z) > 10.0f && std::fabs(pa[1] - disc.z) > 10.0f)
                     continue;
                 float const ax = pa[2] - disc.x;
@@ -98,8 +160,43 @@ namespace Leader::Travel
                     centre += G3D::Vector3(vertex[2], vertex[0], vertex[1]);  // Detour stores (y, z, x)
                 }
                 centre /= float(poly->vertCount);
-                for (G3D::Vector4 const& disc : *discs)
+                // [route102] the discs whose cells the polygon's bounds touch, each once
+                float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
+                for (uint8 index = 0; index < poly->vertCount; ++index)
                 {
+                    float const* vertex = &tile->verts[size_t(poly->verts[index]) * 3];
+                    minX = std::min(minX, vertex[2]);
+                    maxX = std::max(maxX, vertex[2]);
+                    minY = std::min(minY, vertex[0]);
+                    maxY = std::max(maxY, vertex[0]);
+                }
+                thread_local std::vector<uint32> nearDiscs;
+                thread_local std::vector<uint32> discMark;
+                thread_local uint32 discStamp = 0;
+                nearDiscs.clear();
+                if (++discStamp == 0)
+                {
+                    std::fill(discMark.begin(), discMark.end(), 0);
+                    discStamp = 1;
+                }
+                if (discMark.size() < discs->size())
+                    discMark.resize(discs->size(), 0);
+                ForCells(minX, minY, maxX, maxY,
+                         [&](uint64 key)
+                         {
+                             auto const found = discGrid.find(key);
+                             if (found == discGrid.end())
+                                 return;
+                             for (uint32 i : found->second)
+                                 if (discMark[i] != discStamp)
+                                 {
+                                     discMark[i] = discStamp;
+                                     nearDiscs.push_back(i);
+                                 }
+                         });
+                for (uint32 const di : nearDiscs)
+                {
+                    G3D::Vector4 const& disc = (*discs)[di];
                     if (std::fabs(centre.z - disc.z) > 10.0f)
                         continue;
                     if ((centre.x - disc.x) * (centre.x - disc.x) + (centre.y - disc.y) * (centre.y - disc.y) <=
@@ -218,6 +315,7 @@ namespace Leader::Travel
         filter.boxes = avoidBoxes;
         filter.discs = avoidDiscs;  // [b32_brs]
         filter.penalties = penalties && !penalties->empty() ? penalties : nullptr;  // [guild13]
+        filter.BuildGrids();  // [route102]
         filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | (steep ? NAV_GROUND_STEEP : 0)));
         filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
 
@@ -513,7 +611,46 @@ namespace Leader
         return zone->team != own;
     }
 
+    RouteResult RouteSearchUncached(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& toAsked);
+
+    // [route102] the same walk asked again within one world tick (one decision asks the route of a trip, its walk,
+    // its pricing in turn: TripRefused, MoveFarTo, the planner's leg) is answered from the first search of that
+    // tick: the facts it was searched on (the mobs, the walker's spot) are the same tick's. Per thread, a few
+    // entries, cleared at each new tick - no answer outlives its tick (route31: a longer-lived cache was a loss)
     RouteResult Route(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& toAsked)
+    {
+        if (!walker || extraAvoid)
+            return RouteSearchUncached(walker, from, toAsked);
+        struct Entry
+        {
+            uint64 walker;
+            int32 fx, fy, fz, tx, ty, tz;
+            RouteResult result;
+        };
+        thread_local std::vector<Entry> entries;
+        thread_local uint64 entriesTick = 0;
+        uint64 const tick = uint64(GameTime::GetGameTimeMS().count());
+        if (tick != entriesTick)
+        {
+            entries.clear();
+            entriesTick = tick;
+        }
+        Entry key{walker->GetGUID().GetRawValue(), int32(std::floor(from.x)), int32(std::floor(from.y)),
+                  int32(std::floor(from.z)), int32(std::floor(toAsked.x)), int32(std::floor(toAsked.y)),
+                  int32(std::floor(toAsked.z)), {}};
+        for (Entry const& e : entries)
+            if (e.walker == key.walker && e.fx == key.fx && e.fy == key.fy && e.fz == key.fz && e.tx == key.tx &&
+                e.ty == key.ty && e.tz == key.tz)
+                return e.result;
+        key.result = RouteSearchUncached(walker, from, toAsked);
+        constexpr size_t TICK_ENTRIES = 16;  // a decision's walks; the cost bound of the lookup
+        if (entries.size() >= TICK_ENTRIES)
+            entries.erase(entries.begin());
+        entries.push_back(key);
+        return key.result;
+    }
+
+    RouteResult RouteSearchUncached(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& toAsked)
     {
         // [perf26] [patrol101] the walker named: a slow search is its bot's (b417's 5.4 s tick had 100 unnamed
         // 200-430 ms searches in one health window)
