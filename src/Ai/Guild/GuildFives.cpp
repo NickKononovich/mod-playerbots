@@ -2014,7 +2014,13 @@ void GuildCoordinator::AutoFive()
                                       p->GetLevel() >= d.walkMinLevel, PlanRole(row.low, p) == "healer"});
                 }
         }
-        std::unordered_map<std::string, std::pair<uint32, uint32>> band;  // content -> members in band, cleared
+        // [need115] per dungeon option (a content key may have several, one per level band: b421 'sfk-n: band 78-82:
+        // 126 in band' summed the options of one key): its band's members, cleared, their needs, the uncleared below
+        auto const optionKey = [](DungeonOption const& d)
+        { return d.contentKey + " " + std::to_string(d.minLevel) + "-" + std::to_string(d.maxLevel); };
+        std::unordered_map<std::string, std::pair<uint32, uint32>> band;  // option -> members in band, cleared
+        std::unordered_map<std::string, std::map<uint32, std::string>> bandNeeds;  // option -> in-band needs
+        std::unordered_map<std::string, uint32> below;  // option -> members below the band, uncleared
         for (Probe const& probe : probes)
         {
             std::string need;
@@ -2027,11 +2033,16 @@ void GuildCoordinator::AutoFive()
             // in-band dungeon whose mobs still give it experience is a need of its own
             if (need.empty() && probe.healer && probe.inBand && GivesXp(*probe.d, probe.p))
                 need = "xp";
+            std::string const option = optionKey(*probe.d);
             if (probe.inBand)
             {
-                ++band[probe.d->contentKey].first;
-                band[probe.d->contentKey].second += probe.cleared ? 1 : 0;
+                ++band[option].first;
+                band[option].second += probe.cleared ? 1 : 0;
+                if (!need.empty())
+                    bandNeeds[option][probe.low] = need;
             }
+            else if (!probe.cleared)
+                ++below[option];
             if (!need.empty())
                 needs[probe.d->contentKey][probe.low] = need;
         }
@@ -2039,20 +2050,24 @@ void GuildCoordinator::AutoFive()
         for (DungeonOption const& d : dungeons_)
         {
             auto const found = needs.find(d.contentKey);
-            auto const counts = band[d.contentKey];
+            std::string const option = optionKey(d);
+            auto const counts = band[option];
             std::string line = Acore::StringFormat("band {}-{}: {} in band, {} cleared, {} uncleared", d.minLevel,
                                                    d.maxLevel, counts.first, counts.second,
                                                    counts.first - counts.second);
-            if (found == needs.end() || found->second.empty())
+            // [need115] the in-band members' needs by name; those below the band only counted (b421: 1888 lines,
+            // every one naming all 75 members as 'clear' for every dungeon above them)
+            if (auto const mine = bandNeeds.find(option); mine == bandNeeds.end() || mine->second.empty())
                 line += "; needs: none";
             else
             {
-                line += Acore::StringFormat("; needs ({}):", found->second.size());
-                for (auto const& [low, need] : found->second)
+                line += Acore::StringFormat("; needs ({}):", mine->second.size());
+                for (auto const& [low, need] : mine->second)
                     line += " " + Who(low) + " " + need + ",";
                 line.pop_back();
             }
-            if (std::string& logged = needLogged_[d.contentKey]; logged != line)
+            line += Acore::StringFormat("; below the band uncleared: {}", below[option]);
+            if (std::string& logged = needLogged_[option]; logged != line)
             {
                 logged = line;
                 LOG_INFO("playerbots", "[need106] {}: {}", d.contentKey, line);
@@ -2144,11 +2159,14 @@ void GuildCoordinator::AutoFive()
                 if (guardCount == 0 && lookWhy.count(d.contentKey))
                     if (auto const n = needs.find(d.contentKey); n != needs.end())
                     {
-                        // [need106] each member's need, in the look
+                        // [need106] each member's need, in the look - [need115] the free ones (the five's pool) by
+                        // name, the rest counted
                         std::string text = " needs:";
-                        for (auto const& [low, need] : n->second)
-                            text += " " + Who(low) + " " + need + ",";
+                        for (FiveCandidate const& c : pool)
+                            if (auto const m = n->second.find(c.low); m != n->second.end())
+                                text += " " + Who(c.low) + " " + m->second + ",";
                         text.pop_back();
+                        text += Acore::StringFormat(" ({} members need it in all)", n->second.size());
                         lookWhy[d.contentKey].insert(0, text.substr(1) + "; ");
                     }
                 for (FiveCandidate& c : pool)
