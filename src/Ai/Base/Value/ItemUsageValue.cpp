@@ -758,6 +758,13 @@ bool ItemUsageValue::IsItemUsefulForSkill(ItemTemplate const* proto)
             if (botAI->HasSkill(SKILL_HERBALISM) && (RandomItemMgr::IsUsedBySkill(proto, SKILL_HERBALISM) ||
                                                      RandomItemMgr::IsUsedBySkill(proto, SKILL_ALCHEMY)))
                 return true;
+            // [insc141] a scribe keeps its reagents (pigments, inks, parchment) and the herbs it mills itself (the
+            // core's milling check: ITEM_FLAG_IS_MILLABLE, RequiredSkillRank within its Inscription), Herbalism or not
+            if (botAI->HasSkill(SKILL_INSCRIPTION) &&
+                (RandomItemMgr::IsUsedBySkill(proto, SKILL_INSCRIPTION) ||
+                 (proto->HasFlag(ITEM_FLAG_IS_MILLABLE) &&
+                  bot->GetPureSkillValue(SKILL_INSCRIPTION) >= proto->RequiredSkillRank)))
+                return true;
 
             return false;
         }
