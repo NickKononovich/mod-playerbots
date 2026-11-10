@@ -4808,6 +4808,17 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             bool covers = false;
             for (size_t i = fromIndex; i < points.size() && !covers; i += 2)  // every 8 yd: within a reach
                 covers = std::hypot(points[i].x - spawn.x, points[i].y - spawn.y) <= radius;
+            // [patrol101] a beat node whose disc an already kept disc holds for the most part (its centre within
+            // half that disc's radius) adds nothing the route search does not refuse already: the refuse list stays
+            // short (every polygon of the search is tested against each disc). b417: route searches of 200-430 ms,
+            // 100 of them (14 s) in one health window, the 5.4 s tick at the start
+            if (covers && spawn.beat)
+                for (G3D::Vector4 const& kept : discs)
+                    if (std::hypot(kept.x - spawn.x, kept.y - spawn.y) <= kept.w * 0.5f && kept.w >= radius)
+                    {
+                        covers = false;
+                        break;
+                    }
             if (covers)
                 discs.emplace_back(spawn.x, spawn.y, spawn.z, radius);
         }
