@@ -160,6 +160,7 @@ namespace Leader::Dungeon
             uint32 insideMs = 0;
             ObjectGuid groupGuid;
             bool queued = false;  // the Dungeon Finder took the join (a state other than none seen)
+            bool proposalSeen = false;  // [lfg137] the queue's proposal for the five was seen (state PROPOSAL)
             std::vector<std::string> needs;
             std::string entry;
         };

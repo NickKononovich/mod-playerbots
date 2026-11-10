@@ -485,6 +485,23 @@ namespace Leader::Dungeon
             return;
         }
 
+        // [lfg137] a proposal that failed (a member did not accept within the core's proposal time): the core's
+        // RemoveProposal drops the group from the queue, then RestoreState puts its state back to QUEUED - the five
+        // waits in a queue that no longer holds it. b426 fives 12 / 14 and b428 fives 11 / 17 / 22 / 40 / 49 stood in
+        // state 2 for hours. A five whose proposal was seen and whose state is QUEUED again leaves and queues anew
+        if (state == lfg::LFG_STATE_PROPOSAL)
+            run.proposalSeen = true;
+        else if (run.proposalSeen && state == lfg::LFG_STATE_QUEUED)
+        {
+            LOG_INFO("playerbots", "[lfg137] five {} run {}: the proposal failed (a member did not accept in time): the "
+                     "group was dropped from the queue with its state left QUEUED - leaves and queues again",
+                     request.fiveId, run.id);
+            sLFGMgr->LeaveLfg(run.groupGuid);
+            run.queued = false;
+            run.proposalSeen = false;
+            return;
+        }
+
         // the queue ended without the port (role check failed, proposal declined or expired - the core's rules)
         if (state == lfg::LFG_STATE_NONE)
             End(run, "not_started", "dungeon finder: the group was not moved (role check / proposal)", true);
