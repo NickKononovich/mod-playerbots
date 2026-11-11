@@ -45,6 +45,9 @@ namespace PullPlanning
     // [dun172] a druid tank out of (Dire) Bear Form: the bear's stats last seen in form (the planner plans with them),
     // false when `tank` is in form, no druid tank, or no bear of it was seen
     bool BearStatsSeen(Player* tank, float& health, float& armor, float& dodge, float& parry);
+    // [dun180] the damage per second `mob` lands on `victim` as the planner reads it (LandedMeleeDps: its melee
+    // through the game's attack table and armor, its spells from its spell data)
+    float MobLandedDps(Unit* mob, Player* victim);
 }
 
 // the tank's commit of a pull, posted to the leader's order registry

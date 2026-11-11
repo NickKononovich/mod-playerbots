@@ -17,6 +17,8 @@
 #include "PartyStrengthValue.h"
 #include "PlayerbotAIConfig.h"
 #include "LeaderOrders.h"  // [lead18] LEADER_HEALER_HEALS_ONLY
+#include "LeaderPlannerShared.h"  // [dun180] MobLandedDps
+#include "ObjectAccessor.h"
 #include "Playerbots.h"
 #include "RtiTargetValue.h"
 #include "RtiValue.h"
@@ -280,19 +282,44 @@ namespace KillOrder
 
     void SortKillOrder(std::vector<Unit*>& pack, WorldObject const* anchor, Unit const* current)
     {
-        // [b30_mech_pos] healers (MobRoles) first, then the other casters
-        auto const tierOf = [anchor](Unit* unit)
+        // [b30_mech_pos] healers (MobRoles) first
+        auto const healerOf = [anchor](Unit* unit)
+        { return anchor && unit->GetDistance(anchor) <= PACK_RADIUS && MobRoles::IsHealer(unit); };
+        // [dun180] then the damage each mob lands per second of its life under the group's fire: what it lands on
+        // the member it fights (the planner's LandedMeleeDps: melee through the game's attack table and armor,
+        // spells from its spell data) over its health - the death that takes the most damage off the group per
+        // second of the group's damage first, wherever it stands (b424 rfc-n five5 pull 36: a Searing Blade
+        // Warlock 17-20 yd off cast 33/s on the tank for 30 s while 8/s Cultists in the pack died first). A mob
+        // that fights nobody yet (a pull's plan) keeps the caster prior: the casters in the pack first
+        Player* const anchorPlayer = anchor ? ObjectAccessor::FindPlayer(anchor->GetGUID()) : nullptr;
+        std::unordered_map<Unit*, float> rate;  // -1: it fights nobody
+        for (Unit* unit : pack)
         {
-            if (!anchor || unit->GetDistance(anchor) > PACK_RADIUS)
-                return 0;
-            return MobRoles::IsHealer(unit) ? 2 : GetCasterTier(unit) ? 1 : 0;
-        };
+            Unit* victim = unit->GetVictim();
+            Player* on = victim ? victim->ToPlayer() : nullptr;
+            if (!on && victim)
+                on = anchorPlayer;
+            rate[unit] = on ? PullPlanning::MobLandedDps(unit, on) / float(std::max<uint32>(unit->GetHealth(), 1))
+                            : -1.0f;
+        }
+        auto const casterOf = [anchor](Unit* unit)
+        { return anchor && unit->GetDistance(anchor) <= PACK_RADIUS && GetCasterTier(unit); };
         std::stable_sort(pack.begin(), pack.end(), [&](Unit* a, Unit* b)
         {
-            int const tierA = tierOf(a);
-            int const tierB = tierOf(b);
-            if (tierA != tierB)
-                return tierA > tierB;
+            bool const healerA = healerOf(a);
+            bool const healerB = healerOf(b);
+            if (healerA != healerB)
+                return healerA;
+
+            float const rateA = rate[a];
+            float const rateB = rate[b];
+            if (rateA >= 0.0f && rateB >= 0.0f)
+            {
+                if (rateA != rateB)
+                    return rateA > rateB;
+            }
+            else if (bool const casterA = casterOf(a), casterB = casterOf(b); casterA != casterB)
+                return casterA;
 
             if ((a == current) != (b == current))
                 return a == current;
