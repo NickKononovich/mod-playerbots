@@ -11612,6 +11612,35 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                     measured, false, overlapsOut);
         if (walkPulls(target, bot->GetPosition(), target->GetPosition()))
             bossWalkWakes = lastWoken;
+        // [dun200] what his pack holds that is not his (no formation of his, no spawn point within the social radius
+        // of his: SpawnsWith) comes by the walk to him or by its own aggro of his spot - trash: the nearest of it is
+        // its own pull first, as a mob the walk wakes (the walk check measures only walks up to its length cap). b437
+        // wc-n: "Lord Cobrahn ... 11 mobs = 1 start + 2 social + 8 pull path" (overload 3.01), b436 dm-n
+        // "Rhahk'Zor ... 6 mobs = 1 start + 2 pull path + 3 assist" (overload 2.98) were pulled with all of it
+        if (!bossWalkWakes)
+        {
+            Creature* nearest = nullptr;
+            for (Unit* mob : pack)
+            {
+                Creature* creature = mob ? mob->ToCreature() : nullptr;
+                if (!creature || creature == target || IsBossMob(creature) || SpawnsWith(creature, target) ||
+                    !IsIdleEnemy(bot, creature))
+                    continue;
+                if (!nearest || bot->GetExactDist(creature) < bot->GetExactDist(nearest))
+                    nearest = creature;
+            }
+            if (nearest)
+            {
+                bossWalkWakes = nearest;
+                thread_local std::set<std::pair<uint64, uint64>> trashFirstLogged;  // once per tank and mob
+                if (trashFirstLogged.size() > 4096)
+                    trashFirstLogged.clear();
+                if (trashFirstLogged.insert({bot->GetGUID().GetRawValue(), nearest->GetGUID().GetRawValue()}).second)
+                    LOG_INFO("playerbots",
+                             "[dun200] {}: {}'s pull would bring {} ({:.0f} yd), not his own: that trash first",
+                             bot->GetName(), target->GetName(), nearest->GetName(), bot->GetExactDist(nearest));
+            }
+        }
     }
 
     if (!found && boss && bossWalkWakes)
