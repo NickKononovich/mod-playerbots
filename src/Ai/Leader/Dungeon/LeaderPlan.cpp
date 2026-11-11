@@ -1371,6 +1371,61 @@ namespace Leader::Dungeon
                     }
                     walkers.splice(walkers.end(), helpers);
                 }
+                // [dun212] the patrol comes to the group: the fight is where the group stands (the tank, its
+                // members a follow spread round it) and where its pull is fought (the commit spot); every idle mob
+                // whose aggro reaches there in its sight (Creature::MoveInLineOfSight: Leader::Travel::AggroReach)
+                // joins it. b442 sfk-n five7-7 pull 7: the Slavering Worg walker "taken along: 6 mobs, overload
+                // 0.98" at the courtyard's edge, the courtyard's Moonwalkers, Worgs and Servitors standing in reach
+                // came too and the five wiped (4 dead, the same in five2-1 with the Tormented Officers)
+                {
+                    std::list<Creature*> standing;
+                    IdleAggroCheck idle{tank};
+                    float constexpr searchYd = 60.0f;  // GetAggroRange's 45 yd cap + combat reach, wander, margin
+                    auto const addStanding = [&](Position const& at)
+                    {
+                        struct InRange
+                        {
+                            Position at;
+                            float range;
+                            bool operator()(Creature* c) const { return c->GetExactDist(at) <= range; }
+                        };
+                        std::list<Creature*> found;
+                        InRange inRange{at, searchYd};
+                        Acore::CreatureListSearcher<InRange> searcher(tank, found, inRange);
+                        Cell::VisitObjects(at.GetPositionX(), at.GetPositionY(), tank->GetMap(), searcher, searchYd);
+                        for (Creature* mob : found)
+                        {
+                            if (!mob || !idle(mob) || std::find(walkers.begin(), walkers.end(), mob) != walkers.end() ||
+                                std::find(standing.begin(), standing.end(), mob) != standing.end())
+                                continue;
+                            float const reach =
+                                Leader::Travel::AggroReach(mob, tank) + Leader::Travel::APPROACH_FOLLOW_SPREAD;
+                            if (mob->GetExactDist(at) <= reach &&
+                                mob->IsWithinLOS(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + 2.0f))
+                                standing.push_back(mob);
+                        }
+                    };
+                    addStanding(tank->GetPosition());
+                    if (lead.commitSpot.GetExactDist(tank) > Leader::Travel::APPROACH_FOLLOW_SPREAD)
+                        addStanding(lead.commitSpot);
+                    std::vector<ObjectGuid> const own = LeaderPullMobs(lead.commit, lead.commitMob);
+                    std::string names;
+                    for (Creature* mob : standing)
+                        if (std::find(own.begin(), own.end(), mob->GetGUID()) == own.end() &&
+                            std::find(lead.takenWalkers.begin(), lead.takenWalkers.end(), mob->GetGUID()) ==
+                                lead.takenWalkers.end())
+                        {
+                            walkers.push_back(mob);
+                            names += (names.empty() ? "" : ", ") + mob->GetName();
+                        }
+                    if (!names.empty() && lead.patrolStandingFor != patrol->GetGUID())
+                    {
+                        lead.patrolStandingFor = patrol->GetGUID();
+                        LOG_INFO("playerbots", "[dun212] {}: the patrol {} is fought where the group stands: in "
+                                 "reach there {}",
+                                 run.runId, patrol->GetName(), names);
+                    }
+                }
                 std::vector<ObjectGuid> combined = LeaderPullMobs(lead.commit, lead.commitMob);
                 combined.insert(combined.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
                 for (Creature* walker : walkers)

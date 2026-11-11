@@ -181,6 +181,7 @@ namespace Leader
         ObjectGuid commitMob;
         Position commitPos;
         Position commitSpot;
+        ObjectGuid patrolStandingFor;  // [dun212] the patrol whose standing joiners were logged last
         uint32 commitSinceMs = 0;
         uint32 commitIssuedMs = 0;
         bool commitIssued = false;
