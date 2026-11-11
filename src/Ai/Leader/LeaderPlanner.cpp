@@ -331,6 +331,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // [dun219] the patrols searched round a pull for a beat that never leaves it: twice the most aggro reach
     // (Creature::GetAggroRange caps at 45 yd, plus its combat reach and the margin)
     constexpr float PATROL_BEAT_SEARCH = 100.0f;
+    // [dun234] what stands round a pull target, searched for its plan: the most aggro reach
+    // (GetAggroRange's 45 yd cap) plus combat reach, wander and margin, as dun212's search round the fight
+    constexpr float PLAN_FAR_PACK_YD = 60.0f;
     constexpr uint32 KILL_SPOT_RETREATS = 3;
     constexpr uint32 KILL_SPOT_SEARCHES = 8;
     // The tank's own walk (to a mob it engages, to its cast spot, back to its kill spot) follows its navmesh path,
@@ -9719,7 +9722,35 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     GroupSupport const support = CountSupport(bot);
     TankKit const kit = PartyStrengthShared::GetTankKit(bot);
     // Measured: what comes is not limited to what the tank sees from where it stands (a room behind a door frame).
-    GuidVector const possible = PlanPossible(measured);  // [lead7]
+    GuidVector possible = PlanPossible(measured);  // [lead7]
+    // [dun234] the target is priced with what stands round it, wherever the tank stands: its pack, its assist call
+    // and the kill spot's neighbours answer whether the tank sees them or not, and the tank's list (the possible
+    // targets) holds only what is within SightDistance of the tank (and in its sight, unmeasured). b444 rfc-n
+    // five11-11 722 s: "engage ... Ragefire Trogg at 136.7 yd, 1 mobs, nothing else near" - its Shaman 5 yd and Trogg
+    // 8 yd off (and the stop's two more) came with it, 7 mobs in 6 s, and the five wiped
+    {
+        float const sight = sPlayerbotAIConfig.SightDistance;
+        std::list<Creature*> around;
+        Acore::AnyUnitInObjectRangeCheck inRange(target, PLAN_FAR_PACK_YD);
+        Acore::CreatureListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, around, inRange);
+        Cell::VisitObjects(target, searcher, PLAN_FAR_PACK_YD);
+        size_t added = 0;
+        for (Creature* creature : around)
+            if (creature && creature != target && creature->IsAlive() && !creature->IsCritter() &&
+                creature->IsHostileTo(bot) && bot->IsValidAttackTarget(creature) &&
+                std::find(possible.begin(), possible.end(), creature->GetGUID()) == possible.end())
+            {
+                possible.push_back(creature->GetGUID());
+                ++added;
+            }
+        if (added && _farPackLogged != target->GetGUID())
+        {
+            _farPackLogged = target->GetGUID();
+            LOG_INFO("playerbots", "[dun234] {}: {} at {:.1f} yd (sight {:.0f} yd): {} mobs round it the tank's list "
+                     "lacked join the plan's",
+                     bot->GetName(), target->GetName(), bot->GetExactDist(target), sight, added);
+        }
+    }
     // User rule (packs stand apart at spawn): every possible target is sampled where it stands (once a second at
     // most), so a mob that walks is told from one that stands, and a group that crosses a pack now is noted with
     // the plan instead of merged into it (split), unless a wait for one ran out a moment ago.

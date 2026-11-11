@@ -647,6 +647,7 @@ private:
     uint32 _overlapHoldMs = 0;              // since when the tank holds for crossing groups (0: no hold)
     uint32 _overlapSeenMs = 0;
     uint32 _overlapGiveUpMs = 0;            // the wait ran out: planned as before (merged) for a while
+    ObjectGuid _farPackLogged;              // [dun234] the far target whose added neighbours were logged last
     ObjectGuid _overlapBinding;             // the crossing group the hold clock runs for (kept across target flips)
     // [b36_sv] overlap holds started with no fight between them (a looping patrol re-crosses: the clock restarts on
     // every walk-off); past OVERLAP_MAX_CYCLES the patrol is pulled itself, else the wait gives up (planned merged)
