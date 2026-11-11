@@ -570,6 +570,7 @@ namespace Leader
         // the member_no_action invariant) and the member break last logged per member
         std::set<ObjectGuid> memberIdle;
         std::map<ObjectGuid, std::string> memberNoAction;
+        std::set<ObjectGuid> placeFailed;  // [dun218] members whose leader place left them idle in this fight
         std::map<ObjectGuid, std::string> memberBreakLogged;
         ObjectGuid patrolDangerLoggedAlong;              // [lead34] patrol_target "along" logged once
         std::vector<ObjectGuid> planMobs;

@@ -8607,7 +8607,7 @@ namespace Leader::Dungeon
                 if (toTankStop)
                 {
                     Position const place = meleeStopAt(bot, target);
-                    if (reachesAtStop(bot, target))  // [lead1461] the wait costs less than the walk
+                    if (reachesAtStop(bot, target) && !lead.placeFailed.count(guid))  // [lead1461] [dun218]
                     {
                         if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f,
                                                     WAITS_AT_WALK_END))
@@ -8864,7 +8864,7 @@ namespace Leader::Dungeon
                                 // meeting point of the issue (b219: 167 stays, the engaged mob's spawn point inside
                                 // its pack's reach); the pulled mobs' reach is no constraint once the tank has them
                                 Position const stopAt = meleeStopAt(bot, target);
-                                if (reachesAtStop(bot, target))  // [lead1461] the wait costs less than the walk
+                                if (reachesAtStop(bot, target) && !lead.placeFailed.count(guid))  // [lead1461] [dun218]
                                 {
                                     if (Leader::Events::SetMove(guid, Leader::MoveEvent::StandAt, bot->GetPosition(),
                                                                 2.0f, WAITS_AT_STOP_POINT))
@@ -13027,7 +13027,25 @@ namespace Leader::Dungeon
                 std::string const ownWhy =
                     events.moveWhy.empty() ? std::string("-") : events.moveWhy.substr(0, 120);
                 if (!lead.memberIdle.insert(bot->GetGUID()).second)
+                {
                     lead.memberNoAction[bot->GetGUID()] = ownWhy;
+                    // [dun218] the leader's place for it is the wrong order: a member at the combat spot or the
+                    // walk's end the leader sent it to, that acts on nothing of the fight from there for two leader
+                    // decisions (its target out of its reach or sight there, or not walking in after all), gets a
+                    // new place - the spot is searched again for its target as it stands now, and the wait for its
+                    // target at the walk's end ([lead1461] "its target stops in its reach") is not taken again in
+                    // this fight. b442: 579 member_no_action, 96 "combat spot", 72 "... waits, its target stops in
+                    // its reach", 62 "to the tank's walk's end"
+                    bool const leaderPlace = !refusedPlace && (ownWhy.rfind("combat spot", 0) == 0 ||
+                                                               ownWhy.rfind("to the tank's walk's end", 0) == 0);
+                    if (leaderPlace && lead.placeFailed.insert(bot->GetGUID()).second)
+                    {
+                        lead.combatSpots.erase(bot->GetGUID());
+                        lead.meleeChase.erase(bot->GetGUID());
+                        LOG_INFO("playerbots", "[dun218] {}: {} acts on nothing from its place ({}): placed anew",
+                                 group.Run().runId, bot->GetName(), ownWhy);
+                    }
+                }
             }
             for (ObjectGuid const& mobGuid : fightMobs)
                 if (Unit* mob = ObjectAccessor::GetUnit(*tank, mobGuid); acting.empty() && mob && comes(mob))
@@ -13211,6 +13229,7 @@ namespace Leader::Dungeon
             lead.memberIdle.clear();  // [lead1451]
             lead.memberNoAction.clear();
             lead.memberBreakLogged.clear();
+            lead.placeFailed.clear();  // [dun218]
         }
 
         lead.hazardActive = hazardSeen;
