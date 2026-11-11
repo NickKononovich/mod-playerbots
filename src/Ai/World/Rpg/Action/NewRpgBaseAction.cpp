@@ -7994,6 +7994,21 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         town.z = pos.GetPositionZ();
         town.what = what;
         town.xp = QuestRoute::MemberHandInXp(QuestRoute::SpotKey(town.x, town.y));  // [quest16]
+        // [lag337] ... and its own town tasks' worth in its quest experience (their game prices): the stop moves
+        // forward as a hand-in does (HandInsEarlier) when what it brings sooner beats the detour
+        float const tasksXp = sGuildCoordinator.TownStopXp(bot, pos);
+        town.xp += tasksXp;
+        if (tasksXp > 0.0f)
+        {
+            thread_local std::unordered_map<uint64, uint32> townLogged;  // a log cadence, no decision reads it
+            uint32& last = townLogged[bot->GetGUID().GetRawValue() ^ QuestRoute::SpotKey(town.x, town.y)];
+            if (last != uint32(tasksXp))
+            {
+                last = uint32(tasksXp);
+                LOG_INFO("playerbots", "[lag337] {} L{} town stop {} weighs {:.0f} quest xp (its tasks' game prices)",
+                         bot->GetName(), bot->GetLevel(), what, tasksXp);
+            }
+        }
         in.stops.push_back(town);
 
     }

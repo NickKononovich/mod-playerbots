@@ -5419,6 +5419,41 @@ bool GuildCoordinator::UrgentTask(Player* bot, std::string* why) const
     return false;
 }
 
+// [lag337] b444 [health] "waiting for town" 14 -> 29 -> 77 -> 79 in 1.5 h (40 MAIL_TO, 24 BUY, 4 TRAIN, 4 CRAFT, 3
+// REPAIR waiting): a town stop carried no weight in the route (only its party members' hand-ins, [quest16]), so
+// HandInsEarlier never moved it forward and the shortest order put it where it adds the least walk - often last of
+// a 60-70 min route that is built again before it is reached (182 builds, 73 with a town stop, 26 town stops walked).
+// Its tasks' game prices give it a weight: the price a buy, repair, rank or reagent costs (what the bot pays for it is
+// what it is worth to it at least), the vendor price of an item a mail / trade carries to a member, the gold a
+// pickup's letters hold - over the bot's copper per quest experience, the unit questing is weighed in ([econ1])
+float GuildCoordinator::TownStopXp(Player* bot, WorldPosition const& pos) const
+{
+    if (!bot)
+        return 0.0f;
+    CoordLock guard(lock_, __func__);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end() || itr->second.copperPerXp <= 0.0f)
+        return 0.0f;
+    double copper = 0.0;
+    bool pickup = false;
+    for (GuildOrder const& o : itr->second.orders)
+    {
+        if (!o.executable || o.pos == WorldPosition() || o.pos.GetMapId() != pos.GetMapId() ||
+            o.pos.GetExactDist2d(pos.GetPositionX(), pos.GetPositionY()) > 1.0f)  // the same spot (TownStops)
+            continue;
+        copper += double(o.cost);
+        if ((o.type == GuildOrderType::MAIL_TO || o.type == GuildOrderType::TRADE_TO) && o.itemId)
+            if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(o.itemId))
+                copper += double(proto->BuyPrice) * std::max<uint32>(1, o.count);
+        pickup |= o.type == GuildOrderType::MAIL_TO && !o.transferId;
+    }
+    if (pickup)
+        for (Mail const* m : bot->GetMails())
+            if (m && m->state != MAIL_STATE_DELETED && m->money && IsPlanned(m->sender))
+                copper += double(m->money);
+    return float(copper / double(itr->second.copperPerXp));
+}
+
 void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPosition, std::string>>& out) const
 {
     out.clear();

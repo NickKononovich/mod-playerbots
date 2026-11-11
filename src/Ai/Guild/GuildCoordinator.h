@@ -407,6 +407,9 @@ public:
     // [questroute] map thread, read only: the bot's convenient town tasks that wait for their town (executable, a
     // spot on its map) - the spot and the task's name; the quest route visits them on its way
     void TownStops(Player* bot, std::vector<std::pair<WorldPosition, std::string>>& out) const;
+    // [lag337] map thread: what the bot's town tasks at this stop are worth, in its own quest experience (their game
+    // prices over its copper per quest XP, [econ1]): the route weighs the stop as a hand-in of that experience
+    float TownStopXp(Player* bot, WorldPosition const& pos) const;
     // [questroute] map thread, read only (the table is built at startup): a quest's work by the formula for `bot` at
     // `dps` - the kill seconds of its units left (all of them for a quest not taken: health of the cheapest source,
     // an item's over its drop chance), the yards of its objective-spawn tour still to walk, its area and ender;
