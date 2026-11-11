@@ -221,8 +221,57 @@ namespace Leader::Dungeon
                 why = player->GetName() + " already in the dungeon finder";
                 return false;
             }
+            if (player->HasAura(lfg::LFG_SPELL_DUNGEON_DESERTER))  // [dun182] the join's own check
+            {
+                why = player->GetName() + " has the Dungeon Deserter aura";
+                return false;
+            }
+        }
+        // [dun182] refused before with every fact the join reads unchanged: the same answer again (no clock - a
+        // changed fact, a level, a lock, a state, a member, queues it anew)
+        if (auto const refused = refusedFacts_.find(FinderKey(request)); refused != refusedFacts_.end())
+        {
+            if (refused->second == FinderFacts(request))
+            {
+                why = "the dungeon finder refused these five members for it with the same facts";
+                return false;
+            }
+            refusedFacts_.erase(refused);
         }
         return true;
+    }
+
+    std::pair<uint32, std::vector<ObjectGuid>> DungeonRuns::FinderKey(FiveRunRequest const& request)
+    {
+        std::vector<ObjectGuid> members;
+        for (FiveRunMember const& member : request.members)
+            members.push_back(member.guid);
+        std::sort(members.begin(), members.end());
+        return {request.lfgId, members};
+    }
+
+    std::string DungeonRuns::FinderFacts(FiveRunRequest const& request)
+    {
+        std::string facts;
+        LFGDungeonEntry const* dungeon = request.lfgId ? sLFGDungeonStore.LookupEntry(request.lfgId) : nullptr;
+        std::vector<ObjectGuid> const members = FinderKey(request).second;
+        for (ObjectGuid const& guid : members)
+        {
+            Player* p = ObjectAccessor::FindConnectedPlayer(guid);
+            if (!p)
+            {
+                facts += guid.ToString() + " offline;";
+                continue;
+            }
+            lfg::LfgLockMap const& locks = sLFGMgr->GetLockedDungeons(guid);
+            auto const lock = dungeon ? locks.find(dungeon->Entry()) : locks.end();
+            facts += Acore::StringFormat("{} L{} map {} instance {} deserter {} bg {} lock {};", p->GetName(),
+                                         p->GetLevel(), p->GetMapId(), p->GetMap() ? p->GetMap()->GetInstanceId() : 0,
+                                         p->HasAura(lfg::LFG_SPELL_DUNGEON_DESERTER),
+                                         p->InBattleground() || p->InBattlegroundQueue(),
+                                         lock != locks.end() ? int32(lock->second) : -1);
+        }
+        return facts;
     }
 
     std::string DungeonRuns::Start(FiveRunRequest const& request, std::string& error)
@@ -481,6 +530,11 @@ namespace Leader::Dungeon
                 sLFGMgr->JoinLfg(leader, LfgRoles(role, true), dungeons, "");
                 if (sLFGMgr->GetState(run.groupGuid) == lfg::LFG_STATE_NONE)
                 {
+                    // [dun182] the refusal by its facts: this five is not queued again while they hold
+                    std::string const facts = FinderFacts(request);
+                    refusedFacts_[FinderKey(request)] = facts;
+                    LOG_INFO("playerbots", "[dun182] five {} run {}: the dungeon finder refused the join: {}",
+                             request.fiveId, run.id, facts);
                     End(run, "not_started", "the dungeon finder did not take the five", true);
                     return;
                 }

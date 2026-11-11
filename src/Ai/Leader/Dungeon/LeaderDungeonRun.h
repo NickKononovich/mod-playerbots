@@ -169,6 +169,10 @@ namespace Leader::Dungeon
         };
 
         static char const* StageName(Stage stage);
+        // [dun182] what the Dungeon Finder's join reads of each member of the five (LFGMgr::JoinLfg): its level, map
+        // and instance, deserter aura, battleground and the finder's lock on the dungeon
+        static std::string FinderFacts(FiveRunRequest const& request);
+        static std::pair<uint32, std::vector<ObjectGuid>> FinderKey(FiveRunRequest const& request);
         bool TickGroup(Run& run);
         void TickQueue(Run& run);
         void TickWalkIn(Run& run);
@@ -182,6 +186,9 @@ namespace Leader::Dungeon
         EndHook endHook_;
         std::map<uint32, Run> runs_;
         std::set<uint32> lfgRefused_;
+        // [dun182] the Dungeon Finder's refusals by their game facts: the five's members and dungeon, and each
+        // member's state the join reads (FinderFacts); the same five with the same facts is not queued again
+        mutable std::map<std::pair<uint32, std::vector<ObjectGuid>>, std::string> refusedFacts_;
         uint32 seq_ = 0;
         uint32 timer_ = 0;
     };
