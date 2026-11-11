@@ -1085,19 +1085,46 @@ void GuildCoordinator::UpdateTransfers()
             }
             if (needy.empty())
                 continue;
-            Player* q = nullptr;
-            uint32 qHas = 0;
-            for (uint32 m : five.members)
+            auto const pickGiver = [&](uint32& most) -> Player*
             {
-                Player* p = Online(m);
-                if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
-                    std::find(needy.begin(), needy.end(), p) != needy.end())
-                    continue;
-                uint32 const has = CountKind(p, kind, level);
-                if (has > qHas || (has == qHas && has && m == five.quartermasterLow))
+                Player* giver = nullptr;
+                most = 0;
+                for (uint32 m : five.members)
                 {
-                    q = p;
-                    qHas = has;
+                    Player* p = Online(m);
+                    if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
+                        std::find(needy.begin(), needy.end(), p) != needy.end())
+                        continue;
+                    uint32 const has = CountKind(p, kind, level);
+                    if (has > most || (has == most && has && m == five.quartermasterLow))
+                    {
+                        giver = p;
+                        most = has;
+                    }
+                }
+                return giver;
+            };
+            uint32 qHas = 0;
+            Player* q = pickGiver(qHas);
+            // [dun193] inside the run every member below its restock line is needy, so with all of them below it
+            // nobody gave: a member that ran out stood dry beside members holding some (b435 wc-n five 11: Salleas
+            // "no drink in the bags, spirit regen only (drinks 0)" while the others held 7-11). Then the members that
+            // ran out are the needy ones and the one holding the most shares equally (the rule outside the run)
+            bool outOnly = false;
+            if (!q && five.stage == GuildFive::Stage::Run)
+            {
+                std::vector<Player*> out;
+                for (Player* p : needy)
+                    if (CountKind(p, kind, p->GetLevel()) < 1)
+                        out.push_back(p);
+                if (!out.empty() && out.size() < needy.size())
+                {
+                    needy = out;
+                    level = 255;
+                    for (Player* p : needy)
+                        level = std::min<uint8>(level, p->GetLevel());
+                    q = pickGiver(qHas);
+                    outOnly = q != nullptr;
                 }
             }
             if (!q)
@@ -1116,7 +1143,7 @@ void GuildCoordinator::UpdateTransfers()
                            });
             // the giver keeps an equal share; [share92] inside the dungeon it keeps its own restock line and shares
             // only what lies above it (no member is pushed below the line that made another needy: no ping-pong)
-            bool const inRun = five.stage == GuildFive::Stage::Run && q->GetMap()->IsDungeon();
+            bool const inRun = five.stage == GuildFive::Stage::Run && q->GetMap()->IsDungeon() && !outOnly;
             uint32 const share = inRun ? (total > RESTOCK_FOOD_MIN ? (total - RESTOCK_FOOD_MIN) / uint32(needy.size()) : 0)
                                        : total / uint32(needy.size() + 1);
             if (!share)
