@@ -2791,7 +2791,64 @@ namespace Leader::Dungeon
                 }
             }
             else
+            {
                 lead.bossOrderFirst = ObjectGuid::Empty;
+                // [dun185] trash: a healer mob that fights a member goes first wherever it stands (it heals the pack
+                // from range and is on a member already), then the fight's target (the tank's), then [dun180] the rest
+                // by the damage each lands per second of its life (AttackerDps on its victim over its health), not by
+                // the distance to the target. b434 / b435 wc-n: the Druids of the Fang healed and slept from 19-32 yd
+                // and were last in this order
+                std::map<Unit*, float> lifeRate;
+                std::map<Unit*, bool> healerOnMember;
+                for (Unit* mob : fightingMobs)
+                {
+                    Unit* victim = mob->GetVictim() ? mob->GetVictim() : tank;
+                    float part = 0.0f;
+                    lifeRate[mob] =
+                        Leader::Fight::AttackerDps(mob, victim, part) / float(std::max<uint32>(mob->GetHealth(), 1));
+                    Player* const onPlayer = mob->GetVictim() ? mob->GetVictim()->ToPlayer() : nullptr;
+                    healerOnMember[mob] = MobRoles::IsHealer(mob) && onPlayer && onPlayer->IsInSameRaidWith(tank) &&
+                                          !IsCrowdControlled(mob);
+                }
+                std::stable_sort(fightingMobs.begin(), fightingMobs.end(),
+                                 [&](Unit* a, Unit* b)
+                                 {
+                                     if (healerOnMember[a] != healerOnMember[b])
+                                         return healerOnMember[a];
+                                     if ((a == target) != (b == target))
+                                         return a == target;
+                                     return lifeRate[a] > lifeRate[b];
+                                 });
+                if (Unit* head = fightingMobs.front(); head != target && healerOnMember[head])
+                {
+                    thread_local std::set<std::pair<uint64, uint64>> healerFirstLogged;  // once per tank and mob
+                    if (healerFirstLogged.size() > 4096)
+                        healerFirstLogged.clear();
+                    if (healerFirstLogged.insert({tank->GetGUID().GetRawValue(), head->GetGUID().GetRawValue()})
+                            .second)
+                        LOG_INFO("playerbots", "[dun185] {}: kill order: healer mob {} on {} ({:.0f} yd off) first",
+                                 tank->GetName(), head->GetName(), head->GetVictim()->GetName(),
+                                 head->GetExactDist(head->GetVictim()));
+                }
+                if (fightingMobs.size() > 2)
+                {
+                    thread_local std::set<std::pair<uint64, uint64>> rateLogged;  // once per tank and mob
+                    if (rateLogged.size() > 4096)
+                        rateLogged.clear();
+                    Unit* const second = fightingMobs[1];
+                    Unit* nearest = nullptr;
+                    for (Unit* mob : fightingMobs)
+                        if (mob != fightingMobs.front() &&
+                            (!nearest || target->GetExactDist(mob) < target->GetExactDist(nearest)))
+                            nearest = mob;
+                    if (nearest && nearest != second &&
+                        rateLogged.insert({tank->GetGUID().GetRawValue(), second->GetGUID().GetRawValue()}).second)
+                        LOG_INFO("playerbots", "[dun180] {}: kill order: {} ({:.4f} of its health a second) before "
+                                 "the nearest {} ({:.4f})",
+                                 tank->GetName(), second->GetName(), lifeRate[second], nearest->GetName(),
+                                 lifeRate[nearest]);
+                }
+            }
             for (Unit* mob : fightingMobs)
             {
                 killOrder.push_back(mob->GetGUID());
