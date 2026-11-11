@@ -1816,6 +1816,11 @@ public:
         if (!player || !IsPackLow(player->GetGUID().GetCounter()) || IsHuman(player) ||
             mapId == player->GetMapId())
             return true;
+        // [dun181] a member of a guild five's run goes where its run goes: the global leader's five gate judged the
+        // dungeon by the game's numbers ([five58]), the test streak is no rule for it. b433: Geron, Idunk, Kianey
+        // ported into Wailing Caverns by the Dungeon Finder, dead, refused 555-565 times each on the way back in
+        if (Leader::Dungeon::DungeonRuns::Instance().OwnsMember(player->GetGUID()))
+            return true;
         MapEntry const* map = sMapStore.LookupEntry(mapId);
         if (!map || !map->IsDungeon())
             return true;
@@ -1835,6 +1840,10 @@ public:
                             std::string const& /*comment*/) override
     {
         if (!player || !IsPackLow(player->GetGUID().GetCounter()) || IsHuman(player))
+            return true;
+        // [dun181] a guild five's leader queues for its run's dungeon (the five gate judged it): b433 fives 7 - 56
+        // "the dungeon finder did not take the five" every 30 s, "[lfg25] ... wc-n streak 0"
+        if (Leader::Dungeon::DungeonRuns::Instance().OwnsMember(player->GetGUID()))
             return true;
         // [lfg25] a pack bot queues the Dungeon Finder for the dungeons it may enter (the same proven-content rule
         // as its walk in, OnPlayerBeforeTeleport above), not never: b373 the global leader's five 1 for Ragefire
