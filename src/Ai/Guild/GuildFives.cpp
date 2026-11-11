@@ -914,6 +914,16 @@ void GuildCoordinator::LoadDungeons()
             entry->ExpansionLevel > expansion)
             continue;
         std::string const name = entry->Name[0] ? entry->Name[0] : "";
+        // [sfk245] a holiday boss's entry (LFG_FLAG_SEASONAL: The Crown Chemical Co. in Shadowfang Keep, The Frost Lord
+        // Ahune in the Slave Pens, Coren Direbrew in Blackrock Depths, L78-82) is an event, not the dungeon: kept, it
+        // was an option of the dungeon's own key with the instance's walk-in floor and the event's ceiling (b445
+        // "[need106] sfk-n: band 78-82"), so the five gate took any L14-82 member into SFK's five by it
+        if (entry->Flags & lfg::LFG_FLAG_SEASONAL)
+        {
+            LOG_INFO("playerbots", "[sfk245] dungeon {} '{}' (map {}, L{}-{}): a holiday boss, no five's dungeon",
+                     entry->ID, name, entry->MapID, entry->MinLevel, entry->MaxLevel);
+            continue;
+        }
 
         // the dungeon leader's content of that map; a wing (Scarlet Monastery, Dire Maul) by its name
         TestHarness::ContentDef const* content = nullptr;
