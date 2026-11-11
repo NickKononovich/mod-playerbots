@@ -143,6 +143,7 @@ namespace
         bool fleeing = false;
         float fleeAngle = 0.0f;
         ObjectGuid fleeFrom;
+        ObjectGuid escapeLogged;  // [lag355] the fight (its first attacker) whose escape was logged
         // its pet set passive for the run, its stance before
         bool petPassive = false;
         ReactStates petReact = REACT_DEFENSIVE;
@@ -1504,6 +1505,16 @@ namespace SurvivalKit
             flee.why = "no way out clear of other mobs";
         else
             flee = PlanFlee(botAI, bot, p, pieces, state);
+        // [lag355] user 2026-11-11 (in the open world a run almost always escapes; a death is a bug of the estimate,
+        // not a fight to its end): a run the leash prices above its health is still the lesser loss when the fight's
+        // damage to come is more - it runs (its way out clear, the same leash, daze and casts priced) rather than
+        // fighting on to its death. Its own pieces came first above (reset, the pieces that turn it)
+        bool lesserLoss = false;
+        if (!flee.ok && flee.damage > 0.0f && flee.why.rfind("the run costs", 0) == 0 && flee.damage < p.damage)
+        {
+            flee.ok = true;
+            lesserLoss = true;
+        }
         if (flee.ok)
         {
             Piece run;
@@ -1524,6 +1535,15 @@ namespace SurvivalKit
                                                        : (flee.route.empty() ? ", straight" : ", maze"),
                                             flee.trailNote,
                                             numbers);
+            // [lag355] every escape once per fight (its first attacker): the verify counts open-world deaths after it
+            if (state.escapeLogged != state.fleeFrom)
+            {
+                state.escapeLogged = state.fleeFrom;
+                LOG_INFO("playerbots", "[lag355] {} L{} escapes{}: {}", bot->GetName(), bot->GetLevel(),
+                         lesserLoss ? " (the lesser loss: the run costs more than its health, the fight more still)"
+                                    : "",
+                         state.why);
+            }
             state.active = true;
             return true;
         }
