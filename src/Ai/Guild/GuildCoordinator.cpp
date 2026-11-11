@@ -4126,10 +4126,12 @@ void GuildCoordinator::UpdateProfessions()
                 {
                     double unlocked = 0;
                     std::string unlockedText;
+                    uint32 unlockedUnits = 0;  // [lag328]
                     for (Need const* n : lineNeeds)
                         if (n->reqSkill > skill && n->reqSkill <= reach)
                         {
                             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(n->itemId);
+                            unlockedUnits += n->count;
                             unlocked += double(proto ? proto->BuyPrice : 0) * n->count;
                             if (unlockedText.size() < 80)
                                 unlockedText +=
@@ -4159,7 +4161,17 @@ void GuildCoordinator::UpdateProfessions()
                                                 (guildText.empty() ? ""
                                                                    : "; from the guild: " + guildText + " [insc144]") +
                                                 (block.empty() ? "" : "; next: " + block);
-                    if (!QuestPace(st, p, questPace, &questWhy))
+                    // [lag328] coordinator 2026-11-11: members' needs this crafter holds (lag326: the free crafter of
+                    // the line) that its skill-up walk unlocks are its work for the guild - the copper comparison
+                    // weighs them at the items' vendor tags, and a glyph's is a token (BuyPrice 4s, no vendor sells
+                    // one): b440 Dekorhan L21 held Glyph of Maul x5 and Serpent Sting x10, "value -2g 96s 78c
+                    // (unlocks 1g 44s 0c - costs 4g 40s 78c)", all 7 scribes stayed at Inscription 1/75 with 39
+                    // glyph needs listed. A crafter lag325 does not hold back takes the call; each step pays its
+                    // game price when it runs (the reagent buy in lots its budget pays [lag327], a trainer rank waits
+                    // for its money [prof272]) - b440 Dekorhan held 1g 64s against the whole walk's 4g 40s to 225.
+                    // The copper comparison decides the rest
+                    bool const memberNeeds = !levelsFirst && unlockedUnits;
+                    if (!QuestPace(st, p, questPace, &questWhy) && !memberNeeds)
                     {
                         key = "noquestpace";
                         decision = head + lag + " — quests without a value (no quest with data on the map): quests (" +
@@ -4174,12 +4186,16 @@ void GuildCoordinator::UpdateProfessions()
                                                                     uint32(level), uint32(medianLevel)) +
                                    reached + ")";
                     }
-                    else if (value > 0 && value > double(questPace) * minutes)
+                    else if (memberNeeds || (value > 0 && value > double(questPace) * minutes))
                     {
                         double const perMinute = minutes > 0 ? value / minutes : value;
                         char pace[120];
-                        std::snprintf(pace, sizeof(pace), "profession %.0f c/min > quests %.0f c/min", perMinute,
-                                      questPace);
+                        if (value > 0 && value > double(questPace) * minutes)
+                            std::snprintf(pace, sizeof(pace), "profession %.0f c/min > quests %.0f c/min", perMinute,
+                                          questPace);
+                        else
+                            std::snprintf(pace, sizeof(pace), "members' needs: %u unlocked on the way [lag328]",
+                                          unlockedUnits);
                         auto const add = [&](GuildProfessionKind kind, uint32 itemId, double count, std::string details)
                         {
                             ProfessionPick pick;
