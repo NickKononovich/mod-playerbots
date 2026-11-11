@@ -5889,8 +5889,8 @@ bool NewRpgBaseAction::DiscoverTownFlightMaster(std::string const& why)
     TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(master->taxiNodeId);
     LOG_INFO("playerbots", "[night305] {} L{} walks to the flight master of {} (node {}, {:.0f} yd) to learn its "
              "node: {}",
-             bot->GetName(), bot->GetLevel(), node ? node->name[0] : "?", master->taxiNodeId, bot->GetExactDist(x, y, z),
-             why);
+             bot->GetName(), bot->GetLevel(), node ? node->name[0] : "?", master->taxiNodeId,
+             bot->GetExactDist(x, y, z), why);
     botAI->rpgInfo.ChangeToGoCamp(master->pos);
     return true;
 }
