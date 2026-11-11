@@ -1369,6 +1369,20 @@ namespace Leader::Dungeon
             // [lead23] rfc-h 20261031-113954: the window closed on the pull's target itself (a wanderer)
             if (patrol && patrol->GetGUID() == lead.commitMob)
                 patrol = nullptr;
+            // [dun228] a patrol behind closed doors (out of the tank's sight, no walk round them) never comes to the
+            // pull and is no pull itself: no window, no "patrol first". b444 sfk-n five1-1 / four 0/8 stalls: the
+            // Wailing Guardsman beyond the closed Courtyard Door 18895 was the patrol target 30+ times ("plan:
+            // charge"), every plan "crosses the closed Courtyard Door" (plan_through_door), nothing committed
+            if (patrol && Leader::Travel::CagedBlocker(tank, patrol))
+            {
+                if (lead.patrolCagedLogged != patrol->GetGUID())
+                {
+                    lead.patrolCagedLogged = patrol->GetGUID();
+                    LOG_INFO("playerbots", "[dun228] {}: the patrol {} is behind closed doors: no window for {}",
+                             run.runId, patrol->GetName(), mob ? mob->GetName() : std::string("?"));
+                }
+                patrol = nullptr;
+            }
             // [lead34] b83 rfc-h: the leader's target (its last plan) is no patrol either
             if (patrol && (patrol->GetGUID() == lead.planTarget ||
                            std::find(lead.planMobs.begin(), lead.planMobs.end(), patrol->GetGUID()) !=
@@ -1714,7 +1728,14 @@ namespace Leader::Dungeon
             {
                 std::vector<ObjectGuid> pullMobs = LeaderPullMobs(lead.commit, lead.commitMob);
                 pullMobs.insert(pullMobs.end(), lead.takenWalkers.begin(), lead.takenWalkers.end());
-                if (Unit* woken = Leader::Fight::WalkInWakes(tank, mob, pullMobs))
+                Unit* woken = Leader::Fight::WalkInWakes(tank, mob, pullMobs);
+                // [dun228] a mob behind a closed door wakes from no walk on this side of it (b444 sfk-n five1-1: the
+                // Tormented Officer commits released "the walk in to it wakes Wailing Guardsman", the Guardsman
+                // patrolling the courtyard behind the closed Courtyard Door 18895)
+                if (Creature* wokenCreature = woken ? woken->ToCreature() : nullptr;
+                    wokenCreature && Leader::Travel::CagedBlocker(tank, wokenCreature))
+                    woken = nullptr;
+                if (woken)
                 {
                     std::vector<ObjectGuid> wokenPack{woken->GetGUID()};
                     if (Creature* wokenMob = woken->ToCreature())

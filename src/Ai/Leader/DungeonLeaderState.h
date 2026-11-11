@@ -186,6 +186,7 @@ namespace Leader
         ObjectGuid beatReleasedPatrol;  // [dun226] the patrol whose beat released ...
         ObjectGuid beatReleasedMob;     // [dun226] ... this commit once
         ObjectGuid beatHoldLogged;      // [dun226] the patrol whose far-end wait was logged
+        ObjectGuid patrolCagedLogged;   // [dun228] the patrol behind closed doors logged last
         uint32 commitSinceMs = 0;
         uint32 commitIssuedMs = 0;
         bool commitIssued = false;

@@ -418,6 +418,9 @@ namespace Leader::Travel
     void MarkUnseenRouteEnd(Creature* mob, uint32 untilMs);
 
     bool UnseenRouteEnd(Player* leader, Creature* mob);
+    // [dun214] [dun228] a mob behind closed doors out of the leader's sight with no walk to it round them: it
+    // neither aggroes nor walks into the group's fight, nor can it be pulled
+    bool CagedBlocker(Player* leader, Creature* mob);
 
     // [hleft-boss-own-pack] A mob that comes into `boss`'s fight by itself when he is pulled - his formation or a
     // script call for help (JoinsBossFight "formation" / "script") - is his encounter, not a neighbour pack: the
