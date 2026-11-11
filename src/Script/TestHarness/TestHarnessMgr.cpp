@@ -4347,13 +4347,6 @@ namespace TestHarness
             return;
         }
 
-        // [dun189] the leader left a boss the five cannot win at full readiness for a later visit
-        if (std::string outOfReach; !anyInCombat && Leader::BossOutOfReach::Take(party.groupGuid, outOfReach))
-        {
-            Finish(party, "partial", "left for a later visit: " + outOfReach);
-            return;
-        }
-
         if (!party.wiped)
         {
             if (anyInCombat)

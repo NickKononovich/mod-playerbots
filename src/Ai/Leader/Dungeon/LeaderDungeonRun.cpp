@@ -241,34 +241,6 @@ namespace Leader::Dungeon
         return true;
     }
 
-    std::string DungeonRuns::LeftAt(uint32 lfgId, std::vector<Player*> const& members) const
-    {
-        FiveRunRequest request;
-        request.lfgId = lfgId;
-        for (Player* member : members)
-            if (member)
-            {
-                FiveRunMember entry;
-                entry.guid = member->GetGUID();
-                request.members.push_back(entry);
-            }
-        auto const left = leftFacts_.find(FinderKey(request));
-        if (left == leftFacts_.end() || left->second != LevelFacts(request))
-            return "";
-        return "[dun189] these five left a boss of it at their levels now: back at a level up";
-    }
-
-    std::string DungeonRuns::LevelFacts(FiveRunRequest const& request)
-    {
-        std::string facts;
-        for (ObjectGuid const& guid : FinderKey(request).second)
-        {
-            Player* p = ObjectAccessor::FindConnectedPlayer(guid);
-            facts += guid.ToString() + " L" + std::to_string(p ? p->GetLevel() : 0) + ";";
-        }
-        return facts;
-    }
-
     std::pair<uint32, std::vector<ObjectGuid>> DungeonRuns::FinderKey(FiveRunRequest const& request)
     {
         std::vector<ObjectGuid> members;
@@ -313,17 +285,6 @@ namespace Leader::Dungeon
         {
             error = "the five's leader is offline";
             return "";
-        }
-        // [dun189] it left a boss of this dungeon at these levels: it comes back once one of them changed
-        if (auto const left = leftFacts_.find(FinderKey(request)); left != leftFacts_.end())
-        {
-            if (left->second == LevelFacts(request))
-            {
-                error = "[dun189] this five left a boss of " + request.contentKey +
-                        " at these levels: back at a level up";
-                return "";
-            }
-            leftFacts_.erase(left);
         }
         Run run;
         run.request = request;
@@ -726,12 +687,6 @@ namespace Leader::Dungeon
         if (itr == runs_.end())
             return;
         Run& run = itr->second;
-        if (result.reason.find("[dun189]") != std::string::npos || result.reason.find("[dun192]") != std::string::npos)
-        {
-            leftFacts_[FinderKey(run.request)] = LevelFacts(run.request);
-            LOG_INFO("playerbots", "[dun189] five {} run {}: left {} for a later visit, back at a level up ({})",
-                     fiveId, run.id, run.request.contentKey, LevelFacts(run.request));
-        }
         FiveRunReport report;
         report.result = result.result;
         report.reason = result.reason;

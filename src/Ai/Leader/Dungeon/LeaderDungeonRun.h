@@ -127,8 +127,6 @@ namespace Leader::Dungeon
         bool LfgRefused(uint32 fiveId) const { return lfgRefused_.count(fiveId) != 0; }
         // [lfg26] the Dungeon Finder roles a member of a five's queued run was planned for (0: none, no such run)
         uint8 PlannedLfgRoles(ObjectGuid member) const;
-        // [dun189] why these members wait with this dungeon ("" none): they left a boss of it at their levels now
-        std::string LeftAt(uint32 lfgId, std::vector<Player*> const& members) const;
         // [dun178] a member of a five's run from its start to its release: the run's leader owns its strategies
         // (read by other threads)
         bool OwnsMember(ObjectGuid member) const;
@@ -191,10 +189,6 @@ namespace Leader::Dungeon
         // [dun182] the Dungeon Finder's refusals by their game facts: the five's members and dungeon, and each
         // member's state the join reads (FinderFacts); the same five with the same facts is not queued again
         mutable std::map<std::pair<uint32, std::vector<ObjectGuid>>, std::string> refusedFacts_;
-        // [dun189] fives that left a boss for a later visit (over what they take at full readiness), by their members'
-        // levels: the same five comes back once a level changes
-        std::map<std::pair<uint32, std::vector<ObjectGuid>>, std::string> leftFacts_;
-        static std::string LevelFacts(FiveRunRequest const& request);
         uint32 seq_ = 0;
         uint32 timer_ = 0;
     };

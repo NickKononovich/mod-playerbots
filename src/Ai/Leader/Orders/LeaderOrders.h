@@ -486,14 +486,6 @@ namespace Leader
         bool On(ObjectGuid group);
     }
 
-    // [dun189] a boss the group cannot win at full readiness by the dungeon's measured numbers (his pull's overload
-    // over 1): the run leaves him for a later visit (the run's engine takes the note and ends the run)
-    namespace BossOutOfReach
-    {
-        void Note(ObjectGuid group, std::string const& why);
-        bool Take(ObjectGuid group, std::string& why);
-    }
-
     // [lead15] The member's group is led by the dungeon leader (a fresh readiness verdict for it, [dun186] and no
     // self-lead while its leader is down in a fight).
     bool LedGroup(Player* member);

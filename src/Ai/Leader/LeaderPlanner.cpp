@@ -11677,9 +11677,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         chosen.danger = danger;
         chosen.boss = true;
         found = true;
-        // [dun189] at full readiness (the healers' whole pool, the tank's whole health) and by this dungeon's measured
-        // numbers, what comes with him is over what the group takes: no pull - the run leaves him for a later visit
-        // (b435 wc-n: Lady Anacondra "with 6 mobs, cost 3.31 tank hp" was pulled 33 times by Irorm, Bami, Bierya)
+        // [dun195] user rule: no five skips a boss. His pull is always fought (the readiness lines hold it to full,
+        // the separable adds are pulled first, the cooldowns saved for him); one over what the group takes at full
+        // readiness (the healers' whole pool, the tank's whole health) by the dungeon's measured numbers is an alarm
+        // for the five gate (FiveGate), which let this five in
         OverloadTerms bossTerms;
         float const bossOverload =
             chosenPack.size() > 1 ? CarefulOverload(bot, chosen, strength, support, kit, measured, &bossTerms) : 0.0f;
@@ -11688,11 +11689,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                  "{:.2f}{}",
                  bot->GetName(), target->GetName(), chosen.mobs, chosen.cost, chosen.fightSec, bossOverload,
                  measured ? "" : " (not measured yet)");
-        // [dun192] a boss no walk reaches (no route, or a partial one whose end does not see him) is no pull: the run
-        // leaves him (b435 wc-n Lord Serpentis on his ledge, 29 yd above: "route plan: 0 stops to Lord Serpentis,
-        // -1 yd", the engage order open 83 s with the tank idle at the end of its walk). Looked at again when the tank
-        // has moved off the spot it was judged from
-        bool bossUnreachable = false;
+        // [dun196] a boss no walk reaches (no route, or a partial one whose end does not see him) is a navmesh gap:
+        // no engage order the tank cannot walk (b435 wc-n Lord Serpentis on his ledge: an order open 83 s, the tank
+        // idle at the end of its walk) - the plan waits, logging the alarm, and the route is searched again from each
+        // new spot of the tank; the boss is never skipped (user rule), the gap is fixed in the navmesh
         {
             struct Reach
             {
@@ -11721,33 +11721,30 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                         target->GetPositionY(), target->GetPositionZ() + target->GetCollisionHeight(),
                         bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
                 }
+                if (!judged.reaches)
+                    LOG_ERROR("playerbots",
+                              "[navgap] [dun196] {}: no walk reaches the boss {} ({:.1f} {:.1f} {:.1f}) on map {} from "
+                              "({:.1f} {:.1f} {:.1f}): {} - a navmesh gap, high urgency; the pull waits for a route",
+                              bot->GetName(), target->GetName(), target->GetPositionX(), target->GetPositionY(),
+                              target->GetPositionZ(), bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+                              bot->GetPositionZ(), judged.route);
                 judgedAt = bossReach.insert_or_assign(key, judged).first;
             }
             if (!judgedAt->second.reaches)
-            {
-                bossUnreachable = true;
                 found = false;
-                std::string const why = Acore::StringFormat(
-                    "[dun192] no walk reaches {} ({:.1f} {:.1f} {:.1f}) from ({:.1f} {:.1f} {:.1f}): {} - a navmesh "
-                    "gap",
-                    target->GetName(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(),
-                    bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), judgedAt->second.route);
-                if (Group* bossGroup = bot->GetGroup())
-                    Leader::BossOutOfReach::Note(bossGroup->GetGUID(), why);
-                LOG_INFO("playerbots", "{}: {}: left for a later visit", bot->GetName(), why);
-            }
         }
-        if (!bossUnreachable && measured && bossOverload > 1.0f)
+        if (found && measured && bossOverload > 1.0f)
         {
-            found = false;
-            std::string const why = Acore::StringFormat(
-                "[dun189] {} with {} mobs is over what the five takes at full readiness (overload {:.2f}: cost {:.2f} "
-                "tank hp, drop {:.2f} of at most {:.2f}, fight {:.0f} s)",
-                target->GetName(), chosen.mobs, bossOverload, chosen.cost, chosen.drop, chosen.maxDrop,
-                chosen.fightSec);
-            if (Group* bossGroup = bot->GetGroup())
-                Leader::BossOutOfReach::Note(bossGroup->GetGUID(), why);
-            LOG_INFO("playerbots", "{}: {}: left for a later visit", bot->GetName(), why);
+            thread_local std::set<std::pair<uint64, uint64>> overLogged;  // once per tank and boss
+            if (overLogged.size() > 4096)
+                overLogged.clear();
+            if (overLogged.insert({bot->GetGUID().GetRawValue(), target->GetGUID().GetRawValue()}).second)
+                LOG_ERROR("playerbots",
+                          "[dun195] {}: alarm: the admitted five faces {} with {} mobs over what it takes at full "
+                          "readiness (overload {:.2f}: cost {:.2f} tank hp, drop {:.2f} of at most {:.2f}, fight "
+                          "{:.0f} s) - the five gate let it in; fought all the same",
+                          bot->GetName(), target->GetName(), chosen.mobs, bossOverload, chosen.cost, chosen.drop,
+                          chosen.maxDrop, chosen.fightSec);
         }
         _planReason = manageable ? std::string("boss pulled where it stands")
                                  : Acore::StringFormat("boss pulled where it stands: over the capacity estimate "
