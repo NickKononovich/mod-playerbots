@@ -1710,6 +1710,41 @@ namespace Leader::Dungeon
                     broken = "the walk to it is " + verdict;
                 }
             }
+            // [sfk244] ... and a mover's (a patrol, a wanderer) walk in is judged for its detour: one on another level
+            // whose only way there is a long way round is no engage. b445 sfk-n five3-3 165.4 s: "engage (reason:
+            // charge; wanderer Tormented Officer (17 yd) ...)" on the ramparts 15 yd above the tank, 647-750 yd round
+            // by the navmesh; the tank went up alone and died at 193 s. Where it walks next it is judged again
+            // (LeaderUnreachableChanged: the mob moved)
+            if (broken.empty() && !lead.commitIssued && mob && mob->ToCreature() && committed.kind == "engage" &&
+                !IsBossLook(tank, mob->GetGUID()) &&
+                (mob->ToCreature()->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE ||
+                 mob->ToCreature()->GetDefaultMovementType() == RANDOM_MOTION_TYPE))
+            {
+                auto const routeVerdict = group.PathVerdicts().find(mob->GetGUID());
+                bool const onRoute = mob->GetGUID() == group.RouteTarget() ||
+                                     (routeVerdict != group.PathVerdicts().end() && routeVerdict->second.on);
+                std::string const verdict = onRoute ? std::string() : LeaderWalkVerdict(tank, mob->ToCreature(), false);
+                if (verdict.rfind("detour", 0) == 0)
+                {
+                    lead.unreachable[mob->GetGUID()] = LeaderUnreachable(tank, mob, verdict, lead.peaceSinceMs);
+                    Decisions().Write(run, "leader", "pick_unreachable", mob->GetGUID(), mob->GetName(), true,
+                                      JsonObject()
+                                          .Str("why", verdict)
+                                          .Str("pick", "before the order: a mover's walk in")
+                                          .Str("tag", "[sfk244]"));
+                    thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> logged;  // (tank, mob) once
+                    if (logged.size() > 4096)
+                        logged.clear();
+                    if (logged.insert({tank->GetGUID(), mob->GetGUID()}).second)
+                        LOG_INFO("playerbots", "[sfk244] {}: no engage on the {} {} ({:.0f} yd, {:+.1f} yd up): {}",
+                                 tank->GetName(),
+                                 mob->ToCreature()->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE ? "patrol"
+                                                                                                    : "wanderer",
+                                 mob->GetName(), tank->GetExactDist(mob), mob->GetPositionZ() - tank->GetPositionZ(),
+                                 verdict);
+                    broken = "the walk to it is " + verdict;
+                }
+            }
             // [lead101] b139 rfc-h 264.7-301.5 s: the engage on the patrol Ragefire Shaman low 38 (a mover: no walk
             // verdict above) walked the tank in through another pack's reach - Troggs 28 / 36 / 34 and Shamans 39 / 40
             // came, the patrol never joined and walked on, and the leader walked back ~105 yd for it later. A
