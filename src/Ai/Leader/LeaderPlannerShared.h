@@ -54,6 +54,10 @@ namespace PullPlanning
     float ScriptedCallRadius(uint32 entry);
     // [dun205] a template that stands and casts once it fights (the planner's KeepsRange by entry)
     bool KeepsRangeEntry(uint32 entry);
+    // [dun244] the planner's spell model of a mob by its template (GetMobSpells' sources and formula, no live
+    // creature): its spells' damage per second, the share of the fight it casts (no swing meanwhile) and its weapon
+    // specials per second (`weaponHit`: its average weapon hit)
+    void TemplateSpellDps(uint32 entry, float weaponHit, float& spellDps, float& castShare, float& weaponDps);
     // [dun219] a waypoint patrol whose beat (its waypoint path, waypoint_data) never takes it beyond `range` of `at`:
     // no window opens there; true also for a walker without a known path. False for one that stands or wanders
     bool PatrolBeatStays(Creature* patrol, Position const& at, float range);

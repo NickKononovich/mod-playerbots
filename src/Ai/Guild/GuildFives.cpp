@@ -235,6 +235,13 @@ namespace FiveGate
         float health = 0.0f;
         float melee = 0.0f;  // damage per second before the tank's armor and avoidance
         bool boss = false;
+        // [dun244] the planner's spell model of its template (PullPlanning::TemplateSpellDps): its spells per second,
+        // the share of the fight it casts (no swing meanwhile), its weapon specials; a caster that keeps its range
+        // lands its spells only
+        float spellDps = 0.0f;
+        float castShare = 0.0f;
+        float weaponDps = 0.0f;
+        bool keepsRange = false;
     };
 
     // [dun170] a spawn where the core puts it and how it moves: a wanderer anywhere on its wander disc
@@ -394,8 +401,13 @@ namespace FiveGate
                 s.mob.melee = ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) *
                               tmpl->DamageModifier / swing;
                 s.mob.boss = credits.count(tmpl->Entry) || tmpl->rank == CREATURE_ELITE_WORLDBOSS;
+                float const weaponHit =
+                    ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier;
+                PullPlanning::TemplateSpellDps(tmpl->Entry, weaponHit, s.mob.spellDps, s.mob.castShare,
+                                               s.mob.weaponDps);  // [dun244]
                 s.callRadius = PullPlanning::ScriptedCallRadius(tmpl->Entry);
                 s.keepsRange = PullPlanning::KeepsRangeEntry(tmpl->Entry);
+                s.mob.keepsRange = s.keepsRange;
                 s.detection = tmpl->detection_range;
                 data.topLevel = std::max(data.topLevel, s.mob.level);
                 spawns.push_back(std::move(s));
@@ -613,8 +625,16 @@ namespace FiveGate
         auto const judge = [&](std::vector<Mob>& mobs, bool boss) -> PullLoad
         {
             std::sort(mobs.begin(), mobs.end(), [](Mob const& a, Mob const& b) { return a.health < b.health; });
+            // [dun244] as the planner's LandedMeleeDps: a caster at range lands its spells, the others their swings
+            // between casts and their weapon specials through the tank's armor and avoidance, plus their spells
             auto landed = [&](Mob const& m)
-            { return m.melee * (1.0f - ArmorReduction(armor, m.level)) * (1.0f - avoid); };
+            {
+                if (m.keepsRange && m.spellDps > 0.0f)
+                    return m.spellDps;
+                return (m.melee * (1.0f - m.castShare) + m.weaponDps) * (1.0f - ArmorReduction(armor, m.level)) *
+                           (1.0f - avoid) +
+                       m.spellDps;
+            };
             PullLoad result;
             float rate = 0.0f;
             for (Mob const& m : mobs)
@@ -625,6 +645,10 @@ namespace FiveGate
                 result.hi = std::max(result.hi, m.level);
             }
             float const fightGuess = groupDps > 0.0f ? result.health / groupDps : 0.0f;
+            // [dun244] the healer's rate as the planner's SustainedHealHps: its pool's healing over the fight caps it
+            float const healHps = fightGuess > 0.0f && heal.healPerMana > 0.0f
+                                      ? std::min(heal.hps, healMana * heal.healPerMana / fightGuess)
+                                      : heal.hps;
             float const startRate = rate;
             float t = 0.0f, drop = 0.0f, deepest = 0.0f, intake = 0.0f;
             for (Mob const& m : mobs)
@@ -637,7 +661,7 @@ namespace FiveGate
                 float const before = std::clamp(gap - t, 0.0f, seg);
                 drop += rate * before;
                 deepest = std::max(deepest, drop);
-                drop = std::max(0.0f, drop + (rate - heal.hps) * (seg - before));
+                drop = std::max(0.0f, drop + (rate - healHps) * (seg - before));
                 deepest = std::max(deepest, drop);
                 intake += rate * seg;
                 t += seg;
@@ -913,8 +937,8 @@ namespace FiveGate
         out.why = Acore::StringFormat(
             "{} of {} pulls over capacity ([dun170] as the leader splits them, {} patrols pulled apart, each from full "
             "after a rest); worst {:.2f}: {}; group burst dps {:.0f}, healer {} {:.0f} hps (gap {:.1f} s, {:.1f} "
-            "hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{} [mob melee from templates; [dun233] calls for "
-            "help from the fight; spells and area damage not counted]",
+            "hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{} [mob melee and [dun244] spells from templates, "
+            "the healer's rate capped by its pool; [dun233] calls for help from the fight; area damage not counted]",
             failed, judged, apart, worst.load, worstWhy, groupDps, healer->GetName(), heal.hps,
             gap, heal.healPerMana, tank->GetName(), tankHealth, armor, avoid,
             bear ? " (the bear seen in form)" : "");

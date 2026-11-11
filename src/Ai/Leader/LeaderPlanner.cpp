@@ -4346,25 +4346,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // read the spell data alone, so every boss line and pack cost read RFC-H's spells at a 30th. Each damage effect is
     // read through the rescale's own hooks (HazardVerdict::InstanceDamageFactor: a hit, or a periodic tick); the
     // cache is keyed by the map and its difficulty too (the factors are per map and spawn mode)
-    MobSpells const& GetMobSpells(Creature* creature)
+    // [dun244] a mob's spells by its entry: its SmartAI in-combat casts, else its template spells; `caster` (the live
+    // creature, or null for a template: no level scaling of the spell values, no instance rescale factor) for the
+    // spell values and cast times, `weaponHit` its average weapon hit (weapon specials)
+    MobSpells ComputeMobSpells(uint32 entry, std::string const& aiName, CreatureTemplate const* proto, Unit* caster,
+                               float weaponHit)
     {
-        // by entry, map, spawn mode and level, per map thread
-        thread_local std::unordered_map<uint64, MobSpells> cache;
-        Map const* map = creature->FindMap();
-        uint64 const key = (uint64(creature->GetEntry()) << 32) | (uint64(creature->GetMapId() & 0xFFFF) << 16) |
-                           (uint64(map ? map->GetSpawnMode() : 0) << 8) | creature->GetLevel();
-        if (auto const found = cache.find(key); found != cache.end())
-            return found->second;
-
-        // [lead1401] b261 rfc-h: the tank's real intake against the template - Oggleflint melee 6.75 x (Cleave, 110 %
-        // weapon damage, was in no part of it), Bazzalan melee 1.64 x (Sinister Strike) and spells 0.22 x (his Deadly
-        // Poison's script fires at 50 %, read at every timer). A physical spell is melee the core reduces by armor and
-        // avoidance (DamageTaken counts it there): a weapon special's hit - the weapon's mean hit plus its flat bonus,
-        // times its percent (SpellEffectInfo::CalcValue at the mob's level, the core's SpellEffects weapon damage) -
-        // is read on the melee side; a SmartAI cast reads its event's chance (SmartScript::ProcessAction rolls
-        // event_chance each time its timer is up)
-        float const weaponHit =
-            (creature->GetFloatValue(UNIT_FIELD_MINDAMAGE) + creature->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
         MobSpells spells;
         auto const add = [&](uint32 spellId, float intervalMs, float chance)
         {
@@ -4379,7 +4366,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 float percent = 1.0f;
                 for (SpellEffectInfo const& effect : info->GetEffects())
                 {
-                    float const value = float(effect.CalcValue(creature));
+                    float const value = float(effect.CalcValue(caster));
                     if (effect.Effect == SPELL_EFFECT_WEAPON_PERCENT_DAMAGE)
                     {
                         weapon = true;
@@ -4394,11 +4381,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                     }
                     else if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
                         bonus += std::max(value, 0.0f) *
-                                 Leader::HazardVerdict::InstanceDamageFactor(creature, info, false);
+                                 Leader::HazardVerdict::InstanceDamageFactor(caster, info, false);
                 }
                 float const hit = (weapon ? weaponHit + bonus : bonus) * (weapon ? percent : 1.0f);
                 float const everyMs =
-                    std::max({intervalMs, float(info->CalcCastTime(creature)), float(info->StartRecoveryTime), 1.0f});
+                    std::max({intervalMs, float(info->CalcCastTime(caster)), float(info->StartRecoveryTime), 1.0f});
                 if (hit > 0.0f)
                     spells.weaponDps += hit * float(IN_MILLISECONDS) / everyMs * chance;
                 return;
@@ -4408,27 +4395,27 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             for (SpellEffectInfo const& effect : info->GetEffects())
             {
                 if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
-                    damage += float(std::max(effect.CalcValue(creature), 0)) *
-                              Leader::HazardVerdict::InstanceDamageFactor(creature, info, false);  // [lead1362]
+                    damage += float(std::max(effect.CalcValue(caster), 0)) *
+                              Leader::HazardVerdict::InstanceDamageFactor(caster, info, false);  // [lead1362]
                 else if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
                          effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE && effect.Amplitude)
-                    damage += float(std::max(effect.CalcValue(creature), 0)) *
-                              Leader::HazardVerdict::InstanceDamageFactor(creature, info, true) *  // [lead1362]
+                    damage += float(std::max(effect.CalcValue(caster), 0)) *
+                              Leader::HazardVerdict::InstanceDamageFactor(caster, info, true) *  // [lead1362]
                               float(std::max(info->GetMaxDuration(), 0)) / float(effect.Amplitude);
             }
             if (damage <= 0.0f)
                 return;
 
-            float const castMs = float(info->CalcCastTime(creature));
+            float const castMs = float(info->CalcCastTime(caster));
             float const everyMs = std::max({intervalMs, castMs, float(info->StartRecoveryTime), 1.0f});
             spells.dps += damage * float(IN_MILLISECONDS) / everyMs * chance;
             spells.castShare += castMs / everyMs * chance;
         };
 
-        if (creature->GetAIName() == "SmartAI")
+        if (aiName == "SmartAI")
         {
             SmartAIEventList const scripts =
-                sSmartScriptMgr->GetScript(int32(creature->GetEntry()), SMART_SCRIPT_TYPE_CREATURE);
+                sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE);
             for (SmartScriptHolder const& holder : scripts)
                 if (holder.GetActionType() == SMART_ACTION_CAST && holder.GetEventType() == SMART_EVENT_UPDATE_IC &&
                     holder.event.minMaxRepeat.repeatMax)
@@ -4438,7 +4425,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                             ? float(holder.event.event_chance) / 100.0f
                             : 1.0f);  // [lead1401]
         }
-        else if (CreatureTemplate const* proto = creature->GetCreatureTemplate())
+        else if (proto)
         {
             for (uint32 spellId : proto->spells)
             {
@@ -4452,15 +4439,15 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 // no repeat the data knows; it is left out like a once-per-fight spell, the dungeon's measured
                 // intake corrects the rest
                 if (!info->RecoveryTime && !info->CategoryRecoveryTime && !info->StartRecoveryTime &&
-                    !info->CalcCastTime(creature))
+                    !info->CalcCastTime(caster))
                 {
                     thread_local std::set<std::pair<uint32, uint32>> logged;
                     if (logged.size() > 1024)
                         logged.clear();
-                    if (logged.insert({creature->GetEntry(), spellId}).second)
+                    if (logged.insert({entry, spellId}).second)
                         LOG_INFO("playerbots", "[raid3] {} ({}): its template spell {} ({}) has no interval in its "
                                  "data: no repeat counted in its damage estimate",
-                                 creature->GetName(), creature->GetEntry(), info->SpellName[LOCALE_enUS], spellId);
+                                 proto->Name, entry, info->SpellName[LOCALE_enUS], spellId);
                     continue;
                 }
                 add(spellId, float(std::max(info->RecoveryTime, info->CategoryRecoveryTime)), 1.0f);
@@ -4468,7 +4455,22 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         }
 
         spells.castShare = std::min(spells.castShare, 1.0f);
-        // [lead1362] out of the world the rescale's hooks give no factor: not cached
+        return spells;
+    }
+
+    MobSpells const& GetMobSpells(Creature* creature)
+    {
+        thread_local std::unordered_map<uint64, MobSpells> cache;
+        Map const* map = creature->FindMap();
+        uint64 const key = (uint64(creature->GetEntry()) << 32) | (uint64(creature->GetMapId() & 0xFFFF) << 16) |
+                           (uint64(map ? map->GetSpawnMode() : 0) << 8) | creature->GetLevel();
+        if (auto const found = cache.find(key); found != cache.end())
+            return found->second;
+
+        float const weaponHit =
+            (creature->GetFloatValue(UNIT_FIELD_MINDAMAGE) + creature->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
+        MobSpells const spells = ComputeMobSpells(creature->GetEntry(), creature->GetAIName(),
+                                                  creature->GetCreatureTemplate(), creature, weaponHit);
         if (!creature->IsInWorld())
         {
             thread_local MobSpells uncached;
@@ -4478,15 +4480,16 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return cache.emplace(key, spells).first->second;
     }
 
-    // Melee and spells the tank takes per second from this mob: [lead257] its weapon (min-max damage over its
-    // attack time) after the core's armor reduction and the game's attack table against the tank (MeleeTakenShare),
-    // in the share of the fight it does not cast, plus its spells from its spell data (GetMobSpells). A caster
-    // (MobRoles: it stands and casts) only casts, unless it was pulled round a corner (`casterInMelee`): then it
-    // swings between its casts. A paladin class mob with mana is not a caster for that alone: wave 12 read Arcatraz
-    // Warders, Sunblade Mage Guards and Bloodwarder Protectors (melee guards) as casters. A caster whose spells its
-    // data does not give (a C++ script) is read by its weapon, the only damage the game gives for it, until the
-    // dungeon's measured ratio corrects it. `spellPart` (optional): the part of the result that is spells, which
-    // armor and avoidance do not reduce; `why` (optional): the inputs.
+    void TemplateSpellDps(uint32 entry, float weaponHit, float& spellDps, float& castShare, float& weaponDps)
+    {
+        CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(entry);
+        MobSpells const spells =
+            proto ? ComputeMobSpells(entry, proto->AIName, proto, nullptr, weaponHit) : MobSpells();
+        spellDps = spells.dps;
+        castShare = spells.castShare;
+        weaponDps = spells.weaponDps;
+    }
+
     float LandedMeleeDps(Unit* mob, Player* tank, bool casterInMelee = false, float* spellPart = nullptr,
                          std::string* why = nullptr)
     {
