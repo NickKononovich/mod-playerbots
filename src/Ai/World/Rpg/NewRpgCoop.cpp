@@ -2639,6 +2639,24 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                                                  : QuestRoute::ChainXp(req, questId);  // [help25]
                     }
 
+    // [lag351] coordinator 2026-11-11: a requester standing in an area red for it (its level label, the [red63] fact)
+    // has no quest of its own there - every stop of its route lies past the walls round it, so the help opens the
+    // route, not the one quest. b446 Gilduck L14, bound at Darkshire (Duskwood 25): 0 kills in 6 h, every request
+    // dropped "value 1050 xp ... cost 1591 xp" while his 14352 xp route waited in Elwynn and Westfall
+    std::string redNote;
+    if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(req->GetAreaId()))
+    {
+        AreaTableEntry const* label = area->area_level > 0 ? area : sAreaTableStore.LookupEntry(req->GetZoneId());
+        if (label && label->area_level > 0 &&
+            Acore::XP::GetColorCode(req->GetLevel(), uint8(std::min<int32>(label->area_level, 255))) == XP_RED)
+            if (float const routeXp = QuestRoute::RouteXp(req->GetGUID().GetCounter()); routeXp > questXp)
+            {
+                redNote = Acore::StringFormat(" [lag351] its route {:.0f} xp: it stands in {} (area level {}, red "
+                                              "for L{}),",
+                                              routeXp, label->area_name[0], label->area_level, req->GetLevel());
+                questXp = routeXp;
+            }
+    }
     float const saved = aloneWins ? std::max(0.0f, aloneSeconds - v.seconds) : 0.0f;
     float const helpValue = questXp + QuestRoute::XpPerSecond(req->GetGUID().GetCounter()) * saved;
     // [help22] the line names the rates its cost was priced with (a helper's route, else its grind rate)
@@ -2647,9 +2665,9 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         rates += Acore::StringFormat("{}{} {:.2f} xp/s{}", rates.empty() ? "" : ", ", c.p->GetName(), TimeRate(c.p),
                                      QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) > 0.0f ? "" : " (grind)");
     std::string const priced =
-        Acore::StringFormat("value {:.0f} xp (quest {:.0f} [help28] + {:.0f} s saved), cost {:.0f} xp ([help22] helpers {}; "
-                            "requester's wait {:.0f} s at {:.2f} xp/s, counted [help35])",
-                            helpValue, questXp, saved, helpCost, rates, farthest, TimeRate(req));
+        Acore::StringFormat("value {:.0f} xp (quest {:.0f} [help28]{} + {:.0f} s saved), cost {:.0f} xp ([help22] "
+                            "helpers {}; requester's wait {:.0f} s at {:.2f} xp/s, counted [help35])",
+                            helpValue, questXp, redNote, saved, helpCost, rates, farthest, TimeRate(req));
     if (!r.human && helpCost >= helpValue)  // [help22] no value (0) is no help either
     {
         r.refusedKey = priceKey;  // [help21]

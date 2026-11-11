@@ -551,6 +551,13 @@ float QuestRoute::XpPerSecond(uint32 botLow)
 }
 
 
+float QuestRoute::RouteXp(uint32 botLow)
+{
+    std::lock_guard<std::mutex> guard(routesLock);
+    auto const found = routes.find(botLow);
+    return found == routes.end() || !found->second.built ? 0.0f : found->second.plan.xp;
+}
+
 void QuestRoute::NoteQuestEvent(Player* bot, uint32 questId)
 {
     if (!bot)
