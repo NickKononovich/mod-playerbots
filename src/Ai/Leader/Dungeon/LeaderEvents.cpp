@@ -776,6 +776,31 @@ namespace Leader::Dungeon
         }
         if (!leaderDown)
             lead.leaderDownCleared = false;
+        // [dun186] a dead (or outside) leader commands nothing; while the living members fight, each leads itself -
+        // its own heals, targets and moves - instead of standing with its commands ended. b434 wc-n five4 977-1055 s
+        // and the Lady Anacondra wipes (five4 564-593 s, five13 435-466 s): the tank, the five's leader, died first
+        // and the resto druid stood at full mana ("raid leader hold made action ... useless") while the rest died
+        if (Group* leaderGroup = tank->GetGroup())
+        {
+            bool livingFight = false;
+            if (leaderDown)
+                for (ObjectGuid const& groupMember : group.MemberGuids())
+                    if (Player* bot = ObjectAccessor::FindPlayer(groupMember); bot && bot != tank && bot->IsAlive() &&
+                        bot->GetMapId() == group.MapId() && bot->IsInCombat() && !bot->getAttackers().empty())
+                        livingFight = true;
+            if (livingFight != Leader::SelfLead::On(leaderGroup->GetGUID()))
+            {
+                Leader::SelfLead::Set(leaderGroup->GetGUID(), livingFight);
+                Decisions().Write(group.Run(), "leader", "self_lead", tank->GetGUID(), tank->GetName(), true,
+                                  JsonObject().Str("state", livingFight ? "on" : "off")
+                                      .Str("why", livingFight ? "the leader is down and the living fight: each leads "
+                                                                "itself"
+                                                              : "the leader leads again, or the fight is over")
+                                      .Str("tag", "[dun186]"));
+                LOG_INFO("playerbots", "[dun186] {}: self-lead {} ({})", tank->GetName(), livingFight ? "on" : "off",
+                         livingFight ? "the leader is down and the living fight" : "the leader leads, or no fight");
+            }
+        }
         if (!tank->IsAlive())
         {
             // [rez27] user 2026-11-09: a dead leader commands nothing, but the group's standard play goes on - its

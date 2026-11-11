@@ -456,12 +456,36 @@ namespace Leader
         }
     }
 
+    namespace SelfLead
+    {
+        namespace
+        {
+            std::mutex selfLeadLock;
+            std::unordered_set<ObjectGuid> selfLeading;  // groups whose leader is down in a fight
+        }
+
+        void Set(ObjectGuid group, bool on)
+        {
+            std::lock_guard<std::mutex> lock(selfLeadLock);
+            if (on)
+                selfLeading.insert(group);
+            else
+                selfLeading.erase(group);
+        }
+
+        bool On(ObjectGuid group)
+        {
+            std::lock_guard<std::mutex> lock(selfLeadLock);
+            return selfLeading.count(group) != 0;
+        }
+    }
+
     // [lead15] LedGroup / Events (LeaderOrders.h)
     bool LedGroup(Player* member)
     {
         Group* group = member ? member->GetGroup() : nullptr;
         bool ready = false;
-        return group && Readiness::Get(group->GetGUID(), ready);
+        return group && Readiness::Get(group->GetGUID(), ready) && !SelfLead::On(group->GetGUID());
     }
 
     bool LedBot(Player* bot)

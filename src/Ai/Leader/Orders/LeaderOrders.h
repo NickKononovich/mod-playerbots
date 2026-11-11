@@ -478,7 +478,16 @@ namespace Leader
         bool Get(ObjectGuid group, bool& ready, std::string* why = nullptr);
     }
 
-    // [lead15] The member's group is led by the dungeon leader (a fresh readiness verdict for it).
+    // [dun186] the group's leader is dead (or outside the instance) while its living members fight: each living member
+    // leads itself (its own strategies decide its heals, targets and moves) until the leader is back or the fight ends
+    namespace SelfLead
+    {
+        void Set(ObjectGuid group, bool on);
+        bool On(ObjectGuid group);
+    }
+
+    // [lead15] The member's group is led by the dungeon leader (a fresh readiness verdict for it, [dun186] and no
+    // self-lead while its leader is down in a fight).
     bool LedGroup(Player* member);
 
     // [lead29] the committed pull's expected mobs per group (pull together: every mob of the combined plan). The
