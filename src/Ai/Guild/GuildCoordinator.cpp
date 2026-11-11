@@ -2334,6 +2334,10 @@ void GuildCoordinator::UpdateOrders()
                 else if ((pick.kind == GuildProfessionKind::TRAIN || pick.kind == GuildProfessionKind::BUY) &&
                          pick.pos != WorldPosition())
                 {
+                    // [craft381] its game price weighs its town stop ([lag337] / [lag340], TownStopCopper sums the
+                    // orders' cost there): b446 the TRAIN / BUY orders carried none, so Dekorhan's Virtuoso Inking
+                    // Set in Darnassus weighed 0 c against his questing and the other-landmass stop was never taken
+                    o.cost = std::max(pick.cost, pick.worth);
                     std::string const taskKey = TaskKey(o);
                     auto const tried = st.trainDue.find(taskKey);
                     if (tried != st.trainDue.end() && tried->second != p->GetLevel())
@@ -4712,8 +4716,18 @@ void GuildCoordinator::UpdateProfessions()
                         // [lag330] user rule 2026-11-11: guild orders mean the guild helps its crafter - the walk's
                         // costs its spare money does not cover come from the members' gold ([gold41] transfers)
                         st.ordersCall |= memberNeeds;  // [lag336]
+                        // [craft380] its spare: the purse less its upkeep (repair, ammo, travel, food - the module
+                        // budget's reserves before gear), what its walk may spend. b446: FoundingFreeMoney ("free
+                        // money for anything", which also keeps back gear and tradeskill at L^3 - 1 g 6 s each at
+                        // L22 - and a guild tabard's 1 g) read 0 for Dekorhan holding 49 s, so every letter he took
+                        // was followed by another of the walk's whole vendor cost (4 s 64 c, 30 c postage each)
+                        uint32 spare = p->GetMoney();
+                        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p))
+                            spare = ai->GetAiObjectContext()
+                                        ->GetValue<uint32>("free money for", std::to_string(uint32(NeedMoneyFor::gear)))
+                                        ->Get();
                         if (memberNeeds)
-                            if (uint32 const spare = FoundingFreeMoney(p); vendorCost > double(spare))
+                            if (vendorCost > double(spare))
                             {
                                 st.profGoldShort += uint32(std::ceil(vendorCost)) - spare;
                                 st.profGoldWhat += (st.profGoldWhat.empty() ? "" : ", ") +
@@ -4760,8 +4774,34 @@ void GuildCoordinator::UpdateProfessions()
                                 // the nearest inn of each look changed as the bot walked past inns, and with it the
                                 // route's town list (a build each time)
                                 WorldPosition& inn = st.craftInn[line];
+                                // [craft383] ... or its walk there is given up at this level (the route drops the
+                                // stop, [stuck12]) or refused: the nearest inn whose walk is not. b446 Dekorhan's
+                                // Astranaar inn: "every way there passes mobs it does not pull", the stop closed
+                                // unvisited and the call kept it - the craft never had a town to run in
+                                auto const off = [&](WorldPosition const& at)
+                                {
+                                    return at.GetMapId() == p->GetMapId() &&
+                                           (NewRpgBaseAction::WalkGivenUp(p, at.GetPositionX(), at.GetPositionY()) ||
+                                            TownRefused(row->low, at));
+                                };
+                                if (inn != WorldPosition() && off(inn))
+                                {
+                                    WorldPosition const next =
+                                        sTravelRouteMgr.GetNearestInn(p, std::numeric_limits<float>::max(), off);
+                                    std::string const text = Acore::StringFormat(
+                                        "{} L{} {} craft inn ({:.0f},{:.0f}): its walk there is given up or refused - "
+                                        "the next inn ({:.0f},{:.0f})",
+                                        p->GetName(), uint32(level), SkillShort(line), inn.GetPositionX(),
+                                        inn.GetPositionY(), next.GetPositionX(), next.GetPositionY());
+                                    if (std::string& logged = st.craftLogged["craft383"]; logged != text)
+                                    {
+                                        logged = text;
+                                        LOG_INFO("playerbots", "[craft383] {}", text);
+                                    }
+                                    inn = next;
+                                }
                                 if (inn == WorldPosition() || inn.GetMapId() != p->GetMapId())
-                                    inn = sTravelRouteMgr.GetNearestInn(p, std::numeric_limits<float>::max());
+                                    inn = sTravelRouteMgr.GetNearestInn(p, std::numeric_limits<float>::max(), off);
                                 picks.back().pos = inn;
                                 picks.back().cost = value > 0.0 ? uint32(value) : 0;  // its worth, not a price
                             }
@@ -4812,6 +4852,12 @@ void GuildCoordinator::UpdateProfessions()
                                     " [prof277][ench171]");
                             kinds += kinds.empty() ? "gather" : "+gather";
                         }
+                        // [craft381] the trainer's rank / recipe of this line weighs what the walk past it is worth
+                        // (at its rank cap no craft runs before it): b446 Journeyman Inscription would have weighed
+                        // its 9 s 50 c fee alone against the boat to Darnassus
+                        for (ProfessionPick& train : picks)
+                            if (train.kind == GuildProfessionKind::TRAIN && train.skillLine == line && !train.itemId)
+                                train.worth = value > 0.0 ? uint32(value) : 0;
                         key = "profession:" + kinds;
                         decision = head + lag + " — " + pace + " (" + questWhy + ") → PROFESSION " + kinds + " (" +
                                    reached + ")";
@@ -4999,6 +5045,28 @@ void GuildCoordinator::UpdateProfessions()
                 pick.reason = std::string("its called ") + SkillShort(line) + " crafts need it";
                 if (ItemTemplate const* toolProto = sObjectMgr->GetItemTemplate(pick.itemId))
                     pick.cost = toolProto->BuyPrice;  // [prof272]
+                // [craft381] the craft call runs where its tool is bought: without the tool no craft of the line runs
+                // at its inn, and the tool vendor's town (an Inscription supplier stands in a capital, a safe place
+                // for the craft executor) is one stop for both - weighed by the call's worth with the tool's price.
+                // b446 Dekorhan: "Insc 1→105 waits town Astranaar" (an inn, nothing to craft there without the set)
+                // beside "Virtuoso Inking Set waits town Darnassus" that weighed 0 c, never on his route
+                if (pick.pos != WorldPosition())
+                    for (ProfessionPick& craft : picks)
+                        if (craft.kind == GuildProfessionKind::CRAFT && craft.skillLine == line &&
+                            craft.pos != pick.pos)
+                        {
+                            craft.pos = pick.pos;
+                            std::string const text = Acore::StringFormat(
+                                "{} L{} {} craft call runs at its tool vendor ({:.0f},{:.0f}) with its {} buy ({}): "
+                                "one town stop weighed by the call's worth and the tool's price",
+                                p->GetName(), uint32(level), SkillShort(line), pick.pos.GetPositionX(),
+                                pick.pos.GetPositionY(), ItemName(pick.itemId), Gsc(pick.cost));
+                            if (std::string& logged = st.craftLogged["craft381"]; logged != text)
+                            {
+                                logged = text;
+                                LOG_INFO("playerbots", "[craft381] {}", text);
+                            }
+                        }
                 picks.push_back(pick);
             }
         }

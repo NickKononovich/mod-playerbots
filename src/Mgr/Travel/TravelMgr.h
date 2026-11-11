@@ -13,6 +13,7 @@
 #include "GridDefines.h"
 #include "PlayerbotAIConfig.h"
 #include <boost/functional/hash.hpp>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <random>
@@ -1134,6 +1135,8 @@ public:
     std::vector<WorldPosition> const& GetSpawns(uint32 creatureEntry);
     std::vector<WorldPosition> const& GetObjectSpawns(uint32 gameObjectEntry);
     WorldPosition GetNearestInn(Player* bot, float maxDistance);
+    // [craft383] ... the nearest one `skip` does not leave out (a walk the bot gave up at its level)
+    WorldPosition GetNearestInn(Player* bot, float maxDistance, std::function<bool(WorldPosition const&)> const& skip);
 
     bool CanUseLine(Player* bot, Line const& line);
     bool CanUsePortal(Player* bot, Portal const& portal);

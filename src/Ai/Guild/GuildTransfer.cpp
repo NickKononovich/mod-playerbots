@@ -278,6 +278,11 @@ namespace
         return n;
     }
 
+    // [craft382] Spell::CheckCast (SPELL_EFFECT_MILLING / PROSPECTING): one cast takes a bag stack of five
+    constexpr uint32 CONVERSION_STACK = 5;
+    // [craft382] the free slots a crafter keeps for its own loot when the guild fills its bags with materials
+    constexpr uint32 CRAFTER_ROOM = 2;
+
     // [econ1] the free slots of the general bags (backpack + bags without a profession family)
     uint32 FreeSlots(Player* p)
     {
@@ -830,12 +835,34 @@ void GuildCoordinator::UpdateTransfers()
                     std::map<uint32, double> raw;
                     ExpandReagent(item, double(n - have), raw, nullptr, 1.0f, 0, 0, c->GetMapId());
                     for (auto const& [rawItem, units] : raw)
-                        if (rawItem != item)
-                            if (uint32 const own = c->GetItemCount(rawItem, false); double(own) < units)
-                                lack.try_emplace({row.low, rawItem},
-                                                 uint32(std::ceil(units - double(own))),
-                                                 "skill-up " + std::to_string(value) + ": " + ItemText(r.product, 1) +
-                                                     " via " + ItemText(item, 1) + " [lag341]");
+                    {
+                        if (rawItem == item)
+                            continue;
+                        uint32 const own = c->GetItemCount(rawItem, false);
+                        uint32 want = double(own) < units ? uint32(std::ceil(units - double(own))) : 0;
+                        // [craft382] the walk's whole lack to its held rank cap (UpdateWanted's crafterLack_), not
+                        // one craft's, in whole conversion stacks (Spell::CheckCast: a mill / prospect takes five of
+                        // one raw), within its bag room. b446: one Scroll of Stamina wanted "Silverleaf x2" - Ainne's
+                        // 2 and Thyllyn's 1 could never be milled, and nothing more went while they were on the way,
+                        // with 155 Silverleaf, 140 Peacebloom and 54 Earthroot in the members' bags
+                        if (auto const walk = crafterLack_.find(row.low); walk != crafterLack_.end())
+                            if (auto const walkUnits = walk->second.find(rawItem); walkUnits != walk->second.end())
+                                want = std::max(want, walkUnits->second);
+                        ItemTemplate const* rawProto = sObjectMgr->GetItemTemplate(rawItem);
+                        if (!want || !rawProto)
+                            continue;
+                        if (rawProto->HasFlag(ITEM_FLAG_IS_MILLABLE) || rawProto->HasFlag(ITEM_FLAG_IS_PROSPECTABLE))
+                            want = (own + want + CONVERSION_STACK - 1) / CONVERSION_STACK * CONVERSION_STACK - own;
+                        uint32 const stack = std::max<uint32>(1, rawProto->GetMaxStackSize());
+                        uint32 const slots = FreeSlots(c);
+                        uint32 const room = (slots > CRAFTER_ROOM ? slots - CRAFTER_ROOM : 0) * stack +
+                                            (own % stack ? stack - own % stack : 0);
+                        want = std::min(want, room);
+                        if (want)
+                            lack.try_emplace({row.low, rawItem}, want,
+                                             "skill-up " + std::to_string(value) + ": " + ItemText(r.product, 1) +
+                                                 " via " + ItemText(item, 1) + " [lag341][craft382]");
+                    }
                 }
         }
         // [smelt] a miner's next smelt that still gives it skill: the ore goes to it (it smelts and levels Mining)
@@ -876,20 +903,31 @@ void GuildCoordinator::UpdateTransfers()
                                                                     " for band " + job.band};
             }
         }
-    std::set<std::pair<uint32, uint32>> ownNeed, incoming;
+    std::set<std::pair<uint32, uint32>> ownNeed;
+    std::map<std::pair<uint32, uint32>, uint32> incoming;  // [craft382] (crafter, item) -> units in its mailbox
     for (auto const& [key, need] : lack)
         ownNeed.insert(key);
     for (auto const& [id, t] : transfers_)
         if (t.mailed && !t.gold)
-            incoming.insert({t.toLow, t.itemId});  // already in its mailbox
+            incoming[{t.toLow, t.itemId}] += std::max<uint32>(1, t.count);  // already in its mailbox
     for (auto const& [key, need] : lack)
     {
         auto const& [crafter, item] = key;
-        if (incoming.count(key))
+        // [craft382] the holdings nearest it first until they cover the lack, less what its mailbox holds already.
+        // Before, one holding at a time and none while one lay in its mailbox: 2-3 herbs a trip
+        auto const inMail = incoming.find(key);
+        uint32 left = need.first;
+        left -= std::min(left, inMail != incoming.end() ? inMail->second : 0u);
+        if (!left)
             continue;
         Player* c = Online(crafter);
-        Want best;
-        float bestDist = NONE;
+        struct Holding
+        {
+            float dist{NONE};
+            uint32 from{0};
+            HeldItem const* held{nullptr};
+        };
+        std::vector<Holding> holdings;
         for (auto const& [low, st] : bots_)
         {
             if (low == crafter || ownNeed.count({low, item}))
@@ -899,23 +937,29 @@ void GuildCoordinator::UpdateTransfers()
             {
                 if (held.itemId != item || held.forLow || held.purpose == "pending" || used.count(held.itemGuidLow))
                     continue;
-                float const d = h && c && h->GetMapId() == c->GetMapId() ? h->GetExactDist(c) : NONE / 2;
-                if (d < bestDist)
-                {
-                    bestDist = d;
-                    best.key = "r" + std::to_string(crafter) + ":" + std::to_string(item);
-                    best.from = low;
-                    best.to = crafter;
-                    best.guid = held.itemGuidLow;
-                    best.itemId = item;
-                    best.count = held.count;
-                    best.purpose = "reagent";
-                    best.why = "short " + std::to_string(need.first) + " — " + need.second;
-                }
+                holdings.push_back(
+                    {h && c && h->GetMapId() == c->GetMapId() ? h->GetExactDist(c) : NONE / 2, low, &held});
             }
         }
-        if (best.from)
+        std::stable_sort(holdings.begin(), holdings.end(),
+                         [](Holding const& a, Holding const& b) { return a.dist < b.dist; });
+        std::map<uint32, uint32> perHolder;  // a holder's holdings taken: their want keys
+        for (Holding const& holding : holdings)
         {
+            if (!left)
+                break;
+            HeldItem const& held = *holding.held;
+            Want best;
+            best.key = "r" + std::to_string(crafter) + ":" + std::to_string(item) + ":" +
+                       std::to_string(holding.from) + ":" + std::to_string(perHolder[holding.from]++);
+            best.from = holding.from;
+            best.to = crafter;
+            best.guid = held.itemGuidLow;
+            best.itemId = item;
+            best.count = held.count;
+            best.purpose = "reagent";
+            best.why = "short " + std::to_string(left) + " — " + need.second;
+            left -= std::min(left, held.count);
             // [guild81] SUPPLY: the holder gathered it (miner / herbalist / skinner / fisher -> its crafter)
             if (Player* h = Online(best.from))
             {

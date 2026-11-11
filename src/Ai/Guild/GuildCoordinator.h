@@ -637,6 +637,8 @@ private:
         bool ordersCall{false};  // [lag336] called for the members' orders it holds ([lag328])
         // [lag343] skill line -> the inn its craft call's town stop was picked at, kept while the call stands
         std::map<uint32, WorldPosition> craftInn;
+        // [craft381] [craft383] tag -> the line last logged for this bot (a log once per change)
+        std::map<std::string, std::string> craftLogged;
         std::string profGoldWhat;
         // [human] the suggestions sent to a human member: key -> text (sent again only when the text changes)
         std::map<std::string, std::string> suggested;
@@ -661,6 +663,9 @@ private:
         // once its money pays it; a recipe call's taught spell (the trainer executor learns it)
         uint32 cost{0};
         uint32 spellId{0};
+        // [craft381] a rank / recipe call of a line the leader calls: the walk's worth it unlocks (the town stop's
+        // weight, TownStopCopper), its fee aside
+        uint32 worth{0};
     };
     struct TrainerRank
     {

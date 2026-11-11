@@ -5474,13 +5474,19 @@ std::vector<WorldPosition> const& TravelRouteMgr::GetObjectSpawns(uint32 gameObj
 
 WorldPosition TravelRouteMgr::GetNearestInn(Player* bot, float maxDistance)
 {
+    return GetNearestInn(bot, maxDistance, nullptr);
+}
+
+WorldPosition TravelRouteMgr::GetNearestInn(Player* bot, float maxDistance,
+                                            std::function<bool(WorldPosition const&)> const& skip)
+{
     GetLines();
     WorldPosition const botPos(bot);
     WorldPosition best;
     float bestDistance = maxDistance;
     for (auto const& [pos, faction] : _inns)
     {
-        if (pos.GetMapId() != bot->GetMapId() || IsHostileFaction(bot, faction))
+        if (pos.GetMapId() != bot->GetMapId() || IsHostileFaction(bot, faction) || (skip && skip(pos)))
             continue;
 
         float const distance = Distance2d(botPos, pos);
