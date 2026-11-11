@@ -1751,7 +1751,9 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
     // [b35_z0] a guard above (HoldFightSpot's edge, HazardMeleeSpot's spot) may have re-derived z the same way
     if (mapId == bot->GetMapId())
         SnapGridFallbackZ(bot, x, y, z, getName().c_str());
-    if (mapId == bot->GetMapId() && !backwards && !bot->isSwimming() && bot->GetPositionZ() - z > LEDGE_DROP_DZ)
+    // [lag350] ... a dive from the surface the bot floats at to a spot under that water is no ledge (SwimsTo below)
+    if (mapId == bot->GetMapId() && !backwards && !bot->isSwimming() && bot->GetPositionZ() - z > LEDGE_DROP_DZ &&
+        !SwimsTo(bot, x, y, z))
     {
         LedgeDropVerdict const ledge = JudgeLedgeDrop(bot, x, y, z, getName().c_str());
         if (!ledge.allowed)

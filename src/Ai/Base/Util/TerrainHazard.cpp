@@ -41,6 +41,7 @@
 #include <mutex>
 #include <set>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace
 {
@@ -1439,6 +1440,21 @@ bool SnapGridFallbackZ(Unit* mover, float x, float y, float& z, char const* what
     float const here = mover->GetPositionZ();
     if (std::fabs(z - here) <= LEDGE_DROP_DZ || !IsGridFallbackZ(mover, x, y, z))
         return false;
+
+    // [lag350] a spot under water (a sea floor's bones, a lake bed's chest) is the bottom's real height: the navmesh
+    // holds only the surface there, so no floor is no proof of a fallback. b446 Sylaenas L14 on q4681's (6311,857,-14)
+    // off Auberdine: snapped to the surface z 0.1 under her, "the walk ends where the bot stands", GIVE_UP
+    if (mover->GetMap()->IsUnderWater(mover->GetPhaseMask(), x, y, z, mover->GetCollisionHeight()))
+    {
+        thread_local std::unordered_set<uint64> underLogged;
+        if (underLogged.size() > 512)
+            underLogged.clear();
+        if (underLogged.insert(mover->GetGUID().GetRawValue() * 31ull + uint64(int64(x) * 7919 + int64(y))).second)
+            LOG_INFO("playerbots", "[lag350] {}: {} to ({:.1f},{:.1f},{:.1f}) lies under water: its z kept for the "
+                     "dive (no surface snap)",
+                     mover->GetName(), what ? what : "walk", x, y, z);
+        return false;
+    }
 
     // navmesh at that height: a real floor (outdoor terrain at the grid's height, a lower level), the guards judge it
     float floor = 0.0f;
