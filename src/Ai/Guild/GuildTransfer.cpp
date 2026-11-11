@@ -1065,6 +1065,144 @@ void GuildCoordinator::UpdateTransfers()
         }
     }
 
+    // [dun208] user correction 2026-11-11 (b439 dm-n five 11: Bhogagnuth, Jurdogs and Febineysh at 0 drinks for the
+    // last third of the run beside Relara's 24-64; before that drinks bounced between members - Relara ->
+    // Bhogagnuth 14, Bhogagnuth -> Relara 9 and 2): inside the run the five's share is water-filling over the members
+    // that use the kind (a drink: its mana users), the giver included. A member's fill is what it holds (the bag
+    // count of its own food / drink use and of the run's supply check, CountBagFood: spell category 59 / 11, items
+    // it can use) over its [dun194] line (food: RESTOCK_FOOD_MIN each). The pool covering every line: each member
+    // below its line is filled to it from the members above theirs, who keep their line. Else every fill is evened
+    // to the pool's common fill (the pool over the lines): nobody receives above it, nobody gives below it. Food or
+    // drink moves only from a higher fill to a lower one, so none comes back. The fills before and after: [dun208]
+    auto const waterFill = [&](uint32 id, GuildFive const& five, uint8 kind)
+    {
+        uint32 const category = kind == FOOD ? RESTOCK_SPELL_CATEGORY_FOOD : RESTOCK_SPELL_CATEGORY_DRINK;
+        struct Fill
+        {
+            Player* p;
+            uint32 held;
+            uint32 line;
+            uint32 after;
+        };
+        std::vector<Fill> fills;
+        uint64 pool = 0, lines = 0;
+        for (uint32 m : five.members)
+        {
+            Player* p = Online(m);
+            if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) || !p->IsAlive() ||
+                (kind == DRINK && !p->GetMaxPower(POWER_MANA)))
+                continue;
+            uint32 const held = CountBagFood(p, category);
+            uint32 const line = std::max<uint32>(1, RunLine(five, m, kind));
+            fills.push_back({p, held, line, held});
+            pool += held;
+            lines += line;
+        }
+        if (fills.size() < 2 || !lines)
+            return;
+        bool const covered = pool >= lines;
+        // the most a member may hold after (a receiver's cap) and the least a giver keeps
+        auto const capOf = [&](Fill const& f) { return covered ? f.line : uint32(pool * f.line / lines); };
+        auto const keepOf = [&](Fill const& f)
+        { return covered ? f.line : uint32((pool * f.line + lines - 1) / lines); };
+        auto const fillText = [](Fill const& f, uint32 n)
+        { return f.p->GetName() + " " + std::to_string(n) + "/" + std::to_string(f.line); };
+        // the giver's biggest stack the receiver can use (what is left of each this update)
+        std::map<Item*, uint32> left;
+        auto const stackFor = [&](Player* giver, Player* receiver) -> Item*
+        {
+            Item* best = nullptr;
+            ForEachBagItem(giver, [&](Item* i)
+                           {
+                               ItemTemplate const* proto = i->GetTemplate();
+                               if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
+                                   (proto->SubClass != ITEM_SUBCLASS_CONSUMABLE &&
+                                    proto->SubClass != ITEM_SUBCLASS_FOOD) ||
+                                   proto->Spells[0].SpellCategory != category ||
+                                   used.count(i->GetGUID().GetCounter()) || receiver->CanUseItem(proto) != EQUIP_ERR_OK)
+                                   return;
+                               auto const known = left.emplace(i, i->GetCount()).first;
+                               if (known->second && (!best || known->second > left[best]))
+                                   best = i;
+                           });
+            return best;
+        };
+        // the lowest fill first: each receiver takes from the giver with the most above its keep (one want a member)
+        std::vector<size_t> order(fills.size());
+        for (size_t n = 0; n < order.size(); ++n)
+            order[n] = n;
+        std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
+                  { return uint64(fills[a].held) * fills[b].line < uint64(fills[b].held) * fills[a].line; });
+        std::string planned;
+        for (size_t r : order)
+        {
+            Fill& to = fills[r];
+            uint32 const cap = capOf(to);
+            if (to.after >= cap)
+                continue;
+            size_t giver = fills.size();
+            uint32 spare = 0;
+            for (size_t g = 0; g < fills.size(); ++g)
+            {
+                uint32 const keep = keepOf(fills[g]);
+                uint32 const above = fills[g].after > keep ? fills[g].after - keep : 0;
+                // only a member at a higher fill gives (its fill before this update)
+                if (g != r && above > spare &&
+                    uint64(fills[g].held) * to.line > uint64(to.held) * fills[g].line)
+                {
+                    giver = g;
+                    spare = above;
+                }
+            }
+            if (giver == fills.size())
+                continue;
+            Item* from = stackFor(fills[giver].p, to.p);
+            if (!from)
+                continue;
+            uint32 const give = std::min({cap - to.after, spare, left[from]});
+            if (!give)
+                continue;
+            left[from] -= give;
+            fills[giver].after -= give;
+            to.after += give;
+            Want w;
+            w.key = "c" + std::to_string(to.p->GetGUID().GetCounter()) + ":" + std::to_string(kind);
+            w.tradeOnly = true;
+            w.from = fills[giver].p->GetGUID().GetCounter();
+            w.to = to.p->GetGUID().GetCounter();
+            w.guid = from->GetGUID().GetCounter();
+            w.itemId = from->GetEntry();
+            w.count = give;
+            w.purpose = "consumable";
+            w.why = std::string(kind == FOOD ? "food" : "drink") + " below the five's fill; five " +
+                    std::to_string(id) + "'s member " + Who(w.from) + " evens the fills: " +
+                    fillText(fills[giver], fills[giver].held) + " -> " + fillText(to, to.held) + " [dun208]";
+            wants.push_back(w);
+            planned += (planned.empty() ? "" : ", ") + fills[giver].p->GetName() + " -> " + to.p->GetName() + " " +
+                       std::to_string(give);
+        }
+        // the fills before and after, logged when the share's verdict changes (its text without the counts)
+        std::string before, after;
+        for (Fill const& f : fills)
+        {
+            before += (before.empty() ? "" : ", ") + fillText(f, f.held);
+            after += (after.empty() ? "" : ", ") + fillText(f, f.after);
+        }
+        std::string const text = "five " + std::to_string(id) + " " + (kind == FOOD ? "food" : "drink") +
+                                 " (pool " + std::to_string(pool) + " of the lines' " + std::to_string(lines) +
+                                 (covered ? ", covers them" : ", short") + "): " + before + " -> " + after + "; " +
+                                 (planned.empty() ? std::string("nothing moves") : planned);
+        std::string verdict = planned.empty() ? std::string("even") : text;
+        verdict.erase(std::remove_if(verdict.begin(), verdict.end(), [](char ch) { return ch >= '0' && ch <= '9'; }),
+                      verdict.end());
+        static std::map<uint64, std::string> judged;  // five and kind -> its last verdict (lock_ held)
+        if (std::string& last = judged[uint64(id) << 8 | kind]; last != verdict)
+        {
+            last = verdict;
+            LOG_INFO("playerbots", "[dun208] {}", text);
+        }
+    };
+
     // c. consumables in a five: the quartermaster shares its food / drink equally with the members who have none
     // left (trade when they meet: they walk together)
     for (auto const& [id, five] : fives_)
@@ -1073,6 +1211,11 @@ void GuildCoordinator::UpdateTransfers()
             continue;
         for (uint8 kind : {FOOD, DRINK})
         {
+            if (five.stage == GuildFive::Stage::Run)
+            {
+                waterFill(id, five, kind);  // [dun208]
+                continue;
+            }
             // [share83] the giver is the member of the five holding the most of it (the quartermaster first on a tie),
             // not the quartermaster alone: b406 the warrior quartermasters held no drink, and the hunters ran dry
             // beside mages and warlocks with spare stacks (rfc-n five 4: Feette 0 drinks, 18 Taragaman holds)
@@ -1081,13 +1224,10 @@ void GuildCoordinator::UpdateTransfers()
             for (uint32 m : five.members)
             {
                 Player* p = Online(m);
-                // [share92] inside the dungeon (the five's run: its members stand together at its start, they met
-                // nowhere before - lfg89 has them quest apart until the port) a member below the restock line
-                // (RESTOCK_FOOD_MIN) is topped up, not only one that ran out
-                // [dun199] ... and while the five gathers outside (the mage's conjured water goes to the members short
-                // of their priced line before the run)
-                bool const lined = p && ((five.stage == GuildFive::Stage::Run && p->GetMap()->IsDungeon()) ||
-                                         (five.stage == GuildFive::Stage::Gather && kind == DRINK));
+                // [dun199] while the five gathers outside a member below its priced line is topped up (the mage's
+                // conjured water goes to the members short of their priced line before the run); inside the run
+                // the fills are evened (waterFill, [dun208])
+                bool const lined = p && five.stage == GuildFive::Stage::Gather && kind == DRINK;
                 uint32 const line = lined ? RunLine(five, m, kind) : 1;
                 if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
                     (kind == DRINK && p->getPowerType() != POWER_MANA) || CountKind(p, kind, p->GetLevel()) >= line)
@@ -1117,126 +1257,42 @@ void GuildCoordinator::UpdateTransfers()
                 return giver;
             };
             uint32 qHas = 0;
-            Player* q = pickGiver(qHas);
-            // the giver's stacks of the kind it may hand to the needy (their lowest level), and their sum
+            Player* const q = pickGiver(qHas);
+            if (!q)
+                continue;
             std::vector<Item*> stacks;
             uint32 total = 0;
-            auto const stockOf = [&](Player* giver)
-            {
-                stacks.clear();
-                total = 0;
-                ForEachBagItem(giver, [&](Item* i)
+            ForEachBagItem(q, [&](Item* i)
+                           {
+                               ItemTemplate const* proto = i->GetTemplate();
+                               if (ConsumableKind(proto) == kind && proto->RequiredLevel <= level &&
+                                   !used.count(i->GetGUID().GetCounter()))
                                {
-                                   ItemTemplate const* proto = i->GetTemplate();
-                                   if (ConsumableKind(proto) == kind && proto->RequiredLevel <= level &&
-                                       !used.count(i->GetGUID().GetCounter()))
-                                   {
-                                       stacks.push_back(i);
-                                       total += i->GetCount();
-                                   }
-                               });
-            };
+                                   stacks.push_back(i);
+                                   total += i->GetCount();
+                               }
+                           });
             // the giver keeps an equal share; [share92] inside the dungeon it keeps its own restock line and shares
             // only what lies above it (no member is pushed below the line that made another needy: no ping-pong)
-            bool const lineStage = (five.stage == GuildFive::Stage::Run && q && q->GetMap()->IsDungeon()) ||
-                                   (five.stage == GuildFive::Stage::Gather && kind == DRINK);
-            uint32 share = 0;
-            if (q)
-            {
-                stockOf(q);
-                uint32 const keep = RunLine(five, q->GetGUID().GetCounter(), kind);  // [dun194] its own line
-                share = lineStage ? (total > keep ? (total - keep) / uint32(needy.size()) : 0)
-                                  : total / uint32(needy.size() + 1);
-            }
-            // [dun193] inside the run every member below its restock line is needy, so with all of them below it
-            // nobody gave: a member that ran out stood dry beside members holding some (b435 wc-n five 11: Salleas
-            // "no drink in the bags, spirit regen only (drinks 0)" while the others held 7-11). Then the members that
-            // ran out are the needy ones and the one holding the most gives.
-            // [dun208] ... also when the member above its line holds too little above it to give (b439 dm-n five 11:
-            // Febineysh 3 drinks of its line 2 was the giver, its share 0, while Bhogagnuth, Jurdogs and later
-            // Febineysh itself stood at 0 beside Relara's 24-64 for the rest of the run). And the giver hands each
-            // member that ran out the part of its stock that member's priced line ([dun194]) is of their lines
-            // together with its own: an equal half pushed the giver below its own line, it ran out in turn and took
-            // drinks back (Relara -> Bhogagnuth 14, Bhogagnuth -> Relara 9 and 2, Febineysh -> Relara 16 and 5)
-            bool outOnly = false;
-            std::vector<uint32> lines;  // [dun208] the members' lines in the fallback, in `needy` order
-            uint32 giverLine = 0;
-            if (!share && five.stage == GuildFive::Stage::Run)
-            {
-                std::vector<Player*> out;
-                for (Player* p : needy)
-                    if (CountKind(p, kind, p->GetLevel()) < 1)
-                        out.push_back(p);
-                if (!out.empty() && out.size() < needy.size())
-                {
-                    std::vector<Player*> const belowLine = needy;
-                    needy = out;
-                    level = 255;
-                    for (Player* p : needy)
-                        level = std::min<uint8>(level, p->GetLevel());
-                    q = pickGiver(qHas);
-                    if (q)
-                    {
-                        stockOf(q);
-                        outOnly = true;
-                        giverLine = RunLine(five, q->GetGUID().GetCounter(), kind);
-                        uint32 sum = giverLine;
-                        for (Player* p : needy)
-                        {
-                            lines.push_back(RunLine(five, p->GetGUID().GetCounter(), kind));
-                            sum += lines.back();
-                        }
-                        for (uint32& line : lines)  // each one's part: the stock x its line / the lines' sum
-                            line = sum ? uint32(uint64(total) * line / sum) : 0;
-                        share = std::any_of(lines.begin(), lines.end(), [](uint32 n) { return n > 0; }) ? 1 : 0;
-                    }
-                    else
-                        needy = belowLine;
-                }
-            }
-            // [dun208] the five's share judged: who is short, who gives and how much (logged when it changes)
-            {
-                std::string judged = "five " + std::to_string(id) + " " + (kind == FOOD ? "food" : "drink") + ": ";
-                for (size_t n = 0; n < needy.size(); ++n)
-                    judged += (n ? ", " : "") + needy[n]->GetName() + " " +
-                              std::to_string(CountKind(needy[n], kind, needy[n]->GetLevel())) + "/" +
-                              std::to_string(RunLine(five, needy[n]->GetGUID().GetCounter(), kind));
-                judged += " short; " + (q ? q->GetName() + " gives from " + std::to_string(total) +
-                                                (outOnly ? " by the lines (its own " + std::to_string(giverLine) + ")"
-                                                         : " " + std::to_string(share) + " each")
-                                          : std::string("nobody gives"));
-                // a new line when the verdict changes (the text without its counts, as the donation plan's [econ1])
-                std::string verdict = judged;
-                verdict.erase(std::remove_if(verdict.begin(), verdict.end(),
-                                             [](char ch) { return ch >= '0' && ch <= '9'; }),
-                              verdict.end());
-                static std::map<uint64, std::string> shareJudged;  // five and kind -> its last verdict (lock_ held)
-                if (std::string& last = shareJudged[uint64(id) << 8 | kind];
-                    last != verdict && five.stage == GuildFive::Stage::Run)
-                {
-                    last = verdict;
-                    LOG_INFO("playerbots", "[dun208] {}", judged);
-                }
-            }
+            bool const inRun = five.stage == GuildFive::Stage::Gather && kind == DRINK;
+            uint32 const keep = RunLine(five, q->GetGUID().GetCounter(), kind);  // [dun194] its own line
+            uint32 const share = inRun ? (total > keep ? (total - keep) / uint32(needy.size()) : 0)
+                                       : total / uint32(needy.size() + 1);
             if (!share)
                 continue;
             std::sort(stacks.begin(), stacks.end(), [](Item* a, Item* b) { return a->GetCount() > b->GetCount(); });
             std::map<Item*, uint32> left;
             for (Item* i : stacks)
                 left[i] = i->GetCount();
-            for (size_t n = 0; n < needy.size(); ++n)
+            for (Player* p : needy)
             {
-                Player* p = needy[n];
-                uint32 const due = outOnly ? lines[n] : share;  // [dun208] its part by the lines in the fallback
-                if (!due)
-                    continue;
                 Item* from = nullptr;
                 for (Item* i : stacks)
                     if (!from || left[i] > left[from])
                         from = i;
                 if (!from || !left[from])
                     break;
-                uint32 const give = std::min(due, left[from]);
+                uint32 const give = std::min(share, left[from]);
                 left[from] -= give;
                 Want w;
                 w.key = "c" + std::to_string(p->GetGUID().GetCounter()) + ":" + std::to_string(kind);
@@ -1249,9 +1305,8 @@ void GuildCoordinator::UpdateTransfers()
                 w.purpose = "consumable";
                 w.why = std::string(kind == FOOD ? "food" : "drink") + " ran out; five " + std::to_string(id) + "'s " +
                         (q->GetGUID().GetCounter() == five.quartermasterLow ? "quartermaster" : "member") + " " +
-                        Who(q->GetGUID().GetCounter()) +
-                        (outOnly ? " shares by the run's lines: " : " shares equally: ") + std::to_string(total) +
-                        " among " + std::to_string(needy.size() + 1) + (outOnly ? " [dun208]" : " [share83]");
+                        Who(q->GetGUID().GetCounter()) + " shares equally: " + std::to_string(total) + " among " +
+                        std::to_string(needy.size() + 1) + " [share83]";
                 wants.push_back(w);
             }
         }
