@@ -4354,6 +4354,18 @@ void GuildCoordinator::UpdateProfessions()
                 // costs): b426-b429 it stopped at the held rank's cap (Inscription 75) while the needs it is valued
                 // by lie past it (the glyphs from 80), so the line never valued what it unlocks
                 uint32 const top = need;
+                // [ench170] the walk's stopping points: a recipe's yellow or grey edge, a trainer rank's cap, its end -
+                // the sums up to there (the rank fees added below)
+                struct Stop
+                {
+                    uint32 reach{0};
+                    double craftMin{0}, gatherMin{0}, vendorCost{0};
+                };
+                std::vector<Stop> stops;
+                std::set<uint32> rankCaps;
+                if (auto const ranks = trainerRanks_.find(line); ranks != trainerRanks_.end())
+                    for (TrainerRank const& tr : ranks->second)
+                        rankCaps.insert(tr.maxSkill);
                 for (uint32 v = std::max<uint32>(1, skill); v < top; ++v)
                 {
                     if (list == recipesBySkill_.end() || skillPlan == skillPlan_.end() ||
@@ -4519,13 +4531,22 @@ void GuildCoordinator::UpdateProfessions()
                     vendorCost += cost;
                     gatherMin += gmin;
                     reach = v + 1;
+                    if (reach == r.yellow || reach == r.gray || rankCaps.count(reach))
+                        stops.push_back({reach, craftMin, gatherMin, vendorCost});
                 }
+                if (reach > skill && (stops.empty() || stops.back().reach != reach))
+                    stops.push_back({reach, craftMin, gatherMin, vendorCost});
                 // [insc144] the fees of the ranks the walk passes (the rank's cap less one step is the cap it lifts)
                 if (auto const ranks = trainerRanks_.find(line); ranks != trainerRanks_.end())
                     for (TrainerRank const& tr : ranks->second)
-                        if (tr.reqLevel <= level && tr.maxSkill > maxSkill && tr.maxSkill > SKILL_STEP_MAX &&
-                            reach > tr.maxSkill - SKILL_STEP_MAX)
-                            vendorCost += tr.price;
+                        if (tr.reqLevel <= level && tr.maxSkill > maxSkill && tr.maxSkill > SKILL_STEP_MAX)
+                        {
+                            if (reach > tr.maxSkill - SKILL_STEP_MAX)
+                                vendorCost += tr.price;
+                            for (Stop& stop : stops)  // [ench170] and those each stopping point passes
+                                if (stop.reach > tr.maxSkill - SKILL_STEP_MAX)
+                                    stop.vendorCost += tr.price;
+                        }
                 std::string const lag = ", lag " + std::to_string(need - skill);
                 // [supply112] what the line produces for the guild's needs: the cook's supply jobs
                 double supplyValue = 0.0, supplyMin = 0.0;
@@ -4564,6 +4585,44 @@ void GuildCoordinator::UpdateProfessions()
                     // bandages, 56 to Roasted Boar Meat, and the call opened the profession errands (trainers, tool
                     // vendors 1000-3400 yd away): PROFESSION 13 % of all bot time. The sales stay out of the value
                     (void)sales;
+                    // [ench170] coordinator 2026-11-11: the walk is judged at its stopping point of the best value per
+                    // minute, not only at its end - b443 every cook's walk to 175 read "150616 min" from Tangy Clam
+                    // Meat past 160 (ench167), which hid the cheap part below it. Each point counts the members' needs
+                    // it unlocks, its own costs and minutes; none of positive value: the whole walk as before
+                    double const fullCost = vendorCost;  // [lag330] the members' gold funds the whole walk
+                    uint32 judged = reach;
+                    {
+                        double bestRate = 0.0;
+                        for (Stop const& stop : stops)
+                        {
+                            double stopUnlocked = 0;
+                            for (Need const* n : lineNeeds)
+                                if (n->reqSkill > skill && n->reqSkill <= stop.reach)
+                                    if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(n->itemId))
+                                        stopUnlocked += double(proto->BuyPrice) * n->count;
+                            double const stopValue = stopUnlocked + supplyValue - stop.vendorCost;
+                            double const stopMinutes = stop.craftMin + stop.gatherMin + supplyMin;
+                            if (stopValue <= 0 || stopMinutes <= 0)
+                                continue;
+                            if (double const rate = stopValue / stopMinutes; rate >= bestRate)
+                            {
+                                bestRate = rate;
+                                judged = stop.reach;
+                                craftMin = stop.craftMin;
+                                gatherMin = stop.gatherMin;
+                                vendorCost = stop.vendorCost;
+                                unlocked = stopUnlocked;
+                            }
+                        }
+                        if (judged != reach)  // the needs the judged point unlocks
+                        {
+                            unlockedText.clear();
+                            for (Need const* n : lineNeeds)
+                                if (n->reqSkill > skill && n->reqSkill <= judged && unlockedText.size() < 80)
+                                    unlockedText += (unlockedText.empty() ? "" : ", ") + ItemName(n->itemId) + " (" +
+                                                    n->label + ")";
+                        }
+                    }
                     double const value = unlocked + supplyValue - vendorCost;
                     double const minutes = craftMin + gatherMin + supplyMin;
                     float questPace = 0.0f;
@@ -4572,9 +4631,15 @@ void GuildCoordinator::UpdateProfessions()
                     std::snprintf(numbers, sizeof(numbers),
                                   "to %u in %.1f min (craft %.1f, gather %.1f), value %s%s (unlocks %s + supplies %s "
                                   "- costs %s) [econ2]",
-                                  reach, minutes, craftMin, gatherMin, value < 0 ? "-" : "",
+                                  judged, minutes, craftMin, gatherMin, value < 0 ? "-" : "",
                                   Gsc(uint64(std::fabs(value))).c_str(), Gsc(uint64(unlocked)).c_str(),
                                   Gsc(uint64(supplyValue)).c_str(), Gsc(uint64(vendorCost)).c_str());
+                    std::string const stopText = judged == reach
+                                                     ? std::string()
+                                                     : Acore::StringFormat(
+                                                           "; stops at {} of the walk to {}, the best value per "
+                                                           "minute [ench170]",
+                                                           judged, reach);
                     // [ench169] the item most of the gathering minutes go to (b443: the cooks' "to 175 in 150616 min"
                     // named none)
                     std::string slowestText;
@@ -4588,7 +4653,7 @@ void GuildCoordinator::UpdateProfessions()
                         std::string(numbers) + (unlockedText.empty() ? "" : "; unlocks " + unlockedText) +
                         (supplyText.empty() ? "" : "; supplies [supply112]: " + supplyText) +
                         (guildText.empty() ? "" : "; from the guild: " + guildText + " [insc144]") +
-                        (block.empty() ? "" : "; next: " + block) + slowestText;
+                        (block.empty() ? "" : "; next: " + block) + slowestText + stopText;
                     // [lag328] coordinator 2026-11-11: members' needs this crafter holds (lag326: the free crafter of
                     // the line) that its skill-up walk unlocks are its work for the guild - the copper comparison
                     // weighs them at the items' vendor tags, and a glyph's is a token (BuyPrice 4s, no vendor sells
@@ -4619,9 +4684,9 @@ void GuildCoordinator::UpdateProfessions()
                         // [lag330] user rule 2026-11-11: guild orders mean the guild helps its crafter - the walk's
                         // costs its spare money does not cover come from the members' gold ([gold41] transfers)
                         if (memberNeeds)
-                            if (uint32 const spare = FoundingFreeMoney(p); vendorCost > double(spare))
+                            if (uint32 const spare = FoundingFreeMoney(p); fullCost > double(spare))
                             {
-                                st.profGoldShort += uint32(std::ceil(vendorCost)) - spare;
+                                st.profGoldShort += uint32(std::ceil(fullCost)) - spare;
                                 st.profGoldWhat += (st.profGoldWhat.empty() ? "" : ", ") +
                                                    std::string(SkillShort(line)) + " to " + std::to_string(reach) +
                                                    " for " + std::to_string(unlockedUnits) + " members' orders";
