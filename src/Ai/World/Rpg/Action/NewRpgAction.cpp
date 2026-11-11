@@ -3268,6 +3268,25 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                          bot->GetName(), bot->GetLevel(), questId, dx, dy);
                 continue;
             }
+            // [lag364] a spot beyond sight whose camp it loses even at full by the static numbers: no walk there
+            if (std::string why; SoloSafety::Applies(bot) &&
+                                 bot->GetExactDist2d(dx, dy) > sPlayerbotAIConfig.SightDistance &&
+                                 StaticCampLoses(bot, dx, dy, dz, why))
+            {
+                static std::mutex campLogLock;  // one line per bot and spot: a log cadence, no decision reads it
+                static std::unordered_map<uint32, std::pair<int32, int32>> campLogged;
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(campLogLock);
+                    auto& last = campLogged[bot->GetGUID().GetCounter()];
+                    fresh = last != std::make_pair(int32(dx), int32(dy));
+                    last = {int32(dx), int32(dy)};
+                }
+                if (fresh)
+                    LOG_INFO("playerbots", "[lag364] {} L{} SKIP spot of q{} at ({:.0f},{:.0f}): {}", bot->GetName(),
+                             bot->GetLevel(), questId, dx, dy, why);
+                continue;
+            }
             // [spot35] user 2026-11-09: no spot in the round of an orange / red or elite roamer (a wanderer's area,
             // a patrol's path, each with its aggro reach): it walks into the bot while it fights or rests there.
             // b386: 11 of 33 deaths "attacked, no judged pull" - Mountain Buzzard L16, Starving Dire Wolf L19, Black

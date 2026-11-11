@@ -8580,7 +8580,8 @@ namespace
 // and no faster than the spot's spawns come back (all of them killed in turn: their mean respawn over their number).
 // b372 [zone19]: Colian L17 "50699 xp in 14339 s (65 xp a kill of 18 s)" counted the fights only and kept the
 // draenei grinding in Bloodmyst against Darkshore's quests
-float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts)
+float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts,
+                                          float* killXp)
 {
     SlowScope slow("grind cycle", bot ? &bot->GetName() : nullptr);  // [perf26]
     uint8 const level = bot->GetLevel();
@@ -8591,6 +8592,10 @@ float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot
     uint32 count = 0;
     float respawn = 0.0f;
     float mobDps = 0.0f;
+    float xpSum = 0.0f;  // [lag363] each spawn's kill experience at its own level
+    ContentLevels const content = GetContentLevelsForMapAndZone(
+        spot.GetMapId(), bot->GetMap()->GetZoneId(bot->GetPhaseMask(), spot.GetPositionX(), spot.GetPositionY(),
+                                                  spot.GetPositionZ()));
     int32 const reach = int32(std::ceil(radius / GRIND_CELL));
     for (int32 dx = -reach; dx <= reach; ++dx)
         for (int32 dy = -reach; dy <= reach; ++dy)
@@ -8610,7 +8615,9 @@ float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot
                 continue;
             ++count;
             respawn += float(g.respawnSec);
-            mobDps += GrindMobDps(bot, t, std::clamp<uint8>(level, g.minLevel, g.maxLevel));
+            uint8 const mobLevel = std::clamp<uint8>(level, g.minLevel, g.maxLevel);
+            mobDps += GrindMobDps(bot, t, mobLevel);
+            xpSum += float(Acore::XP::BaseGain(level, mobLevel, content));  // the grind's spawns are never elite
         }
     }
     if (!count)
@@ -8620,6 +8627,8 @@ float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot
     }
     respawn /= float(count);
     mobDps /= float(count);
+    if (killXp)
+        *killXp = xpSum / float(count) * sWorld->getRate(RATE_XP_KILL);
     float const speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
     // the mean gap to the nearest other spawn at that density (Poisson: half the root of the area per spawn)
     float const walk = 0.5f * std::sqrt(float(M_PI) * radius * radius / float(count)) / speed;
@@ -8631,6 +8640,103 @@ float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot
                                 "taken, {:.1f} hp/s back); respawn floor {:.0f} s",
                                 killSeconds, walk, count, rest, mobDps, regen, camped);
     return std::max(cycle, camped);
+}
+
+// [lag364] coordinator 2026-11-12 (b448 Rollothan L14: 367 s walked to q64's spot in Westfall, then "its spot lies
+// among mobs it does not pull" there, postponed): the camp at a spot beyond sight is judged before the walk, by the
+// same numbers the judge uses on arrival - the spawn whose reach covers the spot pulled with the mobs its engage call
+// brings (CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS, the ones that assist it), each at the core's base stats for its
+// level (health, melee through the bot's armour), killed one by one at the bot's solo damage; lost even at full
+// health and mana with its heal kit, it is no spot to walk to. Arrived, the live judge decides as before
+bool NewRpgBaseAction::StaticCampLoses(Player* bot, float x, float y, float z, std::string& why)
+{
+    FactionTemplateEntry const* own = bot ? bot->GetFactionTemplateEntry() : nullptr;
+    if (!own)
+        return false;
+    QuestSpawnIndex const& index = GetQuestSpawnIndex();
+    uint8 const level = bot->GetLevel();
+    uint32 const mapId = bot->GetMapId();
+    struct Foe
+    {
+        MobSpawn const* spawn;
+        float gap;
+    };
+    std::vector<Foe> near;
+    for (int32 ox = -1; ox <= 1; ++ox)
+        for (int32 oy = -1; oy <= 1; ++oy)
+        {
+            auto const cell =
+                index.mobCells.find(MobCellKey(mapId, x + ox * MAX_AGGRO_RADIUS, y + oy * MAX_AGGRO_RADIUS));
+            if (cell == index.mobCells.end())
+                continue;
+            for (MobSpawn const& spawn : cell->second)
+            {
+                FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(spawn.tmpl->faction);
+                if (!faction || !faction->IsHostileTo(*own) || !SpawnPresent(spawn))
+                    continue;
+                near.push_back({&spawn, std::hypot(spawn.x - x, spawn.y - y)});
+            }
+        }
+    // the pulled one: the nearest spawn whose reach (Creature::GetAggroRange, its wander area) covers the spot
+    MobSpawn const* pulled = nullptr;
+    float pulledGap = std::numeric_limits<float>::max();
+    for (Foe const& f : near)
+    {
+        CreatureTemplate const* t = f.spawn->tmpl;
+        float const reach = std::clamp(t->detection_range + float(int32(t->maxlevel) - int32(level)), 5.0f,
+                                       MAX_AGGRO_RADIUS) +
+                            bot->GetCombatReach() + f.spawn->wander;
+        if (f.gap <= reach && f.gap < pulledGap)
+        {
+            pulledGap = f.gap;
+            pulled = f.spawn;
+        }
+    }
+    if (!pulled)
+        return false;
+    FactionTemplateEntry const* pulledFaction = sFactionTemplateStore.LookupEntry(pulled->tmpl->faction);
+    float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+    std::vector<MobSpawn const*> pack{pulled};
+    for (Foe const& f : near)
+    {
+        if (f.spawn == pulled || assist <= 0.0f ||
+            std::hypot(f.spawn->x - pulled->x, f.spawn->y - pulled->y) > assist + f.spawn->wander)
+            continue;
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(f.spawn->tmpl->faction);
+        if (faction && pulledFaction && (faction == pulledFaction || faction->IsFriendlyTo(*pulledFaction)))
+            pack.push_back(f.spawn);
+    }
+    float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
+    if (dps <= 0.0f)
+        return false;
+    // killed one by one, the pulled one first: each mob hits until it dies
+    float seconds = 0.0f;
+    float damage = 0.0f;
+    std::vector<std::pair<float, float>> foes;  // (health, dps)
+    for (MobSpawn const* m : pack)
+    {
+        uint8 const mobLevel = std::clamp<uint8>(level, m->tmpl->minlevel, m->tmpl->maxlevel);
+        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(mobLevel, m->tmpl->unit_class);
+        if (!stats)
+            return false;
+        foes.push_back({float(stats->GenerateHealth(m->tmpl)), GrindMobDps(bot, m->tmpl, mobLevel)});
+    }
+    for (size_t i = 0; i < foes.size(); ++i)
+    {
+        float const kill = foes[i].first / dps;
+        for (size_t j = i; j < foes.size(); ++j)
+            damage += foes[j].second * kill;
+        seconds += kill;
+    }
+    float const ehp = float(bot->GetMaxHealth()) +
+                      SurvivalKit::HealPoints(bot, seconds, float(bot->GetMaxPower(POWER_MANA)), true);
+    if (damage < ehp)
+        return false;
+    why = Acore::StringFormat("its camp loses even at full: {} L{}-{} with {} more by its engage call, {:.0f} dmg over "
+                              "{:.0f} s at its {:.1f} dps, ehp {:.0f} full",
+                              pulled->tmpl->Name, pulled->tmpl->minlevel, pulled->tmpl->maxlevel, pack.size() - 1,
+                              damage, seconds, dps, ehp);
+    return true;
 }
 
 // [lag361] coordinator 2026-11-12 (b448, the three L14 laggards at 420-1200 xp/h against several thousand for a
@@ -8672,14 +8778,16 @@ bool NewRpgBaseAction::GrindBeatsRoute(WorldPosition& grindPos, std::string& why
     float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
     if (!stats || dps <= 0.0f)
         return false;
-    float const killXp = float(Acore::XP::BaseGain(level, level, content)) * sWorld->getRate(RATE_XP_KILL);
     float const killSeconds = float(stats->BaseHealth[std::min<uint32>(content, MAX_EXPANSIONS - 1)]) / dps;
     std::string parts;
-    float const cycle = GrindCycleSeconds(bot, spot, killSeconds, parts);
+    float killXp = 0.0f;  // [lag363] the spot's own spawns' levels, not its level for every kill
+    float const cycle = GrindCycleSeconds(bot, spot, killSeconds, parts, &killXp);
     if (killXp <= 0.0f || cycle <= 0.0f)
         return false;
     float const walk = bestDist / std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
-    float const grindXp = killXp * std::max(0.0f, route.plan.eta - walk) / cycle;
+    float grindXp = killXp * std::max(0.0f, route.plan.eta - walk) / cycle;
+    // [lag363] the rested pool doubles kill experience as far as it lasts (Player::GiveXP: GetXPRestBonus)
+    grindXp += std::min(grindXp, bot->GetRestBonus());
     if (grindXp <= route.plan.xp)
         return false;
     grindPos = spot;

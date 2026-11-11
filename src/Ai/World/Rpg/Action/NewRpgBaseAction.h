@@ -357,7 +357,12 @@ public:
     // [supply27] what a five member lacks of its ammo (a hunter below the vendor run's low-ammo line) and of the
     // vendor-sold reagents its known spells use (none left of one); "" = nothing. missingReagents: those item ids
     static std::string FiveGearShort(Player* bot, std::vector<uint32>* missingReagents = nullptr);
-    static float GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts);
+    // [lag363] `killXp`: the mean experience of a kill there by each spawn's own level (Acore::XP::BaseGain)
+    static float GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts,
+                                   float* killXp = nullptr);
+    // [lag364] the camp at (x, y, z), priced from its static spawns before a walk there: the pull of the spawn whose
+    // reach covers the spot with the mobs its engage call brings, lost even at full health and mana
+    static bool StaticCampLoses(Player* bot, float x, float y, float z, std::string& why);
     // [lag361] the grind of its level at its nearest grind spot earns more over its quest route's time than the
     // route does (the route as built: its experience over its seconds): the spot and the numbers
     bool GrindBeatsRoute(WorldPosition& grindPos, std::string& why);
