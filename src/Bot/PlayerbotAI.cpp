@@ -359,6 +359,33 @@ bool PlayerbotAI::StraightLineSupported(WorldObject const* object, float fromX, 
 
 float PlayerbotAI::GroundSampleStep() { return GROUND_SAMPLE_STEP; }
 
+bool PlayerbotAI::UnderLakeBed(WorldObject const* object, float x, float y, float z, float* surface)
+{
+    // [nav256] b428 Peny L17 stood 5 h at (-9403,-2432,7) in Lake Everstill (Redridge), 36 yd under the lake bed
+    // (terrain z 42.8, the water's surface z 56.3), 337 STUCK alerts, every walk "a dead end of its route". The
+    // generator (TerrainBuilder: over a quad whose liquid lies above its terrain only the liquid is kept) left the
+    // bed out of the navmesh; the rocks' undersides under it became a 311-polygon region at z -1..22, joined to the
+    // bed's rock tops. Its walk to q125's Sunken Chest on the bed went on along that region into the ground, where no
+    // water holds it up (GridTerrainData: a z under the ground is "no water") and no route leads out
+    Map* map = object->GetMap();
+    if (!map)
+        return false;
+    float const terrain = map->GetGridHeight(x, y);  // a hole in the terrain (a cave's mouth) reads INVALID
+    if (terrain <= INVALID_HEIGHT || terrain - z <= CLIMB_SUPPORT)
+        return false;
+    LiquidData const liquid =
+        map->GetLiquidData(object->GetPhaseMask(), x, y, terrain + 0.5f, object->GetCollisionHeight(), {});
+    if (liquid.Status == LIQUID_MAP_NO_WATER || liquid.Level <= INVALID_HEIGHT || liquid.Level <= terrain)
+        return false;
+    PositionFullTerrainStatus status;
+    map->GetFullTerrainStatusForPosition(object->GetPhaseMask(), x, y, z, object->GetCollisionHeight(), status);
+    if (!status.outdoors)
+        return false;  // a cave or building model under the ground (its own floor)
+    if (surface)
+        *surface = liquid.Level;
+    return true;
+}
+
 bool PlayerbotAI::IsSubjectToGravity() const
 {
     return bot->IsAlive() && !bot->GetVehicle() && !bot->GetTransport() && !bot->IsInFlight() && !bot->CanFly() &&
@@ -427,7 +454,9 @@ void PlayerbotAI::GuardAirborneSpline()
         {
             LiquidData const liquid =
                 bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), p.x, p.y, p.z, bot->GetCollisionHeight(), {});
-            return liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > INVALID_HEIGHT && liquid.Level >= p.z;
+            // [nav256] ... and the way up from under a lake's bed, through the ground into the water over it
+            return (liquid.Status != LIQUID_MAP_NO_WATER && liquid.Level > INVALID_HEIGHT && liquid.Level >= p.z) ||
+                   UnderLakeBed(bot, p.x, p.y, p.z);
         };
         G3D::Vector3 a, b;
         bool check = false;
@@ -507,6 +536,32 @@ void PlayerbotAI::GuardAirborneSpline()
             }
         }
     }
+    // [nav256] a walk down into the ground under a lake's bed: the generator's polygons there are a model's underside
+    // under the terrain (UnderLakeBed), so every point of the path is looked at - the path is cut at its last point
+    // above the bed. A walk that starts under the bed is its way out (MoveFarTo's LakeBedStep swims it up)
+    if (!UnderLakeBed(bot, start.x, start.y, start.z))
+        for (uint32 i = path.first() + 1; i <= uint32(path.last()); ++i)
+        {
+            G3D::Vector3 const point = path.getPoint(i);
+            if (!UnderLakeBed(bot, point.x, point.y, point.z))
+                continue;
+            G3D::Vector3 const keep = path.getPoint(i - 1);
+            uint32 const now = getMSTime();
+            if (!lastAirborneLogMs || getMSTimeDiff(lastAirborneLogMs, now) > AIRBORNE_LOG_INTERVAL_MS)
+            {
+                lastAirborneLogMs = now;
+                LOG_INFO("playerbots", "[nav256] {} refused a walk under a lake's bed on map {} at ({:.1f},{:.1f},"
+                         "{:.1f}) (terrain z {:.1f}): cut at ({:.1f},{:.1f},{:.1f})",
+                         bot->GetName(), bot->GetMapId(), point.x, point.y, point.z,
+                         bot->GetMap()->GetGridHeight(point.x, point.y), keep.x, keep.y, keep.z);
+            }
+            bot->GetMotionMaster()->Clear();
+            bot->StopMoving();
+            if ((keep - start).length() >= GROUND_MIN_TRUNCATED_MOVE)
+                bot->GetMotionMaster()->MovePoint(0, keep.x, keep.y, keep.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false,
+                                                  true);
+            return;
+        }
     // [nav29] a straight leg under the surface: the server spline has no collision, so a straight leg that keeps
     // its height where the ground rises (a slope, a cliff, a floor up a step) runs inside the terrain or under the
     // floor - b377 Aestymro L13 7 yd inside a Westfall cliff ("ground -200000"), b378 Relara L10 2.5-3.5 yd under the
@@ -2417,6 +2472,40 @@ void PlayerbotAI::ChangeEngineOnNonCombat()
     }
 }
 
+// [stuck258] the combat engine out of combat with an idle mob as its target, and no action of it that runs: a ranged
+// bot's "melee" swings only in reach, a healer's combat strategies hold no walk to the mob - nothing ever leaves the
+// combat engine (InvalidTarget keeps a live idle hostile) and its non-combat engine (New RPG, rest, food) never runs.
+// b424 Almored L15 led a help party of four for q9548 (Bloodmyst) and stood 7031 s at (-1581,-11560); b428 Aestymro
+// L17 (co-op with Januel, Loch Modan) 3284 s, Rollothan / Namwe / Maronic the same: "judgement of light - FAILED |
+// consecration - USELESS | exorcism - IMPOSSIBLE | melee - USELESS | no actions executed", its follower waiting on it.
+// The idle mob is let go as DropTargetAction / [reach_idle_release] do: the non-combat engine plans the next step, the
+// grind picker leaves that mob while it stays idle (ReleasedIdleTarget). Not for a led member (its leader's command
+// holds) nor in an instance, and not while a cast of its at that mob may still land (its last cast's target)
+void PlayerbotAI::ReleaseIdleTargetNobodyReaches(bool acted)
+{
+    if (acted || currentEngine != engines[BOT_STATE_COMBAT] || !bot->IsAlive() || bot->IsInCombat() ||
+        !bot->getAttackers().empty() || bot->isMoving() || bot->IsNonMeleeSpellCast(false) ||
+        bot->GetMap()->Instanceable() || Leader::LedBot(bot))
+        return;
+    Unit* const target = aiObjectContext->GetValue<Unit*>("current target")->Get();
+    if (!target || !target->IsAlive() || target->IsInCombat() || bot->IsWithinMeleeRange(target))
+        return;
+    if (aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().target == target->GetGUID())
+        return;
+    if (releasedIdleTarget != target->GetGUID())
+    {
+        releasedIdleTarget = target->GetGUID();
+        LOG_INFO("playerbots", "[stuck258] {} L{}: the combat engine out of combat with idle {} L{} ({:.0f} yd) as its "
+                 "target and no action that runs: target dropped, back to the non-combat engine",
+                 bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), bot->GetExactDist(target));
+    }
+    bot->AttackStop();
+    bot->SetTarget(ObjectGuid::Empty);
+    bot->SetSelection(ObjectGuid::Empty);
+    aiObjectContext->GetValue<Unit*>("current target")->Set(nullptr);
+    ChangeEngine(BOT_STATE_NON_COMBAT);
+}
+
 void PlayerbotAI::DoNextAction(bool min)
 {
     if (!bot->IsInWorld() || bot->IsBeingTeleported() || (GetMaster() && GetMaster()->IsBeingTeleported()))
@@ -2530,7 +2619,8 @@ void PlayerbotAI::DoNextAction(bool min)
 
     bool minimal = !this->AllowActivity();
 
-    currentEngine->DoNextAction(nullptr, 0, (minimal || min));
+    bool const acted = currentEngine->DoNextAction(nullptr, 0, (minimal || min));
+    ReleaseIdleTargetNobodyReaches(acted);  // [stuck258]
 
     if (minimal)
     {

@@ -281,6 +281,10 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         // [coop] a danger mark is the bot's solo judgement; the party judges the pack itself
         if (!coop && NewRpgBaseAction::InDangerZone(bot, unit->GetPositionX(), unit->GetPositionY()))
             continue;
+        // [stuck258] an idle mob its combat engine had as target with no action that reached it (let go): picked
+        // again it stood the same way (b428 Aestymro's party: "party engages" it, the walk walled by [party75])
+        if (unit->GetGUID() == botAI->ReleasedIdleTarget() && !unit->IsInCombat())
+            continue;
         if (!_reachability.IsReachable(bot, unit))
             continue;
         SoloSafety::Verdict const verdict = coop ? NewRpgCoop::JudgePull(bot, unit) : SoloSafety::Judge(bot, unit);

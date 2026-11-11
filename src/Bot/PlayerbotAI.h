@@ -423,6 +423,10 @@ public:
     void ChangeEngineOnCombat();
     void ChangeEngineOnNonCombat();
     void DoNextAction(bool minimal = false);
+    // [stuck258] the combat engine out of combat with an idle, unreached target and no action that runs: let it go
+    void ReleaseIdleTargetNobodyReaches(bool acted);
+    // [stuck258] the grind picker leaves that mob alone while it stays idle (picked again, the same stand followed)
+    ObjectGuid ReleasedIdleTarget() const { return releasedIdleTarget; }
     virtual bool DoSpecificAction(std::string const name, Event event = Event(), bool silent = false,
                                   std::string const qualifier = "");
     void ChangeStrategy(std::string const name, BotState type);
@@ -682,6 +686,10 @@ public:
                                       float toY, float toZ);
     // the spacing of those samples (yd)
     static float GroundSampleStep();
+    // [nav256] the point lies more than a step under the terrain of a lake's bed (outdoors, no cave model): the
+    // navmesh generator keeps only the water's surface over deep water and drops the bed, so a polygon there is a
+    // model's underside under the ground. `surface`: that water's level (the way up is a swim)
+    static bool UnderLakeBed(WorldObject const* object, float x, float y, float z, float* surface = nullptr);
     // Gravity applies to the bot: alive, outside any vehicle, transport or taxi, and without a way to fly.
     bool IsSubjectToGravity() const;
     // Next tick, a bot that lost its mount or seat in the air falls and takes the damage where it lands.
@@ -754,6 +762,7 @@ protected:
     uint8 paceSameLooks = 0;          // [pace25] standing looks in a row there
     static constexpr uint8 PACE_SAME_LOOKS = 2;  // the fast looks a standing bot gets before the idle tick
     uint32 lastAirborneLogMs = 0;
+    ObjectGuid releasedIdleTarget;  // [stuck258] the last idle target let go: no action of its reached it
     bool fallCheckRequested = false;  // dismounted or left a vehicle: fall if nothing is below
     bool fallPending = false;         // falling; HandleFall runs where the fall spline ends
     bool wasOnVehicle = false;

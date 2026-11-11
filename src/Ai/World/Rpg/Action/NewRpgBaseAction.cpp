@@ -494,6 +494,8 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         return true;
     if (TramTrackStep())  // [tram25]
         return true;
+    if (LakeBedStep())  // [nav257]
+        return true;
     if (DestinationRefused(dest))  // [guild13]
         return RefusedWalk(dest, "its spot lies among mobs it does not pull");
     // [guild15] the next stretch of the walk passes an idle mob whose fight it wins only at full health and mana: it
@@ -566,6 +568,36 @@ void NewRpgBaseAction::GiveUpWalkTargets(WorldPosition const& dest, std::string 
         }
     if (info.trip.phase != NewRpgInfo::TripPhase::Ride && info.trip.phase != NewRpgInfo::TripPhase::Leave)
         info.ClearTrip();
+}
+
+bool NewRpgBaseAction::LakeBedStep()
+{
+    // [nav257] a bot that stands under a lake's bed (the generator's polygons under the ground there, [nav256]) gets
+    // out the way it came in: up into the water over it and on from the surface, whose polygons are the zone's main
+    // region (b428 Peny L17, Lake Everstill (-9403,-2432,7): 36 yd under the bed, 5 h of "dead end of its route").
+    // A straight swim up, no teleport: the guard takes the stretch through the ground as the way up ([swim28])
+    if (bot->GetTransport() || bot->IsInFlight() || bot->IsBeingTeleported() || !bot->IsAlive())
+        return false;
+    float surface = 0.0f;
+    if (!PlayerbotAI::UnderLakeBed(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), &surface))
+        return false;
+    if (bot->isMoving())
+        return true;  // its swim up is under way
+    LOG_INFO("playerbots", "[nav257] {} L{} under a lake's bed at ({:.1f},{:.1f},{:.1f}), terrain z {:.1f}: swims up "
+             "to the water's surface z {:.1f}",
+             bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+             bot->GetMap()->GetGridHeight(bot->GetPositionX(), bot->GetPositionY()), surface);
+    // three points: a two-point move is pathed by the core (MovementAction::SwimStraight's rule)
+    G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    G3D::Vector3 const to(from.x, from.y, surface);
+    Movement::PointsArray path = {from, (from + to) * 0.5f, to};
+    bot->GetMotionMaster()->Clear();
+    bot->GetMotionMaster()->MoveSplinePath(&path);
+    float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay((to - from).length()), 0.0f,
+                                   float(sPlayerbotAIConfig.MaxWaitForMove));
+    AI_VALUE(LastMovement&, "last movement")
+        .Set(bot->GetMapId(), to.x, to.y, to.z, bot->GetOrientation(), delay, MovementPriority::MOVEMENT_NORMAL);
+    return true;
 }
 
 bool NewRpgBaseAction::TramTrackStep()

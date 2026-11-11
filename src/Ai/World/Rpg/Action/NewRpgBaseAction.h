@@ -195,6 +195,7 @@ public:
     // [deaths] the walk to `dest` is refused (`why`): its quest is postponed (the co-op seek asks for a party), its
     // gather node skipped, its state ended; true: the tick is used
     void GiveUpWalkTargets(WorldPosition const& dest, std::string const& why);  // [grind25]
+    bool LakeBedStep();    // [nav257] under a lake's bed (PlayerbotAI::UnderLakeBed): swims up to the water over it
     bool TramTrackStep();  // [tram25] off the navmesh on a tram line's track: boards the car that passes under it
     bool RefusedWalk(WorldPosition const& dest, std::string const& why);
     // [holds9] a walk given up (refused, or proven out of walk: MOVE_FAR_LOOP, no route and no step): its spot is out
