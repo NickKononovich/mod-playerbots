@@ -323,6 +323,26 @@ bool MageConjureAllowed(PlayerbotAI* botAI, Player* bot, bool ownStockEmpty, cha
             return true;
         }
 
+        // [dun239] the five's water: while its group rests, a mage of a guild five conjures up to the five's priced
+        // line ([dun199] ConjureGoal: its own line plus what the others lacked), in the run as before it; the
+        // in-run water-filling hands it on ([dun208], the healer first [dun230])
+        if (groupRests && kind == "conjure water")
+            if (uint32 const goal = ConjureGoal(bot->GetGUID());
+                goal && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < goal)
+            {
+                static std::mutex fiveLogLock;
+                static std::set<std::pair<uint32, uint32>> fiveLogged;  // (bot, instance): once per run
+                bool first = false;
+                {
+                    std::lock_guard<std::mutex> guard(fiveLogLock);
+                    first = fiveLogged.insert({bot->GetGUID().GetCounter(), map->GetInstanceId()}).second;
+                }
+                if (first)
+                    LOG_INFO("playerbots", "[dun239] {} conjures water for its five in instance map {}: {} of {}",
+                             bot->GetName(), map->GetId(), CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK), goal);
+                return true;
+            }
+
         LogConjureSkipOnce(bot, what);
         return false;
     }

@@ -582,9 +582,9 @@ bool NoDrinkTrigger::IsActive()
     std::vector<Item*> const water = AI_VALUE2(std::vector<Item*>, "inventory items", "conjured water");
     if (water.empty())
         return true;
-    // [dun199] outside an instance, a mage of a gathering guild five conjures up to the five's priced line
-    Map* map = bot->GetMap();
-    if (map && map->Instanceable())
+    // [dun199] a mage of a guild five conjures up to the five's priced line - [dun239] in the run too, while it is out
+    // of combat (MageConjureAllowed: inside, while the group rests)
+    if (bot->IsInCombat())
         return false;
     uint32 const goal = ConjureGoal(bot->GetGUID());
     if (!goal)

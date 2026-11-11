@@ -320,6 +320,9 @@ float DrinkRegenPerSec(Player* bot);
 // [dun230] a mana user's regen per second without the food / drink auras, the casting (five-second rule) or the full
 // rate, times RATE_POWER_MANA and the low-level boost as Player::Regenerate takes them
 float ManaRegenPerSec(Player* bot, bool casting);
+// [dun239] a mage that knows a Conjure Water / Conjure Refreshment rank and has the mana to cast its best one now: its
+// own conjure is a drink for its rest
+bool CanConjureDrink(Player* bot);
 // [lead1435] a healer's heal term's mana per second besides its heals: its measured upkeep less its casting regen (%
 // of max mana per second; negative when the regen pays more than the upkeep)
 float HealerNetUpkeepPctPerSec(Player* healer);

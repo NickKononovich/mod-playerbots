@@ -746,6 +746,21 @@ float CastingRegenPerSec(Player* bot)
            sWorld->getRate(RATE_POWER_MANA);
 }
 
+bool CanConjureDrink(Player* bot)
+{
+    if (!bot || bot->getClass() != CLASS_MAGE || bot->IsInCombat())
+        return false;
+    // Conjure Refreshment 2 / 1, Conjure Water 9 .. 1
+    static uint32 const conjures[] = {42956, 42955, 27090, 37420, 10140, 10139, 10138, 6127, 5506, 5505, 5504};
+    for (uint32 spell : conjures)
+        if (bot->HasSpell(spell))
+        {
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+            return info && bot->GetPower(POWER_MANA) >= info->CalcPowerCost(bot, info->GetSchoolMask());
+        }
+    return false;
+}
+
 float ManaRegenPerSec(Player* bot, bool casting)
 {
     if (!bot || !bot->GetMaxPower(POWER_MANA))

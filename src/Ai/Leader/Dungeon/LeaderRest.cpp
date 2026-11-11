@@ -296,7 +296,12 @@ namespace Leader::Dungeon
             // the rest line with water / food in the bags the group waits for them to sit down, as a group
             // waits for its drinker (Stockade 2026-10-24: the wait only held below 20 % mana, the bot only
             // drank below 15 %, so the group stood around a priest at 15-20 % who never sat down).
-            uint32 const drinks = mana ? CountRestItems(bot, 59) : 0;
+            uint32 drinks = mana ? CountRestItems(bot, 59) : 0;
+            // [dun239] a mage that can conjure its water has a drink for this rest (its conjure is the Rest's own
+            // step): waited for as a drinker. b446 wc-n five2-2 2279 s: "Thamesh ... no drink in the bags, spirit
+            // regen only" at 13 % mana, knowing Conjure Water - not waited for, the five pulled on with him empty
+            if (!drinks && mana && RestState::CanConjureDrink(bot))
+                drinks = 1;
             uint32 const foods = CountRestItems(bot, 11);
             // The bots' own rest lines (RestState::WantsDrink / WantsFood): a hurt bot with a healer
             // close by gets healed, it does not sit down, and that is no stall.

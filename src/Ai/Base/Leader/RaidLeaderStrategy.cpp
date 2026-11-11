@@ -775,6 +775,9 @@ float RaidLeaderHoldMultiplier::GetValue(Action* action)
     // step, no buff
     if (!bot->IsInCombat() && Leader::Orders::IsTracked(bot->GetGUID()) && Leader::LedBot(bot) &&
         action->getName() != "leave animal form" &&
+        // [dun239] ... nor a mage's conjured water / food: its drink of this Rest (b446 wc-n Thamesh, no water)
+        action->getName() != "conjure water" && action->getName() != "conjure food" &&
+        action->getName() != "conjure refreshment" &&
         (dynamic_cast<CastBuffSpellAction*>(action) || action->getName() == "blessing on party by role"))
     {
         Leader::MemberEvents restEvents;
