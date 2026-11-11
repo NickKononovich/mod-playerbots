@@ -559,6 +559,8 @@ private:
         std::deque<uint32> deaths;  // game time
         bool deathOpen{false};      // dead since the last DEATH alert
         uint64 xpTotal{0};
+        uint8 xpLevel{0};     // [diag260] its level and its XP into it at the last sample (the gain's split by level)
+        uint32 xpInLevel{0};
         uint32 questsDone{0};
         uint32 money{0};
         uint32 mailGold{0};  // [eco200] the members' gold in its mailbox at the last sample
@@ -962,6 +964,9 @@ private:
                        uint32 top = 0) const;
     void BuildSkillPlans();
     static uint64 XpTotal(Player* bot);
+    // [diag260] / [diag261] an XP gain from (level, xp into it) to the bot's level and xp now, each level's part
+    // divided by that level's XP to the next (levels) and by the core's base XP of one same-level kill there (kills)
+    static void XpUnits(Player* bot, uint8 fromLevel, uint32 fromXp, double& levels, double& kills);
     static uint32 QuestProgress(Player* bot);
     std::string WaitReason(Player* bot, PlayerbotAI* botAI, BotState const& state) const;
     std::string StatusName(Player* bot, PlayerbotAI* botAI) const;
@@ -1135,6 +1140,8 @@ private:
     {
         uint32 at{0};
         uint64 xp{0};
+        double kills{0.0};   // [diag261] the XP gained in same-level kills (XpUnits)
+        double levels{0.0};  // [diag260] the XP gained in levels
         uint32 quests{0};
         uint32 deaths{0};
         int64 money{0};

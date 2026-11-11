@@ -900,6 +900,32 @@ uint64 GuildCoordinator::XpTotal(Player* bot)
     return xp;
 }
 
+void GuildCoordinator::XpUnits(Player* bot, uint8 fromLevel, uint32 fromXp, double& levels, double& kills)
+{
+    // [diag260] user 2026-11-11: XP per hour grows with the level by itself, no build compares on it. A gain counted in
+    // levels (its XP over the level's XP to the next, player_xp_for_level) and [diag261] in same-level kills (its XP
+    // over Acore::XP::BaseGain(level, level, content), the base XP of one kill of a mob of the bot's level - quest and
+    // kill XP both scale with it, the ratio is about level-neutral). A level-up between two samples splits the gain
+    levels = kills = 0.0;
+    uint8 const toLevel = bot->GetLevel();
+    uint32 const toXp = bot->GetUInt32Value(PLAYER_XP);
+    if (!fromLevel || toLevel < fromLevel || (toLevel == fromLevel && toXp <= fromXp))
+        return;
+    ContentLevels const content = GetContentLevelsForMapAndZone(bot->GetMapId(), bot->GetZoneId());
+    for (uint8 level = fromLevel; level <= toLevel; ++level)
+    {
+        uint32 const need = sObjectMgr->GetXPForLevel(level);
+        uint32 const start = level == fromLevel ? fromXp : 0;
+        uint32 const end = level == toLevel ? toXp : need;
+        if (end <= start)
+            continue;
+        if (need)
+            levels += double(end - start) / need;
+        if (uint32 const kill = Acore::XP::BaseGain(level, level, content))
+            kills += double(end - start) / kill;
+    }
+}
+
 uint32 GuildCoordinator::QuestProgress(Player* bot)
 {
     uint32 progress = uint32(bot->getRewardedQuests().size()) * 1000;
@@ -6932,11 +6958,17 @@ void GuildCoordinator::UpdateHealth()
         if (st.seen)
         {
             sample.xp += xp > st.xpTotal ? xp - st.xpTotal : 0;
+            double levels = 0.0, kills = 0.0;
+            XpUnits(p, st.xpLevel, st.xpInLevel, levels, kills);  // [diag260] [diag261]
+            sample.levels += levels;
+            sample.kills += kills;
             sample.quests += quests > st.questsDone ? quests - st.questsDone : 0;
             sample.money += int64(money) + int64(mailGold) - int64(st.money) - int64(st.mailGold);
         }
         st.seen = true;
         st.xpTotal = xp;
+        st.xpLevel = p->GetLevel();
+        st.xpInLevel = p->GetUInt32Value(PLAYER_XP);
         st.questsDone = quests;
         st.money = money;
         st.mailGold = mailGold;
@@ -7073,11 +7105,14 @@ void GuildCoordinator::UpdateHealth()
     while (!rates_.empty() && now - rates_.front().at > HOUR)
         rates_.pop_front();
     uint64 xpH = 0;
+    double killsH = 0.0, levelsH = 0.0;  // [diag260] [diag261]
     uint32 questsH = 0, deathsH = 0;
     int64 moneyH = 0;
     for (RateSample const& r : rates_)
     {
         xpH += r.xp;
+        killsH += r.kills;
+        levelsH += r.levels;
         questsH += r.quests;
         deathsH += r.deaths;
         moneyH += r.money;
@@ -7085,12 +7120,16 @@ void GuildCoordinator::UpdateHealth()
     uint32 const window = rates_.size() > 1 ? now - rates_.front().at : 0;
     auto const perHour = [window](double v) { return window ? v * HOUR / window : v; };
 
-    char buf[400];
+    // [diag261] the primary rate: same-level kills per hour (guild, and the mean per online bot); [diag260] levels
+    double const perBot = online ? 1.0 / online : 0.0;
+    char buf[520];
     snprintf(buf, sizeof(buf),
              "tick avg %u / p95 %u / max %u ms (target %d); AI avg %.2f / max %.1f ms/tick; online %u/%u, dead %u, "
-             "stuck %u; per hour: quests %.0f, xp %.0f, deaths %.0f, gold %.1f (window %u min)",
+             "stuck %u; per hour: quests %.0f, xp %.0f, same-level kills %.0f (%.1f per bot), levels %.2f (%.3f per "
+             "bot), deaths %.0f, gold %.1f (window %u min)",
              avg, p95, maxDiff, target, aiAvgMs, aiMax / 1000.0f, online, uint32(plan_.size()), dead, stuck,
-             perHour(questsH), perHour(double(xpH)), perHour(deathsH), perHour(double(moneyH)) / GOLD, window / MINUTE);
+             perHour(questsH), perHour(double(xpH)), perHour(killsH), perHour(killsH) * perBot, perHour(levelsH),
+             perHour(levelsH) * perBot, perHour(deathsH), perHour(double(moneyH)) / GOLD, window / MINUTE);
     healthRow_ = buf;
     // [tasks] the task lists: waiting town tasks, their wait until started, town tasks per visit
     uint32 waiting = 0, waitingTown = 0;
