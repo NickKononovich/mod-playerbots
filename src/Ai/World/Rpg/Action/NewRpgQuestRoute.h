@@ -8,6 +8,7 @@
 #define PLAYERBOTS_NEWRPGQUESTROUTE_H
 
 #include "Define.h"
+#include "TravelMgr.h"  // [build150] WorldPosition ([lag340] BotRoute::crossTown)
 
 #include <functional>
 #include <map>
