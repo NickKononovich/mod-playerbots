@@ -1336,6 +1336,21 @@ void GuildCoordinator::PlanRoles()
         std::string const planned = RoleOf(low);
         return planned.empty() ? SpecRoleNow(p) : planned;
     };
+    // [lag334] the guild's median level (the planned members online): a member below it is moved to no other role
+    uint8 medianLevel = 0;
+    {
+        std::vector<uint8> levels;
+        for (PlanRow const& row : plan_)
+            if (row.grp >= 'A' && row.grp <= 'C')
+                if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                    p && p->IsInWorld() && !IsHuman(p))
+                    levels.push_back(p->GetLevel());
+        if (!levels.empty())
+        {
+            std::nth_element(levels.begin(), levels.begin() + levels.size() / 2, levels.end());
+            medianLevel = levels[levels.size() / 2];
+        }
+    }
     auto count = [&roleNow](Band const& band, std::string const& role)
     {
         uint32 n = 0;
@@ -1393,6 +1408,15 @@ void GuildCoordinator::PlanRoles()
             {
                 int8 const spec = RoleSpecIndex(p->getClass(), role);
                 if (spec < 0 || inFive(row->low) || !may(row, p) || (!movedToo && !RoleOf(row->low).empty()))
+                    continue;
+                // [lag334] coordinator decision 2026-11-11 (a member goes for progress of its own; levelling first
+                // below the median, [lag324] / [lag325]): a member below the guild's median level is moved to no
+                // other role - an unlearn at its trainer and a new spec while it levels behind the guild. b439-b442
+                // Rollothan L13-14 (the second lowest member): "[roles107] a surplus tank moves to heal" (b439,
+                // unlearn 5 g from Peny and Mutil, 1274 yd to Bromos Grummner), "[roles108] a surplus healer moves to
+                // tank" (b440 and b442: unlearn 10 g, 2022 yd to the Paladin Trainer) as the band's counts swung; he
+                // quested 5/0/0 Holy meanwhile
+                if (p->GetLevel() < medianLevel && SpecRoleNow(p) != role)
                     continue;
                 std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(p);
                 uint32 const points = tabs[SpecTree(p->getClass(), uint8(spec))];
