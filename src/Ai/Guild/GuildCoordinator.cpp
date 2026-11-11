@@ -1284,6 +1284,11 @@ bool GuildCoordinator::VendorSource(uint32 item, uint32 mapId) const
         }
         mapId = uint32(entry->entrance_map);
     }
+    // [insc147] a map that is neither a continent nor an instance with an entrance (the Deeprun Tram, map 369) has no
+    // continent of its own: the vendors of any continent count, as before [lag329] (b443: Rollothan in the tram -
+    // "Light Parchment: neither held nor gathered in the guild")
+    if (MapEntry const* entry = sMapStore.LookupEntry(mapId); entry && !entry->IsContinent())
+        return true;
     auto const maps = vendorMaps_.find(item);
     return maps == vendorMaps_.end() || maps->second.count(mapId);  // no spawn row: as before
 }
