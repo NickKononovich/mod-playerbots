@@ -717,6 +717,7 @@ private:
         uint32 repeats{0};  // [need106] its runs of the dungeon so far (a carrier with no need: the fewest first)
         bool xp{false};      // [roles108] a healer the dungeon still gives experience (no other need)
         bool townStop{false};  // [lag336] a called crafter whose profession town stop is due
+        bool overMax{false};   // [order362] above the band, uncleared: it walks in for its first clear
     };
 
     void LoadPlan();
@@ -731,7 +732,8 @@ private:
     DungeonOption const* FindDungeon(std::string const& contentKey) const;
     // "" = the dungeon fits this character. [next1] walk: the five walks in (the Dungeon Finder does not take it),
     // so the entrance's continent and an enemy capital count; else only while the finder cannot port the five.
-    std::string DungeonRefusal(DungeonOption const& d, Player* p, bool walk = false) const;
+    // [order362] overMax: above the dungeon's band, uncleared - the walk in up to the instance's own entry ceiling
+    std::string DungeonRefusal(DungeonOption const& d, Player* p, bool walk = false, bool overMax = false) const;
     std::string FiveWalkRefusal(GuildFive const& five) const;  // [next1] a member the walk in refuses, "" = none
     // [need106] the first boss item of the dungeon the member needs (its own spec's upgrade, not owned): its name,
     // "" = none

@@ -69,6 +69,7 @@ namespace
     constexpr size_t FIVE_DROPS_KEPT = 40;
     // [guild70] markers in the five-leader's report reason (FiveRunReport -> GuildFiveReport)
     constexpr char const* FIVE_LFG_REFUSED = "lfg refused: ";
+    constexpr char const* REFUSAL_OTHER_CONTINENT = "entrance on another continent (map ";
     constexpr char const* FIVE_ITEM_NEED = "item needed: ";
     // [guild70] the last "no Dungeon Finder" reason logged per five (world thread)
     std::map<uint32, std::string> fiveLfgWhy;
@@ -1235,14 +1236,24 @@ static char const* EnemyCapital(uint32 entranceZone, TeamId team)
     return nullptr;
 }
 
-std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, bool walk) const
+std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, bool walk, bool overMax) const
 {
     // [five58] user 2026-11-09: the five gate proves a five's capacity, so the Dungeon Finder's minimum is no floor:
     // from the instance's own entry level (RFC 8, WC / DM 10, SFK 14) a five that walks in goes (b400: the healers
     // Guinudrond, Selalleas and Aevmae at L14 were outside every band of 15+)
-    if (p->GetLevel() < d.walkMinLevel || p->GetLevel() > d.maxLevel)
+    if (p->GetLevel() < d.walkMinLevel || (!overMax && p->GetLevel() > d.maxLevel))
         return "L" + std::to_string(p->GetLevel()) + " outside " + std::to_string(d.walkMinLevel) + "-" +
                std::to_string(d.maxLevel);
+    // [order362] above the finder's band only the walk in takes it, up to the instance's own entry ceiling (if any)
+    if (overMax && p->GetLevel() > d.maxLevel)
+    {
+        if (DungeonProgressionRequirements const* access =
+                sObjectMgr->GetAccessRequirement(d.mapId, DUNGEON_DIFFICULTY_NORMAL);
+            access && access->levelMax && p->GetLevel() > access->levelMax)
+            return "L" + std::to_string(p->GetLevel()) + " above the entry's max " +
+                   std::to_string(access->levelMax);
+        walk = true;
+    }
     bool const belowFinder = p->GetLevel() < d.minLevel;
     if (belowFinder)
         walk = true;
@@ -1253,7 +1264,7 @@ std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, 
         return "";
     // a walk across continents has no solo safety check yet (TripRefused judges the bot's own map)
     if (p->GetMapId() != d.entrance.GetMapId())
-        return "entrance on another continent (map " + std::to_string(d.entrance.GetMapId()) + ")";
+        return REFUSAL_OTHER_CONTINENT + std::to_string(d.entrance.GetMapId()) + ")";
     if (char const* capital = EnemyCapital(d.entranceZone, p->GetTeamId()))
         return std::string("entrance in an enemy capital ") + capital;
     return "";
@@ -1722,7 +1733,16 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
         Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
         if (!p || IsHuman(p) || !FreeForFive(row.low, p))
             continue;
-        std::string const refusal = DungeonRefusal(d, p);
+        std::string refusal = DungeonRefusal(d, p);
+        // [order362] user rule 2026-11-11 (all 75 members, no exceptions): guild-wide a member that outlevelled the
+        // dungeon uncleared still clears it - it walks in (the finder's band ends at its max, the instance does not)
+        bool overMax = false;
+        if (!refusal.empty() && band && !sPlayerbotAIConfig.GuildDungeonOrderPerMember &&
+            p->GetLevel() > d.maxLevel && !Cleared(d.contentKey, row.low))
+        {
+            refusal = DungeonRefusal(d, p, true, true);
+            overMax = refusal.empty();
+        }
         if (!refusal.empty() && (band || refusal.rfind("L", 0) != 0))
             continue;
         // [lfg69] refused for this dungeon at its level (its walk there, or the finder): left out until it levels
@@ -1733,6 +1753,7 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
         c.low = row.low;
         c.player = p;
         c.role = PlanRole(row.low, p);
+        c.overMax = overMax;
         // every planned member (A, B and C) clears every dungeon, in its band (user 2026-11-08)
         c.needsClear = !Cleared(d.contentKey, row.low);
         // [order360] the dungeon order: guild-wide only the guild's open dungeon (its uncleared members and helpers);
@@ -1828,21 +1849,25 @@ void GuildCoordinator::UpdateDungeonOrder()
             Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
             if (p && IsHuman(p))
                 continue;
-            // outlevelled it uncleared: the gate (DungeonRefusal) lets it in no more, it cannot hold the guild
+            // [order362] outlevelled it uncleared: it still clears it by the walk in ([order362] Candidates) - only one
+            // that cannot enter at all (the instance's own entry ceiling, the entrance in an enemy capital) is not
+            // counted; another continent is only a journey
             if (p && p->GetLevel() > keyMax)
-            {
-                ++goneCount;
-                gone += Acore::StringFormat(" {} L{},", Who(row.low), p->GetLevel());
-                continue;
-            }
+                if (std::string const why = DungeonRefusal(d, p, true, true);
+                    !why.empty() && why.rfind(REFUSAL_OTHER_CONTINENT, 0) != 0)
+                {
+                    ++goneCount;
+                    gone += Acore::StringFormat(" {} L{} ({}),", Who(row.low), p->GetLevel(), why);
+                    continue;
+                }
             ++count;
             names += " " + Who(row.low) + (p ? " L" + std::to_string(p->GetLevel()) : std::string(" offline")) + ",";
         }
         if (goneCount)
         {
             gone.pop_back();
-            notCounted += Acore::StringFormat("; {} not counted: {} outlevelled it uncleared ({})", d.contentKey,
-                                              goneCount, gone.substr(1));
+            notCounted += Acore::StringFormat("; {} not counted: {} outlevelled it uncleared and cannot enter ({})",
+                                              d.contentKey, goneCount, gone.substr(1));
         }
         if (!count)
         {
@@ -2196,7 +2221,7 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
     std::string const role = roleItr != five.roles.end() ? roleItr->second : "dps";
     std::vector<FiveCandidate> fits;
     for (FiveCandidate const& c : Candidates(*d, true))
-        if (c.role == role && DungeonRefusal(*d, c.player, true).empty() &&
+        if (c.role == role && DungeonRefusal(*d, c.player, true, c.overMax).empty() &&
             (c.needsClear || !NeededUpgrade(*d, c.player).empty() || (role != "dps" && GivesXp(*d, c.player))))
             fits.push_back(c);
     // PickFive's order: an open clear first, then the highest level
@@ -2997,6 +3022,7 @@ void GuildCoordinator::AutoFive()
             bool cleared;
             bool inBand;
             bool healer;  // [roles108] (a tank too: [lag324])
+            bool over;    // [order362] above the band, uncleared
         };
         std::vector<Probe> probes;
         {
@@ -3007,10 +3033,15 @@ void GuildCoordinator::AutoFive()
                     if (row.grp < 'A' || row.grp > 'C')
                         continue;
                     Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
-                    if (!p || IsHuman(p) || p->GetLevel() > d.maxLevel)
+                    if (!p || IsHuman(p))
                         continue;
-                    probes.push_back({&d, row.low, p, Cleared(d.contentKey, row.low),
-                                      p->GetLevel() >= d.walkMinLevel, PlanRole(row.low, p) != "dps"});
+                    bool const cleared = Cleared(d.contentKey, row.low);
+                    // [order362] guild-wide an outlevelled member keeps its open clear (all 75 members clear it)
+                    bool const over = p->GetLevel() > d.maxLevel;
+                    if (over && (cleared || sPlayerbotAIConfig.GuildDungeonOrderPerMember))
+                        continue;
+                    probes.push_back({&d, row.low, p, cleared, !over && p->GetLevel() >= d.walkMinLevel,
+                                      PlanRole(row.low, p) != "dps", over});
                 }
         }
         // [need115] per dungeon option (a content key may have several, one per level band: b421 'sfk-n: band 78-82:
@@ -3020,6 +3051,7 @@ void GuildCoordinator::AutoFive()
         std::unordered_map<std::string, std::pair<uint32, uint32>> band;  // option -> members in band, cleared
         std::unordered_map<std::string, std::map<uint32, std::string>> bandNeeds;  // option -> in-band needs
         std::unordered_map<std::string, uint32> below;  // option -> members below the band, uncleared
+        std::unordered_map<std::string, uint32> above;  // [order362] option -> members above the band, uncleared
         for (Probe const& probe : probes)
         {
             std::string need;
@@ -3042,6 +3074,8 @@ void GuildCoordinator::AutoFive()
                 if (!need.empty())
                     bandNeeds[option][probe.low] = need;
             }
+            else if (probe.over)
+                ++above[option];
             else if (!probe.cleared)
                 ++below[option];
             if (!need.empty())
@@ -3068,6 +3102,8 @@ void GuildCoordinator::AutoFive()
                 line.pop_back();
             }
             line += Acore::StringFormat("; below the band uncleared: {}", below[option]);
+            if (uint32 const over = above[option])
+                line += Acore::StringFormat("; [order362] above the band uncleared (walk in): {}", over);
             if (std::string& logged = needLogged_[option]; logged != line)
             {
                 logged = line;
@@ -3257,9 +3293,9 @@ void GuildCoordinator::AutoFive()
             std::vector<FiveCandidate> finderPool, walkPool;
             for (FiveCandidate const& c : pool)
             {
-                if (c.player->GetLevel() >= d->minLevel)
+                if (c.player->GetLevel() >= d->minLevel && !c.overMax)
                     finderPool.push_back(c);
-                if (DungeonRefusal(*d, c.player, true).empty())
+                if (DungeonRefusal(*d, c.player, true, c.overMax).empty())
                     walkPool.push_back(c);
             }
             bool const fromFinder = PickFive(finderPool, five);
@@ -3286,11 +3322,15 @@ void GuildCoordinator::AutoFive()
             uint32 left = UINT32_MAX;
             std::string urgent;
             for (FiveCandidate const& c : five)
-                if ((firstClear ? c.needsClear : c.upgrade) && d->maxLevel - c.player->GetLevel() < left)
+            {
+                // [order362] a member above the band (its walk-in clear) has no level left
+                uint32 const levelsLeft = c.overMax ? 0 : d->maxLevel - c.player->GetLevel();
+                if ((firstClear ? c.needsClear : c.upgrade) && levelsLeft < left)
                 {
-                    left = d->maxLevel - c.player->GetLevel();
+                    left = levelsLeft;
                     urgent = c.player->GetName() + " L" + std::to_string(c.player->GetLevel());
                 }
+            }
             if (guardCount == 0)
                 lookWhy[d->contentKey] += Acore::StringFormat(" -> five of score {}, {}, urgency {} level(s) left ({} "
                                                               "of max {})",

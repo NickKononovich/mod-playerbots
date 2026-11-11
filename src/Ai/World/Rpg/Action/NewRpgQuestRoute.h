@@ -197,9 +197,6 @@ namespace QuestRoute
     // [help20] the bot's own route: its experience over its seconds (0: no route built) - what an hour of its own plan
     // is worth, the price of the time it gives a help party
     float XpPerSecond(uint32 botLow);
-    // [lag351] the experience of the bot's whole route as last built (0: none) - what a help opens for a requester
-    // whose every stop lies past the walls round it
-    float RouteXp(uint32 botLow);
     // [help25] the experience of `questId` and of the quests its hand-in opens after it, as far as the chain goes
     // (UnlockedBy, the ones the bot has not done): what a quest it cannot do alone walls off
     float ChainXp(Player* bot, uint32 questId);
