@@ -384,6 +384,7 @@ namespace Leader::Travel
             G3D::Vector3 at;
             size_t doors = 0;
             bool caged = false;
+            bool logged = false;  // [dun224]
         };
         static std::map<InstanceGuid, Memo> memo;  // world thread
         if (memo.size() > 4096)
@@ -396,10 +397,14 @@ namespace Leader::Travel
         entry.doors = doors.size();
         G3D::Vector3 const to(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ());
         entry.caged = !DoorFreeRoute(leader, to, doors).complete;
-        if (entry.caged)
+        // [dun224] logged once per mob (b443: 9111 lines in 23 min, one per recompute of the memo)
+        if (entry.caged && !entry.logged)
+        {
+            entry.logged = true;
             LOG_INFO("playerbots", "[dun214] {}: {} ({:.1f} yd) stops no approach: out of sight behind {} closed "
                      "door(s), no walk to it round them",
                      leader->GetName(), mob->GetName(), range, doors.size());
+        }
         return entry.caged;
     }
 

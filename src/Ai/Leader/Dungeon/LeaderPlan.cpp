@@ -1522,8 +1522,10 @@ namespace Leader::Dungeon
                     // [dun219] a beat that never leaves twice its reach of the pull opens no window: the commit is
                     // planned again, its way back searched out of the beat (the planner's kill spot, priced as any
                     // pull) - no wait that never ends
-                    if (patrolOwnRefused &&
-                        PullPlanning::PatrolBeatStays(patrol, lead.commitSpot, 2.0f * patrolReach))
+                    // [dun224] whether or not its own pull fits: b443 sfk-n five4-4 / five1-1, the Wailing Guardsman's
+                    // own pull "plan: walks in" was never issued (its beat took it out of reach and back), the
+                    // Whitescalp commit released 14 times "the patrol first", stalled at 0/8
+                    if (PullPlanning::PatrolBeatStays(patrol, lead.commitSpot, 2.0f * patrolReach))
                     {
                         patrolOwnRefused = false;
                         broken = "the patrol's beat stays at the pull: planned again out of its beat";
