@@ -8536,9 +8536,9 @@ namespace Leader::Dungeon
                             LOG_INFO("playerbots", "[lead802] {}: the tank's walk's end with {} holds until the fight "
                                      "stands", bot->GetName(), target->GetName());
                     }
-                // [dun202] user rule (melee go to the tank's predicted stop): a mob still running in at the tank (not in
-                // its melee reach yet) is met where it stops on the tank (meleeStopAt: the meeting of the running mob
-                // and its victim), not followed behind while it runs. b436 / b437 fives: 988 s of "Follow: chase:
+                // [dun202] user rule (melee go to the tank's predicted stop): a mob still running in at the tank (not
+                // in its melee reach yet) is met where it stops on the tank (meleeStopAt: the meeting of the running
+                // mob and its victim), not followed behind while it runs. b436 / b437 fives: 988 s of "Follow: chase:
                 // behind the target", melee moving 19 % of their combat time
                 if (!toTankStop && melee && !frontHere && target->GetVictim() == tank && target->isMoving() &&
                     !tank->IsWithinMeleeRange(target))
