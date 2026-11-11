@@ -1212,6 +1212,18 @@ void TickBuffOrders(LeaderGroup& group, std::vector<Player*> const& members, Log
                 continue;
             }
         }
+        // [dun223] no caster of it sees the target (the picker took the first one): out of a fight the leader walks
+        // the caster to the target first, its order goes out once it sees it
+        if (Unit* buffTarget = ObjectAccessor::GetUnit(*caster, order.target);
+            buffTarget && buffTarget != caster && !caster->IsInCombat() && !caster->IsWithinLOSInMap(buffTarget))
+        {
+            if (Leader::Events::SetMove(order.caster, Leader::MoveEvent::MoveTo, buffTarget->GetPosition(), 3.0f,
+                                        "to the buff's target: into its sight [dun223]"))
+                LOG_INFO("playerbots", "[dun223] buff_order: {} walks into {}'s sight first ({})", caster->GetName(),
+                         buffTarget->GetName(), group.Run().runId);
+            work += (work.empty() ? "" : ", ") + order.what + " (walks into its sight)";
+            continue;
+        }
         std::string stale;
         Leader::Events::TakeExternalFailed(order.caster, order.spell, stale);  // a report of an earlier order
         bool const changed = Leader::Events::SetExternal(order.caster, order.spell, order.target);

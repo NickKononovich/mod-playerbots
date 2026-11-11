@@ -359,13 +359,16 @@ namespace Leader::Dungeon
                     first && first->PowerType == POWER_RAGE)
                     continue;
                 bool givable = false;
-                Player* giver = nullptr;
+                Player* firstGiver = nullptr;
+                std::vector<Player*> givers;  // [dun223] every caster that can give it
                 for (Player* caster : players)
-                    if (!givable && caster->getClass() == def.casterClass && InBuffRange(caster, leader) &&
+                    if (caster->getClass() == def.casterClass && InBuffRange(caster, leader) &&
                         CanGive(caster, def.spells))
                     {
+                        if (!givable)
+                            firstGiver = caster;
                         givable = true;
-                        giver = caster;
+                        givers.push_back(caster);
                     }
                 if (!givable)
                     continue;
@@ -387,6 +390,16 @@ namespace Leader::Dungeon
                     if (!has)
                     {
                         missing += (missing.empty() ? "" : ", ") + bot->GetName() + " " + def.label;
+                        // [dun223] the giver that sees its target (the cast's line of sight, Spell::CheckCast), else
+                        // the first one (its order walks it into sight: TickBuffing). b442: 6 order_impossible
+                        // "external 1244 / 19835 on X: SPELL_FAILED_LINE_OF_SIGHT"
+                        Player* giver = firstGiver;
+                        for (Player* caster : givers)
+                            if (caster == bot || caster->IsWithinLOSInMap(bot))
+                            {
+                                giver = caster;
+                                break;
+                            }
                         if (orders && giver)
                         {
                             if (uint32 const spell = KnownRank(giver, def.spells))

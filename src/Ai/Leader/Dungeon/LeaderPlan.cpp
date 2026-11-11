@@ -902,8 +902,9 @@ namespace Leader::Dungeon
                 }
             if (!orderFor && waitWhy.compare(0, 10, "[lead940] ") == 0)
                 if (Player* bot = ObjectAccessor::FindPlayer(guid))
+                    // [dun223] its own heal over time too (b442: Enyssia's Rejuvenation, Brelir's Regrowth)
                     for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_PERIODIC_HEAL))
-                        if (effect->GetBase()->GetDuration() > 0 && effect->GetBase()->GetCasterGUID() != guid)
+                        if (effect->GetBase()->GetDuration() > 0)
                             orderFor = true;
         }
 
