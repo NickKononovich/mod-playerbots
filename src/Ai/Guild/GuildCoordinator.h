@@ -627,6 +627,7 @@ private:
         // [lag330] a crafter holding members' orders ([lag328]): the copper its spare money lacks for the skill-up
         // walk's costs (trainer fees, vendor reagents at their game prices), funded by the members' gold, and what for
         uint32 profGoldShort{0};
+        bool ordersCall{false};  // [lag336] called for the members' orders it holds ([lag328])
         std::string profGoldWhat;
         // [human] the suggestions sent to a human member: key -> text (sent again only when the text changes)
         std::map<std::string, std::string> suggested;
@@ -706,6 +707,7 @@ private:
         bool enchanter{false};
         uint32 repeats{0};  // [need106] its runs of the dungeon so far (a carrier with no need: the fewest first)
         bool xp{false};      // [roles108] a healer the dungeon still gives experience (no other need)
+        bool townStop{false};  // [lag336] a called crafter whose profession town stop is due
     };
 
     void LoadPlan();

@@ -4170,6 +4170,7 @@ void GuildCoordinator::UpdateProfessions()
         uint8 const level = p->GetLevel();
         bool const levelsFirst = level < medianLevel;  // [lag325]
         st.profGoldShort = 0;  // [lag330] summed below over its lines with members' orders
+        st.ordersCall = false;  // [lag336]
         st.profGoldWhat.clear();
         std::vector<ProfessionPick> picks;
         std::vector<uint32> lines;
@@ -4701,6 +4702,7 @@ void GuildCoordinator::UpdateProfessions()
                     {
                         // [lag330] user rule 2026-11-11: guild orders mean the guild helps its crafter - the walk's
                         // costs its spare money does not cover come from the members' gold ([gold41] transfers)
+                        st.ordersCall |= memberNeeds;  // [lag336]
                         if (memberNeeds)
                             if (uint32 const spare = FoundingFreeMoney(p); vendorCost > double(spare))
                             {

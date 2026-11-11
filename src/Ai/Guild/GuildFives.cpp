@@ -1641,6 +1641,13 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
         // every planned member (A, B and C) clears every dungeon, in its band (user 2026-11-08)
         c.needsClear = !Cleared(d.contentKey, row.low);
         c.enchanter = p->HasSkill(SKILL_ENCHANTING) && p->HasSpell(SPELL_DISENCHANT);
+        // [lag336] a crafter called for the members' orders with its profession town stop due (a BUY / TRAIN call
+        // runnable at its vendor's / trainer's town, [lag326] / [prof272])
+        if (auto const st = bots_.find(row.low); st != bots_.end() && st->second.ordersCall)
+            for (GuildOrder const& o : st->second.orders)
+                if (o.type == GuildOrderType::PROFESSION && o.executable && o.townArea &&
+                    (o.profession == GuildProfessionKind::BUY || o.profession == GuildProfessionKind::TRAIN))
+                    c.townStop = true;
         out.push_back(c);
     }
     return out;
@@ -1910,6 +1917,8 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
     std::stable_sort(fits.begin(), fits.end(),
                      [](FiveCandidate const& a, FiveCandidate const& b)
                      {
+                         if (a.townStop != b.townStop)  // [lag336] a crafter with its town stop due last
+                             return b.townStop;
                          if (a.needsClear != b.needsClear)
                              return a.needsClear;
                          return a.player->GetLevel() > b.player->GetLevel();
@@ -2905,6 +2914,40 @@ void GuildCoordinator::AutoFive()
             pool.erase(std::remove_if(pool.begin(), pool.end(),
                                       [](FiveCandidate const& c) { return !c.needsClear && !c.upgrade && !c.xp; }),
                        pool.end());
+            // [lag336] coordinator decision 2026-11-11: a crafter called for the members' orders whose town stop is due
+            // goes to that town first - its own dungeon need waits until the stop is done; it is taken into a new
+            // five only when the five cannot form without it (no other tank / healer free, fewer than 3 other dps).
+            // b443 / b444: Dekorhan L22, the scribe holding the guild's 16 glyph orders, in RFC and SFK fives
+            // (26 + 6.4 min) while his Light Parchment / Virtuoso Inking Set calls waited
+            {
+                static std::map<uint32, std::string> lag336Logged;  // world thread: a log cadence, no decision
+                std::vector<uint32> held;
+                for (FiveCandidate const& c : pool)
+                {
+                    if (!c.townStop)
+                        continue;
+                    uint32 others = 0;
+                    for (FiveCandidate const& o : pool)
+                        others += !o.townStop && o.role == c.role ? 1 : 0;
+                    uint32 const needed = c.role == "dps" ? 3 : 1;
+                    std::string const line =
+                        others >= needed ? "held for its profession town stop (" + d->contentKey + ")"
+                                         : "taken though its town stop is due: no other " + c.role + " free (" +
+                                               d->contentKey + ")";
+                    if (lag336Logged[c.low] != line)
+                    {
+                        lag336Logged[c.low] = line;
+                        LOG_INFO("playerbots", "[lag336] {} L{} {}", c.player->GetName(), c.player->GetLevel(), line);
+                    }
+                    if (others >= needed)
+                        held.push_back(c.low);
+                }
+                if (!held.empty())
+                    pool.erase(std::remove_if(pool.begin(), pool.end(),
+                                              [&held](FiveCandidate const& c)
+                                              { return std::find(held.begin(), held.end(), c.low) != held.end(); }),
+                               pool.end());
+            }
             std::vector<FiveCandidate> five;
             // [five58] the finder's band first (the five may queue); else a five that walks in: every member of it
             // passes the walk (same continent, no enemy capital), members below the finder's minimum among them
