@@ -3762,7 +3762,24 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
                  "it",
                  bot->GetName(), bot->GetLevel(), behind->GetName(), behind->GetLevel(), bot->GetExactDist(behind));
     }
-    if (Player* member = purpose ? behind : nullptr;
+    // [lag320] a meet walk only where a walk joins the two: the same landmass (TravelRouteMgr::Landmass) and neither
+    // on a transport. Across a ride (the Deeprun Tram's platforms, a boat's piers) the member's own trip brings it;
+    // the leader's ride towards it crossed the member's ride the other way. b435: Rollothan L13 (help party with
+    // Geefeelli L18, q399) rode the tram back and forth for 47 min, 148 "travels by" legs: each stop it "walks to meet"
+    // Geefeelli on the other platform while Geefeelli boarded the car the other way
+    bool const walkJoins =
+        behind && !behind->GetTransport() && !bot->GetTransport() &&
+        TravelRouteMgr::Landmass(WorldPosition(behind)) == TravelRouteMgr::Landmass(WorldPosition(bot));
+    if (behind && purpose && !walkJoins && _meetLogged != behind->GetGUID())
+    {
+        _meetLogged = behind->GetGUID();
+        LOG_INFO("playerbots", "[lag320] {} L{} does not walk to meet {} L{} {:.0f} yd behind: {} - it waits for "
+                 "the member's own trip",
+                 bot->GetName(), bot->GetLevel(), behind->GetName(), behind->GetLevel(), bot->GetExactDist(behind),
+                 behind->GetTransport() || bot->GetTransport() ? "a transport carries one of them"
+                                                               : "another landmass (only a ride joins them)");
+    }
+    if (Player* member = purpose && walkJoins ? behind : nullptr;
         member && member->IsAlive() && member->IsInWorld() && member->GetMapId() == bot->GetMapId() &&
         !bot->IsInCombat())
     {
