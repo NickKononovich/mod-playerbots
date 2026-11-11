@@ -740,7 +740,12 @@ private:
     bool FreeForFive(uint32 low, Player* p, std::string* why = nullptr) const;  // lock_ held
     std::string PlanRole(uint32 low, Player* p) const;
     bool Cleared(std::string const& contentKey, uint32 low) const;  // lock_ held
-    std::vector<FiveCandidate> Candidates(DungeonOption const& d, bool needCheck);  // lock_ held
+    // lock_ held. [order360] heldByOrder: the free members the dungeon order keeps out (needCheck only)
+    std::vector<FiveCandidate> Candidates(DungeonOption const& d, bool needCheck, uint32* heldByOrder = nullptr);
+    // [order360] the dungeon order (Playerbots.Guild.DungeonOrderPerMember), lock_ held: the guild's one open dungeon
+    // (guild-wide), and why a member may not go into a dungeon ("" = it may)
+    void UpdateDungeonOrder();
+    std::string OrderHold(DungeonOption const& d, uint32 low, Player* p);
     // [lag321] a gathering five's member refused its walk in: a free member of its role takes its place (lock_ held)
     bool ReplaceRefusedMember(GuildFive& five, uint32 refusedLow);
     bool PickFive(std::vector<FiveCandidate> const& pool, std::vector<FiveCandidate>& out) const;
@@ -1107,6 +1112,22 @@ private:
     // [done106] the dungeons no member at or below their band needs (cleared or a needed upgrade): no five forms
     std::unordered_set<std::string> guildDone_;
     std::unordered_map<std::string, std::string> needLogged_;  // [need106] the last needs line per dungeon
+    // [order360] the dungeon order: dungeons_ indices by min level, max level, list order (orderIdx_) and each index's
+    // place in it (orderPos_); the guild's open dungeon; per member (per-member order) its uncleared in-band dungeons'
+    // places, kept while its level and the clears (orderGen_) stay
+    std::vector<size_t> orderIdx_;
+    std::vector<size_t> orderPos_;
+    std::string orderOpenKey_;
+    std::string orderLogged_;
+    uint32 orderGen_{0};
+    struct OrderOpen
+    {
+        uint8 level{0};
+        uint32 gen{UINT32_MAX};
+        std::vector<size_t> open;
+    };
+    std::unordered_map<uint32, OrderOpen> orderOpen_;
+    std::map<std::pair<uint32, size_t>, std::string> orderHoldLogged_;  // (member, dungeon index) -> last verdict
     bool autoFives_{true};
     bool drain_{false};          // [drain114]
     std::string drainLogged_;      // [drain114] the last held-fives line

@@ -622,6 +622,7 @@ bool PlayerbotAIConfig::Initialize()
     RandomBotGuildCount = sConfigMgr->GetOption<int32>("Playerbots.RandomBotGuildCount", 20);
     RandomBotGuildSizeMax = sConfigMgr->GetOption<int32>("Playerbots.RandomBotGuildSizeMax", 15);
     DeleteRandomBotGuilds = sConfigMgr->GetOption<bool>("Playerbots.DeleteRandomBotGuilds", false);
+    GuildDungeonOrderPerMember = sConfigMgr->GetOption<bool>("Playerbots.Guild.DungeonOrderPerMember", false);
 
     BotSendMailEnabled = sConfigMgr->GetOption<bool>("Playerbots.BotSendMailEnabled", true);
 

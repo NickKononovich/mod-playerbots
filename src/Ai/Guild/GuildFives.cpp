@@ -1152,6 +1152,7 @@ void GuildCoordinator::LoadRuns()
 {
     runs_.clear();
     cleared_.clear();
+    ++orderGen_;  // [order360]
     PlayerbotsDatabase.DirectExecute(
         "CREATE TABLE IF NOT EXISTS guild_project_runs ("
         "id INT UNSIGNED NOT NULL AUTO_INCREMENT, content VARCHAR(16) NOT NULL, kind VARCHAR(8) NOT NULL, "
@@ -1224,6 +1225,16 @@ GuildCoordinator::DungeonOption const* GuildCoordinator::FindDungeon(std::string
     return nullptr;
 }
 
+// the entrance in the other faction's capital (its guards): the capital's name, else nullptr
+static char const* EnemyCapital(uint32 entranceZone, TeamId team)
+{
+    AreaTableEntry const* zone = sAreaTableStore.LookupEntry(entranceZone);
+    uint32 const own = team == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
+    if (zone && (zone->flags & AREA_FLAG_CAPITAL) && zone->team && zone->team != own && zone->team != AREATEAM_ANY)
+        return zone->area_name[0];
+    return nullptr;
+}
+
 std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, bool walk) const
 {
     // [five58] user 2026-11-09: the five gate proves a five's capacity, so the Dungeon Finder's minimum is no floor:
@@ -1243,13 +1254,8 @@ std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, 
     // a walk across continents has no solo safety check yet (TripRefused judges the bot's own map)
     if (p->GetMapId() != d.entrance.GetMapId())
         return "entrance on another continent (map " + std::to_string(d.entrance.GetMapId()) + ")";
-    // the entrance in the other faction's capital: its guards
-    if (AreaTableEntry const* zone = sAreaTableStore.LookupEntry(d.entranceZone))
-    {
-        uint32 const own = p->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
-        if ((zone->flags & AREA_FLAG_CAPITAL) && zone->team && zone->team != own && zone->team != AREATEAM_ANY)
-            return std::string("entrance in an enemy capital ") + zone->area_name[0];
-    }
+    if (char const* capital = EnemyCapital(d.entranceZone, p->GetTeamId()))
+        return std::string("entrance in an enemy capital ") + capital;
     return "";
 }
 
@@ -1705,7 +1711,8 @@ bool GuildCoordinator::Cleared(std::string const& contentKey, uint32 low) const
     return itr != cleared_.end() && itr->second.count(low);
 }
 
-std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(DungeonOption const& d, bool band)
+std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(DungeonOption const& d, bool band,
+                                                                          uint32* heldByOrder)
 {
     std::vector<FiveCandidate> out;
     for (PlanRow const& row : plan_)
@@ -1728,6 +1735,15 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
         c.role = PlanRole(row.low, p);
         // every planned member (A, B and C) clears every dungeon, in its band (user 2026-11-08)
         c.needsClear = !Cleared(d.contentKey, row.low);
+        // [order360] the dungeon order: guild-wide only the guild's open dungeon (its uncleared members and helpers);
+        // per member its first clear once the earlier dungeons of its band are cleared (a repeat is never held)
+        if (band && (c.needsClear || !sPlayerbotAIConfig.GuildDungeonOrderPerMember) &&
+            !OrderHold(d, row.low, p).empty())
+        {
+            if (heldByOrder)
+                ++*heldByOrder;
+            continue;
+        }
         c.enchanter = p->HasSkill(SKILL_ENCHANTING) && p->HasSpell(SPELL_DISENCHANT);
         // [lag336] a crafter called for the members' orders with its profession town stop due (a BUY / TRAIN call
         // runnable at its vendor's / trainer's town, [lag326] / [prof272])
@@ -1740,6 +1756,175 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
         out.push_back(c);
     }
     return out;
+}
+
+// [order360] user rule 2026-11-11 («Я тебя просил идти всех по порядку», «и так со всеми остальными инстансами»): the
+// guild takes the dungeons one at a time by difficulty - min level, then max level, equal bands in the list's order -
+// and the next opens once every member has fully cleared the current one. b446 five 9 went to the Stockade with five
+// members none of whom had cleared Wailing Caverns or Shadowfang Keep
+void GuildCoordinator::UpdateDungeonOrder()
+{
+    if (orderIdx_.size() != dungeons_.size())
+    {
+        orderIdx_.clear();
+        for (size_t index = 0; index < dungeons_.size(); ++index)
+            orderIdx_.push_back(index);
+        std::stable_sort(orderIdx_.begin(), orderIdx_.end(),
+                         [this](size_t a, size_t b)
+                         {
+                             DungeonOption const& da = dungeons_[a];
+                             DungeonOption const& db = dungeons_[b];
+                             return da.minLevel != db.minLevel ? da.minLevel < db.minLevel : da.maxLevel < db.maxLevel;
+                         });
+        orderPos_.assign(dungeons_.size(), 0);
+        for (size_t pos = 0; pos < orderIdx_.size(); ++pos)
+            orderPos_[orderIdx_[pos]] = pos;
+        orderOpen_.clear();
+        orderHoldLogged_.clear();
+    }
+    if (sPlayerbotAIConfig.GuildDungeonOrderPerMember)
+    {
+        orderOpenKey_.clear();
+        return;
+    }
+    bool const finder = sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER);
+    TeamId team = TEAM_NEUTRAL;
+    for (PlanRow const& row : plan_)
+        if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low)))
+        {
+            team = p->GetTeamId();
+            break;
+        }
+    std::set<std::string> passed;
+    std::string notCounted;
+    std::string held;
+    uint32 heldCount = 0;
+    DungeonOption const* open = nullptr;
+    for (size_t index : orderIdx_)
+    {
+        DungeonOption const& d = dungeons_[index];
+        if (passed.count(d.contentKey))
+            continue;
+        // the guild cannot run it: no Dungeon Finder port, and the entrance in the other faction's capital
+        if (!(finder && d.lfgId) && team != TEAM_NEUTRAL)
+            if (char const* capital = EnemyCapital(d.entranceZone, team))
+            {
+                notCounted += Acore::StringFormat("; {} skipped: no finder port, entrance in an enemy capital {}",
+                                                  d.contentKey, capital);
+                continue;
+            }
+        uint32 keyMax = 0;  // a dungeon of several options (Maraudon's wings): the highest band's top
+        for (DungeonOption const& o : dungeons_)
+            if (o.contentKey == d.contentKey)
+                keyMax = std::max(keyMax, o.maxLevel);
+        std::string names;
+        std::string gone;
+        uint32 count = 0;
+        uint32 goneCount = 0;
+        for (PlanRow const& row : plan_)
+        {
+            if (row.grp < 'A' || row.grp > 'C' || Cleared(d.contentKey, row.low))
+                continue;
+            Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+            if (p && IsHuman(p))
+                continue;
+            // outlevelled it uncleared: the gate (DungeonRefusal) lets it in no more, it cannot hold the guild
+            if (p && p->GetLevel() > keyMax)
+            {
+                ++goneCount;
+                gone += Acore::StringFormat(" {} L{},", Who(row.low), p->GetLevel());
+                continue;
+            }
+            ++count;
+            names += " " + Who(row.low) + (p ? " L" + std::to_string(p->GetLevel()) : std::string(" offline")) + ",";
+        }
+        if (goneCount)
+        {
+            gone.pop_back();
+            notCounted += Acore::StringFormat("; {} not counted: {} outlevelled it uncleared ({})", d.contentKey,
+                                              goneCount, gone.substr(1));
+        }
+        if (!count)
+        {
+            passed.insert(d.contentKey);
+            continue;
+        }
+        names.pop_back();
+        held = names.substr(1);
+        heldCount = count;
+        open = &d;
+        break;
+    }
+    std::string const line =
+        (open ? Acore::StringFormat("open up to {} ({} L{}-{}), held by {}: {} members not cleared ({})",
+                                    open->contentKey, open->name, open->minLevel, open->maxLevel, open->contentKey,
+                                    heldCount, held)
+              : std::string("every dungeon cleared by every member, none held")) +
+        notCounted;
+    if (line != orderLogged_)
+    {
+        orderLogged_ = line;
+        LOG_INFO("playerbots", "[order360] guild order: {}", line);
+    }
+    std::string const key = open ? open->contentKey : "";
+    if (key != orderOpenKey_)
+    {
+        orderOpenKey_ = key;
+        if (open)
+            Decision("[order360] the guild's dungeon is now " + open->name + ": no five goes elsewhere until every "
+                     "member has cleared it");
+    }
+}
+
+std::string GuildCoordinator::OrderHold(DungeonOption const& d, uint32 low, Player* p)
+{
+    if (orderPos_.size() != dungeons_.size() || &d < dungeons_.data() || &d >= dungeons_.data() + dungeons_.size())
+        return "";
+    if (!sPlayerbotAIConfig.GuildDungeonOrderPerMember)
+        return orderOpenKey_.empty() || d.contentKey == orderOpenKey_ ? "" : "the guild's dungeon is " + orderOpenKey_;
+    size_t const index = size_t(&d - dungeons_.data());
+    uint8 const level = uint8(p->GetLevel());
+    OrderOpen& mine = orderOpen_[low];
+    if (mine.level != level || mine.gen != orderGen_)
+    {
+        mine.level = level;
+        mine.gen = orderGen_;
+        mine.open.clear();
+        bool const finder = sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER);
+        for (size_t pos = 0; pos < orderIdx_.size(); ++pos)
+        {
+            DungeonOption const& e = dungeons_[orderIdx_[pos]];
+            if (level >= e.minLevel && level <= e.maxLevel && !Cleared(e.contentKey, low) &&
+                ((finder && e.lfgId) || !EnemyCapital(e.entranceZone, p->GetTeamId())))
+                mine.open.push_back(pos);
+        }
+    }
+    std::string why;
+    for (size_t pos : mine.open)
+    {
+        if (pos >= orderPos_[index])
+            break;
+        DungeonOption const& e = dungeons_[orderIdx_[pos]];
+        if (e.contentKey == d.contentKey || why.find(e.contentKey) != std::string::npos)
+            continue;
+        // [lfg69] refused for it at this level: it cannot run it now
+        if (auto const r = refusedFor_.find(e.contentKey); r != refusedFor_.end())
+            if (auto const m = r->second.find(low); m != r->second.end() && m->second == level)
+                continue;
+        why += (why.empty() ? "" : ", ") + e.contentKey;
+    }
+    if (!why.empty())
+        why += " not cleared";
+    if (std::string& logged = orderHoldLogged_[{low, index}]; logged != why)
+    {
+        if (!why.empty())
+            LOG_INFO("playerbots", "[order360] {} L{} not for {}: {}", Who(low), level, d.contentKey, why);
+        else
+            LOG_INFO("playerbots", "[order360] {} L{} for {}: every earlier dungeon cleared", Who(low), level,
+                     d.contentKey);
+        logged = why;
+    }
+    return why;
 }
 
 bool GuildCoordinator::PickFive(std::vector<FiveCandidate> const& pool, std::vector<FiveCandidate>& out) const
@@ -2791,6 +2976,7 @@ void GuildCoordinator::AutoFive()
                 LOG_INFO("playerbots", "[alert] MISSED_DUNGEON {} L{} left {} ({}-{}) uncleared", Who(row.low),
                          p->GetLevel(), d.name, d.minLevel, d.maxLevel);
             }
+        UpdateDungeonOrder();  // [order360]
     }
     // [roles59] the role mix first: each band's fives get their tanks and healers
     {
@@ -2916,7 +3102,8 @@ void GuildCoordinator::AutoFive()
             CoordLock guard(lock_, __func__);
             for (DungeonOption const& d : dungeons_)
             {
-                std::vector<FiveCandidate> pool = Candidates(d, true);
+                uint32 heldByOrder = 0;  // [order360]
+                std::vector<FiveCandidate> pool = Candidates(d, true, &heldByOrder);
                 if (guardCount == 0)
                 {
                     uint32 inBand = 0;
@@ -2946,6 +3133,8 @@ void GuildCoordinator::AutoFive()
                             tanks += c.role == "tank" ? 1 : 0, healers += c.role == "healer" ? 1 : 0;
                         std::string text = Acore::StringFormat("{} in band, {} free (t{} h{} d{})", inBand, pool.size(),
                                                                tanks, healers, pool.size() - tanks - healers);
+                        if (heldByOrder)
+                            text += Acore::StringFormat(", held by order: {}", heldByOrder);
                         if (!busy.empty())
                         {
                             text += " busy:";
@@ -2953,7 +3142,10 @@ void GuildCoordinator::AutoFive()
                                 text += Acore::StringFormat(" {} {},", why, n);
                             text.pop_back();
                         }
-                        if (pool.size() < 5)
+                        if (!sPlayerbotAIConfig.GuildDungeonOrderPerMember && !orderOpenKey_.empty() &&
+                            d.contentKey != orderOpenKey_)
+                            text += " -> held by order: the guild's dungeon is " + orderOpenKey_;
+                        else if (pool.size() < 5)
                             text += " -> fewer than 5 free";
                         else if (!tanks)
                             text += " -> no tank";
@@ -3012,8 +3204,15 @@ void GuildCoordinator::AutoFive()
             // [lag324] coordinator decision 2026-11-11: every member goes for progress of its own at its level - a
             // clear or an upgrade it needs, or (a tank / healer) the dungeon's experience; no carrier with none (a
             // five's time is that member's questing time: the laggards' rule of the global leader)
-            pool.erase(std::remove_if(pool.begin(), pool.end(),
-                                      [](FiveCandidate const& c) { return !c.needsClear && !c.upgrade && !c.xp; }),
+            // [order360] user rule 2026-11-11: the guild's open dungeon takes helpers for its uncleared members - a
+            // lone member's first clear forms with members who cleared it already, an upgrade of their own or not
+            bool const helpers =
+                !sPlayerbotAIConfig.GuildDungeonOrderPerMember && d->contentKey == orderOpenKey_ &&
+                std::any_of(pool.begin(), pool.end(), [](FiveCandidate const& c) { return c.needsClear; });
+            if (helpers && guardCount == 0)
+                lookWhy[d->contentKey] += " -> [order360] helpers carry its uncleared members";
+            pool.erase(std::remove_if(pool.begin(), pool.end(), [helpers](FiveCandidate const& c)
+                                      { return !helpers && !c.needsClear && !c.upgrade && !c.xp; }),
                        pool.end());
             // [lag336] coordinator decision 2026-11-11: a crafter called for the members' orders whose town stop is due
             // goes to that town first - its own dungeon need waits until the stop is done; it is taken into a new
@@ -3441,8 +3640,11 @@ void GuildCoordinator::RecordRun(GuildFive const& five, GuildFiveReport const& r
         rec.deaths += count;
     rec.id = runs_.empty() ? 1 : runs_.back().id + 1;  // the DB's own id may differ; the tab shows the order
     if (rec.result == "done")
+    {
         for (uint32 low : five.members)
             cleared_[rec.contentKey].insert(low);
+        ++orderGen_;  // [order360]
+    }
     runs_.push_back(rec);
 
     std::string members;

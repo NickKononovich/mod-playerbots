@@ -199,6 +199,17 @@ Playerbots.RandomBotGuildSizeMax = 15
 # server to resume normal random bot guild assignment.
 Playerbots.DeleteRandomBotGuilds = 0
 
+# The bot guild's fives take the dungeons strictly in order of difficulty: by the Dungeon Finder's level band
+# (min level, then max level; equal bands in the dungeon list's order: Wailing Caverns before Deadmines).
+# 0 = guild-wide: one dungeon at a time for the whole guild. The next dungeon opens only once every guild member
+#     has fully cleared (every boss killed) the current one; only the current dungeon's fives form - its uncleared
+#     members plus helpers who cleared it already. A member who outlevelled a dungeon uncleared cannot enter it
+#     any more and does not hold it (logged).
+# 1 = per member: a member takes its first clear of a dungeon once it has cleared every earlier dungeon whose band
+#     it is in; repeats of a cleared dungeon (a needed upgrade) are never held.
+# Default: 0 (guild-wide)
+Playerbots.Guild.DungeonOrderPerMember = 0
+
 # Randombots will invite players to groups/raids/guilds
 Playerbots.RandomBotInvitePlayer = 0
 

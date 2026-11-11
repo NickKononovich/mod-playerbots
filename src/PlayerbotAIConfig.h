@@ -309,6 +309,7 @@ public:
     bool DeleteRandomBotAccounts;
     uint32 RandomBotGuildCount, RandomBotGuildSizeMax;
     bool DeleteRandomBotGuilds;
+    bool GuildDungeonOrderPerMember;  // [order360] false: one dungeon at a time for the whole guild
     std::vector<uint32> PvpProhibitedZoneIds;
     std::vector<uint32> PvpProhibitedAreaIds;
     bool FastReactInBG;
