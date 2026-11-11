@@ -1013,6 +1013,18 @@ bool PetMayEngage(PlayerbotAI* botAI, Creature* pet, Unit* target, PetControlSta
     if (Leader::ExecutorMember(bot))
     {
         Leader::MemberEvents events;
+        // [dun203] the tank's own target, once the tank's first hit is on it (its threat there): the pet goes with the
+        // tank's hit, not with its owner's own opening (b436 / b437: pets held passive until the owner's Attack, 2-3 %
+        // of the group's formula). Any other mob waits for the owner's leader Attack as before
+        Player* tankOfGroup = GroupTank(bot);
+        bool const tankHits = tankOfGroup && tankOfGroup->GetVictim() == target &&
+                              target->GetThreatMgr().GetThreat(tankOfGroup) > petThreat;
+        if (tankHits && (!Leader::Events::Get(bot->GetGUID(), events) ||
+                         events.attack != Leader::AttackEvent::Attack))
+        {
+            why = "[dun203] the tank's first hit is on it";
+            return true;
+        }
         if (!Leader::Events::Get(bot->GetGUID(), events) || events.attack != Leader::AttackEvent::Attack)
         {
             why = "its owner has no leader Attack";
