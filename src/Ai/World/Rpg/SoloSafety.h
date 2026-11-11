@@ -43,6 +43,9 @@ namespace Leader::Travel
 namespace SoloSafety
 {
     bool Applies(Player* bot);
+    // [deaths146] a bot in the open world with no group member near that fights with it (SoloPlayerBot), whatever
+    // its strategies: a dungeon five's member walking alone to its instance is one
+    bool WalksAlone(Player* bot);
     // [deaths23] the group member fights with the bot: both in the co-op / help party, or neither and not both bots
     // on their own New RPG plans (a human, a follower and its leader); two own-plan bots walk their own routes
     bool FightsWith(Player* bot, Player* member);

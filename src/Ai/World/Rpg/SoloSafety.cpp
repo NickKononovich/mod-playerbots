@@ -1400,6 +1400,8 @@ namespace SoloSafety
         return out;
     }
 
+    bool WalksAlone(Player* bot) { return SoloPlayerBot(bot); }
+
     bool Applies(Player* bot)
     {
         if (!SoloPlayerBot(bot))
@@ -3416,7 +3418,11 @@ namespace SoloSafety
         // spawns went through Nightsabers, Webwood Lurkers and Shadow Sprites L5-6, five fights off the objective, a
         // Lurker L6 killed Ryarii): orange / red, elite and danger-zone reaches are refused; the pack it loses alone is
         // the party's judgement (NewRpgCoop::JudgePull), not refused here
-        bool const alone = Applies(bot);
+        // [deaths146] ... and a bot that walks alone off its New RPG plans (a dungeon five's member on its way to the
+        // instance, its group inside): b438b Aevmae L19 (dm-n five 2) rose at the Westfall graveyard 32 yd above the
+        // Deadmines entrance, its "move to instance portal" walk went round by Moonbrook through the Defias
+        // Pathstalkers at Demont's Place unpriced - 8 deaths there in a row under Resurrection Sickness (hp 192)
+        bool const alone = Applies(bot) || WalksAlone(bot);
         // [group22] coordinator 2026-11-09: any bot leading an open-world group (co-op, help, user pack, a restored
         // group) prices its walk for the group as a co-op leader does - the reaches of mobs it never fights refused,
         // the packs the party judge's (JudgePull); a human leader decides himself (no bot walk). b370: the user-pack

@@ -18,6 +18,7 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "SpellInfo.h"
+#include "SoloSafety.h"  // [deaths146]
 #include "SpellMgr.h"
 #include "TerrainHazard.h"  // [b44_strat] PathThroughClosedDoor for the walk inside to an exact goal
 #include "Timer.h"
@@ -984,6 +985,66 @@ int32 MoveToInstancePortalAction::WalkTowards(AreaTrigger const* portal, bool gh
 {
     G3D::Vector3 const target(portal->x, portal->y, portal->z);
     float const left = bot->GetExactDist(portal->x, portal->y, portal->z);
+
+    // [deaths146] alive and walking alone in the open world (its group in the instance or far off): the walk is the
+    // priced route a solo walk takes (SoloSafety::RouteCosts: round the packs it loses, never through orange / red
+    // reaches), not the core's path through every camp. A route that only passes through refused reaches is no
+    // walk: the bot stays (its group's leader decides), as a solo walk does. No route at all: the walks below
+    if (!ghost && SoloSafety::WalksAlone(bot))
+    {
+        // the route kept per bot while it walks on it (searched again off it, for another goal, or at the long
+        // route's recheck cadence), as NextRouteLeg keeps its own: a route search is a cost
+        struct PricedWalk
+        {
+            SelfTravel::RouteWalk walk;
+            bool refused = false;
+        };
+        static thread_local std::unordered_map<ObjectGuid, PricedWalk> pricedWalks;
+        PricedWalk& priced = pricedWalks[bot->GetGUID()];
+        uint32 const now = getMSTime();
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        bool const sameGoal = priced.walk.searchedMs && priced.walk.mapId == bot->GetMapId() &&
+                              (priced.walk.goal - target).length() <= ROUTE_SAME_GOAL_RANGE;
+        size_t segment = 0;
+        float off = FLT_MAX;
+        G3D::Vector3 onRoute = here;
+        if (sameGoal && priced.walk.found && priced.walk.corners.size() >= 2)
+            onRoute = NearestOnPolyline(priced.walk.corners, here, segment, off);
+        bool const onIt = sameGoal && priced.walk.found && off <= LONG_ROUTE_OFF_RANGE;
+        bool const recent = sameGoal && getMSTimeDiff(priced.walk.searchedMs, now) < LONG_ROUTE_RECHECK_MS;
+        if (!onIt && !recent)
+        {
+            Leader::RouteResult const route = Leader::Route(bot, Position(target.x, target.y, target.z));
+            priced.walk.goal = target;
+            priced.walk.mapId = bot->GetMapId();
+            priced.walk.searchedMs = now ? now : 1;
+            priced.walk.found = route.found && !route.throughRefused && route.points.size() >= 2;
+            priced.walk.corners.assign(route.points.begin(), route.points.end());
+            priced.refused = (route.found && route.throughRefused) || route.refusedArea;
+            off = FLT_MAX;
+            segment = 0;
+            if (priced.walk.found)
+                onRoute = NearestOnPolyline(priced.walk.corners, here, segment, off);
+            if (priced.refused)
+                LOG_INFO("playerbots", "[deaths146] {} L{} walks alone to portal {} ({:.0f} yd): every way passes "
+                         "mobs or an area it must not walk through - it stays",
+                         bot->GetName(), bot->GetLevel(), portal->entry, left);
+        }
+        if (priced.walk.found && priced.walk.corners.size() >= 2 && off <= LONG_ROUTE_OFF_RANGE)
+        {
+            Movement::PointsArray rest;
+            rest.push_back(onRoute);
+            for (size_t index = segment + 1; index < priced.walk.corners.size(); ++index)
+                rest.push_back(priced.walk.corners[index]);
+            G3D::Vector3 const next = PointAlong(rest, PORTAL_LEG_STEP);
+            if (bot->GetExactDist(next.x, next.y, next.z) > 1.0f && MoveTo(bot->GetMapId(), next.x, next.y, next.z))
+                return 1;
+            if (bot->isMoving())
+                return -1;
+        }
+        else if (priced.refused)
+            return 0;
+    }
 
     PathGenerator path(bot);
     path.SetUseStraightPath(true);
