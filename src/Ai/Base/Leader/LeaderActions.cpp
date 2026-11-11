@@ -36,6 +36,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <map>
+#include <set>
 
 using namespace RaidLeader;
 
@@ -962,21 +963,59 @@ bool LeaderMoveOrderAction::FollowPlace(Unit* target, uint8 index, float& x, flo
         return true;
     }
     float const o = target->GetOrientation();
-    x = target->GetPositionX() + std::cos(o + float(M_PI)) * back + std::cos(o + float(M_PI) / 2.0f) * side;
-    y = target->GetPositionY() + std::sin(o + float(M_PI)) * back + std::sin(o + float(M_PI) / 2.0f) * side;
-    z = target->GetPositionZ();
-    // [lead161] a non-finite place (an orientation or a collision answer that is no number) is no place: the
-    // target's own position, and none when that is not finite either
-    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
-        !bot->GetMap()->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
-                                                        target->GetPositionZ(), x, y, z) ||
-        !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z))
+    // the follow row turned round the target by `turn` (0 behind it, 1 in front of it)
+    auto const placeAt = [&](float turn, float& px, float& py, float& pz)
     {
-        x = target->GetPositionX();
-        y = target->GetPositionY();
-        z = target->GetPositionZ();
+        float const angle = o + float(M_PI) * (1.0f + turn);
+        px = target->GetPositionX() + std::cos(angle) * back + std::cos(angle - float(M_PI) / 2.0f) * side;
+        py = target->GetPositionY() + std::sin(angle) * back + std::sin(angle - float(M_PI) / 2.0f) * side;
+        pz = target->GetPositionZ();
+        // [lead161] a non-finite place (an orientation or a collision answer that is no number) is no place: the
+        // target's own position, and none when that is not finite either
+        if (!std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz) ||
+            !bot->GetMap()->CheckCollisionAndGetValidCoords(target, target->GetPositionX(), target->GetPositionY(),
+                                                            target->GetPositionZ(), px, py, pz) ||
+            !std::isfinite(px) || !std::isfinite(py) || !std::isfinite(pz))
+        {
+            px = target->GetPositionX();
+            py = target->GetPositionY();
+            pz = target->GetPositionZ();
+        }
+        return std::isfinite(px) && std::isfinite(py) && std::isfinite(pz);
+    };
+    if (!placeAt(0.0f, x, y, z))
+        return false;
+    // [sfk240] b445 sfk-n five3-3 / five5-5: the tank back from its corpse run stood at the entry spot (-229.1,
+    // 2109.2), 5.4 yd from the exit areatrigger 194 (radius 5), facing in; the row behind it lay in the exit, every
+    // member's walk along with it was refused (InInstanceExit), lead77 held the tank for them: 0/8 to the stall.
+    // A row in the exit turns round the target to the first place out of it
+    uint32 const exit = bot->GetMap()->IsDungeon()
+                            ? InInstanceExit(bot->GetMapId(), x, y, z, bot->GetCombatReach())
+                            : 0;
+    if (!exit)
+        return true;
+    static constexpr float TURNS[] = {0.5f, -0.5f, 0.75f, -0.75f, 0.25f, -0.25f, 1.0f};
+    for (float const turn : TURNS)
+    {
+        float tx = 0.0f;
+        float ty = 0.0f;
+        float tz = 0.0f;
+        if (!placeAt(turn, tx, ty, tz) || InInstanceExit(bot->GetMapId(), tx, ty, tz, bot->GetCombatReach()))
+            continue;
+        thread_local std::set<std::pair<ObjectGuid, uint32>> logged;  // (member, exit) once
+        if (logged.size() > 4096)
+            logged.clear();
+        if (logged.insert({bot->GetGUID(), exit}).second)
+            LOG_INFO("playerbots",
+                     "[sfk240] {}: its follow place behind {} is in the instance's exit (areatrigger {}): turned "
+                     "{:.0f} deg round it to ({:.1f}, {:.1f}, {:.1f})",
+                     bot->GetName(), target->GetName(), exit, turn * 180.0f, tx, ty, tz);
+        x = tx;
+        y = ty;
+        z = tz;
+        return true;
     }
-    return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+    return true;
 }
 
 std::string LeaderMoveOrderAction::DryFollow(Unit* target, uint8 index, ObjectGuid& mob, bool chase)
