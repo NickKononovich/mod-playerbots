@@ -1043,7 +1043,30 @@ int32 MoveToInstancePortalAction::WalkTowards(AreaTrigger const* portal, bool gh
                 return -1;
         }
         else if (priced.refused)
+        {
+            // [deaths147] it stays - out of every idle mob's and roamer's reach (the [deaths140] spot search), as a
+            // sick or walled-in solo bot waits: b438b Aevmae L19 stood under Resurrection Sickness at the Westfall
+            // graveyard by the Deadmines while its five was inside
+            std::string who;
+            std::vector<G3D::Vector3> spots;
+            if (!bot->isMoving() && SoloSafety::StandsInReach(bot, who, spots))
+            {
+                for (G3D::Vector3 const& at : spots)
+                {
+                    Leader::RouteResult const out = Leader::Route(bot, Position(at.x, at.y, at.z));
+                    if (!out.found || !out.complete || out.throughRefused)
+                        continue;
+                    if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+                        continue;
+                    LOG_INFO("playerbots", "[deaths147] {} L{} waits for its walk to portal {} out of the reach of {}: "
+                             "steps to ({:.0f},{:.0f}), {:.0f} yd walk",
+                             bot->GetName(), bot->GetLevel(), portal->entry, who, at.x, at.y, out.length);
+                    return 1;
+                }
+                SoloSafety::NoteNoWayOut(bot, who, spots.size(), "walk to its instance refused");
+            }
             return 0;
+        }
     }
 
     PathGenerator path(bot);
