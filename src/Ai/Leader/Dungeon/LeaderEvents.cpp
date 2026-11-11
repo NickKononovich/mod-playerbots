@@ -1223,11 +1223,50 @@ namespace Leader::Dungeon
                                   .Str("member", bot->GetName())
                                   .Str("event", MoveEventName(Leader::MoveEvent::StandAt)));
         };
+        // [dun231] a member still on the near side of the route link the leader has crossed walks the crossing the
+        // leader gave it (CrossLinks: the link's start, then the jump / the line), no other walk: b443 wc-n five 2
+        // 2080-2122 s, the healer Irrua 3.4 yd from the start of the drop from Verdan's ledge was held by "heal reach:
+        // top up Gnetlibozz: stays (... JudgeLedgeDrop)" (the landing's fall damage) and never jumped; the four
+        // others fought below without her, the Disciple of Naralex was never reached. Its live move ends once
+        auto const crossesLink = [&](Player* bot) -> bool
+        {
+            GroupRouteState const& route = group.Route();
+            return bot && bot != tank && route.linkIdx >= 0 && route.linkLeaderCrossed && bot->IsAlive() &&
+                   !bot->IsInCombat() && !route.linkCrossed.count(bot->GetGUID());
+        };
+        auto const leaveToLink = [&](Player* bot) -> bool
+        {
+            Leader::MemberEvents live;
+            if (!Leader::Events::Get(bot->GetGUID(), live) || live.move == Leader::MoveEvent::None)
+                return false;
+            bool const changed = Leader::Events::SetMove(bot->GetGUID(), Leader::MoveEvent::None, bot->GetPosition(),
+                                                         0.0f, "over the route link first [dun231]");
+            if (changed)
+            {
+                thread_local std::set<std::pair<ObjectGuid, int32>> logged;  // (member, link) once
+                if (logged.size() > 4096)
+                    logged.clear();
+                if (logged.insert({bot->GetGUID(), group.Route().linkIdx}).second)
+                {
+                    LOG_INFO("playerbots",
+                             "[dun231] {}: {} crosses the route link the leader crossed first: its move \"{}\" ends",
+                             group.Run().runId, bot->GetName(), live.moveWhy);
+                    Decisions().Write(run, "leader", "link_cross_member", bot->GetGUID(), bot->GetName(), true,
+                                      JsonObject()
+                                          .Str("member", bot->GetName())
+                                          .Str("ended", live.moveWhy)
+                                          .Str("tag", "[dun231]"));
+                }
+            }
+            return changed;
+        };
         // [lead374] the walk along with the tank: a Follow the member's walk takes is issued; one it cannot take
         // safely is not - the member stays and the group holds for it (group_blocked: the tank walks on only where
         // the group follows, lead77), the idle mob in the way is the next pull (lead364). Returns the command changed
         auto const followTank = [&](Player* bot, uint8 index, std::string const& why) -> bool
         {
+            if (crossesLink(bot))  // [dun231]
+                return leaveToLink(bot);
             ObjectGuid mob;
             std::string const refusal = followRefusal(bot, tank, index, mob);
             if (refusal.empty())
@@ -1257,6 +1296,11 @@ namespace Leader::Dungeon
                                      std::string const& why) -> bool
         {
             Player* bot = ObjectAccessor::FindPlayer(member);
+            if (crossesLink(bot))  // [dun231]
+            {
+                leaveToLink(bot);
+                return false;
+            }
             // [lead127] the arbiter's one owner: a move barred for the member is neither judged nor issued
             // [lead137] ... and no "along with the tank" walk while the group fights (b162: the shaman 83 s)
             if (Leader::Events::MoveBarred(member, why) ||

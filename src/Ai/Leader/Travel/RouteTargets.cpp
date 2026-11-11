@@ -4649,6 +4649,7 @@ namespace Leader::Travel
         int32 starterIdx = -1;
         float starterScore = 0.0f;
         bool starterPriority = false;
+        bool starterArrives = false;  // [dun231] the chosen starter's walk ends at it
         bool starterDoorPromoted = false;
         // [b32_st] Sunken Temple: the Shade of Hakkar event failed (the Shade despawned at 25 Suppressions, 8440 id
         // 9-10, or the Avatar 8443 stood 10 s out of combat, 8443 id 0-1: instance data 2 back to NOT_STARTED). The
@@ -5139,6 +5140,7 @@ namespace Leader::Travel
                 starterIdx = int32(index);
                 starterScore = path.length;
                 starterPriority = priority;
+                starterArrives = StarterPathArrives(path, object);
                 starterDoorPromoted = priority && !starter.def->priority;
                 group.Route().starterTargets[index] = object->GetGUID();
             }
@@ -5178,7 +5180,29 @@ namespace Leader::Travel
         }
         if (introBoss || leadSpotWins || eventHold)
             starterIdx = -1;
-        bool useStarter = starterIdx >= 0 && (starterPriority || bestGuid.IsEmpty() || bestFar);
+        // [dun231] ... and before the full-clear fallback once no boss of the route is left to walk to (the bosses
+        // still alive come out of an event): the fallback's trash lies off every route, the starter brings the boss.
+        // b443 wc-n five 2: after Verdan the drop to the Disciple of Naralex was taken, then the fallback chose Druid
+        // of the Fang across the caverns ("fallback (nothing on the route)", 81 candidates) for 4 minutes - Mutanus
+        // "event not started" (wc-h 2026-10-26 likewise cleared the whole fallback first)
+        bool const starterBeforeFallback =
+            starterIdx >= 0 && !starterPriority && starterArrives && routeFallback && (!nextBoss || nextOrder < 0);
+        bool useStarter =
+            starterIdx >= 0 && (starterPriority || bestGuid.IsEmpty() || bestFar || starterBeforeFallback);
+        if (starterBeforeFallback && !bestGuid.IsEmpty())
+        {
+            thread_local std::set<std::pair<uint32, int32>> logged;  // (instance, starter) once
+            if (logged.size() > 4096)
+                logged.clear();
+            if (logged.insert({group.InstanceId(), starterIdx}).second)
+            {
+                char const* const note = group.Route().starters[size_t(starterIdx)].def->note;
+                LOG_INFO("playerbots", "[dun231] {}: no boss left on the route: {} before the full-clear fallback",
+                         group.Run().runId, note);
+                group.LogEvent("starter_before_fallback",
+                               JsonObject().Str("note", note).Real("distance", starterScore).Str("tag", "[dun231]"));
+            }
+        }
         // [b32_st] A hold spot's guard out of combat at the spot comes before any starter, priority ones too: the
         // Nightmare Suppressor 8497 adds 1 to the Shade of Hakkar's counter 2 every second it stands idle within 40
         // yd (smart_scripts 8497 id 5, after 4 s), 25 in all despawn the Shade (8440 id 9-10, instance data 2
