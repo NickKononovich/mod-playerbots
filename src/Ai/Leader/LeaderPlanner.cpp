@@ -11688,7 +11688,56 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                  "{:.2f}{}",
                  bot->GetName(), target->GetName(), chosen.mobs, chosen.cost, chosen.fightSec, bossOverload,
                  measured ? "" : " (not measured yet)");
-        if (measured && bossOverload > 1.0f)
+        // [dun192] a boss no walk reaches (no route, or a partial one whose end does not see him) is no pull: the run
+        // leaves him (b435 wc-n Lord Serpentis on his ledge, 29 yd above: "route plan: 0 stops to Lord Serpentis,
+        // -1 yd", the engage order open 83 s with the tank idle at the end of its walk). Looked at again when the tank
+        // has moved off the spot it was judged from
+        bool bossUnreachable = false;
+        {
+            struct Reach
+            {
+                Position from;
+                bool reaches = true;
+                std::string route;
+            };
+            thread_local std::map<std::pair<uint64, uint64>, Reach> bossReach;
+            if (bossReach.size() > 1024)
+                bossReach.clear();
+            auto const key = std::make_pair(bot->GetGUID().GetRawValue(), target->GetGUID().GetRawValue());
+            auto judgedAt = bossReach.find(key);
+            if (judgedAt == bossReach.end() ||
+                judgedAt->second.from.GetExactDist(bot) > Leader::LEADER_COMMIT_MOVED_YD)
+            {
+                Leader::RouteResult const way = Leader::Route(bot, target->GetPosition());
+                Reach judged;
+                judged.from = bot->GetPosition();
+                judged.route = way.Describe();
+                judged.reaches = way.found && !way.points.empty();
+                if (judged.reaches && !way.complete)
+                {
+                    G3D::Vector3 const& end = way.points.back();
+                    judged.reaches = bot->GetMap()->isInLineOfSight(
+                        end.x, end.y, end.z + bot->GetCollisionHeight(), target->GetPositionX(),
+                        target->GetPositionY(), target->GetPositionZ() + target->GetCollisionHeight(),
+                        bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
+                }
+                judgedAt = bossReach.insert_or_assign(key, judged).first;
+            }
+            if (!judgedAt->second.reaches)
+            {
+                bossUnreachable = true;
+                found = false;
+                std::string const why = Acore::StringFormat(
+                    "[dun192] no walk reaches {} ({:.1f} {:.1f} {:.1f}) from ({:.1f} {:.1f} {:.1f}): {} - a navmesh "
+                    "gap",
+                    target->GetName(), target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(),
+                    bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), judgedAt->second.route);
+                if (Group* bossGroup = bot->GetGroup())
+                    Leader::BossOutOfReach::Note(bossGroup->GetGUID(), why);
+                LOG_INFO("playerbots", "{}: {}: left for a later visit", bot->GetName(), why);
+            }
+        }
+        if (!bossUnreachable && measured && bossOverload > 1.0f)
         {
             found = false;
             std::string const why = Acore::StringFormat(

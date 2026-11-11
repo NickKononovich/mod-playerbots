@@ -726,7 +726,7 @@ namespace Leader::Dungeon
         if (itr == runs_.end())
             return;
         Run& run = itr->second;
-        if (result.reason.find("[dun189]") != std::string::npos)
+        if (result.reason.find("[dun189]") != std::string::npos || result.reason.find("[dun192]") != std::string::npos)
         {
             leftFacts_[FinderKey(run.request)] = LevelFacts(run.request);
             LOG_INFO("playerbots", "[dun189] five {} run {}: left {} for a later visit, back at a level up ({})",
