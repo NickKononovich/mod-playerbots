@@ -258,6 +258,13 @@ namespace
                 c.xpKill += amount;
                 c.lastKillXp = amount;  // [log28]
                 c.lastKillVictim = victim ? victim->GetGUID() : ObjectGuid::Empty;
+                // [diag263] a grouped bot's kill XP, whoever took the kill: the core credits the kill line
+                // ([quest] kill, OnPlayerCreatureKillCredit) to one player of the group, every member present gets
+                // its share of the XP - b442 Eraelor / Sycina in their fives: 0 kills, the whole run's XP unseen
+                if (Group const* group = player->GetGroup())
+                    LOG_INFO("playerbots", "[xp263] {} L{} +{} kill xp, victim {} L{}, group of {} t={}",
+                             player->GetName(), player->GetLevel(), amount, victim ? victim->GetEntry() : 0,
+                             victim ? victim->GetLevel() : 0, group->GetMembersCount(), QuestStats::NowMs());
             }
             else if (xpSource == XPSOURCE_QUEST || xpSource == XPSOURCE_QUEST_DF)
             {
@@ -290,7 +297,7 @@ namespace
             QuestStats::LogEvent(player, "kill", servedQuest == UINT32_MAX ? 0 : servedQuest,
                                  "entry=" + std::to_string(killed->GetEntry()) + " L" +
                                      std::to_string(killed->GetLevel()) + " useful=" + (served ? "1" : "0") +
-                                     " xp=" + std::to_string(xp) +
+                                     " xp=" + std::to_string(xp) + (player->GetGroup() ? " grouped=1" : "") +
                                      (served ? Acore::StringFormat(" chance={:.4g}", chance) : std::string()));
         }
 
