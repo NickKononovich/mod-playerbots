@@ -311,6 +311,9 @@ public:
     // [guild70] the item is on the wanted list with a shortfall (a skill-up craft whose product someone needs)
     bool IsWanted(uint32 itemId) const;
     bool GlyphNeeded(uint32 itemId) const;  // [insc145] a member waits for this glyph ([insc143] need)
+    // [eco192] map thread: what a second of this bot's rest costs, in copper - its quest pace (QuestPace, copper per
+    // minute) for itself and each group member on its map that waits with it; < 0: no pace known
+    float RestCopperPerSecond(Player* bot);
     // [supply112] the crafts of a guild supply recipe this cook still owes the fives' bands (its target less what it
     // holds of the product), 0 = none (map thread: NewRpgCraft weighs them with its skill-ups)
     uint32 SupplyCrafts(Player* cook, uint32 spellId) const;

@@ -8188,6 +8188,28 @@ uint32 GuildCoordinator::SupplyCrafts(Player* cook, uint32 spellId) const
     return owed;
 }
 
+// [eco192] the rest's time price for the restock's choice (RestockFoodAction: price and rest time per point)
+float GuildCoordinator::RestCopperPerSecond(Player* bot)
+{
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+        return -1.0f;
+    float perMinute = 0.0f;
+    {
+        CoordLock guard(lock_, __func__);
+        auto const st = bots_.find(bot->GetGUID().GetCounter());
+        if (st == bots_.end() || !QuestPace(st->second, bot, perMinute) || perMinute <= 0.0f)
+            return -1.0f;
+    }
+    // the group rests with it (RestState::GroupResting): each member on its map waits out the same seconds
+    uint32 waiting = 1;
+    if (Group* group = bot->GetGroup())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource();
+                member && member != bot && member->IsInWorld() && member->GetMapId() == bot->GetMapId())
+                ++waiting;
+    return perMinute / float(MINUTE) * float(waiting);
+}
+
 // [supply112] coordinator 2026-11-10: a profession is worth what it produces for the guild's needs too, not only the
 // gear and bag crafts its skill unlocks - the cook's supply jobs at what each unit saves against the vendor, over the
 // casts they take (a recipe it has not learned yet: its BUY order comes first, no value until it knows it)

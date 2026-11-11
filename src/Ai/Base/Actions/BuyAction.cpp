@@ -344,8 +344,46 @@ bool IsRestockFood(ItemTemplate const* proto, uint32 spellCategory)
     return false;
 }
 
-// Best (highest required level the bot meets) gold-priced food/drink in the vendor list, or -1.
-int32 PickVendorFood(Player* bot, Creature* vendor, uint32 spellCategory)
+// [eco192] what one item restores (hp for food, mana for drink) and how fast, as the core restores it: MOD_REGEN /
+// MOD_POWER_REGEN give their amount per 5 s (Player::RegenerateHealth / UpdateManaRegen) over the aura's duration,
+// OBS_MOD_HEALTH / OBS_MOD_POWER their amount per amplitude; 0 when it restores none of it
+float RestoredPoints(ItemTemplate const* proto, uint32 spellCategory, float& perSecond)
+{
+    perSecond = 0.0f;
+    SpellInfo const* spell = proto ? sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId) : nullptr;
+    if (!spell)
+        return 0.0f;
+    bool const food = spellCategory == RESTOCK_SPELL_CATEGORY_FOOD;
+    float const duration = float(std::max(spell->GetMaxDuration(), 0));
+    float points = 0.0f;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+    {
+        SpellEffectInfo const& effect = spell->Effects[i];
+        float const amount = float(effect.CalcValue());
+        float const amplitude = float(effect.Amplitude);
+        bool const mana = effect.MiscValue == POWER_MANA;
+        if ((food && effect.ApplyAuraName == SPELL_AURA_MOD_REGEN) ||
+            (!food && effect.ApplyAuraName == SPELL_AURA_MOD_POWER_REGEN && mana))
+        {
+            perSecond += amount / 5.0f;
+            points += amount * duration / 5000.0f;
+        }
+        else if (amplitude > 0.0f && ((food && effect.ApplyAuraName == SPELL_AURA_OBS_MOD_HEALTH) ||
+                                      (!food && effect.ApplyAuraName == SPELL_AURA_OBS_MOD_POWER && mana)))
+        {
+            perSecond += amount * 1000.0f / amplitude;
+            points += amount * duration / amplitude;
+        }
+    }
+    return points;
+}
+
+// The gold-priced food/drink in the vendor list it buys, or -1. [eco192] coordinator 2026-11-11: the cheapest per
+// restored point - its price over the points, plus the seconds a point takes to restore at the copper a second of its
+// rest costs (RestCopperPerSecond: its quest pace for itself and each member resting with it). Before: the highest
+// required level it met, whatever the price - Melon Juice (L15) 1 s for 835 mana over Ice Cold Milk (L5) 25 c for 436.
+// With no pace known (restSecond < 0): the highest required level, as before
+int32 PickVendorFood(Player* bot, Creature* vendor, uint32 spellCategory, float restSecond)
 {
     VendorItemData const* items = vendor->GetVendorItems();
     if (!items)
@@ -353,6 +391,7 @@ int32 PickVendorFood(Player* bot, Creature* vendor, uint32 spellCategory)
 
     int32 bestSlot = -1;
     uint32 bestLevel = 0;
+    float bestPerPoint = 0.0f;
     for (uint32 slot = 0; slot < items->GetItemCount(); ++slot)
     {
         VendorItem const* vItem = items->GetItem(slot);
@@ -368,6 +407,23 @@ int32 PickVendorFood(Player* bot, Creature* vendor, uint32 spellCategory)
 
         if (vItem->maxcount && vendor->GetVendorItemCurrentCount(vItem) == 0)
             continue;
+
+        if (restSecond >= 0.0f)
+        {
+            float perSecond = 0.0f;
+            float const points = RestoredPoints(proto, spellCategory, perSecond);
+            if (points <= 0.0f || perSecond <= 0.0f)
+                continue;
+            float const price = float(proto->BuyPrice) * bot->GetReputationPriceDiscount(vendor) /
+                                float(std::max<uint32>(1, proto->BuyCount));
+            float const perPoint = price / points + restSecond / perSecond;
+            if (bestSlot < 0 || perPoint < bestPerPoint)
+            {
+                bestSlot = static_cast<int32>(slot);
+                bestPerPoint = perPoint;
+            }
+            continue;
+        }
 
         if (bestSlot < 0 || proto->RequiredLevel > bestLevel)
         {
@@ -435,6 +491,8 @@ bool RestockFoodAction::Execute(Event /*event*/)
     float bestDist = RESTOCK_VENDOR_RANGE;
 
     GuidVector const npcs = AI_VALUE(GuidVector, "nearest npcs");
+    float restSecond = -1.0f;  // [eco192] the copper a second of its rest costs, read at the first vendor in range
+    bool restRead = false;
     for (ObjectGuid const& guid : npcs)
     {
         Creature* creature = botAI->GetCreature(guid);
@@ -446,8 +504,13 @@ bool RestockFoodAction::Execute(Event /*event*/)
         if (dist > bestDist)
             continue;
 
-        int32 const f = needFood ? PickVendorFood(bot, creature, RESTOCK_SPELL_CATEGORY_FOOD) : -1;
-        int32 const d = needDrink ? PickVendorFood(bot, creature, RESTOCK_SPELL_CATEGORY_DRINK) : -1;
+        if (!restRead)
+        {
+            restRead = true;
+            restSecond = sGuildCoordinator.RestCopperPerSecond(bot);
+        }
+        int32 const f = needFood ? PickVendorFood(bot, creature, RESTOCK_SPELL_CATEGORY_FOOD, restSecond) : -1;
+        int32 const d = needDrink ? PickVendorFood(bot, creature, RESTOCK_SPELL_CATEGORY_DRINK, restSecond) : -1;
         if (f < 0 && d < 0)
             continue;
 

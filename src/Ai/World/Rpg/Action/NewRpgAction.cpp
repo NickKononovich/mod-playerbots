@@ -876,6 +876,8 @@ bool NewRpgBaseAction::StartVendorRun()
             // counted as a visit: tried again once the bags or the purse grow (b311: Hobliir's unreachable Exodar
             // vendor 29 yd off was walked to, given up and chosen again every few seconds)
             info.vendorVisited = true;
+            info.vendorVisitStocked = false;  // [eco193]
+            info.vendorVisitMap = bot->GetMapId();
             info.vendorMissed = true;  // [vendor23]
             info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
             info.vendorVisitMoney = bot->GetMoney();
@@ -959,8 +961,14 @@ bool NewRpgBaseAction::StartVendorRun()
     if (!fiveSupply)
         info.fiveRestockTried = false;
     bool const fiveRetry = fiveSupply && !info.fiveRestockTried;
+    // [eco193] coordinator 2026-11-11: the money-gain gate holds a restock only after a visit or look that could not
+    // stock it (a vendor missed, none found, the visit left it out) - and only on that map. After a visit that
+    // stocked it, running dry again is a new need: b428 198 "[supply34] out of drink: no money gained since its last
+    // vendor visit" (Alnia 46, Pherua 10562c and Orenem resting dry 810 / 784 times) - they had bought their drink
+    // there, drunk it, and the gate waited for a coin that a healer resting dry does not loot
     bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 &&
-                         (fiveRetry || !info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney);
+                         (fiveRetry || !info.vendorVisited || info.vendorVisitStocked ||
+                          info.vendorVisitMap != bot->GetMapId() || bot->GetMoney() > info.vendorVisitMoney);
     if (restock && fiveRetry)
         info.fiveRestockTried = true;
     // [supply34] why a bot out of food / drink makes no run: one line per money value it has (b386: 1.10 h sat
@@ -983,7 +991,9 @@ bool NewRpgBaseAction::StartVendorRun()
                  why, bot->GetMoney(), info.vendorVisited ? info.vendorVisitMoney : 0);
     };
     if ((noFood || noDrink) && !restock)
-        noRunWhy(bot->GetMoney() == 0 ? "no money" : "no money gained since its last vendor visit or look");
+        noRunWhy(bot->GetMoney() == 0 ? "no money"
+                                      : "its last vendor visit or look on this map could not stock it and no money "
+                                        "was gained since [eco193]");
     // [supply27] a five member before its five goes in buys the vendor-sold reagents its spells use and has none of
     std::vector<uint32> reagents;
     if (fiveSupply && bot->GetMoney() > 0 && (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney))
@@ -1019,6 +1029,8 @@ bool NewRpgBaseAction::StartVendorRun()
         // [supply26] no vendor sells it a way it walks: looked again after its next money gain (the look is a scan of
         // the map's vendors and their trips, not for every tick of its rest)
         info.vendorVisited = true;
+        info.vendorVisitStocked = false;  // [eco193]
+        info.vendorVisitMap = bot->GetMapId();
         info.vendorVisitBagUsed = bagUsed;
         info.vendorVisitMoney = bot->GetMoney();
         return false;
@@ -2345,6 +2357,8 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         LOG_INFO("playerbots", "[New RPG] {} finds no vendor {} at its spawn", bot->GetName(), info.vendorRunEntry);
         info.vendorRunEntry = 0;
         info.vendorVisited = true;
+        info.vendorVisitStocked = false;  // [eco193]
+        info.vendorVisitMap = bot->GetMapId();
         info.vendorMissed = true;  // [vendor23]
         info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
         info.vendorVisitMoney = bot->GetMoney();
@@ -2442,6 +2456,15 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                         info.vendorRunEntry = 0;
                         info.vendorVisited = true;
                         info.vendorMissed = false;  // [vendor23]
+                        // [eco193] the visit did not fail to stock it: not out of food, nor of drink using mana -
+                        // or this vendor sells none of the kind it is out of (a sale's vendor: no try was made)
+                        bool const outFood = !CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
+                        bool const outDrink =
+                            bot->GetMaxPower(POWER_MANA) && !CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK);
+                        info.vendorVisitStocked =
+                            (!outFood || !RestockPrice(bot, creature->GetEntry(), RESTOCK_SPELL_CATEGORY_FOOD)) &&
+                            (!outDrink || !RestockPrice(bot, creature->GetEntry(), RESTOCK_SPELL_CATEGORY_DRINK));
+                        info.vendorVisitMap = bot->GetMapId();
                         info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                         info.vendorVisitMoney = bot->GetMoney();
                     }
@@ -2501,6 +2524,8 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
             {
                 info.vendorRunEntry = 0;
                 info.vendorVisited = true;
+                info.vendorVisitStocked = false;  // [eco193]
+                info.vendorVisitMap = bot->GetMapId();
                 info.vendorMissed = true;  // [vendor23]
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                 info.vendorVisitMoney = bot->GetMoney();
@@ -2570,6 +2595,8 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 }
                 info.vendorRunEntry = 0;
                 info.vendorVisited = true;
+                info.vendorVisitStocked = false;  // [eco193]
+                info.vendorVisitMap = bot->GetMapId();
                 info.vendorMissed = true;  // [vendor23]
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                 info.vendorVisitMoney = bot->GetMoney();

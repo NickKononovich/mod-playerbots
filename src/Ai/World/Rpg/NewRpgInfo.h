@@ -242,6 +242,11 @@ struct NewRpgInfo
     bool fiveRestockTried{false};  // [five43] its five's supply run made once past the visit gate
     bool vendorVisited{false};
     bool vendorMissed{false};  // [vendor23] its last vendor run ended without reaching the vendor
+    // [eco193] its last vendor visit did not fail to stock it (it left holding food and, using mana, drink - or that
+    // vendor sold none of what it lacked): a restock need after it is a new one, no money gain asked; and the map of
+    // that visit or look (a look that found no vendor holds on that map only)
+    bool vendorVisitStocked{false};
+    uint32 vendorVisitMap{0};
     // [regress10] the global leader's REPAIR task: a visit to a repairer for it was made at this money (tried again
     // after a money gain); cleared when the task ends
     bool repairVisited{false};
