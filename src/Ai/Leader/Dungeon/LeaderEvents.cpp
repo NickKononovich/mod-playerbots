@@ -877,8 +877,35 @@ namespace Leader::Dungeon
                     for (Player* bot : living)
                     {
                         Leader::MemberEvents now;
-                        if (bot->IsInCombat() || bot->isMoving() ||
-                            (Leader::Events::Get(bot->GetGUID(), now) && now.move != Leader::MoveEvent::None))
+                        bool const hasEvents = Leader::Events::Get(bot->GetGUID(), now);
+                        // [dun232] the resurrecter keeps its External's walk and cast (the comment above), and its
+                        // own wait out of a reach ends: b444 rfc-n five11-11 890-1131 s, Relara's Revive on the dead
+                        // tank Enyssia - this step's "out of the reach of Ragefire Trogg L13" MoveTo (94) took her
+                        // back 7 yd from the spot that sees the corpse each time her walk there (91) got near, 30+
+                        // "[corpse res] Relara resurrects Enyssia" walks and no cast; the leader stayed dead and the
+                        // stall watchdog ended the run at 1131 s
+                        Player* const raised =
+                            hasEvents && now.externalSpell ? ObjectAccessor::FindPlayer(now.externalTarget) : nullptr;
+                        if (raised && !raised->IsAlive())
+                        {
+                            bool const waitEnds = now.move != Leader::MoveEvent::None &&
+                                                  now.moveWhy.rfind("[rez27] waits for the dead", 0) == 0;
+                            if (waitEnds)
+                                Leader::Events::SetMove(bot->GetGUID(), Leader::MoveEvent::None, bot->GetPosition(),
+                                                        0.0f, "[dun232] raises " + raised->GetName());
+                            thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> keptLogged;
+                            if (keptLogged.size() > 4096)
+                                keptLogged.clear();
+                            if (keptLogged.insert({bot->GetGUID(), raised->GetGUID()}).second)
+                                LOG_INFO("playerbots",
+                                         "[dun232] {}: {} raises {}: its walk to the corpse and its cast are not "
+                                         "stepped out of an idle reach{}",
+                                         group.Run().runId, bot->GetName(), raised->GetName(),
+                                         waitEnds ? " (its wait out of the reach ends)" : "");
+                            continue;
+                        }
+                        if (bot->IsInCombat() || bot->isMoving() || bot->IsNonMeleeSpellCast(false) ||
+                            (hasEvents && now.move != Leader::MoveEvent::None))
                             continue;
                         std::string who;
                         std::vector<G3D::Vector3> spots;
