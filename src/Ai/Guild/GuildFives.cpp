@@ -853,6 +853,40 @@ void GuildCoordinator::LoadDungeons()
                 } while (result->NextRow());
             }
         }
+        // [night300] a world-drop table is no loot of the dungeon: a reference table that creatures spawned in the open
+        // world drop too is the generic loot of every mob of that level (24060-24078: one of 51-73 greens), or a rare
+        // table shared with open-world rares. b432: RFC's Oggleflint and Bazzalan have no loot of their own, only those
+        // tables at 1 % a kill (Lesser Staff of the Spire 0.014 %) - 26 of 50 members at L17-21 went back to RFC for
+        // such an 'upgrade' at urgency 0 (L21 of max 21), and none of the 23 fives formed went to Deadmines or Wailing
+        // Caverns. A boss's own items (direct rows) stay, also those an open-world mob by the entrance drops (BFD)
+        std::set<uint32> worldRefs;
+        {
+            std::set<uint32> top;
+            for (auto const& [mapId, list] : rows)
+                for (auto const& [creature, item, reference] : list)
+                    if (reference)
+                        top.insert(reference);
+            std::string ids;
+            for (uint32 id : top)
+                ids += (ids.empty() ? "" : ",") + std::to_string(id);
+            if (!ids.empty())
+                if (QueryResult result = WorldDatabase.Query(
+                        "SELECT DISTINCT l.Reference, c.map FROM creature_loot_template l JOIN creature_template t ON "
+                        "t.lootid = l.Entry JOIN creature c ON c.id = t.entry WHERE l.Reference IN ({})",
+                        ids))
+                {
+                    do
+                    {
+                        Field* f = result->Fetch();
+                        MapEntry const* map = sMapStore.LookupEntry(f[1].Get<uint32>());
+                        if (map && !map->Instanceable())
+                            worldRefs.insert(f[0].Get<uint32>());
+                    } while (result->NextRow());
+                }
+            LOG_INFO("playerbots", "[night300] boss loot: {} of {} reference tables are world drops (open-world mobs "
+                     "drop them too): no dungeon upgrade",
+                     worldRefs.size(), top.size());
+        }
         auto addItem = [](std::set<uint32>& items, uint32 itemId)
         {
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
@@ -877,6 +911,8 @@ void GuildCoordinator::LoadDungeons()
                         addItem(items, item);
                         continue;
                     }
+                    if (worldRefs.count(reference))
+                        continue;
                     for (auto const& [refItem, refRef] : refs[reference])
                     {
                         if (!refRef)
