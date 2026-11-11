@@ -372,7 +372,14 @@ protected:
     void AbandonGreyQuest(uint8 slot, Quest const* quest, std::string const& reason);
     // [guild11] the quest the bot is closest to being allowed: lowest min level above its own, nearest giver;
     // grindPos = the grind spot of its level nearest that giver
-    uint32 ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot = true);
+    // [perf214] `pending` (none: the whole sweep in this call): set when the grind-spot sweep spent this tick's
+    // searches before it ended - the look is asked again next tick and goes on where the verdicts kept stop
+    uint32 ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot = true,
+                                bool* pending = nullptr);
+    // [perf214] the IDLE look paces its grind-spot sweeps over ticks (choicePacing, set round its ChooseBestQuest);
+    // choicePending: the zone choice stopped for a sweep not finished this tick
+    bool choicePacing = false;
+    bool choicePending = false;
     // [guild11] hook for the dungeon step: logs the normal dungeons of its level
     void LogDungeonCandidates();
     float GetQuestWeight(Quest const* quest, bool rested);

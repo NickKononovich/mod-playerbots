@@ -91,4 +91,11 @@ namespace Leader::Travel
     std::vector<size_t> ShortestTour(std::vector<std::vector<float>> const& cost, bool fixedEnd, float& length);
 }
 
+namespace Leader
+{
+    // [perf214] the route searches this thread has started (Leader::Route's top searches, a tick cache's answer not
+    // counted): a caller paces a sweep of searches by them
+    uint64 RouteSearchesOnThread();
+}
+
 #endif

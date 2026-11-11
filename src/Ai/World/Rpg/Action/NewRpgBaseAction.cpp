@@ -761,6 +761,34 @@ namespace
         return {dest.GetMapId(), int32(dest.GetPositionX()), int32(dest.GetPositionY())};
     }
 
+    // [perf214] coordinator 2026-11-11: WalkOffIsland's landing look (does a walk on to the destination start at
+    // this landing: a route search each, up to PATH_TRIES) paced over ticks while the bot stands: the verdicts found
+    // are kept for the spot and destination, a call adds at least one and stops at its search budget; the next call
+    // takes up the look where it stopped - the same landings, the same verdicts, the same choice. b438 Ryarii L16:
+    // ~20 searches of 50-70 ms from the landings round (1442,-532) to (4520,410) in one 1139 ms update
+    struct IslandLook
+    {
+        std::tuple<uint32, int32, int32, int32> spot{0, 0, 0, 0};  // map, x, y, z (its health may change meanwhile)
+        std::tuple<uint32, int32, int32> dest{0, 0, 0};
+        std::vector<std::pair<G3D::Vector3, bool>> verdicts;  // landing -> leads on
+        bool pending = false;                                 // a look stopped at its budget, taken up next call
+    };
+    std::mutex islandLookLock;
+    std::unordered_map<uint32, IslandLook> islandLooks;
+    constexpr uint64 ISLAND_LOOK_SEARCHES_PER_TICK = 2;  // compute pacing per call, not a behaviour rule
+
+    // a landing look stopped for `dest` at the spot the bot stands on (its stand there is the look's, no stuck sign)
+    bool IslandLookPending(Player* bot, WorldPosition const& dest)
+    {
+        std::lock_guard<std::mutex> guard(islandLookLock);
+        auto const found = islandLooks.find(bot->GetGUID().GetCounter());
+        if (found == islandLooks.end() || !found->second.pending || found->second.dest != DestKey(dest))
+            return false;
+        auto const& spot = found->second.spot;
+        return std::get<0>(spot) == bot->GetMapId() && std::get<1>(spot) == int32(bot->GetPositionX()) &&
+               std::get<2>(spot) == int32(bot->GetPositionY()) && std::get<3>(spot) == int32(bot->GetPositionZ());
+    }
+
     // [deaths] user 2026-11-08: a long walk in stages - the travel node graph (TravelNodeMap, loaded at startup and
     // read only after) by its walk links on the bot's map, from the node nearest the bot to the node nearest the
     // destination, the shortest by link length; the nodes' spots in walk order (empty: no such chain)
@@ -2510,10 +2538,28 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
     static std::unordered_map<uint32, std::pair<std::tuple<uint32, int32, int32, int32, uint32>, bool>> searched;
     std::tuple<uint32, int32, int32, int32, uint32> const spotKey{bot->GetMapId(), int32(here.x), int32(here.y),
                                                                   int32(here.z), bot->GetHealth()};
+    // [perf214] the landing look taken up where the last call stopped it, else a new one for this spot
+    bool resumed = false;
+    {
+        std::lock_guard<std::mutex> guard(islandLookLock);
+        IslandLook& look = islandLooks[bot->GetGUID().GetCounter()];
+        std::tuple<uint32, int32, int32, int32> const lookSpot{bot->GetMapId(), int32(here.x), int32(here.y),
+                                                               int32(here.z)};
+        if (look.spot != lookSpot || look.dest != DestKey(dest))
+        {
+            look = IslandLook();
+            look.spot = lookSpot;
+            look.dest = DestKey(dest);
+        }
+        resumed = look.pending;
+        look.pending = false;
+        if (!resumed)
+            look.verdicts.clear();  // a new look judges its landings afresh
+    }
     {
         std::lock_guard<std::mutex> guard(islandLock);
         auto& last = searched[bot->GetGUID().GetCounter()];
-        if (last.first == spotKey)
+        if (last.first == spotKey && !resumed)
         {
             onIsland = last.second;
             return false;
@@ -2599,6 +2645,33 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         return on.type == PATHFIND_INCOMPLETE && on.points.size() >= 2 &&
                dest.GetExactDist(on.actualEnd.x, on.actualEnd.y, on.actualEnd.z) + way.gap < disToDest;
     };
+    // [perf214] a kept verdict, else a new one within the call's search budget (at least one per call); none: the
+    // look stops here and the call returns (the walk waits for the look, next tick)
+    uint64 const searchesAtStart = Leader::RouteSearchesOnThread();
+    uint32 newVerdicts = 0;
+    auto const pacedLeadsOn = [&](Way const& way) -> std::optional<bool>
+    {
+        {
+            std::lock_guard<std::mutex> guard(islandLookLock);
+            for (auto const& [to, leads] : islandLooks[bot->GetGUID().GetCounter()].verdicts)
+                if (to.x == way.to.x && to.y == way.to.y && to.z == way.to.z)
+                    return leads;
+        }
+        if (newVerdicts > 0 &&
+            Leader::RouteSearchesOnThread() - searchesAtStart >= ISLAND_LOOK_SEARCHES_PER_TICK)
+            return std::nullopt;
+        bool const leads = leadsOn(way);
+        ++newVerdicts;
+        std::lock_guard<std::mutex> guard(islandLookLock);
+        islandLooks[bot->GetGUID().GetCounter()].verdicts.emplace_back(way.to, leads);
+        return leads;
+    };
+    auto const pauseLook = [&]()
+    {
+        std::lock_guard<std::mutex> guard(islandLookLock);
+        islandLooks[bot->GetGUID().GetCounter()].pending = true;
+        return true;  // the tick is the look's: nothing walked, nothing given up
+    };
     if (onPolygon)
     {
         std::vector<Way> kept;
@@ -2621,8 +2694,13 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         // was never looked at (b384 / b385: 9-33 alarms at the Dolanaar inn's 17-polygon island, 2.4 yd off the
         // main region at the same height)
         for (size_t i = 0; i < order.size() && i < PATH_TRIES; ++i)
-            if (leadsOn(*order[i]))
+        {
+            std::optional<bool> const leads = pacedLeadsOn(*order[i]);  // [perf214]
+            if (!leads)
+                return pauseLook();
+            if (*leads)
                 kept.push_back(*order[i]);
+        }
         if (kept.empty())
         {
             // [deaths] user 2026-11-08: the main region is no island - the bot's own region round it (Detour's
@@ -2710,8 +2788,13 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         std::sort(order.begin(), order.end(), [](Way const* a, Way const* b) { return a->gap < b->gap; });
         constexpr size_t PATH_TRIES = 16;  // search cost bound, not a behaviour rule
         for (size_t i = 0; i < order.size() && i < PATH_TRIES && leading.empty(); ++i)
-            if (leadsOn(*order[i]))
+        {
+            std::optional<bool> const leads = pacedLeadsOn(*order[i]);  // [perf214]
+            if (!leads)
+                return pauseLook();
+            if (*leads)
                 leading.push_back(*order[i]);
+        }
         if (leading.empty())
         {
             NavGap(bot, "off the navmesh: no landing in sight has a walk on to its destination");
@@ -2964,7 +3047,8 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         botAI->rpgInfo.nearestMoveFarDis = disToDest;
         botAI->rpgInfo.stuckSpots.clear();
     }
-    else if (IsMovingAllowed() && !bot->IsNonMeleeSpellCast(false))  // a bot that cannot step now proves nothing
+    // [perf214] ... nor does one standing for its landing look, paced over ticks (IslandLookPending)
+    else if (IsMovingAllowed() && !bot->IsNonMeleeSpellCast(false) && !IslandLookPending(bot, dest))
     {
         G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
         for (G3D::Vector3 const& spot : botAI->rpgInfo.stuckSpots)
@@ -8773,7 +8857,15 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         // [stuck8] with its grind spot: the grind needs mobs of the bot's level where it stands (b343 Orton L9 on the
         // Deeprun Tram, map 369: "stays ... by grinding" toward q6661, no mob of its level on the map, IDLE / GO_GRIND
         // / WANDER_RANDOM 160 alerts in a loop). No grind spot on this map: no grind; else its walk counts too
-        uint32 const nextQuest = ChooseNextLevelQuest(nextGiver, nextGrind, true);
+        bool sweepPending = false;  // [perf214]
+        uint32 const nextQuest =
+            ChooseNextLevelQuest(nextGiver, nextGrind, true, choicePacing ? &sweepPending : nullptr);
+        if (sweepPending)
+        {
+            choicePending = true;  // the IDLE look asks again next tick
+            giverPos = WorldPosition();
+            return 0;
+        }
         Quest const* next = nextQuest ? sObjectMgr->GetQuestTemplate(nextQuest) : nullptr;
         ContentLevels const content = GetContentLevelsForMapAndZone(bot->GetMapId(), hereZone);
         CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, CLASS_WARRIOR);
@@ -8875,8 +8967,11 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
     return best->questId;
 }
 
-uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot)
+uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot,
+                                              bool* pending)
 {
+    if (pending)
+        *pending = false;
     uint8 const level = bot->GetLevel();
     uint32 bestMinLevel = std::numeric_limits<uint32>::max();
     float bestDistance = std::numeric_limits<float>::max();
@@ -8973,12 +9068,39 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
             return bestQuest;  // the nearest stays the fallback; the caller's refusal check sends it to its hub
     }
     constexpr uint32 GRIND_SPOT_TRIES = 8;  // a search cost bound per look, not a behaviour rule
+    // [perf214] coordinator 2026-11-11: the sweep's route searches paced over ticks - at most this many in one call
+    // when the caller paces it; a spot already judged answers from TripRefused's verdict at this level (no search),
+    // so the next call goes on where this one stopped, the same spots in the same order, the same choice. b438
+    // Uraela L18: 8 refused 3200-3600 yd grind spots, 125 ms each, in one 1270 ms update. Each call goes at least
+    // one spot past where the last one stopped (a verdict TripRefused does not keep - a walk given up, a danger zone,
+    // another landmass - is asked again), so the sweep always ends
+    constexpr uint64 SWEEP_SEARCHES_PER_TICK = 2;  // compute pacing per call, not a behaviour rule
+    static std::unordered_map<uint32, std::tuple<uint8, uint32, uint32>> sweepStop;  // bot -> (level, quest, spots)
+    uint32 pastStop = 0;
+    if (pending)
+    {
+        std::lock_guard<std::mutex> guard(grindLock);
+        auto const stop = sweepStop.find(bot->GetGUID().GetCounter());
+        if (stop != sweepStop.end() && std::get<0>(stop->second) == level && std::get<1>(stop->second) == bestQuest)
+            pastStop = std::get<2>(stop->second);
+    }
+    uint64 const searchesBefore = Leader::RouteSearchesOnThread();
     uint32 refused = 0;
+    uint32 judgedSpots = 0;
     bool found = false;
     for (auto const& [d, pos] : grinds)
     {
         if (d > QUEST_MAX_GIVER_DISTANCE)  // a spot that far is no grind toward this giver
             break;
+        if (pending && judgedSpots > pastStop &&
+            Leader::RouteSearchesOnThread() - searchesBefore >= SWEEP_SEARCHES_PER_TICK)
+        {
+            std::lock_guard<std::mutex> guard(grindLock);
+            sweepStop[bot->GetGUID().GetCounter()] = {level, bestQuest, judgedSpots};
+            *pending = true;
+            return bestQuest;
+        }
+        ++judgedSpots;
         if (!TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(), "grind spot"))
         {
             grindPos = pos;
@@ -8987,6 +9109,11 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
         }
         if (++refused >= GRIND_SPOT_TRIES)
             break;
+    }
+    if (pending)  // [perf214] the sweep ended: the next one starts paced from its first spot
+    {
+        std::lock_guard<std::mutex> guard(grindLock);
+        sweepStop.erase(bot->GetGUID().GetCounter());
     }
     if (!found && refused)
     {

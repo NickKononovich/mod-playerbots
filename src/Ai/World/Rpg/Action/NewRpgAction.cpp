@@ -2074,7 +2074,14 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     return true;
                 }
                 WorldPosition giverPos;
+                // [perf214] the zone choice's grind-spot sweep paced over ticks: a look not finished this tick is
+                // asked again next tick (the status stays IDLE, the verdicts found so far kept)
+                choicePacing = true;
+                choicePending = false;
                 uint32 const questId = ChooseBestQuest(giverPos);
+                choicePacing = false;
+                if (choicePending)
+                    return true;
                 Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
                 // [guild20] after the hand-ins: the planned profession's trainer or tool vendor
                 // [tasks] single decider: a guild member works its profession only on the global leader's PROFESSION
@@ -2114,7 +2121,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             {
                 WorldPosition giverPos;
                 WorldPosition grindPos;
-                uint32 const questId = ChooseNextLevelQuest(giverPos, grindPos);
+                bool sweepPending = false;  // [perf214] its grind-spot sweep paced over ticks
+                uint32 const questId = ChooseNextLevelQuest(giverPos, grindPos, true, &sweepPending);
+                if (sweepPending)
+                    return true;
                 Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
                 // [stuck8] no grind spot of its level on this map and the giver under its feet: a GO_GRIND there
                 // reaches it at once and WANDER_RANDOM finds no mob (b343 Orton on the Deeprun Tram, 160 alerts of

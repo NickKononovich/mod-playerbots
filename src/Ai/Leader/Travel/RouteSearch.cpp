@@ -1155,6 +1155,12 @@ namespace Leader
             PassMemo passes[2][2];  // [priced][steep]
         };
         thread_local SearchPrep const* handedPrep = nullptr;
+        thread_local uint64 topSearches = 0;  // [perf214]
+    }
+
+    uint64 RouteSearchesOnThread()
+    {
+        return topSearches;
     }
 
     std::string RouteResult::Describe() const
@@ -1252,6 +1258,8 @@ namespace Leader
         // [perf210] the profile: the top search and its [static39] search are counted (one line per minute)
         bool const top = routeProfile.depth == 0;
         bool const record = top || prep;
+        if (top)
+            ++topSearches;  // [perf214]
         struct DepthScope
         {
             bool top;
