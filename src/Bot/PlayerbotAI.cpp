@@ -396,6 +396,13 @@ bool PlayerbotAI::IsSubjectToGravity() const
 // (PathGenerator::BuildPolyPath: "creature ? creature->CanFly() : true"), because a client applies gravity to it.
 // A bot has no client: it walked that line through the air (Oculus wave 7: Drakos' island z 360 to Ring 2 z 433,
 // wave 6: up to a flying Azure Ring Guardian), and the next dismount let it fall to the bottom of the instance.
+bool PlayerbotAI::GuardRefusedWalkTo(float x, float y, float z) const
+{
+    return guardRefusedMap == bot->GetMapId() &&
+           std::hypot(guardRefusedX - x, guardRefusedY - y) <= bot->GetCombatReach() &&
+           std::abs(guardRefusedZ - z) <= bot->GetCollisionHeight() + bot->GetCombatReach();
+}
+
 void PlayerbotAI::GuardAirborneSpline()
 {
     if (master == bot)
@@ -642,6 +649,15 @@ void PlayerbotAI::GuardAirborneSpline()
                          "from ({:.1f},{:.1f},{:.1f}) to ({:.1f},{:.1f},{:.1f}), mover {}",
                          bot->GetName(), point.x, point.y, point.z, bot->GetMapId(), a.x, a.y, a.z, b.x, b.y, b.z,
                          mover.empty() ? std::string("?") : mover);
+                {
+                    // [deaths145] the walk's end, for the mover that asks for it again (b434 Maronic L17: the survival
+                    // flee re-issued the same spot 44 times, each refused, and stood under two mobs until it died)
+                    G3D::Vector3 const walkEnd = path.getPoint(path.last());
+                    guardRefusedMap = bot->GetMapId();
+                    guardRefusedX = walkEnd.x;
+                    guardRefusedY = walkEnd.y;
+                    guardRefusedZ = walkEnd.z;
+                }
                 bot->GetMotionMaster()->Clear();
                 bot->StopMoving();
                 if ((lastAbove - a).length() >= GROUND_MIN_TRUNCATED_MOVE)

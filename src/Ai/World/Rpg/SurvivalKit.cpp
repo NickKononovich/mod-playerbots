@@ -1676,6 +1676,8 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                              bot->GetName(), bot->GetLevel(), n + 1, BlockerName(*on));
                     break;
                 }
+                if (botAI->GuardRefusedWalkTo(at.x, at.y, at.z))  // [deaths145] its walk there was refused
+                    continue;
                 bot->GetMotionMaster()->MovePoint(0, at.x, at.y, at.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
                 std::lock_guard<std::mutex> guard(lock);
                 states[bot->GetGUID().GetCounter()].routeStep = n;
@@ -1721,6 +1723,13 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                              bot->GetName(), bot->GetLevel(), n + 1);
                     continue;
                 }
+                if (botAI->GuardRefusedWalkTo(at.x, at.y, at.z))
+                {
+                    LOG_INFO("playerbots", "[deaths145] {} L{} survival flee: spot {} back skipped: its walk there "
+                             "was refused (a leg under the surface)",
+                             bot->GetName(), bot->GetLevel(), n + 1);
+                    continue;
+                }
                 bot->GetMotionMaster()->MovePoint(0, at.x, at.y, at.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
                 std::lock_guard<std::mutex> guard(lock);
                 states[bot->GetGUID().GetCounter()].trailStep = n;
@@ -1752,6 +1761,8 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
             float y = bot->GetPositionY() + std::sin(a) * leash;
             float z = bot->GetPositionZ();
             bot->UpdateAllowedPositionZ(x, y, z);
+            if (botAI->GuardRefusedWalkTo(x, y, z))
+                continue;  // [deaths145] its walk there was refused
             PathGenerator path(bot);
             path.CalculatePath(x, y, z, false);
             if (path.GetPathType() != PATHFIND_NORMAL)
@@ -1776,7 +1787,8 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
             float shortestYd = 0.0f;
             for (std::vector<G3D::Vector3> const& way : ways)
             {
-                if (StretchBlocker(blockers, here, way.front(), 0.0f, runSpeed))
+                if (StretchBlocker(blockers, here, way.front(), 0.0f, runSpeed) ||
+                    botAI->GuardRefusedWalkTo(way.front().x, way.front().y, way.front().z))  // [deaths145]
                     continue;  // its first stretch as the walk checks it
                 float yd = 0.0f;
                 G3D::Vector3 from = here;

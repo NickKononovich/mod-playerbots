@@ -24,6 +24,7 @@
 #include "SpellAuras.h"
 #include "Util.h"
 #include "WorldPacket.h"
+#include <limits>  // [deaths145]
 #include <mutex>
 #include <stack>
 #include <unordered_set>
@@ -694,8 +695,14 @@ public:
     bool IsSubjectToGravity() const;
     // Next tick, a bot that lost its mount or seat in the air falls and takes the damage where it lands.
     void RequestFallCheck() { fallCheckRequested = true; }
+    // [deaths145] the walk to this spot was refused by GuardAirborneSpline ([nav29] a leg under the surface): a mover
+    // that asks for the same spot again gets the same refusal, so it takes another spot (within the bot's combat
+    // reach of the refused walk's end, on its map)
+    bool GuardRefusedWalkTo(float x, float y, float z) const;
 
 private:
+    uint32 guardRefusedMap = std::numeric_limits<uint32>::max();  // [deaths145]
+    float guardRefusedX = 0.0f, guardRefusedY = 0.0f, guardRefusedZ = 0.0f;
     // Bots have no client to apply gravity: stop straight splines that leave the ground, fall when airborne.
     void GuardAirborneSpline();
     void UpdateFall();
