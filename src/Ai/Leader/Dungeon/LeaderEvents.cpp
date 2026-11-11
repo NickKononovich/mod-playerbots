@@ -8603,7 +8603,8 @@ namespace Leader::Dungeon
                                  bot->GetName(), target->GetName());
                 }
                 bool const chases = !toTankStop && melee && !frontHere && target->GetVictim() == tank &&
-                                    (chasing || tank->IsWithinMeleeRange(target)) && !chaseRefused();
+                                    (chasing || tank->IsWithinMeleeRange(target)) && !chaseRefused() &&
+                                    !lead.placeFailed.count(guid);  // [dun220] a chase that left it idle
                 if (toTankStop)
                 {
                     Position const place = meleeStopAt(bot, target);
@@ -13036,8 +13037,11 @@ namespace Leader::Dungeon
                     // target at the walk's end ([lead1461] "its target stops in its reach") is not taken again in
                     // this fight. b442: 579 member_no_action, 96 "combat spot", 72 "... waits, its target stops in
                     // its reach", 62 "to the tank's walk's end"
+                    // [dun220] and the melee chase behind its target ("chase: behind the target", b442: 60): the
+                    // chase ended out of its melee reach
                     bool const leaderPlace = !refusedPlace && (ownWhy.rfind("combat spot", 0) == 0 ||
-                                                               ownWhy.rfind("to the tank's walk's end", 0) == 0);
+                                                               ownWhy.rfind("to the tank's walk's end", 0) == 0 ||
+                                                               ownWhy.rfind("chase: behind the target", 0) == 0);
                     if (leaderPlace && lead.placeFailed.insert(bot->GetGUID()).second)
                     {
                         lead.combatSpots.erase(bot->GetGUID());
