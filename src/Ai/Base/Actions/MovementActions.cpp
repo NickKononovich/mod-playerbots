@@ -88,6 +88,8 @@ namespace
     constexpr float OPEN_WATER_ABOVE_LEVEL = 1.0f;  // a bot this close above the surface is still in the water
     // [hleft-chase-drop] a chase without a complete path to a target this far below is a fall off a ledge
     constexpr float CHASE_DROP_DZ = 8.0f;
+    // [dun241] a step to melee reach at the bot's level: no walk off its floor
+    constexpr float CHASE_EDGE_STEP_YD = 2.0f;
     // [hleft-door-chase] one "[chase refused]" line per target this often
     constexpr uint32 CHASE_REFUSED_LOG_MS = 10 * IN_MILLISECONDS;
 
@@ -2702,13 +2704,22 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         // 328 yd); the four members re-entered as stranded (four deaths). Same Guardian, same landing, warrior
         // Charge variant: 184229-occ-h-5F-26 (the [b30_oculus] GapCloserLeavesGround guard). The walk is judged as
         // the fall it is: to the ground under the target (JudgeLedgeDrop), refused with no ground at all.
+        // [dun241] ... not when the bot stands within a step of its melee reach on its level (the walk ends at the
+        // navmesh's edge, no fall), and a target whose ground
+        // lookup finds nothing (INVALID_HEIGHT) is judged by the navmesh floor under it too: b446 wc-n five6-7
+        // 2995-3244 s, the tank Lyleria 3.6-4.5 yd from the Evolving Ectoplasm on the pool's edge (-390.2,-97.7,-64.4)
+        // dropped it every look ("the target hovers over open air with no ground under it"), its engage order stood
+        // Issued 200 s and the stall watchdog ended the run at 5/8
         if (Map* map = bot->GetMap(); map && map->IsDungeon() && !bot->IsFlying() && !bot->isSwimming() &&
-                                      !bot->GetVehicle() && !bot->GetTransport())
+                                      !bot->GetVehicle() && !bot->GetTransport() &&
+                                      !(bot->GetExactDist2d(target) <=
+                                            bot->GetMeleeRange(target) + CHASE_EDGE_STEP_YD &&
+                                        std::fabs(bot->GetPositionZ() - tz) <= CHASE_EDGE_STEP_YD))
         {
             float level = target->GetMapWaterOrGroundLevel(tx, ty, tz);
             // [b35_z0] the grid's fallback (0.0 on a WMO-only tile: the vmap ray from tz found no floor) is no
             // ground: a target standing on navmesh is on its floor, not over open air
-            if (IsGridFallbackZ(bot, tx, ty, level))
+            if (level <= INVALID_HEIGHT || IsGridFallbackZ(bot, tx, ty, level))
             {
                 float floor = 0.0f;
                 if (NavmeshFloorZ(bot, tx, ty, tz, GAP_CLOSER_AIR_HEIGHT, floor) && floor <= tz + 1.0f)
