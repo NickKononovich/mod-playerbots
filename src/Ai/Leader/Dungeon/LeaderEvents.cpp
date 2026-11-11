@@ -824,9 +824,16 @@ namespace Leader::Dungeon
                         PlayerbotAI::IsHeal(bot) || bot->GetMap() != threat->GetMap() ||
                         !bot->IsValidAttackTarget(threat))
                         continue;
+                    // [dun227] once per member and attacker: a ranged member is out of combat until its first hit
+                    // lands, and the attack asserted every tick restarted its engine and its cast - b444 sfk-n
+                    // five5-5: 152k "[dun225] self-led ... takes on Haunted Servitor", the Servitor never died
+                    Unit* const current = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
+                    if (current == threat || bot->GetVictim() == threat)
+                        continue;
                     botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(threat);
                     bot->SetSelection(threat->GetGUID());
-                    botAI->ChangeEngine(BOT_STATE_COMBAT);
+                    if (botAI->GetState() != BOT_STATE_COMBAT)
+                        botAI->ChangeEngine(BOT_STATE_COMBAT);
                     bot->Attack(threat, PlayerbotAI::IsMelee(bot));
                     LOG_INFO("playerbots", "[dun225] {}: self-led {} takes on {} (on {})", group.Run().runId,
                              bot->GetName(), threat->GetName(),
