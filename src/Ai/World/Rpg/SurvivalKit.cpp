@@ -29,6 +29,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
+#include "Timer.h"  // [lag360] getMSTime
 #include "World.h"
 
 #include <algorithm>
@@ -480,6 +481,25 @@ namespace
         }
     }
 
+    // [lag360] a speed aura that dazes its owner when struck (Aspect of the Cheetah: a proc that casts a speed
+    // decrease on the bot): every hit of a chaser halves the run - no gain on a chase, it costs more hits
+    bool DazesOnHit(uint32 spellId)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info)
+            return false;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            if (effect.ApplyAuraName != SPELL_AURA_PROC_TRIGGER_SPELL || !effect.TriggerSpell)
+                continue;
+            if (SpellInfo const* proc = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+                for (SpellEffectInfo const& procEffect : proc->GetEffects())
+                    if (procEffect.ApplyAuraName == SPELL_AURA_MOD_DECREASE_SPEED)
+                        return true;
+        }
+        return false;
+    }
+
     bool Castable(PlayerbotAI* botAI, Player* bot, Piece const& piece, Unit* target)
     {
         if (!target)
@@ -892,7 +912,8 @@ namespace
         Piece const* leap = nullptr;
         for (Piece const& piece : kit)
         {
-            if (piece.kind == Kind::Speed && (!speed || piece.pct > speed->pct) && Castable(botAI, bot, piece, bot))
+            if (piece.kind == Kind::Speed && (!speed || piece.pct > speed->pct) && !DazesOnHit(piece.spell) &&
+                Castable(botAI, bot, piece, bot))  // [lag360] no daze-on-hit aspect on a chase
                 speed = &piece;
             else if (piece.kind == Kind::Snare && (!snare || piece.pct < snare->pct) &&
                      Castable(botAI, bot, piece, PieceTarget(bot, piece, p)))
@@ -1300,6 +1321,45 @@ namespace SurvivalKit
             total += amount * casts;
         }
         return total;
+    }
+
+    uint32 RunPastSpeed(Player* bot, float seconds, float& pct)
+    {
+        pct = 0.0f;
+        PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+        if (!botAI || bot->IsInWater() || bot->IsMounted())
+            return 0;
+        // [lag360] a performance cache per bot and look (a route search prices many chases in one tick), no decision
+        // rule: the answer is the cooldown state of this moment
+        struct Cached
+        {
+            uint32 ms = 0;
+            float seconds = 0.0f;
+            uint32 spell = 0;
+            float pct = 0.0f;
+        };
+        thread_local std::unordered_map<uint32, Cached> cache;
+        uint32 const now = getMSTime();
+        Cached& c = cache[bot->GetGUID().GetCounter()];
+        if (c.ms == now && c.seconds == seconds)
+        {
+            pct = c.pct;
+            return c.spell;
+        }
+        std::vector<Piece> pieces;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            pieces = KitOf(bot).pieces;
+        }
+        Piece const* best = nullptr;
+        for (Piece const& piece : pieces)
+            if (piece.kind == Kind::Speed && !piece.item && piece.instant && piece.pct > 0.0f &&
+                piece.durationSec >= seconds && (!best || piece.pct > best->pct) && !bot->HasAura(piece.spell) &&
+                !DazesOnHit(piece.spell) && Castable(botAI, bot, piece, bot))
+                best = &piece;
+        c = Cached{now, seconds, best ? best->spell : 0u, best ? best->pct : 0.0f};
+        pct = c.pct;
+        return c.spell;
     }
 
     bool Evaluate(Player* bot)
@@ -1943,6 +2003,22 @@ bool SoloRunPastAction::Execute(Event /*event*/)
             botAI->PetFollow();
     if (bot->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_CONTROLLED))
         return true;
+    // [lag360] the speed piece the run's price counted (instant, castable now, its aura not on yet): cast first
+    {
+        float pct = 0.0f;
+        float seconds = 0.0f;
+        for (Unit* attacker : bot->getAttackers())
+            if (Creature* mob = attacker ? attacker->ToCreature() : nullptr)
+                seconds = std::max(seconds, SoloSafety::RunPastChase(bot, mob, false).seconds);
+        if (uint32 const spell = SurvivalKit::RunPastSpeed(bot, seconds, pct))
+            if (botAI->CastSpell(spell, bot))
+            {
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+                LOG_INFO("playerbots", "[lag360] {} L{} run past: casts {} (+{:.0f} % speed) as the chase starts",
+                         bot->GetName(), bot->GetLevel(), info ? info->SpellName[0] : "?", pct * 100.0f);
+                return true;
+            }
+    }
     // the leg's walk goes on: a walk already under way is kept (no new spline every tick)
     if (bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
         return true;

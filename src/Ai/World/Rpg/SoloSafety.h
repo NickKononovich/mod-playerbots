@@ -208,7 +208,8 @@ namespace SoloSafety
         float damage = 0.0f;
         float seconds = 0.0f;
     };
-    RunPast RunPastChase(Player* bot, Creature* mob);
+    // [lag360] `withSpeed`: with the speed piece the run-past executor casts first (the price); false: without it
+    RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed = true);
     RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl);
     // the bot lives through `damage` over `seconds` from its health now with its heal kit (the flee's test)
     bool SurvivesRunPast(Player* bot, float damage, float seconds);

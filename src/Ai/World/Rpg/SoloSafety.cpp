@@ -3032,10 +3032,19 @@ namespace SoloSafety
 
         // the chase of a mob of run speed `vm`, leash timer `leashSec`, melee dps `melee` (its melee reach `reach`):
         // how long it lasts and how long its melee lands
-        void ChaseTimes(Player* bot, float vm, float leashSec, float melee, float reach, float& until, float& exposure)
+        void ChaseTimes(Player* bot, float vm, float leashSec, float melee, float reach, float& until, float& exposure,
+                        bool withSpeed = true)
         {
             float const leashRadius = sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS);
-            float const vb = bot->GetSpeed(bot->IsInWater() ? MOVE_SWIM : MOVE_RUN);
+            float vb = bot->GetSpeed(bot->IsInWater() ? MOVE_SWIM : MOVE_RUN);
+            // [lag360] the speed piece the run-past executor casts as the chase starts (SurvivalKit::RunPastSpeed:
+            // instant, castable now, lasting the chase, no daze of its own on being struck)
+            if (withSpeed)
+            {
+                float pct = 0.0f;
+                if (SurvivalKit::RunPastSpeed(bot, std::max(leashSec, leashRadius / std::max(vb, 0.1f)) + 1.0f, pct))
+                    vb *= 1.0f + pct;
+            }
             float const dazed = DazedShare();
             bool const canDaze = melee > 0.0f && vm > vb && vb * (1.0f + dazed) <= vm;
             float const follow = std::max(std::min(vm, canDaze ? vb * (1.0f + dazed) : vb), 0.1f);
@@ -3046,7 +3055,7 @@ namespace SoloSafety
         }
     }
 
-    RunPast RunPastChase(Player* bot, Creature* mob)
+    RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed)
     {
         RunPast out;
         if (!bot || !mob || sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS) <= 0.0f || mob->isWorldBoss())
@@ -3057,7 +3066,7 @@ namespace SoloSafety
         float const melee = MeleeDps(mob, bot);
         float exposure = 0.0f;
         ChaseTimes(bot, mob->GetSpeed(MOVE_RUN), float(mob->GetLeashTimer()), melee, mob->GetMeleeRange(bot),
-                   out.seconds, exposure);
+                   out.seconds, exposure, withSpeed);
         float const casts = ChaseSpellDamage(mob, out.seconds);
         out.damage = melee * BehindFactor(bot) * exposure + (casts > 0.0f ? casts : SpellDpsOf(mob) * out.seconds);
         return out;
