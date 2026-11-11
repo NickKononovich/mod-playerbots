@@ -635,6 +635,8 @@ private:
         // walk's costs (trainer fees, vendor reagents at their game prices), funded by the members' gold, and what for
         uint32 profGoldShort{0};
         bool ordersCall{false};  // [lag336] called for the members' orders it holds ([lag328])
+        // [lag343] skill line -> the inn its craft call's town stop was picked at, kept while the call stands
+        std::map<uint32, WorldPosition> craftInn;
         std::string profGoldWhat;
         // [human] the suggestions sent to a human member: key -> text (sent again only when the text changes)
         std::map<std::string, std::string> suggested;

@@ -4756,7 +4756,13 @@ void GuildCoordinator::UpdateProfessions()
                             // keeps its forge ([econ1])
                             if (line != SKILL_MINING)
                             {
-                                picks.back().pos = sTravelRouteMgr.GetNearestInn(p, std::numeric_limits<float>::max());
+                                // [lag343] picked once when the call is set, kept until it ends (or its map changes):
+                                // the nearest inn of each look changed as the bot walked past inns, and with it the
+                                // route's town list (a build each time)
+                                WorldPosition& inn = st.craftInn[line];
+                                if (inn == WorldPosition() || inn.GetMapId() != p->GetMapId())
+                                    inn = sTravelRouteMgr.GetNearestInn(p, std::numeric_limits<float>::max());
+                                picks.back().pos = inn;
                                 picks.back().cost = value > 0.0 ? uint32(value) : 0;  // its worth, not a price
                             }
                         }
@@ -4998,6 +5004,14 @@ void GuildCoordinator::UpdateProfessions()
         }
         std::stable_sort(picks.begin(), picks.end(), [](ProfessionPick const& a, ProfessionPick const& b)
                          { return uint8(a.kind) > uint8(b.kind); });  // craft, buy, gather, then the trainer
+        // [lag343] a line whose craft call is gone (done, or no longer called) lets its inn go
+        for (auto itr = st.craftInn.begin(); itr != st.craftInn.end();)
+            if (std::none_of(picks.begin(), picks.end(),
+                             [line = itr->first](ProfessionPick const& pick)
+                             { return pick.kind == GuildProfessionKind::CRAFT && pick.skillLine == line; }))
+                itr = st.craftInn.erase(itr);
+            else
+                ++itr;
         professions_[row->low] = std::move(picks);
     }
 }
