@@ -5942,6 +5942,53 @@ namespace Leader::Dungeon
                         return "the tank's hit not predictable";
                     return "";
                 };
+                // [dun204] the pre-pull placement: a caster whose opener cannot reach the pull mob from where it
+                // stands (out of its range or sight) goes to a ranged spot in its range and sight of it before the
+                // tank's hit - the combat spot search (a ranged spot always exists; never the tank's spot), the walk
+                // and the spot judged against every unpulled mob's reach (checkedMove) - so the pre-cast can start
+                // as its window opens. b437 fives: 165 "out of its range", 62 "out of sight", 256 "walking" (walking
+                // along with the tank) of 953 pulls with no pre-cast
+                if (info && PrecastSpell(info) && bot->HasSpell(pre.opener) && !running &&
+                    bot->GetThreatMgr().GetThreatenedByMeList().empty() &&
+                    (!bot->IsWithinCombatRange(pullMob, info->GetMaxRange(false, bot)) ||
+                     !bot->IsWithinLOSInMap(pullMob)))
+                {
+                    thread_local std::map<ObjectGuid, ObjectGuid> placedFor;  // member -> the pull mob it was sent for
+                    if (placedFor.size() > 1024)
+                        placedFor.clear();
+                    if (placedFor[bot->GetGUID()] != pullMob->GetGUID())
+                    {
+                        Position spot;
+                        bool covered = false;
+                        std::vector<HazardZone> const& placeZones = lead.hazardZones[bot->GetGUID()];
+                        // in its range, out of the pull mob's own aggro reach (it is the tank's to wake), not on
+                        // the tank's spot, in the healer's reach
+                        Creature* const pullCreature = pullMob->ToCreature();
+                        float const pullReach =
+                            pullCreature ? MovementAction::IdleAggroReach(pullCreature, bot,
+                                                                          PullPlanning::CAREFUL_AGGRO_MARGIN)
+                                         : 0.0f;
+                        std::function<bool(Position const&)> const placeKeeps = [&](Position const& at)
+                        {
+                            float const toMob = at.GetExactDist(pullMob);
+                            return keepsHealer(at) && toMob <= info->GetMaxRange(false, bot) && toMob > pullReach &&
+                                   tank->GetExactDist(at) > PullPlanning::CAREFUL_AGGRO_MARGIN;
+                        };
+                        if (LeaderSearchCombatSpot(bot, GET_PLAYERBOT_AI(bot), pullMob, false, placeZones,
+                                                   placeKeeps, spot, nullptr, nullptr, covered) &&
+                            checkedMove(bot->GetGUID(), Leader::MoveEvent::MoveTo, spot, Leader::LEADER_SPOT_TOLERANCE,
+                                        "[dun204] pre-pull: in its opener's range and sight of " +
+                                            pullMob->GetName()))
+                        {
+                            placedFor[bot->GetGUID()] = pullMob->GetGUID();
+                            logEvent(bot, "MoveTo",
+                                     JsonObject().Str("why", "[dun204] pre-pull: in its opener's range and sight")
+                                         .Str("target", pullMob->GetName()).Num("spell", int64(pre.opener))
+                                         .Real("x", spot.GetPositionX()).Real("y", spot.GetPositionY())
+                                         .Real("z", spot.GetPositionZ()));
+                        }
+                    }
+                }
                 pre.skip = gate();
                 if (!pre.skip.empty())
                     continue;
