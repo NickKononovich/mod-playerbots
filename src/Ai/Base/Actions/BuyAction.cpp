@@ -448,6 +448,28 @@ int32 PickVendorFood(Player* bot, Creature* vendor, uint32 spellCategory, float 
 }
 }  // namespace
 
+namespace
+{
+std::mutex conjureGoalLock;
+std::unordered_map<ObjectGuid, uint32> conjureGoals;  // [dun199] under conjureGoalLock
+}  // namespace
+
+void SetConjureGoal(ObjectGuid mage, uint32 count)
+{
+    std::lock_guard<std::mutex> guard(conjureGoalLock);
+    if (count)
+        conjureGoals[mage] = count;
+    else
+        conjureGoals.erase(mage);
+}
+
+uint32 ConjureGoal(ObjectGuid mage)
+{
+    std::lock_guard<std::mutex> guard(conjureGoalLock);
+    auto const found = conjureGoals.find(mage);
+    return found == conjureGoals.end() ? 0 : found->second;
+}
+
 float BestBagRestore(Player* bot, uint32 spellCategory)
 {
     float best = 0.0f;

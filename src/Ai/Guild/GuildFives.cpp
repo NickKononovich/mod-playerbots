@@ -1641,6 +1641,7 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
         BotState& st = bots_[low];
         st.fiveId = five.id;
         st.supplyShort.clear();  // [supply27] a new five, or none: its supply check starts again
+        SetConjureGoal(ObjectGuid::Create<HighGuid::Player>(low), 0);  // [dun199]
         st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
         st.fiveRefused.clear();
         // the five's order comes first: the member leaves its quest now (New RPG takes the order at IDLE)
@@ -1766,6 +1767,7 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
         BotState& st = bots_[low];
         st.fiveId = 0;
         st.supplyShort.clear();  // [supply27] a new five, or none: its supply check starts again
+        SetConjureGoal(ObjectGuid::Create<HighGuid::Player>(low), 0);  // [dun199]
         st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
         st.fiveRefused.clear();
         if (st.run && st.runType == GuildOrderType::DUNGEON)
@@ -2149,6 +2151,41 @@ void GuildCoordinator::UpdateFives()
                     }
                     food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
                     mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
+                }
+                // [dun199] a mage that knows Conjure Water conjures before the run up to the five's priced line: its
+                // own count plus what the five's other mana users lack of theirs (their bags now); the members get it
+                // by trade when they meet (the share of the five: c.), the pool counts it as it lands in the bags
+                {
+                    uint32 othersShort = 0;
+                    std::vector<Player*> conjurers;
+                    for (uint32 low : five.members)
+                    {
+                        Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+                        if (!p || !p->IsInWorld() || !p->GetMaxPower(POWER_MANA))
+                            continue;
+                        if (p->getClass() == CLASS_MAGE && p->HasSpell(5504))  // Conjure Water
+                        {
+                            conjurers.push_back(p);
+                            continue;
+                        }
+                        uint32 const held = CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
+                        othersShort += drinkLine(low) > held ? drinkLine(low) - held : 0;
+                    }
+                    for (Player* mage : conjurers)
+                    {
+                        auto const own = five.drinkNeed.find(mage->GetGUID().GetCounter());
+                        uint32 const goal = (own != five.drinkNeed.end() ? own->second : RESTOCK_FOOD_MIN) +
+                                            othersShort / uint32(conjurers.size());
+                        if (goal != ConjureGoal(mage->GetGUID()))
+                        {
+                            SetConjureGoal(mage->GetGUID(), goal);
+                            uint32 const forOthers = othersShort / uint32(conjurers.size());
+                            LOG_INFO("playerbots",
+                                     "[dun199] five {} ({}): {} conjures water up to {} before the run (its own line + "
+                                     "{} the others lack)",
+                                     id, five.contentKey, mage->GetName(), goal, forOthers);
+                        }
+                    }
                 }
                 bool const pooled = noRoom.empty() && drinks >= drinksNeeded;
                 if (!noRoom.empty() && !five.poolGoesIn)
@@ -3134,6 +3171,7 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         BotState& st = bots_[low];
         st.fiveId = 0;
         st.supplyShort.clear();  // [supply27] a new five, or none: its supply check starts again
+        SetConjureGoal(ObjectGuid::Create<HighGuid::Player>(low), 0);  // [dun199]
         st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
         st.run = false;
         st.fiveRefused.clear();

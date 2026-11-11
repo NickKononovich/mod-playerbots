@@ -49,6 +49,11 @@ uint32 CountBagFood(Player* bot, uint32 spellCategory);
 // [dun194] the most one usable item of that kind in the bags restores (RestoredPoints, at most the bot's max health /
 // mana: a drink stops at a full pool); 0 when it holds none
 float BestBagRestore(Player* bot, uint32 spellCategory);
+// [dun199] the conjured water a mage of a gathering guild five conjures up to before the run (its own priced line plus
+// what the five's other mana users lack of theirs), set by the global leader (world thread), read by the mage's "no
+// drink" trigger (map thread); 0: none (it conjures only when it holds no conjured water)
+void SetConjureGoal(ObjectGuid mage, uint32 count);
+uint32 ConjureGoal(ObjectGuid mage);
 
 // Out of combat, low on food/drink and a vendor/innkeeper selling level-appropriate food is near:
 // walk to it and buy with the bot's own gold (consumables budget, repair money stays reserved).

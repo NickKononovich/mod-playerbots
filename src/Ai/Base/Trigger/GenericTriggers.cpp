@@ -579,7 +579,21 @@ bool NoFoodTrigger::IsActive()
 
 bool NoDrinkTrigger::IsActive()
 {
-    return AI_VALUE2(std::vector<Item*>, "inventory items", "conjured water").empty();
+    std::vector<Item*> const water = AI_VALUE2(std::vector<Item*>, "inventory items", "conjured water");
+    if (water.empty())
+        return true;
+    // [dun199] outside an instance, a mage of a gathering guild five conjures up to the five's priced line
+    Map* map = bot->GetMap();
+    if (map && map->Instanceable())
+        return false;
+    uint32 const goal = ConjureGoal(bot->GetGUID());
+    if (!goal)
+        return false;
+    uint32 held = 0;
+    for (Item* item : water)
+        if (item)
+            held += item->GetCount();
+    return held < goal;
 }
 
 bool NeedFoodRestockTrigger::IsActive()

@@ -1084,9 +1084,11 @@ void GuildCoordinator::UpdateTransfers()
                 // [share92] inside the dungeon (the five's run: its members stand together at its start, they met
                 // nowhere before - lfg89 has them quest apart until the port) a member below the restock line
                 // (RESTOCK_FOOD_MIN) is topped up, not only one that ran out
-                uint32 const line = five.stage == GuildFive::Stage::Run && p && p->GetMap()->IsDungeon()
-                                        ? RunLine(five, m, kind)
-                                        : 1;
+                // [dun199] ... and while the five gathers outside (the mage's conjured water goes to the members short
+                // of their priced line before the run)
+                bool const lined = p && ((five.stage == GuildFive::Stage::Run && p->GetMap()->IsDungeon()) ||
+                                         (five.stage == GuildFive::Stage::Gather && kind == DRINK));
+                uint32 const line = lined ? RunLine(five, m, kind) : 1;
                 if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
                     (kind == DRINK && p->getPowerType() != POWER_MANA) || CountKind(p, kind, p->GetLevel()) >= line)
                     continue;
@@ -1153,7 +1155,9 @@ void GuildCoordinator::UpdateTransfers()
                            });
             // the giver keeps an equal share; [share92] inside the dungeon it keeps its own restock line and shares
             // only what lies above it (no member is pushed below the line that made another needy: no ping-pong)
-            bool const inRun = five.stage == GuildFive::Stage::Run && q->GetMap()->IsDungeon() && !outOnly;
+            bool const inRun = ((five.stage == GuildFive::Stage::Run && q->GetMap()->IsDungeon()) ||
+                                (five.stage == GuildFive::Stage::Gather && kind == DRINK)) &&
+                               !outOnly;
             uint32 const keep = RunLine(five, q->GetGUID().GetCounter(), kind);  // [dun194] its own line
             uint32 const share = inRun ? (total > keep ? (total - keep) / uint32(needy.size()) : 0)
                                        : total / uint32(needy.size() + 1);
