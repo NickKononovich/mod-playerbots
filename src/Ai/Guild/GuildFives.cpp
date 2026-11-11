@@ -476,6 +476,11 @@ namespace FiveGate
         // [dun194] each mana user's net mana over the dungeon's pulls (the healer's healing mana less its regen in
         // the fights, a caster's rotation less its regen in combat), by its GUID
         std::map<ObjectGuid, float> manaNeed;
+        // [dun230] the terms of the healer's: the healing's mana over the run, its regen in the fights, and each mana
+        // user's regen on the walks between the pulls (taken off its need)
+        float healingMana = 0.0f;
+        float fightRegen = 0.0f;
+        std::map<ObjectGuid, float> walkRegen;
     };
 
     // The five: the tank first, the healer second (PickFive's order). [dun170] The dungeon is pulled as its leader
@@ -508,6 +513,8 @@ namespace FiveGate
         {
             ObjectGuid guid;
             float manaPerSec = 0.0f;  // [dun194] its rotation's mana less its regen in combat
+            float walkRegen = 0.0f;   // [dun230] its full regen per second on the walk between pulls
+            float lastUsed = 0.0f;    // [dun230] what the pull before took of its pool
             uint8 level = 1;
             float burst = 0.0f;
             float white = 0.0f;
@@ -528,6 +535,7 @@ namespace FiveGate
                 Damage d;
                 d.guid = p->GetGUID();
                 d.manaPerSec = p->GetMaxPower(POWER_MANA) ? std::max(r.manaPerSec, 0.0f) : 0.0f;
+                d.walkRegen = RestState::ManaRegenPerSec(p, false);
                 d.level = p->GetLevel();
                 d.burst = r.burstDps;
                 d.white = r.whiteDps;
@@ -550,9 +558,16 @@ namespace FiveGate
         float const avoid = std::clamp((dodge + parry) / 100.0f, 0.0f, 0.75f);
         float const healMana = heal.maxMana;
         float const gap = std::max(heal.gapSec, 1.5f);
-        float const regenCasting =
-            healer->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + AsUnderlyingType(POWER_MANA));
-        float const regenFull = healer->GetFloatValue(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER + AsUnderlyingType(POWER_MANA));
+        // [dun230] without a food / drink aura's MP5 (both fields carry it while the healer sits): b443 / b444 wc-n
+        // admitted on a drinking healer's 36 mana/s ("heal mana 3079 of 4514 (770 pool + regen)"); standing, the same
+        // pulls read "3012 of 939" - 3.2 times its mana, over capacity
+        float const regenCasting = RestState::ManaRegenPerSec(healer, true);
+        float const regenFull = RestState::ManaRegenPerSec(healer, false);
+        // [dun230] the walk between two pulls: the straight line from one pull's first mob to the next one's at the
+        // tank's run speed (a path is never shorter, so the regen on it is never overcounted)
+        float const runSpeed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
+        G3D::Vector3 lastPull;
+        bool walked = false;
 
         // one pull's load (1.0: just fits) and its terms
         struct PullLoad
@@ -807,12 +822,26 @@ namespace FiveGate
                 ++failed;
             if (best.load > worst.load)
                 worst = best;
-            // [dun194] the pull's mana for each mana user
-            for (Damage const& d : dps)
+            // [dun194] the pull's mana for each mana user; [dun230] less what the walk to it regenerates of the
+            // previous pull's (its full rate past the five-second rule after that fight)
+            G3D::Vector3 const pullPos = spawns[bestMembers.front()].pos;
+            float const walkSec = walked ? (pullPos - lastPull).length() / runSpeed : 0.0f;
+            lastPull = pullPos;
+            walked = true;
+            out.healingMana += best.manaNeeded;
+            out.fightRegen += best.fightMana - healMana;
+            for (Damage& d : dps)
             {
+                float const back = std::min(d.lastUsed, d.walkRegen * std::max(0.0f, walkSec - 5.0f));
+                if (back > 0.0f)
+                {
+                    out.manaNeed[d.guid] -= back;
+                    out.walkRegen[d.guid] += back;
+                }
                 float const used = d.guid == healer->GetGUID()
                                        ? std::max(0.0f, best.manaNeeded - (best.fightMana - healMana))
                                        : d.manaPerSec * best.sec;
+                d.lastUsed = used;
                 if (used > 0.0f)
                     out.manaNeed[d.guid] += used;
             }
@@ -1763,12 +1792,15 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
     {
         std::vector<Player*> players(2, nullptr);
         float drinkMana = 0.0f;
+        std::map<ObjectGuid, float> ownDrink;  // [dun230] each one's best drink
         for (uint32 low : members)
         {
             Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
             if (!p)
                 continue;
-            drinkMana = std::max(drinkMana, BestBagRestore(p, RESTOCK_SPELL_CATEGORY_DRINK));
+            float const own = BestBagRestore(p, RESTOCK_SPELL_CATEGORY_DRINK);
+            ownDrink[p->GetGUID()] = own;
+            drinkMana = std::max(drinkMana, own);
             auto const role = roles.find(low);
             std::string const r = role != roles.end() ? role->second : "dps";
             if (r == "tank" && !players[0])
@@ -1789,13 +1821,22 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
                 auto const need = priced.manaNeed.find(p->GetGUID());
                 float const mana = (need != priced.manaNeed.end() ? need->second : 0.0f) +
                                    float(p->GetMaxPower(POWER_MANA));
-                uint32 const drinks = uint32(std::ceil(mana / drinkMana));
+                // [dun230] never below one full rest: its bar from empty over its own best drink (the five's best
+                // when it holds none) - b444 wc-n five 12 priced the healer Farret at 1 drink beside 19-38 each
+                float const ownBest = ownDrink[p->GetGUID()] > 0.0f ? ownDrink[p->GetGUID()] : drinkMana;
+                uint32 const oneRest = uint32(std::ceil(float(p->GetMaxPower(POWER_MANA)) / ownBest));
+                uint32 const drinks = std::max(uint32(std::ceil(mana / drinkMana)), oneRest);
                 five.drinkNeed[p->GetGUID().GetCounter()] = drinks;
-                line += Acore::StringFormat("{}{} {} ({:.0f} mana)", line.empty() ? "" : ", ", p->GetName(), drinks,
-                                            mana);
+                auto const walk = priced.walkRegen.find(p->GetGUID());
+                line += Acore::StringFormat("{}{} {} ({:.0f} mana, [dun230] walks {:.0f}, rest {})",
+                                            line.empty() ? "" : ", ", p->GetName(), drinks, mana,
+                                            walk != priced.walkRegen.end() ? walk->second : 0.0f, oneRest);
             }
-            LOG_INFO("playerbots", "[dun194] five {} ({}): drinks the run needs at {:.0f} mana a drink: {}", five.id,
-                     d.contentKey, drinkMana, line);
+            LOG_INFO("playerbots",
+                     "[dun194] five {} ({}): drinks the run needs at {:.0f} mana a drink: {}; [dun230] the healer {}'s "
+                     "heals {:.0f} mana less {:.0f} regen in the fights",
+                     five.id, d.contentKey, drinkMana, line, players[1]->GetName(), priced.healingMana,
+                     priced.fightRegen);
         }
     }
 

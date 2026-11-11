@@ -19,6 +19,7 @@
 #include "Creature.h"
 #include "DBCStores.h"
 #include "Group.h"
+#include "HealthTriggers.h"  // [dun230] RestState::DrinkRegenPerSec
 #include "Item.h"
 #include "Log.h"
 #include "ObjectMgr.h"
@@ -2239,7 +2240,11 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     float rate = sWorld->getRate(RATE_POWER_MANA);
     if (sWorld->getBoolConfig(CONFIG_LOW_LEVEL_REGEN_BOOST) && bot->GetLevel() < 15)
         rate *= 2.066f - float(bot->GetLevel()) * 0.066f;
-    p.manaRegen = (bot->GetFloatValue(uint16(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER) + uint16(POWER_MANA)) +
+    // [dun230] without a food / drink aura's MP5: it breaks when the bot stands up for the fight (b444 wc-n: a
+    // healer drinking at the five's forming read 36 mana/s instead of 1.4)
+    p.manaRegen = (std::max(0.0f, bot->GetFloatValue(uint16(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER) +
+                                                     uint16(POWER_MANA)) -
+                                      RestState::DrinkRegenPerSec(bot)) +
                    m.bonus.manaPerSec) *
                   rate;
     p.cycleSec = std::max(cycle, float(GCD_MAX_MS) / float(IN_MILLISECONDS));

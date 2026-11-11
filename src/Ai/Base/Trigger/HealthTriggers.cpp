@@ -724,20 +724,38 @@ float HealerUpkeepPctPerSec(Player* healer)
     return healer ? HealerThroughput(healer, healer).upkeepPctPerSec : 0.0f;
 }
 
-float CastingRegenPerSec(Player* bot)
+float DrinkRegenPerSec(Player* bot)
 {
-    if (!bot || !bot->GetMaxPower(POWER_MANA))
-        return 0.0f;
-    // [lead1020] the drink aura's SPELL_AURA_MOD_POWER_REGEN (mp5) is in this field while it sits: not the fight's
     float drinkMp5 = 0.0f;
     for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_MOD_POWER_REGEN))
         if (effect->GetMiscValue() == POWER_MANA)
             if (SpellSpecificType const specific = effect->GetSpellInfo()->GetSpellSpecific();
                 specific == SPELL_SPECIFIC_DRINK || specific == SPELL_SPECIFIC_FOOD_AND_DRINK)
                 drinkMp5 += float(effect->GetAmount());
-    return std::max(bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + POWER_MANA) - drinkMp5 / 5.0f,
+    return drinkMp5 / 5.0f;
+}
+
+float CastingRegenPerSec(Player* bot)
+{
+    if (!bot || !bot->GetMaxPower(POWER_MANA))
+        return 0.0f;
+    // [lead1020] the drink aura's SPELL_AURA_MOD_POWER_REGEN (mp5) is in this field while it sits: not the fight's
+    return std::max(bot->GetFloatValue(UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER + POWER_MANA) -
+                        DrinkRegenPerSec(bot),
                     0.0f) *
            sWorld->getRate(RATE_POWER_MANA);
+}
+
+float ManaRegenPerSec(Player* bot, bool casting)
+{
+    if (!bot || !bot->GetMaxPower(POWER_MANA))
+        return 0.0f;
+    float rate = sWorld->getRate(RATE_POWER_MANA);
+    if (sWorld->getBoolConfig(CONFIG_LOW_LEVEL_REGEN_BOOST) && bot->GetLevel() < 15)
+        rate *= 2.066f - float(bot->GetLevel()) * 0.066f;
+    uint16 const field =
+        casting ? UNIT_FIELD_POWER_REGEN_INTERRUPTED_FLAT_MODIFIER : UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER;
+    return std::max(bot->GetFloatValue(field + AsUnderlyingType(POWER_MANA)) - DrinkRegenPerSec(bot), 0.0f) * rate;
 }
 
 float HealerNetUpkeepPctPerSec(Player* healer)

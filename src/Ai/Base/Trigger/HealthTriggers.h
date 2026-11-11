@@ -314,6 +314,12 @@ float HealerUpkeepPctPerSec(Player* healer);
 // while casting, times RATE_POWER_MANA as Player::Regenerate takes it), without a food or drink aura's MP5 (it breaks
 // when the bot stands up for the fight)
 float CastingRegenPerSec(Player* bot);
+// [dun230] the MP5 of the food / drink auras on `bot` (SPELL_AURA_MOD_POWER_REGEN of a drink spell), per second as
+// Player::UpdateManaRegen adds it to both regen fields: no part of a fight's or a walk's regen (it breaks on standing)
+float DrinkRegenPerSec(Player* bot);
+// [dun230] a mana user's regen per second without the food / drink auras, the casting (five-second rule) or the full
+// rate, times RATE_POWER_MANA and the low-level boost as Player::Regenerate takes them
+float ManaRegenPerSec(Player* bot, bool casting);
 // [lead1435] a healer's heal term's mana per second besides its heals: its measured upkeep less its casting regen (%
 // of max mana per second; negative when the regen pays more than the upkeep)
 float HealerNetUpkeepPctPerSec(Player* healer);

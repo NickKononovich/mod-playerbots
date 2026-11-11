@@ -1115,25 +1115,47 @@ void GuildCoordinator::UpdateTransfers()
         // the largest share (b439 five 11: Febineysh 0/2 rounded to 0 beside 44 drinks). A member's share is both
         // the most it receives to and the least it gives down to
         std::vector<uint32> target(fills.size(), 0);
+        // [dun230] a short pool of drink fills the five's healer to its line first: its mana gates every pull (the
+        // five gate and the planner judge the tank's healing on it), a dps short of mana still deals its white
+        // damage. b444 wc-n five 12: "pool 1 of the lines' 78, short: Farret 0/1, Feette 1/20, ..." - the healer
+        // stood at 38-41 % with no drink while the planner held Verdan's pull for his mana
+        size_t healerFill = fills.size();
+        if (kind == DRINK)
+            for (size_t n = 0; n < fills.size(); ++n)
+                if (auto const role = five.roles.find(fills[n].p->GetGUID().GetCounter());
+                    role != five.roles.end() && role->second == "healer")
+                    healerFill = n;
         if (!covered)
         {
-            uint64 given = 0;
+            uint64 given = 0, sharedPool = pool, sharedLines = lines;
+            if (healerFill < fills.size())
+            {
+                target[healerFill] = uint32(std::min<uint64>(pool, fills[healerFill].line));
+                given = target[healerFill];
+                sharedPool -= given;
+                sharedLines -= fills[healerFill].line;
+            }
             std::vector<std::pair<uint64, size_t>> rest;  // (remainder, member)
             for (size_t n = 0; n < fills.size(); ++n)
             {
-                uint64 const exact = pool * fills[n].line;
-                target[n] = uint32(exact / lines);
+                if (n == healerFill || !sharedLines)
+                    continue;
+                uint64 const exact = sharedPool * fills[n].line;
+                target[n] = uint32(exact / sharedLines);
                 given += target[n];
-                rest.emplace_back(exact % lines, n);
+                rest.emplace_back(exact % sharedLines, n);
             }
             std::stable_sort(rest.begin(), rest.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
             for (size_t k = 0; given < pool && k < rest.size(); ++k, ++given)
                 ++target[rest[k].second];
             if (pool >= fills.size())
                 for (size_t n = 0; n < fills.size(); ++n)
-                    if (!target[n])
+                    if (!target[n] && n != healerFill)
                     {
-                        size_t const most = size_t(std::max_element(target.begin(), target.end()) - target.begin());
+                        size_t most = n;  // [dun230] never from the healer's share
+                        for (size_t m = 0; m < target.size(); ++m)
+                            if (m != healerFill && target[m] > target[most])
+                                most = m;
                         if (target[most] < 2)
                             break;
                         --target[most];
@@ -1171,6 +1193,8 @@ void GuildCoordinator::UpdateTransfers()
             order[n] = n;
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
                   { return uint64(fills[a].held) * fills[b].line < uint64(fills[b].held) * fills[a].line; });
+        if (!covered && healerFill < fills.size())  // [dun230] the healer of a short pool takes first
+            std::stable_partition(order.begin(), order.end(), [&](size_t n) { return n == healerFill; });
         std::string planned;
         // [dun210] b441: Lanbuzz -> Almored 22 trades of one Ice Cold Milk each, Almored at 7/8 drinking them as they
         // came; Ainne <-> Geefeelli 4 / 2, Aevmae <-> Zharet 2 / 2, Aevmae <-> Galiver 2 / 1 back and forth. A member
@@ -1222,9 +1246,11 @@ void GuildCoordinator::UpdateTransfers()
             {
                 uint32 const keep = keepOf(fills[g]);
                 uint32 const above = fills[g].after > keep ? fills[g].after - keep : 0;
-                // only a member at a higher fill gives (its fill before this update)
+                // only a member at a higher fill gives (its fill before this update); [dun230] any member above its
+                // share gives to the healer of a short pool (the healer gives none back: its share is all it holds)
                 if (g != r && above > spare &&
-                    uint64(fills[g].held) * to.line > uint64(to.held) * fills[g].line)
+                    ((!covered && r == healerFill) ||
+                     uint64(fills[g].held) * to.line > uint64(to.held) * fills[g].line))
                 {
                     // [dun210] no trade back while the pair holds what it held after its last trade
                     if (auto const last = lastMove.find(pairKey(fills[g].p, to.p));
@@ -1277,7 +1303,11 @@ void GuildCoordinator::UpdateTransfers()
         }
         std::string const text = "five " + std::to_string(id) + " " + (kind == FOOD ? "food" : "drink") +
                                  " (pool " + std::to_string(pool) + " of the lines' " + std::to_string(lines) +
-                                 (covered ? ", covers them" : ", short") + "): " + before + " -> " + after + "; " +
+                                 (covered ? ", covers them" : ", short") +
+                                 (!covered && healerFill < fills.size()
+                                      ? ", [dun230] the healer " + fills[healerFill].p->GetName() + " first"
+                                      : std::string()) +
+                                 "): " + before + " -> " + after + "; " +
                                  (planned.empty() ? std::string("nothing moves") : planned) +
                                  (waiting.empty() ? std::string() : "; waits: " + waiting);
         std::string verdict = planned.empty() ? std::string("even") : text;
