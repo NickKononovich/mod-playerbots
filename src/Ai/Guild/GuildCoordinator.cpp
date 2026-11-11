@@ -5502,7 +5502,12 @@ double GuildCoordinator::TownStopCopper(Player* bot, WorldPosition const& pos) c
         if (!o.executable || o.pos == WorldPosition() || o.pos.GetMapId() != pos.GetMapId() ||
             o.pos.GetExactDist2d(pos.GetPositionX(), pos.GetPositionY()) > 1.0f)  // the same spot (TownStops)
             continue;
-        copper += double(o.cost);
+        // [lag344] gold the bot gives away (DONATE_GOLD: the sender's mail / trade of a member's gold) is no gain to
+        // it at its own price, and to the guild only money moving between members: it weighs nothing here. b445:
+        // "[lag337] Brelir L22 town stop DONATE_GOLD Blood Watch weighs 14565 quest xp" - his share of the guild's
+        // first bank tab (100 g, the members' spare gold to the guild master) counted as his own gain
+        if (o.type != GuildOrderType::DONATE_GOLD)
+            copper += double(o.cost);
         if ((o.type == GuildOrderType::MAIL_TO || o.type == GuildOrderType::TRADE_TO) && o.itemId)
             if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(o.itemId))
                 copper += double(proto->BuyPrice) * std::max<uint32>(1, o.count);
