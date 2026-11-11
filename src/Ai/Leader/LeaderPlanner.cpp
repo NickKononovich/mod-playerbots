@@ -11724,7 +11724,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 }
                 // [dun197] ... or over a curated route link (a bridge, a lift, a jump down: LeaderKnowledge's
                 // RouteLinks) whose far end walks to him - RouteTargets' own test (Gal'darah's bridge, the Mechanar
-                // lift to Sepethrea and Pathaleon, Dire Maul West to Immol'thar, ...): the route walks the group over it
+                // lift to Sepethrea and Pathaleon, Dire Maul West to Immol'thar, ...): the route crosses it
                 if (!judged.reaches)
                     for (Leader::Knowledge::RouteLinkDef const* link : Leader::Knowledge::RouteLinks(bot->GetMapId()))
                     {
