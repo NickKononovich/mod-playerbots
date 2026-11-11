@@ -1123,6 +1123,7 @@ void GuildCoordinator::Update(uint32 diff)
         }
         SlowScope slow("coordinator professions");
         UpdateProfessions();  // [tasks] profession vs questing: the global leader's call per member
+        UpdateEnchantOrders();  // [craft386] the enchanters' orders on the members' gear
     }
     updateTimer_ += diff;
     if (updateTimer_ >= 5 * IN_MILLISECONDS)
@@ -1163,6 +1164,7 @@ void GuildCoordinator::Update(uint32 diff)
     }
     SlowScope slow("coordinator run transfers");
     RunTransfers(diff);  // [guild81] trades next to each other, mails at mailboxes (once a second)
+    RunEnchantOrders(diff);  // [craft386] an enchanter and a member side by side: the trade's enchant
 }
 
 void GuildCoordinator::UpdateLeaders()

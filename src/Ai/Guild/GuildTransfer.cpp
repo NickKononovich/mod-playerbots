@@ -60,10 +60,12 @@
 #include "Opcodes.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"  // [craft386] sight distance
 #include "Playerbots.h"
 #include "SpellInfo.h"
 #include "Spell.h"
 #include "SpellMgr.h"
+#include "StatsWeightCalculator.h"  // [craft386]
 #include "Trainer.h"  // [econ2] the profession trainers
 #include "TradeData.h"
 #include "World.h"
@@ -3127,4 +3129,321 @@ void GuildCoordinator::TransferPlanRows(std::vector<std::vector<std::string>>& r
     if (!donationState_.empty())
         rows.push_back(
             {"money", "donations", "guild members", "bank tab 1", "guild master", "mail / trade", donationState_});
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [craft386] user 2026-11-11 «enchanters enchant the guild's gear»: the guild's Enchanting (about 49 from members'
+// disenchanted greens, ench160-171) went into the enchanters' own pieces only ([ench156], the craft executor's skill-up
+// casts). An enchanter now enchants the worn pieces of the members it meets with what its skill and its bags allow,
+// as players do: the member takes the piece off, puts it in the trade's "will not be traded" slot, the enchanter casts
+// on it, both accept (the core casts at the accept, WorldSession::HandleAcceptTradeOpcode), the member wears it again.
+// The enchant is the one the member's stat weights value most; a piece that already has a permanent enchantment is
+// never overwritten. The reagents are the enchanter's own (the core's triggered trade cast takes them but does not
+// check them: they are checked here first - no free enchant)
+// ---------------------------------------------------------------------------------------------------------------------
+namespace
+{
+    struct EnchantRecipe
+    {
+        uint32 spellId{0};
+        uint32 enchantId{0};
+        uint32 yellow{0};
+        uint32 gray{0};
+        std::vector<std::pair<uint32, uint32>> reagents;
+    };
+
+    // the Enchanting recipes that enchant an item (SkillLineAbility of the line, SPELL_EFFECT_ENCHANT_ITEM), world
+    // thread, built once
+    std::vector<EnchantRecipe> const& EnchantRecipes()
+    {
+        static std::vector<EnchantRecipe> list;
+        static bool loaded = false;
+        if (loaded)
+            return list;
+        loaded = true;
+        std::set<uint32> seen;
+        for (uint32 i = 0; i < sSkillLineAbilityStore.GetNumRows(); ++i)
+        {
+            SkillLineAbilityEntry const* ability = sSkillLineAbilityStore.LookupEntry(i);
+            if (!ability || ability->SkillLine != SKILL_ENCHANTING || !seen.insert(ability->Spell).second)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(ability->Spell);
+            if (!info)
+                continue;
+            EnchantRecipe r;
+            r.spellId = ability->Spell;
+            r.yellow = ability->TrivialSkillLineRankLow;
+            r.gray = ability->TrivialSkillLineRankHigh;
+            for (uint8 e = 0; e < MAX_SPELL_EFFECTS && !r.enchantId; ++e)
+                if (info->Effects[e].Effect == SPELL_EFFECT_ENCHANT_ITEM && info->Effects[e].MiscValue > 0)
+                    r.enchantId = uint32(info->Effects[e].MiscValue);
+            for (uint8 k = 0; k < MAX_SPELL_REAGENTS; ++k)
+                if (info->Reagent[k] > 0 && info->ReagentCount[k] > 0)
+                    r.reagents.emplace_back(uint32(info->Reagent[k]), info->ReagentCount[k]);
+            if (r.enchantId && !r.reagents.empty())
+                list.push_back(std::move(r));
+        }
+        LOG_INFO("playerbots", "[craft386] {} Enchanting recipes enchant an item", list.size());
+        return list;
+    }
+
+    // the recipe's tools in the caster's bags (Runed Copper Rod: TotemCategory): the triggered trade cast does not
+    // check them either
+    bool EnchantToolsHeld(Player* e, SpellInfo const* info)
+    {
+        for (uint32 totem : info->Totem)
+            if (totem && !e->HasItemCount(totem, 1))
+                return false;
+        for (uint32 category : info->TotemCategory)
+            if (category && !e->HasItemTotemCategory(category))
+                return false;
+        return true;
+    }
+
+    std::string SpellNameOf(uint32 spellId)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        return info ? std::string(info->SpellName[0]) : std::to_string(spellId);
+    }
+
+    // Spell::CheckItems (SPELL_EFFECT_ENCHANT_ITEM): the item's required level (else its item level) reaches the
+    // spell's base level
+    bool EnchantLevelOk(SpellInfo const* info, ItemTemplate const* proto)
+    {
+        if (info->HasAttribute(SPELL_ATTR2_ALLOW_LOW_LEVEL_BUFF))
+            return true;
+        uint32 const required = proto->RequiredLevel ? proto->RequiredLevel : proto->ItemLevel;
+        return required >= info->BaseLevel;
+    }
+
+    // the enchanter's trade with the member: the piece in the member's "will not be traded" slot, the enchant spell on
+    // the enchanter's side (TradeData::SetSpell, what the client's cast on a trade item does), both accept
+    std::string EnchantInTrade(Player* e, Player* m, Item* item, uint32 spellId)
+    {
+        auto const cancel = [&](std::string why)
+        {
+            if (e->GetTradeData())
+            {
+                WorldPacket packet(CMSG_CANCEL_TRADE);
+                e->GetSession()->HandleCancelTradeOpcode(packet);
+            }
+            return why;
+        };
+        WorldPacket init(CMSG_INITIATE_TRADE);
+        init << m->GetGUID();
+        e->GetSession()->HandleInitiateTradeOpcode(init);
+        if (!e->GetTradeData() || e->GetTrader() != m)
+            return cancel("the core did not open the trade");
+        WorldPacket begin(CMSG_BEGIN_TRADE);
+        m->GetSession()->HandleBeginTradeOpcode(begin);
+        WorldPacket set(CMSG_SET_TRADE_ITEM);
+        set << uint8(TRADE_SLOT_NONTRADED) << item->GetBagSlot() << item->GetSlot();
+        m->GetSession()->HandleSetTradeItemOpcode(set);
+        if (!m->GetTradeData() || m->GetTradeData()->GetItem(TRADE_SLOT_NONTRADED) != item || !e->GetTradeData())
+            return cancel("the piece did not go into the will-not-be-traded slot");
+        e->GetTradeData()->SetSpell(spellId);
+        WorldPacket accept(CMSG_ACCEPT_TRADE);
+        e->GetSession()->HandleAcceptTradeOpcode(accept);
+        if (m->GetTradeData())
+        {
+            WorldPacket accept2(CMSG_ACCEPT_TRADE);
+            m->GetSession()->HandleAcceptTradeOpcode(accept2);
+        }
+        if (e->GetTradeData())
+            return cancel("the core did not complete the trade (the cast was refused)");
+        return "";
+    }
+}
+
+void GuildCoordinator::UpdateEnchantOrders()
+{
+    std::vector<uint32> lows;
+    {
+        CoordLock guard(lock_, __func__);
+        for (PlanRow const& row : plan_)
+            lows.push_back(row.low);
+    }
+    std::vector<EnchantRecipe> const& recipes = EnchantRecipes();
+    std::vector<EnchantOrder> orders;
+    std::map<uint32, std::unique_ptr<StatsWeightCalculator>> weights;  // member -> its stat weights (this look)
+    std::set<uint32> taken;                                             // member pieces already given an order
+    for (uint32 enchanterLow : lows)
+    {
+        Player* e = Online(enchanterLow);
+        if (!e || !GET_PLAYERBOT_AI(e) || HumanCharacter(e) || !e->IsAlive() || !e->HasSkill(SKILL_ENCHANTING))
+            continue;
+        // what it can cast now: a recipe it knows, the reagents in its bags
+        std::map<uint32, uint32> pool;
+        std::vector<EnchantRecipe const*> castable;
+        for (EnchantRecipe const& r : recipes)
+        {
+            if (!e->HasSpell(r.spellId))
+                continue;
+            bool held = true;
+            for (auto const& [item, n] : r.reagents)
+            {
+                uint32& have = pool.try_emplace(item, e->GetItemCount(item, false)).first->second;
+                held = held && have >= n;
+            }
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(r.spellId); held && info && EnchantToolsHeld(e, info))
+                castable.push_back(&r);
+        }
+        if (castable.empty())
+            continue;
+        uint32 const skill = e->GetPureSkillValue(SKILL_ENCHANTING);
+        struct Candidate
+        {
+            float gain{0.0f};
+            bool skillUp{false};
+            Player* m{nullptr};
+            Item* item{nullptr};
+            EnchantRecipe const* recipe{nullptr};
+        };
+        std::vector<Candidate> candidates;
+        for (uint32 memberLow : lows)
+        {
+            Player* m = memberLow == enchanterLow ? nullptr : Online(memberLow);
+            if (!m || !GET_PLAYERBOT_AI(m) || HumanCharacter(m) || !m->IsAlive() || m->GetMap() != e->GetMap())
+                continue;
+            // the members it meets: its group, or in its sight (the trade waits until they stand side by side)
+            bool const meets = (e->GetGroup() && e->GetGroup() == m->GetGroup()) ||
+                               e->IsWithinDistInMap(m, sPlayerbotAIConfig.SightDistance);
+            if (!meets)
+                continue;
+            for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            {
+                Item* item = m->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                if (!item || item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) || taken.count(item->GetGUID().GetCounter()))
+                    continue;
+                ItemTemplate const* proto = item->GetTemplate();
+                for (EnchantRecipe const* r : castable)
+                {
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(r->spellId);
+                    if (!info || !item->IsFitToSpellRequirements(info) || !EnchantLevelOk(info, proto))
+                        continue;
+                    if (auto const refused = enchantRefused_.find({item->GetGUID().GetCounter(), r->spellId});
+                        refused != enchantRefused_.end() && refused->second == m->GetLevel())
+                        continue;
+                    std::unique_ptr<StatsWeightCalculator>& calc = weights[memberLow];
+                    if (!calc)
+                        calc = std::make_unique<StatsWeightCalculator>(m);
+                    float const gain =
+                        calc->CalculateEnchant(r->enchantId, proto->Class == ITEM_CLASS_WEAPON ? proto->Delay : 0,
+                                               slot == EQUIPMENT_SLOT_RANGED);
+                    if (gain <= 0.0f)
+                        continue;
+                    candidates.push_back({gain, skill < r->gray, m, item, r});
+                }
+            }
+        }
+        std::stable_sort(candidates.begin(), candidates.end(),
+                         [](Candidate const& a, Candidate const& b) { return a.gain > b.gain; });
+        for (Candidate const& c : candidates)
+        {
+            uint32 const guid = c.item->GetGUID().GetCounter();
+            if (taken.count(guid))
+                continue;
+            bool held = true;
+            for (auto const& [item, n] : c.recipe->reagents)
+                held = held && pool[item] >= n;
+            if (!held)
+                continue;
+            for (auto const& [item, n] : c.recipe->reagents)
+                pool[item] -= n;
+            taken.insert(guid);
+            EnchantOrder o;
+            o.enchanterLow = enchanterLow;
+            o.memberLow = c.m->GetGUID().GetCounter();
+            o.itemGuidLow = guid;
+            o.spellId = c.recipe->spellId;
+            o.enchantId = c.recipe->enchantId;
+            o.gain = c.gain;
+            o.text = SpellNameOf(c.recipe->spellId) + " on " + c.m->GetName() + "'s " +
+                     c.item->GetTemplate()->Name1 + " (stat weight " + Acore::StringFormat("{:.1f}", c.gain) +
+                     (c.skillUp ? ", a skill-up chance at " + std::to_string(skill) : "") + ")";
+            orders.push_back(std::move(o));
+        }
+    }
+    // each order once when it is planned
+    std::set<std::tuple<uint32, uint32, uint32>> before;
+    for (EnchantOrder const& o : enchantOrders_)
+        before.emplace(o.enchanterLow, o.itemGuidLow, o.spellId);
+    for (EnchantOrder const& o : orders)
+        if (!before.count({o.enchanterLow, o.itemGuidLow, o.spellId}))
+            LOG_INFO("playerbots", "[craft386] plan: {} enchants {} - when they stand side by side",
+                     Who(o.enchanterLow), o.text);
+    enchantOrders_ = std::move(orders);
+}
+
+void GuildCoordinator::RunEnchantOrders(uint32 diff)
+{
+    enchantTimer_ += diff;
+    if (enchantTimer_ < IN_MILLISECONDS || enchantOrders_.empty())
+        return;
+    enchantTimer_ = 0;
+    std::set<uint32> busy;  // one trade a member a run
+    for (auto it = enchantOrders_.begin(); it != enchantOrders_.end();)
+    {
+        EnchantOrder const& o = *it;
+        Player* e = Online(o.enchanterLow);
+        Player* m = Online(o.memberLow);
+        Item* item = m ? m->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(o.itemGuidLow)) : nullptr;
+        if (!e || !m || !item || item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) || !e->HasSpell(o.spellId))
+        {
+            it = enchantOrders_.erase(it);  // gone, enchanted or no longer known: the next look plans again
+            continue;
+        }
+        bool const ready = !busy.count(o.enchanterLow) && !busy.count(o.memberLow) && e->IsAlive() && m->IsAlive() &&
+                           !e->IsInCombat() && !m->IsInCombat() && !e->IsInFlight() && !m->IsInFlight() &&
+                           !e->GetTradeData() && !m->GetTradeData() && !e->IsNonMeleeSpellCast(false) &&
+                           !m->IsNonMeleeSpellCast(false) && e->GetMap() == m->GetMap() &&
+                           e->IsWithinDistInMap(m, TRADE_DISTANCE) && item->IsEquipped();
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(o.spellId);
+        bool reagents = info && EnchantToolsHeld(e, info);
+        for (uint8 k = 0; info && k < MAX_SPELL_REAGENTS; ++k)
+            if (info->Reagent[k] > 0 && info->ReagentCount[k] > 0)
+                reagents = reagents && e->HasItemCount(uint32(info->Reagent[k]), info->ReagentCount[k]);
+        if (!reagents)
+        {
+            it = enchantOrders_.erase(it);
+            continue;
+        }
+        if (!ready)
+        {
+            ++it;
+            continue;
+        }
+        busy.insert(o.enchanterLow);
+        busy.insert(o.memberLow);
+        // the member takes the piece off into a free bag slot, as a player puts it in the trade window
+        uint8 const wornSlot = item->GetSlot();
+        uint8 bag = 0, slot = 0;
+        std::string err;
+        if (!FreeSlot(m, bag, slot))
+            err = "no free bag slot to take the piece off";
+        else
+        {
+            m->SwapItem(uint16((INVENTORY_SLOT_BAG_0 << 8) | wornSlot), uint16((bag << 8) | slot));
+            if (m->GetItemByPos(bag, slot) != item)
+                err = "the piece did not come off";
+        }
+        if (err.empty())
+            err = EnchantInTrade(e, m, item, o.spellId);
+        bool const enchanted = item->GetEnchantmentId(PERM_ENCHANTMENT_SLOT) == o.enchantId;
+        // and wears it again
+        if (!item->IsEquipped() && m->GetItemByPos(bag, slot) == item)
+            m->SwapItem(uint16((bag << 8) | slot), uint16((INVENTORY_SLOT_BAG_0 << 8) | wornSlot));
+        if (enchanted)
+            LOG_INFO("playerbots", "[craft386] done: {} enchanted {}; Enchanting {}, worn again: {}",
+                     Who(o.enchanterLow), o.text, e->GetPureSkillValue(SKILL_ENCHANTING),
+                     item->IsEquipped() ? "yes" : "no (its own equip picks it)");
+        else
+        {
+            enchantRefused_[{o.itemGuidLow, o.spellId}] = m->GetLevel();
+            LOG_INFO("playerbots", "[craft386] refused: {} could not enchant {}: {} - not again until {}'s next level",
+                     Who(o.enchanterLow), o.text, err.empty() ? "the enchantment is not on the piece" : err,
+                     m->GetName());
+        }
+        it = enchantOrders_.erase(it);
+    }
 }

@@ -920,6 +920,27 @@ private:
     std::string TasksText(BotState const& st) const;
     // [tasks] profession vs questing, decided by the global leader only (world thread)
     void UpdateProfessions();
+    // [craft386] the enchanters enchant the members' gear: a worn piece without a permanent enchantment, the enchant
+    // the member's stat weights value most (StatsWeightCalculator::CalculateEnchant) of the recipes the enchanter
+    // knows and holds the reagents for, for the members it meets (its group, or in its sight). Applied as players
+    // do: the member puts the piece in the trade's "will not be traded" slot, the enchanter casts on it (world thread)
+    struct EnchantOrder
+    {
+        uint32 enchanterLow{0};
+        uint32 memberLow{0};
+        uint32 itemGuidLow{0};
+        uint32 spellId{0};
+        uint32 enchantId{0};
+        float gain{0.0f};
+        std::string text;  // what for, as logged
+    };
+    void UpdateEnchantOrders();
+    void RunEnchantOrders(uint32 diff);
+    std::vector<EnchantOrder> enchantOrders_;  // world thread
+    // [craft386] (member item guid, enchant spell) -> the member's level when the core refused it: not again until
+    // its next level (world thread)
+    std::map<std::pair<uint32, uint32>, uint8> enchantRefused_;
+    uint32 enchantTimer_{0};
     // [supply111] lock_ held: per dungeon band, the fives' food / drink by game math - the vendor's price per restored
     // point against the cooked supply's (its recipe, its reagents, the cook's and the fisher's time at their quest
     // pace)
