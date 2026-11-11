@@ -1014,11 +1014,11 @@ bool NewRpgBaseAction::StartVendorRun()
     auto const reserveText = [&]()
     {
         auto const need = [&](NeedMoneyFor what) { return AI_VALUE2(uint32, "money needed for", uint32(what)); };
-        return Acore::StringFormat("kept back: repair {}c (now {}c + one death), ammo {}c, class spells {}c, travel "
-                                   "{}c, guild {}c",
+        return Acore::StringFormat("kept back: repair {}c (now {}c + one death), ammo {}c, class spells {}c, guild "
+                                   "{}c; after the restock: travel {}c [eco203]",
                                    need(NeedMoneyFor::repair), AI_VALUE(uint32, "repair cost"),
-                                   need(NeedMoneyFor::ammo), need(NeedMoneyFor::spells), need(NeedMoneyFor::travel),
-                                   need(NeedMoneyFor::guild));
+                                   need(NeedMoneyFor::ammo), need(NeedMoneyFor::spells), need(NeedMoneyFor::guild),
+                                   need(NeedMoneyFor::travel));
     };
     bool const budgetCovers = info.vendorRestockPrice ? spendable >= info.vendorRestockPrice
                                                       : bot->GetMoney() > info.vendorVisitMoney;

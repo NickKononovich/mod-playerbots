@@ -242,6 +242,11 @@ uint32 FreeMoneyForValue::Calculate()
 
     uint32 savedMoney = AI_VALUE2(uint32, "total money needed for", getQualifier()) -
                         AI_VALUE2(uint32, "money needed for", getQualifier());
+    // [eco203] coordinator 2026-11-11: a guild-plan bot's food and drink for the rest it needs now come before its
+    // travel reserve - kept only from the money left after that restock (a bot that cannot regenerate does not
+    // travel safely anyway): the consumables budget does not hold it back
+    if (NeedMoneyFor(stoi(getQualifier())) == NeedMoneyFor::consumables && GuildHonest::IsHonestBot(bot))
+        savedMoney -= std::min(savedMoney, AI_VALUE2(uint32, "money needed for", uint32(NeedMoneyFor::travel)));
 
     if (savedMoney > money)
         return 0;
