@@ -2648,6 +2648,14 @@ void GuildCoordinator::AutoFive()
                         break;
                 }
             }
+            // [dun189] this five left a boss of the dungeon at its members' levels now: it waits for a level up
+            if (verdict.clears)
+                if (std::string const left = Leader::Dungeon::DungeonRuns::Instance().LeftAt(d->lfgId, players);
+                    !left.empty())
+                {
+                    verdict.clears = false;
+                    verdict.why = left;
+                }
             if (!verdict.clears)
             {
                 if (guardCount == 0)

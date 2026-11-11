@@ -480,6 +480,32 @@ namespace Leader
         }
     }
 
+    namespace BossOutOfReach
+    {
+        namespace
+        {
+            std::mutex outOfReachLock;
+            std::unordered_map<ObjectGuid, std::string> outOfReach;  // group -> why
+        }
+
+        void Note(ObjectGuid group, std::string const& why)
+        {
+            std::lock_guard<std::mutex> lock(outOfReachLock);
+            outOfReach[group] = why;
+        }
+
+        bool Take(ObjectGuid group, std::string& why)
+        {
+            std::lock_guard<std::mutex> lock(outOfReachLock);
+            auto const found = outOfReach.find(group);
+            if (found == outOfReach.end())
+                return false;
+            why = found->second;
+            outOfReach.erase(found);
+            return true;
+        }
+    }
+
     // [lead15] LedGroup / Events (LeaderOrders.h)
     bool LedGroup(Player* member)
     {

@@ -11657,9 +11657,29 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         chosen.danger = danger;
         chosen.boss = true;
         found = true;
+        // [dun189] at full readiness (the healers' whole pool, the tank's whole health) and by this dungeon's measured
+        // numbers, what comes with him is over what the group takes: no pull - the run leaves him for a later visit
+        // (b435 wc-n: Lady Anacondra "with 6 mobs, cost 3.31 tank hp" was pulled 33 times by Irorm, Bami, Bierya)
+        OverloadTerms bossTerms;
+        float const bossOverload =
+            chosenPack.size() > 1 ? CarefulOverload(bot, chosen, strength, support, kit, measured, &bossTerms) : 0.0f;
         LOG_INFO("playerbots",
-                 "[dun188] {}: {} pulled where he stands with {} mobs, cost {:.2f} tank hp, fight {:.0f} s",
-                 bot->GetName(), target->GetName(), chosen.mobs, chosen.cost, chosen.fightSec);
+                 "[dun188] {}: {} pulled where he stands with {} mobs, cost {:.2f} tank hp, fight {:.0f} s, overload "
+                 "{:.2f}{}",
+                 bot->GetName(), target->GetName(), chosen.mobs, chosen.cost, chosen.fightSec, bossOverload,
+                 measured ? "" : " (not measured yet)");
+        if (measured && bossOverload > 1.0f)
+        {
+            found = false;
+            std::string const why = Acore::StringFormat(
+                "[dun189] {} with {} mobs is over what the five takes at full readiness (overload {:.2f}: cost {:.2f} "
+                "tank hp, drop {:.2f} of at most {:.2f}, fight {:.0f} s)",
+                target->GetName(), chosen.mobs, bossOverload, chosen.cost, chosen.drop, chosen.maxDrop,
+                chosen.fightSec);
+            if (Group* bossGroup = bot->GetGroup())
+                Leader::BossOutOfReach::Note(bossGroup->GetGUID(), why);
+            LOG_INFO("playerbots", "{}: {}: left for a later visit", bot->GetName(), why);
+        }
         _planReason = manageable ? std::string("boss pulled where it stands")
                                  : Acore::StringFormat("boss pulled where it stands: over the capacity estimate "
                                                        "(danger {:.2f}), the boss is the route's goal", danger);
