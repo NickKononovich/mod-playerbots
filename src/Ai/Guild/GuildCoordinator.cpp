@@ -1263,6 +1263,24 @@ bool GuildCoordinator::VendorSource(uint32 item, uint32 mapId) const
         return false;
     if (mapId == ANY_MAP)
         return true;
+    // [insc146] a bot inside a dungeon stands on the instance's map, where no vendor is: its continent is the map of
+    // the instance's entrance (MapEntry entrance_map). b442: Dekorhan in RFC (map 389) - "Light Parchment: neither
+    // held nor gathered in the guild", the Inscription call dropped with its gold letter and parchment buy
+    for (uint8 hop = 0; hop < 2; ++hop)
+    {
+        MapEntry const* entry = sMapStore.LookupEntry(mapId);
+        if (!entry || !entry->Instanceable() || entry->entrance_map < 0)
+            break;
+        static std::mutex seenLock;
+        static std::set<uint32> seen;
+        {
+            std::lock_guard<std::mutex> guard(seenLock);
+            if (seen.insert(mapId).second)
+                LOG_INFO("playerbots", "[insc146] vendor reagents seen from instance map {} are bought on map {}, "
+                         "its entrance's continent", mapId, entry->entrance_map);
+        }
+        mapId = uint32(entry->entrance_map);
+    }
     auto const maps = vendorMaps_.find(item);
     return maps == vendorMaps_.end() || maps->second.count(mapId);  // no spawn row: as before
 }
