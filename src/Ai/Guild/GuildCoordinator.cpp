@@ -1837,12 +1837,38 @@ void GuildCoordinator::UpdateOrders()
                     shortfall[item] = std::max(shortfall[item], n);
                     stock.try_emplace(item, n, 0);
                 }
+            // [lag333] the guild's median level (its planned members online): a gatherer below it levels first
+            uint8 medianLevel = 0;
+            {
+                std::vector<uint8> levels;
+                for (PlanRow const& row : plan_)
+                    if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                        p && p->IsInWorld() && !HumanCharacter(p))
+                        levels.push_back(p->GetLevel());
+                if (!levels.empty())
+                {
+                    std::nth_element(levels.begin(), levels.begin() + levels.size() / 2, levels.end());
+                    medianLevel = levels[levels.size() / 2];
+                }
+            }
             for (PlanRow const& row : plan_)
                 if (row.grp == 'B' || row.grp == 'C' || fishers_.count(row.low))
                     if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
                         p && p->IsInWorld() && !HumanCharacter(p))
                     {
                         gatherers.push_back(p);
+                        // [lag333] coordinator decision 2026-11-11 ([lag325]'s rule for the gathering): a gatherer
+                        // below the guild's median level gets no URGENT gathering over its quests - no quest pace for
+                        // the plan to beat, so it gathers only on its way (a convenient task). b442 Sylaenas L13 (the
+                        // lowest member, median 19) was sent URGENT to Teldrassil's Silverleaf for the scribes' inks
+                        // ("gathering 60.1 c/min > quests 55.3 c/min")
+                        if (p->GetLevel() < medianLevel)
+                        {
+                            questWhy[row.low] = Acore::StringFormat("L{} below the guild's median L{}: it levels first "
+                                                                    "[lag333]",
+                                                                    uint32(p->GetLevel()), uint32(medianLevel));
+                            continue;
+                        }
                         // [questrate] its questing by formula (QuestPace), not by measured history
                         float copper = 0.0f;
                         std::string why;
