@@ -151,6 +151,7 @@ namespace KillOrder
         bool const ranged = PlayerbotAI::IsRanged(bot);
         GuidVector const attackers = context->GetValue<GuidVector>("attackers")->Get();
         std::vector<std::pair<ObjectGuid, int8>> tiers;
+        GuidSet onMember;  // [dun185] healer mobs on a member, not the tank: no threat lead to wait for
         int8 best = -1;
         for (ObjectGuid const& guid : attackers)
         {
@@ -171,7 +172,20 @@ namespace KillOrder
             }
 
             int8 tier = -1;
-            if (!IsCrowdControlled(unit) && IsHeldByTank(unit, bot))
+            // [dun185] a healer mob fighting a member of the group is killed first wherever it stands, held by the
+            // tank or not: it heals the pack from range and is on a member already (no threat to keep off it).
+            // b433 wc-n five4 / five5: the Druids of the Fang (Healing Touch, Druid's Slumber) nuked and slept from
+            // 19-32 yd, out of the kill order, while the group died to the pack they healed
+            Unit* const victim = unit->GetVictim();
+            Player* const victimPlayer = victim ? victim->ToPlayer() : nullptr;
+            if (!IsCrowdControlled(unit) && MobRoles::IsHealer(unit) && victimPlayer &&
+                victimPlayer->IsInSameRaidWith(bot) && IsInGroupFight(bot, unit))
+            {
+                tier = 2;
+                if (!IsHeldByTank(unit, bot))
+                    onMember.insert(guid);
+            }
+            else if (!IsCrowdControlled(unit) && IsHeldByTank(unit, bot))
             {
                 tier = 0;
                 // melee kill the casters standing in the tank's pack; ranged also those nuking from range
@@ -209,8 +223,10 @@ namespace KillOrder
         // Omen's data), on the best tier first; with no such mob it waits for the tank's lead, at most
         // OPEN_MAX_WAIT_MS from the pull (a stunned or silenced tank builds none).
         // A mob this bot already fights stays open: from then on the threat multiplier ([threat-hold]) paces it.
-        auto const open = [botAI, bot, careful](ObjectGuid const& guid)
+        auto const open = [botAI, bot, careful, &onMember](ObjectGuid const& guid)
         {
+            if (onMember.count(guid))
+                return true;
             Unit* unit = botAI->GetUnit(guid);
             return unit && (unit->GetThreatMgr().GetThreat(bot) > 0.0f || ThreatLead::SafeToOpen(botAI, unit, careful));
         };
@@ -282,9 +298,14 @@ namespace KillOrder
 
     void SortKillOrder(std::vector<Unit*>& pack, WorldObject const* anchor, Unit const* current)
     {
-        // [b30_mech_pos] healers (MobRoles) first
+        // [b30_mech_pos] healers (MobRoles) first: [dun185] a healer that fights heals from wherever it stands
+        // (b433 wc-n: the Druids of the Fang healed and slept the group from 19-32 yd, outside the 10 yd window);
+        // one that fights nobody yet by the pack window
         auto const healerOf = [anchor](Unit* unit)
-        { return anchor && unit->GetDistance(anchor) <= PACK_RADIUS && MobRoles::IsHealer(unit); };
+        {
+            return MobRoles::IsHealer(unit) &&
+                   (unit->GetVictim() || (anchor && unit->GetDistance(anchor) <= PACK_RADIUS));
+        };
         // [dun180] then the damage each mob lands per second of its life under the group's fire: what it lands on
         // the member it fights (the planner's LandedMeleeDps: melee through the game's attack table and armor,
         // spells from its spell data) over its health - the death that takes the most damage off the group per
