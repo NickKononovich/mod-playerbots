@@ -3938,10 +3938,21 @@ namespace SoloSafety
 
                 // [runpast11] a pack it does not fight is run past when it lives through the chase, as an orange
                 // one is: the same leash model and the same sum
-                if (why != RouteWall::Why::None && mayRunPast && tryRunPast(mob, model, runPastDamage, runPastHp))
+                // [lag359] ... from the mobs a walk past brings (its engage call and formation: Links; the chase's own
+                // assistance calls are tryRunPast's), not the fight's grown pack: a run deals no damage, so no member
+                // flees for help and no caster stands to cast at the fight spot. b447 Dekorhan L22 on the Zoram
+                // Strand: the Wrathtail wanderers (30 yd apart, assistance radius 10) priced as one grown pack of 11,
+                // "run-past priced 2271 hp vs hp 1152", the pier and Darnassus given up, hearthed
+                if (why != RouteWall::Why::None && mayRunPast)
                 {
-                    ranPast = true;
-                    why = RouteWall::Why::None;
+                    buildAround();
+                    PullModel walkPast(bot, mob, around);
+                    walkPast.Links();
+                    if (tryRunPast(mob, walkPast, runPastDamage, runPastHp))
+                    {
+                        ranPast = true;
+                        why = RouteWall::Why::None;
+                    }
                 }
             }
             // [party75] coordinator 2026-11-10: a co-op / help party leader's walk is priced as a solo walk is, with
