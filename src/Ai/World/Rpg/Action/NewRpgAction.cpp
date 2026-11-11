@@ -1954,7 +1954,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     if (NewRpgFishing::PutPoleAway(bot))
         return true;
 
-
+    // [build147] the steps above can change the state without returning (b438 crash: std::get<GoCamp> on another
+    // state, bad_variant_access): the switch dispatches on the state the bot is in now
+    status = info.GetStatus();
     switch (status)
     {
         case RPG_IDLE:
