@@ -1233,8 +1233,11 @@ namespace Leader::Dungeon
             if (refusal.empty())
                 return Leader::Events::SetFollow(bot->GetGUID(), tank->GetGUID(), index, why);
             Creature* woken = mob.IsEmpty() ? nullptr : map->GetCreature(mob);
+            // [dun229] the refusal itself when no idle mob names it (b444 sfk-n: four fives' members 45-51 yd behind
+            // the tank "stays (no safe walk)" - the guard's own words were dropped)
             std::string const stay = "along with the tank: stays (" +
-                                     (woken ? "its walk would wake " + woken->GetName() : std::string("no safe walk")) +
+                                     (woken ? "its walk would wake " + woken->GetName()
+                                            : "no safe walk: " + refusal.substr(0, 100)) +
                                      ")";
             bool const changed =
                 Leader::Events::SetMove(bot->GetGUID(), Leader::MoveEvent::StandAt, bot->GetPosition(), 2.0f, stay);
