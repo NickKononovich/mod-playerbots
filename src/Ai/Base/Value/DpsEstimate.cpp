@@ -1537,6 +1537,7 @@ struct Profile
     float altPerEnergy = 0.0f;  // [rot610] ... energy spells (a builder-finisher cycle per its energy)
     std::vector<std::pair<uint32, float>> parts;  // [dpscal] damage per second by rotation spell ([dpsparts] log)
     float replacedWhite = 0.0f;  // [rot611] the swings a next-swing strike replaces (in `white`, logged in its part)
+    float whiteHitsPerSec = 0.0f;  // [dps238] its landed melee swings a second ([dpsparts] log only)
 };
 
 // [rot606] PetAI::_canMeleeAttack: an imp or a water elemental with the mana for its bolt chases to the bolt's range
@@ -1830,6 +1831,8 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     float whiteTps =
         rotationWhite * bot->GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_THREAT, SPELL_SCHOOL_MASK_NORMAL);
     p.white = caster ? std::max(meleeWhite, rangedWhite) : rotationWhite;
+    if (!caster && (!hunter || meleeHunter))
+        p.whiteHitsPerSec = (mh.perSec * mh.landed + oh.perSec * oh.landed) * meleeShare;  // [dps238]
 
     // budgets per second (core power units)
     float time = 1.0f;
@@ -2201,6 +2204,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             {
                 p.parts.back().second += rate * mh.damage;
                 p.replacedWhite = rate * mh.damage;
+                p.whiteHitsPerSec = std::max(0.0f, p.whiteHitsPerSec - rate * mh.landed);  // [dps238]
             }
         }
 
@@ -2359,6 +2363,11 @@ struct LiveFight
     Profile formula;                            // the formula at its first hit
     Profile ideal;                              // the ideal rotation's at its first hit
     bool petOut = false;
+    // [dps238] what splits a melee white gap and a caster's idle time: its landed white swings, its finishers and the
+    // combo points they spent (b426-b429: melee white 0.66-0.85 of the formula's in fights spent in melee, casters'
+    // casts 0.7-0.9 of the window when hit and ~1.0 when not)
+    uint32 whiteHits = 0;
+    uint32 finishers = 0, finisherPoints = 0;
 };
 
 std::mutex liveLock;
@@ -2646,13 +2655,16 @@ void RecordFight(Player* bot, FightSample const& sample)
         LOG_INFO("playerbots",
                  "[dpsparts] {} L{} {}/{} formula {:.1f} over {:.1f} s: {}{}white {:.1f}, pet {:.1f} ({}) | dealt {} "
                  "(spell {}, dot {}, white {}, pet {}) = {:.1f} dps over {:.1f} s (lead {:.1f} s), capped {:.1f} "
-                 "| casts: {} | ideal {:.1f}: {}",
+                 "| casts: {} | ideal {:.1f}: {} | white hits {} of {:.1f}, busy {:.0f} %, finishers {} at {:.1f} "
+                 "points",
                  bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), AiFactory::GetPlayerSpecName(bot),
                  sample.formulaDps, f.formula.lifeSec, plan, plan.empty() ? "" : ", ",
                  f.formula.white - f.formula.pet - f.formula.replacedWhite, f.formula.pet, f.petOut ? "out" : "none",
                  f.raw, f.spell, f.dot,
                  f.white, f.pet, actual, active, leadSec, cappedActual, casts.empty() ? "-" : casts, idealDps,
-                 idealPlan.empty() ? "-" : idealPlan);
+                 idealPlan.empty() ? "-" : idealPlan, f.whiteHits, f.formula.whiteHitsPerSec * active,
+                 active > 0.0f ? f.timedMs / (active * float(IN_MILLISECONDS)) * 100.0f : 0.0f, f.finishers,
+                 f.finishers ? float(f.finisherPoints) / float(f.finishers) : 0.0f);
     }
 
     // async (the module pool's own thread), never read by a decision; the last 1000 fights per bot are kept
@@ -2729,7 +2741,10 @@ void NoteDealt(Unit* attacker, Unit* victim, uint32 damage, uint8 damageType)
         else if (damageType == DOT)
             f.dot += damage;
         else if (damageType == DIRECT_DAMAGE)
+        {
             f.white += damage;
+            ++f.whiteHits;  // [dps238]
+        }
         else
             f.spell += damage;
         // its health (before this hit) below what this bot took off it: someone else hit it
@@ -2770,6 +2785,11 @@ void NoteCast(Player* player, SpellInfo const* info)
     std::lock_guard<std::mutex> guard(liveLock);
     LiveFight& f = live[player->GetGUID().GetRawValue()];
     ++f.casts[info->Id];
+    if (info->NeedsComboPoints())  // [dps238] its points before the finisher takes them
+    {
+        ++f.finishers;
+        f.finisherPoints += player->GetComboPoints();
+    }
     if (executeMs > 0.0f)
     {
         ++f.timedCasts;
