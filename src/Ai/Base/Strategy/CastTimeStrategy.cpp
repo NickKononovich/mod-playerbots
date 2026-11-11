@@ -8,6 +8,7 @@
 #include "EstimatedLifetimeValue.h"
 #include "GenericSpellActions.h"
 #include "Group.h"  // [guild15]
+#include "Pet.h"    // [deaths144]
 #include "Playerbots.h"
 #include "SpellInfo.h"
 #include "Timer.h"
@@ -82,8 +83,25 @@ float CastTimeMultiplier::GetValue(Action* action)
         // [guild15] a bot that fights alone is the damage that would end the target: holding its cast for a lifetime
         // its own damage gives holds that damage too (b315 Bierya L7 held Wrath on a Gnarlpine Defender at 15 %
         // health, "the target lives 1.7 s", until two mobs killed it; Gilduck's Frostbolts the same)
-        Group const* group = bot->GetGroup();
-        bool const alone = !group || group->GetMembersCount() <= 1;
+        // [deaths144] ... alone on the target, not alone in a group: a member whose group fights elsewhere (a five
+        // gathering for its port, a help party split up) is the only damage on its target all the same. b434 Jurdogs
+        // L15 (five 7, waiting for the Dungeon Finder port) held Smite on a Redridge Thrasher at 5 % health ("the
+        // target lives 2.5 s", group 0 dps by the gear model) until the Thrasher and a Poacher killed it. Alone = no
+        // other member (or a member's pet) has the target as its victim
+        Group* group = bot->GetGroup();
+        bool alone = true;
+        if (group)
+            for (GroupReference* ref = group->GetFirstMember(); ref && alone; ref = ref->next())
+            {
+                Player* member = ref->GetSource();
+                if (!member || member == bot || !member->IsInWorld() || !member->IsAlive() ||
+                    member->GetMapId() != bot->GetMapId())
+                    continue;
+                if (member->GetVictim() == target)
+                    alone = false;
+                else if (Pet* pet = member->GetPet())
+                    alone = !(pet->IsAlive() && pet->GetVictim() == target);
+            }
         if (castTime > 0 && !alone)
         {
             float flight = 0.0f;
