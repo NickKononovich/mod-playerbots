@@ -6009,9 +6009,22 @@ namespace Leader::Dungeon
                             SpellInfo const* castInfo = cast->GetSpellInfo();
                             Unit* victim = cast->m_targets.GetUnitTarget() ? cast->m_targets.GetUnitTarget() : tank;
                             float damage = 0.0f;
+                            float controlSec = 0.0f;  // [dun183]
                             for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
                             {
                                 SpellEffectInfo const& effect = castInfo->Effects[i];
+                                // [dun183] a control aura (sleep / stun, fear, charm, silence) takes its target out
+                                // of the fight for its duration
+                                if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
+                                    (effect.ApplyAuraName == SPELL_AURA_MOD_STUN ||
+                                     effect.ApplyAuraName == SPELL_AURA_MOD_CONFUSE ||
+                                     effect.ApplyAuraName == SPELL_AURA_MOD_FEAR ||
+                                     effect.ApplyAuraName == SPELL_AURA_MOD_CHARM ||
+                                     effect.ApplyAuraName == SPELL_AURA_MOD_POSSESS ||
+                                     effect.ApplyAuraName == SPELL_AURA_MOD_SILENCE ||
+                                     effect.ApplyAuraName == SPELL_AURA_MOD_PACIFY_SILENCE))
+                                    controlSec = std::max(controlSec, float(std::max(castInfo->GetMaxDuration(), 0)) /
+                                                                          float(IN_MILLISECONDS));
                                 float hit = 0.0f;
                                 if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
                                     hit = float(caster->SpellDamageBonusDone(
@@ -6050,6 +6063,16 @@ namespace Leader::Dungeon
                             float const cost = float(std::max(kick->CalcPowerCost(kicker, kick->GetSchoolMask()), 0));
                             float const loss =
                                 regen > 0.0f && dealers ? cost / regen * groupDps / float(dealers) : 0.0f;
+                            // [dun183] a control cast costs its target's output over the aura: a healer's healing
+                            // (its best rate on the tank, HealerThroughput), a damage dealer's share of the group's
+                            // damage. b433 wc-n: "no Kick on Lady Anacondra's 8040 (0 damage ...)" - Druid's
+                            // Slumber, the sleep that left Maronic idle while Ryarii died
+                            if (controlSec > 0.0f)
+                                if (Player* slept = victim ? victim->ToPlayer() : nullptr)
+                                    damage += controlSec *
+                                              (PlayerbotAI::IsHeal(slept) ? RestState::HealerThroughput(slept, tank).hps
+                                               : dealers                 ? groupDps / float(dealers)
+                                                                         : 0.0f);
                             if (damage <= loss)
                             {
                                 thread_local std::set<std::pair<uint64, uint32>> kickLogged;
