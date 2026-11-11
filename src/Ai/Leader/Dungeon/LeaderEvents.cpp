@@ -6094,10 +6094,23 @@ namespace Leader::Dungeon
                             // Slumber, the sleep that left Maronic idle while Ryarii died
                             if (controlSec > 0.0f)
                                 if (Player* slept = victim ? victim->ToPlayer() : nullptr)
-                                    damage += controlSec *
-                                              (PlayerbotAI::IsHeal(slept) ? RestState::HealerThroughput(slept, tank).hps
-                                               : dealers                 ? groupDps / float(dealers)
-                                                                         : 0.0f);
+                                {
+                                    float const output = PlayerbotAI::IsHeal(slept)
+                                                             ? RestState::HealerThroughput(slept, tank).hps
+                                                         : dealers ? groupDps / float(dealers)
+                                                                   : 0.0f;
+                                    float const lost = controlSec * output;
+                                    damage += lost;
+                                    thread_local std::set<std::pair<uint64, uint32>> controlLogged;
+                                    if (controlLogged.size() > 4096)
+                                        controlLogged.clear();
+                                    if (controlLogged.insert({kicker->GetGUID().GetRawValue(), castInfo->Id}).second)
+                                        LOG_INFO("playerbots",
+                                                 "[dun183] {}: {}'s {} controls {} {:.1f} s: {:.0f} of its output "
+                                                 "against {:.0f} of the kicker's damage for the kick",
+                                                 kicker->GetName(), caster->GetName(), castInfo->Id, slept->GetName(),
+                                                 controlSec, lost, loss);
+                                }
                             if (damage <= loss)
                             {
                                 thread_local std::set<std::pair<uint64, uint32>> kickLogged;

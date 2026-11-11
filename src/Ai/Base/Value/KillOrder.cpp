@@ -28,6 +28,7 @@
 #include "Timer.h"
 
 #include <algorithm>
+#include <set>
 #include <ctime>
 #include <mutex>
 #include <unordered_map>
@@ -183,7 +184,16 @@ namespace KillOrder
             {
                 tier = 2;
                 if (!IsHeldByTank(unit, bot))
+                {
                     onMember.insert(guid);
+                    thread_local std::set<std::pair<uint64, uint64>> healerLogged;  // once per bot and mob
+                    if (healerLogged.size() > 4096)
+                        healerLogged.clear();
+                    if (healerLogged.insert({bot->GetGUID().GetRawValue(), guid.GetRawValue()}).second)
+                        LOG_INFO("playerbots", "[dun185] {}: healer mob {} on {} ({:.0f} yd off) is its first target",
+                                 bot->GetName(), unit->GetName(), victimPlayer->GetName(),
+                                 unit->GetExactDist(victimPlayer));
+                }
             }
             else if (!IsCrowdControlled(unit) && IsHeldByTank(unit, bot))
             {
@@ -347,6 +357,19 @@ namespace KillOrder
 
             return a->GetHealth() < b->GetHealth();
         });
+        // [dun180] the order's head where the damage per second of life put it ahead of the lowest health
+        if (pack.size() > 1 && anchor && rate[pack.front()] > 0.0f)
+        {
+            Unit* lowest = *std::min_element(pack.begin(), pack.end(),
+                                             [](Unit* a, Unit* b) { return a->GetHealth() < b->GetHealth(); });
+            thread_local std::set<std::pair<uint64, uint64>> rateLogged;  // once per anchor and head
+            if (rateLogged.size() > 4096)
+                rateLogged.clear();
+            if (lowest != pack.front() && pack.front() != current &&
+                rateLogged.insert({anchor->GetGUID().GetRawValue(), pack.front()->GetGUID().GetRawValue()}).second)
+                LOG_INFO("playerbots", "[dun180] kill order of {}: {} first ({:.4f} of its health a second) before {}",
+                         anchor->GetName(), pack.front()->GetName(), rate[pack.front()], lowest->GetName());
+        }
     }
 
     bool IsKillMarkStale(PlayerbotAI* tankAI, uint8 icon, ObjectGuid ours)

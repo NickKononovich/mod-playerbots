@@ -9940,12 +9940,25 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                fight->GetPositionZ() + (mob->GetPositionZ() - fight->GetPositionZ()) * share);
             }
             CollectPack(botAI, bot, mob, stand, possible, around, FightHere(stand), measured, false, nullptr);
+            size_t const before = merged.size();
             for (Unit* joined : around)
                 if (joined && std::find(merged.begin(), merged.end(), joined) == merged.end())
                 {
                     merged.push_back(joined);
                     mergedHops.emplace_back(joined->GetGUID(), uint8(1));
                 }
+            if (merged.size() > before)
+            {
+                thread_local std::set<uint64> standLogged;  // once per caster
+                if (standLogged.size() > 4096)
+                    standLogged.clear();
+                if (standLogged.insert(mob->GetGUID().GetRawValue()).second)
+                    LOG_INFO("playerbots",
+                             "[dun184] {}: {} keeps its range and casts from ({:.1f} {:.1f} {:.1f}): its stand brings "
+                             "{} more ({} in the pull)",
+                             bot->GetName(), mob->GetName(), stand.GetPositionX(), stand.GetPositionY(),
+                             stand.GetPositionZ(), merged.size() - before, merged.size());
+            }
         }
         pack = merged;
         lastPackHops = mergedHops;  // [b33_brs] for EstimatePack on this pack
