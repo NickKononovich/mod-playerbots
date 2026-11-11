@@ -186,6 +186,11 @@ namespace QuestRoute
         float legPlannedSec{0.0f};
         float legActualSec{0.0f};
         uint32 legStops{0};
+        // [lag340] a town stop on another landmass (its route there by boat / portal) worth its trip: walked before
+        // the landmass's own stops
+        WorldPosition crossTown{};
+        std::string crossWhat;
+        uint64 crossKey{0};  // the town list it was judged for
     };
     BotRoute& Of(uint32 botLow);
     // [help20] the bot's own route: its experience over its seconds (0: no route built) - what an hour of its own plan

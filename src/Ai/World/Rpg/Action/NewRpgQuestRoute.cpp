@@ -21,6 +21,7 @@
 #include "QuestDef.h"
 #include "QuestStats.h"
 #include "StringFormat.h"
+#include "TravelMgr.h"  // [lag340] the landmasses, the routes across them
 
 #include <algorithm>
 #include <cmath>
@@ -1101,6 +1102,51 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
         if (why.empty())
             why = RouteMissingStop(r, towns);
     }
+    // [lag340] coordinator 2026-11-11: a town stop on another landmass is no stop of the landmass's route (its legs
+    // are walks) - b445: Dekorhan's Virtuoso Inking Set in Darnassus, across the water from Darkshore, ran only when he
+    // happened to stand in a town. Such a stop with a route there (boat / portal, TravelRouteMgr::FindRoute) is taken
+    // when its tasks' worth (their game prices, [lag337]) beats what questing gives in the trip's time there (the walk,
+    // the waits and rides of its route; [econ1] its quest copper per minute); the best of them by worth per second
+    if (r.crossTown != WorldPosition() && !TownListed(towns, r.crossTown.GetPositionX(), r.crossTown.GetPositionY()))
+    {
+        r.crossTown = WorldPosition();
+        r.crossWhat.clear();
+    }
+    if (!why.empty() || r.crossKey != townKey)
+    {
+        r.crossKey = townKey;
+        uint32 const own = TravelRouteMgr::Landmass(WorldPosition(bot));
+        float const questPerMin = sGuildCoordinator.QuestCopperPerMinute(bot);
+        double bestRate = 0.0;
+        WorldPosition bestPos;
+        std::string bestWhat, bestLine;
+        for (auto const& [pos, what] : towns)
+        {
+            if (pos.GetMapId() != bot->GetMapId() || TravelRouteMgr::Landmass(pos) == own)
+                continue;
+            TravelRouteMgr::Leg leg;
+            float seconds = 0.0f;
+            if (!sTravelRouteMgr.FindRoute(bot, pos, leg, seconds) || seconds <= 0.0f)
+                continue;
+            double const worth = sGuildCoordinator.TownStopCopper(bot, pos);
+            double const questing = double(questPerMin) * double(seconds) / 60.0;
+            if (worth <= questing || worth / seconds <= bestRate)
+                continue;
+            bestRate = worth / seconds;
+            bestPos = pos;
+            bestWhat = what;
+            bestLine = Acore::StringFormat("worth {:.0f}c against {:.0f}c of questing in its {:.0f} s trip", worth,
+                                           questing, seconds);
+        }
+        if (bestPos != r.crossTown)
+        {
+            if (bestPos != WorldPosition())
+                LOG_INFO("playerbots", "[lag340] {} L{} takes the town stop {} on another landmass: {}",
+                         bot->GetName(), bot->GetLevel(), bestWhat, bestLine);
+            r.crossTown = bestPos;
+            r.crossWhat = bestWhat;
+        }
+    }
     if (!why.empty())
     {
         CloseRouteStop(r, towns);
@@ -1331,6 +1377,14 @@ uint32 NewRpgBaseAction::ChooseBestQuest(WorldPosition& giverPos)
 bool NewRpgBaseAction::RouteTownStop(WorldPosition& pos, std::string& what)
 {
     QuestRoute::BotRoute& r = CurrentRoute();
+    // [lag340] a town stop on another landmass worth its trip goes first: the walk there takes its boat / portal
+    // (MoveFarTo's trip), the guild's NextStep runs the tasks on arrival
+    if (r.crossTown != WorldPosition() && r.crossTown.GetMapId() == bot->GetMapId())
+    {
+        pos = r.crossTown;
+        what = r.crossWhat + " [lag340]";
+        return true;
+    }
     if (r.plan.stops.empty() || r.plan.stops.front().kind != StopKind::Town)
         return false;
     Stop const& town = r.plan.stops.front();

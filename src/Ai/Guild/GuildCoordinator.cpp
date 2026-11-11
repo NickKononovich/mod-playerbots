@@ -5430,10 +5430,37 @@ float GuildCoordinator::TownStopXp(Player* bot, WorldPosition const& pos) const
 {
     if (!bot)
         return 0.0f;
+    float perXp = 0.0f;
+    {
+        CoordLock guard(lock_, __func__);
+        auto const itr = bots_.find(bot->GetGUID().GetCounter());
+        if (itr == bots_.end() || itr->second.copperPerXp <= 0.0f)
+            return 0.0f;
+        perXp = itr->second.copperPerXp;
+    }
+    return float(TownStopCopper(bot, pos) / double(perXp));
+}
+
+float GuildCoordinator::QuestCopperPerMinute(Player* bot)
+{
+    if (!bot)
+        return 0.0f;
     CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
-    if (itr == bots_.end() || itr->second.copperPerXp <= 0.0f)
+    float copper = 0.0f;
+    if (itr == bots_.end() || !QuestPace(itr->second, bot, copper))
         return 0.0f;
+    return copper;
+}
+
+double GuildCoordinator::TownStopCopper(Player* bot, WorldPosition const& pos) const
+{
+    if (!bot)
+        return 0.0;
+    CoordLock guard(lock_, __func__);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end())
+        return 0.0;
     double copper = 0.0;
     bool pickup = false;
     for (GuildOrder const& o : itr->second.orders)
@@ -5451,7 +5478,7 @@ float GuildCoordinator::TownStopXp(Player* bot, WorldPosition const& pos) const
         for (Mail const* m : bot->GetMails())
             if (m && m->state != MAIL_STATE_DELETED && m->money && IsPlanned(m->sender))
                 copper += double(m->money);
-    return float(copper / double(itr->second.copperPerXp));
+    return copper;
 }
 
 void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPosition, std::string>>& out) const

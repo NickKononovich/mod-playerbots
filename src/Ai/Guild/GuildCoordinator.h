@@ -410,6 +410,10 @@ public:
     // [lag337] map thread: what the bot's town tasks at this stop are worth, in its own quest experience (their game
     // prices over its copper per quest XP, [econ1]): the route weighs the stop as a hand-in of that experience
     float TownStopXp(Player* bot, WorldPosition const& pos) const;
+    // [lag340] the same tasks' worth in copper (their game prices), and its questing's copper per minute ([econ1]
+    // QuestPace; 0: none priced)
+    double TownStopCopper(Player* bot, WorldPosition const& pos) const;
+    float QuestCopperPerMinute(Player* bot);
     // [questroute] map thread, read only (the table is built at startup): a quest's work by the formula for `bot` at
     // `dps` - the kill seconds of its units left (all of them for a quest not taken: health of the cheapest source,
     // an item's over its drop chance), the yards of its objective-spawn tour still to walk, its area and ender;
