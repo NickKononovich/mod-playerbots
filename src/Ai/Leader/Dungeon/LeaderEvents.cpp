@@ -369,7 +369,7 @@ namespace Leader::Dungeon
     // never rests and a full sitter holds nothing (the bot's own stand-up rule: RestDone, full)
     bool MemberFull(Player* bot)
     {
-        return bot && bot->GetHealthPct() >= 99.0f &&
+        return bot && RestState::HealthAtRestMax(bot) &&  // [dun242]
                (!bot->GetMaxPower(POWER_MANA) || bot->GetPowerPct(POWER_MANA) >= 99.0f);
     }
 

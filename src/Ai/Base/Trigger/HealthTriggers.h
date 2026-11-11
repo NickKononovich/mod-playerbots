@@ -323,6 +323,11 @@ float ManaRegenPerSec(Player* bot, bool casting);
 // [dun239] a mage that knows a Conjure Water / Conjure Refreshment rank and has the mana to cast its best one now: its
 // own conjure is a drink for its rest
 bool CanConjureDrink(Player* bot);
+// [dun242] the health a member stood up from its meal "full" with (absolute): the most its eating gives. A druid eats
+// in caster form and fights in bear / cat form, whose higher max health reads the same health as 97-98 %
+void NoteStoodFull(Player* bot);
+// [dun242] its health is all a meal can give it: at 99 % or more, or not below what it stood up full with
+bool HealthAtRestMax(Player* bot);
 // [lead1435] a healer's heal term's mana per second besides its heals: its measured upkeep less its casting regen (%
 // of max mana per second; negative when the regen pays more than the upkeep)
 float HealerNetUpkeepPctPerSec(Player* healer);

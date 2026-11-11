@@ -229,6 +229,8 @@ bool EatAction::isPossible()
 
 bool StandUpAction::Execute(Event /*event*/)
 {
+    if (!bot->IsInCombat())
+        RestState::NoteStoodFull(bot);  // [dun242] (only at 99 % or more)
     // Standing up removes the food / drink auras (AURA_INTERRUPT_FLAG_NOT_SEATED), nothing else.
     Creature* patrol = bot->IsInCombat() ? nullptr : RestState::PatrolComes(bot);  // [b46_patrol]
     LOG_INFO("playerbots", "[rest] {} stands up: {}{} (hp {:.0f} %, mana {:.0f} %)", bot->GetName(),

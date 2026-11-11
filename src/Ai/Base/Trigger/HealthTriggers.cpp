@@ -746,6 +746,31 @@ float CastingRegenPerSec(Player* bot)
            sWorld->getRate(RATE_POWER_MANA);
 }
 
+namespace
+{
+    std::mutex stoodFullLock;
+    std::unordered_map<ObjectGuid, uint32> stoodFullHealth;  // [dun242] under stoodFullLock
+}
+
+void NoteStoodFull(Player* bot)
+{
+    if (!bot || bot->GetHealthPct() < 99.0f)
+        return;
+    std::lock_guard<std::mutex> guard(stoodFullLock);
+    stoodFullHealth[bot->GetGUID()] = bot->GetHealth();
+}
+
+bool HealthAtRestMax(Player* bot)
+{
+    if (!bot)
+        return false;
+    if (bot->GetHealthPct() >= 99.0f)
+        return true;
+    std::lock_guard<std::mutex> guard(stoodFullLock);
+    auto const found = stoodFullHealth.find(bot->GetGUID());
+    return found != stoodFullHealth.end() && bot->GetHealth() >= found->second;
+}
+
 bool CanConjureDrink(Player* bot)
 {
     if (!bot || bot->getClass() != CLASS_MAGE || bot->IsInCombat())
@@ -2859,7 +2884,10 @@ bool WantsFood(Player* bot, std::string* why)
 {
     if (!Leader::LedGroup(bot) && SoloSafety::WantsRest(bot, false, why))  // [guild13]
         return !SoloSafety::RestSpotInReach(bot);  // [deaths14] out of every reach first (RestEscape)
-    float const health = bot->GetHealthPct();
+    // [dun242] at the most its meal gives, it is full: b446 wc-n five7-6 2880-3135 s, the bear tank Ryarii stood up
+    // "full (hp 100 %)" in caster form, shifted to Bear Form (more max health: 98 %), the leader's Rest sent it to
+    // eat again - 47 meals, 88 drinking phases, the pull held "the tank rests (health 98 %)" until the stall
+    float const health = HealthAtRestMax(bot) ? 100.0f : bot->GetHealthPct();
     // [lead116] b151 rfc-h 16-56 s: the tank ate at 95 % (its next pull cost 0.5 tank hp), stood up, ate again - a
     // led group rests health to its computed line, never to full above it, and not with a healer free to heal it
     bool const ledLine = Leader::LEADER_ONE_REST_RULE && Leader::LedGroup(bot);
