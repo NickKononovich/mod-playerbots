@@ -1439,8 +1439,39 @@ namespace Leader::Travel
         float PlanWalkLength(Player* leader, Position const& from, Position const& to)
         {
             G3D::Vector3 const start(from.GetPositionX(), from.GetPositionY(), from.GetPositionZ());
-            PathResult const walk = RoutePath(leader, to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), &start);
-            return walk.reachable && walk.complete ? walk.length : -1.0f;
+            G3D::Vector3 const dest(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ());
+            PathResult const walk = RoutePath(leader, dest.x, dest.y, dest.z, &start);
+            if (walk.reachable && walk.complete)
+                return walk.length;
+            // [dun207] b438b dm-n five 9: from the cove water under the ship (-106.7,-789.2,4.9) the plan to
+            // VanCleef read -1 yd ("0 stops") while the navmesh joins the two (634 yd, tools/navmesh_probe.py and a
+            // Detour-limited A* over the same tiles: 3972 nodes). Once per walker and pair of 5 yd cells: what the
+            // walk answered and what the long search alone finds between the same ends
+            thread_local std::set<std::tuple<uint64, int32, int32, int32, int32>> logged;
+            if (logged.size() > 4096)
+                logged.clear();
+            auto const cell = [](float v) { return int32(std::floor(v / 5.0f)); };
+            if (logged.insert({leader->GetGUID().GetRawValue(), cell(start.x), cell(start.y), cell(dest.x),
+                               cell(dest.y)}).second)
+            {
+                Movement::PointsArray corners;
+                bool longComplete = false;
+                LongRouteInfo info;
+                bool const longFound = LongRoute(leader, start, dest, true, corners, longComplete, nullptr, nullptr,
+                                                 0.0f, nullptr, nullptr, &info);
+                LOG_INFO("playerbots",
+                         "[dun207] {}: no plan walk ({:.1f},{:.1f},{:.1f}) -> ({:.1f},{:.1f},{:.1f}): reachable {} "
+                         "complete {} pathType {} longRoute {} steep {} surface {} hole {}, ends ({:.1f},{:.1f},{:.1f})"
+                         " {:.1f} yd short; start grid fallback {} in water {}; the long search alone (steep): found {}"
+                         " complete {} noComplete {} memo {} searches {}+{}+{} nodes {}",
+                         leader->GetName(), start.x, start.y, start.z, dest.x, dest.y, dest.z, walk.reachable,
+                         walk.complete, walk.type, walk.longRoute, walk.steep, walk.fromSurface, walk.navHole,
+                         walk.end.x, walk.end.y, walk.end.z, (dest - walk.end).length(),
+                         IsGridFallbackZ(leader, start.x, start.y, start.z),
+                         WaterSurfaceAt(leader, start) > INVALID_HEIGHT, longFound, longComplete, info.noComplete,
+                         info.memoHit, info.findPaths, info.reverse, info.big, info.nodes);
+            }
+            return -1.0f;
         }
 
         // [lead204] the walk between two plan spots, measured once per pair while both stand where they were
