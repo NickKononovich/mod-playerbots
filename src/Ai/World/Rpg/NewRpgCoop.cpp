@@ -2426,6 +2426,14 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         // [help14] the helper's walk is to the camp it helps at (the requester walks there too): b354 Nelaeleas L12
         // was assigned to Sycina's q1580 camp at "eta 25 s, walk 175 yd" - the yards to Sycina standing next to it in
         // Darkshore; Sycina hearthed to Darnassus, the camp lay on Teldrassil, the helper walked 3849 yd and a boat
+        // [night303] coordinator 2026-11-11: ... but a camp red for the helper (its top mob's XP colour, the game fact
+        // of the [red73] / [zone38] rules) is no help of it: b432 Rollothan L12 was sent 28 times as healer to L16-20
+        // camps of L17-19 requesters and Guinudrond L14 likewise - 58 % / 72 % of their time helping, 0 kills credited
+        if (r.topLevel && Acore::XP::GetColorCode(p->GetLevel(), r.topLevel) == XP_RED)
+        {
+            ++skipped["the camp is red for it"];
+            continue;
+        }
         pool.push_back({p, 0.0f, 0.0f, false});
     }
     // [help21] the inputs of the price: unchanged since its last refusal by price - no new pricing.
@@ -2937,7 +2945,41 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
         else if (!party.campOnly && (!quest || quest->questId != party.helpObj.questId) &&
                  !(ai && (ai->rpgInfo.vendorRunEntry || ai->rpgInfo.GetStatus() == RPG_REST ||
                           ai->rpgInfo.GetStatus() == RPG_IDLE)))
-            exit = "its own plan moved on";
+        {
+            // [night302] coordinator 2026-11-11: the requester stays on its help quest while its party holds - its
+            // route's next stop (a town task, a member's hand-in, another quest) waits. b432: 32 help parties ended
+            // "its own plan moved on" (50 of 52 with helpers abandoned), helpers walked 1000+ yd for nothing -
+            // Rollothan L12 4 times (Kianey, Manue, Ainne: replans "town task HAND_IN q106 (for Rollothan)", others)
+            Quest const* help = sObjectMgr->GetQuestTemplate(party.helpObj.questId);
+            bool const resumable = ai && help && bot->IsAlive() && !bot->IsInFlight() && !bot->GetTransport() &&
+                                   ai->rpgInfo.GetStatus() != RPG_TRAVEL_FLIGHT &&
+                                   bot->GetQuestStatus(party.helpObj.questId) == QUEST_STATUS_INCOMPLETE &&
+                                   (party.campAt == WorldPosition() ||
+                                    !NewRpgBaseAction::WalkGivenUp(bot, party.campAt.GetPositionX(),
+                                                                   party.campAt.GetPositionY()));
+            if (!resumable)
+                exit = "its own plan moved on";
+            else
+            {
+                out.logs.push_back(Acore::StringFormat(
+                    "[night302] keep {} q{} group={}: its plan had moved to {} - back on the help quest, its helpers "
+                    "come{}",
+                    me.name, party.helpObj.questId, party.id,
+                    quest ? "q" + std::to_string(quest->questId)
+                          : "status " + std::to_string(uint32(ai->rpgInfo.GetStatus())),
+                    HelpStamp()));
+                ai->lowPriorityQuest.erase(party.helpObj.questId);
+                ai->rpgInfo.ChangeToDoQuest(party.helpObj.questId, help);
+                if (auto* data = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data);
+                    data && party.campAt != WorldPosition())
+                {
+                    data->pos = party.campAt;
+                    data->objectiveIdx = party.helpObj.index;
+                    data->lastReachPOI = 0;
+                }
+                return order;
+            }
+        }
     }
     else if (!party.group.IsEmpty() && (!group || group->GetGUID() != party.group))
         exit = "its group is gone";
