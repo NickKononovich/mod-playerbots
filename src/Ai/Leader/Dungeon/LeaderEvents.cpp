@@ -8536,6 +8536,21 @@ namespace Leader::Dungeon
                             LOG_INFO("playerbots", "[lead802] {}: the tank's walk's end with {} holds until the fight "
                                      "stands", bot->GetName(), target->GetName());
                     }
+                // [dun202] user rule (melee go to the tank's predicted stop): a mob still running in at the tank (not in
+                // its melee reach yet) is met where it stops on the tank (meleeStopAt: the meeting of the running mob
+                // and its victim), not followed behind while it runs. b436 / b437 fives: 988 s of "Follow: chase:
+                // behind the target", melee moving 19 % of their combat time
+                if (!toTankStop && melee && !frontHere && target->GetVictim() == tank && target->isMoving() &&
+                    !tank->IsWithinMeleeRange(target))
+                {
+                    toTankStop = true;
+                    thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> stopLogged;
+                    if (stopLogged.size() > 4096)
+                        stopLogged.clear();
+                    if (stopLogged.insert({guid, target->GetGUID()}).second)
+                        LOG_INFO("playerbots", "[dun202] {}: meets {} at its stop on the tank, no chase behind it",
+                                 bot->GetName(), target->GetName());
+                }
                 bool const chases = !toTankStop && melee && !frontHere && target->GetVictim() == tank &&
                                     (chasing || tank->IsWithinMeleeRange(target)) && !chaseRefused();
                 if (toTankStop)
