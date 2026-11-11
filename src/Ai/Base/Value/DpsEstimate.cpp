@@ -100,7 +100,8 @@ enum class Kind : uint8
     Dump,          // runic power dump
     Judgement,     // the seal's judgement on cooldown
     PaidCooldown,  // [rot603] on cooldown where one cast beats the filler in its execute time (DpsEstimate::CastPays)
-    Opener         // [rot605] once at a solo fight's start (its fresh mob): nothing in the steady state
+    Opener,        // [rot605] once at a solo fight's start (its fresh mob): nothing in the steady state
+    HasteFinisher  // [dps237] a combo point finisher kept up for its melee haste (Slice and Dice)
 };
 
 enum class Script : uint8
@@ -207,11 +208,12 @@ std::vector<SpecRotation> const& Rotations()
           {"Arcane Shot", Kind::Cooldown},
           {"Multi-Shot", Kind::Cooldown},
           {"Steady Shot", Kind::Filler, Script::SteadyShot}}},
-        // rogue/apls mutilate
+        // rogue/apls mutilate; [dps237] Slice and Dice kept up in all three (wowsims rogue APLs, Rawr.Rogue)
         {CLASS_ROGUE,
          0,
          false,
-         {{"Mutilate", Kind::Builder},
+         {{"Slice and Dice", Kind::HasteFinisher},
+          {"Mutilate", Kind::Builder},
           {"Sinister Strike", Kind::Builder},
           {"Rupture", Kind::ComboDot, Script::Rupture},
           {"Envenom", Kind::Finisher, Script::Envenom},
@@ -220,13 +222,15 @@ std::vector<SpecRotation> const& Rotations()
         {CLASS_ROGUE,
          1,
          false,
-         {{"Sinister Strike", Kind::Builder},
+         {{"Slice and Dice", Kind::HasteFinisher},
+          {"Sinister Strike", Kind::Builder},
           {"Rupture", Kind::ComboDot, Script::Rupture},
           {"Eviscerate", Kind::Finisher, Script::Eviscerate}}},
         {CLASS_ROGUE,
          2,
          false,
-         {{"Hemorrhage", Kind::Builder},
+         {{"Slice and Dice", Kind::HasteFinisher},
+          {"Hemorrhage", Kind::Builder},
           {"Sinister Strike", Kind::Builder},
           {"Rupture", Kind::ComboDot, Script::Rupture},
           {"Eviscerate", Kind::Finisher, Script::Eviscerate}}},
@@ -1958,11 +1962,17 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             }
         p.fillerId = fillerId;
         bool judged = false;
+        SpellInfo const* hasteFinisher = nullptr;  // [dps237]
         for (Ability const& ability : rotation->abilities)
         {
             uint32 const id = known[ability.name];
             if (!id)
                 continue;
+            if (ability.kind == Kind::HasteFinisher)
+            {
+                hasteFinisher = sSpellMgr->GetSpellInfo(id);
+                continue;
+            }
             Cast cast;
             uint32 readId = id;
             if (ability.kind == Kind::Judgement)
@@ -2061,6 +2071,52 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
                     break;
                 default:
                     break;
+            }
+        }
+
+        // [dps237] Slice and Dice before the damage finishers: its builders and its cast once per its duration, the
+        // swings it hastens its damage. The steady state keeps it up on five points (wowsims rogue APLs, Rawr.Rogue);
+        // a solo bot's fresh mob takes it once on the bot's SND_MIN_COMBO_POINTS (2) when the mob outlives the bot's
+        // SND_MIN_LIFETIME_S (6 s) after it (RogueTriggers.cpp). Its haste is the swings' already where it wears it.
+        // b426-b429: neither the formula nor the ideal had it
+        if (haveBuilder && hasteFinisher && meleeWhite > 0.0f && !bot->HasAura(hasteFinisher->Id))
+        {
+            float hastePct = 0.0f;
+            for (SpellEffectInfo const& effect : hasteFinisher->GetEffects())
+                if (effect.ApplyAuraName == SPELL_AURA_MOD_MELEE_HASTE)
+                    hastePct = std::max(hastePct, float(effect.CalcValue(bot)));
+            constexpr uint8 SOLO_POINTS = 2;
+            constexpr float SOLO_AFTER_SEC = 6.0f;
+            uint8 const points = lifeSec > 0.0f ? SOLO_POINTS : MAX_COMBO;
+            int32 durationMs = hasteFinisher->GetDuration();
+            int32 const maxMs = hasteFinisher->GetMaxDuration();
+            if (durationMs > 0 && maxMs > durationMs)
+                durationMs += (maxMs - durationMs) * points / MAX_COMBO;  // WorldObject::CalcSpellDuration
+            bot->ApplySpellMod(hasteFinisher->Id, SPELLMOD_DURATION, durationMs);
+            float const durationSec = float(std::max(durationMs, 0)) / float(IN_MILLISECONDS);
+            float const builders = std::ceil(float(points) / std::max(1.0f, builder.comboGain));
+            Cast cyc;
+            cyc.id = hasteFinisher->Id;
+            cyc.kind = Kind::ComboDot;
+            cyc.power = POWER_ENERGY;
+            cyc.executeSec = builders * builder.executeSec +
+                             GlobalCooldownMs(bot, bot, hasteFinisher, m.bonus.spellHaste) / float(IN_MILLISECONDS);
+            cyc.cost = builders * builder.cost +
+                       float(std::max(0, hasteFinisher->CalcPowerCost(bot, hasteFinisher->GetSchoolMask())));
+            float uptime = durationSec;
+            float limit = durationSec > 0.0f ? 1.0f / durationSec : 0.0f;
+            if (lifeSec > 0.0f)
+            {
+                float const after = lifeSec - cyc.executeSec;
+                uptime = after >= SOLO_AFTER_SEC ? std::min(durationSec, after) : 0.0f;
+                limit = 1.0f / lifeSec;
+            }
+            float const gain = meleeWhite * hastePct / 100.0f * uptime;
+            if (hastePct > 0.0f && uptime > 0.0f)
+            {
+                cyc.damage = builders * builder.damage + gain;
+                cyc.threat = builders * builder.threat + gain;
+                spend(cyc, affordable(cyc, limit));
             }
         }
 
