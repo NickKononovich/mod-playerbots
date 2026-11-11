@@ -970,9 +970,13 @@ private:
                        std::map<size_t, double>& crafts, std::map<size_t, uint32>* points = nullptr) const;
     // [guild70] an intermediate (bar, bolt, potion used as reagent…) as its raw materials; `via` gets
     // raw -> intermediate -> raw per intermediate
+    // [lag329] mapId: the crafter's map - a vendor item is a source (the expansion stops at it) only when a vendor of
+    // it stands on that map; ANY_MAP: anywhere
+    static constexpr uint32 ANY_MAP = UINT32_MAX;
     void ExpandReagent(uint32 item, double count, std::map<uint32, double>& out,
                        std::map<uint32, std::map<uint32, float>>* via, float perUnit = 1.0f, uint32 depth = 0,
-                       uint32 top = 0) const;
+                       uint32 top = 0, uint32 mapId = ANY_MAP) const;
+    bool VendorSource(uint32 item, uint32 mapId) const;  // [lag329]
     void BuildSkillPlans();
     static uint64 XpTotal(Player* bot);
     // [diag260] / [diag261] an XP gain from (level, xp into it) to the bot's level and xp now, each level's part
@@ -992,6 +996,7 @@ private:
     std::unordered_map<uint32, std::pair<uint32, uint32>> gatherSource_;  // item -> (skill, min node skill)
     std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> smeltFrom_;  // bar -> ore x count per bar
     std::unordered_set<uint32> vendorItems_;
+    std::unordered_map<uint32, std::set<uint32>> vendorMaps_;  // [lag329] item -> the maps of its unlimited vendors
     // [guild70] crafted intermediates: product -> (reagent, count per product), read-only after Load
     std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> craftedFrom_;
     std::unordered_set<uint32> skinned_;  // skinning loot (leather is gathered, not only crafted)

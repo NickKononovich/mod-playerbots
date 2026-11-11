@@ -625,6 +625,7 @@ void GuildCoordinator::LoadRecipes()
     recipesBySkill_.clear();
     smeltFrom_.clear();
     vendorItems_.clear();
+    vendorMaps_.clear();
     craftedFrom_.clear();
     skinned_.clear();
     if (QueryResult result = WorldDatabase.Query("SELECT DISTINCT Item FROM skinning_loot_template WHERE Reference = 0"))
@@ -697,6 +698,16 @@ void GuildCoordinator::LoadRecipes()
         do
             vendorItems_.insert(result->Fetch()[0].Get<uint32>());
         while (result->NextRow());
+    }
+    // [lag329] where each unlimited vendor item is sold: the maps of its vendors' spawns
+    if (QueryResult result = WorldDatabase.Query("SELECT DISTINCT v.item, c.map FROM npc_vendor v JOIN creature c ON "
+                                                 "c.id = v.entry WHERE v.maxcount = 0"))
+    {
+        do
+        {
+            Field* f = result->Fetch();
+            vendorMaps_[f[0].Get<uint32>()].insert(f[1].Get<uint32>());
+        } while (result->NextRow());
     }
 
     std::unordered_set<uint32> lines(std::begin(CRAFT_LINES), std::end(CRAFT_LINES));
@@ -1242,11 +1253,25 @@ void GuildCoordinator::SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 s
     }
 }
 
+// [lag329] a vendor item is a source for a crafter only when a vendor of it stands on the crafter's map (a buy on
+// another continent is no plan of its: "the vendor is on another map ... no route of its own goes there"). b440: Ivory
+// Ink is sold without limit only by Jessica Sellers in Dalaran (map 571): every scribe's Inscription walk from 1 counted
+// its ink as bought there at 0c, so no herb was wanted, gathered or milled for it ("gather 0.0")
+bool GuildCoordinator::VendorSource(uint32 item, uint32 mapId) const
+{
+    if (!vendorItems_.count(item))
+        return false;
+    if (mapId == ANY_MAP)
+        return true;
+    auto const maps = vendorMaps_.find(item);
+    return maps == vendorMaps_.end() || maps->second.count(mapId);  // no spawn row: as before
+}
+
 void GuildCoordinator::ExpandReagent(uint32 item, double count, std::map<uint32, double>& out,
                                      std::map<uint32, std::map<uint32, float>>* via, float perUnit, uint32 depth,
-                                     uint32 top) const
+                                     uint32 top, uint32 mapId) const
 {
-    if (depth < 3 && !vendorItems_.count(item) && !gatherSource_.count(item) && !skinned_.count(item))
+    if (depth < 3 && !VendorSource(item, mapId) && !gatherSource_.count(item) && !skinned_.count(item))
     {
         std::vector<std::pair<uint32, float>> const* parts = nullptr;
         if (auto const smelt = smeltFrom_.find(item); smelt != smeltFrom_.end())
@@ -1258,7 +1283,7 @@ void GuildCoordinator::ExpandReagent(uint32 item, double count, std::map<uint32,
         if (parts)
         {
             for (auto const& [raw, per] : *parts)
-                ExpandReagent(raw, count * per, out, via, perUnit * per, depth + 1, depth ? top : item);
+                ExpandReagent(raw, count * per, out, via, perUnit * per, depth + 1, depth ? top : item, mapId);
             return;
         }
     }
@@ -1402,8 +1427,8 @@ void GuildCoordinator::UpdateWanted()
                 Recipe const& r = list->second[index];
                 double const n = std::ceil(expected - 0.001);
                 std::map<uint32, double> raw;
-                for (auto const& [item, count] : r.reagents)
-                    ExpandReagent(item, n * count, raw, &via);
+                for (auto const& [item, count] : r.reagents)  // [lag329] its vendors: on its map
+                    ExpandReagent(item, n * count, raw, &via, 1.0f, 0, 0, online ? p->GetMapId() : ANY_MAP);
                 for (auto const& [item, amount] : raw)
                 {
                     addPart(item, amount, SkillPlural(line), WHY_SKILL, row.low, r.product);
@@ -4006,7 +4031,7 @@ void GuildCoordinator::UpdateProfessions()
                         if (want <= 0)
                             continue;
                         std::map<uint32, double> raw;
-                        ExpandReagent(item, want, raw, nullptr);
+                        ExpandReagent(item, want, raw, nullptr, 1.0f, 0, 0, p->GetMapId());  // [lag329]
                         for (auto const& [rawItem, rawUnits] : raw)
                         {
                             double units = rawUnits;
@@ -4019,7 +4044,7 @@ void GuildCoordinator::UpdateProfessions()
                             }
                             if (units <= 0)
                                 continue;
-                            if (vendorItems_.count(rawItem))
+                            if (VendorSource(rawItem, p->GetMapId()))  // [lag329]
                             {
                                 ItemTemplate const* proto = sObjectMgr->GetItemTemplate(rawItem);
                                 cost += units *
