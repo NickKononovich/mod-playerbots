@@ -2604,6 +2604,17 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return true;
     }
 
+    float PatrolBeatFarthest(Creature* patrol, Position const& at)
+    {
+        uint32 const pathId = patrol ? patrol->GetWaypointPath() : 0;
+        WaypointPath const* path = pathId ? sWaypointMgr->GetPath(pathId) : nullptr;
+        float farthest = 0.0f;
+        if (path)
+            for (WaypointNode const& node : path->Nodes)
+                farthest = std::max(farthest, at.GetExactDist(node.X, node.Y, node.Z));
+        return farthest;
+    }
+
     float ScriptedCallRadius(uint32 entry)
     {
         CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);

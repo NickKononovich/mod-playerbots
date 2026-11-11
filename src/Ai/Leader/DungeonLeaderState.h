@@ -183,6 +183,9 @@ namespace Leader
         Position commitSpot;
         ObjectGuid patrolStandingFor;  // [dun212] the patrol whose standing joiners were logged last
         ObjectGuid patrolHeldFor;  // [dun217] the patrol whose wait-out was logged last
+        ObjectGuid beatReleasedPatrol;  // [dun226] the patrol whose beat released ...
+        ObjectGuid beatReleasedMob;     // [dun226] ... this commit once
+        ObjectGuid beatHoldLogged;      // [dun226] the patrol whose far-end wait was logged
         uint32 commitSinceMs = 0;
         uint32 commitIssuedMs = 0;
         bool commitIssued = false;

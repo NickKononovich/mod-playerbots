@@ -120,6 +120,8 @@
 
 namespace Leader::Dungeon
 {
+    // [dun226] the patrol counts as at its beat's far end within this of it (a waypoint's arrival radius)
+    constexpr float PATROL_BEAT_FAR_SLACK = 2.0f;
     using namespace Leader::Fight;
     using Leader::Travel::PointOnPath;
 
@@ -1359,6 +1361,8 @@ namespace Leader::Dungeon
             }
             float patrolGap = 0.0f;
             float patrolReach = 0.0f;
+            bool beatHold = false;  // [dun226] the window is the patrol at its beat's far end
+            float beatFar = 0.0f;
             Creature* patrol = broken.empty()
                                    ? LeaderPatrolNear(tank, lead.commitSpot, committed, patrolGap, patrolReach)
                                    : nullptr;
@@ -1525,8 +1529,30 @@ namespace Leader::Dungeon
                     // [dun224] whether or not its own pull fits: b443 sfk-n five4-4 / five1-1, the Wailing Guardsman's
                     // own pull "plan: walks in" was never issued (its beat took it out of reach and back), the
                     // Whitescalp commit released 14 times "the patrol first", stalled at 0/8
-                    if (PullPlanning::PatrolBeatStays(patrol, lead.commitSpot, 2.0f * patrolReach))
+                    // [dun226] once per patrol and commit: the plan again came back inside the beat (the way back
+                    // did not clear it), so the verdict holds - the pull waits for the patrol at its beat's far end
+                    // (the window opens as far as it ever walks, its waypoints), logged once; no release and
+                    // recommit every tick
+                    bool const beatReleased =
+                        lead.beatReleasedPatrol == patrol->GetGUID() && lead.beatReleasedMob == lead.commitMob;
+                    if (beatReleased && PullPlanning::PatrolBeatStays(patrol, lead.commitSpot, 2.0f * patrolReach))
                     {
+                        patrolOwnRefused = true;
+                        beatHold = true;
+                        beatFar = PullPlanning::PatrolBeatFarthest(patrol, lead.commitSpot);
+                        if (lead.beatHoldLogged != patrol->GetGUID())
+                        {
+                            lead.beatHoldLogged = patrol->GetGUID();
+                            LOG_INFO("playerbots",
+                                     "[dun226] {}: {}: the way back did not clear the patrol {}'s beat: the pull waits "
+                                     "for it at its beat's far end ({:.0f} yd)",
+                                     run.runId, mob ? mob->GetName() : std::string("?"), patrol->GetName(), beatFar);
+                        }
+                    }
+                    else if (PullPlanning::PatrolBeatStays(patrol, lead.commitSpot, 2.0f * patrolReach))
+                    {
+                        lead.beatReleasedPatrol = patrol->GetGUID();
+                        lead.beatReleasedMob = lead.commitMob;
                         patrolOwnRefused = false;
                         broken = "the patrol's beat stays at the pull: planned again out of its beat";
                         if (lead.patrolHeldFor != patrol->GetGUID())
@@ -1603,7 +1629,8 @@ namespace Leader::Dungeon
                     patrol = nullptr;
                 }
             }
-            bool const windowOpen = !patrol || patrolGap > 2.0f * patrolReach;
+            bool const windowOpen =
+                !patrol || patrolGap > 2.0f * patrolReach || (beatHold && patrolGap >= beatFar - PATROL_BEAT_FAR_SLACK);
             if (broken.empty() && windowOpen != lead.patrolWindowOpen)
             {
                 lead.patrolWindowOpen = windowOpen;

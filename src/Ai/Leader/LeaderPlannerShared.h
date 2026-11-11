@@ -57,6 +57,8 @@ namespace PullPlanning
     // [dun219] a waypoint patrol whose beat (its waypoint path, waypoint_data) never takes it beyond `range` of `at`:
     // no window opens there; true also for a walker without a known path. False for one that stands or wanders
     bool PatrolBeatStays(Creature* patrol, Position const& at, float range);
+    // [dun226] the farthest its beat's waypoints come from `at` (0: no path known)
+    float PatrolBeatFarthest(Creature* patrol, Position const& at);
 }
 
 // the tank's commit of a pull, posted to the leader's order registry
