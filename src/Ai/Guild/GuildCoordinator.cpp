@@ -66,7 +66,6 @@
 #include "QuestStats.h"    // [questvalue] t= stamps
 #include "ScriptMgr.h"
 #include "SelfBotControl.h"
-#include "SlowScope.h"  // [perf211]
 #include "SellAction.h"
 #include "SpellAuras.h"  // [diag253]
 #include "SpellInfo.h"
@@ -1040,11 +1039,8 @@ void GuildCoordinator::Update(uint32 diff)
         aiTicks_.pop_front();
 
     PMON_SCOPE(coordScope, PERF_MON_TOTAL, "guild coordinator");  // [guild15] world-thread cost, pmon
-    // [perf211] each world-thread step names itself when one run of it is slow (b436 / b437: ticks 250-650 ms over
-    // the bots' AI, only "help update" named)
     {
         PMON_SCOPE(lootScope, PERF_MON_VALUE, "guild deaths + loot");
-        SlowScope slow("coordinator deaths + loot");
         ProcessDeaths();
         ProcessLoot();
     }
@@ -1054,51 +1050,31 @@ void GuildCoordinator::Update(uint32 diff)
     {
         wantedTimer_ = 0;
         PMON_SCOPE(wantedScope, PERF_MON_VALUE, "guild wanted list");
-        {
-            SlowScope slow("coordinator wanted list");
-            UpdateWanted();
-        }
-        SlowScope slow("coordinator professions");
+        UpdateWanted();
         UpdateProfessions();  // [tasks] profession vs questing: the global leader's call per member
     }
     updateTimer_ += diff;
     if (updateTimer_ >= 5 * IN_MILLISECONDS)
     {
         updateTimer_ = 0;
-        {
-            SlowScope slow("coordinator leaders");
-            UpdateLeaders();
-        }
+        UpdateLeaders();
         {
             PMON_SCOPE(gearScope, PERF_MON_VALUE, "guild gear plan");
-            SlowScope slow("coordinator gear plan");
             UpdateGear();  // [guild50]
         }
-        {
-            SlowScope slow("coordinator founding");
-            UpdateFounding();  // [guild80] the bots' own guild: plan + charter / signatures / invites / bank tab
-        }
+        UpdateFounding();  // [guild80] the bots' own guild: plan + charter / signatures / invites / bank tab
         {
             PMON_SCOPE(transferScope, PERF_MON_VALUE, "guild transfers plan");
-            SlowScope slow("coordinator transfers plan");
             UpdateTransfers();  // [guild81] trade / mail / bank between members, gold for the bank tab
         }
         {
             PMON_SCOPE(ordersScope, PERF_MON_VALUE, "guild orders");
-            SlowScope slow("coordinator orders");
             UpdateOrders();
         }
-        {
-            SlowScope slow("coordinator health");
-            UpdateHealth();
-        }
-        {
-            SlowScope slow("coordinator fives");
-            UpdateFives();  // [guild60]
-        }
+        UpdateHealth();
+        UpdateFives();  // [guild60]
         NewRpgCoop::UpdateHelp();  // [help] the guild's help requests: helpers assigned, human parties ended
     }
-    SlowScope slow("coordinator run transfers");
     RunTransfers(diff);  // [guild81] trades next to each other, mails at mailboxes (once a second)
 }
 

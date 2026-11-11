@@ -47,7 +47,6 @@
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "SelfBotControl.h"
-#include "SlowScope.h"  // [perf211]
 #include "StatsWeightCalculator.h"
 #include "TestHarnessData.h"
 #include "LeaderDungeonRun.h"  // [guild70] the five-leader runs the dungeon (no test harness)
@@ -487,8 +486,6 @@ namespace FiveGate
     // maxDrop) and the healer's mana covers the healing. Not counted: the mobs' spells, area damage on the group.
     Verdict Judge(uint32 mapId, std::vector<Player*> const& five)
     {
-        std::string const gateName = "map " + std::to_string(mapId);
-        SlowScope slow("five gate judge", &gateName);  // [perf211] a world-thread look's cost, named when slow
         Verdict out;
         if (five.size() < 2 || !five[0] || !five[1])
         {
@@ -699,60 +696,33 @@ namespace FiveGate
 
         PullLoad worst;
         uint32 judged = 0, failed = 0, apart = 0;
+        std::vector<uint32> members;
         std::vector<uint32> bestMembers;
         std::vector<Mob> mobs;
-        // [perf211] each standing spawn's pull and its load are kept from round to round: a round takes one pull out,
-        // and a kept pull changes only when one of its members is taken or one of its patrol members turns apart (a
-        // member never comes back: `left` only falls, a patrol only becomes apart). Only those pulls are split and
-        // judged again (a patrol's own pull always is: it reads its path's counts). The same pulls in the same order,
-        // the same loads: the same choice. Before, every round split and judged every standing spawn - n^2 pulls
-        // per gate (wc-n 132 rounds x 258 spawns), at each five look on the world thread
-        std::vector<std::vector<uint32>> pulls(n);
-        std::vector<PullLoad> loads(n);
-        std::vector<char> kept(n, 0);
-        std::vector<std::vector<uint32>> inPulls(n);  // spawn -> the kept pulls it is a member of (stale entries ok)
-        std::vector<char> apartBefore(n, 0);
-        auto const drop = [&](uint32 j)
-        {
-            for (uint32 i : inPulls[j])
-                kept[i] = 0;
-            inPulls[j].clear();
-        };
         for (;;)
         {
             for (uint32 p : map.patrols)
-            {
                 apartNow[p] = left[p] && patrolFree(p);
-                if (apartNow[p] != apartBefore[p])
-                    drop(p);
-                apartBefore[p] = apartNow[p];
-            }
             PullLoad best;
             bool any = false;
             for (size_t i = 0; i < n; ++i)
             {
                 if (!left[i])
                     continue;
-                if (!kept[i] || Patrols(spawns[i]))
+                pullOf(i, members);
+                mobs.clear();
+                bool boss = false;
+                for (uint32 j : members)
                 {
-                    std::vector<uint32>& members = pulls[i];
-                    pullOf(i, members);
-                    mobs.clear();
-                    bool boss = false;
-                    for (uint32 j : members)
-                    {
-                        mobs.push_back(spawns[j].mob);
-                        boss |= spawns[j].mob.boss;
-                        inPulls[j].push_back(uint32(i));
-                    }
-                    loads[i] = judge(mobs, boss);
-                    kept[i] = 1;
+                    mobs.push_back(spawns[j].mob);
+                    boss |= spawns[j].mob.boss;
                 }
-                if (!any || loads[i].load < best.load)
+                PullLoad const load = judge(mobs, boss);
+                if (!any || load.load < best.load)
                 {
                     any = true;
-                    best = loads[i];
-                    bestMembers = pulls[i];
+                    best = load;
+                    bestMembers = members;
                 }
             }
             if (!any)
@@ -774,10 +744,7 @@ namespace FiveGate
                     out.manaNeed[d.guid] += used;
             }
             for (uint32 j : bestMembers)
-            {
                 left[j] = 0;
-                drop(j);  // [perf211] the kept pulls it was in are split again
-            }
         }
         std::string const worstWhy =
             worst.mobs ? Acore::StringFormat(

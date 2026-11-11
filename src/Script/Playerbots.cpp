@@ -46,7 +46,6 @@
 #include "ServerScript.h"
 #include "SessionScript.h"
 #include "WorldScript.h"
-#include "SlowUpdate.h"  // [perf212]
 #include "cmath"
 
 class PlayerbotsDatabaseScript : public DatabaseScript
@@ -464,9 +463,7 @@ public:
         if (botAI != nullptr && !SelfBotControl::IsSuspended(player))
         {
             auto const aiStart = std::chrono::steady_clock::now();  // [guild30] bot AI time per tick
-            SlowUpdate::Begin();  // [perf212] a slow update names its stages
             botAI->UpdateAI(diff);
-            SlowUpdate::End(player->GetName());
             sGuildCoordinator.AddAiTime(player, uint64(std::chrono::duration_cast<std::chrono::microseconds>(
                                                     std::chrono::steady_clock::now() - aiStart)
                                                     .count()));
