@@ -10117,7 +10117,34 @@ namespace Leader::Dungeon
                                         healer->IsWithinLOSInMap(bot) &&
                                         (!healer->GetMaxPower(POWER_MANA) ||
                                          healer->GetPowerPct(POWER_MANA) >= RestState::OwnManaLine(healer));
-                    bool const survives = damage < health && healed;
+                    // [dun235] user rule (aggro-loss-if-survives: "until retaken or healed"): the healer's heals on
+                    // the member count - its sustained rate (HealerThroughput, dun215) after its first gap, less what
+                    // the tank takes now, and no more than its mana buys past the tank's share; the member must also
+                    // live through the first gap. Before, only its health counted: b444 rfc-n five11-11 held all three
+                    // casters on secondary mobs the bear built 1 tps on ("1207 vs 442 health, healer reaches it: the
+                    // Stop stands"), 5-6 dps each for 139 s while 7 mobs piled in - 2 kills, the five wiped
+                    float heals = 0.0f;
+                    if (healed)
+                    {
+                        RestState::HealerFacts const facts = RestState::HealerThroughput(healer, bot);
+                        float tankIntake = 0.0f;
+                        for (Unit* attacker : tank->getAttackers())
+                            if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank)
+                            {
+                                float part = 0.0f;
+                                tankIntake += AttackerDps(attacker, tank, part);
+                            }
+                        float const spareRate = std::max(0.0f, facts.hps - tankIntake);
+                        float const healSec = std::max(0.0f, longest - facts.gapSec);
+                        heals = spareRate * healSec;
+                        if (healer->GetMaxPower(POWER_MANA) && facts.healPerMana > 0.0f)
+                            heals = std::min(heals, std::max(0.0f, float(healer->GetPower(POWER_MANA)) *
+                                                                       facts.healPerMana -
+                                                                   tankIntake * longest));
+                        if (incoming * std::min(longest, facts.gapSec) >= health)
+                            heals = 0.0f;
+                    }
+                    bool const survives = damage < health + heals && healed;
                     // logged on a change of the verdict per member, first mob and set size
                     thread_local std::map<std::tuple<uint64, uint64, size_t>, bool> verdicts;
                     if (verdicts.size() > 4096)
@@ -10133,18 +10160,18 @@ namespace Leader::Dungeon
                             LOG_INFO("playerbots",
                                      "[lead985] {}: no headroom on {} ({:.0f} -> {:.0f} vs tank {:.0f} -> {:.0f}); "
                                      "{} dps on it ({:.0f} cast) x {:.1f} s to take it back ({}) = {:.0f} vs {:.0f} "
-                                     "health, healer {}: {}",
+                                     "health + {:.0f} heals [dun235], healer {}: {}",
                                      bot->GetName(), first->GetName(), p.mine, p.mineNext, p.tank, p.tankNext,
-                                     incoming, spellPart, longest, how, damage, health,
+                                     incoming, spellPart, longest, how, damage, health, heals,
                                      healed ? "reaches it" : "does not",
                                      survives ? "keeps its damage" : "the Stop stands");
                         else
                             LOG_INFO("playerbots",
                                      "[lead1010] {}: its area takes {} mobs without headroom ({} first); {:.0f} dps on "
                                      "it ({:.0f} cast), {:.0f} damage until the tank has them back (longest {:.1f} s, "
-                                     "{}) vs {:.0f} health, healer {}: {}",
+                                     "{}) vs {:.0f} health + {:.0f} heals [dun235], healer {}: {}",
                                      bot->GetName(), taken.size(), first->GetName(), incoming, spellPart, damage,
-                                     longest, how, health, healed ? "reaches it" : "does not",
+                                     longest, how, health, heals, healed ? "reaches it" : "does not",
                                      survives ? "the area may take them" : "they stay spared");
                     }
                     return survives;
