@@ -30,6 +30,7 @@
 #include "LeaderHazardVerdict.h"  // [lead1362] InstanceDamageFactor
 #include "LeaderKnowledge.h"  // [lead107 final] the door-cut registry
 #include "LeaderOrders.h"  // [lead1] the tank's commit as a pull order (C:/WoW/LEADER_REFACTOR_PLAN.md step 1)
+#include "RouteLegs.h"  // [dun197] RoutePath from a route link's far end
 #include "LootObjectStack.h"
 #include "Map.h"
 #include "MobRoles.h"
@@ -11721,6 +11722,22 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                         target->GetPositionY(), target->GetPositionZ() + target->GetCollisionHeight(),
                         bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing);
                 }
+                // [dun197] ... or over a curated route link (a bridge, a lift, a jump down: LeaderKnowledge's
+                // RouteLinks) whose far end walks to him - RouteTargets' own test (Gal'darah's bridge, the Mechanar
+                // lift to Sepethrea and Pathaleon, Dire Maul West to Immol'thar, ...): the route walks the group over it
+                if (!judged.reaches)
+                    for (Leader::Knowledge::RouteLinkDef const* link : Leader::Knowledge::RouteLinks(bot->GetMapId()))
+                    {
+                        G3D::Vector3 const farEnd(link->toX, link->toY, link->toZ);
+                        if (Leader::Travel::RoutePath(bot, target->GetPositionX(), target->GetPositionY(),
+                                                      target->GetPositionZ(), &farEnd)
+                                .reachable)
+                        {
+                            judged.reaches = true;
+                            judged.route = Acore::StringFormat("over the route link {}", link->note ? link->note : "");
+                            break;
+                        }
+                    }
                 if (!judged.reaches)
                     LOG_ERROR("playerbots",
                               "[navgap] [dun196] {}: no walk reaches the boss {} ({:.1f} {:.1f} {:.1f}) on map {} from "
