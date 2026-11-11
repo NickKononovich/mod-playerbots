@@ -181,6 +181,10 @@ public:
     }
     // [guild14] no way out from where the bot stands: the core path, the reverse route, the nearest polygon in sight
     bool WalkOffIsland(WorldPosition const& dest, float disToDest);
+    // [nav165] a dead end's deep search out of where the bot stands (once per pocket and level), stepped while it
+    // stands; then its way out walked before any other walk
+    void RequestPocketRescue(WorldPosition const& dest);
+    bool PocketRescue();
     // [runpast11] the last WalkOffIsland found the bot on a navmesh island (its region within its sight, no step or
     // fall off it leading on): no walk from here reaches anything, a postpone of the target is no answer
     bool onIsland = false;

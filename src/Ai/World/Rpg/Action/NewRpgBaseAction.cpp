@@ -1003,6 +1003,9 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
                                                 : "its walk there ends in a dead end (maze search)";
     LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {}{}{}", bot->GetName(), bot->GetLevel(),
              goal.x, goal.y, why, walls.empty() ? "" : "; walls: ", walls);
+    // [nav165] a dead end (no mob walls it): the deep search out of where it stands, once per pocket and level
+    if (!path.throughRefused)
+        RequestPocketRescue(dest);
     // [fly97] a far destination with no walk there (a dead end, every way through mobs it must not fight): the flight
     // from its nearest flight master to the known node nearest it, as a player flies past the zone it cannot cross
     // (b414 Thokhen L18 / Feette L19 in Ashenvale: 36 "dead end (maze search)" postpones, every quest walk to
@@ -2316,6 +2319,193 @@ static float FallDamageShare(Player* bot, float height)
 // and at last a step onto the nearest navmesh polygon in sight - walked when the ground carries it there, else a
 // jump down when the fall (the core's fall damage) leaves the bot alive. Each one logs WALK_FAIL with the position.
 
+namespace
+{
+    // [nav165] the pocket rescues: per bot (its GUID counter) its running deep search, and the pockets searched -
+    // per bot, level and navmesh tile (533 yd) of the spot it stood at: one search per pocket and level
+    struct PocketRescueState
+    {
+        Leader::Travel::DeepSearch search;
+        WorldPosition dest;
+        G3D::Vector3 from;
+        uint32 mapId = 0;
+    };
+    std::mutex pocketLock;
+    std::unordered_map<uint32, std::shared_ptr<PocketRescueState>> pocketRescues;
+    std::set<std::tuple<uint32, uint8, uint32, int32, int32>> pocketsSearched;
+    constexpr uint32 POCKET_SEARCH_NODES = 1u << 19;  // the node table's bound (~30 MB): a memory bound, no rule
+    constexpr uint32 POCKET_SEARCH_SLICE = 4000;      // polygons expanded per bot update: a slice's cost, no rule
+    constexpr float POCKET_TILE = 533.3333f;          // the navmesh tile (GRID_SIZE)
+}
+
+void NewRpgBaseAction::RequestPocketRescue(WorldPosition const& dest)
+{
+    // another landmass (the sea, a trigger's far side) is no walk at any depth: the travel planner's
+    if (!SoloSafety::Applies(bot) || bot->GetMap()->Instanceable() || dest.GetMapId() != bot->GetMapId() ||
+        !botAI->rpgInfo.rescueRoute.empty() ||
+        TravelRouteMgr::Landmass(WorldPosition(bot)) != TravelRouteMgr::Landmass(dest))
+        return;
+    uint32 const counter = bot->GetGUID().GetCounter();
+    std::tuple<uint32, uint8, uint32, int32, int32> const pocket{
+        counter, bot->GetLevel(), bot->GetMapId(), int32(std::floor(bot->GetPositionX() / POCKET_TILE)),
+        int32(std::floor(bot->GetPositionY() / POCKET_TILE))};
+    {
+        std::lock_guard<std::mutex> guard(pocketLock);
+        if (pocketRescues.count(counter) || !pocketsSearched.insert(pocket).second)
+            return;
+    }
+    auto state = std::make_shared<PocketRescueState>();
+    state->dest = dest;
+    state->from = G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    state->mapId = bot->GetMapId();
+    std::string why;
+    if (!state->search.Start(bot, state->from,
+                             G3D::Vector3(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()),
+                             POCKET_SEARCH_NODES, why))
+    {
+        LOG_INFO("playerbots", "[nav165] {} L{} no deep search out of ({:.0f},{:.0f},{:.0f}) to ({:.0f},{:.0f}): {}",
+                 bot->GetName(), bot->GetLevel(), state->from.x, state->from.y, state->from.z, dest.GetPositionX(),
+                 dest.GetPositionY(), why);
+        return;
+    }
+    LOG_INFO("playerbots",
+             "[nav165] {} L{} deep search out of ({:.0f},{:.0f},{:.0f}) to ({:.0f},{:.0f}) {:.0f} yd: its walk there "
+             "ends in a dead end; it stands while the search runs ({} polygons an update)",
+             bot->GetName(), bot->GetLevel(), state->from.x, state->from.y, state->from.z, dest.GetPositionX(),
+             dest.GetPositionY(), bot->GetExactDist(dest), POCKET_SEARCH_SLICE);
+    std::lock_guard<std::mutex> guard(pocketLock);
+    pocketRescues[counter] = std::move(state);
+}
+
+bool NewRpgBaseAction::PocketRescue()
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    uint32 const counter = bot->GetGUID().GetCounter();
+    std::shared_ptr<PocketRescueState> state;
+    {
+        std::lock_guard<std::mutex> guard(pocketLock);
+        auto const found = pocketRescues.find(counter);
+        if (found != pocketRescues.end())
+            state = found->second;
+    }
+    if (state)
+    {
+        auto const drop = [&]()
+        {
+            std::lock_guard<std::mutex> guard(pocketLock);
+            pocketRescues.erase(counter);
+        };
+        if (state->mapId != bot->GetMapId() || bot->IsInCombat())
+        {
+            if (state->mapId != bot->GetMapId())
+                drop();
+            return false;
+        }
+        Leader::Travel::DeepSearch::State const result = state->search.Step(bot, POCKET_SEARCH_SLICE);
+        if (result == Leader::Travel::DeepSearch::State::Running)
+            return HoldPosition(IN_MILLISECONDS);
+        drop();
+        if (result != Leader::Travel::DeepSearch::State::Found)
+        {
+            LOG_INFO("playerbots", "[nav165] {} L{} deep search out of ({:.0f},{:.0f}) failed after {} updates: {}",
+                     bot->GetName(), bot->GetLevel(), state->from.x, state->from.y, state->search.Steps(),
+                     state->search.Why());
+            return false;
+        }
+        info.rescueRoute.assign(state->search.Corners().begin(), state->search.Corners().end());
+        info.rescueMap = bot->GetMapId();
+        LOG_INFO("playerbots", "[nav165] {} L{} deep search out of ({:.0f},{:.0f}) found its way to ({:.0f},{:.0f}): "
+                 "{:.0f} yd, {}, {} corners, {} updates; walks it",
+                 bot->GetName(), bot->GetLevel(), state->from.x, state->from.y, state->dest.GetPositionX(),
+                 state->dest.GetPositionY(), state->search.Length(), state->search.Why(), info.rescueRoute.size(),
+                 state->search.Steps());
+    }
+    std::vector<G3D::Vector3>& route = info.rescueRoute;
+    if (route.size() < 2)
+        return false;
+    float const sight = sPlayerbotAIConfig.SightDistance;
+    auto const leave = [&](char const* why)
+    {
+        LOG_INFO("playerbots", "[nav165] {} L{} leaves its way out of the pocket at ({:.0f},{:.0f},{:.0f}): {}",
+                 bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), why);
+        route.clear();
+        return false;
+    };
+    if (info.rescueMap != bot->GetMapId())
+        return leave("another map");
+    // where on the way it stands: the nearest point of its segments
+    G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    size_t segment = 0;
+    G3D::Vector3 onWay = route.front();
+    float best = std::numeric_limits<float>::max();
+    for (size_t i = 1; i < route.size(); ++i)
+    {
+        G3D::Vector3 const ab = route[i] - route[i - 1];
+        float const lengthSq = ab.squaredLength();
+        float const t = lengthSq > 0.0f ? std::clamp((here - route[i - 1]).dot(ab) / lengthSq, 0.0f, 1.0f) : 0.0f;
+        G3D::Vector3 const point = route[i - 1] + ab * t;
+        if (float const d = (point - here).length(); d < best)
+        {
+            best = d;
+            segment = i;
+            onWay = point;
+        }
+    }
+    if (best > sight)
+        return leave("it stands off the way");
+    Movement::PointsArray rest;
+    rest.push_back(onWay);
+    rest.insert(rest.end(), route.begin() + segment, route.end());
+    float restLength = 0.0f;
+    for (size_t i = 1; i < rest.size(); ++i)
+        restLength += (rest[i] - rest[i - 1]).length();
+    if (restLength <= 2.0f * sight)
+        return leave("out of the pocket: the walk on is searched as any walk");
+    // the next leg as any leg on a known way ([guild15]'s far route): the local search to a sight ahead on the way
+    // prices the mobs in sight; with none, the way's own corners to a sight ahead, past no mob it must not fight
+    G3D::Vector3 const target = Leader::Travel::PointOnPath(rest, sight);
+    BotPath const local = FindBotPath(bot, target.x, target.y, target.z);
+    if (local.type == PATHFIND_NORMAL && !local.throughRefused && local.points.size() >= 2 &&
+        (local.actualEnd - target).length() < 5.0f)
+    {
+        G3D::Vector3 const leg =
+            local.length > sight ? Leader::Travel::PointOnPath(local.points, sight) : local.actualEnd;
+        if (MoveTo(bot->GetMapId(), leg.x, leg.y, leg.z, false, false, false, true))
+        {
+            CommitLeg(bot, local.points, leg);  // [runpast11]
+            return true;
+        }
+    }
+    if (local.throughRefused)
+        return false;  // a mob it must not fight on the next leg: the walk's own handling (the maze search's wait)
+    Movement::PointsArray slice{here};
+    float walked = (onWay - here).length();
+    for (size_t i = 1; i < rest.size() && walked < sight; ++i)
+    {
+        float const length = (rest[i] - rest[i - 1]).length();
+        if (walked + length > sight && length > 0.0f)
+        {
+            slice.push_back(rest[i - 1] + (rest[i] - rest[i - 1]) * ((sight - walked) / length));
+            break;
+        }
+        slice.push_back(rest[i]);
+        walked += length;
+    }
+    if (slice.size() < 2)
+        return false;
+    for (size_t i = 1; i < slice.size(); ++i)
+        if (DangerOnWay(bot, slice[i - 1].x, slice[i - 1].y, slice[i].x, slice[i].y, slice[i - 1].z, slice[i].z))
+            return false;
+    if (!WalkBotPoints(bot, slice))
+        return false;
+    float const delay =
+        std::clamp(float(IN_MILLISECONDS) * MoveDelay(walked), 0.0f, float(sPlayerbotAIConfig.MaxWaitForMove));
+    G3D::Vector3 const& end = slice.back();
+    AI_VALUE(LastMovement&, "last movement")
+        .Set(bot->GetMapId(), end.x, end.y, end.z, bot->GetOrientation(), delay, MovementPriority::MOVEMENT_NORMAL);
+    return true;
+}
+
 bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
 {
     // [guild14] a solo bot walks such a path only as far as it sees, and only when that stretch passes no mob of
@@ -2395,7 +2585,30 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         if (!(coreType & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)) ||
             (coreType & (PATHFIND_NOPATH | PATHFIND_NOT_USING_PATH | PATHFIND_SHORTCUT)) || points.size() < 2 ||
             dest.GetExactDist(coreEnd.x, coreEnd.y, coreEnd.z) + 5.0f >= disToDest || !firstLegCarried(points) ||
-            !SafeLeg(points) || !WalkBotPoints(bot, points))
+            !SafeLeg(points))
+            return false;
+        // [nav165] a partial path (it does not reach the destination) only to where the route search plans a complete
+        // walk back to the walk's start: b435 Sycina L18's partial legs (21, 50, 114 yd) toward the Zoram Strand went
+        // up a Stonetalon valley onto a ridge (1764,-1019,246) whose only way out is 4084 yd, past the search's pool:
+        // every walk from there a dead end, 89 WALK_FAIL in b438
+        if (!(coreType & PATHFIND_NORMAL) && SoloSafety::Applies(bot))
+        {
+            NewRpgInfo const& info = botAI->rpgInfo;
+            G3D::Vector3 const start = info.moveFarFromSet ? info.moveFarFrom : here;
+            G3D::Vector3 const legEnd = points.back();
+            if ((legEnd - start).length() > 1.0f)
+            {
+                BotPath const back = FindBotPath(bot, legEnd.x, legEnd.y, legEnd.z, start.x, start.y, start.z);
+                if (back.type != PATHFIND_NORMAL || !back.leaderRoute)
+                {
+                    logged(Acore::StringFormat("[nav165] no partial core path to ({:.0f},{:.0f},{:.0f}): no complete "
+                                               "walk back from there to the walk's start ({:.0f},{:.0f},{:.0f})",
+                                               legEnd.x, legEnd.y, legEnd.z, start.x, start.y, start.z));
+                    return false;
+                }
+            }
+        }
+        if (!WalkBotPoints(bot, points))
             return false;
         float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(core.getPathLength()), 0.0f,
                                        float(sPlayerbotAIConfig.MaxWaitForMove));
@@ -2970,6 +3183,9 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     {
         // clear stuck information if it's a new dest
         botAI->rpgInfo.SetMoveFarTo(dest);
+        // [nav165] where this walk starts
+        botAI->rpgInfo.moveFarFrom = G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        botAI->rpgInfo.moveFarFromSet = true;
         // [guild15] b317 Eraelor "route complete (335 yd, ends 0 yd short), the walk refused: IsWaitingForLastMove":
         // a new destination replaces the last walk; the old walk's clock no longer holds the new one (lead244)
         LastMovement& last = AI_VALUE(LastMovement&, "last movement");
@@ -3025,6 +3241,11 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 return true;
         }
     }
+
+    // [nav165] a pocket's deep search runs while the bot stands, then its way out is walked first (before the stuck
+    // check: standing for the search proves nothing about the walk)
+    if (PocketRescue())
+        return true;
 
     // [runpast15] every search below is for a stage or leg of the walk to `dest`: a run past is measured to it
     // (another map's destination: no stop on this map - each search is measured to its own end)

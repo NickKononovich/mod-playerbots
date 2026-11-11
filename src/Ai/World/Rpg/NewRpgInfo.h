@@ -137,6 +137,13 @@ struct NewRpgInfo
     // [guild15] perf: the last complete far route to moveFarPos; the next leg is planned only to a point on it
     // two sights ahead (the danger penalties are of the mobs in sight, so a local search sees the same mobs)
     std::vector<G3D::Vector3> farRoute;
+    // [nav165] where the walk to moveFarPos started (the area its partial legs must stay plannable back to)
+    G3D::Vector3 moveFarFrom;
+    bool moveFarFromSet{false};
+    // [nav165] the deep search's way out of a pocket the route search cannot plan out of: walked before any other
+    // walk until its last two sights; not cleared by a new destination (every walk starts in the pocket)
+    std::vector<G3D::Vector3> rescueRoute;
+    uint32 rescueMap{0};
     bool meetWalk = false;  // [wait19] the walk under way is a group leader's walk to meet a member
     // END MOVE_FAR
 

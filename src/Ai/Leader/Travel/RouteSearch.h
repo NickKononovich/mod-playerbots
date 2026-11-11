@@ -17,6 +17,8 @@
 #include "G3D/Vector3.h"
 #include "G3D/Vector4.h"
 #include "MoveSplineInitArgs.h"
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 class Unit;
@@ -89,6 +91,57 @@ namespace Leader::Travel
     // or-opt (segments of 1-3 stops), the shorter kept - the order tools/ideal_route.py computes. The order of the
     // stops (0 first) and its `length`.
     std::vector<size_t> ShortestTour(std::vector<std::vector<float>> const& cost, bool fixedEnd, float& length);
+
+    // [nav165] the deep search: one A* over the navmesh's polygons with its own node table (Detour's pool is 16-bit:
+    // 65535 nodes at most, LONG_ROUTE_BIG_NODES), resumable - Step() expands `expansions` polygons and returns, the
+    // next call goes on. For a walker that the route search cannot plan out of where it stands (b438 Sycina L19 on a
+    // Stonetalon ridge: the only way down 4084 yd, 862 polygons, ~115k polygons expanded). The player filter flags with
+    // NAV_GROUND_STEEP, no off-mesh link (they can be one-way); the corridor as corner points (findStraightPath)
+    class DeepSearch
+    {
+    public:
+        enum class State : uint8
+        {
+            Idle,
+            Running,
+            Found,
+            Failed
+        };
+        // false (with why) when the walker has no navmesh or an end has no polygon
+        bool Start(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, uint32 maxNodes, std::string& why);
+        State Step(Unit* walker, uint32 expansions);
+        State GetState() const { return _state; }
+        Movement::PointsArray const& Corners() const { return _corners; }
+        std::string const& Why() const { return _why; }
+        size_t Nodes() const { return _nodes.size(); }
+        uint32 Steps() const { return _steps; }
+        float Length() const { return _length; }
+
+    private:
+        struct Node
+        {
+            float g = 0.0f;
+            float c[3] = {0.0f, 0.0f, 0.0f};  // the polygon's centre (Detour's y, z, x)
+            dtPolyRef parent = 0;
+            bool closed = false;
+        };
+        bool Centre(dtPolyRef ref, float* out) const;
+        void Finish();
+
+        State _state = State::Idle;
+        dtNavMesh const* _mesh = nullptr;
+        dtQueryFilter _filter;
+        dtPolyRef _startRef = 0, _endRef = 0;
+        float _startPos[3] = {0.0f, 0.0f, 0.0f};
+        float _endPos[3] = {0.0f, 0.0f, 0.0f};
+        uint32 _maxNodes = 0;
+        uint32 _steps = 0;
+        float _length = 0.0f;
+        std::unordered_map<dtPolyRef, Node> _nodes;
+        std::vector<std::pair<float, dtPolyRef>> _open;  // a min-heap on f (std::push_heap with std::greater)
+        Movement::PointsArray _corners;
+        std::string _why;
+    };
 }
 
 namespace Leader

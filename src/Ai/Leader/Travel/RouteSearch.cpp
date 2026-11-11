@@ -1954,3 +1954,217 @@ namespace Leader::Travel
         return best;
     }
 }
+// [nav165] the deep search (RouteSearch.h)
+namespace Leader::Travel
+{
+    namespace
+    {
+        // findNearestPoly / findStraightPath need no search nodes; init wants some
+        constexpr int DEEP_QUERY_NODES = 64;
+        constexpr int DEEP_MAX_CORNERS = 4096;
+
+        dtNavMeshQuery* DeepQuery(dtNavMesh const* mesh)
+        {
+            thread_local std::unordered_map<dtNavMesh const*, std::unique_ptr<dtNavMeshQuery, NavMeshQueryFree>>
+                queries;
+            auto& query = queries[mesh];
+            if (!query)
+            {
+                query.reset(dtAllocNavMeshQuery());
+                if (!query || dtStatusFailed(query->init(mesh, DEEP_QUERY_NODES)))
+                {
+                    query.reset();
+                    return nullptr;
+                }
+            }
+            return query.get();
+        }
+    }
+
+    bool DeepSearch::Centre(dtPolyRef ref, float* out) const
+    {
+        dtMeshTile const* tile = nullptr;
+        dtPoly const* poly = nullptr;
+        if (dtStatusFailed(_mesh->getTileAndPolyByRef(ref, &tile, &poly)) || !poly || !poly->vertCount)
+            return false;
+        out[0] = out[1] = out[2] = 0.0f;
+        for (uint8 v = 0; v < poly->vertCount; ++v)
+        {
+            float const* vertex = &tile->verts[size_t(poly->verts[v]) * 3];
+            out[0] += vertex[0];
+            out[1] += vertex[1];
+            out[2] += vertex[2];
+        }
+        for (int i = 0; i < 3; ++i)
+            out[i] /= float(poly->vertCount);
+        return true;
+    }
+
+    bool DeepSearch::Start(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, uint32 maxNodes,
+                           std::string& why)
+    {
+        *this = DeepSearch();
+        _state = State::Failed;
+        _mesh = walker && walker->GetMap() ? walker->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh()
+                                           : nullptr;
+        dtNavMeshQuery* query = _mesh ? DeepQuery(_mesh) : nullptr;
+        if (!query)
+        {
+            why = _why = "no navmesh";
+            return false;
+        }
+        _filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+        _filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
+        auto const nearest = [&](G3D::Vector3 const& p, float* at) -> dtPolyRef
+        {
+            float const point[3] = {p.y, p.z, p.x};  // Detour works in (y, z, x)
+            // PathGenerator::GetPolyByLocation: a low box first, then a tall one
+            for (float const tall : {5.0f, 50.0f})
+            {
+                float const extents[3] = {3.0f, tall, 3.0f};
+                dtPolyRef ref = 0;
+                if (dtStatusSucceed(query->findNearestPoly(point, extents, &_filter, &ref, at)) && ref)
+                    return ref;
+            }
+            return 0;
+        };
+        _startRef = nearest(from, _startPos);
+        _endRef = nearest(to, _endPos);
+        if (!_startRef || !_endRef)
+        {
+            why = _why = !_startRef ? "no polygon at the start" : "no polygon at the destination";
+            return false;
+        }
+        Node start;
+        if (!Centre(_startRef, start.c))
+        {
+            why = _why = "the start polygon is not loaded";
+            return false;
+        }
+        _maxNodes = maxNodes;
+        _nodes.emplace(_startRef, start);
+        _open.emplace_back(dtVdist(start.c, _endPos), _startRef);
+        _state = State::Running;
+        return true;
+    }
+
+    DeepSearch::State DeepSearch::Step(Unit* walker, uint32 expansions)
+    {
+        if (_state != State::Running)
+            return _state;
+        ++_steps;
+        // the walker's map keeps its navmesh object while it lives; another one is no search of this one
+        Map* map = walker ? walker->GetMap() : nullptr;
+        if (!map || map->GetMapCollisionData().GetMMapData().GetNavMesh() != _mesh)
+        {
+            _why = "the navmesh changed";
+            _state = State::Failed;
+            return _state;
+        }
+        constexpr float H_SCALE = 0.999f;  // Detour's own heuristic scale
+        for (uint32 done = 0; done < expansions; ++done)
+        {
+            if (_open.empty())
+            {
+                _why = "every polygon it reaches searched: no way there";
+                _state = State::Failed;
+                return _state;
+            }
+            std::pop_heap(_open.begin(), _open.end(), std::greater<>());
+            dtPolyRef const ref = _open.back().second;
+            _open.pop_back();
+            auto const at = _nodes.find(ref);
+            if (at == _nodes.end() || at->second.closed)
+                continue;
+            at->second.closed = true;
+            if (ref == _endRef)
+            {
+                Finish();
+                return _state;
+            }
+            dtMeshTile const* tile = nullptr;
+            dtPoly const* poly = nullptr;
+            if (dtStatusFailed(_mesh->getTileAndPolyByRef(ref, &tile, &poly)) || !poly)
+                continue;  // its tile was unloaded since: no way through it now
+            float const g = at->second.g;
+            float centre[3];
+            dtVcopy(centre, at->second.c);
+            for (unsigned int link = poly->firstLink; link != DT_NULL_LINK; link = tile->links[link].next)
+            {
+                dtPolyRef const next = tile->links[link].ref;
+                if (!next)
+                    continue;
+                dtMeshTile const* nextTile = nullptr;
+                dtPoly const* nextPoly = nullptr;
+                if (dtStatusFailed(_mesh->getTileAndPolyByRef(next, &nextTile, &nextPoly)) || !nextPoly ||
+                    nextPoly->getType() == DT_POLYTYPE_OFFMESH_CONNECTION ||
+                    !_filter.passFilter(next, nextTile, nextPoly))
+                    continue;
+                auto found = _nodes.find(next);
+                if (found != _nodes.end() && found->second.closed)
+                    continue;
+                if (found == _nodes.end())
+                {
+                    if (_nodes.size() >= _maxNodes)
+                    {
+                        _why = "its node table is full (" + std::to_string(_maxNodes) + " polygons)";
+                        _state = State::Failed;
+                        return _state;
+                    }
+                    Node node;
+                    if (!Centre(next, node.c))
+                        continue;
+                    node.g = std::numeric_limits<float>::max();
+                    found = _nodes.emplace(next, node).first;
+                }
+                float const cost = g + dtVdist(centre, found->second.c);
+                if (cost >= found->second.g)
+                    continue;
+                found->second.g = cost;
+                found->second.parent = ref;
+                _open.emplace_back(cost + dtVdist(found->second.c, _endPos) * H_SCALE, next);
+                std::push_heap(_open.begin(), _open.end(), std::greater<>());
+            }
+        }
+        return _state;
+    }
+
+    void DeepSearch::Finish()
+    {
+        _state = State::Failed;
+        std::vector<dtPolyRef> corridor;
+        for (dtPolyRef ref = _endRef; ref;)
+        {
+            corridor.push_back(ref);
+            auto const at = _nodes.find(ref);
+            ref = at == _nodes.end() ? 0 : at->second.parent;
+        }
+        std::reverse(corridor.begin(), corridor.end());
+        dtNavMeshQuery* query = DeepQuery(_mesh);
+        if (!query || corridor.empty() || corridor.front() != _startRef)
+        {
+            _why = "its corridor is broken";
+            return;
+        }
+        std::vector<float> straight(size_t(DEEP_MAX_CORNERS) * 3);
+        int count = 0;
+        if (dtStatusFailed(query->findStraightPath(_startPos, _endPos, corridor.data(), int(corridor.size()),
+                                                   straight.data(), nullptr, nullptr, &count, DEEP_MAX_CORNERS)) ||
+            count < 2)
+        {
+            _why = "no straight path along its corridor";
+            return;
+        }
+        _corners.clear();
+        for (int i = 0; i < count; ++i)
+            _corners.emplace_back(straight[size_t(i) * 3 + 2], straight[size_t(i) * 3], straight[size_t(i) * 3 + 1]);
+        _length = 0.0f;
+        for (size_t i = 1; i < _corners.size(); ++i)
+            _length += (_corners[i] - _corners[i - 1]).length();
+        _why = std::to_string(corridor.size()) + " polygons";
+        _state = State::Found;
+        // the table is done with: its memory back now
+        std::unordered_map<dtPolyRef, Node>().swap(_nodes);
+        std::vector<std::pair<float, dtPolyRef>>().swap(_open);
+    }
+}
