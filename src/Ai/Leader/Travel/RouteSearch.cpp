@@ -1564,6 +1564,10 @@ namespace Leader
         // is priced from the static spawns (each spawn's level, elite rank, aggro reach): when the walk passes such
         // reaches out there, it is searched once more with them refused (b388 Ganna L14: "route complete, Crag Coyote
         // unseen" - the Loch Modan walk round the Stonesplinter walls went through the Badlands)
+        // [lag331] this walk's static spawns are priced: by the pass below, or (staticRefuse set) it is the search
+        // round the reaches that pass refused
+        bool const staticPriced = walker->IsPlayer() && SoloSafety::Applies(walker->ToPlayer()) &&
+                                  (!staticRefuse.empty() || (result.found && result.points.size() >= 2));
         if (walker->IsPlayer() && SoloSafety::Applies(walker->ToPlayer()) && result.found && staticRefuse.empty() &&
             result.points.size() >= 2)
         {
@@ -1650,7 +1654,16 @@ namespace Leader
                 AreaTableEntry const* entry = sAreaTableStore.LookupEntry(area);
                 if (!entry)
                     continue;
-                bool const red = entry->area_level > 0 &&
+                // [lag331] coordinator 2026-11-11 (Gilduck L14 walled in Darkshire for hours, 0 kills): the area's
+                // level is a label; what makes a walk through it deadly are its spawns, and the [static39] pass above
+                // priced every static spawn on this walk beyond sight (each one's level, rank, aggro reach, wander and
+                // patrol beat; the live search the ones in sight) and refused the reaches of those it must not fight
+                // - this walk is the one searched round them. The label refused it again whatever the spawns: b442
+                // Gilduck's way to Goldshire round the 10 reaches it must not fight "passes Brightwood Grove (area
+                // level 28)", his own town "Darkshire (area level 25)" - 261 quest starters with no route, every road
+                // out refused. The label refuses only a walk the static pass did not price (a walker it does not
+                // apply to); the other faction's capital stays refused whatever (its guards L75)
+                bool const red = !staticPriced && entry->area_level > 0 &&
                                  Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(entry->area_level, 255))) ==
                                      XP_RED;
                 // [cap65] ... or an area of the other faction's capital (its guards L75 everywhere, out of the
