@@ -1012,8 +1012,11 @@ bool NewRpgBaseAction::StartVendorRun()
     // [supply27] a five member before its five goes in restocks below the restock line, not only when out
     bool const fiveSupply = sGuildCoordinator.SupplyWanted(bot);
     uint32 const line = fiveSupply ? RESTOCK_FOOD_MIN : 1;
+    // [eco206] ... the drinks its run needs ([dun194]) for a mana user of a gathering five
+    uint32 const fiveDrinks = fiveSupply && usesMana ? sGuildCoordinator.FiveDrinkTarget(bot) : 0;
+    uint32 const drinkLine = fiveDrinks ? fiveDrinks : line;
     bool const noFood = CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD) < line;
-    bool const noDrink = usesMana && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < line;
+    bool const noDrink = usesMana && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < drinkLine;
     // [five43] a five member's supply run before its five goes in passes the "one run per money gain" gate once:
     // its last visit (a food vendor without drink, a sale) left it short and the five waited for a run that never
     // started (b390: "[supply27] Orenem / Thokhen supply run could not be made (no vendor run started)", the five
@@ -2566,9 +2569,12 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                         // not only an empty bag - b430 Manue (11 drinks, no money its budget let it spend) was
                         // "stocked" at 1, went straight back and visited Innkeeper Heather again and again (LOOP)
                         uint32 const line = sGuildCoordinator.SupplyWanted(bot) ? RESTOCK_FOOD_MIN : 1;
+                        uint32 const fiveDrinks =  // [eco206] its five's [dun194] drinks
+                            line > 1 && bot->GetMaxPower(POWER_MANA) ? sGuildCoordinator.FiveDrinkTarget(bot) : 0;
                         bool const outFood = CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD) < line;
-                        bool const outDrink =
-                            bot->GetMaxPower(POWER_MANA) && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < line;
+                        bool const outDrink = bot->GetMaxPower(POWER_MANA) &&
+                                              CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) <
+                                                  (fiveDrinks ? fiveDrinks : line);
                         uint32 const foodPrice =
                             outFood ? RestockPrice(bot, creature->GetEntry(), RESTOCK_SPELL_CATEGORY_FOOD) : 0;
                         uint32 const drinkPrice =

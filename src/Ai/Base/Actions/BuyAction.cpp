@@ -515,9 +515,12 @@ bool RestockFoodAction::Execute(Event /*event*/)
 {
     bool const usesMana = bot->GetMaxPower(POWER_MANA) > 0;
     uint32 const food = CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
-    uint32 const drink = usesMana ? CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) : RESTOCK_FOOD_TARGET;
+    // [eco206] a member of a gathering five: the drinks its run needs ([dun194]) are its line and its target
+    uint32 const fiveDrinks = usesMana ? sGuildCoordinator.FiveDrinkTarget(bot) : 0;
+    uint32 const drinkTarget = fiveDrinks ? fiveDrinks : RESTOCK_FOOD_TARGET;
+    uint32 const drink = usesMana ? CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) : drinkTarget;
     bool const needFood = food < RESTOCK_FOOD_MIN;
-    bool const needDrink = drink < RESTOCK_FOOD_MIN;
+    bool const needDrink = drink < (fiveDrinks ? fiveDrinks : RESTOCK_FOOD_MIN);
     if (!needFood && !needDrink)
         return false;
 
@@ -572,11 +575,11 @@ bool RestockFoodAction::Execute(Event /*event*/)
     GuildLedger::Cause const ledger("buy: food / drink");  // [eco190]
     std::string why;
     if (drinkSlot >= 0)
-        bought |= Buy(vendor, drinkSlot, drink, why);
+        bought |= Buy(vendor, drinkSlot, drink, why, drinkTarget);
     else if (needDrink)
         why += "no drink of its level it can use at " + std::string(vendor->GetName()) + "; ";
     if (foodSlot >= 0)
-        bought |= Buy(vendor, foodSlot, food, why);
+        bought |= Buy(vendor, foodSlot, food, why, RESTOCK_FOOD_TARGET);
     else if (needFood)
         why += "no food of its level it can use at " + std::string(vendor->GetName()) + "; ";
     if (!bought && !why.empty())
@@ -605,9 +608,9 @@ void RestockFoodAction::LogDeclined(std::string const& why)
              why, bot->GetMoney());
 }
 
-bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have, std::string& why)
+bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have, std::string& why, uint32 target)
 {
-    if (have >= RESTOCK_FOOD_TARGET)
+    if (have >= target)
         return false;
 
     VendorItemData const* items = vendor->GetVendorItems();
@@ -624,7 +627,7 @@ bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have, std
         std::max<uint32>(1, uint32(std::floor(proto->BuyPrice * bot->GetReputationPriceDiscount(vendor))));
     uint32 const budget = AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables));
 
-    uint32 purchases = (RESTOCK_FOOD_TARGET - have + perBuy - 1) / perBuy;
+    uint32 purchases = (target - have + perBuy - 1) / perBuy;  // [eco206] up to its target, then money and bags
     purchases = std::min(purchases, budget / unitPrice);
     if (!purchases)
     {

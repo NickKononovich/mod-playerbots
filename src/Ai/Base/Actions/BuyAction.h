@@ -62,7 +62,8 @@ public:
 
 private:
     // [eco204] why: what kept a purchase from happening (logged by Execute when nothing was bought)
-    bool Buy(Creature* vendor, int32 vendorSlot, uint32 have, std::string& why);
+    // [eco206] target: the count it buys up to (RESTOCK_FOOD_TARGET, or a gathering five's [dun194] drinks)
+    bool Buy(Creature* vendor, int32 vendorSlot, uint32 have, std::string& why, uint32 target);
     void LogDeclined(std::string const& why);
 };
 

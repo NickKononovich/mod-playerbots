@@ -319,6 +319,9 @@ public:
     // [eco192] map thread: what a second of this bot's rest costs, in copper - its quest pace (QuestPace, copper per
     // minute) for itself and each group member on its map that waits with it; < 0: no pace known
     float RestCopperPerSecond(Player* bot);
+    // [eco206] map thread: the drinks a member of a gathering five carries for its run ([dun194] drinkNeed), 0 = none
+    // priced (not in a gathering five, no mana user, the five holds no drink to price with)
+    uint32 FiveDrinkTarget(Player* bot) const;
     // [supply112] the crafts of a guild supply recipe this cook still owes the fives' bands (its target less what it
     // holds of the product), 0 = none (map thread: NewRpgCraft weighs them with its skill-ups)
     uint32 SupplyCrafts(Player* cook, uint32 spellId) const;

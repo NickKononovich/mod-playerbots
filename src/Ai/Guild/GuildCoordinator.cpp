@@ -8346,6 +8346,24 @@ uint32 GuildCoordinator::SupplyCrafts(Player* cook, uint32 spellId) const
     return owed;
 }
 
+// [eco206] coordinator 2026-11-11: a member of a forming / gathering five restocks to the drinks its run needs
+// ([dun194]: the five gate's mana over the dungeon plus one refill, over one drink's mana), not the fixed 20 / 40 - it
+// went in short of the five's own line
+uint32 GuildCoordinator::FiveDrinkTarget(Player* bot) const
+{
+    if (!bot)
+        return 0;
+    CoordLock guard(lock_, __func__);
+    auto const st = bots_.find(bot->GetGUID().GetCounter());
+    if (st == bots_.end() || !st->second.fiveId)
+        return 0;
+    auto const five = fives_.find(st->second.fiveId);
+    if (five == fives_.end() || five->second.stage != GuildFive::Stage::Gather)
+        return 0;
+    auto const need = five->second.drinkNeed.find(bot->GetGUID().GetCounter());
+    return need != five->second.drinkNeed.end() ? need->second : 0;
+}
+
 // [eco192] the rest's time price for the restock's choice (RestockFoodAction: price and rest time per point)
 float GuildCoordinator::RestCopperPerSecond(Player* bot)
 {
