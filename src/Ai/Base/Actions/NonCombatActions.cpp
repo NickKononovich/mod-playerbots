@@ -10,6 +10,7 @@
 #include "Event.h"
 #include "HealthTriggers.h"
 #include "LeaderOrders.h"  // [lead47] the Rest ack
+#include "MotionMaster.h"  // [dun238]
 #include "Playerbots.h"
 #include "StringFormat.h"
 #include "Timer.h"
@@ -66,6 +67,11 @@ bool AtTripExitStop(Player* bot, PlayerbotAI* botAI)
 bool IsDisallowedFoodState(Player* bot)
 {
     if (bot->HasUnitState(UNIT_STATE_LOST_CONTROL))
+        return true;
+    // [dun238] no meal in the air: sitting down clears the jump's spline and the bot hangs where it was (b446 wc-n
+    // five2-2: Thamesh's Rest drink mid-jump down Verdan's ledge, 17.5 yd over the landing)
+    if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == EFFECT_MOTION_TYPE ||
+        bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING))
         return true;
 
     if (bot->getClass() == CLASS_DRUID)

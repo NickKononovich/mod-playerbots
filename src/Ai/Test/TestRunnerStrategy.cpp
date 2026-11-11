@@ -139,11 +139,28 @@ bool TestRunnerMoveAction::Execute(Event /*event*/)
         if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == EFFECT_MOTION_TYPE ||
             bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING))
             return true;
-        if (_jumpSerial == waypoint.serial)
+        // [dun238] a jump cut off in the air (its spline cleared: b446 wc-n five2-2 2278 s, the mage Thamesh took the
+        // leader's Rest drink mid-jump down Verdan's ledge and hung at -62.4, 17.5 yd over the landing's polygon,
+        // with no navmesh under it - the link timed out, the five waited 240 s) is jumped again from where it hangs;
+        // a jump that ends at its far end (LINK_DONE_RANGE) is done. At most JUMP_MAX_TRIES jumps a waypoint
+        constexpr float JUMP_DONE_RANGE = 6.0f;
+        constexpr uint8 JUMP_MAX_TRIES = 3;
+        if (_jumpSerial == waypoint.serial &&
+            (_jumpTries >= JUMP_MAX_TRIES || bot->isMoving() ||
+             bot->GetExactDist(waypoint.x, waypoint.y, waypoint.z) <= JUMP_DONE_RANGE))
             return false;
         // Retried until it starts (the walk to the start may still be ending: IsWaitingForLastMove).
         if (!JumpTo(waypoint.mapId, waypoint.x, waypoint.y, waypoint.z, MovementPriority::MOVEMENT_NORMAL))
             return false;
+        if (_jumpSerial == waypoint.serial)
+            LOG_INFO("playerbots",
+                     "[dun238] {}: its jump to ({:.1f},{:.1f},{:.1f}) ended short at ({:.1f},{:.1f},{:.1f}), {:.1f} yd "
+                     "off: jumps again (try {})",
+                     bot->GetName(), waypoint.x, waypoint.y, waypoint.z, bot->GetPositionX(), bot->GetPositionY(),
+                     bot->GetPositionZ(), bot->GetExactDist(waypoint.x, waypoint.y, waypoint.z), _jumpTries + 1);
+        else
+            _jumpTries = 0;
+        ++_jumpTries;
         _jumpSerial = waypoint.serial;
         return true;
     }

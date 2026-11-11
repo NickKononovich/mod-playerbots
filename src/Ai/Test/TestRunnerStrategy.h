@@ -83,6 +83,7 @@ private:
     uint32 _progressMs = 0;
     float _bestDistance = 0.0f;
     uint32 _jumpSerial = 0;  // the jump waypoint already jumped to (once per waypoint)
+    uint8 _jumpTries = 0;    // [dun238] jumps to that waypoint (one, and again only after one cut off short)
     uint32 _straightLogMs = 0;  // last "[test runner] link line" log line
 };
 
