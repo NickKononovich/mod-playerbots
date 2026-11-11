@@ -6,6 +6,7 @@
 
 #include "EstimatedLifetimeValue.h"
 #include "AiFactory.h"
+#include "DpsEstimate.h"  // [dps241]
 #include "Group.h"
 #include "Map.h"
 #include "PlayerbotAI.h"
@@ -214,8 +215,13 @@ float EstimatedGroupDpsValue::ModelDps()
     // [lead265] each member's damage from its own stats and spells (MemberModelDps) instead of the gear-table
     // model's dps by level, role multipliers (tank 0.3, healer 0.1), gear-score scale (0.75-4, the epic bonus) and
     // the group buff bonus (1.05-1.2)
+    // [dps241] ... from the dps formula (DpsEstimate: its rotation's burst in the group's buff context, the core's
+    // numbers, its pet; a healer heals: 0). MemberModelDps took every damage spell it knows at its fastest repeat, its
+    // weapon on top: b436 / b437 fives at 228 dps by it ("group 228 dps by the gear model") against 172 by the formula
+    // and 122 measured: casters held their casts ([cast-short-life]) on mobs it read dying in 1.8 s that lived 4-5 s
     for (Player* player : groupPlayer)
-        totalDps += MemberModelDps(player);
+        if (!PlayerbotAI::IsHeal(player))
+            totalDps += DpsEstimate::Estimate(player, nullptr, DpsEstimate::ContextOf(player)).burstDps;
     return totalDps;
 }
 
