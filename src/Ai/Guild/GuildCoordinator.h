@@ -867,6 +867,11 @@ private:
     uint32 PlannedFor(uint32 itemId) const;
     // [ench155] the enchanter's own soulbound greens / blues nobody can take: onto its disenchant list (lock_ held)
     void AddOwnDisenchants(BotState& st, Player* p);
+    // [ench161] the members' spare greens / blues (unbound, no member's gear plan takes the copy, the holder does not
+    // wear it better) go to an enchanter whose skill disenchants them: its own list, else held for the transfer
+    void RouteSpareGreens();
+    // [ench160] the expected items of one Disenchant of an item of this DisenchantID (disenchant_loot_template)
+    std::map<uint32, float> const& DisenchantYield(uint32 disenchantId);
     static bool TownReady(Player* bot, GuildOrder const& o);
     void LogTaskChanges(uint32 low, BotState& st, std::vector<GuildOrder> const& now);
     std::string TasksText(BotState const& st) const;
@@ -1004,6 +1009,7 @@ private:
     // [guild70] crafted intermediates: product -> (reagent, count per product), read-only after Load
     std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> craftedFrom_;
     std::unordered_set<uint32> skinned_;  // skinning loot (leather is gathered, not only crafted)
+    std::unordered_map<uint32, std::map<uint32, float>> disenchantYield_;  // [ench160] DisenchantID -> item -> units
     // [guild70] per skill line and skill value: the best trainer / auto-learned skill-up recipe (index, -1 none)
     std::unordered_map<uint32, std::vector<int32>> skillPlan_;
     std::unordered_map<uint32, std::vector<size_t>> extraRecipes_;  // per line: recipes learned elsewhere (drops)

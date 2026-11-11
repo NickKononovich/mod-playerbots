@@ -1929,6 +1929,7 @@ void GuildCoordinator::UpdateOrders()
         st->second.expect = std::move(keep);
     }
     UpdateCrafts(now);  // [guild50]
+    RouteSpareGreens();                                   // [ench161]
     std::map<std::pair<uint32, uint32>, bool> withdrawn;  // (member, item) already on its withdraw list
     for (auto const& [low, list] : withdraw_)
         for (auto const& [item, why] : list)
@@ -3041,6 +3042,143 @@ void GuildCoordinator::AddOwnDisenchants(BotState& st, Player* p)
                 look(bag->GetItemByPos(uint8(j)));
 }
 
+// [ench160] lock_ held. LootTemplate::Process of one Disenchant: each group rolls one entry (VisitEntries gives the
+// equal-chance share), an entry gives (min + max) / 2 on average
+std::map<uint32, float> const& GuildCoordinator::DisenchantYield(uint32 disenchantId)
+{
+    auto const cached = disenchantYield_.find(disenchantId);
+    if (cached != disenchantYield_.end())
+        return cached->second;
+    std::map<uint32, float>& out = disenchantYield_[disenchantId];
+    if (LootTemplate const* tmpl = LootTemplates_Disenchant.GetLootFor(disenchantId))
+        tmpl->VisitEntries(
+            [&](LootStoreItem const& e, float chance)
+            {
+                if (e.reference || e.needs_quest || !(e.lootmode & LOOT_MODE_DEFAULT))
+                    return;
+                out[e.itemid] += std::min(100.0f, chance) / 100.0f * (float(e.mincount) + float(e.maxcount)) / 2.0f;
+            });
+    return out;
+}
+
+// [ench161] lock_ held. User rules: greens nobody wears are disenchanted, not sold; an upgrade a member needs is never
+// disenchanted; honest play (the holder mails / trades its own item, GuildTransfer). [ench153] routed only a green
+// looted from then on to the enchanter: b442 the members held 179 disenchantable greens / blues in their bags (160 of
+// skill 1) from earlier loot, quest rewards and plan picks that moved on, none went to the 5 enchanters (Enchanting
+// 8-10), and every enchanter's walk stopped at "Strange Dust x1: neither held nor gathered in the guild"
+void GuildCoordinator::RouteSpareGreens()
+{
+    struct Enchanter
+    {
+        uint32 low{0};
+        uint32 skill{0};
+        uint32 queued{0};
+    };
+    std::vector<Enchanter> enchanters;
+    for (PlanRow const& row : plan_)
+        if (Player* m = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low)))
+            if (m->IsInWorld() && GET_PLAYERBOT_AI(m) && !HumanCharacter(m) && m->HasSkill(SKILL_ENCHANTING) &&
+                m->HasSpell(SPELL_DISENCHANT))
+                enchanters.push_back(
+                    {row.low, m->GetPureSkillValue(SKILL_ENCHANTING), uint32(bots_[row.low].disenchant.size())});
+    if (enchanters.empty())
+        return;
+    // the copies the members' gear plans take (one per member and item), the ones held for a member first
+    std::map<uint32, uint32> planned;
+    for (auto const& [low, st] : bots_)
+    {
+        std::set<uint32> ids;
+        for (auto const* list : {&st.gearNow, &st.gearPlan})
+            for (GearPick const& g : *list)
+                ids.insert(g.itemId);
+        for (uint32 id : ids)
+            ++planned[id];
+    }
+    for (auto const& [low, st] : bots_)
+        for (HeldItem const& h : st.held)
+        {
+            if (h.purpose.rfind("disenchant", 0) == 0)
+            {
+                for (Enchanter& e : enchanters)
+                    if (e.low == h.forLow)
+                        ++e.queued;
+                continue;
+            }
+            if (auto const p = planned.find(h.itemId); p != planned.end() && p->second)
+                --p->second;
+        }
+    for (PlanRow const& row : plan_)
+    {
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+        if (!p || !p->IsInWorld() || !GET_PLAYERBOT_AI(p) || HumanCharacter(p))
+            continue;  // a human's bags are his own
+        BotState& st = bots_[row.low];
+        std::optional<StatsWeightCalculator> calc;
+        auto const look = [&](Item* item)
+        {
+            ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+            if (!proto || item->IsSoulBound() || !proto->DisenchantID || proto->Quality < ITEM_QUALITY_UNCOMMON ||
+                proto->Quality > ITEM_QUALITY_RARE ||
+                (proto->Class != ITEM_CLASS_ARMOR && proto->Class != ITEM_CLASS_WEAPON) ||
+                proto->RequiredDisenchantSkill < 0)
+                return;
+            uint32 const guid = item->GetGUID().GetCounter();
+            if (std::find(st.disenchant.begin(), st.disenchant.end(), guid) != st.disenchant.end() ||
+                std::any_of(st.held.begin(), st.held.end(), [&](HeldItem const& h) { return h.itemGuidLow == guid; }) ||
+                TransferHolds(guid))
+                return;
+            if (auto const pl = planned.find(proto->ItemId); pl != planned.end() && pl->second)
+            {
+                --pl->second;  // this copy is a member's upgrade: kept
+                return;
+            }
+            uint32 const req = uint32(proto->RequiredDisenchantSkill);
+            // its own Disenchant first (no transfer), else the lowest skill (Disenchant's skill-up chance falls from
+            // its yellow rank to its gray one), the shortest list among equal skills
+            Enchanter* to = nullptr;
+            for (Enchanter& e : enchanters)
+                if (e.skill >= req)
+                {
+                    if (e.low == row.low)
+                    {
+                        to = &e;
+                        break;
+                    }
+                    if (!to || e.skill < to->skill || (e.skill == to->skill && e.queued < to->queued))
+                        to = &e;
+                }
+            if (!to)
+                return;  // no enchanter's skill disenchants it yet
+            if (!calc)
+            {
+                calc.emplace(p);
+                calc->SetItemSetBonus(false);
+                calc->SetOverflowPenalty(false);
+            }
+            GuildGear::Eval ev;
+            if (GuildGear::Evaluate(p, *calc, proto, ev) && ev.gain > 0.0f)
+                return;  // the holder wears it (its own equip takes it)
+            st.sell.erase(std::remove(st.sell.begin(), st.sell.end(), guid), st.sell.end());
+            ++to->queued;
+            if (to->low == row.low)
+                st.disenchant.push_back(guid);
+            else
+                st.held.push_back({guid, proto->ItemId, item->GetCount(), to->low, "disenchant " + Who(to->low)});
+            LOG_INFO("playerbots",
+                     "[ench161] spare {} (at {}) -> {} (Enchanting {}, needs {}): no member's gear plan takes this "
+                     "copy, disenchanted not sold",
+                     proto->Name1, Who(row.low), to->low == row.low ? std::string("its own Disenchant") : Who(to->low),
+                     to->skill, req);
+        };
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            look(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            if (Bag* bag = p->GetBagByPos(b))
+                for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                    look(bag->GetItemByPos(uint8(j)));
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // [tasks] profession vs questing: only the global leader decides. Lag = the skill the plan needs at the member's level
 // (the trainer rank cap its level allows; the upgrade / bag crafts nobody in the guild can make yet) minus its skill.
@@ -4044,6 +4182,30 @@ void GuildCoordinator::UpdateProfessions()
                 };
                 bool fromGuild = false;
                 std::string guildText;
+                // [ench160] an enchanter's dust / essences / shards from the greens on its way to its Disenchant
+                // ([ench153] / [ench161] / [ench155]): their expected yield. b442 every enchanter's walk stopped at
+                // "Strange Dust x1: neither held nor gathered in the guild" (Enchanting 8-10, best 10) - disenchanting
+                // is the only source of Strange Dust / Lesser Magic Essence and the walk did not count it
+                std::map<uint32, double> disenchanted, takeDisenchanted;
+                uint32 greens = 0;
+                if (line == SKILL_ENCHANTING && p->HasSpell(SPELL_DISENCHANT))
+                {
+                    auto const addYield = [&](ItemTemplate const* proto)
+                    {
+                        if (!proto || !proto->DisenchantID)
+                            return;
+                        ++greens;
+                        for (auto const& [item, units] : DisenchantYield(proto->DisenchantID))
+                            disenchanted[item] += units;
+                    };
+                    for (uint32 guid : st.disenchant)
+                        if (Item* item = p->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(guid)))
+                            addYield(item->GetTemplate());
+                    for (auto const& [holder, hs] : bots_)
+                        for (HeldItem const& h : hs.held)
+                            if (h.forLow == row->low && h.purpose.rfind("disenchant", 0) == 0)
+                                addYield(sObjectMgr->GetItemTemplate(h.itemId));
+                }
                 // [insc144] the walk runs to the need through the trainer ranks its level allows (their fees are
                 // costs): b426-b429 it stopped at the held rank's cap (Inscription 75) while the needs it is valued
                 // by lie past it (the glyphs from 80), so the line never valued what it unlocks
@@ -4131,6 +4293,20 @@ void GuildCoordinator::UpdateProfessions()
                             takeOthers[rawItem] += fromOthers;
                             units -= fromOthers;
                             fromGuild = true;
+                            // [ench160] then what its Disenchant makes of the greens on their way to it
+                            auto const yield = disenchanted.find(rawItem);
+                            if (double const fromGreens =
+                                    yield == disenchanted.end()
+                                        ? 0.0
+                                        : std::clamp(yield->second - takeDisenchanted[rawItem], 0.0, units);
+                                fromGreens > 0)
+                            {
+                                takeDisenchanted[rawItem] += fromGreens;
+                                units -= fromGreens;
+                                if (guildText.empty() && fromOthers <= 0)
+                                    guildText = ItemName(rawItem) + " (Disenchant of " + std::to_string(greens) +
+                                                " guild greens [ench160])";
+                            }
                             if (guildText.empty())
                                 guildText = ItemName(rawItem);
                             if (units <= 0)
@@ -4149,6 +4325,9 @@ void GuildCoordinator::UpdateProfessions()
                                              SkillShort(src->second.first) + " " +
                                              std::to_string(src->second.second) + ")"
                                        : std::string("neither held nor gathered in the guild"));
+                            if (yield != disenchanted.end())  // [ench160] what the greens on their way gave
+                                why +=
+                                    " (beyond the Disenchant of " + std::to_string(greens) + " guild greens [ench160])";
                             break;
                         }
                         if (!why.empty())
@@ -4163,6 +4342,9 @@ void GuildCoordinator::UpdateProfessions()
                         pool[item] -= n;
                     for (auto const& [item, n] : takeOthers)
                         others[item] -= n;
+                    for (auto const& [item, n] : takeDisenchanted)
+                        disenchanted[item] -= n;
+                    takeDisenchanted.clear();
                     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(r.spellId))
                         craftMin += crafts * info->CalcCastTime() / double(MINUTE * IN_MILLISECONDS);
                     if (ItemTemplate const* product = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr)
