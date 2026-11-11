@@ -172,7 +172,12 @@ uint32 MoneyNeededForValue::Calculate()
                                     // (should be best ammo buyable x 8 stacks cost)
             break;
         case NeedMoneyFor::spells:
-            moneyWanted = AI_VALUE(uint32, "train cost");
+            // [eco202] coordinator 2026-11-11: a guild-plan bot pays no class trainer - its class trainers' spells
+            // come at each level-up and login (AutoMaintenanceOnLevelupAction::LearnGuildClassSpells, the approved
+            // AutoLearnTrainerSpells exception; b430's ledger: no class-trainer money at all). What "train cost"
+            // still finds are spells that path does not teach (other trainers' lists): money kept back for a visit
+            // that never comes, ahead of its food and drink - a bot that cannot regenerate does not level to them
+            moneyWanted = GuildHonest::IsHonestBot(bot) ? 0 : AI_VALUE(uint32, "train cost");
             break;
         case NeedMoneyFor::travel:
             moneyWanted = 1500;  // 15s for traveling half a continent. Todo: Add better calculation (Should be ???)

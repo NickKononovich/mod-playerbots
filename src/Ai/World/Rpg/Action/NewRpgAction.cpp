@@ -1010,6 +1010,16 @@ bool NewRpgBaseAction::StartVendorRun()
     // Ainne / Namwe / Galiver back to a vendor whose drink their budget could not pay
     uint32 const spendable =
         (noFood || noDrink) ? AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables)) : 0;
+    // [eco202] what the consumables budget keeps back (BudgetValues: saveMoneyFor), for the [supply34] line
+    auto const reserveText = [&]()
+    {
+        auto const need = [&](NeedMoneyFor what) { return AI_VALUE2(uint32, "money needed for", uint32(what)); };
+        return Acore::StringFormat("kept back: repair {}c (now {}c + one death), ammo {}c, class spells {}c, travel "
+                                   "{}c, guild {}c",
+                                   need(NeedMoneyFor::repair), AI_VALUE(uint32, "repair cost"),
+                                   need(NeedMoneyFor::ammo), need(NeedMoneyFor::spells), need(NeedMoneyFor::travel),
+                                   need(NeedMoneyFor::guild));
+    };
     bool const budgetCovers = info.vendorRestockPrice ? spendable >= info.vendorRestockPrice
                                                       : bot->GetMoney() > info.vendorVisitMoney;
     bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 &&
@@ -1042,8 +1052,8 @@ bool NewRpgBaseAction::StartVendorRun()
             bot->GetMoney() == 0 ? std::string("no money")
             : info.vendorRestockPrice
                 ? Acore::StringFormat("its last vendor visit or look on this map could not stock it: it may spend "
-                                      "{}c, the cheapest there costs {}c [eco201]",
-                                      spendable, info.vendorRestockPrice)
+                                      "{}c of its {}c ({}), the cheapest there costs {}c [eco201]",
+                                      spendable, bot->GetMoney(), reserveText(), info.vendorRestockPrice)
                 : std::string("its last vendor visit or look on this map could not stock it and no money was gained "
                               "since [eco193]");
         noRunWhy(why.c_str());
@@ -1081,7 +1091,10 @@ bool NewRpgBaseAction::StartVendorRun()
     if (!vendor)
     {
         if (restock)
-            noRunWhy("no vendor of its faction sells it food / drink of its level it can pay on a walk it takes");
+            noRunWhy(Acore::StringFormat("no vendor of its faction sells it food / drink of its level it can pay on a "
+                                         "walk it takes: it may spend {}c of its {}c ({}) [eco202]",
+                                         spendable, bot->GetMoney(), reserveText())
+                         .c_str());
         // [supply26] no vendor sells it a way it walks: looked again after its next money gain (the look is a scan of
         // the map's vendors and their trips, not for every tick of its rest)
         info.vendorVisited = true;
