@@ -80,6 +80,16 @@ namespace
 
     uint32 NowSec() { return uint32(GameTime::GetGameTime().count()); }
 
+    // [dun194] a member's line inside the run: the drinks the run needs it to carry (priced at the five's forming),
+    // else the restock line
+    uint32 RunLine(GuildFive const& five, uint32 low, uint8 kind)
+    {
+        if (kind == DRINK)
+            if (auto const priced = five.drinkNeed.find(low); priced != five.drinkNeed.end())
+                return priced->second;
+        return RESTOCK_FOOD_MIN;
+    }
+
     std::string Gold(uint32 copper)
     {
         uint32 const g = copper / 10000, s = (copper / 100) % 100, c = copper % 100;
@@ -1075,7 +1085,7 @@ void GuildCoordinator::UpdateTransfers()
                 // nowhere before - lfg89 has them quest apart until the port) a member below the restock line
                 // (RESTOCK_FOOD_MIN) is topped up, not only one that ran out
                 uint32 const line = five.stage == GuildFive::Stage::Run && p && p->GetMap()->IsDungeon()
-                                        ? RESTOCK_FOOD_MIN
+                                        ? RunLine(five, m, kind)
                                         : 1;
                 if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
                     (kind == DRINK && p->getPowerType() != POWER_MANA) || CountKind(p, kind, p->GetLevel()) >= line)
@@ -1144,7 +1154,8 @@ void GuildCoordinator::UpdateTransfers()
             // the giver keeps an equal share; [share92] inside the dungeon it keeps its own restock line and shares
             // only what lies above it (no member is pushed below the line that made another needy: no ping-pong)
             bool const inRun = five.stage == GuildFive::Stage::Run && q->GetMap()->IsDungeon() && !outOnly;
-            uint32 const share = inRun ? (total > RESTOCK_FOOD_MIN ? (total - RESTOCK_FOOD_MIN) / uint32(needy.size()) : 0)
+            uint32 const keep = RunLine(five, q->GetGUID().GetCounter(), kind);  // [dun194] its own line
+            uint32 const share = inRun ? (total > keep ? (total - keep) / uint32(needy.size()) : 0)
                                        : total / uint32(needy.size() + 1);
             if (!share)
                 continue;

@@ -46,6 +46,9 @@ constexpr uint32 RESTOCK_SPELL_CATEGORY_DRINK = 59;
 
 // Counts real food (category 11) or drink (category 59) the bot can use, in its bags. Bounded bag walk.
 uint32 CountBagFood(Player* bot, uint32 spellCategory);
+// [dun194] the most one usable item of that kind in the bags restores (RestoredPoints, at most the bot's max health /
+// mana: a drink stops at a full pool); 0 when it holds none
+float BestBagRestore(Player* bot, uint32 spellCategory);
 
 // Out of combat, low on food/drink and a vendor/innkeeper selling level-appropriate food is near:
 // walk to it and buy with the bot's own gold (consumables budget, repair money stays reserved).

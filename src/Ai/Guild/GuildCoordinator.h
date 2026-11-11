@@ -186,6 +186,9 @@ struct GuildFive
     bool forced{false};                   // formed by the command
     bool humanAlerted{false};
     bool poolGoesIn{false};  // [supply100] its pooled supplies carried it: no member's restock holds it
+    // [dun194] member -> the drinks the run needs it to carry (the five gate's mana need over the dungeon plus one
+    // full refill, over one drink's mana); a mana user missing here keeps RESTOCK_FOOD_MIN
+    std::map<uint32, uint32> drinkNeed;
     // the five-leader's roll decisions: (loot source guid, item) -> (member who needs it, 0: none; disenchant)
     std::map<std::pair<uint64, uint32>, std::pair<uint32, bool>> rolls;
 };

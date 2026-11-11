@@ -448,6 +448,30 @@ int32 PickVendorFood(Player* bot, Creature* vendor, uint32 spellCategory, float 
 }
 }  // namespace
 
+float BestBagRestore(Player* bot, uint32 spellCategory)
+{
+    float best = 0.0f;
+    float const cap = spellCategory == RESTOCK_SPELL_CATEGORY_FOOD ? float(bot->GetMaxHealth())
+                                                                   : float(bot->GetMaxPower(POWER_MANA));
+    auto look = [&](Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
+            (proto->SubClass != ITEM_SUBCLASS_CONSUMABLE && proto->SubClass != ITEM_SUBCLASS_FOOD) ||
+            proto->Spells[0].SpellCategory != spellCategory || bot->CanUseItem(proto) != EQUIP_ERR_OK)
+            return;
+        float perSecond = 0.0f;
+        best = std::max(best, std::min(RestoredPoints(proto, spellCategory, perSecond), cap));
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        look(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                look(bag->GetItemByPos(static_cast<uint8>(slot)));
+    return best;
+}
+
 uint32 CountBagFood(Player* bot, uint32 spellCategory)
 {
     uint32 count = 0;

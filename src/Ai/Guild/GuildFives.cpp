@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <sstream>
 
@@ -467,6 +468,9 @@ namespace FiveGate
     {
         bool clears = true;
         std::string why;
+        // [dun194] each mana user's net mana over the dungeon's pulls (the healer's healing mana less its regen in
+        // the fights, a caster's rotation less its regen in combat), by its GUID
+        std::map<ObjectGuid, float> manaNeed;
     };
 
     // The five: the tank first, the healer second (PickFive's order). [dun170] The dungeon is pulled as its leader
@@ -495,6 +499,8 @@ namespace FiveGate
         // state now): a pull of T seconds gets burst x min(T, oom) + white x the rest, over T
         struct Damage
         {
+            ObjectGuid guid;
+            float manaPerSec = 0.0f;  // [dun194] its rotation's mana less its regen in combat
             uint8 level = 1;
             float burst = 0.0f;
             float white = 0.0f;
@@ -513,6 +519,8 @@ namespace FiveGate
             {
                 DpsEstimate::Result const r = DpsEstimate::Estimate(p, nullptr, DpsEstimate::BuffContext::Group);
                 Damage d;
+                d.guid = p->GetGUID();
+                d.manaPerSec = p->GetMaxPower(POWER_MANA) ? std::max(r.manaPerSec, 0.0f) : 0.0f;
                 d.level = p->GetLevel();
                 d.burst = r.burstDps;
                 d.white = r.whiteDps;
@@ -726,6 +734,15 @@ namespace FiveGate
                 ++failed;
             if (best.load > worst.load)
                 worst = best;
+            // [dun194] the pull's mana for each mana user
+            for (Damage const& d : dps)
+            {
+                float const used = d.guid == healer->GetGUID()
+                                       ? std::max(0.0f, best.manaNeeded - (best.fightMana - healMana))
+                                       : d.manaPerSec * best.sec;
+                if (used > 0.0f)
+                    out.manaNeed[d.guid] += used;
+            }
             for (uint32 j : bestMembers)
                 left[j] = 0;
         }
@@ -1632,6 +1649,48 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
                 ai->rpgInfo.ChangeToIdle();
     }
 
+    // [dun194] the drinks each mana user carries for this run, priced by the five gate's pulls: its mana need over
+    // the dungeon (FiveGate::Verdict::manaNeed) plus one full refill (a rest from empty: its max mana), over the mana
+    // of one drink (the best one the five holds: they share inside, RestoredPoints with the core's drink amount)
+    {
+        std::vector<Player*> players(2, nullptr);
+        float drinkMana = 0.0f;
+        for (uint32 low : members)
+        {
+            Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+            if (!p)
+                continue;
+            drinkMana = std::max(drinkMana, BestBagRestore(p, RESTOCK_SPELL_CATEGORY_DRINK));
+            auto const role = roles.find(low);
+            std::string const r = role != roles.end() ? role->second : "dps";
+            if (r == "tank" && !players[0])
+                players[0] = p;
+            else if (r == "healer" && !players[1])
+                players[1] = p;
+            else
+                players.push_back(p);
+        }
+        if (players[0] && players[1] && drinkMana > 0.0f)
+        {
+            FiveGate::Verdict const priced = FiveGate::Judge(d.mapId, players);
+            std::string line;
+            for (Player* p : players)
+            {
+                if (!p || !p->GetMaxPower(POWER_MANA))
+                    continue;
+                auto const need = priced.manaNeed.find(p->GetGUID());
+                float const mana = (need != priced.manaNeed.end() ? need->second : 0.0f) +
+                                   float(p->GetMaxPower(POWER_MANA));
+                uint32 const drinks = uint32(std::ceil(mana / drinkMana));
+                five.drinkNeed[p->GetGUID().GetCounter()] = drinks;
+                line += Acore::StringFormat("{}{} {} ({:.0f} mana)", line.empty() ? "" : ", ", p->GetName(), drinks,
+                                            mana);
+            }
+            LOG_INFO("playerbots", "[dun194] five {} ({}): drinks the run needs at {:.0f} mana a drink: {}", five.id,
+                     d.contentKey, drinkMana, line);
+        }
+    }
+
     std::string list;
     for (uint32 low : members)
     {
@@ -1929,8 +1988,14 @@ void GuildCoordinator::UpdateFives()
             // run or supply gold never holds a five that the pool carries. b415: no five entered in 20 min - the
             // waits lasted up to ~1290 s (Ellosera, five 4, "the guild's supply gold is on its way"), ~1050 s
             // (Dekorhan, five 10), ~810 s (Selalleas, five 10), ~330 s (Mutil, five 1)
+            // [dun194] a mana user's drink line: the drinks the run needs it to carry (priced at the five's forming)
+            auto const drinkLine = [&five](uint32 low) -> uint32
             {
-                uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0;
+                auto const priced = five.drinkNeed.find(low);
+                return priced != five.drinkNeed.end() ? priced->second : RESTOCK_FOOD_MIN;
+            };
+            {
+                uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0, drinksNeeded = 0;
                 std::string noRoom;  // [supply104] a short member the pool cannot reach: no free bag slot
                 for (uint32 low : five.members)
                 {
@@ -1940,17 +2005,18 @@ void GuildCoordinator::UpdateFives()
                     if (p->GetMaxPower(POWER_MANA))
                     {
                         ++manaUsers;
+                        drinksNeeded += drinkLine(low);
                         uint32 const own = CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
                         drinks += own;
                         // [supply104] the hand-over must be possible: a member below the line takes a stack only
                         // into a free slot (the giver's side: share103 hands the whole stack when it cannot split)
-                        if (own < RESTOCK_FOOD_MIN && !p->GetFreeInventorySpace())
+                        if (own < drinkLine(low) && !p->GetFreeInventorySpace())
                             noRoom += (noRoom.empty() ? "" : ", ") + p->GetName();
                     }
                     food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
                     mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
                 }
-                bool const pooled = noRoom.empty() && (mages || drinks >= manaUsers * RESTOCK_FOOD_MIN);
+                bool const pooled = noRoom.empty() && (mages || drinks >= drinksNeeded);
                 if (!noRoom.empty() && !five.poolGoesIn)
                     if (std::string& logged = fiveLfgWhy[id + 1000000]; logged != noRoom)
                     {
@@ -1959,9 +2025,9 @@ void GuildCoordinator::UpdateFives()
                                  "a stack - restocks or frees a slot first",
                                  id, five.contentKey, noRoom);
                     }
-                std::string const poolText = Acore::StringFormat("pool {} drinks for {} mana users (line {} each){}, "
-                                                                 "{} food",
-                                                                 drinks, manaUsers, RESTOCK_FOOD_MIN,
+                std::string const poolText = Acore::StringFormat("pool {} drinks for {} mana users ([dun194] {} the "
+                                                                 "run needs){}, {} food",
+                                                                 drinks, manaUsers, drinksNeeded,
                                                                  mages ? ", a mage conjures water" : "", food);
                 if (pooled || five.poolGoesIn)
                 {
@@ -1984,7 +2050,7 @@ void GuildCoordinator::UpdateFives()
             // entered in 20 min - waits up to ~1290 s (Ellosera, five 4, "the guild's supply gold is on its way"),
             // ~1050 s (Dekorhan, five 10), ~810 s (Selalleas, five 10), ~330 s (Mutil, five 1)
             {
-                uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0;
+                uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0, drinksNeeded = 0;
                 for (uint32 low : five.members)
                 {
                     Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
@@ -1993,17 +2059,18 @@ void GuildCoordinator::UpdateFives()
                     if (p->GetMaxPower(POWER_MANA))
                     {
                         ++manaUsers;
+                        drinksNeeded += drinkLine(low);
                         drinks += CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
                     }
                     food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
                     mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
                 }
-                bool const pooled = mages || drinks >= manaUsers * RESTOCK_FOOD_MIN;
+                bool const pooled = mages || drinks >= drinksNeeded;
                 if ((pooled || five.poolGoesIn) && !five.poolGoesIn)
                 {
                     LOG_INFO("playerbots", "[supply100] five {} ({}): its supplies pooled carry the run: {} drinks for {} "
-                             "mana users (line {} each){}, {} food; goes in, topped up inside",
-                             id, five.contentKey, drinks, manaUsers, RESTOCK_FOOD_MIN,
+                             "mana users ([dun194] {} the run needs){}, {} food; goes in, topped up inside",
+                             id, five.contentKey, drinks, manaUsers, drinksNeeded,
                              mages ? ", a mage conjures water" : "", food);
                     five.poolGoesIn = true;
                 }
@@ -2033,8 +2100,9 @@ void GuildCoordinator::UpdateFives()
                     continue;
                 }
                 std::string shortOf;
-                uint32 const drink = p->GetMaxPower(POWER_MANA) ? CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK)
-                                                                : RESTOCK_FOOD_MIN;
+                uint32 const line = drinkLine(low);  // [dun194]
+                uint32 const drink =
+                    p->GetMaxPower(POWER_MANA) ? CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK) : line;
                 uint32 const food = CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
                 // [supply113] the guild cook's letters (sent only: a planned letter counts nothing) - the core's
                 // delivery time (MailDeliveryDelay for items between accounts, HandleSendMail; 0 here) and the
@@ -2056,8 +2124,8 @@ void GuildCoordinator::UpdateFives()
                                 continue;
                             arrivesAt = std::max(arrivesAt, t.deliverAt);
                         }
-                if ((drink < RESTOCK_FOOD_MIN || food < RESTOCK_FOOD_MIN) && (mailDrink || mailFood) &&
-                    drink + mailDrink >= RESTOCK_FOOD_MIN && food + mailFood >= RESTOCK_FOOD_MIN)
+                if ((drink < line || food < RESTOCK_FOOD_MIN) && (mailDrink || mailFood) &&
+                    drink + mailDrink >= line && food + mailFood >= RESTOCK_FOOD_MIN)
                 {
                     uint32 const nowSec = uint32(GameTime::GetGameTime().count());
                     std::string const wait =
@@ -2072,8 +2140,8 @@ void GuildCoordinator::UpdateFives()
                     supplied = false;
                     continue;
                 }
-                if (drink < RESTOCK_FOOD_MIN)
-                    shortOf = "drink " + std::to_string(drink);
+                if (drink < line)
+                    shortOf = "drink " + std::to_string(drink) + " of " + std::to_string(line);
                 if (food < RESTOCK_FOOD_MIN)
                     shortOf += (shortOf.empty() ? "" : ", ") + ("food " + std::to_string(food));
                 // [supply27] ammo (a hunter) and the vendor-sold reagents of its spells, the same way
