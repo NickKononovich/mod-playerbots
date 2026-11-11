@@ -1464,8 +1464,40 @@ namespace Leader::Dungeon
                 }
                 // [lead34] LEADER_PATROL_IS_TARGET: the danger chooses along / own pull, never a wait. Only a patrol
                 // that would close the old window (within twice its reach of the pull or the tank) is judged.
+                // [dun217] the patrol's own pull judged as the planner would (its walkers, their helpers and the
+                // standing mobs in reach of where it is fought, PullPlanner::JudgePack): when that is over the budget
+                // as well, nothing here can be pulled safely - the commit is kept and its pull waits while the patrol
+                // walks within twice its reach (the window, judged by the patrol's walk). b442 sfk-n five15-15: 28
+                // "the patrol first: its own pull" releases of Rethilgore's pack, the patrol's own pull "no safe pull
+                // ... overload 2.11", nothing issued for 4 minutes, stalled at 0/8
+                bool patrolOwnRefused = false;
                 if (Leader::LEADER_PATROL_IS_TARGET && !fits && patrolGap <= 2.0f * patrolReach &&
                     !lead.commitIssued && broken.empty())
+                {
+                    std::vector<ObjectGuid> own;
+                    for (Creature* walker : walkers)
+                        own.push_back(walker->GetGUID());
+                    float ownOverload = 0.0f;
+                    std::string ownJudged;
+                    patrolOwnRefused = !PullPlanner::JudgePack(tank, own, ownOverload, ownJudged);
+                    if (patrolOwnRefused && lead.patrolHeldFor != patrol->GetGUID())
+                    {
+                        lead.patrolHeldFor = patrol->GetGUID();
+                        LOG_INFO("playerbots",
+                                 "[dun217] {}: {} kept, its pull waits out the patrol {} ({:.0f} yd, reach {:.0f}): "
+                                 "with it {}; alone {}",
+                                 run.runId, mob ? mob->GetName() : std::string("?"), patrol->GetName(), patrolGap,
+                                 patrolReach, judged, ownJudged);
+                        Decisions().Write(run, "leader", "patrol_target", patrol->GetGUID(), patrol->GetName(), true,
+                                          JsonObject().Str("choice", "wait out")
+                                              .Str("pull", mob ? mob->GetName() : "?")
+                                              .Str("reason", "no safe pull: with it " + judged + "; alone " +
+                                                                 ownJudged + " [dun217]")
+                                              .Real("overload", overload).Real("gap", patrolGap));
+                    }
+                }
+                if (Leader::LEADER_PATROL_IS_TARGET && !fits && patrolGap <= 2.0f * patrolReach &&
+                    !lead.commitIssued && broken.empty() && !patrolOwnRefused)
                 {
                     lead.patrolTarget = patrol->GetGUID();
                     Decisions().Write(run, "leader", "patrol_target", patrol->GetGUID(), patrol->GetName(),
@@ -1494,7 +1526,8 @@ namespace Leader::Dungeon
                                                                          judged)
                                                       .Real("overload", overload).Real("gap", patrolGap));
                 }
-                if (Leader::LEADER_PATROL_IS_TARGET && (!fits || patrolGap > 2.0f * patrolReach))
+                if (Leader::LEADER_PATROL_IS_TARGET && (!fits || patrolGap > 2.0f * patrolReach) &&
+                    !(patrolOwnRefused && patrolGap <= 2.0f * patrolReach))  // [dun217] the window holds
                     patrol = nullptr;  // far off: no window, not along, the pull goes on
                 if (patrol && fits)
                 {
