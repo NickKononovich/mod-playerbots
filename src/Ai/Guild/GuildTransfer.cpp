@@ -1187,12 +1187,35 @@ void GuildCoordinator::UpdateTransfers()
             return std::make_tuple(five.runId, kind, std::min(x, y), std::max(x, y));
         };
         AuraType const resting = kind == FOOD ? SPELL_AURA_MOD_REGEN : SPELL_AURA_MOD_POWER_REGEN;
+        // [dun211] b442: Relara -> Mytaeleas 9 trades, Almored -> Ainne 9, Geefeelli -> Rumanatol 9, Idunk ->
+        // Jurdogs 7, mostly one drink each: a member a drink or two under the common fill after each rest took
+        // them at once. A member takes its share only when what it holds no longer covers one full rest - its bar
+        // from empty over what its best item restores (its max mana / health over BestBagRestore, the drink action's
+        // own amount) - then its whole deficit in one trade; until then it rests from its own
+        auto const oneRest = [&](Player* p) -> uint32
+        {
+            float const per = BestBagRestore(p, category);
+            uint32 const bar = kind == FOOD ? p->GetMaxHealth() : p->GetMaxPower(POWER_MANA);
+            return per > 0.0f ? uint32(std::ceil(float(bar) / per)) : 1;
+        };
+        std::string waiting;  // [dun210] / [dun211] the members left out this update, for the [dun208] line
         for (size_t r : order)
         {
             Fill& to = fills[r];
             uint32 const cap = capOf(to);
-            if (to.after >= cap || to.p->HasAuraType(resting))
+            if (to.after >= cap)
                 continue;
+            if (to.p->HasAuraType(resting))
+            {
+                waiting += (waiting.empty() ? "" : ", ") + to.p->GetName() + " eats / drinks [dun210]";
+                continue;
+            }
+            if (uint32 const rest = oneRest(to.p); to.held >= rest)
+            {
+                waiting += (waiting.empty() ? "" : ", ") + to.p->GetName() + " holds a rest (" +
+                           std::to_string(to.held) + " of " + std::to_string(rest) + ") [dun211]";
+                continue;
+            }
             size_t giver = fills.size();
             uint32 spare = 0;
             for (size_t g = 0; g < fills.size(); ++g)
@@ -1207,7 +1230,11 @@ void GuildCoordinator::UpdateTransfers()
                     if (auto const last = lastMove.find(pairKey(fills[g].p, to.p));
                         last != lastMove.end() && last->second.first == to.p->GetGUID().GetCounter() &&
                         fills[g].held + to.held >= last->second.second)
+                    {
+                        waiting += (waiting.empty() ? "" : ", ") + fills[g].p->GetName() + " -> " + to.p->GetName() +
+                                   " refused: the trade back [dun210]";
                         continue;
+                    }
                     giver = g;
                     spare = above;
                 }
@@ -1251,7 +1278,8 @@ void GuildCoordinator::UpdateTransfers()
         std::string const text = "five " + std::to_string(id) + " " + (kind == FOOD ? "food" : "drink") +
                                  " (pool " + std::to_string(pool) + " of the lines' " + std::to_string(lines) +
                                  (covered ? ", covers them" : ", short") + "): " + before + " -> " + after + "; " +
-                                 (planned.empty() ? std::string("nothing moves") : planned);
+                                 (planned.empty() ? std::string("nothing moves") : planned) +
+                                 (waiting.empty() ? std::string() : "; waits: " + waiting);
         std::string verdict = planned.empty() ? std::string("even") : text;
         verdict.erase(std::remove_if(verdict.begin(), verdict.end(), [](char ch) { return ch >= '0' && ch <= '9'; }),
                       verdict.end());
