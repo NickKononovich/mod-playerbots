@@ -411,6 +411,17 @@ namespace
         return gray + int32(int64(grayLevel - skillValue) * (orange - gray) / (grayLevel - yellowLevel));
     }
 
+    // [ench165] Player::UpdateCraftSkill for a Disenchant: its skill-up chance at `skill` (its SkillLineAbility
+    // trivial ranks, as for a recipe)
+    int32 DisenchantSkillUpChance(uint32 skill)
+    {
+        SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(SPELL_DISENCHANT);
+        for (auto itr = bounds.first; itr != bounds.second; ++itr)
+            if (itr->second->SkillLine == SKILL_ENCHANTING)
+                return CraftChance(skill, itr->second->TrivialSkillLineRankHigh, itr->second->TrivialSkillLineRankLow);
+        return 0;
+    }
+
     // [guild70] a recipe's skill-up chance at `value` and its expected cost per skill point (gathered units, vendor
     // reagents free) when it is orange or yellow there; false when green / gray
     template <class R>
@@ -3121,6 +3132,7 @@ void GuildCoordinator::RouteSpareGreens()
         uint32 low{0};
         uint32 skill{0};
         uint32 queued{0};
+        int32 chance{0};  // [ench165] its Disenchant's skill-up chance (per mille)
     };
     auto const mix = [](uint64 a, uint64 b)
     {
@@ -3141,8 +3153,9 @@ void GuildCoordinator::RouteSpareGreens()
             online.insert(row.low);
             if (m->HasSkill(SKILL_ENCHANTING) && m->HasSpell(SPELL_DISENCHANT))
             {
+                uint32 const skill = m->GetPureSkillValue(SKILL_ENCHANTING);
                 enchanters.push_back(
-                    {row.low, m->GetPureSkillValue(SKILL_ENCHANTING), uint32(bots_[row.low].disenchant.size())});
+                    {row.low, skill, uint32(bots_[row.low].disenchant.size()), DisenchantSkillUpChance(skill)});
                 signature += mix(row.low, enchanters.back().skill);
             }
         }
@@ -3243,8 +3256,10 @@ void GuildCoordinator::RouteSpareGreens()
                 return;
             }
             uint32 const req = uint32(proto->RequiredDisenchantSkill);
-            // its own Disenchant first (no transfer), else the lowest skill (Disenchant's skill-up chance falls from
-            // its yellow rank to its gray one), the shortest list among equal skills
+            // its own Disenchant first (no transfer), else the highest skill-up chance of the Disenchant, the shortest
+            // list among equal chances, then the lowest skill. [ench165] b443: by the lowest skill alone the three
+            // enchanters at 8-9 took all 123 greens while Emdyl and Manue (11, the same orange chance) got none and
+            // stayed "cannot level now: Strange Dust x1"
             Enchanter* to = nullptr;
             for (Enchanter& e : enchanters)
                 if (e.skill >= req)
@@ -3254,7 +3269,9 @@ void GuildCoordinator::RouteSpareGreens()
                         to = &e;
                         break;
                     }
-                    if (!to || e.skill < to->skill || (e.skill == to->skill && e.queued < to->queued))
+                    if (!to || e.chance > to->chance ||
+                        (e.chance == to->chance &&
+                         (e.queued < to->queued || (e.queued == to->queued && e.skill < to->skill))))
                         to = &e;
                 }
             if (!to)
@@ -6548,16 +6565,32 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
         // least), a guild bank or not - b426-b428: 5 greens sold "enchanter #6 Emdyl exists, no bank" while all five
         // enchanters stood at skill 1-2. The enchanter the skill-up is worth most to: the lowest skill (Disenchant's
         // skill-up chance falls from its yellow rank to its gray one, SkillLineAbility 13262: 20 / 60)
+        // [ench165] by the Disenchant's skill-up chance, then the shortest list, then the lowest skill (as [ench161])
         uint32 enchanter = 0;
         uint32 enchanterSkill = 0;
+        int32 enchanterChance = 0;
+        size_t enchanterQueued = 0;
         for (PlanRow const& row : plan_)
             if (Player* m = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low)))
                 if (GET_PLAYERBOT_AI(m) && m->HasSkill(SKILL_ENCHANTING) && m->HasSpell(SPELL_DISENCHANT) &&
-                    m->GetPureSkillValue(SKILL_ENCHANTING) >= req &&
-                    (!enchanter || m->GetPureSkillValue(SKILL_ENCHANTING) < enchanterSkill))
+                    m->GetPureSkillValue(SKILL_ENCHANTING) >= req)
                 {
+                    uint32 const skill = m->GetPureSkillValue(SKILL_ENCHANTING);
+                    int32 const chance = DisenchantSkillUpChance(skill);
+                    size_t queued = bots_[row.low].disenchant.size();
+                    for (auto const& [holder, hs] : bots_)
+                        for (HeldItem const& h : hs.held)
+                            if (h.forLow == row.low && h.purpose.rfind("disenchant", 0) == 0)
+                                ++queued;
+                    if (enchanter &&
+                        (chance < enchanterChance ||
+                         (chance == enchanterChance &&
+                          (queued > enchanterQueued || (queued == enchanterQueued && skill >= enchanterSkill)))))
+                        continue;
                     enchanter = row.low;
-                    enchanterSkill = m->GetPureSkillValue(SKILL_ENCHANTING);
+                    enchanterSkill = skill;
+                    enchanterChance = chance;
+                    enchanterQueued = queued;
                 }
         if (enchanter)
         {
