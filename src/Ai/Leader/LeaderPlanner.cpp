@@ -4571,6 +4571,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         bool withBoss = false;      // [lead201] a boss's own health and damage are in the estimate (the boss judge)
         float healHps = 0.0f;       // [lead259] the healers' best rate together (GroupSupport::healHps)
         float healGapSec = 0.0f;    // [lead259] the time between two heals landing (GroupSupport::healGapSec)
+        float healPool = -1.0f;     // [dun215] health the healers' spendable mana heals (< 0: not given)
+        float healUpkeep = 0.0f;    // [dun215] health per second their upkeep less their regen costs
         float dropScale = 1.0f;     // [lead259] the dungeon's measured drop ratio (DropCalibration)
         // [lead650] the group's measured AoE (MeasuredGroupDamage): what every stacked mob takes per second on top of
         // the focus target's `groupDps`, up to the most stacked mobs measured; > 0: the fight's length, cost and drop
@@ -4578,6 +4580,18 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float measuredAoeDps = 0.0f;
         uint32 measuredAoeTargets = 0;
     };
+
+    // [dun215] the healers' rate a fight of `fightSec` can hold: their cast rate (the spells' own: amount over cast /
+    // cooldown / duration) while their mana lasts - the health their spendable mana heals (full bar less the low
+    // mana line, at their health per mana) over the fight, less what their upkeep net of their casting regen costs
+    // per second (Rawr's healer model: sustained HPS = min(cast-limited HPS, (pool + regen x T) x HPM / T)).
+    // b442 sfk-n five2-1: "heals 116/s" (a fight's best measured rate) under five Tormented Officers for 41 s
+    float SustainedHealHps(EstimateMode const& mode, float fightSec)
+    {
+        if (mode.healPool < 0.0f || fightSec <= 0.0f)
+            return mode.healHps;
+        return std::clamp(mode.healPool / fightSec - mode.healUpkeep, 0.0f, mode.healHps);
+    }
 
     // [lead261] [lead650] The stack's fight played out kill by kill: the focus target (the first one alive in the
     // order, `reverse`: from the back) takes `focusDps` plus the AoE, every other stacked mob (up to `maxTargets`, 0:
@@ -4813,7 +4827,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             for (size_t i = 0; i < lives.size(); ++i)
                 profile.emplace_back(lives[i].first, lifeSec[i]);
             float const gapSec = mode.healHps > 0.0f ? mode.healGapSec : estimate.fightSec;
-            estimate.dropRaw = std::min(DropOver(profile, mode.healHps, gapSec) / tankHealth, estimate.cost);
+            estimate.dropRaw = std::min(
+                DropOver(profile, SustainedHealHps(mode, estimate.fightSec), gapSec) / tankHealth,  // [dun215]
+                estimate.cost);
             estimate.drop = estimate.dropRaw * mode.dropScale;
             estimate.maxDrop =
                 std::clamp(1.0f - estimate.landedDps * std::max(mode.healGapSec, GCD_SEC) / tankHealth, 0.0f, 1.0f);
@@ -4852,7 +4868,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 estimate.aoeSpellCost = spellDamage / tankHealth;
                 float const gapSec = mode.healHps > 0.0f ? mode.healGapSec : estimate.aoeSec;
                 estimate.aoeDrop =
-                    std::min(DropOver(profile, mode.healHps, gapSec) / tankHealth, estimate.aoeCost) * mode.dropScale;
+                    std::min(DropOver(profile, SustainedHealHps(mode, estimate.aoeSec), gapSec) / tankHealth,
+                             estimate.aoeCost) *
+                    mode.dropScale;  // [dun215]
             }
         }
 
@@ -9727,6 +9745,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                   fightsDps > 0.0f ? "no AoE measured" : "not measured yet");
     estimateMode.healHps = support.healHps;  // [lead259]
     estimateMode.healGapSec = support.healGapSec;
+    estimateMode.healPool = std::max(support.healMana - support.healReserve, 0.0f);  // [dun215]
+    estimateMode.healUpkeep = support.healUpkeep;
     estimateMode.dropScale = DropCalibration(bot);
     LandedRatios const landedRatios = LandedCalibration(bot);  // [lead209]
     estimateMode.landedScale = landedRatios.trash;
@@ -14688,6 +14708,8 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     }
     mode.healHps = support.healHps;  // [lead259]
     mode.healGapSec = support.healGapSec;
+    mode.healPool = std::max(support.healMana - support.healReserve, 0.0f);  // [dun215]
+    mode.healUpkeep = support.healUpkeep;
     mode.dropScale = DropCalibration(bot);
     LandedRatios const landedRatios = LandedCalibration(bot);  // [lead209]
     mode.landedScale = landedRatios.trash;

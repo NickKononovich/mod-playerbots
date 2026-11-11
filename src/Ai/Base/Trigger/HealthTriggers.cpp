@@ -711,7 +711,8 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
             facts.healPerMana = found->second.healed / found->second.mana;
             facts.measured = true;
         }
-        facts.hps = std::max(facts.hps, found->second.bestHps);
+        // [dun215] the rate is the spells' cast-limited one; a fight's best measured rate is a peak (crits, a burst
+        // of casts on a full bar), not what the healer holds over a fight (b442: "heals 116/s" at L19-20)
         if (found->second.upkeepSec > 0.0f && facts.maxMana > 0.0f)  // [lead1431]
             facts.upkeepPctPerSec = 100.0f * found->second.upkeep / found->second.upkeepSec / facts.maxMana;
     }
