@@ -4890,6 +4890,33 @@ void GuildCoordinator::UpdateProfessions()
                                            (NewRpgBaseAction::WalkGivenUp(p, at.GetPositionX(), at.GetPositionY()) ||
                                             TownRefused(row->low, at));
                                 };
+                                // [craft384] ... or the bot quests in another zone now and an inn stands in it: b446
+                                // Bami's "Cook 103→115 waits town Ratchet", picked in the Barrens, kept while he
+                                // quested in Ashenvale (Astranaar's inn in his zone). Inns it walks past inside one
+                                // zone keep the pick ([lag343])
+                                auto const zoneOf = [](WorldPosition const& at)
+                                {
+                                    return sMapMgr->GetZoneId(PHASEMASK_NORMAL, at.GetMapId(), at.GetPositionX(),
+                                                              at.GetPositionY(), at.GetPositionZ());
+                                };
+                                if (inn != WorldPosition() && inn.GetMapId() == p->GetMapId() &&
+                                    zoneOf(inn) != p->GetZoneId())
+                                    if (WorldPosition const here =
+                                            sTravelRouteMgr.GetNearestInn(p, std::numeric_limits<float>::max(), off);
+                                        here != WorldPosition() && here != inn && zoneOf(here) == p->GetZoneId())
+                                    {
+                                        std::string const text = Acore::StringFormat(
+                                            "{} L{} {} craft inn ({:.0f},{:.0f}) in another zone: the inn of its zone "
+                                            "({:.0f},{:.0f})",
+                                            p->GetName(), uint32(level), SkillShort(line), inn.GetPositionX(),
+                                            inn.GetPositionY(), here.GetPositionX(), here.GetPositionY());
+                                        if (std::string& logged = st.craftLogged["craft384"]; logged != text)
+                                        {
+                                            logged = text;
+                                            LOG_INFO("playerbots", "[craft384] {}", text);
+                                        }
+                                        inn = here;
+                                    }
                                 if (inn != WorldPosition() && off(inn))
                                 {
                                     WorldPosition const next =

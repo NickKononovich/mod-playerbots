@@ -1192,87 +1192,110 @@ void GuildCoordinator::UpdateTransfers()
     // e. SUPPLY of food: a cook shares the food it holds with the members who have none left, each by its measured
     // use (food eaten over the last hour, from the bags between updates; no use measured yet: equal shares); the cook
     // keeps its own share. Members of a five get theirs from the five's quartermaster (c).
-    std::set<uint32> fed;
-    for (PlanRow const& row : plan_)
+    // [craft385] user 2026-11-11 «cooks feed the guild»: water-filling by shortfall as the five's drinks ([dun209]),
+    // over the members outside a five. A member's fill is the food it holds and can eat (CountKind: its level) over
+    // its line (RESTOCK_FOOD_MIN, the restock line of its own vendor buy); a giver keeps its own line. The lowest fill
+    // takes first, its whole shortfall, from the giver with the most above its line - the guild's supply cooks
+    // (supplyCrafts_: the band food they cooked) before the other members who hold food. Before, a member got food
+    // only at 0 left, and every holder of the Cooking skill shared its whole stock by the use weights
+    struct FoodFill
     {
-        Player* cook = Online(row.low);
-        if (!cook || !GET_PLAYERBOT_AI(cook) || HumanCharacter(cook) || !cook->HasSkill(SKILL_COOKING))
+        Player* p{nullptr};
+        uint32 held{0};
+    };
+    std::vector<FoodFill> fills;
+    for (PlanRow const& m : plan_)
+    {
+        Player* p = Online(m.low);
+        if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p))
             continue;
-        auto const useOf = [&](uint32 low)
-        {
-            uint32 n = 0;
-            auto const u = foodUse_.find(low);
-            if (u != foodUse_.end())
-                for (auto const& [at, eaten] : u->second.second)
-                    n += eaten;
-            return n;
-        };
-        std::vector<std::pair<Player*, uint32>> needy;  // member, food eaten last hour
-        uint8 level = cook->GetLevel();
-        for (PlanRow const& m : plan_)
-        {
-            Player* p = m.low == row.low || fed.count(m.low) ? nullptr : Online(m.low);
-            if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) || CountKind(p, FOOD, p->GetLevel()))
-                continue;
-            if (auto const st = bots_.find(m.low); st != bots_.end() && st->second.fiveId)
-                continue;
-            needy.emplace_back(p, useOf(m.low));
-            level = std::min<uint8>(level, p->GetLevel());
-        }
-        if (needy.empty())
+        if (auto const st = bots_.find(m.low); st != bots_.end() && st->second.fiveId)
             continue;
-        std::vector<Item*> stacks;
-        uint32 total = 0;
-        auto const cookState = bots_.find(row.low);
-        auto const forSale = [&](Item* i)  // the global leader already sold it off
-        {
-            return cookState != bots_.end() &&
-                   std::find(cookState->second.sell.begin(), cookState->second.sell.end(),
-                             i->GetGUID().GetCounter()) != cookState->second.sell.end();
-        };
-        ForEachBagItem(cook, [&](Item* i)
+        fills.push_back({p, CountKind(p, FOOD, p->GetLevel())});
+    }
+    std::stable_sort(fills.begin(), fills.end(), [](FoodFill const& a, FoodFill const& b) { return a.held < b.held; });
+    struct FoodGiver
+    {
+        Player* p{nullptr};
+        bool cook{false};
+        uint32 surplus{0};
+        std::vector<std::pair<Item*, uint32>> stacks;  // its food stacks and what is left of each to give
+    };
+    std::vector<FoodGiver> givers;
+    for (FoodFill const& f : fills)
+    {
+        if (f.held <= RESTOCK_FOOD_MIN)
+            continue;
+        uint32 const low = f.p->GetGUID().GetCounter();
+        FoodGiver g;
+        g.p = f.p;
+        g.cook = supplyCrafts_.count(low) != 0;
+        g.surplus = f.held - RESTOCK_FOOD_MIN;
+        auto const giverState = bots_.find(low);
+        ForEachBagItem(f.p,
+                       [&](Item* i)
                        {
-                           if (ConsumableKind(i->GetTemplate()) == FOOD && i->GetTemplate()->RequiredLevel <= level &&
-                               !used.count(i->GetGUID().GetCounter()) && !forSale(i))
-                           {
-                               stacks.push_back(i);
-                               total += i->GetCount();
-                           }
+                           uint32 const guid = i->GetGUID().GetCounter();
+                           bool const forSale = giverState != bots_.end() &&
+                                                std::find(giverState->second.sell.begin(),
+                                                          giverState->second.sell.end(),
+                                                          guid) != giverState->second.sell.end();
+                           if (ConsumableKind(i->GetTemplate()) == FOOD &&
+                               i->GetTemplate()->RequiredLevel <= f.p->GetLevel() && !used.count(guid) && !forSale)
+                               g.stacks.emplace_back(i, i->GetCount());
                        });
-        uint64 weights = 0;
-        bool const measured = std::any_of(needy.begin(), needy.end(), [](auto const& n) { return n.second > 0; });
-        uint32 const cookUse = useOf(row.low);
-        for (auto const& [p, use] : needy)
-            weights += measured ? use : 1;
-        weights += measured ? cookUse : 1;
-        if (!total || !weights)
-            continue;
-        std::map<Item*, uint32> left;
-        for (Item* i : stacks)
-            left[i] = i->GetCount();
-        for (auto const& [p, use] : needy)
+        if (!g.stacks.empty())
+            givers.push_back(std::move(g));
+    }
+    std::stable_sort(givers.begin(), givers.end(),
+                     [](FoodGiver const& a, FoodGiver const& b)
+                     { return a.cook != b.cook ? a.cook : a.surplus > b.surplus; });
+    for (FoodFill const& f : fills)
+    {
+        if (f.held >= RESTOCK_FOOD_MIN || givers.empty())
+            break;  // sorted by fill: the rest stand at their line
+        uint32 const shortfall = RESTOCK_FOOD_MIN - f.held;
+        FoodGiver* from = nullptr;
+        std::pair<Item*, uint32>* stack = nullptr;
+        for (FoodGiver& g : givers)
         {
-            uint32 const share = uint32(uint64(total) * (measured ? use : 1) / weights);
-            Item* from = nullptr;
-            for (Item* i : stacks)
-                if (!from || left[i] > left[from])
-                    from = i;
-            if (!share || !from || !left[from])
+            if (g.p == f.p || !g.surplus)
                 continue;
-            uint32 const give = std::min(share, left[from]);
-            left[from] -= give;
-            Want w;
-            w.key = "s" + std::to_string(p->GetGUID().GetCounter()) + ":food";
-            w.from = row.low;
-            w.to = p->GetGUID().GetCounter();
-            w.guid = from->GetGUID().GetCounter();
-            w.itemId = from->GetEntry();
-            w.count = give;
-            w.purpose = "supply";
-            w.why = "food ran out; eaten in an hour " + std::to_string(use) + "; the cook shares " +
-                    std::to_string(total) + (measured ? " by use" : " equally");
-            wants.push_back(w);
-            fed.insert(w.to);
+            for (auto& entry : g.stacks)
+                if (entry.second && entry.first->GetTemplate()->RequiredLevel <= f.p->GetLevel() &&
+                    (!stack || entry.second > stack->second))
+                    stack = &entry;
+            if (stack)
+            {
+                from = &g;
+                break;
+            }
+        }
+        if (!from)
+            continue;
+        uint32 const give = std::min({shortfall, from->surplus, stack->second});
+        from->surplus -= give;
+        stack->second -= give;
+        uint32 const to = f.p->GetGUID().GetCounter();
+        Want w;
+        w.key = "s" + std::to_string(to) + ":food";
+        w.from = from->p->GetGUID().GetCounter();
+        w.to = to;
+        w.guid = stack->first->GetGUID().GetCounter();
+        w.itemId = stack->first->GetEntry();
+        w.count = give;
+        w.purpose = "supply";
+        w.why = "food " + std::to_string(f.held) + " of its line " + std::to_string(RESTOCK_FOOD_MIN) + "; " +
+                (from->cook ? "the guild cook" : "a member") + " with " +
+                std::to_string(from->surplus + give) + " above its own line fills it [craft385]";
+        wants.push_back(w);
+        // [craft385] each fill once per change of its numbers
+        static std::map<uint32, std::string> fillLogged;  // receiver -> its fill line (world thread)
+        std::string const line = Who(w.from) + " -> " + Who(to) + " " + ItemText(w.itemId, give) + ": " + w.why;
+        if (std::string& logged = fillLogged[to]; logged != line)
+        {
+            logged = line;
+            LOG_INFO("playerbots", "[craft385] food fill: {}", line);
         }
     }
 
