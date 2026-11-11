@@ -119,6 +119,8 @@ public:
     // [guild15] a creature / object objective whose credit comes from using the quest's own tool item (its start item,
     // with an on-use spell: a flute, a disguise kit) - the bot does not use quest items, so it is not taken
     static bool NeedsItemUseCredit(Quest const* quest, std::string* why = nullptr);
+    // [lag358] an item objective the bot lacks that no source in the world gives (or only another quest does)
+    static bool ItemWithoutSource(Player* bot, Quest const* quest, std::string* why = nullptr);
     // [flit] a kill objective on a creature friendly to the bot that no kill, talk or other creature credits: a spell
     // or a script gives it (openOnly: the objectives still to do)
     static bool NeedsSpellCredit(Player* bot, Quest const* quest, bool openOnly, std::string* why = nullptr);

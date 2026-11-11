@@ -4086,6 +4086,10 @@ bool NewRpgBaseAction::IsQuestCapableDoing(Quest const* quest)
     if (NeedsItemUseCredit(quest) || NeedsSpellCredit(bot, quest, false))  // [flit] or a spell / script one
         return false;
 
+    // [lag358] an item objective with no source it can reach now (only another quest gives it, or nothing does)
+    if (ItemWithoutSource(bot, quest))
+        return false;
+
     // [fish14] an item only fishing gives: only for a bot that fishes it (Fishing at the water's skill, its own pole)
     if (uint32 fishItem = 0; true)
         if (WorldPosition water; FishOnlyItem(bot, quest, fishItem, water) &&
@@ -4632,6 +4636,11 @@ namespace
         std::unordered_map<uint32, std::vector<QuestSpot>> objects;    // object entry -> spawns
         std::unordered_map<uint32, std::vector<QuestSpot>> triggers;   // quest id -> explore area triggers
         std::unordered_map<uint32, std::vector<uint32>> triggerIds;    // [quest13] quest id -> those triggers' ids
+        // [lag358] quest items with a source a player meets in the world other than the two droppers above: any loot
+        // table (references, containers, pickpocketing, skinning, fishing, mail, spells, ...), a vendor, a spell
+        // that creates it, a script that hands it out; and the quests that give it (provided on accept, a reward)
+        std::unordered_set<uint32> itemOtherSource;
+        std::unordered_map<uint32, std::vector<uint32>> itemFromQuests;
     };
 
     QuestSpawnIndex const& GetQuestSpawnIndex()
@@ -4728,6 +4737,44 @@ namespace
                     std::sort(entries.begin(), entries.end());
                     entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
                 }
+
+            // [lag358] every other source of a quest item (generous: an item in any loot row counts)
+            for (char const* query :
+                 {"SELECT Item FROM creature_loot_template", "SELECT Item FROM gameobject_loot_template",
+                  "SELECT Item FROM reference_loot_template", "SELECT Item FROM item_loot_template",
+                  "SELECT Item FROM pickpocketing_loot_template", "SELECT Item FROM skinning_loot_template",
+                  "SELECT Item FROM fishing_loot_template", "SELECT Item FROM mail_loot_template",
+                  "SELECT Item FROM spell_loot_template", "SELECT Item FROM disenchant_loot_template",
+                  "SELECT Item FROM prospecting_loot_template", "SELECT Item FROM milling_loot_template",
+                  "SELECT item FROM npc_vendor",
+                  "SELECT action_param1 FROM smart_scripts WHERE action_type = 56"})  // SMART_ACTION_ADD_ITEM
+                if (QueryResult result = WorldDatabase.Query(query))
+                    do
+                    {
+                        uint32 const item = result->Fetch()[0].Get<uint32>();
+                        if (questItems.count(item))
+                            index.itemOtherSource.insert(item);
+                    } while (result->NextRow());
+            for (uint32 id = 0; id < sSpellMgr->GetSpellInfoStoreSize(); ++id)
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(id))
+                    for (SpellEffectInfo const& effect : info->GetEffects())
+                        if ((effect.Effect == SPELL_EFFECT_CREATE_ITEM ||
+                             effect.Effect == SPELL_EFFECT_CREATE_ITEM_2) &&
+                            questItems.count(effect.ItemType))
+                            index.itemOtherSource.insert(effect.ItemType);
+            for (auto const& [id, quest] : sObjectMgr->GetQuestTemplates())
+            {
+                auto const gives = [&](uint32 item)
+                {
+                    if (item && questItems.count(item))
+                        index.itemFromQuests[item].push_back(id);
+                };
+                gives(quest->GetSrcItemId());
+                for (uint8 i = 0; i < QUEST_REWARDS_COUNT; ++i)
+                    gives(quest->RewardItemId[i]);
+                for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT; ++i)
+                    gives(quest->RewardChoiceItemId[i]);
+            }
 
             uint32 const indexStart = getMSTime();  // [patrol86] its cost, logged once
             size_t spawnsIndexed = 0, beatNodes = 0, beatPatrols = 0;
@@ -6599,6 +6646,57 @@ bool NewRpgBaseAction::EnderNeedsScript(uint32 questId)
     return quests.count(questId) > 0;
 }
 
+// [lag358] coordinator 2026-11-11: b447 Gilduck L14 walked to his q116 Dry Times route stop - its Keg of Thunderbrew
+// Lager (1262) drops nowhere and no vendor sells it, it is q117 Thunderbrew Lager's reward (the casks and rum are
+// bought: [vendor60]). An item objective is workable when the world holds a source of it (a dropper, any loot, a
+// vendor, a spell or script); one only another quest gives waits until that quest gave it; one with no source never
+bool NewRpgBaseAction::ItemWithoutSource(Player* bot, Quest const* quest, std::string* why)
+{
+    if (!bot || !quest)
+        return false;
+    QuestSpawnIndex const& index = GetQuestSpawnIndex();
+    for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+    {
+        uint32 const item = quest->RequiredItemId[i];
+        if (!item || !quest->RequiredItemCount[i] || bot->GetItemCount(item, true) >= quest->RequiredItemCount[i] ||
+            index.itemCreatures.count(item) || index.itemObjects.count(item) || index.itemOtherSource.count(item))
+            continue;
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+        std::string const name = proto ? proto->Name1 : std::to_string(item);
+        std::string text;
+        if (auto const givers = index.itemFromQuests.find(item); givers != index.itemFromQuests.end())
+        {
+            std::string others;
+            for (uint32 other : givers->second)
+                if (other != quest->GetQuestId())
+                    others += " q" + std::to_string(other);
+            if (others.empty())
+                continue;  // the quest itself gives it (provided on accept)
+            text = Acore::StringFormat("its item {} ({}) comes only from quest(s){}: done first", name, item, others);
+        }
+        else
+            text = Acore::StringFormat("its item {} ({}) has no source in the world (no loot, vendor, spell or "
+                                       "script gives it)",
+                                       name, item);
+        if (why)
+            *why = text;
+        static std::mutex logLock;  // a log cadence per bot, quest and level, no decision reads it
+        static std::unordered_set<uint64> logged;
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> guard(logLock);
+            fresh = logged.insert(((uint64(bot->GetGUID().GetCounter()) << 32) | quest->GetQuestId()) * 101ull +
+                                  bot->GetLevel())
+                        .second;
+        }
+        if (fresh)
+            LOG_INFO("playerbots", "[lag358] {} L{} q{} {}: {} - not worked", bot->GetName(), bot->GetLevel(),
+                     quest->GetQuestId(), quest->GetTitle(), text);
+        return true;
+    }
+    return false;
+}
+
 bool NewRpgBaseAction::FishOnlyItem(Player* bot, Quest const* quest, uint32& itemId, WorldPosition& water)
 {
     // [fish14] b354 Nelaeleas L12 took q1141 The Family and the Fishing Pole (6 Darkshore Grouper): its sweeps found
@@ -7709,7 +7807,8 @@ float NewRpgBaseAction::OtherQuestSeconds(uint32 exceptQuest, uint32& otherQuest
         std::vector<POIInfo> poiInfo;
         if (!quest ||
             (bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE &&
-             (NeedsItemUseCredit(quest) || NeedsSpellCredit(bot, quest, true))) ||  // [flit] no candidate either
+             (NeedsItemUseCredit(quest) || NeedsSpellCredit(bot, quest, true) ||
+              ItemWithoutSource(bot, quest))) ||  // [flit] no candidate either; [lag358]
             !GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
             continue;
         float distance = std::numeric_limits<float>::max();
@@ -7902,7 +8001,8 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         }
         QuestStatus const status = bot->GetQuestStatus(questId);
         if (std::string why; status == QUEST_STATUS_INCOMPLETE &&
-                             (NeedsItemUseCredit(quest, &why) || NeedsSpellCredit(bot, quest, true, &why)))
+                             (NeedsItemUseCredit(quest, &why) || NeedsSpellCredit(bot, quest, true, &why) ||
+                              ItemWithoutSource(bot, quest, &why)))  // [lag358]
         {
             NotePostpone(bot, questId, "unsupported: " + why);
             leaveOut(questId, false);
@@ -8633,7 +8733,8 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
         // noted once and skipped here, never entered and left on the next tick (b341: 30 of 121 switches were such
         // DO_QUEST -> POSTPONE hops, again after every level-up)
         if (std::string why; bot->GetQuestStatus(questId) == QUEST_STATUS_INCOMPLETE &&
-                             (NeedsItemUseCredit(quest, &why) || NeedsSpellCredit(bot, quest, true, &why)))
+                             (NeedsItemUseCredit(quest, &why) || NeedsSpellCredit(bot, quest, true, &why) ||
+                              ItemWithoutSource(bot, quest, &why)))  // [lag358]
         {
             NotePostpone(bot, questId, "unsupported: " + why);
             if (questId == committed)
