@@ -54,6 +54,8 @@
 #include "LeaderDungeonRun.h"  // [guild70] the five-leader runs the dungeon (no test harness)
 #include "LeaderOrders.h"  // [run80] Leader::LedBot
 #include "LeaderPlannerShared.h"  // [dun172] the bear the planner plans with
+#include "LeaderTankSaves.h"      // [split254] the tank's defensives, as the planner prices them
+#include "RtiValue.h"             // [split254] the members' crowd control
 #include "World.h"
 #include "WorldConfig.h"
 #include "WorldPacket.h"
@@ -850,6 +852,165 @@ namespace FiveGate
                 kept[i] = 0;
             inPulls[j].clear();
         };
+
+        // [split254] a pull over capacity gets the leader's options in the planner's order (LeaderPlanner
+        // PlanPackCrowdControl, PickTankSave), so a five is kept out only when they all fail for its members' spells.
+        // The split itself is this gate's own: each spawn's pull is what the core brings with it ([dun170]).
+        // (b) Crowd control: a member but the tank (a damage dealer, else the healer; no feral druid) holds a mob its
+        // spell takes (the template's creature type and immunities, FindCrowdControlTemplate), greedy as the planner,
+        // at most AutoCcMarkMaxPerPack: the hold that leaves the lightest pull of the rest, while the hold lasts the
+        // rest's fight (CrowdControlHoldsFight) and a breakable hold stands beyond the group's area reach (its
+        // members' spell data) from the rest's spawns - unless the tank pulls at range (the fight at the tank). The
+        // held spawn stays standing: its own pull later. (c) The tank's defensive (TankSaves), ready on the gate's
+        // clock (the pulls' fights and walks), the drop and the mana through its reduction and its health; one spent
+        // on trash must be back before the next boss pull, else that pull fails as the planner would not spend it
+        bool const ccOn = sPlayerbotAIConfig.AutoCc && sPlayerbotAIConfig.AutoCcPrePull;
+        struct Holder
+        {
+            Player* player = nullptr;
+            PlayerbotAI* ai = nullptr;
+        };
+        std::vector<Holder> dpsHolders;
+        std::vector<Holder> healHolders;
+        float areaReach = 0.0f;
+        for (Player* p : five)
+        {
+            if (!p)
+                continue;
+            areaReach = std::max(areaReach, PullPlanning::MemberAreaReach(p));
+            PlayerbotAI* ai = GET_PLAYERBOT_AI(p);
+            if (!ccOn || p == tank || !ai || !GetCrowdControlRole(p->getClass()) ||
+                (p->getClass() == CLASS_DRUID && AiFactory::GetPlayerSpecTab(p) == DRUID_TAB_FERAL))
+                continue;
+            (p == healer ? healHolders : dpsHolders).push_back({p, ai});
+        }
+        bool const tankAtRange = PullPlanning::TankPullsAtRange(tank);
+        float const clearance = areaReach + PullPlanning::FightDriftYd();
+        uint32 const maxHolds = std::max<uint32>(sPlayerbotAIConfig.AutoCcMarkMaxPerPack, 1);
+        struct HoldKey
+        {
+            bool known = false;
+            CrowdControlHold hold;
+        };
+        std::map<std::pair<uint64, uint32>, HoldKey> holdOf;  // (member, entry) -> its hold
+        auto const holdFor = [&](Holder const& holder, Spawn const& spawn) -> HoldKey const&
+        {
+            HoldKey& key = holdOf[{holder.player->GetGUID().GetRawValue(), spawn.mob.entry}];
+            if (!key.known)
+            {
+                key.known = true;
+                CreatureTemplate const* proto = sObjectMgr->GetCreatureTemplate(spawn.mob.entry);
+                CrowdControlOption const* option =
+                    proto && !spawn.mob.boss
+                        ? FindCrowdControlTemplate(holder.ai, proto, spawn.mob.spellDps > 0.0f)
+                        : nullptr;
+                if (!option || !GetCrowdControlHold(holder.ai, *option, key.hold))
+                    key.hold = CrowdControlHold();
+            }
+            return key;
+        };
+        auto const loadOf = [&](std::vector<uint32> const& members) -> PullLoad
+        {
+            std::vector<Mob> pullMobs;
+            bool boss = false;
+            for (uint32 j : members)
+            {
+                pullMobs.push_back(spawns[j].mob);
+                boss |= spawns[j].mob.boss;
+            }
+            return judge(pullMobs, boss);
+        };
+        // the rest's pull and load with the held spawns out; `held` grows; false: no hold helps
+        auto const holdPart = [&](std::vector<uint32>& members, PullLoad& load, std::vector<uint32>& held,
+                                  std::string& what) -> bool
+        {
+            for (std::vector<Holder> const* holders : {&dpsHolders, &healHolders})
+            {
+                std::vector<uint32> rest = members;
+                std::vector<uint32> took;
+                std::vector<Player*> usedBy;
+                PullLoad restLoad = load;
+                std::string line;
+                while (took.size() < maxHolds)
+                {
+                    Holder const* bestHolder = nullptr;
+                    uint32 bestSpawn = 0;
+                    PullLoad bestLoad;
+                    std::vector<uint32> bestRest;
+                    for (Holder const& holder : *holders)
+                    {
+                        if (std::find(usedBy.begin(), usedBy.end(), holder.player) != usedBy.end())
+                            continue;
+                        for (uint32 j : rest)
+                        {
+                            HoldKey const& key = holdFor(holder, spawns[j]);
+                            if (!key.hold.spellId)
+                                continue;
+                            std::vector<uint32> trial;
+                            for (uint32 k : rest)
+                                if (k != j)
+                                    trial.push_back(k);
+                            if (trial.empty())
+                                continue;
+                            PullLoad const trialLoad = loadOf(trial);
+                            if (!CrowdControlHoldsFight(key.hold, trialLoad.sec))
+                                continue;
+                            bool clear = !key.hold.breakable || tankAtRange;
+                            if (!clear)
+                            {
+                                clear = true;
+                                for (uint32 k : trial)
+                                {
+                                    float const dx = spawns[k].pos.x - spawns[j].pos.x;
+                                    float const dy = spawns[k].pos.y - spawns[j].pos.y;
+                                    clear = clear && std::sqrt(dx * dx + dy * dy) > clearance;
+                                }
+                            }
+                            if (clear && (!bestHolder || trialLoad.load < bestLoad.load))
+                            {
+                                bestHolder = &holder;
+                                bestSpawn = j;
+                                bestLoad = trialLoad;
+                                bestRest = trial;
+                            }
+                        }
+                    }
+                    if (!bestHolder)
+                        break;
+                    took.push_back(bestSpawn);
+                    usedBy.push_back(bestHolder->player);
+                    rest = bestRest;
+                    restLoad = bestLoad;
+                    line += Acore::StringFormat("{}{} by {}'s {}", line.empty() ? "" : ", ",
+                                                spawns[bestSpawn].mob.name, bestHolder->player->GetName(),
+                                                holdFor(*bestHolder, spawns[bestSpawn]).hold.spell);
+                    if (restLoad.load <= 1.0f)
+                        break;
+                }
+                if (!took.empty() && restLoad.load < load.load)
+                {
+                    members = rest;
+                    load = restLoad;
+                    held.insert(held.end(), took.begin(), took.end());
+                    what = line;
+                    return true;
+                }
+            }
+            return false;
+        };
+        std::vector<PullPlanning::TankSave> const saves = PullPlanning::TankSaves(tank);
+        std::map<uint32, float> saveReadyAt;  // by spell: the gate's clock when it is back
+        struct Spent
+        {
+            float readyAt = 0.0f;
+            std::string what;
+        };
+        std::vector<Spent> spentOnTrash;
+        float clock = 0.0f;
+        uint32 heldPulls = 0;
+        uint32 savedPulls = 0;
+        uint32 savesBroken = 0;
+        std::string optionsNote;  // the first pull each option made fit
         for (;;)
         {
             for (uint32 p : map.patrols)
@@ -892,6 +1053,81 @@ namespace FiveGate
             ++judged;
             if (Patrols(spawns[bestMembers.front()]) && apartNow[bestMembers.front()])
                 ++apart;
+            // [split254] the pull's start on the gate's clock (the walk to it after the fights before)
+            float const startClock =
+                clock + (walked ? (spawns[bestMembers.front()].pos - lastPull).length() / runSpeed : 0.0f);
+            std::vector<uint32> heldNow;
+            if (best.load > 1.0f && !best.boss)
+            {
+                // as the planner: the holds count only when they carry the rest (else the pull as it comes goes on
+                // to the tank's defensive)
+                std::string what;
+                std::vector<uint32> rest = bestMembers;
+                PullLoad restLoad = best;
+                if (holdPart(rest, restLoad, heldNow, what) && restLoad.load <= 1.0f)
+                {
+                    ++heldPulls;
+                    if (optionsNote.find("[split254] held") == std::string::npos)
+                        optionsNote += Acore::StringFormat("; [split254] held: {} x{} -> {} mobs ({})", best.name,
+                                                           best.mobs, restLoad.mobs, what);
+                    bestMembers = rest;
+                    best = restLoad;
+                }
+            }
+            if (best.load > 1.0f && !saves.empty())
+            {
+                PullPlanning::TankSave const* picked = nullptr;
+                PullLoad pickedLoad;
+                for (PullPlanning::TankSave const& save : saves)
+                {
+                    auto const ready = saveReadyAt.find(save.spell);
+                    if (ready != saveReadyAt.end() && ready->second > startClock)
+                        continue;
+                    float const factor = PullPlanning::TankSaveFactor(save, best.sec);
+                    float const gain = PullPlanning::TankSaveHealth(save, best.sec);
+                    PullLoad saved = best;
+                    saved.deepest *= factor;
+                    saved.gapDrop *= factor;
+                    saved.manaNeeded *= factor;
+                    saved.dropShare = tankHealth > 0.0f
+                                          ? (saved.deepest + saved.gapDrop) / (tankHealth * (1.0f + gain))
+                                          : 99.0f;
+                    saved.manaShare = saved.fightMana > 0.0f ? saved.manaNeeded / saved.fightMana : saved.manaShare;
+                    saved.load = std::max(saved.dropShare, saved.manaShare);
+                    if (saved.load <= 1.0f && (!picked || save.rechargeSec < picked->rechargeSec))
+                    {
+                        picked = &save;
+                        pickedLoad = saved;
+                    }
+                }
+                if (picked)
+                {
+                    best = pickedLoad;
+                    saveReadyAt[picked->spell] = startClock + picked->rechargeSec;
+                    ++savedPulls;
+                    if (!best.boss)
+                        spentOnTrash.push_back({startClock + picked->rechargeSec,
+                                                Acore::StringFormat("{} on {} x{}", picked->name, best.name,
+                                                                    best.mobs)});
+                    if (optionsNote.find("[split254] save") == std::string::npos)
+                        optionsNote += Acore::StringFormat("; [split254] save: {} on {} x{} ({:.2f})", picked->name,
+                                                           best.name, best.mobs, best.load);
+                }
+            }
+            // a defensive spent on trash not back for this boss pull: the planner keeps it, so that trash pull fails
+            if (best.boss)
+            {
+                for (Spent const& spent : spentOnTrash)
+                    if (spent.readyAt > startClock)
+                    {
+                        ++failed;
+                        ++savesBroken;
+                        optionsNote += Acore::StringFormat("; [split254] {} not back for {} (in {:.0f} s)", spent.what,
+                                                           best.name, spent.readyAt - startClock);
+                    }
+                spentOnTrash.clear();
+            }
+            clock = startClock + best.sec;
             if (best.load > 1.0f)
                 ++failed;
             if (best.load > worst.load)
@@ -936,12 +1172,13 @@ namespace FiveGate
         out.clears = failed == 0 && judged > 0;
         out.why = Acore::StringFormat(
             "{} of {} pulls over capacity ([dun170] as the leader splits them, {} patrols pulled apart, each from full "
-            "after a rest); worst {:.2f}: {}; group burst dps {:.0f}, healer {} {:.0f} hps (gap {:.1f} s, {:.1f} "
+            "after a rest; [split254] {} with crowd control, {} with the tank's defensive, {} defensives not back for "
+            "a boss); worst {:.2f}: {}; group burst dps {:.0f}, healer {} {:.0f} hps (gap {:.1f} s, {:.1f} "
             "hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{} [mob melee and [dun244] spells from templates, "
-            "the healer's rate capped by its pool; [dun233] calls for help from the fight; area damage not counted]",
-            failed, judged, apart, worst.load, worstWhy, groupDps, healer->GetName(), heal.hps,
-            gap, heal.healPerMana, tank->GetName(), tankHealth, armor, avoid,
-            bear ? " (the bear seen in form)" : "");
+            "the healer's rate capped by its pool; [dun233] calls for help from the fight; area damage not counted]{}",
+            failed, judged, apart, heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
+            healer->GetName(), heal.hps, gap, heal.healPerMana, tank->GetName(), tankHealth, armor, avoid,
+            bear ? " (the bear seen in form)" : "", optionsNote);
         return out;
     }
 }

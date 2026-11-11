@@ -20,6 +20,9 @@
 #include "Position.h"
 #include "Strategy.h"
 
+#include <string>
+#include <vector>
+
 class Action;
 class Multiplier;
 class Player;
@@ -104,6 +107,11 @@ namespace PrePullCc
         uint32 claimedMs = 0;
         bool ready = false;  // nothing left to do before the pull (a Sap landed, a trap is down, a cast waits)
         bool failed = false;
+        // [split250] the leader's order (RegisterAssigned): its planner priced the pack with this mob held, so the
+        // pull waits for it (no CLAIM_PLACE_MS drop) and its failure re-plans the pack (HasFailedAssigned)
+        bool assigned = false;
+        std::string spell;      // the assigned hold
+        bool breakable = true;  // damage breaks the assigned hold (all but Banish)
     };
 
     struct Plan
@@ -131,6 +139,23 @@ namespace PrePullCc
     void Register(Player* tank, Unit* pullTarget, GuidVector const& pack, GuidVector const& controllers, bool heavy,
                   bool reopen = false);
 
+    // [split250] The leader's crowd control plan: its planner chose who holds which mob of the pack (the pack priced
+    // without them) and the pull target among the rest. Replaces the group's plan; each assignment is a claim of its
+    // member from now (the mark and the placing are the member's, PrePullCcAction).
+    struct Assignment
+    {
+        ObjectGuid bot;
+        ObjectGuid target;
+        std::string spell;
+        bool breakable = true;
+    };
+    void RegisterAssigned(Player* tank, Unit* pullTarget, GuidVector const& pack,
+                          std::vector<Assignment> const& assignments, std::string const& why);
+
+    // [split250] An assignment of the tank's live plan failed (its member could not place it): the pack is priced
+    // again without that hold. `member` / `target`: the first failed one.
+    bool HasFailedAssigned(Player* tank, ObjectGuid* member = nullptr, ObjectGuid* target = nullptr);
+
     // The tank holds its pull now: the claim window is open, or a claimed Sap or trap is still on its way.
     bool IsHolding(Player* tank);
 
@@ -152,6 +177,10 @@ namespace PrePullCc
     bool TryClaim(Player* bot, uint32 planId, ObjectGuid target, uint32 maxClaims, bool ready);
 
     void SetClaimState(Player* bot, uint32 planId, bool ready, bool failed);
+
+    // [split250] The bot's claim waits for the tank's verdict (a Sap on a pack refused as it stands): its placing
+    // time starts again (MAX_WAIT_MS counts the placing, not the wait).
+    void TouchClaim(Player* bot, uint32 planId);
 }
 
 class PullStrategy : public Strategy

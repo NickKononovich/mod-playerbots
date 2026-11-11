@@ -31,6 +31,7 @@
 #include "RangedPositionActions.h"
 #include "ReachTargetActions.h"
 #include "SpellMgr.h"
+#include "TargetValue.h"  // [split252] IsCrowdControlled
 #include "Timer.h"
 
 #include <algorithm>
@@ -471,6 +472,11 @@ namespace PrePullCc
         if (current && current->tank == tank->GetGUID() && !current->pulledMs &&
             std::find(current->pack.begin(), current->pack.end(), pullTarget->GetGUID()) != current->pack.end())
         {
+            // [split250] the leader's assignments name the pull target among the mobs they leave: they stand
+            if (std::any_of(current->claims.begin(), current->claims.end(),
+                            [](Claim const& claim) { return claim.assigned; }))
+                return;
+
             current->pullTarget = pullTarget->GetGUID();
             if (!reopen)
             {
@@ -509,6 +515,71 @@ namespace PrePullCc
                   controllers.size());
     }
 
+    void RegisterAssigned(Player* tank, Unit* pullTarget, GuidVector const& pack,
+                          std::vector<Assignment> const& assignments, std::string const& why)
+    {
+        Group* group = tank ? tank->GetGroup() : nullptr;
+        if (!group || !pullTarget || assignments.empty())
+            return;
+
+        uint32 const now = getMSTime();
+        PrePullCcRegistry& registry = GetPrePullCcRegistry();
+        std::lock_guard<std::mutex> guard(registry.lock);
+        Plan plan;
+        plan.id = ++registry.nextId;
+        plan.mapId = tank->GetMapId();
+        plan.instanceId = tank->GetInstanceId();
+        plan.tank = tank->GetGUID();
+        plan.pullTarget = pullTarget->GetGUID();
+        plan.pack = pack;
+        plan.plannedMs = now;
+        plan.heavy = true;  // refused as it stands: a Sap waits for the accepted verdict (TankPullsPack)
+        for (Assignment const& assignment : assignments)
+        {
+            plan.controllers.push_back(assignment.bot);
+            Claim claim;
+            claim.bot = assignment.bot;
+            claim.target = assignment.target;
+            claim.claimedMs = now;
+            claim.assigned = true;
+            claim.spell = assignment.spell;
+            claim.breakable = assignment.breakable;
+            plan.claims.push_back(claim);
+        }
+
+        registry.plans[group->GetGUID()] = plan;
+        registry.count = uint32(registry.plans.size());
+        LOG_INFO("playerbots", "[split250] {} plans {}: the pull on {} ({} mobs), {} held by the group's crowd "
+                 "control: {}", tank->GetName(), plan.id, pullTarget->GetName(), pack.size(), assignments.size(), why);
+    }
+
+    bool HasFailedAssigned(Player* tank, ObjectGuid* member, ObjectGuid* target)
+    {
+        Group* group = tank ? tank->GetGroup() : nullptr;
+        PrePullCcRegistry& registry = GetPrePullCcRegistry();
+        if (!group || !registry.count.load(std::memory_order_relaxed))
+            return false;
+
+        std::lock_guard<std::mutex> guard(registry.lock);
+        Plan const* plan = FindPrePullCc(registry, group, getMSTime());
+        if (!plan || plan->tank != tank->GetGUID() || plan->pulledMs)
+            return false;
+
+        for (Claim const& claim : plan->claims)
+        {
+            if (!claim.assigned || !claim.failed)
+                continue;
+
+            if (member)
+                *member = claim.bot;
+            if (target)
+                *target = claim.target;
+            return true;
+        }
+
+        return false;
+    }
+
     bool IsHolding(Player* tank)
     {
         Group* group = tank ? tank->GetGroup() : nullptr;
@@ -522,6 +593,14 @@ namespace PrePullCc
         if (!plan || plan->tank != tank->GetGUID() || plan->pulledMs)
             return false;
 
+        // [split250] the leader's assignment holds the pull until it is placed or its member reports it failed (its
+        // pack is priced with the mob held: pulled without it, the pack is the one refused); a failed one holds too,
+        // until the planner prices the pack again (HasFailedAssigned). No wait cap: the member's own placing has one
+        // (PrePullCcAction::Place, MAX_WAIT_MS from the accepted verdict) and reports the failure.
+        for (Claim const& claim : plan->claims)
+            if (claim.assigned && claim.target && (claim.failed || !claim.ready))
+                return true;
+
         uint32 const age = getMSTimeDiff(plan->plannedMs, now);
         if (age >= MAX_WAIT_MS)
             return false;
@@ -529,7 +608,7 @@ namespace PrePullCc
         bool pending = false;
         for (Claim& claim : plan->claims)
         {
-            if (!claim.target || claim.ready || claim.failed)
+            if (!claim.target || claim.ready || claim.failed || claim.assigned)
                 continue;
 
             // [prepull_cc_claim_drop] not placed in time: dropped, the pull goes on
@@ -572,6 +651,22 @@ namespace PrePullCc
 
             LOG_DEBUG("playerbots", "[pre-pull cc] {} pulls after {} ms: {} of {} claims placed", tank->GetName(),
                       getMSTimeDiff(plan->plannedMs, now), placed, plan->claims.size());
+            // [split252] each assignment's outcome at the pull: what holds its mob now
+            for (Claim const& claim : plan->claims)
+            {
+                if (!claim.assigned)
+                    continue;
+
+                Player* member = ObjectAccessor::FindPlayer(claim.bot);
+                Unit* mob = member ? ObjectAccessor::GetUnit(*member, claim.target) : nullptr;
+                LOG_INFO("playerbots", "[split252] {} pulls plan {}: {}'s {} on {}: {}", tank->GetName(), plan->id,
+                         member ? member->GetName() : std::string("?"), claim.spell,
+                         mob ? mob->GetName() : std::string("?"),
+                         claim.failed ? "failed"
+                                      : (mob && IsCrowdControlled(mob)
+                                             ? "held"
+                                             : (claim.ready ? "cast as the pack comes" : "not placed")));
+            }
         }
     }
 
@@ -667,6 +762,24 @@ namespace PrePullCc
         claim.ready = ready || !target;
         plan->claims.push_back(claim);
         return true;
+    }
+
+    void TouchClaim(Player* bot, uint32 planId)
+    {
+        Group* group = bot ? bot->GetGroup() : nullptr;
+        if (!group)
+            return;
+
+        uint32 const now = getMSTime();
+        PrePullCcRegistry& registry = GetPrePullCcRegistry();
+        std::lock_guard<std::mutex> guard(registry.lock);
+        Plan* plan = FindPrePullCc(registry, group, now);
+        if (!plan || plan->id != planId)
+            return;
+
+        for (Claim& claim : plan->claims)
+            if (claim.bot == bot->GetGUID())
+                claim.claimedMs = now;
     }
 
     void SetClaimState(Player* bot, uint32 planId, bool ready, bool failed)

@@ -31,6 +31,7 @@
 #include "LeaderFightChecks.h"  // [lead1240] LeaderCastsFrom
 #include "LeaderHazardVerdict.h"  // [lead1362] InstanceDamageFactor
 #include "LeaderKnowledge.h"  // [lead107 final] the door-cut registry
+#include "LeaderTankSaves.h"  // [split251]
 #include "LeaderOrders.h"  // [lead1] the tank's commit as a pull order (C:/WoW/LEADER_REFACTOR_PLAN.md step 1)
 #include "RouteLegs.h"  // [dun197] RoutePath from a route link's far end
 #include "LootObjectStack.h"
@@ -71,6 +72,7 @@
 #include <cctype>
 #include <cmath>
 #include <deque>   // [lead7]
+#include <functional>  // [split250]
 #include <iterator>
 #include <map>
 #include <memory>  // [lead7]
@@ -2880,6 +2882,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 Player* controller = member ? member->ToPlayer() : nullptr;
                 if (!controller || !controller->IsAlive())
                     continue;
+
+                // [split250] the leader's own assignment: its planner priced the pack with this mob held, and the
+                // pull waits until it is placed (PrePullCc::IsHolding); a failed one counts no more
+                if (claim.assigned)
+                {
+                    sapClaimed.push_back(claim.target);
+                    continue;
+                }
 
                 if (controller->getClass() == CLASS_ROGUE)
                 {
@@ -6640,6 +6650,27 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return tools;
     }
 
+    bool TankPullsAtRange(Player* tank)
+    {
+        PlayerbotAI* tankAI = tank ? GET_PLAYERBOT_AI(tank) : nullptr;
+        PullStrategy* strategy = tankAI ? PullStrategy::Get(tankAI) : nullptr;
+        if (!strategy)
+            return false;
+        AiObjectContext* context = tankAI->GetAiObjectContext();
+        if (context->GetValue<uint32>("spell id", strategy->GetSpellName())->Get() &&
+            strategy->GetRange() >= CAREFUL_MIN_PULL_RANGE)
+            return true;
+        // or a ranged threat tool it opens with from where it stands (TankRangedTool: Growl, Taunt, Heroic Throw)
+        for (char const* tool : TankRangedTools(tank))
+        {
+            uint32 const spellId = context->GetValue<uint32>("spell id", tool)->Get();
+            SpellInfo const* info = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+            if (info && info->GetMaxRange(false, tank) >= CAREFUL_MIN_PULL_RANGE)
+                return true;
+        }
+        return false;
+    }
+
     // [lead202] The tank's tool that takes `mob` from where the tank stands, ready and castable on it now: Death Grip
     // brings it in; the ranged threat spells (Avenger's Shield, Heroic Throw, Faerie Fire (Feral), the taunts) hold
     // it at range. nullptr: none - the mob stays out of the tank's threat reach.
@@ -7279,6 +7310,11 @@ namespace FightSpot
     }
 }
 
+namespace PullPlanning
+{
+    bool DropFailedAssignment(Player* tank, bool shadow);  // [split250] with the crowd control search below
+}
+
 bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool refused, uint32 plannedMobs)
 {
     constexpr uint32 DANGEROUS_PACK_SIZE = 3;  // a smaller pack with a healer or two casters, as AutoCcHardPackValue
@@ -7296,6 +7332,13 @@ bool AggressiveTargetAction::HoldForPrePullCc(Unit* pullTarget, bool heavy, bool
     Map* map = bot->GetMap();
     if (!group || !map || !map->IsNonRaidDungeon() || bot->InBattleground() || IsGroupFighting(bot))
         return false;
+
+    // [split250] the leader's own crowd control plan (its planner priced the pull with those mobs held): the pull
+    // waits for every assignment; a failed one drops the plan and holds this look (the next one plans the pack again)
+    if (PrePullCc::Plan current; PrePullCc::Get(bot, current) && current.tank == bot->GetGUID() && !current.pulledMs &&
+                                 std::any_of(current.claims.begin(), current.claims.end(),
+                                             [](PrePullCc::Claim const& claim) { return claim.assigned; }))
+        return DropFailedAssignment(bot, _shadow) || PrePullCc::IsHolding(bot);
 
     // [lead39] b88 rfc-h 22 s: "held for pre-pull cc" on a pull of lone wanderers - a wanderer walks out of any
     // crowd control plan and needs none: no hold for it
@@ -8724,6 +8767,156 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         cached = {member->GetSpellMap().size(), power, best};
         return best;
     }
+
+    float MemberAreaReach(Player* member)
+    {
+        struct Cached
+        {
+            size_t spells = 0;
+            float reach = 0.0f;
+        };
+        thread_local std::unordered_map<uint64, Cached> cache;  // per member while its spells stay the same
+        Cached& cached = cache[member->GetGUID().GetRawValue()];
+        if (cached.spells == member->GetSpellMap().size())
+            return cached.reach;
+
+        float reach = 0.0f;
+        for (auto const& [spellId, known] : member->GetSpellMap())
+        {
+            if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || info->IsPositive() || !info->IsAffectingArea())
+                continue;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.IsTargetingArea() || effect.Effect == SPELL_EFFECT_PERSISTENT_AREA_AURA)
+                    reach = std::max(reach, effect.CalcRadius(member));
+        }
+        cached = {member->GetSpellMap().size(), reach};
+        return reach;
+    }
+
+    float FightDriftYd() { return PACK_SOCIAL_DRIFT; }
+
+    std::vector<TankSave> TankSaves(Player* tank)
+    {
+        // first ranks; Last Stand, Survival Instincts and Vampiric Blood give a share of the max health by the core's
+        // spell scripts (spell_warr_last_stand, spell_dru_survival_instincts, spell_dk_vampiric_blood: the effect's
+        // value as a percent of the max health)
+        constexpr uint32 SPELL_SHIELD_WALL = 871;
+        constexpr uint32 SPELL_LAST_STAND = 12975;
+        constexpr uint32 SPELL_SURVIVAL_INSTINCTS = 61336;
+        constexpr uint32 SPELL_BARKSKIN = 22812;
+        constexpr uint32 SPELL_DIVINE_PROTECTION = 498;
+        constexpr uint32 SPELL_ICEBOUND_FORTITUDE = 48792;
+        constexpr uint32 SPELL_VAMPIRIC_BLOOD = 55233;
+        std::vector<TankSave> saves;
+        if (!tank)
+            return saves;
+        for (uint32 const first : {SPELL_SHIELD_WALL, SPELL_LAST_STAND, SPELL_SURVIVAL_INSTINCTS, SPELL_BARKSKIN,
+                                   SPELL_DIVINE_PROTECTION, SPELL_ICEBOUND_FORTITUDE, SPELL_VAMPIRIC_BLOOD})
+        {
+            uint32 known = 0;
+            for (uint32 spell = first, guard = 0; spell && guard < 20; spell = sSpellMgr->GetNextSpellInChain(spell),
+                        ++guard)
+                if (tank->HasSpell(spell))
+                    known = spell;
+            SpellInfo const* info = known ? sSpellMgr->GetSpellInfo(known) : nullptr;
+            if (!info)
+                continue;
+            TankSave save;
+            save.spell = known;
+            save.name = info->SpellName[LOCALE_enUS] ? info->SpellName[LOCALE_enUS] : "?";
+            bool const scriptedHealth =
+                first == SPELL_LAST_STAND || first == SPELL_SURVIVAL_INSTINCTS || first == SPELL_VAMPIRIC_BLOOD;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+            {
+                int32 const value = effect.CalcValue(tank);
+                if (effect.ApplyAuraName == SPELL_AURA_MOD_DAMAGE_PERCENT_TAKEN && value < 0)
+                    save.reduction = std::min(save.reduction + float(-value) / 100.0f, 1.0f);
+                else if (effect.ApplyAuraName == SPELL_AURA_MOD_INCREASE_HEALTH_PERCENT && value > 0)
+                    save.healthGain += float(value) / 100.0f;
+                else if (scriptedHealth && value > 0 &&
+                         (effect.Effect == SPELL_EFFECT_DUMMY || effect.ApplyAuraName == SPELL_AURA_DUMMY ||
+                          effect.ApplyAuraName == SPELL_AURA_MOD_INCREASE_HEALTH))
+                    save.healthGain = std::max(save.healthGain, float(value) / 100.0f);
+            }
+            int32 durationMs = std::max(info->GetMaxDuration(), 0);
+            tank->ApplySpellMod(known, SPELLMOD_DURATION, durationMs);
+            if (first == SPELL_LAST_STAND)  // the dummy casts its health aura (12976), which lasts
+                if (SpellInfo const* aura = sSpellMgr->GetSpellInfo(SPELL_LAST_STAND + 1))
+                    durationMs = std::max(durationMs, aura->GetMaxDuration());
+            int32 rechargeMs = int32(std::max(info->RecoveryTime, info->CategoryRecoveryTime));
+            tank->ApplySpellMod(known, SPELLMOD_COOLDOWN, rechargeMs);
+            save.durationSec = float(std::max(durationMs, 0)) / float(IN_MILLISECONDS);
+            save.rechargeSec = float(std::max(rechargeMs, 0)) / float(IN_MILLISECONDS);
+            if (save.durationSec > 0.0f && (save.reduction > 0.0f || save.healthGain > 0.0f))
+                saves.push_back(save);
+        }
+        return saves;
+    }
+
+    float TankSaveFactor(TankSave const& save, float fightSec)
+    {
+        float const covered = fightSec > 0.0f ? std::min(save.durationSec / fightSec, 1.0f) : 1.0f;
+        return 1.0f - save.reduction * covered;
+    }
+
+    float TankSaveHealth(TankSave const& save, float fightSec)
+    {
+        return save.durationSec >= fightSec ? save.healthGain : 0.0f;
+    }
+
+    struct PlannedSave
+    {
+        uint32 spell = 0;
+        std::vector<ObjectGuid> pack;
+        std::string why;
+    };
+    std::mutex plannedSaveLock;
+    std::unordered_map<uint64, PlannedSave> plannedSaves;  // by tank, under plannedSaveLock
+
+    void PlanPullSave(Player* tank, uint32 spell, std::vector<ObjectGuid> const& pack, std::string const& why)
+    {
+        std::lock_guard<std::mutex> lock(plannedSaveLock);
+        plannedSaves[tank->GetGUID().GetRawValue()] = {spell, pack, why};
+    }
+
+    bool PlannedPullSave(Player* tank, uint32& spell, std::string& why)
+    {
+        PlannedSave save;
+        {
+            std::lock_guard<std::mutex> lock(plannedSaveLock);
+            auto const found = plannedSaves.find(tank->GetGUID().GetRawValue());
+            if (found == plannedSaves.end())
+                return false;
+            save = found->second;
+        }
+        bool alive = false;
+        bool fights = false;
+        for (ObjectGuid const& guid : save.pack)
+        {
+            Unit* mob = ObjectAccessor::GetUnit(*tank, guid);
+            if (!mob || !mob->IsAlive())
+                continue;
+            alive = true;
+            fights = fights || (mob->IsInCombat() && mob->GetVictim() == tank);
+        }
+        if (!alive)
+        {
+            ClearPullSave(tank);
+            return false;
+        }
+        spell = save.spell;
+        why = save.why;
+        return fights;
+    }
+
+    void ClearPullSave(Player* tank)
+    {
+        std::lock_guard<std::mutex> lock(plannedSaveLock);
+        plannedSaves.erase(tank->GetGUID().GetRawValue());
+    }
 }
 
 namespace AoePull
@@ -9464,6 +9657,324 @@ ObjectGuid AggressiveTargetAction::FindApproachTarget()
 namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execution
 {
     bool LosPullBanned(Player* bot, Unit* target);  // [b35_lbrs2] the split round a corner (defined below)
+
+    // [split250] the (member, mob) holds of the tank's crowd control plans that their members could not place: not
+    // planned again on that pack (per map thread, by tank; a dead mob's entries go)
+    thread_local std::unordered_map<uint64, std::vector<std::pair<ObjectGuid, ObjectGuid>>> ccFailedPairs;
+
+    void NoteCcFailed(Player* tank, ObjectGuid member, ObjectGuid mob)
+    {
+        constexpr size_t CC_FAILED_MAX = 32;
+        auto& pairs = ccFailedPairs[tank->GetGUID().GetRawValue()];
+        pairs.erase(std::remove_if(pairs.begin(), pairs.end(),
+                                   [tank](std::pair<ObjectGuid, ObjectGuid> const& pair)
+                                   {
+                                       Unit* unit = ObjectAccessor::GetUnit(*tank, pair.second);
+                                       return !unit || !unit->IsAlive();
+                                   }),
+                    pairs.end());
+        if (pairs.size() >= CC_FAILED_MAX)
+            pairs.erase(pairs.begin());
+        pairs.emplace_back(member, mob);
+    }
+
+    bool CcFailedBefore(Player* tank, ObjectGuid member, ObjectGuid mob)
+    {
+        auto const found = ccFailedPairs.find(tank->GetGUID().GetRawValue());
+        return found != ccFailedPairs.end() &&
+               std::find(found->second.begin(), found->second.end(), std::make_pair(member, mob)) !=
+                   found->second.end();
+    }
+
+    // [split250] A failed assignment of the tank's live crowd control plan: noted, and the plan goes (the pack is
+    // planned again without that hold). `shadow`: a shadow look changes nothing. True when one was found.
+    bool DropFailedAssignment(Player* tank, bool shadow)
+    {
+        ObjectGuid member;
+        ObjectGuid mob;
+        if (!PrePullCc::HasFailedAssigned(tank, &member, &mob))
+            return false;
+        if (shadow)
+            return true;
+        NoteCcFailed(tank, member, mob);
+        Player* who = ObjectAccessor::FindPlayer(member);
+        Unit* held = ObjectAccessor::GetUnit(*tank, mob);
+        LOG_INFO("playerbots", "[split250] {}: {} could not place its hold on {}: the plan goes, the pack is planned "
+                 "again without it", tank->GetName(), who ? who->GetName() : std::string("?"),
+                 held ? held->GetName() : std::string("?"));
+        PrePullCc::Cancel(tank);
+        return true;
+    }
+
+    // [split250] the widest area reach of the group's members (MemberAreaReach)
+    float GroupAreaReach(Player* tank)
+    {
+        float reach = 0.0f;
+        Group* group = tank->GetGroup();
+        for (GroupReference* ref = group ? group->GetFirstMember() : nullptr; ref; ref = ref->next())
+            if (Player* member = ref->GetSource(); member && member->IsAlive() && member->GetMap() == tank->GetMap())
+                reach = std::max(reach, MemberAreaReach(member));
+        return reach;
+    }
+
+    // [split250] a crowd-controlled mob the fight at `fightAt` does not reach: beyond the group's area reach, its
+    // bounding radius and the fight's drift (a hold damage does not break stands anywhere)
+    bool HoldClearOfFight(Unit* mob, bool breakable, Position const& fightAt, float areaReach)
+    {
+        return !breakable || mob->GetExactDist2d(fightAt.GetPositionX(), fightAt.GetPositionY()) >
+                                 areaReach + mob->GetCombatReach() + PACK_SOCIAL_DRIFT;
+    }
+
+    // [split250] The leader's crowd control plan for a pack over the budget as it comes (user design 2026-11-11: split
+    // a hard pack before judging it hopeless). Each member but the tank with a crowd control spell (its class's
+    // GetCrowdControlRole options it knows: Sap, Polymorph, Hex, Hibernate, Shackle Undead, Repentance, Banish,
+    // Freezing Trap, Wyvern Sting, roots on a melee mob, its pet's Seduction; never a fear in a dungeon, Q67) may
+    // hold one mob of the pack its spell takes (the mob's creature type and immunities, out of combat: a Sap too),
+    // the damage dealers' holds first, the healer's when theirs carry nothing. Greedy, at most AutoCcMarkMaxPerPack
+    // holds: the hold that leaves the cheapest pull of the rest is taken, until the rest is carried. A hold counts
+    // only where the game keeps it for the rest's fight: it is cast again as it ends (no cooldown in its way) or it
+    // lasts the fight (CrowdControlHoldsFight), and a hold damage breaks stands beyond the group's area reach from
+    // the fight (at the tank where it pulls the pull target back or opens on it with its ranged tool, else at that
+    // mob). Each held mob is its own fight after the rest (the tank carries it alone) and the healers' mana covers
+    // the rest and them all.
+    struct PackCcHold
+    {
+        Player* member = nullptr;
+        Unit* mob = nullptr;
+        CrowdControlHold hold;
+    };
+
+    struct PackCcPlan
+    {
+        std::vector<PackCcHold> holds;
+        std::vector<Unit*> rest;
+        Unit* pullTarget = nullptr;
+        PackEstimate estimate;  // of `rest`
+        float heldCost = 0.0f;  // the held mobs' own fights after
+        std::string why;        // the chosen holds, or why none carries
+    };
+
+    bool PlanPackCrowdControl(PlayerbotAI* botAI, Player* tank, Unit* target, std::vector<Unit*> const& pack,
+                              float groupDps, EstimateMode const& mode, GroupSupport const& support,
+                              std::function<bool(Unit*)> const& pullsBack, GuidVector const& busy, PackCcPlan& out)
+    {
+        Group* group = tank->GetGroup();
+        Map* map = tank->GetMap();
+        if (!sPlayerbotAIConfig.AutoCc || !sPlayerbotAIConfig.AutoCcPrePull || !group || !map ||
+            !map->IsNonRaidDungeon() || pack.size() < 2)
+        {
+            out.why = "no crowd control here";
+            return false;
+        }
+
+        struct Pair
+        {
+            Player* member = nullptr;
+            Unit* mob = nullptr;
+            CrowdControlHold hold;
+        };
+        std::vector<Pair> dpsPairs;
+        std::vector<Pair> healerPairs;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            PlayerbotAI* memberAI = member ? GET_PLAYERBOT_AI(member) : nullptr;
+            if (!member || member == tank || !member->IsAlive() || member->GetMap() != map || !memberAI ||
+                PlayerbotAI::IsTank(member) || !GetCrowdControlRole(member->getClass()) ||
+                std::find(busy.begin(), busy.end(), member->GetGUID()) != busy.end() ||
+                (member->getClass() == CLASS_DRUID && AiFactory::GetPlayerSpecTab(member) == DRUID_TAB_FERAL))
+                continue;
+            for (Unit* mob : pack)
+            {
+                if (!mob || !mob->IsAlive() || mob->IsInCombat() || IsBossMob(mob) || IsCrowdControlled(mob) ||
+                    CcFailedBefore(tank, member->GetGUID(), mob->GetGUID()))
+                    continue;
+                CrowdControlOption const* option = FindCrowdControl(memberAI, mob, true);
+                Pair pair;
+                if (!option || IsFearCrowdControl(memberAI, *option) ||
+                    !GetCrowdControlHold(memberAI, *option, pair.hold))
+                    continue;
+                pair.member = member;
+                pair.mob = mob;
+                (PlayerbotAI::IsHeal(member) ? healerPairs : dpsPairs).push_back(pair);
+            }
+        }
+        if (dpsPairs.empty() && healerPairs.empty())
+        {
+            out.why = "no member holds a mob of it";
+            return false;
+        }
+
+        float const areaReach = GroupAreaReach(tank);
+        float const pool = HealerPool(support);
+        auto const load = [pool](PackEstimate const& estimate)
+        {
+            float const drop = estimate.maxDrop > 0.0f ? std::max(estimate.drop, 0.0f) / estimate.maxDrop : 99.0f;
+            return std::max(drop, pool > 0.0f ? TakenCost(estimate) / pool : 0.0f);
+        };
+        std::unordered_map<Unit*, bool> backOf;  // pullsBack per pull target (a path search each)
+        auto const fightOf = [&](std::vector<Unit*> const& rest, Unit*& pull) -> Position
+        {
+            pull = std::find(rest.begin(), rest.end(), target) != rest.end() ? target : nullptr;
+            for (Unit* mob : rest)
+                if (!pull || (pull != target && tank->GetExactDist(mob) < tank->GetExactDist(pull)))
+                    pull = mob;
+            auto const found = backOf.find(pull);
+            bool const back = found != backOf.end() ? found->second : (backOf[pull] = pullsBack(pull));
+            return back ? tank->GetPosition() : pull->GetPosition();
+        };
+
+        // the damage dealers' holds first, the healer's when they carry nothing
+        auto const search = [&](std::vector<Pair> const& pairs) -> bool
+        {
+            std::vector<PackCcHold> holds;
+            std::vector<Unit*> rest(pack);
+            std::string refused;  // the last hold turned down, and why
+            uint32 const maxHolds = std::max<uint32>(sPlayerbotAIConfig.AutoCcMarkMaxPerPack, 1);
+            while (holds.size() < maxHolds)
+            {
+                Pair const* best = nullptr;
+                PackEstimate bestEstimate;
+                float bestLoad = 0.0f;
+                for (Pair const& pair : pairs)
+                {
+                    bool const used = std::any_of(holds.begin(), holds.end(), [&pair](PackCcHold const& hold)
+                                                  { return hold.member == pair.member || hold.mob == pair.mob; });
+                    if (used || std::find(rest.begin(), rest.end(), pair.mob) == rest.end())
+                        continue;
+                    std::vector<Unit*> trial;
+                    for (Unit* mob : rest)
+                        if (mob != pair.mob)
+                            trial.push_back(mob);
+                    if (trial.empty())
+                        continue;
+                    PackEstimate const estimate = EstimatePack(trial, tank, groupDps, mode);
+                    if (!CrowdControlHoldsFight(pair.hold, estimate.fightSec))
+                    {
+                        refused = Acore::StringFormat("{}'s {} on {} lasts {:.0f} s of the rest's {:.0f} s fight",
+                                                      pair.member->GetName(), pair.hold.spell, pair.mob->GetName(),
+                                                      pair.hold.holdSec, estimate.fightSec);
+                        continue;
+                    }
+                    Unit* pull = nullptr;
+                    Position const fightAt = fightOf(trial, pull);
+                    bool clear = HoldClearOfFight(pair.mob, pair.hold.breakable, fightAt, areaReach);
+                    for (PackCcHold const& hold : holds)
+                        clear = clear && HoldClearOfFight(hold.mob, hold.hold.breakable, fightAt, areaReach);
+                    if (!clear)
+                    {
+                        refused = Acore::StringFormat("{}'s {} on {}: the fight at {} ({:.0f} yd off) is within the "
+                                                      "group's area reach ({:.0f} yd) of a held mob",
+                                                      pair.member->GetName(), pair.hold.spell, pair.mob->GetName(),
+                                                      pull->GetName(), pair.mob->GetExactDist2d(fightAt.GetPositionX(),
+                                                                                                fightAt.GetPositionY()),
+                                                      areaReach);
+                        continue;
+                    }
+                    float const trialLoad = load(estimate);
+                    if (!best || trialLoad < bestLoad)
+                    {
+                        best = &pair;
+                        bestEstimate = estimate;
+                        bestLoad = trialLoad;
+                    }
+                }
+                if (!best)
+                    break;
+
+                PackCcHold hold;
+                hold.member = best->member;
+                hold.mob = best->mob;
+                hold.hold = best->hold;
+                holds.push_back(hold);
+                rest.erase(std::remove(rest.begin(), rest.end(), best->mob), rest.end());
+
+                // carried: the rest, each held mob alone after it, the healers' mana for them all
+                bool carried = TankCarries(bestEstimate, support);
+                float heldCost = 0.0f;
+                std::string heldWhy;
+                for (PackCcHold const& each : holds)
+                {
+                    PackEstimate const alone = EstimatePack({each.mob}, tank, groupDps, mode);
+                    heldCost += TakenCost(alone);
+                    std::string why;
+                    carried = carried && TankCarries(alone, support, &why);
+                    heldWhy += Acore::StringFormat("{}{}: {} by {} ({:.0f} s), then alone {}",
+                                                   heldWhy.empty() ? "" : "; ", each.mob->GetName(), each.hold.spell,
+                                                   each.member->GetName(), each.hold.holdSec, why);
+                }
+                carried = carried && (pool <= 0.0f || TakenCost(bestEstimate) + heldCost <= pool);
+                std::string carries;
+                TankCarries(bestEstimate, support, &carries);
+                out.why = Acore::StringFormat("{} held ({}); the rest {} mobs: {}, fight {:.0f} s; mana {:.2f} of "
+                                              "{:.2f} tank hp", holds.size(), heldWhy, rest.size(), carries,
+                                              bestEstimate.fightSec, TakenCost(bestEstimate) + heldCost, pool);
+                out.holds = holds;
+                out.rest = rest;
+                out.estimate = bestEstimate;
+                out.heldCost = heldCost;
+                fightOf(rest, out.pullTarget);
+                if (carried)
+                    return true;
+            }
+            if (holds.empty())
+                out.why = refused.empty() ? std::string("no hold helps") : refused;
+            else if (!refused.empty())
+                out.why += "; " + refused;
+            return false;
+        };
+        if (!dpsPairs.empty() && search(dpsPairs))
+            return true;
+        return !healerPairs.empty() && search(healerPairs);
+    }
+
+    // [split251] the tank's ready defensive that carries `estimate` - the pull's drop and cost through its reduction,
+    // its max health raised (TankSaveFactor / TankSaveHealth) - and is back before the next boss pull (user rule
+    // cooldowns-boss-judged-like-pulls: kept for the bosses, on trash only when the pack cannot be done otherwise and
+    // its recharge is over before the boss is pulled; NoteBossPullSec's estimate, or no boss left). The cheapest
+    // recharge first. Null: none.
+    TankSave const* PickTankSave(Player* tank, std::vector<TankSave> const& saves, PackEstimate& estimate,
+                                 GroupSupport const& support, std::string& why)
+    {
+        bool const noBoss = NoBossLeftOf(tank);
+        float const toBoss = BossPullSecOf(tank);
+        TankSave const* picked = nullptr;
+        PackEstimate pickedEstimate;
+        for (TankSave const& save : saves)
+        {
+            if (tank->HasSpellCooldown(save.spell))
+                continue;
+            if (!noBoss && (toBoss < 0.0f || save.rechargeSec > toBoss))
+            {
+                why += Acore::StringFormat("{}{} kept for the boss (back in {:.0f} s, his pull {})",
+                                           why.empty() ? "" : "; ", save.name, save.rechargeSec,
+                                           toBoss < 0.0f ? std::string("not estimated")
+                                                         : Acore::StringFormat("in {:.0f} s", toBoss));
+                continue;
+            }
+            PackEstimate saved = estimate;
+            float const factor = TankSaveFactor(save, estimate.fightSec);
+            saved.drop *= factor;
+            saved.dropRaw *= factor;
+            saved.cost *= factor;
+            saved.spellCost *= factor;
+            saved.maxDrop += TankSaveHealth(save, estimate.fightSec);
+            std::string carries;
+            if (!TankCarries(saved, support, &carries))
+            {
+                why += Acore::StringFormat("{}{}: still {}", why.empty() ? "" : "; ", save.name, carries);
+                continue;
+            }
+            if (!picked || save.rechargeSec < picked->rechargeSec)
+            {
+                picked = &save;
+                pickedEstimate = saved;
+            }
+        }
+        if (picked)
+            estimate = pickedEstimate;
+        return picked;
+    }
 }
 
 bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool rescaled)
@@ -10753,6 +11264,37 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 pack = together;
                 return takeEngage(Acore::StringFormat("pull_combine: {} mobs with {} (fits, faster together)",
                                                       estimate.mobs, merged));
+            }
+        }
+
+        // [split253] a mob the leader's crowd control holds for this pull stands within the group's area reach of
+        // the candidate's spot: the fight is taken where the tank stands - its ranged tool opens from here
+        // (TankRangedTool), the mob comes - off the held mob, as off a hazard. With the tank's spot too near as well,
+        // or no tool, it is engaged at its spot and the acceptance check drops the hold ([split253] below)
+        if (engageFits && engageSeen && !engageCrossed && !engageHazard && !crowd && !sapClaimed.empty() &&
+            bot->GetExactDist(candidate) > CAREFUL_AGGRO_MARGIN)
+        {
+            float const areaReach = GroupAreaReach(bot);
+            Unit* heldNear = nullptr;
+            bool tankClear = true;
+            for (ObjectGuid const& guid : sapClaimed)
+                if (Unit* held = botAI->GetUnit(guid); held && held->IsAlive())
+                {
+                    if (!HoldClearOfFight(held, true, candidate->GetPosition(), areaReach))
+                        heldNear = held;
+                    tankClear = tankClear && HoldClearOfFight(held, true, bot->GetPosition(), areaReach);
+                }
+            if (heldNear && tankClear && TankRangedTool(botAI, bot, candidate))
+            {
+                takeEngage(Acore::StringFormat("[split253] {} mobs at its spot, {} held {:.0f} yd from it (area reach "
+                                               "{:.0f} yd): fought where the tank stands",
+                                               estimate.mobs, heldNear->GetName(), heldNear->GetExactDist(candidate),
+                                               areaReach));
+                _planFightFor = candidate->GetGUID();
+                _planFight = bot->GetPosition();
+                _planFightBack = candidate->GetExactDist(bot);
+                _planFightNote = "[split253] off the held " + heldNear->GetName();
+                return true;
             }
         }
 
@@ -13301,12 +13843,115 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // 99) was committed as the last resort with no woken pack (so unchecked), the tank walked 187 yd to it, the healer
     // stayed 45.6 yd back (pull_without_healer, 7 attackers). The 105714-5E-13 685 s 25-mob pull it kept is carried
     // or not by the same test now - a last resort the survival terms refuse is no option (LeaderNoOption holds)
+    // [split250] [split251] user 2026-11-11: a hard pack is split before it is judged hopeless. The pack as it comes
+    // over the budget with no split above carrying it: (b) the leader's crowd control holds part of it
+    // (PlanPackCrowdControl: the members' known holds, the pack priced without the held mobs, each held one its own
+    // fight after) - registered as its orders (PrePullCc::RegisterAssigned), the pull held for them and planned on
+    // the rest on the next look; (c) else the tank's ready defensive cooldown carries the pull as it comes
+    // (PickTankSave: kept for the bosses unless back before the next boss pull), told by the leader as it starts.
+    // b446 wc-n five12-11 880-1113 s: Druid of the Fang +2 "drop 1.11 of at most 0.77" stood refused (then
+    // hopeless) with a rogue in the five: its Sap on the Druid (the caster's 19/s of the pack's 46/s) was never
+    // priced - the pre-pull claims took only the tail of the kill order past the pull target
     PackEstimate cheapestEstimate;
     std::string cheapestCarries;
+    TankSave cheapestSave;
+    if (!found && !cheapest.pack.empty() && map && map->IsNonRaidDungeon())
+    {
+        PackEstimate const asItComes = EstimatePack(cheapest.pack, bot, groupDps, estimateMode);
+        if (!TankCarries(asItComes, support))
+        {
+            DropFailedAssignment(bot, _shadow);
+            // the live plan's assignments stand (their mobs are out of this pack already: SapClaimScope); their
+            // members hold nothing more
+            std::vector<PrePullCc::Assignment> standing;
+            GuidVector busy;
+            if (PrePullCc::Plan live; PrePullCc::Get(bot, live) && live.tank == bot->GetGUID() && !live.pulledMs)
+                for (PrePullCc::Claim const& claim : live.claims)
+                    if (claim.assigned && !claim.failed)
+                    {
+                        standing.push_back({claim.bot, claim.target, claim.spell, claim.breakable});
+                        busy.push_back(claim.bot);
+                    }
+            PackCcPlan ccPlan;
+            // the fight is at the tank: pulled back, or opened from its spot with its ranged tool ([split253] engage)
+            auto const pullsBack = [this](Unit* mob)
+            {
+                Position castSpot;
+                return PullBackSpot(mob, castSpot) || TankRangedTool(botAI, bot, mob) != nullptr;
+            };
+            bool const ccCarries = PlanPackCrowdControl(botAI, bot, target, cheapest.pack, groupDps, estimateMode,
+                                                        support, pullsBack, busy, ccPlan);
+            std::string const ccLine =
+                Acore::StringFormat("{} ({} mobs): {}", target->GetName(), cheapest.pack.size(), ccPlan.why);
+            thread_local std::unordered_map<uint64, std::string> ccLogged;  // once per change, per tank
+            if (std::string& logged = ccLogged[bot->GetGUID().GetRawValue()]; logged != ccLine && !_shadow)
+            {
+                logged = ccLine;
+                LOG_INFO("playerbots", "[split250] {}: crowd control {} {}", bot->GetName(),
+                         ccCarries ? "carries" : "does not carry", ccLine);
+            }
+            if (ccCarries && ccPlan.pullTarget)
+            {
+                if (!_shadow)  // [lead7] a shadow look registers nothing
+                {
+                    GuidVector order = {ccPlan.pullTarget->GetGUID()};
+                    for (Unit* mob : ccPlan.rest)
+                        if (mob != ccPlan.pullTarget)
+                            order.push_back(mob->GetGUID());
+                    std::vector<PrePullCc::Assignment> assignments = standing;
+                    for (PrePullCc::Assignment const& kept : standing)
+                        order.push_back(kept.target);
+                    for (PackCcHold const& hold : ccPlan.holds)
+                    {
+                        order.push_back(hold.mob->GetGUID());
+                        assignments.push_back(
+                            {hold.member->GetGUID(), hold.mob->GetGUID(), hold.hold.spell, hold.hold.breakable});
+                    }
+                    PrePullCc::RegisterAssigned(bot, ccPlan.pullTarget, order, assignments, ccPlan.why);
+                }
+                // held, no refusal: the next look plans the pull on the rest (its target claimed: DecideLook's swap)
+                _planNotReadyWhy = Acore::StringFormat("[split250] the group's crowd control first: {}", ccLine);
+                return false;
+            }
+
+            // (c) the tank's defensive on the pull as it comes
+            std::vector<TankSave> const saves = TankSaves(bot);
+            if (!saves.empty())
+            {
+                PackEstimate saved = asItComes;
+                std::string saveWhy;
+                if (TankSave const* save = PickTankSave(bot, saves, saved, support, saveWhy))
+                    cheapestSave = *save;
+                std::string const saveLine = Acore::StringFormat(
+                    "{} ({} mobs): {}", target->GetName(), cheapest.pack.size(),
+                    cheapestSave.spell ? Acore::StringFormat("{} carries it (drop {:.2f} of at most {:.2f}, back in "
+                                                             "{:.0f} s)",
+                                                             cheapestSave.name, saved.drop, saved.maxDrop,
+                                                             cheapestSave.rechargeSec)
+                                       : "no defensive carries it: " + saveWhy);
+                thread_local std::unordered_map<uint64, std::string> saveLogged;  // once per change, per tank
+                if (std::string& logged = saveLogged[bot->GetGUID().GetRawValue()]; logged != saveLine && !_shadow)
+                {
+                    logged = saveLine;
+                    LOG_INFO("playerbots", "[split251] {}: the tank's defensive: {}", bot->GetName(), saveLine);
+                }
+            }
+        }
+    }
     if (!found && !cheapest.pack.empty())
     {
         cheapestEstimate = EstimatePack(cheapest.pack, bot, groupDps, estimateMode);
-        if (!TankCarries(cheapestEstimate, support, &cheapestCarries))
+        PackEstimate carriedEstimate = cheapestEstimate;
+        if (cheapestSave.spell)
+        {
+            float const factor = TankSaveFactor(cheapestSave, carriedEstimate.fightSec);
+            carriedEstimate.drop *= factor;
+            carriedEstimate.dropRaw *= factor;
+            carriedEstimate.cost *= factor;
+            carriedEstimate.spellCost *= factor;
+            carriedEstimate.maxDrop += TankSaveHealth(cheapestSave, carriedEstimate.fightSec);
+        }
+        if (!TankCarries(carriedEstimate, support, &cheapestCarries))
         {
             std::string const way = cheapest.woken.empty() ? std::string("as it comes")
                                                            : "waking " + cheapest.woken + " on the way in";
@@ -13328,6 +13973,16 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     {
         chosenPack = cheapest.pack;
         chosen = EstimatePack(chosenPack, bot, groupDps, estimateMode);
+        // [split251] the pull counted with the tank's defensive, as the refusal above judged it
+        if (cheapestSave.spell)
+        {
+            float const factor = TankSaveFactor(cheapestSave, chosen.fightSec);
+            chosen.drop *= factor;
+            chosen.dropRaw *= factor;
+            chosen.cost *= factor;
+            chosen.spellCost *= factor;
+            chosen.maxDrop += TankSaveHealth(cheapestSave, chosen.fightSec);
+        }
         chosenOverlaps.clear();
         _planCached = target->GetGUID();
         _planPullBack = cheapest.back;
@@ -13344,6 +13999,20 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             "every option over the budget, the cheapest: the pull as it comes{} (overload {:.2f}): {}",
             cheapest.woken.empty() ? std::string() : " with what the way in wakes (" + cheapest.woken + ")",
             cheapest.overload, cheapest.judged);
+        if (cheapestSave.spell)
+        {
+            _planReason += Acore::StringFormat(" [split251] with the tank's {} at the pull (drop {:.2f} of at most "
+                                               "{:.2f})", cheapestSave.name, chosen.drop, chosen.maxDrop);
+            if (!_shadow)
+            {
+                GuidVector packGuids;
+                for (Unit* mob : chosenPack)
+                    packGuids.push_back(mob->GetGUID());
+                PlanPullSave(bot, cheapestSave.spell, packGuids,
+                             Acore::StringFormat("[split251] the planner's pull of {} ({} mobs) is priced with it",
+                                                 target->GetName(), chosenPack.size()));
+            }
+        }
         LOG_INFO("playerbots", "[lead208] {}: {} ({} mobs): {}", bot->GetName(), target->GetName(), chosenPack.size(),
                  _planReason);
     }
@@ -14015,6 +14684,39 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             _planLos ? _losSpot
                      : (_planPullBack ? (_planKillFor == plannedMob->GetGUID() ? _planKill : bot->GetPosition())
                                       : engageAt);
+        // [split253] a mob the leader's crowd control holds for this pull stands beyond the group's area reach from
+        // its fight, or the hold breaks and the mob joins a fight priced without it: the plan holds, the hold is
+        // noted failed and the pack planned again without it
+        if (!sapClaimed.empty())
+        {
+            PrePullCc::Plan ccPlan;
+            float const areaReach = GroupAreaReach(bot);
+            if (PrePullCc::Get(bot, ccPlan) && ccPlan.tank == bot->GetGUID() && !ccPlan.pulledMs)
+                for (PrePullCc::Claim const& claim : ccPlan.claims)
+                {
+                    Unit* held = claim.assigned && !claim.failed ? botAI->GetUnit(claim.target) : nullptr;
+                    if (!held || HoldClearOfFight(held, claim.breakable, fightSpot, areaReach))
+                        continue;
+                    std::string const why = Acore::StringFormat(
+                        "[split253] the fight at ({:.1f} {:.1f} {:.1f}) is {:.1f} yd from {} held by {}: within the "
+                        "group's area reach ({:.0f} yd)",
+                        fightSpot.GetPositionX(), fightSpot.GetPositionY(), fightSpot.GetPositionZ(),
+                        held->GetExactDist2d(fightSpot.GetPositionX(), fightSpot.GetPositionY()), held->GetName(),
+                        claim.spell, areaReach);
+                    if (!_shadow)
+                    {
+                        LOG_INFO("playerbots", "{} ({}: {})", why, bot->GetName(), _planReason);
+                        NoteCcFailed(bot, claim.bot, claim.target);
+                        PrePullCc::Cancel(bot);
+                    }
+                    _planNotReadyWhy = why;
+                    _stallFor = stallFor;
+                    _stallMs = stallMs;
+                    _loneWaitMs = loneWaitMs;
+                    return false;
+                }
+        }
+
         float const walkIn = _planLos || _planPullBack
                                  ? 0.0f
                                  : Leader::WalkYd(bot, plannedMob->GetPosition()) /  // [lead804]

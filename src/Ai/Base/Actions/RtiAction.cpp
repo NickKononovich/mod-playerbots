@@ -854,7 +854,39 @@ bool PrePullCcAction::Execute(Event /*event*/)
         if (!claim.target || claim.ready || claim.failed)
             return false;
 
-        return Place(plan, claim);
+        // [split250] the leader's assignment: this bot's icon goes on its mob first (the kill marks and the members'
+        // area damage keep off a marked mob; "cast auto cc" casts on it in the fight)
+        if (claim.assigned)
+        {
+            Unit* mob = botAI->GetUnit(claim.target);
+            AutoCcMark const& mark = context->GetValue<AutoCcMark>("auto cc mark")->RefGet();
+            if (mob && mark.target != claim.target && !SetOwnMark(botAI, mob))
+            {
+                LOG_INFO("playerbots", "[split252] {}: the leader's {} on {} failed: no crowd control icon to mark it",
+                         bot->GetName(), claim.spell, mob->GetName());
+                PrePullCc::SetClaimState(bot, plan.id, false, true);
+                return true;
+            }
+        }
+
+        bool const done = Place(plan, claim);
+        if (claim.assigned)
+        {
+            PrePullCc::Plan after;
+            if (PrePullCc::Get(bot, after) && after.id == plan.id)
+                for (PrePullCc::Claim const& now : after.claims)
+                    if (now.bot == bot->GetGUID() && (now.ready || now.failed))
+                    {
+                        Unit* mob = botAI->GetUnit(now.target);
+                        LOG_INFO("playerbots", "[split252] {}: the leader's {} on {}: {}", bot->GetName(), now.spell,
+                                 mob ? mob->GetName() : std::string("?"),
+                                 now.failed ? "failed, the pack is planned again"
+                                            : (mob && IsCrowdControlled(mob) ? "placed, it holds"
+                                                                             : "ready, cast as the pack comes"));
+                    }
+        }
+
+        return done;
     }
 
     return ClaimTarget(plan);
@@ -1043,6 +1075,14 @@ bool PrePullCcAction::Place(PrePullCc::Plan const& plan, PrePullCc::Claim const&
     if (!TankPullsPack(plan, claim.target, why))
     {
         // claimed on a refused pack: waits where it is for the tank's verdict (at most MAX_WAIT_MS, above)
+        // [split250] the leader's assignment waits for the tank's accepted pull of the rest, however it is held
+        // meanwhile (the group's rest, the readiness): no placing time yet
+        if (claim.assigned)
+        {
+            PrePullCc::TouchClaim(bot, plan.id);
+            return false;
+        }
+
         if (TankRefusedPack(plan, claim.target))
             return false;
 

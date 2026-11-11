@@ -63,6 +63,15 @@ namespace PullPlanning
     bool PatrolBeatStays(Creature* patrol, Position const& at, float range);
     // [dun226] the farthest its beat's waypoints come from `at` (0: no path known)
     float PatrolBeatFarthest(Creature* patrol, Position const& at);
+
+    // [split250] the widest reach of the area spells (hostile, affecting an area) the member knows, from their spell
+    // data: what a crowd-controlled mob must stand beyond, from the fight, not to be broken (0: none)
+    float MemberAreaReach(Player* member);
+    // [split250] the yards a fight drifts from where it is planned (CollectPack's)
+    float FightDriftYd();
+    // [split254] the tank has a ranged pull (its pull strategy's spell, known, reaching CAREFUL_MIN_PULL_RANGE, as
+    // PullBackSpot reads it): its fight can be pulled back to it
+    bool TankPullsAtRange(Player* tank);
 }
 
 // the tank's commit of a pull, posted to the leader's order registry

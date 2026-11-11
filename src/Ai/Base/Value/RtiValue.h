@@ -16,6 +16,7 @@ class Player;
 class PlayerbotAI;
 class SpellInfo;
 class Unit;
+struct CreatureTemplate;
 
 // How a crowd control spell is used, and what keeps it from pulling the room or breaking.
 enum CrowdControlFlag : uint8
@@ -61,6 +62,34 @@ bool CanCrowdControl(PlayerbotAI* botAI, CrowdControlOption const& option, Unit*
 // The first option of the bot's class that can hold the mob, or nullptr.
 CrowdControlOption const* FindCrowdControl(PlayerbotAI* botAI, Unit* target, bool prePull);
 
+// [split250] CanCrowdControl on a creature template, for the five gate (no live mob): the spells' creature type
+// masks and the template's immunities (creature_immunities: mechanic and school); `caster`: the mob casts (a root
+// does not hold it). Judged before the pull (a Sap counts); a fear never (Q67), a pet spell while the pet is out.
+bool CanCrowdControlTemplate(PlayerbotAI* botAI, CrowdControlOption const& option, CreatureTemplate const* proto,
+                             bool caster);
+
+// [split250] The first option of the bot's class that holds a mob of this template (CanCrowdControlTemplate).
+CrowdControlOption const* FindCrowdControlTemplate(PlayerbotAI* botAI, CreatureTemplate const* proto, bool caster);
+
+// [split250] What one crowd control gives a pull, from its spell data at the rank the bot knows (its duration and
+// cooldown mods applied); a creature has no diminishing returns, so each hold lasts its full duration.
+struct CrowdControlHold
+{
+    uint32 spellId = 0;
+    std::string spell;
+    float holdSec = 0.0f;      // the hold aura's duration
+    float rechargeSec = 0.0f;  // the cast's cooldown
+    bool prePull = false;      // placed before the pull only (Sap): not cast again once the fight is on
+    bool trap = false;         // laid before the pull (Freezing Trap): its cooldown runs from then
+    bool breakable = true;     // damage breaks it (all but Banish)
+};
+bool GetCrowdControlHold(PlayerbotAI* botAI, CrowdControlOption const& option, CrowdControlHold& out);
+
+// [split250] The hold keeps its mob out of a fight of `fightSec`: cast again as it ends (cast in the fight, its
+// cooldown within its duration: Polymorph, Hex, Hibernate, Shackle, Banish), or it lasts the fight and the global
+// cooldown between its cast and the pull (Sap, a trap, Repentance).
+bool CrowdControlHoldsFight(CrowdControlHold const& hold, float fightSec);
+
 // [lead1330] The option holds by fear (CC_FLAG_FEAR or a fear mechanic on its hold spell): the mob runs off. User
 // 2026-11-05 (Q67): no dungeon crowd control, only the leader's emergency (LeaderEvents, the Cc block).
 bool IsFearCrowdControl(PlayerbotAI* botAI, CrowdControlOption const& option);
@@ -76,6 +105,7 @@ uint64 GetKnownCrowdControlMechanics(PlayerbotAI* botAI);
 bool IsHeldByCrowdControl(Unit* unit, uint64 mechanics);
 
 // An attacker held by breakable crowd control stands within `range` of `center`: an area spell there breaks it.
+// [split252] So does a mob a crowd control icon of the group is on (a Sap before the pull: no attacker, held).
 bool IsCrowdControlledMobNear(PlayerbotAI* botAI, Unit const* center, float range);
 
 // No idle hostile mob within reach of where a feared mob runs (FleeingMovementGenerator: 28-43 yd from the caster)

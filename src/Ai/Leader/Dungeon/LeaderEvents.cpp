@@ -52,6 +52,7 @@
 #include "LeaderCommand.h"  // [lead410] SPELL_MASTER_OF_GHOULS
 #include "LeaderOrders.h"  // [lead1] the tank's pull orders
 #include "LeaderPlannerShared.h"  // [lead1091] TankEngageOpeners
+#include "LeaderTankSaves.h"     // [split251] PlannedPullSave
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PartyMemberToHeal.h"  // [lead945] [lead946] HealTriage
@@ -11900,6 +11901,34 @@ namespace Leader::Dungeon
                             if (gapLogged.insert({tank->GetGUID().GetRawValue(), asked.GetRawValue()}).second)
                                 LOG_INFO("playerbots", "[lead925] {}: {} told, {}", tank->GetName(), save, note);
                         }
+                    }
+                }
+            }
+            // [split251] a pull the planner priced with the tank's defensive (every other option over its budget, the
+            // cooldown back before the next boss pull): told once the tank fights that pack, the order ends once its
+            // aura is up or the cooldown runs
+            if (uint32 planned = 0; tank->IsAlive())
+            {
+                std::string note;
+                thread_local std::set<std::pair<uint64, uint32>> plannedLogged;  // once per planned save
+                if (plannedLogged.size() > 4096)
+                    plannedLogged.clear();
+                if (PullPlanning::PlannedPullSave(tank, planned, note))
+                {
+                    if (Leader::Fight::GapCloserSaveUp(tank, planned) || tank->HasSpellCooldown(planned))
+                    {
+                        PullPlanning::ClearPullSave(tank);
+                        Leader::MemberEvents order;
+                        if (Leader::Events::Get(tank->GetGUID(), order) && order.externalSpell == planned)
+                            Leader::Events::SetExternal(tank->GetGUID(), 0, ObjectGuid::Empty);
+                        plannedLogged.erase({tank->GetGUID().GetRawValue(), planned});
+                        LOG_INFO("playerbots", "[split251] {}: its planned {} is {}", tank->GetName(), planned,
+                                 Leader::Fight::GapCloserSaveUp(tank, planned) ? "up" : "spent");
+                    }
+                    else if (tell(tank, planned, tank, note.c_str()))
+                    {
+                        if (plannedLogged.insert({tank->GetGUID().GetRawValue(), planned}).second)
+                            LOG_INFO("playerbots", "[split251] {}: {} told, {}", tank->GetName(), planned, note);
                     }
                 }
             }

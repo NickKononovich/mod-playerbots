@@ -5,6 +5,7 @@
  */
 
 #include "RtiValue.h"
+#include "CreatureData.h"
 #include "Group.h"
 #include "MobRoles.h"
 #include "Pet.h"
@@ -172,6 +173,84 @@ CrowdControlOption const* FindCrowdControl(PlayerbotAI* botAI, Unit* target, boo
     return nullptr;
 }
 
+bool CanCrowdControlTemplate(PlayerbotAI* botAI, CrowdControlOption const& option, CreatureTemplate const* proto,
+                             bool caster)
+{
+    uint32 const spellId = KnownSpellId(botAI, option);
+    SpellInfo const* castInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    SpellInfo const* holdInfo = castInfo && option.holdSpell ? sSpellMgr->GetSpellInfo(option.holdSpell) : castInfo;
+    if (!castInfo || !holdInfo || !proto || IsFearCrowdControl(botAI, option))
+        return false;
+
+    // SpellInfo::CheckTargetCreatureType by the template's type (Unit::GetCreatureTypeMask)
+    uint32 const typeMask = proto->type ? 1u << (proto->type - 1) : 0;
+    for (SpellInfo const* info : {castInfo, holdInfo})
+        if (info->TargetCreatureType && typeMask && !(info->TargetCreatureType & typeMask))
+            return false;
+
+    if (CreatureImmunities const* immunities = sSpellMgr->GetCreatureImmunities(proto->CreatureImmunitiesId))
+    {
+        if ((immunities->Mechanic.to_ullong() & GetCrowdControlMechanics(holdInfo)) != 0)
+            return false;
+
+        for (uint8 school = 0; school < MAX_SPELL_SCHOOL; ++school)
+            if (immunities->School.test(school) && (holdInfo->GetSchoolMask() & (1u << school)))
+                return false;
+    }
+
+    return !((option.flags & CC_FLAG_MELEE_ONLY) && caster);
+}
+
+CrowdControlOption const* FindCrowdControlTemplate(PlayerbotAI* botAI, CreatureTemplate const* proto, bool caster)
+{
+    CrowdControlRole const* role = GetCrowdControlRole(botAI->GetBot()->getClass());
+    if (!role)
+        return nullptr;
+
+    for (CrowdControlOption const& option : role->options)
+    {
+        if (!option.spell)
+            break;
+
+        if (CanCrowdControlTemplate(botAI, option, proto, caster))
+            return &option;
+    }
+
+    return nullptr;
+}
+
+bool GetCrowdControlHold(PlayerbotAI* botAI, CrowdControlOption const& option, CrowdControlHold& out)
+{
+    Player* bot = botAI->GetBot();
+    uint32 const spellId = KnownSpellId(botAI, option);
+    SpellInfo const* castInfo = spellId ? sSpellMgr->GetSpellInfo(spellId) : nullptr;
+    SpellInfo const* holdInfo = GetCrowdControlHoldInfo(botAI, option);
+    if (!castInfo || !holdInfo)
+        return false;
+
+    int32 holdMs = std::max(holdInfo->GetMaxDuration(), 0);
+    bot->ApplySpellMod(holdInfo->Id, SPELLMOD_DURATION, holdMs);
+    int32 rechargeMs = int32(std::max(castInfo->RecoveryTime, castInfo->CategoryRecoveryTime));
+    bot->ApplySpellMod(spellId, SPELLMOD_COOLDOWN, rechargeMs);
+    out.spellId = spellId;
+    out.spell = castInfo->SpellName[LOCALE_enUS] ? castInfo->SpellName[LOCALE_enUS] : option.spell;
+    out.holdSec = float(std::max(holdMs, 0)) / float(IN_MILLISECONDS);
+    out.rechargeSec = float(std::max(rechargeMs, 0)) / float(IN_MILLISECONDS);
+    out.prePull = IsPrePullOnly(option, castInfo);
+    out.trap = (option.flags & CC_FLAG_TRAP) != 0;
+    out.breakable = !IsUnbreakableCrowdControl(botAI, option);
+    return out.holdSec > 0.0f;
+}
+
+bool CrowdControlHoldsFight(CrowdControlHold const& hold, float fightSec)
+{
+    constexpr float GLOBAL_COOLDOWN_SEC = 1.5f;  // the cast and the tank's pull, one global cooldown apart
+    if (!hold.prePull && !hold.trap && hold.rechargeSec <= hold.holdSec)
+        return true;
+
+    return hold.holdSec >= fightSec + GLOBAL_COOLDOWN_SEC;
+}
+
 bool IsFearCrowdControl(PlayerbotAI* botAI, CrowdControlOption const& option)
 {
     return (option.flags & CC_FLAG_FEAR) ||
@@ -229,6 +308,19 @@ bool IsCrowdControlledMobNear(PlayerbotAI* botAI, Unit const* center, float rang
     for (ObjectGuid const& guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get())
     {
         Unit* unit = botAI->GetUnit(guid);
+        if (unit && unit->GetExactDist2d(center) <= range && IsCrowdControlled(unit))
+            return true;
+    }
+
+    // [split252] a sapped mob is no attacker: the group's crowd control icons name it
+    Group* group = botAI->GetBot()->GetGroup();
+    for (uint8 icon = 0; group && icon < TARGETICONCOUNT; ++icon)
+    {
+        if (icon == RtiTargetValue::skullIndex || icon == RtiTargetValue::crossIndex)
+            continue;
+
+        ObjectGuid const guid = group->GetTargetIcon(icon);
+        Unit* unit = guid ? botAI->GetUnit(guid) : nullptr;
         if (unit && unit->GetExactDist2d(center) <= range && IsCrowdControlled(unit))
             return true;
     }
