@@ -5749,6 +5749,12 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
     // of its landmass given up: [travel57] in TravelRouteMgr::Solve) is refused: TripDanger names no danger for it
     // and the walk itself only fails there (b397 Salleas L12: GO_GRIND to five spots by q982's Darkshore giver in
     // turn, each a MAZE / MOVE_FAR_LOOP at the Darnassus portal walk, STUCK)
+    // [lag339] ... and one there is: the trip's own first leg is what it walks from here - the walk to the pier or
+    // portal its route takes (judged as any walk, below); the straight line over the water to the far spot is no
+    // walk (TripDanger read the mobs under it). b445 Dekorhan L22 (the guild's scribe) at Grove of the Ancients:
+    // "TRIP_REFUSED town task PROFESSION Darnassus at (10138,2314) 6630 yd: its walk passes Wrathtail Sorceress
+    // L18-19" - the Virtuoso Inking Set his Inscription crafts need is sold only in Darnassus for him
+    float tx = x, ty = y, tz = z;
     if (TravelRouteMgr::Landmass(WorldPosition(bot)) !=
         TravelRouteMgr::Landmass(WorldPosition(bot->GetMapId(), x, y, z)))
     {
@@ -5761,10 +5767,29 @@ bool NewRpgBaseAction::TripRefused(Player* bot, float x, float y, float z, std::
                      bot->GetName(), bot->GetLevel(), what, x, y);
             return true;
         }
+        WorldPosition start;
+        if (leg.kind == TravelRouteMgr::LegKind::Portal)
+        {
+            std::vector<TravelRouteMgr::Portal> const& portals = sTravelRouteMgr.GetPortals();
+            if (leg.portalIndex < portals.size())
+                start = portals[leg.portalIndex].from;
+        }
+        else if (leg.kind == TravelRouteMgr::LegKind::Transport)
+            if (TravelRouteMgr::Line const* line = sTravelRouteMgr.GetLine(leg.lineEntry);
+                line && leg.fromDock < line->docks.size())
+                start = line->docks[leg.fromDock].pier;
+        if (start == WorldPosition() || start.GetMapId() != bot->GetMapId())
+            return false;  // no walk of its own to judge here: the ride's legs are judged as they come
+        tx = start.GetPositionX();
+        ty = start.GetPositionY();
+        tz = start.GetPositionZ();
     }
     static std::mutex lock;
     // bot -> destination (map, x, y) -> (the level it was judged at, refused)
     static std::unordered_map<uint32, std::map<std::tuple<uint32, int32, int32>, std::pair<uint8, bool>>> judged;
+    x = tx;  // [lag339] the walk judged from here on: to the far spot, else to its trip's first leg
+    y = ty;
+    z = tz;
     std::tuple<uint32, int32, int32> const key{bot->GetMapId(), int32(x), int32(y)};
     {
         std::lock_guard<std::mutex> guard(lock);
