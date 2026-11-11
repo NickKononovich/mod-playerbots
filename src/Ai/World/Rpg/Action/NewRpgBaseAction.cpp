@@ -5253,6 +5253,17 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
         for (int32 ox = -1; ox <= 1; ++ox)
             for (int32 oy = -1; oy <= 1; ++oy)
                 cells.insert(MobCellKey(mapId, points[i].x + ox * MAX_AGGRO_RADIUS, points[i].y + oy * MAX_AGGRO_RADIUS));
+    // [lag354] the walk's yards at each point (a reach's place along it), and the run pasts of its orange / red spawns
+    std::vector<float> along(points.size(), 0.0f);
+    for (size_t i = 1; i < points.size(); ++i)
+        along[i] = along[i - 1] + (points[i] - points[i - 1]).length();
+    struct Chase
+    {
+        float along;
+        G3D::Vector4 disc;
+        SoloSafety::RunPast chase;
+    };
+    std::vector<Chase> chases;
     for (uint64 const cell : cells)
       for (auto const* cellMap : {&index.mobCells, &index.beatCells})  // [patrol95] the spawns, then the beats
     {
@@ -5283,8 +5294,13 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
                                             MAX_AGGRO_RADIUS) +
                                  bot->GetCombatReach() + spawn.wander;  // [wander56]
             bool covers = false;
+            size_t coverAt = fromIndex;
             for (size_t i = fromIndex; i < points.size() && !covers; i += 2)  // every 8 yd: within a reach
-                covers = std::hypot(points[i].x - spawn.x, points[i].y - spawn.y) <= radius;
+                if (std::hypot(points[i].x - spawn.x, points[i].y - spawn.y) <= radius)
+                {
+                    covers = true;
+                    coverAt = i;
+                }
             // [patrol101] a beat node whose disc an already kept disc holds for the most part (its centre within
             // half that disc's radius) adds nothing the route search does not refuse already: the refuse list stays
             // short (every polygon of the search is tested against each disc). b417: route searches of 200-430 ms,
@@ -5296,9 +5312,54 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
                         covers = false;
                         break;
                     }
-            if (covers)
+            if (!covers)
+                continue;
+            // an elite (its chase by base stats only) and a patrol's beat node (one mob on many nodes) stay refused
+            if (elite || spawn.beat)
                 discs.emplace_back(spawn.x, spawn.y, spawn.z, radius);
+            else
+                chases.push_back({along[coverAt], G3D::Vector4(spawn.x, spawn.y, spawn.z, radius),
+                                  SoloSafety::RunPastTemplate(bot, tmpl)});
         }
+    }
+    // [lag354] user 2026-11-11 (in the open world nobody is walled in: a mob chases until its leash lets it go): an
+    // orange / red spawn beyond sight is a run past as the live search prices one in sight ([regress10]) - the chases
+    // the walk takes within one sight of it summed (the live leg's span: the mobs met on one leg chase together),
+    // refused only where that sum is no longer survived (SoloSafety::SurvivesRunPast, the core's leash and daze)
+    std::sort(chases.begin(), chases.end(), [](Chase const& a, Chase const& b) { return a.along < b.along; });
+    std::vector<bool> refused(chases.size(), false);
+    for (size_t i = 0; i < chases.size(); ++i)
+    {
+        SoloSafety::RunPast sum;
+        for (size_t j = 0; j <= i; ++j)
+        {
+            if (refused[j] || chases[i].along - chases[j].along > sPlayerbotAIConfig.SightDistance)
+                continue;
+            SoloSafety::RunPast const& chase = chases[j].chase;
+            sum.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage : sum.damage + chase.damage;
+            sum.seconds = std::max(sum.seconds, chase.seconds);
+        }
+        if (!SoloSafety::SurvivesRunPast(bot, sum.damage, sum.seconds))
+        {
+            refused[i] = true;
+            discs.push_back(chases[i].disc);
+        }
+    }
+    if (size_t const ranPast = size_t(std::count(refused.begin(), refused.end(), false)))
+    {
+        static std::mutex staticLogLock;  // a log cadence per bot and count, no decision reads it
+        static std::unordered_map<uint32, size_t> staticLogged;
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> guard(staticLogLock);
+            size_t& last = staticLogged[bot->GetGUID().GetCounter()];
+            fresh = last != ranPast;
+            last = ranPast;
+        }
+        if (fresh)
+            LOG_INFO("playerbots", "[lag354] {} L{} walk beyond sight: {} orange / red spawn reach(es) priced as run "
+                     "pasts it survives, {} refused",
+                     bot->GetName(), bot->GetLevel(), ranPast, chases.size() - ranPast);
     }
     return discs;
 }

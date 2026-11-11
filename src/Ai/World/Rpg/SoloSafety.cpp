@@ -3637,10 +3637,12 @@ namespace SoloSafety
                             ai && ai->rpgInfo.farRoute.size() >= 2 &&
                             (ai->rpgInfo.farRoute.back() - walkStop).length() <= 8.0f)  // the farRoute tolerance
                             walkOn += std::hypot(walkStop.x - to.x, walkStop.y - to.y);
+                    // [lag354] user 2026-11-11 (nobody is walled in the open world: a mob chases until its leash lets
+                    // it go): a chase that outlasts the walk is no wall - its whole damage is in the price already, and
+                    // from the walk's end the bot runs on as from a fight going wrong (SurvivalKit's flee, priced by
+                    // the same leash and daze) until it drops off; then the walk is searched again from there
                     if (chase.seconds * speed > walkOn)
                     {
-                        price = std::numeric_limits<float>::max();
-                        hp = float(bot->GetHealth());
                         static std::mutex stopLogLock;
                         static std::unordered_set<uint64> stopLogged;
                         bool fresh = false;
@@ -3652,11 +3654,11 @@ namespace SoloSafety
                                                       bot->GetGUID().GetCounter()).second;
                         }
                         if (fresh)
-                            LOG_INFO("playerbots", "[deaths14] {} L{} no run past {} L{}: the walk ends {:.0f} yd past "
-                                     "where it meets the walk, the chase runs {:.0f} s ({:.0f} yd) - a wall",
-                                     bot->GetName(), bot->GetLevel(), chaser->GetName(), chaser->GetLevel(),
-                                     walkOn, chase.seconds, chase.seconds * speed);
-                        return false;
+                            LOG_INFO("playerbots", "[lag354] {} L{} run past {} L{}: the walk ends {:.0f} yd past "
+                                     "where it meets the walk, the chase runs {:.0f} s ({:.0f} yd) - it runs on from "
+                                     "the walk's end until the leash lets the chaser go",
+                                     bot->GetName(), bot->GetLevel(), chaser->GetName(), chaser->GetLevel(), walkOn,
+                                     chase.seconds, chase.seconds * speed);
                     }
                 }
                 with.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage
