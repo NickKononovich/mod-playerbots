@@ -67,6 +67,7 @@ private:
     uint8 _lockRequirementCount = 0;
     uint32 _lockType = 0;
     bool _hasUnsupportedLockRequirement = false;
+    bool _neededQuestItem = false;  // [night301] the object holds an item a quest in the log still needs
     static bool IsNeededForQuest(Player* bot, uint32 itemId);
 };
 

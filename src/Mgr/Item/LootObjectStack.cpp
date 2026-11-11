@@ -66,6 +66,7 @@ void LootObject::Refresh(Player* bot, ObjectGuid lootGUID)
     _lockRequirementCount = 0;
     _lockType = 0;
     _hasUnsupportedLockRequirement = false;
+    _neededQuestItem = false;
     guid.Clear();
 
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
@@ -122,6 +123,7 @@ void LootObject::Refresh(Player* bot, ObjectGuid lootGUID)
                 // bailing here.
                 this->guid = lootGUID;
                 neededQuestItem = true;
+                _neededQuestItem = true;
             }
 
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
@@ -349,7 +351,8 @@ bool LootObject::IsLootPossible(Player* bot, bool checkHeight)
     if (go && go->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_INTERACT_COND) && !go->ActivateToQuest(bot))
         return false;
 
-    auto canUseRequirement = [bot, botAI](LootLockRequirement const& requirement)
+    bool const neededQuestItem = _neededQuestItem;
+    auto canUseRequirement = [bot, botAI, neededQuestItem](LootLockRequirement const& requirement)
     {
         if (requirement.ReqItem)
             return bot->HasItemCount(requirement.ReqItem, 1);
@@ -361,7 +364,11 @@ bool LootObject::IsLootPossible(Player* bot, bool checkHeight)
                                      requirement.SkillId == SKILL_SKINNING || requirement.SkillId == SKILL_ENGINEERING;
         Player* master = botAI->GetMaster();
         bool const hasActivePlayerMaster = master && !GET_PLAYERBOT_AI(master);
-        if (gatheringObject && !hasActivePlayerMaster)
+        // [night301] a node that holds a quest item the log still needs is gathered for the quest, whatever the bags'
+        // fill (the core's loot takes what fits): b432 Arrengyl L17 (5 of 36 slots free) and Thokhen L19 (6-8 of 38)
+        // swept q866 Root Samples' herbs for 1.15 h each, every Peacebloom / Silverleaf / Earthroot "not lootable for
+        // it" by this 80 % bag line - 0 samples, 0 turn-ins
+        if (gatheringObject && !hasActivePlayerMaster && !neededQuestItem)
         {
             constexpr uint8 maxGatheringBagUsage = 80;
             if (botAI->GetAiObjectContext()->GetValue<uint8>("bag space")->Get() > maxGatheringBagUsage)
