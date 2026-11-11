@@ -103,7 +103,12 @@ namespace
         if (!map || bot->IsFlying() || bot->GetVehicle() || bot->GetTransport() || bot->HasWaterWalkAura())
             return false;
 
-        LiquidData const& liquid = bot->GetLiquidData();
+        LiquidData liquid = bot->GetLiquidData();
+        // [lag362] the unit's own liquid state is the last terrain update's; a bot standing on the navmesh's water
+        // surface (above the level, b448 Sylaenas over q4681's sea floor) may read none: the map's own data there
+        if (liquid.Status == LIQUID_MAP_NO_WATER)
+            liquid = map->GetLiquidData(bot->GetPhaseMask(), bot->GetPositionX(), bot->GetPositionY(),
+                                        bot->GetPositionZ(), bot->GetCollisionHeight(), {});
         if (liquid.Status == LIQUID_MAP_NO_WATER || liquid.Level <= INVALID_HEIGHT ||
             !(liquid.Flags & (MAP_LIQUID_TYPE_WATER | MAP_LIQUID_TYPE_OCEAN)) ||
             bot->GetPositionZ() - liquid.Level > OPEN_WATER_ABOVE_LEVEL)
