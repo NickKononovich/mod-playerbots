@@ -9882,9 +9882,13 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     // 20261025-221216-scholo-n-5C-4 pull 8: "one (every plan too dangerous, one mob at range; packs: one 6 where it is
     // fought)" Risen Guard pulled back, the Neophytes / Acolytes cast from the hall, 3 -> 7 -> 12 -> 13 came and all
     // five died. Each such mob's own pack at its stand spot is added to the estimate.
-    auto const addCasterStands = [&]()
+    // [dun184] `fight`: the pull's fight spot - a caster farther than CASTER_KEEP_RANGE from it walks in to that range
+    // and casts from there (CollectPack's standPoint), else it stands and casts where it is. A lone caster pulled
+    // back is looked at too: b433 wc-n five4 pull 25 "Druid of the Fang ... 1 mobs come back to the tank" - it
+    // stayed, cast from its spot, and its spot's pack came (5: 2 Deviate Adders, 3 Druids of the Fang)
+    auto const addCasterStands = [&](Position const* fight)
     {
-        if (pack.size() <= 1)
+        if (pack.empty())
             return;
 
         std::vector<Unit*> const base(pack);
@@ -9927,8 +9931,15 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             if (!creature || !KeepsRange(creature) || mergedHops[index].second)
                 continue;
 
-            CollectPack(botAI, bot, mob, mob->GetPosition(), possible, around, FightHere(mob->GetPosition()), measured,
-                        false, nullptr);
+            Position stand = mob->GetPosition();
+            if (float const toKill = fight ? mob->GetExactDist(*fight) : 0.0f; toKill > CASTER_KEEP_RANGE)
+            {
+                float const share = CASTER_KEEP_RANGE / toKill;
+                stand.Relocate(fight->GetPositionX() + (mob->GetPositionX() - fight->GetPositionX()) * share,
+                               fight->GetPositionY() + (mob->GetPositionY() - fight->GetPositionY()) * share,
+                               fight->GetPositionZ() + (mob->GetPositionZ() - fight->GetPositionZ()) * share);
+            }
+            CollectPack(botAI, bot, mob, stand, possible, around, FightHere(stand), measured, false, nullptr);
             for (Unit* joined : around)
                 if (joined && std::find(merged.begin(), merged.end(), joined) == merged.end())
                 {
@@ -9969,7 +9980,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         if (pack.size() <= 1 || !creature || !killSearches ||
             (GetScriptedHelp(creature).callRadius <= 0.0f && !FleesForHelp(creature) && !killSpotBrings))
         {
-            addCasterStands();  // [b32_pull]
+            addCasterStands(&kill);  // [b32_pull]
             return;
         }
 
@@ -10068,7 +10079,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             overlaps = fewestOverlaps;
 
         kill = fewestKill;
-        addCasterStands();  // [b32_pull]
+        addCasterStands(&kill);  // [b32_pull]
     };
 
     // User, RFC 2026-10-24 20:04: «танк пошёл влево, потом на дальний пак, хотя справа стоял большой пак - в
@@ -12330,7 +12341,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 }
                 CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightAt(option), measured, false,
                             overlapsOut);
-                addCasterStands();
+                addCasterStands(&option);
                 if (std::find(pack.begin(), pack.end(), candidate) == pack.end())
                     pack.insert(pack.begin(), candidate);
                 if (!fewest || pack.size() < fewest)
@@ -12625,7 +12636,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             {
                 CollectPack(botAI, bot, candidate, castSpot, possible, pack, FightAt(option), measured, false,
                             overlapsOut);
-                addCasterStands();
+                addCasterStands(&option);
                 if (std::find(pack.begin(), pack.end(), candidate) == pack.end())
                     pack.insert(pack.begin(), candidate);
                 if (std::any_of(pack.begin(), pack.end(), [](Unit* mob) { return IsBossMob(mob); }))
