@@ -7,6 +7,7 @@
 #include "NewRpgProfession.h"
 #include "QuestStats.h"  // [log28]
 
+#include <algorithm>
 #include <cfloat>
 #include <map>
 #include <mutex>
@@ -39,6 +40,7 @@
 #include "PlayerbotFactory.h"
 #include "World.h"
 #include "GuildLedger.h"
+#include "GuildGear.h"  // [lag327] the vendors of an item (npc_vendor)
 
 namespace
 {
@@ -567,6 +569,74 @@ namespace
     }
 }
 
+namespace
+{
+    // [lag327] the leader's due skill-up BUY call: the units it lacks, in lots its consumables budget pays, at the
+    // nearest friendly vendor of the item on its map (npc_vendor, gold only) whose walk is safe and that did not fail
+    // it at this money and level
+    bool StartCalledBuy(PlayerbotAI* botAI, Player* bot)
+    {
+        uint32 itemId = 0, count = 0, skill = 0;
+        if (!sGuildCoordinator.ProfessionBuyDue(bot, itemId, count, skill))
+            return false;
+        uint32 const have = bot->GetItemCount(itemId, false);
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        std::vector<GuildGear::VendorSpawn> const* spawns = GuildGear::VendorsOf(itemId);
+        if (!proto || !spawns || have >= count)
+            return false;
+        uint32 const lot = std::max<uint32>(1, proto->BuyCount);
+        uint32 lots = (count - have + lot - 1) / lot;
+        if (proto->BuyPrice)
+            lots = std::min(lots, NewRpgCraft::Budget(botAI, bot) / proto->BuyPrice);
+        // one buy: a stack at most (the core's vendor buy, its count a byte)
+        lots = std::min<uint32>(lots, std::min<uint32>(UINT8_MAX, std::max<uint32>(1, proto->GetMaxStackSize() / lot)));
+        if (!lots)
+            return false;
+        std::unordered_set<GuildGear::VendorSpawn const*> refused;
+        while (true)
+        {
+            GuildGear::VendorSpawn const* best = nullptr;
+            float bestDist = FLT_MAX;
+            for (GuildGear::VendorSpawn const& v : *spawns)
+            {
+                if (v.extendedCost || v.mapId != bot->GetMapId() || refused.count(&v) || !Friendly(bot, v.entry) ||
+                    FailedBefore(bot, v.entry, itemId))
+                    continue;
+                float const d = bot->GetExactDist(v.x, v.y, v.z);
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    best = &v;
+                }
+            }
+            if (!best)
+                return false;
+            CreatureTemplate const* npc = sObjectMgr->GetCreatureTemplate(best->entry);
+            if (NewRpgBaseAction::TripRefused(bot, best->x, best->y, best->z,
+                                              std::string("reagent vendor ") + (npc ? npc->Name : "?")))
+            {
+                refused.insert(best);
+                continue;
+            }
+            NewRpgInfo::DoProfession task;
+            task.kind = TASK_BUY;
+            task.npcEntry = best->entry;
+            task.pos = WorldPosition(best->mapId, best->x, best->y, best->z);
+            task.itemId = itemId;
+            task.skill = skill;
+            task.count = lots;
+            task.cost = lots * proto->BuyPrice;
+            QuestStats::TownStart(bot, "PROFESSION BUY");  // [log28]
+            LOG_INFO("playerbots", "[lag327] {} L{} PROFESSION reason: the leader's call buys {} x{} ({} lots, has {}) "
+                     "for {} at {} ({:.0f} yd), cost {}c, money {}c",
+                     bot->GetName(), bot->GetLevel(), proto->Name1, count, lots, have, SkillName(skill),
+                     npc ? npc->Name : "?", bestDist, task.cost, bot->GetMoney());
+            botAI->rpgInfo.ChangeToDoProfession(task);
+            return true;
+        }
+    }
+}
+
 namespace NewRpgProfession
 {
     void LoadPlan()
@@ -630,8 +700,14 @@ namespace NewRpgProfession
                 }
             }
             // [guild70] no rank / tool errand: a recipe visit, else skill-up crafting in town
+            // [lag327] ... before both, the global leader's skill-up BUY call due here ([prof277], its vendor's town
+            // [lag326]): bought at the nearest friendly vendor of it in reach. Before, nothing ran the call - the
+            // craft executor buys a vendor reagent only for a craft it can make now (Light Parchment for a scroll
+            // whose ink it holds), so a scribe at 1/75 with no ink never bought the Light Parchment x85 it was
+            // called for
             if (!best.task.kind || !best.spawn)
-                return StartRecipeTrip(botAI, bot, plan->second) || NewRpgCraft::StartCraft(botAI, bot);
+                return StartCalledBuy(botAI, bot) || StartRecipeTrip(botAI, bot, plan->second) ||
+                       NewRpgCraft::StartCraft(botAI, bot);
             CreatureTemplate const* npc = sObjectMgr->GetCreatureTemplate(best.task.npcEntry);
             if (!NewRpgBaseAction::TripRefused(bot, best.spawn->x, best.spawn->y, best.spawn->z,
                                                std::string("profession npc ") + (npc ? npc->Name : "?")))
@@ -1137,7 +1213,9 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
                                  RoomFor(bot, data->itemId));
                     }
                 }
-                bot->BuyItemFromVendorSlot(npc->GetGUID(), slot, data->itemId, 1, NULL_BAG, NULL_SLOT);
+                // [lag327] a called skill-up buy takes its lots (the core multiplies by the item's BuyCount)
+                bot->BuyItemFromVendorSlot(npc->GetGUID(), slot, data->itemId,
+                                           uint8(std::clamp<uint32>(data->count, 1, UINT8_MAX)), NULL_BAG, NULL_SLOT);
                 bought = bot->GetItemCount(data->itemId, false) > before;
                 break;
             }

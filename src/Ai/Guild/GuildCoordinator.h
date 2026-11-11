@@ -357,6 +357,9 @@ public:
     // [econ2] ... and only once the call can run where the bot stands: TRAIN in the town of the trainer the leader
     // planned for it (its next visit there), CRAFT / BUY in a town (rest area); NONE while it only waits
     GuildProfessionKind ProfessionCall(Player* bot, uint32* skillLine = nullptr);
+    // [lag327] map thread: the bot's skill-up BUY call (item, units, its line) when it is due where the bot stands
+    // (its vendor's town, [lag326]); false: none due
+    bool ProfessionBuyDue(Player* bot, uint32& itemId, uint32& count, uint32& skillLine);
     // [prof273] map thread: the recipes of this skill line the global leader called the bot to learn at a trainer
     // (a planned craft's recipe, the guild cook's supply recipe) - the trainer executor learns them whether they
     // still give skill or not

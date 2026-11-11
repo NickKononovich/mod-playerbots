@@ -4452,6 +4452,31 @@ GuildCoordinator::NpcSpot const* GuildCoordinator::NearestSpot(Player* p, uint32
 // PROFESSION time were such trips. A call is due only where it runs: a TRAIN call in the town of its trainer (its
 // next visit there, TownReady), a CRAFT / BUY call in a town (the craft executor works in a rest area); the smelt
 // runs through NextStep and gathering through its own task, neither opens the executor
+// [lag327] the due BUY call's item for the profession executor (NewRpgProfession::StartTask buys it at a vendor of
+// it in reach); the same "due" test as ProfessionCall
+bool GuildCoordinator::ProfessionBuyDue(Player* bot, uint32& itemId, uint32& count, uint32& skillLine)
+{
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+        return false;
+    CoordLock guard(lock_, __func__);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end())
+        return false;
+    for (GuildOrder const& o : itr->second.orders)
+    {
+        if (o.type != GuildOrderType::PROFESSION || o.profession != GuildProfessionKind::BUY || !o.itemId)
+            continue;
+        bool const ready = o.pos != WorldPosition() ? o.townArea && TownReady(bot, o) : NewRpgCraft::InSafePlace(bot);
+        if (!ready)
+            continue;
+        itemId = o.itemId;
+        count = o.count;
+        skillLine = o.skillLine;
+        return true;
+    }
+    return false;
+}
+
 GuildProfessionKind GuildCoordinator::ProfessionCall(Player* bot, uint32* skillLine)
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
