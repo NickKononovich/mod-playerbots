@@ -22,7 +22,6 @@ namespace
 // [dps240] spell_pri_power_word_shield (spell_priest.cpp): the absorb's healing power coefficient
 constexpr float SHIELD_HEALING_COEFF = 0.8068f;
 constexpr float HEAL_LOSS_WINDOW_SEC = 2.0f;  // GroupHealthLossValue: the share of max health lost in 2 s
-constexpr uint8 PRIEST_TAB_DISCIPLINE = 0;
 constexpr size_t SHIELD_LOG_MAX = 4096;
 
 // a heal spell's mean amount on `target` with the caster's bonuses (Unit::SpellHealingBonusDone)

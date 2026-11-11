@@ -24,8 +24,8 @@
 
 namespace
 {
-constexpr uint32 SPELL_CATEGORY_FOOD = 11;   // the core's spell category of food (BuyAction's restock items)
-constexpr uint32 SPELL_CATEGORY_DRINK = 59;  // ... and of drink
+constexpr uint32 LEDGER_FOOD_CATEGORY = 11;   // the core's spell category of food (BuyAction's restock items)
+constexpr uint32 LEDGER_DRINK_CATEGORY = 59;  // ... and of drink
 constexpr uint32 LEDGER_LOG_SECONDS = 60;    // the [health] line's minute: the totals log with it, on change
 
 // a cause the core's own hook named for this player's next money change in the same world tick
@@ -121,8 +121,8 @@ char const* BuyCause(ItemTemplate const* proto)
     switch (proto->Class)
     {
         case ITEM_CLASS_CONSUMABLE:
-            if (proto->Spells[0].SpellCategory == SPELL_CATEGORY_FOOD ||
-                proto->Spells[0].SpellCategory == SPELL_CATEGORY_DRINK)
+            if (proto->Spells[0].SpellCategory == LEDGER_FOOD_CATEGORY ||
+                proto->Spells[0].SpellCategory == LEDGER_DRINK_CATEGORY)
                 return "buy: food / drink";
             if (proto->SubClass == ITEM_SUBCLASS_POTION || proto->SubClass == ITEM_SUBCLASS_ELIXIR ||
                 proto->SubClass == ITEM_SUBCLASS_FLASK)
