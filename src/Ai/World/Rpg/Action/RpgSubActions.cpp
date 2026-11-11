@@ -17,6 +17,7 @@
 #include "Playerbots.h"
 #include "PossibleRpgTargetsValue.h"
 #include "SocialMgr.h"
+#include "GuildLedger.h"
 
 void RpgHelper::OnExecute(std::string nextAction)
 {
@@ -195,6 +196,7 @@ bool RpgTaxiAction::Execute(Event /*event*/)
         return false;
     }
 
+    GuildLedger::Cause const ledger("flight");  // [eco190]
     if (!bot->ActivateTaxiPathTo({entry->from, entry->to}, flightMaster, 0))
     {
         LOG_ERROR("playerbots", "Bot {} cannot fly {} ({} location available)", bot->GetName(), path, nodes.size());

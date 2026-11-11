@@ -11,6 +11,7 @@
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
+#include "GuildLedger.h"
 
 bool TaxiAction::Execute(Event event)
 {
@@ -78,7 +79,10 @@ bool TaxiAction::Execute(Event event)
                 {
                     if (Creature* npcPtr = ObjectAccessor::GetCreature(*bot, npcGuid))
                         if (!movement.taxiNodes.empty())
+                        {
+                            GuildLedger::Cause const ledger("flight");  // [eco190]
                             bot->ActivateTaxiPathTo(movement.taxiNodes, npcPtr, 0);
+                        }
                 },
                 delay);
             botAI->SetNextCheckDelay(delay + 50);
@@ -116,9 +120,11 @@ bool TaxiAction::Execute(Event event)
             if (!entry)
                 return false;
 
+            GuildLedger::Cause const ledger("flight");  // [eco190]
             return bot->ActivateTaxiPathTo({entry->from, entry->to}, npc, 0);
         }
 
+        GuildLedger::Cause const ledger("flight");  // [eco190]
         if (!movement.taxiNodes.empty() && !bot->ActivateTaxiPathTo(movement.taxiNodes, npc, 0))
         {
             movement.taxiNodes.clear();

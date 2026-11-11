@@ -45,6 +45,7 @@
 #include "Trainer.h"
 #include "World.h"
 #include "WorldSession.h"  // [insc142] the conversion loot release
+#include "GuildLedger.h"
 
 namespace
 {
@@ -828,6 +829,7 @@ namespace NewRpgCraft
             if (cost > budget)
                 break;
             uint32 const before = bot->GetMoney();
+            GuildLedger::Cause const ledger("profession trainer");  // [eco190]
             trainer->TeachSpell(npc, bot, spellId);  // the trainer window's path: checks, pays, learns
             if (!bot->HasSpell(TaughtSpell(spellId)))
                 continue;

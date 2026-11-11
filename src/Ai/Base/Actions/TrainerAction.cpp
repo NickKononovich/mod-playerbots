@@ -15,6 +15,7 @@
 #include "Playerbots.h"
 #include "ReputationMgr.h"
 #include "Trainer.h"
+#include "GuildLedger.h"
 
 bool TrainerAction::Execute(Event event)
 {
@@ -156,7 +157,10 @@ void TrainerAction::Learn(SpellInfo const* spellInfo, uint32 cost, std::ostrings
         return;
     }
 
-    bot->ModifyMoney(-static_cast<int32>(cost));
+    {
+        GuildLedger::Cause const ledger("class / trainer spells");  // [eco190]
+        bot->ModifyMoney(-static_cast<int32>(cost));
+    }
 
     if (spellInfo->HasEffect(SPELL_EFFECT_LEARN_SPELL))
         bot->CastSpell(bot, spellInfo->Id, true);

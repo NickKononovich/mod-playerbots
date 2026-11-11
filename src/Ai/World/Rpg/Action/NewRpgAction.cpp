@@ -120,6 +120,7 @@ namespace
 #include "World.h"  // [guild15] durability rates
 #include "WorldPacket.h"
 #include "G3D/Vector2.h"
+#include "GuildLedger.h"
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
@@ -3524,6 +3525,7 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
         taxiPacket << node;
     RelayPacketToGroupBots(taxiPacket);
 
+    GuildLedger::Cause const ledger("flight");  // [eco190]
     if (!bot->ActivateTaxiPathTo(nodes, flightMaster, 0))
     {
         LOG_DEBUG("playerbots", "[New RPG] {} active taxi path {} (from {} to {}) failed", bot->GetName(),

@@ -11,6 +11,7 @@
 #include "Event.h"
 #include "GuildGear.h"
 #include "GuildHonest.h"
+#include "GuildLedger.h"
 #include "ItemCountValue.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
@@ -103,6 +104,17 @@ bool BuyAction::Execute(Event event)
                 if (!proto)
                     continue;
 
+                // [eco191] coordinator 2026-11-11: a guild-plan bot's food and drink are RestockFoodAction's (the
+                // cheapest per restored point, its rest time priced): this generic buy took the vendor's best level
+                // up to two stacks at every vendor visit with all the money its budget let it spend - b428: 119 food /
+                // drink visits spent 13.4 g net, the restock's own buys 4.5 g of it; Melon Juice 1 s an item for 835
+                // mana against Ice Cold Milk 25 c for 436 (twice the price per point), and the restock behind it had
+                // no money left
+                if (GuildHonest::IsHonestBot(bot) && proto->Class == ITEM_CLASS_CONSUMABLE &&
+                    (proto->Spells[0].SpellCategory == RESTOCK_SPELL_CATEGORY_FOOD ||
+                     proto->Spells[0].SpellCategory == RESTOCK_SPELL_CATEGORY_DRINK))
+                    continue;
+
                 if (proto->Class == ITEM_CLASS_CONSUMABLE || proto->Class == ITEM_CLASS_PROJECTILE)
                 {
                     maxPurchases = 10;  // Allow up to 10 purchases if it's a consumable or projectile
@@ -185,8 +197,15 @@ bool BuyAction::Execute(Event event)
                     if (AI_VALUE2(uint32, "free money for", uint32(needMoneyFor)) < price)
                         break;
 
+                    uint32 const moneyBefore = bot->GetMoney();
                     if (!BuyItem(tItems, vendorguid, proto))
                         break;
+                    // [eco191] each purchase of the generic buy (the money's way out had no line)
+                    if (GuildHonest::IsHonestBot(bot))
+                        LOG_INFO("playerbots", "[eco191] {} L{} bought {} x{} at {} for {}c ({}, usage {}; {}c left)",
+                                 bot->GetName(), bot->GetLevel(), proto->Name1, std::max<uint32>(1, proto->BuyCount),
+                                 pCreature->GetName(), moneyBefore - std::min(moneyBefore, bot->GetMoney()),
+                                 GuildLedger::BuyCause(proto), uint32(usage), bot->GetMoney());
                     if (!leaderDecision.empty())
                         GuildGear::HistoryNoteDecisionIfNone(bot->GetGUID().GetCounter(), proto->ItemId, "leader",
                                                              leaderDecision);
@@ -445,6 +464,7 @@ bool RestockFoodAction::Execute(Event /*event*/)
         return MoveNear(vendor, INTERACTION_DISTANCE - 1.0f);
 
     bool bought = false;
+    GuildLedger::Cause const ledger("buy: food / drink");  // [eco190]
     if (drinkSlot >= 0)
         bought |= Buy(vendor, drinkSlot, drink);
     if (foodSlot >= 0)

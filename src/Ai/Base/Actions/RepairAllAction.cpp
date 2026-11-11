@@ -8,6 +8,7 @@
 #include "ChatHelper.h"
 #include "Event.h"
 #include "Playerbots.h"
+#include "GuildLedger.h"
 
 bool RepairAllAction::Execute(Event /*event*/)
 {
@@ -25,6 +26,7 @@ bool RepairAllAction::Execute(Event /*event*/)
         float discountMod = bot->GetReputationPriceDiscount(unit);
 
         // Repairs are paid from the bot's own gold (weapons first while money lasts).
+        GuildLedger::Cause const ledger("repair");  // [eco190]
         uint32 totalCost = bot->DurabilityRepair(EQUIPMENT_SLOT_MAINHAND, true, discountMod, false);
         totalCost += bot->DurabilityRepair(EQUIPMENT_SLOT_RANGED, true, discountMod, false);
         totalCost += bot->DurabilityRepair(EQUIPMENT_SLOT_OFFHAND, true, discountMod, false);

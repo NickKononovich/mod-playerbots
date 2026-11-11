@@ -38,6 +38,7 @@
 #include "GuildHonest.h"   // [roles59] dual spec at the trainer
 #include "PlayerbotFactory.h"
 #include "World.h"
+#include "GuildLedger.h"
 
 namespace
 {
@@ -1031,6 +1032,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
             if (NewRpgProfession::NeedsRespec(bot, roleSpec))
             {
                 uint8 const before = AiFactory::GetPlayerSpecTab(bot);
+                GuildLedger::Cause const ledger("talent reset (role spec)");  // [eco190]
                 if (bot->resetTalents(false))  // the core's price (Player::resetTalentsCost)
                 {
                     PlayerbotFactory factory(bot, bot->GetLevel());
@@ -1087,7 +1089,10 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         uint16 const maxBefore = bot->HasSkill(data->skill) ? bot->GetPureMaxSkillValue(data->skill) : 0;
         uint16 const valueBefore = bot->HasSkill(data->skill) ? bot->GetPureSkillValue(data->skill) : 0;
         if (Trainer::Trainer* trainer = sObjectMgr->GetTrainer(npc->GetEntry()))
+        {
+            GuildLedger::Cause const ledger("profession trainer");  // [eco190]
             trainer->TeachSpell(npc, bot, data->spellId);  // the trainer window's path: checks, pays, learns
+        }
         uint16 const maxAfter = bot->HasSkill(data->skill) ? bot->GetPureMaxSkillValue(data->skill) : 0;
         bool const learned = maxAfter > maxBefore;
         LOG_INFO("playerbots", "[guild20] {} L{} {} {} at {}: {} rank {}, skill {}/{} -> {}/{}, paid {}c ({}c left)",

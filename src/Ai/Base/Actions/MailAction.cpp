@@ -9,6 +9,7 @@
 #include "Event.h"
 #include "Mail.h"
 #include "Playerbots.h"
+#include "GuildLedger.h"
 
 std::map<std::string, MailProcessor*> MailAction::processors;
 
@@ -97,6 +98,7 @@ public:
             WorldPacket packet;
             packet << mailbox;
             packet << mail->messageID;
+            GuildLedger::Cause const ledger("mail taken (gold from members)");  // [eco190]
             bot->GetSession()->HandleMailTakeMoney(packet);
             RemoveMail(bot, mail->messageID, mailbox);
         }

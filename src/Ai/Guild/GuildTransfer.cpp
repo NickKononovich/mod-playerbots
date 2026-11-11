@@ -69,6 +69,7 @@
 #include "WorldConfig.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include "GuildLedger.h"
 
 namespace
 {
@@ -346,6 +347,7 @@ namespace
         }
         if (s->GetTradeData() && (!item || s->GetTradeData()->GetItem(TradeSlots(0)) == item))
         {
+            GuildLedger::Cause const ledger("trade (gold between members)");  // [eco190]
             WorldPacket accept(CMSG_ACCEPT_TRADE);
             s->GetSession()->HandleAcceptTradeOpcode(accept);
             if (r->GetTradeData())
@@ -2155,6 +2157,7 @@ void GuildCoordinator::RunTransfers(uint32 diff)
                 uint32 const money = m->money;
                 WorldPacket take(CMSG_MAIL_TAKE_MONEY);
                 take << box->GetGUID() << mailId;
+                GuildLedger::Cause const ledger("mail taken (gold from members)");  // [eco190]
                 r->GetSession()->HandleMailTakeMoney(take);
                 m = r->GetMail(mailId);
                 if (!m || !m->money)

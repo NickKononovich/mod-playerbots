@@ -35,6 +35,7 @@
 #include "GuildGatherPlan.h"  // [gather]
 #include "GuildGear.h"        // [guild50]
 #include "GuildHonest.h"
+#include "GuildLedger.h"  // [eco190]
 #include "Item.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
@@ -8221,4 +8222,5 @@ void AddGuildCoordinatorScripts()
     new TramCarActiveScript();
     new GuildCoordinatorPlayerScript();
     new GuildCoordinatorWorldScript();
+    AddGuildLedgerScripts();  // [eco190]
 }
