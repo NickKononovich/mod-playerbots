@@ -21,7 +21,9 @@
 #include "EscortProtect.h"  // [b36_ohb] EscortWalksIntoPack
 #include "EstimatedLifetimeValue.h"
 #include "Event.h"
+#include "CellImpl.h"  // [dun219] the patrols round a pull
 #include "GridNotifiers.h"  // [dun176] AnyAssistCreatureInRangeCheck
+#include "GridNotifiersImpl.h"  // [dun219]
 #include "Group.h"
 #include "HealthTriggers.h"
 #include "InstanceScript.h"
@@ -326,6 +328,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // times, for at most KILL_SPOT_SEARCHES mobs a plan. Wailing Caverns wave 2 (level 19): Lady Anacondra's five
     // Deviate Guardians call for help in 40 yd at 15% health; every pull of one was counted with the whole room.
     constexpr float KILL_SPOT_RETREAT_STEP = 10.0f;
+    // [dun219] the patrols searched round a pull for a beat that never leaves it: twice the most aggro reach
+    // (Creature::GetAggroRange caps at 45 yd, plus its combat reach and the margin)
+    constexpr float PATROL_BEAT_SEARCH = 100.0f;
     constexpr uint32 KILL_SPOT_RETREATS = 3;
     constexpr uint32 KILL_SPOT_SEARCHES = 8;
     // The tank's own walk (to a mob it engages, to its cast spot, back to its kill spot) follows its navmesh path,
@@ -2583,6 +2588,20 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     {
         float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
         return assist > 0.0f ? std::min(PACK_SOCIAL_RADIUS, assist + PACK_SOCIAL_DRIFT) : 0.0f;
+    }
+
+    bool PatrolBeatStays(Creature* patrol, Position const& at, float range)
+    {
+        if (!patrol || patrol->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE)
+            return false;
+        uint32 const pathId = patrol->GetWaypointPath();
+        WaypointPath const* path = pathId ? sWaypointMgr->GetPath(pathId) : nullptr;
+        if (!path || path->Nodes.empty())
+            return true;  // a walker with no path we can read: its beat is where it walks now
+        for (WaypointNode const& node : path->Nodes)
+            if (at.GetExactDist(node.X, node.Y, node.Z) > range)
+                return false;
+        return true;
     }
 
     float ScriptedCallRadius(uint32 entry)
@@ -10094,9 +10113,40 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // Deviate Guardian near Lady Anacondra (17-32 yd off her; "call for help 40" at 15 %) was refused as "the pack
         // brings a boss" (30 yd of retreat), the boss was pulled with all of them and two fives wiped
         float const callRadius = GetScriptedHelp(creature).callRadius;
+        // [dun219] a waypoint patrol whose beat never leaves twice its reach of the pull (no window ever opens
+        // there): the way back is searched as far as clears its beat's reach - the kill spot's pack (CollectPack: its
+        // "patrol walks in") prices each step, the one without the patrol is taken when it is the fewest. Decided
+        // from the beat's geometry now (waypoint_data), not after a wait. b442 sfk-n five15-15: the patrols round
+        // Rethilgore's pack never passed, the five waited 4 minutes
+        float beatClear = 0.0f;
+        {
+            std::list<Creature*> walkers;
+            Acore::AnyUnitInObjectRangeCheck inBeatRange(candidate, PATROL_BEAT_SEARCH);
+            Acore::CreatureListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(candidate, walkers, inBeatRange);
+            Cell::VisitObjects(candidate, searcher, PATROL_BEAT_SEARCH);
+            for (Creature* walker : walkers)
+            {
+                if (!walker || walker == creature || !walker->IsAlive() || walker->IsInCombat() ||
+                    walker->GetDefaultMovementType() != WAYPOINT_MOTION_TYPE || !walker->IsHostileTo(bot))
+                    continue;
+                float const reach = MovementAction::IdleAggroReach(walker, bot, 0.0f);
+                if (PatrolBeatStays(walker, castSpot, 2.0f * reach) && 2.0f * reach > beatClear)
+                {
+                    beatClear = 2.0f * reach;
+                    static std::set<uint64> logged;  // planner thread: one line per patrol and candidate
+                    if (logged.size() > 4096)
+                        logged.clear();
+                    if (logged.insert(walker->GetGUID().GetRawValue() ^ candidate->GetGUID().GetRawValue()).second)
+                        LOG_INFO("playerbots",
+                                 "[dun219] {}: {}'s beat never leaves {:.0f} yd of the pull of {}: the way back is "
+                                 "searched out of it",
+                                 bot->GetName(), walker->GetName(), beatClear, candidate->GetName());
+                }
+            }
+        }
         uint32 const retreats =
-            std::max(KILL_SPOT_RETREATS,
-                     uint32(std::ceil((callRadius + KILL_SPOT_DRIFT) / KILL_SPOT_RETREAT_STEP)));
+            std::max({KILL_SPOT_RETREATS, uint32(std::ceil((callRadius + KILL_SPOT_DRIFT) / KILL_SPOT_RETREAT_STEP)),
+                      uint32(std::ceil((beatClear + KILL_SPOT_DRIFT) / KILL_SPOT_RETREAT_STEP))});
         for (uint32 i = 1; i <= retreats && fewest.size() > 1; ++i)
         {
             float const back = KILL_SPOT_RETREAT_STEP * float(i);

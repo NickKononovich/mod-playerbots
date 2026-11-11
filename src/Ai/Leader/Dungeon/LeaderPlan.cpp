@@ -1480,6 +1480,24 @@ namespace Leader::Dungeon
                     float ownOverload = 0.0f;
                     std::string ownJudged;
                     patrolOwnRefused = !PullPlanner::JudgePack(tank, own, ownOverload, ownJudged);
+                    // [dun219] a beat that never leaves twice its reach of the pull opens no window: the commit is
+                    // planned again, its way back searched out of the beat (the planner's kill spot, priced as any
+                    // pull) - no wait that never ends
+                    if (patrolOwnRefused &&
+                        PullPlanning::PatrolBeatStays(patrol, lead.commitSpot, 2.0f * patrolReach))
+                    {
+                        patrolOwnRefused = false;
+                        broken = "the patrol's beat stays at the pull: planned again out of its beat";
+                        if (lead.patrolHeldFor != patrol->GetGUID())
+                        {
+                            lead.patrolHeldFor = patrol->GetGUID();
+                            LOG_INFO("playerbots",
+                                     "[dun219] {}: {}: the patrol {}'s beat never leaves {:.0f} yd of it, no window: "
+                                     "planned again, its way back out of the beat",
+                                     run.runId, mob ? mob->GetName() : std::string("?"), patrol->GetName(),
+                                     2.0f * patrolReach);
+                        }
+                    }
                     if (patrolOwnRefused && lead.patrolHeldFor != patrol->GetGUID())
                     {
                         lead.patrolHeldFor = patrol->GetGUID();
