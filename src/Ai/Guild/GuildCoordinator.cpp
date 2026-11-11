@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <tuple>
@@ -2195,7 +2196,9 @@ void GuildCoordinator::UpdateOrders()
                 // town stop) and ran only when a walk happened to end in that town: b426-b429 160 tool / rank /
                 // recipe calls, 2 learned at the planned trainer, 104 Mining Pick / Skinning Knife calls dropped
                 // unrun, no Cooking recipe learned for the cook
-                else if (pick.kind == GuildProfessionKind::TRAIN && pick.pos != WorldPosition())
+                // [lag326] ... and a BUY call of a vendor-only reagent: the vendor's town is a stop of its route
+                else if ((pick.kind == GuildProfessionKind::TRAIN || pick.kind == GuildProfessionKind::BUY) &&
+                         pick.pos != WorldPosition())
                 {
                     std::string const taskKey = TaskKey(o);
                     auto const tried = st.trainDue.find(taskKey);
@@ -2448,7 +2451,9 @@ void GuildCoordinator::UpdateOrders()
         for (GuildOrder& t : trainCalls)
         {
             t.executable = true;
-            t.status = "trains on its route's stop in the trainer's town ([prof272])";
+            t.status = t.profession == GuildProfessionKind::BUY
+                           ? "buys on its route's stop in the vendor's town ([lag326])"
+                           : "trains on its route's stop in the trainer's town ([prof272])";
             orders.push_back(std::move(t));
         }
         GuildOrder quest;
@@ -3656,21 +3661,72 @@ void GuildCoordinator::UpdateProfessions()
             glyphNeeds_ = std::move(glyphs);
         }
     }
-    // each need goes to the member of that profession closest to it (the highest skill; BoP: the member itself)
+    // [lag325] coordinator decision 2026-11-11 (the user's laggard focus): a member below the guild's median level
+    // levels first - its profession calls (craft / buy / gather for a skill-up) wait until it reaches the median; the
+    // [econ1] price of its quest XP (its own copper per XP, a few copper a minute at L13) never weighed its lag.
+    // b435 Rollothan L13 (median 18): "profession 837 c/min > quests 89 c/min" -> 6.9 min crafting Light Parchment
+    uint8 medianLevel = 0;
+    {
+        std::vector<uint8> levels;
+        for (auto const& entry : members)
+            if (!HumanCharacter(entry.second))
+                levels.push_back(entry.second->GetLevel());
+        if (!levels.empty())
+        {
+            std::nth_element(levels.begin(), levels.begin() + levels.size() / 2, levels.end());
+            medianLevel = levels[levels.size() / 2];
+        }
+    }
+    // [lag326] the yards from a member to the nearest vendor of one of a recipe's vendor-sold reagents (npc_vendor,
+    // its own map; FLT_MAX: none there)
+    auto const vendorYards = [](Player* m, uint32 spellId)
+    {
+        float best = std::numeric_limits<float>::max();
+        if (GuildGear::CraftRecipe const* r = GuildGear::Recipe(spellId))
+            for (auto const& [reagent, count] : r->reagents)
+                if (std::vector<GuildGear::VendorSpawn> const* spawns = GuildGear::VendorsOf(reagent))
+                    for (GuildGear::VendorSpawn const& v : *spawns)
+                        if (!v.extendedCost && v.mapId == m->GetMapId() && FriendlyNpc(m, v.entry))
+                            best = std::min(best, m->GetExactDist(v.x, v.y, v.z));
+        return best;
+    };
+    // each need goes to the member of that profession closest to it (the highest skill; BoP: the member itself).
+    // [lag326] coordinator 2026-11-11: a member [lag325] holds back (below the guild's median level) holds no need
+    // another member of the line can take - the free ones first, then the highest skill, then the nearest to a vendor
+    // of the recipe's reagents. b437: all 7 scribes at Inscription 1/75 (a tie) and every glyph need went to the first
+    // of them, Rollothan L13 below the median: no scribe was ever called, Inscription could not start
     std::map<std::pair<uint32, uint32>, std::vector<Need const*>> assigned;  // (crafter, line) -> needs
     for (Need const& n : needs)
     {
         uint32 best = 0, bestSkill = 0;
+        bool bestHeld = true;
+        float bestYards = std::numeric_limits<float>::max();
         for (auto const& [row, m] : members)
         {
             if (HumanCharacter(m) || (n.bop && row->low != n.forLow) || !plansLine(*row, m, n.line))
                 continue;
             uint32 const skill = m->HasSkill(n.line) ? m->GetPureSkillValue(n.line) : 0;
-            if (!best || skill > bestSkill)
+            bool const held = m->GetLevel() < medianLevel;
+            float const yards = vendorYards(m, n.spellId);
+            if (best)
             {
-                best = row->low;
-                bestSkill = skill;
+                if (held != bestHeld)
+                {
+                    if (held)
+                        continue;  // a free member beats a held one
+                }
+                else if (skill != bestSkill)
+                {
+                    if (skill < bestSkill)
+                        continue;
+                }
+                else if (yards >= bestYards)
+                    continue;
             }
+            best = row->low;
+            bestSkill = skill;
+            bestHeld = held;
+            bestYards = yards;
         }
         if (best)
             assigned[{best, n.line}].push_back(&n);
@@ -3715,22 +3771,6 @@ void GuildCoordinator::UpdateProfessions()
                     return r.price;
         return 0;
     };
-    // [lag325] coordinator decision 2026-11-11 (the user's laggard focus): a member below the guild's median level
-    // levels first - its profession calls (craft / buy / gather for a skill-up) wait until it reaches the median; the
-    // [econ1] price of its quest XP (its own copper per XP, a few copper a minute at L13) never weighed its lag.
-    // b435 Rollothan L13 (median 18): "profession 837 c/min > quests 89 c/min" -> 6.9 min crafting Light Parchment
-    uint8 medianLevel = 0;
-    {
-        std::vector<uint8> levels;
-        for (auto const& entry : members)
-            if (!HumanCharacter(entry.second))
-                levels.push_back(entry.second->GetLevel());
-        if (!levels.empty())
-        {
-            std::nth_element(levels.begin(), levels.begin() + levels.size() / 2, levels.end());
-            medianLevel = levels[levels.size() / 2];
-        }
-    }
     for (auto const& [row, p] : members)
     {
         if (HumanCharacter(p))
@@ -4154,6 +4194,23 @@ void GuildCoordinator::UpdateProfessions()
                                 ItemName(buyNowItem) + " ×" + std::to_string(uint32(std::ceil(buyNowUnits))) +
                                     " for " + SkillShort(line) + " to " + std::to_string(maxSkill) + " [prof277]");
                             kinds += kinds.empty() ? "buy" : "+buy";
+                            // [lag326] the nearest vendor that sells it (npc_vendor, its own map, no token cost) is
+                            // the call's town: a stop of its route, as a TRAIN call's trainer ([prof272]). Before, the
+                            // call ran "on its next town visit" in any town: b435-b437 Rollothan's Light Parchment
+                            // x85 stood unbought (only inscription suppliers sell it, none in Westfall)
+                            float yards = std::numeric_limits<float>::max();
+                            if (std::vector<GuildGear::VendorSpawn> const* spawns = GuildGear::VendorsOf(buyNowItem))
+                                for (GuildGear::VendorSpawn const& v : *spawns)
+                                    if (!v.extendedCost && v.mapId == p->GetMapId() && FriendlyNpc(p, v.entry) &&
+                                        !NewRpgProfession::BuyFailed(p, v.entry, buyNowItem) &&
+                                        p->GetExactDist(v.x, v.y, v.z) < yards)
+                                    {
+                                        yards = p->GetExactDist(v.x, v.y, v.z);
+                                        picks.back().pos = WorldPosition(v.mapId, v.x, v.y, v.z);
+                                    }
+                            if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(buyNowItem))
+                                picks.back().cost = proto->BuyPrice * uint32(std::ceil(buyNowUnits)) /
+                                                    std::max<uint32>(proto->BuyCount, 1);
                         }
                         if (gatherNowItem)
                         {
@@ -4412,8 +4469,11 @@ GuildProfessionKind GuildCoordinator::ProfessionCall(Player* bot, uint32* skillL
             o.profession == GuildProfessionKind::GATHER ||
             (o.profession == GuildProfessionKind::CRAFT && o.skillLine == SKILL_MINING && o.pos != WorldPosition()))
             continue;
-        bool const ready = o.profession == GuildProfessionKind::TRAIN ? o.townArea && TownReady(bot, o)
-                                                                      : NewRpgCraft::InSafePlace(bot);
+        // [lag326] a BUY call with its vendor's town: due in that town only
+        bool const ready = o.profession == GuildProfessionKind::TRAIN ||
+                                   (o.profession == GuildProfessionKind::BUY && o.pos != WorldPosition())
+                               ? o.townArea && TownReady(bot, o)
+                               : NewRpgCraft::InSafePlace(bot);
         if (ready)
         {
             due = &o;
