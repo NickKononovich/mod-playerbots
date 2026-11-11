@@ -13312,6 +13312,12 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                      way, cheapestCarries, cheapest.judged);
             _planVerdictWhy = Acore::StringFormat("[lead1560] [lead1582] the cheapest option ({}) is more than the "
                                                   "tank carries ({}): {}", way, cheapestCarries, cheapest.judged);
+            // [dun243] no option of the pack is carried: a hopeless verdict, so the leader takes its no-option path
+            // (the whole pack asked, then planner_no_option: a side pack skipped, a required one reported). As a plain
+            // refusal the leader asked nothing more and stood: b446 wc-n five12-11 880-1113 s, Druid of the Fang +2
+            // "(drop 1.11 of at most 0.77 ...): not pulled" every look, the group at full, no answer until the stall
+            _planVerdictHopeless = true;
+            _planVerdictGuaranteeWaitMs = 0;
             cheapest.pack.clear();
         }
     }
