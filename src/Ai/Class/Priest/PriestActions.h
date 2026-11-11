@@ -29,7 +29,15 @@ public:
     CastPowerWordFortitudeOnPartyAction(PlayerbotAI* botAI)
         : GroupBuffOnPartyAction(botAI, "power word: fortitude") {}
 };
-BUFF_ACTION(CastPowerWordShieldAction, "power word: shield");
+// [dps240] Power Word: Shield where it pays for its mana against the priest's direct heals (PowerWordShieldPays)
+bool PowerWordShieldPays(PlayerbotAI* botAI, Unit* target);
+
+class CastPowerWordShieldAction : public CastBuffSpellAction
+{
+public:
+    CastPowerWordShieldAction(PlayerbotAI* botAI) : CastBuffSpellAction(botAI, "power word: shield") {}
+    bool isUseful() override;
+};
 
 BUFF_ACTION(CastInnerFireAction, "inner fire");
 CURE_ACTION(CastDispelMagicAction, "dispel magic");
@@ -90,6 +98,7 @@ public:
     }
 
     Unit* GetTarget() override;
+    bool isUseful() override;  // [dps240]
 };
 HEAL_PARTY_ACTION(CastFlashHealOnPartyAction, "flash heal", 15.0f, HealingManaEfficiency::LOW);
 HEAL_PARTY_ACTION(CastRenewOnPartyAction, "renew", 15.0f, HealingManaEfficiency::VERY_HIGH);
