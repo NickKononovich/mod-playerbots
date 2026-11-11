@@ -3715,6 +3715,22 @@ void GuildCoordinator::UpdateProfessions()
                     return r.price;
         return 0;
     };
+    // [lag325] coordinator decision 2026-11-11 (the user's laggard focus): a member below the guild's median level
+    // levels first - its profession calls (craft / buy / gather for a skill-up) wait until it reaches the median; the
+    // [econ1] price of its quest XP (its own copper per XP, a few copper a minute at L13) never weighed its lag.
+    // b435 Rollothan L13 (median 18): "profession 837 c/min > quests 89 c/min" -> 6.9 min crafting Light Parchment
+    uint8 medianLevel = 0;
+    {
+        std::vector<uint8> levels;
+        for (auto const& entry : members)
+            if (!HumanCharacter(entry.second))
+                levels.push_back(entry.second->GetLevel());
+        if (!levels.empty())
+        {
+            std::nth_element(levels.begin(), levels.begin() + levels.size() / 2, levels.end());
+            medianLevel = levels[levels.size() / 2];
+        }
+    }
     for (auto const& [row, p] : members)
     {
         if (HumanCharacter(p))
@@ -3724,6 +3740,7 @@ void GuildCoordinator::UpdateProfessions()
         }
         BotState& st = bots_[row->low];
         uint8 const level = p->GetLevel();
+        bool const levelsFirst = level < medianLevel;  // [lag325]
         std::vector<ProfessionPick> picks;
         std::vector<uint32> lines;
         for (auto const* list : {&row->profs, &row->secondary})
@@ -4082,6 +4099,15 @@ void GuildCoordinator::UpdateProfessions()
                     {
                         key = "noquestpace";
                         decision = head + lag + " — quests without a value (no quest with data on the map): quests (" +
+                                   reached + ")";
+                    }
+                    else if (levelsFirst && value > 0 && value > double(questPace) * minutes)
+                    {
+                        // [lag325] below the guild's median level: quests first, the profession waits
+                        key = "quest:levels-first";
+                        decision = head + lag + Acore::StringFormat(" — L{} below the guild's median L{}: it levels "
+                                                                    "first, quests [lag325] (",
+                                                                    uint32(level), uint32(medianLevel)) +
                                    reached + ")";
                     }
                     else if (value > 0 && value > double(questPace) * minutes)
