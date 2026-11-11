@@ -856,7 +856,9 @@ namespace Leader::Knowledge
             // (-135.0,125.4,-78.1), whose escort brings Mutanus, was "starter_partial_walk endLeft 76.9" at the ledge
             // edge (wc-h 20261025-163739 2920-3221 s). Players drop off the ledge above the ramp: edge poly 11067
             // (-187.7,76.4,-46.9, connected to Verdan's ledge -90.1,34.0) to ground poly 11078 below (-189.2,79.6,
-            // -79.9; bot path to the Disciple, tools/navmesh_probe.py CONNECTED, 71 yd). A 33 yd drop: fall damage
+            // -79.9; tools/navmesh_probe.py CONNECTED to the Disciple, 71 yd in a straight line, but the walk is
+            // ~924 yd west through the water: solid rock between the two caves, no floor in the WMO / vmo [dun240]).
+            // A 33 yd drop: fall damage
             // 0.018 * 33 - 0.2426 = ~35 % of max health, no water below this edge (the water drops are 41+ yd).
             {43, -187.7f, 76.4f, -46.9f, -189.2f, 79.6f, -79.9f, 0, 0, {},
              "Wailing Caverns: the drop from Serpentis' / Verdan's ledges back down to the Disciple of Naralex "
