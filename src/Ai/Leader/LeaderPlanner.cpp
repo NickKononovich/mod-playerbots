@@ -7675,7 +7675,16 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         for (ObjectGuid const& guid : record.came)  // a boss is healed as the fight goes: trash fights only
             if (Unit* mob = botAI->GetUnit(guid); mob && IsBossMob(mob))
                 return;
-        float const planned = record.drop / record.dropScale;
+        // [dun201] a fight that brought more than its plan is another fight than the one planned: no ratio of it
+        if (record.came.size() > record.mobs)
+            return;
+        // [dun201] the healers heal from their first health line on (AlmostFullHealth: the "almost full health"
+        // heals): a fight's drop is at least that depth whatever its damage, so the plan's drop is read no shallower.
+        // b437 the ratio of tiny plans to that depth ran the dungeons' drop scales to 4.67 (dm-n, Bami) and 11.41
+        // (wc-n, Thelengyl: "drop 0.33 = 0.03 x measured 11.41"), every pack was refused and both runs stalled
+        float const healLineDepth =
+            std::clamp((100.0f - float(sPlayerbotAIConfig.AlmostFullHealth)) / 100.0f, 0.0f, 1.0f);
+        float const planned = std::max(record.drop / record.dropScale, healLineDepth);
         float const real = std::max(record.tankStartPct - record.tankLowPct, 0.0f) / 100.0f;
         MeasuredDrop& entry = measuredDrops[tank->GetGUID().GetRawValue()];
         if (entry.instanceId != tank->GetInstanceId())
