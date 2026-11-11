@@ -247,6 +247,9 @@ struct NewRpgInfo
     // that visit or look (a look that found no vendor holds on that map only)
     bool vendorVisitStocked{false};
     uint32 vendorVisitMap{0};
+    // [eco201] the cheapest food / drink package it lacked at that visit (or on that map, a look that found none it
+    // could pay): the restock waits until its consumables budget covers it; 0 = the money-gain rule
+    uint32 vendorRestockPrice{0};
     // [regress10] the global leader's REPAIR task: a visit to a repairer for it was made at this money (tried again
     // after a money gain); cleared when the task ends
     bool repairVisited{false};

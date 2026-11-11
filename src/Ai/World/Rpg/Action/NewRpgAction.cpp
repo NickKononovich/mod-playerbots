@@ -118,6 +118,7 @@ namespace
 #include "MapDefines.h"         // [nav24]
 #include "WaypointMovementGenerator.h"
 #include "World.h"  // [guild15] durability rates
+#include "BudgetValues.h"  // [eco201] the consumables budget
 #include "WorldPacket.h"
 #include "G3D/Vector2.h"
 #include "GuildLedger.h"
@@ -237,9 +238,10 @@ namespace
         for (VendorItem const* item : items->m_items)
         {
             ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
+            // [eco201] ... and one it can use (RestockFoodAction::PickVendorFood's own check)
             if (!proto || item->ExtendedCost || proto->Class != ITEM_CLASS_CONSUMABLE ||
                 proto->Spells[0].SpellCategory != spellCategory || proto->RequiredLevel > bot->GetLevel() ||
-                !proto->BuyPrice)
+                !proto->BuyPrice || bot->CanUseItem(proto) != EQUIP_ERR_OK)
                 continue;
             SpellInfo const* spell = sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId);
             bool real = false;
@@ -252,6 +254,33 @@ namespace
     }
 
     thread_local uint32 restockWanted = 0;
+    // [eco201] the money its restock may spend (free money for consumables): a vendor whose cheapest food / drink of
+    // its level costs more is no restock vendor for it
+    thread_local uint32 restockBudget = 0;
+
+    // [eco201] the cheapest food (bit 0) / drink (bit 1) of its level the vendors of its faction on its map sell for
+    // gold, 0 = none sells it (a failed look waits until its budget covers it)
+    uint32 CheapestRestock(Player* bot, uint32 wanted)
+    {
+        FactionTemplateEntry const* own = bot->GetFactionTemplateEntry();
+        uint32 food = 0, drink = 0;
+        for (VendorSpawn const& spawn : VendorSpawns())
+        {
+            if (spawn.mapId != bot->GetMapId())
+                continue;
+            CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(spawn.entry);
+            FactionTemplateEntry const* faction = info ? sFactionTemplateStore.LookupEntry(info->faction) : nullptr;
+            if (!faction || !own || faction->IsHostileTo(*own) || own->IsHostileTo(*faction))
+                continue;
+            if (uint32 const f = (wanted & 1) ? RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_FOOD) : 0;
+                f && (!food || f < food))
+                food = f;
+            if (uint32 const d = (wanted & 2) ? RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_DRINK) : 0;
+                d && (!drink || d < drink))
+                drink = d;
+        }
+        return std::max(food, drink);
+    }
     thread_local std::vector<uint32> const* reagentsWanted = nullptr;  // [supply27] the vendor sells one of them  // [pace25] the spell categories the vendor choice needs (bit 0 food, 1 drink)
 
     // The nearest vendor spawn on the bot's map that is not hostile to it (and sells its ammo when it needs some).
@@ -311,9 +340,18 @@ namespace
                     continue;
             }
             // [pace25] a restock run goes to a vendor that sells what it lacks
-            if (((restockWanted & 1) && !RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_FOOD)) ||
-                ((restockWanted & 2) && !RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_DRINK)))
-                continue;
+            // [eco201] coordinator 2026-11-11: ... at a price its restock may spend (b432: 30 "buy drink" visits in
+            // 25 min bought nothing - Ainne 6, Namwe 7 vendors - their consumables budget below the cheapest drink)
+            if (restockWanted)
+            {
+                uint32 const food =
+                    (restockWanted & 1) ? RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_FOOD) : 0;
+                uint32 const drink =
+                    (restockWanted & 2) ? RestockPrice(bot, spawn.entry, RESTOCK_SPELL_CATEGORY_DRINK) : 0;
+                if (((restockWanted & 1) && (!food || food > restockBudget)) ||
+                    ((restockWanted & 2) && (!drink || drink > restockBudget)))
+                    continue;
+            }
             candidates.emplace_back(bot->GetExactDist(spawn.x, spawn.y, spawn.z), &spawn);
         }
         std::sort(candidates.begin(), candidates.end(),
@@ -877,6 +915,7 @@ bool NewRpgBaseAction::StartVendorRun()
             // vendor 29 yd off was walked to, given up and chosen again every few seconds)
             info.vendorVisited = true;
             info.vendorVisitStocked = false;  // [eco193]
+            info.vendorRestockPrice = 0;  // [eco201]
             info.vendorVisitMap = bot->GetMapId();
             info.vendorMissed = true;  // [vendor23]
             info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
@@ -966,9 +1005,16 @@ bool NewRpgBaseAction::StartVendorRun()
     // stocked it, running dry again is a new need: b428 198 "[supply34] out of drink: no money gained since its last
     // vendor visit" (Alnia 46, Pherua 10562c and Orenem resting dry 810 / 784 times) - they had bought their drink
     // there, drunk it, and the gate waited for a coin that a healer resting dry does not loot
+    // [eco201] coordinator 2026-11-11: ... and after one, the restock waits until the money it may spend covers the
+    // cheapest food / drink it lacked there (vendorRestockPrice), not for any coin: b432 each small loot gain sent
+    // Ainne / Namwe / Galiver back to a vendor whose drink their budget could not pay
+    uint32 const spendable =
+        (noFood || noDrink) ? AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables)) : 0;
+    bool const budgetCovers = info.vendorRestockPrice ? spendable >= info.vendorRestockPrice
+                                                      : bot->GetMoney() > info.vendorVisitMoney;
     bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 &&
                          (fiveRetry || !info.vendorVisited || info.vendorVisitStocked ||
-                          info.vendorVisitMap != bot->GetMapId() || bot->GetMoney() > info.vendorVisitMoney);
+                          info.vendorVisitMap != bot->GetMapId() || budgetCovers);
     if (restock && fiveRetry)
         info.fiveRestockTried = true;
     // [supply34] why a bot out of food / drink makes no run: one line per money value it has (b386: 1.10 h sat
@@ -991,9 +1037,17 @@ bool NewRpgBaseAction::StartVendorRun()
                  why, bot->GetMoney(), info.vendorVisited ? info.vendorVisitMoney : 0);
     };
     if ((noFood || noDrink) && !restock)
-        noRunWhy(bot->GetMoney() == 0 ? "no money"
-                                      : "its last vendor visit or look on this map could not stock it and no money "
-                                        "was gained since [eco193]");
+    {
+        std::string const why =
+            bot->GetMoney() == 0 ? std::string("no money")
+            : info.vendorRestockPrice
+                ? Acore::StringFormat("its last vendor visit or look on this map could not stock it: it may spend "
+                                      "{}c, the cheapest there costs {}c [eco201]",
+                                      spendable, info.vendorRestockPrice)
+                : std::string("its last vendor visit or look on this map could not stock it and no money was gained "
+                              "since [eco193]");
+        noRunWhy(why.c_str());
+    }
     // [supply27] a five member before its five goes in buys the vendor-sold reagents its spells use and has none of
     std::vector<uint32> reagents;
     if (fiveSupply && bot->GetMoney() > 0 && (!info.vendorVisited || bot->GetMoney() > info.vendorVisitMoney))
@@ -1004,6 +1058,8 @@ bool NewRpgBaseAction::StartVendorRun()
 
     float dist = 0.0f;
     restockWanted = restock && !sell && !ammoSubClass && !repair ? (noFood ? 1u : 0u) | (noDrink ? 2u : 0u) : 0u;
+    restockBudget = spendable;  // [eco201]
+    uint32 const lookedFor = restockWanted;
     reagentsWanted = reagentRun && !sell && !ammoSubClass && !repair && !restock ? &reagents : nullptr;
     VendorSpawn const* vendor = repair ? NearestRepairer(bot, dist) : NearestVendor(bot, ammoSubClass, dist);
     restockWanted = 0;
@@ -1025,12 +1081,16 @@ bool NewRpgBaseAction::StartVendorRun()
     if (!vendor)
     {
         if (restock)
-            noRunWhy("no vendor of its faction sells it food / drink of its level on a walk it takes");
+            noRunWhy("no vendor of its faction sells it food / drink of its level it can pay on a walk it takes");
         // [supply26] no vendor sells it a way it walks: looked again after its next money gain (the look is a scan of
         // the map's vendors and their trips, not for every tick of its rest)
         info.vendorVisited = true;
         info.vendorVisitStocked = false;  // [eco193]
+        info.vendorRestockPrice = 0;  // [eco201]
         info.vendorVisitMap = bot->GetMapId();
+        // [eco201] ... once its budget covers the cheapest of it on its map and is more than it is now (a vendor it
+        // can pay may then be in reach; the same budget finds the same vendors)
+        info.vendorRestockPrice = lookedFor ? std::max(CheapestRestock(bot, lookedFor), spendable + 1) : 0;
         info.vendorVisitBagUsed = bagUsed;
         info.vendorVisitMoney = bot->GetMoney();
         return false;
@@ -2358,6 +2418,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         info.vendorRunEntry = 0;
         info.vendorVisited = true;
         info.vendorVisitStocked = false;  // [eco193]
+        info.vendorRestockPrice = 0;  // [eco201]
         info.vendorVisitMap = bot->GetMapId();
         info.vendorMissed = true;  // [vendor23]
         info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
@@ -2465,9 +2526,17 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                         bool const outFood = CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD) < line;
                         bool const outDrink =
                             bot->GetMaxPower(POWER_MANA) && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < line;
-                        info.vendorVisitStocked =
-                            (!outFood || !RestockPrice(bot, creature->GetEntry(), RESTOCK_SPELL_CATEGORY_FOOD)) &&
-                            (!outDrink || !RestockPrice(bot, creature->GetEntry(), RESTOCK_SPELL_CATEGORY_DRINK));
+                        uint32 const foodPrice =
+                            outFood ? RestockPrice(bot, creature->GetEntry(), RESTOCK_SPELL_CATEGORY_FOOD) : 0;
+                        uint32 const drinkPrice =
+                            outDrink ? RestockPrice(bot, creature->GetEntry(), RESTOCK_SPELL_CATEGORY_DRINK) : 0;
+                        info.vendorVisitStocked = !foodPrice && !drinkPrice;
+                        // [eco201] what it lacked costs this much here: the next restock waits for that budget (and
+                        // more than the budget this visit could not buy with: bags full, a sold-out stock)
+                        uint32 const budgetNow =
+                            AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables));
+                        info.vendorRestockPrice =
+                            info.vendorVisitStocked ? 0 : std::max(std::max(foodPrice, drinkPrice), budgetNow + 1);
                         info.vendorVisitMap = bot->GetMapId();
                         info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                         info.vendorVisitMoney = bot->GetMoney();
@@ -2529,6 +2598,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 info.vendorRunEntry = 0;
                 info.vendorVisited = true;
                 info.vendorVisitStocked = false;  // [eco193]
+                info.vendorRestockPrice = 0;  // [eco201]
                 info.vendorVisitMap = bot->GetMapId();
                 info.vendorMissed = true;  // [vendor23]
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
@@ -2600,6 +2670,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 info.vendorRunEntry = 0;
                 info.vendorVisited = true;
                 info.vendorVisitStocked = false;  // [eco193]
+                info.vendorRestockPrice = 0;  // [eco201]
                 info.vendorVisitMap = bot->GetMapId();
                 info.vendorMissed = true;  // [vendor23]
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
