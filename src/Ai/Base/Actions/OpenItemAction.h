@@ -24,6 +24,9 @@ public:
 private:
     // Performs the action of opening the item
     void OpenItem(Item* item, uint8 bag, uint8 slot);
+    // [ench168] a container its use spell opens (spell_loot_template): the clams
+    Item* FindContainer() const;
+    bool UseContainer(Item* item);
 };
 
 #endif

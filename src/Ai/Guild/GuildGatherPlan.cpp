@@ -690,6 +690,19 @@ void GuildGatherPlan::LoadDrops()
         {
             std::map<uint32, float> all, goods;
             Expected(LootTemplates_Creature.GetLootFor(tmpl->lootid), all, 1.0f);
+            // [ench167] a dropped container opened by its use spell (the clams: Thick-shelled Clam's 58168 gives
+            // Tangy Clam Meat by spell_loot_template, SPELL_EFFECT_CREATE_RANDOM_ITEM) gives its contents per kill
+            // too - b443 the cooks' walk to 175 priced Tangy Clam Meat (Goblin Deviled Clams, the trainer's recipe
+            // from 160) at the 0.02-0.1 % of its direct drops: "to 175 in 150616 min"
+            std::map<uint32, float> contents;
+            for (auto const& [item, amount] : all)
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+                    proto && proto->Spells[0].SpellId > 0 &&
+                    proto->Spells[0].SpellTrigger == ITEM_SPELLTRIGGER_ON_USE &&
+                    LootTemplates_Spell.HaveLootFor(uint32(proto->Spells[0].SpellId)))
+                    Expected(LootTemplates_Spell.GetLootFor(uint32(proto->Spells[0].SpellId)), contents, amount);
+            for (auto const& [item, amount] : contents)
+                all[item] += amount;
             for (auto const& [item, amount] : all)
                 if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
                     proto && proto->Class == ITEM_CLASS_TRADE_GOODS && proto->Quality >= ITEM_QUALITY_NORMAL &&

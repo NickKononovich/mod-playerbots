@@ -4305,6 +4305,7 @@ void GuildCoordinator::UpdateProfessions()
                 // Insc 1/75 "Common Parchment x316": the units of the walk to 150 through the next rank, every
                 // vendor reagent of the walk summed under the last one's name
                 std::map<uint32, double> buyNow, gatherNow;
+                std::map<uint32, double> gatherItemMin;  // [ench169] the walk's gathering minutes per item
                 bool held = false;
                 std::string block;
                 uint32 reach = skill;
@@ -4413,6 +4414,7 @@ void GuildCoordinator::UpdateProfessions()
                                 if (pace > 0.0f)
                                 {
                                     gmin += units / pace;
+                                    gatherItemMin[rawItem] += units / pace;
                                     if (units > gatherUnits)
                                     {
                                         gatherItem = rawItem;
@@ -4460,6 +4462,7 @@ void GuildCoordinator::UpdateProfessions()
                                     pace > 0.0f)
                                 {
                                     gmin += units / pace;
+                                    gatherItemMin[rawItem] += units / pace;
                                     continue;
                                 }
                             // [ench163] skinning and fishing (GuildGatherPlan's SKIN / FISH places), [ench164] a
@@ -4477,6 +4480,7 @@ void GuildCoordinator::UpdateProfessions()
                                     pace > 0.0f)
                                 {
                                     gmin += units / pace;
+                                    gatherItemMin[rawItem] += units / pace;
                                     continue;
                                 }
                             why = ItemName(rawItem) + " ×" + std::to_string(uint32(std::ceil(units))) + ": " +
@@ -4571,12 +4575,20 @@ void GuildCoordinator::UpdateProfessions()
                                   reach, minutes, craftMin, gatherMin, value < 0 ? "-" : "",
                                   Gsc(uint64(std::fabs(value))).c_str(), Gsc(uint64(unlocked)).c_str(),
                                   Gsc(uint64(supplyValue)).c_str(), Gsc(uint64(vendorCost)).c_str());
-                    std::string const reached = std::string(numbers) +
-                                                (unlockedText.empty() ? "" : "; unlocks " + unlockedText) +
-                                                (supplyText.empty() ? "" : "; supplies [supply112]: " + supplyText) +
-                                                (guildText.empty() ? ""
-                                                                   : "; from the guild: " + guildText + " [insc144]") +
-                                                (block.empty() ? "" : "; next: " + block);
+                    // [ench169] the item most of the gathering minutes go to (b443: the cooks' "to 175 in 150616 min"
+                    // named none)
+                    std::string slowestText;
+                    if (auto const slowest =
+                            std::max_element(gatherItemMin.begin(), gatherItemMin.end(),
+                                             [](auto const& x, auto const& y) { return x.second < y.second; });
+                        slowest != gatherItemMin.end() && gatherMin > 0)
+                        slowestText = Acore::StringFormat("; slowest gathered: {} {:.1f} min [ench169]",
+                                                          ItemName(slowest->first), slowest->second);
+                    std::string const reached =
+                        std::string(numbers) + (unlockedText.empty() ? "" : "; unlocks " + unlockedText) +
+                        (supplyText.empty() ? "" : "; supplies [supply112]: " + supplyText) +
+                        (guildText.empty() ? "" : "; from the guild: " + guildText + " [insc144]") +
+                        (block.empty() ? "" : "; next: " + block) + slowestText;
                     // [lag328] coordinator 2026-11-11: members' needs this crafter holds (lag326: the free crafter of
                     // the line) that its skill-up walk unlocks are its work for the guild - the copper comparison
                     // weighs them at the items' vendor tags, and a glyph's is a token (BuyPrice 4s, no vendor sells
@@ -4804,6 +4816,16 @@ void GuildCoordinator::UpdateProfessions()
                     key = "learn";
                     decision = head + " — not learned: TRAIN at the trainer";
                 }
+                // [ench166] the pole before the rank: without one the fisher fishes nothing, at its rank cap too (the
+                // guild needs its fish, not its skill). b443: both guild fishers stood at Fishing 225/225 with no pole
+                // in their bags, the rank call ("TRAIN rank to 300", Feathermoon Stronghold) took the branch the pole
+                // call came after, and every fish's walk read "no member gatherer reaches it (Fish 0) [ench163]"
+                else if (has && line == SKILL_FISHING && !NewRpgFishing::HasPole(p))
+                {
+                    call("Fishing Pole", "fishing learned, no pole [ench166]", ProfessionTool(line));
+                    key = "tool";
+                    decision = head + " — no pole: buy at a vendor [ench166]";
+                }
                 else if (has && skill >= maxSkill && cap > maxSkill)
                 {
                     TrainerRank const* rank = nullptr;
@@ -4820,12 +4842,6 @@ void GuildCoordinator::UpdateProfessions()
                         key = "rank";
                         decision = head + " — rank cap: TRAIN rank to " + std::to_string(rank->maxSkill);
                     }
-                }
-                else if (has && line == SKILL_FISHING && !NewRpgFishing::HasPole(p))
-                {
-                    call("Fishing Pole", "fishing learned, no pole", ProfessionTool(line));
-                    key = "tool";
-                    decision = head + " — no pole: buy at a vendor";
                 }
                 // [econ2] the executor buys a tool only on the leader's call: a learned Mining / Skinning without
                 // its tool (the node / the corpse needs it)
