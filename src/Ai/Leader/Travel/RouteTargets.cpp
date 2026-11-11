@@ -51,6 +51,8 @@
 #include "LeaderOrders.h"  // [lead1] the tank's pull orders
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
+#include "Opcodes.h"  // [dun216] the loot packets
+#include "LootMgr.h"  // [dun216] Loot / LootItem
 #include "PathGenerator.h"
 #include "LeaderKnowledge.h"
 #include "RouteSearch.h"  // [lead99] the leader's route search
@@ -4602,6 +4604,48 @@ namespace Leader::Travel
             for (auto const& [entry, seenMs] : chainDoors)
                 if (getMSTimeDiff(seenMs, now) <= KEY_DOOR_CHAIN_FRESH_MS)
                     blockingDoors.insert(entry);
+        // [dun216] a starter chest the leader opened (starter_chest_open: the lock's opening spell, EffectOpenLock ->
+        // Player::SendLoot) holds its loot until it is taken: the leader takes it as a player's loot window does
+        // (CMSG_LOOT on the opened chest, CMSG_AUTOSTORE_LOOT_ITEM per slot, CMSG_LOOT_RELEASE). b442 dm-n
+        // five12-12: the Defias Gunpowder crate 17155 opened at 1414 s, its Defias Gunpowder 5397 never taken, the
+        // Defias Cannon 16398 "no usable object" (its lock asks the gunpowder) and Smite / Cookie / Greenskin /
+        // VanCleef "behind a closed door (Iron Clad Door 16397)" until the stall at 1941 s
+        if (!leader->IsInCombat() && leader->GetLootGUID().IsEmpty())
+            for (StarterTrack const& starter : group.Route().starters)
+            {
+                if (starter.def->kind != StarterKind::UseGameObject)
+                    continue;
+                for (uint32 entry : starter.def->entries)
+                {
+                    GameObject* chest = leader->FindNearestGameObject(entry, INTERACTION_DISTANCE);
+                    if (!chest || chest->GetGoType() != GAMEOBJECT_TYPE_CHEST ||
+                        chest->getLootState() != GO_ACTIVATED || chest->loot.isLooted() || chest->loot.items.empty())
+                        continue;
+                    WorldPacket* open = new WorldPacket(CMSG_LOOT, 8);
+                    *open << chest->GetGUID();
+                    leader->GetSession()->QueuePacket(open);
+                    std::string taken;
+                    for (size_t slot = 0; slot < chest->loot.items.size(); ++slot)
+                    {
+                        LootItem const& item = chest->loot.items[slot];
+                        if (item.is_looted)
+                            continue;
+                        WorldPacket* store = new WorldPacket(CMSG_AUTOSTORE_LOOT_ITEM, 1);
+                        *store << uint8(slot);
+                        leader->GetSession()->QueuePacket(store);
+                        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item.itemid);
+                        taken += (taken.empty() ? "" : ", ") + (proto ? proto->Name1 : std::to_string(item.itemid));
+                    }
+                    WorldPacket* release = new WorldPacket(CMSG_LOOT_RELEASE, 8);
+                    *release << chest->GetGUID();
+                    leader->GetSession()->QueuePacket(release);
+                    group.LogEvent("starter_chest_loot", JsonObject().Str("note", starter.def->note)
+                                                             .Num("entry", chest->GetEntry())
+                                                             .Str("items", taken));
+                    LOG_INFO("playerbots", "[dun216] {}: takes the opened {}'s loot ({}): {}", leader->GetName(),
+                             chest->GetName(), starter.def->note, taken.empty() ? std::string("-") : taken);
+                }
+            }
         int32 starterIdx = -1;
         float starterScore = 0.0f;
         bool starterPriority = false;
