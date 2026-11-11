@@ -640,6 +640,7 @@ void GuildCoordinator::LoadRecipes()
     smeltFrom_.clear();
     vendorItems_.clear();
     vendorMaps_.clear();
+    reagentVendors_.clear();
     craftedFrom_.clear();
     skinned_.clear();
     if (QueryResult result = WorldDatabase.Query("SELECT DISTINCT Item FROM skinning_loot_template WHERE Reference = 0"))
@@ -714,13 +715,18 @@ void GuildCoordinator::LoadRecipes()
         while (result->NextRow());
     }
     // [lag329] where each unlimited vendor item is sold: the maps of its vendors' spawns
-    if (QueryResult result = WorldDatabase.Query("SELECT DISTINCT v.item, c.map FROM npc_vendor v JOIN creature c ON "
+    // [lag335] ... and the spawns themselves (ReagentVendors)
+    if (QueryResult result = WorldDatabase.Query("SELECT v.item, c.map, c.id, c.position_x, c.position_y, "
+                                                 "c.position_z, v.ExtendedCost FROM npc_vendor v JOIN creature c ON "
                                                  "c.id = v.entry WHERE v.maxcount = 0"))
     {
         do
         {
             Field* f = result->Fetch();
-            vendorMaps_[f[0].Get<uint32>()].insert(f[1].Get<uint32>());
+            uint32 const item = f[0].Get<uint32>();
+            vendorMaps_[item].insert(f[1].Get<uint32>());
+            reagentVendors_[item].push_back({f[2].Get<uint32>(), f[1].Get<uint32>(), f[3].Get<float>(),
+                                             f[4].Get<float>(), f[5].Get<float>(), f[6].Get<uint32>()});
         } while (result->NextRow());
     }
 
@@ -1271,6 +1277,12 @@ void GuildCoordinator::SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 s
 // another continent is no plan of its: "the vendor is on another map ... no route of its own goes there"). b440:
 // Ivory Ink is sold without limit only by Jessica Sellers in Dalaran (map 571): every scribe's Inscription walk from 1
 // counted its ink as bought there at 0c, so no herb was wanted, gathered or milled for it ("gather 0.0")
+std::vector<GuildCoordinator::ReagentVendor> const* GuildCoordinator::ReagentVendors(uint32 itemId) const
+{
+    auto const itr = reagentVendors_.find(itemId);
+    return itr != reagentVendors_.end() ? &itr->second : nullptr;
+}
+
 bool GuildCoordinator::VendorSource(uint32 item, uint32 mapId) const
 {
     if (!vendorItems_.count(item))
@@ -4044,13 +4056,15 @@ void GuildCoordinator::UpdateProfessions()
     }
     // [lag326] the yards from a member to the nearest vendor of one of a recipe's vendor-sold reagents (npc_vendor,
     // its own map; FLT_MAX: none there)
-    auto const vendorYards = [](Player* m, uint32 spellId)
+    // [lag335] the reagents' vendors from npc_vendor itself: GuildGear::VendorsOf indexes only gear and bags, so no
+    // reagent vendor was ever found here (b443 / b444: every scribe's distance FLT_MAX)
+    auto const vendorYards = [this](Player* m, uint32 spellId)
     {
         float best = std::numeric_limits<float>::max();
         if (GuildGear::CraftRecipe const* r = GuildGear::Recipe(spellId))
             for (auto const& [reagent, count] : r->reagents)
-                if (std::vector<GuildGear::VendorSpawn> const* spawns = GuildGear::VendorsOf(reagent))
-                    for (GuildGear::VendorSpawn const& v : *spawns)
+                if (std::vector<ReagentVendor> const* spawns = ReagentVendors(reagent))
+                    for (ReagentVendor const& v : *spawns)
                         if (!v.extendedCost && v.mapId == m->GetMapId() && FriendlyNpc(m, v.entry))
                             best = std::min(best, m->GetExactDist(v.x, v.y, v.z));
         return best;
@@ -4746,9 +4760,11 @@ void GuildCoordinator::UpdateProfessions()
                             // the call's town: a stop of its route, as a TRAIN call's trainer ([prof272]). Before, the
                             // call ran "on its next town visit" in any town: b435-b437 Rollothan's Light Parchment
                             // x85 stood unbought (only inscription suppliers sell it, none in Westfall)
+                            // [lag335] npc_vendor's own spawns (GuildGear::VendorsOf holds no reagent: b443 / b444
+                            // Dekorhan's "Light Parchment x85" had no vendor town, [lag327] 0 buys)
                             float yards = std::numeric_limits<float>::max();
-                            if (std::vector<GuildGear::VendorSpawn> const* spawns = GuildGear::VendorsOf(buyNowItem))
-                                for (GuildGear::VendorSpawn const& v : *spawns)
+                            if (std::vector<ReagentVendor> const* spawns = ReagentVendors(buyNowItem))
+                                for (ReagentVendor const& v : *spawns)
                                     if (!v.extendedCost && v.mapId == p->GetMapId() && FriendlyNpc(p, v.entry) &&
                                         !NewRpgProfession::BuyFailed(p, v.entry, buyNowItem) &&
                                         p->GetExactDist(v.x, v.y, v.z) < yards)

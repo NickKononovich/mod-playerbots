@@ -581,7 +581,8 @@ namespace
             return false;
         uint32 const have = bot->GetItemCount(itemId, false);
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
-        std::vector<GuildGear::VendorSpawn> const* spawns = GuildGear::VendorsOf(itemId);
+        // [lag335] npc_vendor's own spawns: GuildGear::VendorsOf indexes only gear and bags (b444: [lag327] 0 buys)
+        std::vector<GuildCoordinator::ReagentVendor> const* spawns = sGuildCoordinator.ReagentVendors(itemId);
         if (!proto || !spawns || have >= count)
             return false;
         uint32 const lot = std::max<uint32>(1, proto->BuyCount);
@@ -592,12 +593,12 @@ namespace
         lots = std::min<uint32>(lots, std::min<uint32>(UINT8_MAX, std::max<uint32>(1, proto->GetMaxStackSize() / lot)));
         if (!lots)
             return false;
-        std::unordered_set<GuildGear::VendorSpawn const*> refused;
+        std::unordered_set<GuildCoordinator::ReagentVendor const*> refused;
         while (true)
         {
-            GuildGear::VendorSpawn const* best = nullptr;
+            GuildCoordinator::ReagentVendor const* best = nullptr;
             float bestDist = FLT_MAX;
-            for (GuildGear::VendorSpawn const& v : *spawns)
+            for (GuildCoordinator::ReagentVendor const& v : *spawns)
             {
                 if (v.extendedCost || v.mapId != bot->GetMapId() || refused.count(&v) || !Friendly(bot, v.entry) ||
                     FailedBefore(bot, v.entry, itemId))

@@ -363,6 +363,16 @@ public:
     // [lag327] map thread: the bot's skill-up BUY call (item, units, its line) when it is due where the bot stands
     // (its vendor's town, [lag326]); false: none due
     bool ProfessionBuyDue(Player* bot, uint32& itemId, uint32& count, uint32& skillLine);
+    // [lag335] the spawns of the vendors that sell an item without a stock limit (npc_vendor maxcount 0, any item:
+    // GuildGear's vendor index holds only gear and bags); loaded with the recipes, read-only after
+    struct ReagentVendor
+    {
+        uint32 entry{0};
+        uint32 mapId{0};
+        float x{0.0f}, y{0.0f}, z{0.0f};
+        uint32 extendedCost{0};
+    };
+    std::vector<ReagentVendor> const* ReagentVendors(uint32 itemId) const;
     // [prof273] map thread: the recipes of this skill line the global leader called the bot to learn at a trainer
     // (a planned craft's recipe, the guild cook's supply recipe) - the trainer executor learns them whether they
     // still give skill or not
@@ -1009,6 +1019,7 @@ private:
     std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> smeltFrom_;  // bar -> ore x count per bar
     std::unordered_set<uint32> vendorItems_;
     std::unordered_map<uint32, std::set<uint32>> vendorMaps_;  // [lag329] item -> the maps of its unlimited vendors
+    std::unordered_map<uint32, std::vector<ReagentVendor>> reagentVendors_;  // [lag335] item -> its vendors' spawns
     // [guild70] crafted intermediates: product -> (reagent, count per product), read-only after Load
     std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> craftedFrom_;
     std::unordered_set<uint32> skinned_;  // skinning loot (leather is gathered, not only crafted)
