@@ -2002,6 +2002,13 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
     if (!master || !master->taxiNodeId || master->pos.GetMapId() != bot->GetMapId() ||
         !bot->m_taxi.IsTaximaskNodeKnown(master->taxiNodeId))
         return false;
+    // [lag332] the flight master on the bot's own landmass (TravelRouteMgr::Landmass: only a ride joins two): the
+    // nearest one by the straight line may stand across the water. b442 Sylaenas L13 (the lowest member) on Teldrassil
+    // walled from q483's spot: "[fly97] flies ... from Auberdine, Darkshore -> Rut'theran Village", her walk to the
+    // Auberdine master took the portal down and the boat over, the flight brought her back - a Teldrassil-Darkshore
+    // circle of portal, boat and flight, TRAVEL 73 % of her 37 min, 2.7 same-level kills an hour
+    if (TravelRouteMgr::Landmass(master->pos) != TravelRouteMgr::Landmass(WorldPosition(bot)))
+        return false;
     // [fly164] a flight master whose walk is given up at this level is no flight from here: b438 Sycina L19 on a
     // Stonetalon ridge (1764,-1019,246) gave the walk to the Astranaar flight master (2828,-284) up (MAZE dead end,
     // MOVE_FAR_LOOP), and every next quest's walk chose the flight from it again - WALK_FAIL x89 from that spot, 37 %
@@ -2018,6 +2025,10 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
     {
         TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(i);
         if (!node || node->map_id != dest.GetMapId() || !bot->m_taxi.IsTaximaskNodeKnown(node->ID))
+            continue;
+        // [lag332] ... and the landing on the destination's: the walk off it must reach the destination
+        if (TravelRouteMgr::Landmass(WorldPosition(node->map_id, node->x, node->y, node->z)) !=
+            TravelRouteMgr::Landmass(dest))
             continue;
         float const gap = std::hypot(node->x - dest.GetPositionX(), node->y - dest.GetPositionY());
         if (gap < toGap)
