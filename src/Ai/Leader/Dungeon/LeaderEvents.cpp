@@ -10146,16 +10146,18 @@ namespace Leader::Dungeon
                     }
                     bool const survives = damage < health + heals && healed;
                     // logged on a change of the verdict per member, first mob and set size
-                    thread_local std::map<std::tuple<uint64, uint64, size_t>, bool> verdicts;
+                    // [dun236] once per member, first mob, set size and verdict: with dun235's heals the verdict
+                    // flips as the tank's intake and the healer's mana move (b446 wc-n: ~50 lines a minute)
+                    thread_local std::set<std::tuple<uint64, uint64, size_t, bool>> verdicts;
                     if (verdicts.size() > 4096)
                         verdicts.clear();
                     Projection const& p = taken.front().p;
                     Unit* const first = taken.front().mob;
-                    auto const key =
-                        std::make_tuple(bot->GetGUID().GetRawValue(), first->GetGUID().GetRawValue(), taken.size());
-                    if (auto const was = verdicts.find(key); was == verdicts.end() || was->second != survives)
+                    if (verdicts
+                            .insert(std::make_tuple(bot->GetGUID().GetRawValue(), first->GetGUID().GetRawValue(),
+                                                    taken.size(), survives))
+                            .second)
                     {
-                        verdicts[key] = survives;
                         if (taken.size() == 1)
                             LOG_INFO("playerbots",
                                      "[lead985] {}: no headroom on {} ({:.0f} -> {:.0f} vs tank {:.0f} -> {:.0f}); "
