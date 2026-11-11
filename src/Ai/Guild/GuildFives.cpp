@@ -32,6 +32,7 @@
 #include "NewRpgProfession.h"  // [roles118] NeedsRespec
 #include "GameTime.h"
 #include "Group.h"
+#include "GameEventMgr.h"  // [sfk246] a game event's spawns
 #include "LFGMgr.h"  // [next1] whether the Dungeon Finder can port a five
 #include "Item.h"
 #include "ItemUsageValue.h"
@@ -331,9 +332,16 @@ namespace FiveGate
                 } while (result->NextRow());
         }
 
+        // [sfk246] no creature the five cannot fight, nor a holiday's spawn: b446 sfk-n's gate refused SFK on
+        // "Slavering Worg x2 (L21-21, 6203 hp) ... heal mana 789 of 750 (1.05)" - the worg 16267 (1563 hp) and the
+        // scripted Arugal 10000 2 yd from it (247103, 4640 hp, unit_flags IMMUNE_TO_PC | IMMUNE_TO_NPC: the Rethilgore
+        // event's speaker, never a fight); Hallow's End's Sever 14682 (game_event_creature 120) stood in the list too
+        uint32 skippedImmune = 0;
+        uint32 skippedEvent = 0;
         if (QueryResult result = WorldDatabase.Query(
                 "SELECT c.guid, c.id, c.position_x, c.position_y, c.position_z, IFNULL(f.leaderGUID, 0), "
-                "c.MovementType, c.wander_distance FROM creature c "
+                "c.MovementType, c.wander_distance, CAST(IFNULL((SELECT e.eventEntry FROM game_event_creature e "
+                "WHERE e.guid = c.guid LIMIT 1), 0) AS SIGNED) FROM creature c "
                 "LEFT JOIN creature_formations f ON f.memberGUID = c.guid WHERE c.map = {}",
                 mapId))
         {
@@ -344,6 +352,19 @@ namespace FiveGate
                 if (!tmpl || tmpl->type == CREATURE_TYPE_CRITTER ||
                     (tmpl->unit_flags & (UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE)))
                     continue;
+                if (tmpl->unit_flags & UNIT_FLAG_IMMUNE_TO_PC)  // [sfk246]
+                {
+                    ++skippedImmune;
+                    continue;
+                }
+                // [sfk246] a game event's spawn is in the world only while its event runs (a negative entry: only
+                // while it does not)
+                if (int64 const event = f[8].Get<int64>();
+                    event && sGameEventMgr->IsActiveEvent(uint16(event > 0 ? event : -event)) != (event > 0))
+                {
+                    ++skippedEvent;
+                    continue;
+                }
                 FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(tmpl->faction);
                 if (!ft || !(ft->IsHostileToPlayers() || ft->IsHostileToAlliancePlayers()))
                     continue;
@@ -445,8 +466,9 @@ namespace FiveGate
                 ++callers;
         LOG_INFO("playerbots",
                  "[dun170] five gate: map {} - {} hostile spawns, {} of them on a waypoint patrol, [dun191] {} with a "
-                 "scripted call for help, social radius {:.1f}",
-                 mapId, n, data.patrols.size(), callers, radius);
+                 "scripted call for help, social radius {:.1f}; [sfk246] left out: {} immune to players, {} of a game "
+                 "event not running",
+                 mapId, n, data.patrols.size(), callers, radius, skippedImmune, skippedEvent);
         return data;
     }
 
