@@ -710,6 +710,8 @@ private:
     std::string PlanRole(uint32 low, Player* p) const;
     bool Cleared(std::string const& contentKey, uint32 low) const;  // lock_ held
     std::vector<FiveCandidate> Candidates(DungeonOption const& d, bool needCheck);  // lock_ held
+    // [lag321] a gathering five's member refused its walk in: a free member of its role takes its place (lock_ held)
+    bool ReplaceRefusedMember(GuildFive& five, uint32 refusedLow);
     bool PickFive(std::vector<FiveCandidate> const& pool, std::vector<FiveCandidate>& out) const;
     uint32 FormFiveLocked(uint32 leaderLow, std::vector<uint32> const& members, DungeonOption const& d,
                           std::map<uint32, std::string> const& roles, std::string const& why, bool forced,

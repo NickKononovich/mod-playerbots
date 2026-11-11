@@ -1783,6 +1783,128 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
     fives_.erase(itr);
 }
 
+// [lag321] a gathering five whose member's own walk to the entrance is refused ([lfg69], FiveStep) loses that member
+// only: the free member of its role the global leader would pick (Candidates, the walk in, a dps with a need) takes
+// its place when the five gate clears the five with it - the others' walks go on. Before, the whole five was called
+// off and the next look formed a new one round the same tank: b437 fives 8, 9, 10 and 11 to Deadmines, each with
+// Rollothan L13 as tank, disbanded in turn on Lanbuzz, Gilduck, Namwe and Geefeelli's refused walks - Rollothan's
+// quests interrupted four times, a 198 s flight to Westfall and 7 min of refused walks; b434 5 such disbands
+bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
+{
+    if (refusedLow == five.leaderLow || five.forced || five.humans.count(refusedLow) ||
+        five.stage != GuildFive::Stage::Gather)
+        return false;
+    DungeonOption const* d = FindDungeon(five.contentKey);
+    if (!d)
+        return false;
+    auto const roleItr = five.roles.find(refusedLow);
+    std::string const role = roleItr != five.roles.end() ? roleItr->second : "dps";
+    std::vector<FiveCandidate> fits;
+    for (FiveCandidate const& c : Candidates(*d, true))
+        if (c.role == role && DungeonRefusal(*d, c.player, true).empty() &&
+            (role != "dps" || c.needsClear || !NeededUpgrade(*d, c.player).empty()))
+            fits.push_back(c);
+    // PickFive's order: an open clear first, then the highest level
+    std::stable_sort(fits.begin(), fits.end(),
+                     [](FiveCandidate const& a, FiveCandidate const& b)
+                     {
+                         if (a.needsClear != b.needsClear)
+                             return a.needsClear;
+                         return a.player->GetLevel() > b.player->GetLevel();
+                     });
+    constexpr size_t TRIES = 4;  // AutoFive's gate cost bound (PAIRS_SIDE): the first four of the role
+    if (fits.size() > TRIES)
+        fits.resize(TRIES);
+    for (FiveCandidate const& c : fits)
+    {
+        // the gate's order: the tank, the healer, then the dps
+        std::vector<Player*> players(2, nullptr);
+        bool everyone = true;
+        for (uint32 low : five.members)
+        {
+            uint32 const who = low == refusedLow ? c.low : low;
+            Player* p = who == c.low ? c.player : ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(who));
+            if (!p)
+            {
+                everyone = false;
+                break;
+            }
+            auto const r = five.roles.find(low);
+            std::string const memberRole = low == refusedLow ? role : r != five.roles.end() ? r->second : "dps";
+            if (memberRole == "tank" && !players[0])
+                players[0] = p;
+            else if (memberRole == "healer" && !players[1])
+                players[1] = p;
+            else
+                players.push_back(p);
+        }
+        if (!everyone)
+            return false;
+        FiveGate::Verdict const verdict = FiveGate::Judge(d->mapId, players);
+        if (!verdict.clears)
+            continue;
+
+        // the refused member goes back to its own plan (as DisbandFive does for each member)
+        {
+            BotState& st = bots_[refusedLow];
+            st.fiveId = 0;
+            st.supplyShort.clear();
+            st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+            st.fiveRefused.clear();
+            if (st.run && st.runType == GuildOrderType::DUNGEON)
+            {
+                st.run = false;
+                if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(refusedLow)))
+                    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p); ai && ai->rpgInfo.GetStatus() == RPG_GO_CAMP)
+                        ai->rpgInfo.ChangeToIdle();
+            }
+        }
+        std::replace(five.members.begin(), five.members.end(), refusedLow, c.low);
+        five.roles.erase(refusedLow);
+        five.roles[c.low] = role;
+        five.arrived.erase(refusedLow);
+        five.drinkNeed.erase(refusedLow);
+        if (five.enchanterLow == refusedLow)
+            five.enchanterLow = 0;
+        if (!five.enchanterLow && c.enchanter)
+            five.enchanterLow = c.low;
+        // the new member takes the five's order now (FormFiveLocked's per-member start)
+        {
+            BotState& st = bots_[c.low];
+            st.fiveId = five.id;
+            st.supplyShort.clear();
+            st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+            st.fiveRefused.clear();
+            if (PlayerbotAI* ai = GET_PLAYERBOT_AI(c.player); ai && !c.player->IsInCombat())
+                ai->rpgInfo.ChangeToIdle();
+        }
+        // [dun194] its drinks for the run, priced as the five's were at its forming
+        if (c.player->GetMaxPower(POWER_MANA))
+        {
+            float drinkMana = 0.0f;
+            for (Player* p : players)
+                if (p)
+                    drinkMana = std::max(drinkMana, BestBagRestore(p, RESTOCK_SPELL_CATEGORY_DRINK));
+            if (drinkMana > 0.0f)
+            {
+                auto const need = verdict.manaNeed.find(c.player->GetGUID());
+                float const mana = (need != verdict.manaNeed.end() ? need->second : 0.0f) +
+                                   float(c.player->GetMaxPower(POWER_MANA));
+                five.drinkNeed[c.low] = uint32(std::ceil(mana / drinkMana));
+            }
+        }
+        LOG_INFO("playerbots", "[lag321] five {} ({}): {} {} leaves it (no safe walk to the entrance), {} L{} takes "
+                 "its place ({}): {}",
+                 five.id, five.contentKey, role, Who(refusedLow), Who(c.low), c.player->GetLevel(),
+                 c.needsClear ? "an open clear" : "a needed upgrade or a carrier", verdict.why);
+        Decision("five " + std::to_string(five.id) + " (" + five.dungeon + "): " + Who(refusedLow) +
+                 " has no safe way to the entrance — " + Who(c.low) + " " + RoleRu(role) +
+                 " takes its place, the others walk on");
+        return true;
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // the global leader's look at the fives (every coordinator update, world thread)
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1950,6 +2072,7 @@ void GuildCoordinator::UpdateFives()
             if (five.stage != GuildFive::Stage::Gather)
                 continue;
             std::string why;
+            uint32 refusedLow = 0;  // [lag321]
             for (uint32 low : five.members)
             {
                 Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
@@ -1962,6 +2085,7 @@ void GuildCoordinator::UpdateFives()
                 if (!st.fiveRefused.empty())
                 {
                     why = Who(low) + ": " + st.fiveRefused;
+                    refusedLow = low;
                     break;
                 }
                 bool const at = p->IsInWorld() && p->IsAlive() && !p->IsBeingTeleported() &&
@@ -1974,6 +2098,10 @@ void GuildCoordinator::UpdateFives()
             }
             if (!why.empty())
             {
+                // [lag321] a member whose own walk to the entrance is refused leaves the five alone: a free member of
+                // its role takes its place when the gate clears the five with it, else the five is called off
+                if (refusedLow && ReplaceRefusedMember(five, refusedLow))
+                    continue;
                 cancel.emplace_back(id, why);
                 continue;
             }
