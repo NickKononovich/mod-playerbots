@@ -2988,7 +2988,10 @@ void GuildCoordinator::AutoFive()
             // b443 / b444: Dekorhan L22, the scribe holding the guild's 16 glyph orders, in RFC and SFK fives
             // (26 + 6.4 min) while his Light Parchment / Virtuoso Inking Set calls waited
             {
-                static std::map<uint32, std::string> lag336Logged;  // world thread: a log cadence, no decision
+                // [lag338] per member and dungeon: the pools of the look alternate dungeons, so a line kept per
+                // member alone changed every pool and logged every look (b445: 203 lines for Dekorhan in 19 min)
+                static std::map<std::pair<uint32, std::string>, std::string> lag336Logged;  // world thread: a log
+                                                                                             // cadence, no decision
                 std::vector<uint32> held;
                 for (FiveCandidate const& c : pool)
                 {
@@ -3002,9 +3005,9 @@ void GuildCoordinator::AutoFive()
                         others >= needed ? "held for its profession town stop (" + d->contentKey + ")"
                                          : "taken though its town stop is due: no other " + c.role + " free (" +
                                                d->contentKey + ")";
-                    if (lag336Logged[c.low] != line)
+                    if (std::string& logged = lag336Logged[{c.low, d->contentKey}]; logged != line)
                     {
-                        lag336Logged[c.low] = line;
+                        logged = line;
                         LOG_INFO("playerbots", "[lag336] {} L{} {}", c.player->GetName(), c.player->GetLevel(), line);
                     }
                     if (others >= needed)
