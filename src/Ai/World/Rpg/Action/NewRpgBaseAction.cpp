@@ -8633,6 +8633,62 @@ float NewRpgBaseAction::GrindCycleSeconds(Player* bot, WorldPosition const& spot
     return std::max(cycle, camped);
 }
 
+// [lag361] coordinator 2026-11-12 (b448, the three L14 laggards at 420-1200 xp/h against several thousand for a
+// normal quester): a route whose open stops are postponed one by one is left with its far ones - Sylaenas L14's
+// route of 2390 xp over 2662 s went to q866's giver in Ratchet, 7397 yd from Darkshore, while Darkshore's mobs of her
+// level stood round her. A quest is worth its route only while the route earns more than the grind of the bot's
+// level does in the same time: the core's kill experience at its level over the kill's whole cycle at the nearest
+// grind spot (GrindCycleSeconds: the fight at its solo damage, the walk between spawns, the rest, the respawn
+// floor), the walk there taken off the route's seconds
+bool NewRpgBaseAction::GrindBeatsRoute(WorldPosition& grindPos, std::string& why)
+{
+    if (!SoloSafety::Applies(bot))
+        return false;
+    QuestRoute::BotRoute const& route = QuestRoute::Of(bot->GetGUID().GetCounter());
+    if (!route.built || route.plan.eta <= 0.0f)
+        return false;
+    uint8 const level = bot->GetLevel();
+    float const sight = sPlayerbotAIConfig.SightDistance;
+    // the nearest grind spot of its level in its zone beyond its sight (within sight: it would be fighting there)
+    WorldPosition spot;
+    float bestDist = std::numeric_limits<float>::max();
+    for (WorldLocation const& loc : sTravelMgr.GetLocsPerLevelCache(level))
+    {
+        if (loc.GetMapId() != bot->GetMapId())
+            continue;
+        float const d = bot->GetExactDist(loc);
+        if (d <= sight || d >= bestDist || WalkGivenUp(bot, loc.GetPositionX(), loc.GetPositionY()) ||
+            InDangerZone(bot, loc.GetPositionX(), loc.GetPositionY()) ||
+            bot->GetMap()->GetZoneId(bot->GetPhaseMask(), loc.GetPositionX(), loc.GetPositionY(),
+                                     loc.GetPositionZ()) != bot->GetZoneId())
+            continue;
+        bestDist = d;
+        spot = WorldPosition(loc);
+    }
+    if (spot == WorldPosition())
+        return false;
+    ContentLevels const content = GetContentLevelsForMapAndZone(bot->GetMapId(), bot->GetZoneId());
+    CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, CLASS_WARRIOR);
+    float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
+    if (!stats || dps <= 0.0f)
+        return false;
+    float const killXp = float(Acore::XP::BaseGain(level, level, content)) * sWorld->getRate(RATE_XP_KILL);
+    float const killSeconds = float(stats->BaseHealth[std::min<uint32>(content, MAX_EXPANSIONS - 1)]) / dps;
+    std::string parts;
+    float const cycle = GrindCycleSeconds(bot, spot, killSeconds, parts);
+    if (killXp <= 0.0f || cycle <= 0.0f)
+        return false;
+    float const walk = bestDist / std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    float const grindXp = killXp * std::max(0.0f, route.plan.eta - walk) / cycle;
+    if (grindXp <= route.plan.xp)
+        return false;
+    grindPos = spot;
+    why = Acore::StringFormat("its route gives {:.0f} xp in {:.0f} s, the grind of its level {:.0f} xp in that time "
+                              "({:.0f} xp a kill of {:.0f} s cycle, {:.0f} yd off: {})",
+                              route.plan.xp, route.plan.eta, grindXp, killXp, cycle, bestDist, parts);
+    return true;
+}
+
 uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
 {
     uint8 const level = bot->GetLevel();

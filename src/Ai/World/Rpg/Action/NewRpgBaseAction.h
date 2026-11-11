@@ -358,6 +358,9 @@ public:
     // vendor-sold reagents its known spells use (none left of one); "" = nothing. missingReagents: those item ids
     static std::string FiveGearShort(Player* bot, std::vector<uint32>* missingReagents = nullptr);
     static float GrindCycleSeconds(Player* bot, WorldPosition const& spot, float killSeconds, std::string& parts);
+    // [lag361] the grind of its level at its nearest grind spot earns more over its quest route's time than the
+    // route does (the route as built: its experience over its seconds): the spot and the numbers
+    bool GrindBeatsRoute(WorldPosition& grindPos, std::string& why);
 protected:
     // [routeplan] the stops done, postponed or dropped are cut out of the order (no new build); a hand-in that opens
     // a follow-up the bot may take: its why (the route is built again)

@@ -2138,6 +2138,22 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                      sGuildCoordinator.ProfessionCall(bot) != GuildProfessionKind::NONE) &&
                     NewRpgProfession::StartTask(botAI, bot))
                     return true;
+                // [lag361] the route's next stop is a pickup or an objective, and the grind of its level nearby earns
+                // more over the route's time: it grinds there (a hand-in of a complete quest is taken as planned)
+                if (quest && bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
+                    if (WorldPosition grindPos; [&]()
+                        {
+                            std::string why;
+                            if (!GrindBeatsRoute(grindPos, why))
+                                return false;
+                            LOG_INFO("playerbots", "[lag361] {} L{} GRIND instead of q{}: {}", bot->GetName(),
+                                     bot->GetLevel(), questId, why);
+                            return true;
+                        }())
+                    {
+                        info.ChangeToGoGrind(grindPos);
+                        return true;
+                    }
                 if (quest)
                 {
                     QuestStatus const questStatus = bot->GetQuestStatus(questId);
