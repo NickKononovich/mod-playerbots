@@ -2515,6 +2515,7 @@ void GuildCoordinator::AutoFive()
         std::vector<FiveCandidate> bestFive;
         uint32 bestScore = 0;
         uint32 bestLeft = UINT32_MAX;  // [five58] the fewest levels a member of the five has left in the band
+        bool bestFirstClear = false;   // [night304] the best five holds a member's first clear
         for (auto& [d, pool] : pools)
         {
             // [need106] the need found above: not cleared, or a needed upgrade in the loot
@@ -2558,19 +2559,28 @@ void GuildCoordinator::AutoFive()
                                                       [](FiveCandidate const& c) { return c.upgrade; }));
             // [five58] user rule: every member clears every dungeon at its own level - a five whose member is about to
             // outlevel the band (a clear open or an upgrade in it) goes first, then the most clears and upgrades
+            // [night304] user rule (dungeon once per character, repeats only while a needed upgrade drops there): a
+            // five with a member's first clear of the dungeon goes before an upgrade-only repeat of a cleared one, and
+            // its urgency is its clearing members' levels left. b432: 23 of 24 fives were RFC upgrade repeats at
+            // urgency 0 (L21 of max 21) while 29 members needed their first Deadmines clear
+            bool const firstClear =
+                std::any_of(five.begin(), five.end(), [](FiveCandidate const& c) { return c.needsClear; });
             uint32 left = UINT32_MAX;
             std::string urgent;
             for (FiveCandidate const& c : five)
-                if ((c.needsClear || c.upgrade) && d->maxLevel - c.player->GetLevel() < left)
+                if ((firstClear ? c.needsClear : c.upgrade) && d->maxLevel - c.player->GetLevel() < left)
                 {
                     left = d->maxLevel - c.player->GetLevel();
                     urgent = c.player->GetName() + " L" + std::to_string(c.player->GetLevel());
                 }
             if (guardCount == 0)
-                lookWhy[d->contentKey] += Acore::StringFormat(" -> five of score {}, urgency {} level(s) left ({} of "
-                                                              "max {})",
-                                                              score, left, urgent, d->maxLevel);
-            if (best && (left > bestLeft || (left == bestLeft && score <= bestScore)))
+                lookWhy[d->contentKey] += Acore::StringFormat(" -> five of score {}, {}, urgency {} level(s) left ({} "
+                                                              "of max {})",
+                                                              score, firstClear ? "first clears" : "upgrades only",
+                                                              left, urgent, d->maxLevel);
+            if (best && ((bestFirstClear && !firstClear) ||
+                         (bestFirstClear == firstClear &&
+                          (left > bestLeft || (left == bestLeft && score <= bestScore)))))
             {
                 if (guardCount == 0)
                     lookWhy[d->contentKey] += " -> another dungeon's five is more urgent";
@@ -2685,6 +2695,7 @@ void GuildCoordinator::AutoFive()
             }
             bestScore = score;
             bestLeft = left;
+            bestFirstClear = firstClear;
             best = d;
             bestFive = five;
         }
