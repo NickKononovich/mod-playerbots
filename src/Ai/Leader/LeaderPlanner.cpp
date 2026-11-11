@@ -7720,7 +7720,21 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         if (found == measuredDrops.end() || found->second.instanceId != tank->GetInstanceId())
             return 1.0f;
         float const scale = WeightedQuantile(found->second.fights, MEASURED_QUANTILE);
-        return scale > 0.0f ? scale : 1.0f;
+        // [dun213] a fight's measured drop is the tank's net loss: its intake less the heals it got. A shallow one
+        // shows the healers kept up, not that the mobs hit softer, so it never scales the game's intake down (only a
+        // deeper drop than planned raises it). b442 sfk-n five2-1: a two-officer fight (planned 0.60, the tank lost
+        // 0.05 under its healer) set "x measured 0.45", five Tormented Officers then read "drop 0.01 ... landed 8/s",
+        // went "pull together: 5 mobs, overload 0.31" and killed the tank Colian (and again 142 s later)
+        if (scale > 0.0f && scale < 1.0f)
+        {
+            static std::mutex loggedLock;
+            static std::set<uint64> logged;
+            std::lock_guard<std::mutex> guard(loggedLock);
+            if (logged.insert(tank->GetGUID().GetRawValue() ^ uint64(tank->GetInstanceId()) << 40).second)
+                LOG_INFO("playerbots", "[dun213] {}: the measured drop scale {:.2f} (the heals kept up) is read as "
+                         "1: no lower intake than the game's numbers", tank->GetName(), scale);
+        }
+        return scale > 1.0f ? scale : 1.0f;
     }
 
     float DropCalibration(Player* tank)
