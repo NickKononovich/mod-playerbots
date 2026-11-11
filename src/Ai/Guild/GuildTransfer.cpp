@@ -668,18 +668,23 @@ void GuildCoordinator::UpdateTransfers()
     auto const lastPickup = mailPickup_;  // [guild15] a pickup walk keeps its town's mailbox while there
     mailPickup_.clear();
     mailTransit_.clear();
+    needGoldMail_.clear();
+    needGoldOnWay_.clear();
     for (PlanRow const& row : plan_)
     {
         Player* p = Online(row.low);
         if (!p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p))
             continue;
         uint32 delivered = 0;
+        uint32 goldIn = 0;  // [eco199] the members' gold delivered to its mailbox
         for (Mail const* m : p->GetMails())
         {
             if (!m || m->state == MAIL_STATE_DELETED || m->messageType != MAIL_NORMAL || m->COD ||
                 !IsPlanned(m->sender) || (m->items.empty() && !m->money))
                 continue;
             uint8 bag = 0, slot = 0;
+            if (uint32(m->deliver_time) <= now)
+                goldIn += m->money;
             if (uint32(m->deliver_time) <= now && (m->money || FreeSlot(p, bag, slot)))
                 ++delivered;  // bags full: an item mail waits (no stand at the mailbox it cannot empty)
             else if (uint32(m->deliver_time) <= now)
@@ -694,8 +699,27 @@ void GuildCoordinator::UpdateTransfers()
             keepArea = sMapMgr->GetAreaId(PHASEMASK_NORMAL, last->second.second.GetMapId(),
                                           last->second.second.GetPositionX(), last->second.second.GetPositionY(),
                                           last->second.second.GetPositionZ());
+        // [eco199] coordinator 2026-11-11 (b430: 27.3 g in Farret's 19 letters, a five leader that never reached a
+        // mailbox): gold waiting there for its planned need (its repair, its supplies, its role spec's unlearn) is
+        // taken at its next mailbox chance - a town stop on its route, a five member's too while its five gathers,
+        // and the five's leader before its five goes in when a mailbox is on its way (FiveStep, the five's check)
+        bool needGold = false;
+        if (auto const st = bots_.find(row.low); goldIn && st != bots_.end())
+        {
+            needGold = st->second.repairShort || st->second.supplyGoldShort;
+            if (!needGold)
+                if (uint32 const roleSpec = RoleSpec(row.low, 0);
+                    roleSpec && NewRpgProfession::NeedsRespec(p, roleSpec) && p->GetMoney() < p->resetTalentsCost())
+                    needGold = true;
+            if (needGold)
+                needGoldMail_.insert(row.low);
+        }
         if (delivered && nearestMailbox(p, box, keepArea) < NONE)
+        {
             mailPickup_[row.low] = {delivered, box};
+            if (needGold)
+                needGoldOnWay_.insert(row.low);
+        }
         // [econ1] b350: 143 letters lay in the members' mailboxes (Lanbuzz 19, Emdyl 11) and 15 were ever taken -
         // the pickup was planned only while a mailbox lay on the bot's way right then, so a bot whose walks never
         // passed one never got the task. No mailbox on its way now: its nearest friendly town mailbox, taken on
@@ -2381,6 +2405,10 @@ void GuildCoordinator::TransferOrders(uint32 low, Player* p, std::vector<GuildOr
         o.pos = pick->second.second;
         o.details = "collect mail: " + std::to_string(o.count) + " letters from the guild";
         o.reason = "delivered by the core";
+        // [eco199] gold its planned need waits for: a town stop even while its five gathers
+        o.needGold = needGoldMail_.count(low) != 0;
+        if (o.needGold)
+            o.reason += "; the members' gold its repair / supplies / role spec waits for [eco199]";
         o.status =
             "to the mailbox " +
             std::to_string(uint32(p->GetExactDist(o.pos.GetPositionX(), o.pos.GetPositionY(), o.pos.GetPositionZ()))) +

@@ -4721,14 +4721,24 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
     {
         CoordLock guard(lock_, __func__);
         auto const itr = bots_.find(low);
-        if (itr == bots_.end() || itr->second.fiveId)
+        if (itr == bots_.end())
             return;
+        // [eco199] a five member's route takes no town stop - but while its five gathers (not in the dungeon), the
+        // pickup of the members' gold its planned need waits for
+        bool const inFive = itr->second.fiveId != 0;
+        if (inFive)
+        {
+            auto const five = fives_.find(itr->second.fiveId);
+            if (five == fives_.end() || five->second.stage != GuildFive::Stage::Gather)
+                return;
+        }
         // [econ2] world2 [town12]: the mail pickup (MAIL_TO without a transfer, GuildTransfer TransferOrders) is a
         // town stop until the bot stands in its mailbox's town - whatever its waitsTown flag says - so a party
         // leader's route takes its followers there (b353: party followers held most of the ~100 letters)
         for (GuildOrder const& o : itr->second.orders)
             if (o.executable && o.priority == GuildTaskPriority::CONVENIENT && o.pos != WorldPosition() &&
                 o.pos.GetMapId() == bot->GetMapId() &&
+                (!inFive || (o.type == GuildOrderType::MAIL_TO && o.needGold)) &&
                 (o.waitsTown || (o.type == GuildOrderType::MAIL_TO && !o.transferId &&
                                  (!o.townArea || !TownReady(bot, o)))))
                 stops.emplace_back(o.pos,
@@ -6907,6 +6917,13 @@ void GuildCoordinator::UpdateHealth()
         uint64 const xp = XpTotal(p);
         uint32 const quests = uint32(p->getRewardedQuests().size());
         uint32 const money = p->GetMoney();
+        // [eco200] coordinator 2026-11-11: the members' gold in its mailbox (sent, not taken yet) is still the guild's:
+        // the [health] gold counts it (b430: -8.5 g/h while 14.7 g lay unread in the letters)
+        uint32 mailGold = 0;
+        for (Mail const* m : p->GetMails())
+            if (m && m->state != MAIL_STATE_DELETED && m->messageType == MAIL_NORMAL && m->money &&
+                IsPlanned(m->sender))
+                mailGold += m->money;
         // [questrate] b338: Dandolar / Brelir / Lyleria bought 4-5 vendor upgrades in a row at one vendor (each BUY
         // order its own DO_PROFESSION trip, the next one issued when the last was equipped), standing still with no
         // XP: 20 STUCK alerts under BUY. Money changing hands (bought, sold, mailed, traded) is progress, as a skill
@@ -6916,12 +6933,13 @@ void GuildCoordinator::UpdateHealth()
         {
             sample.xp += xp > st.xpTotal ? xp - st.xpTotal : 0;
             sample.quests += quests > st.questsDone ? quests - st.questsDone : 0;
-            sample.money += int64(money) - int64(st.money);
+            sample.money += int64(money) + int64(mailGold) - int64(st.money) - int64(st.mailGold);
         }
         st.seen = true;
         st.xpTotal = xp;
         st.questsDone = quests;
         st.money = money;
+        st.mailGold = mailGold;
         RecordPace(st, p);  // [questrate] its copper per quest XP (the questing formula, UpdateWanted)
 
         if (p->IsAlive())

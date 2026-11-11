@@ -132,6 +132,7 @@ struct GuildOrder
     uint32 transferId{0};  // [guild81] TRADE_TO / MAIL_TO / DONATE_GOLD: the transfer (0: take the delivered mail)
     uint32 placeId{0};     // [gather] GATHER: the GuildGatherPlan place
     bool repairUrgent{false};  // [regress10] REPAIR: a weapon broken or at one death's loss, or a broken armour piece
+    bool needGold{false};  // [eco199] MAIL_TO pickup: its mailbox holds the members' gold a planned need waits for
 };
 
 // What New RPG does for the order (map thread).
@@ -560,6 +561,7 @@ private:
         uint64 xpTotal{0};
         uint32 questsDone{0};
         uint32 money{0};
+        uint32 mailGold{0};  // [eco200] the members' gold in its mailbox at the last sample
         bool seen{false};
         // xp, progress, pos, map, [econ2] work (money, profession skills, smelt casts)
         std::map<uint8, std::tuple<uint64, uint32, float, float, float, uint32, uint64>> statusEntry;
@@ -822,6 +824,9 @@ private:
     std::vector<std::pair<uint32, uint32>> recipeLearn_;
     // receiver -> its delivered mails from members (count, the cheapest mailbox), what is still in transit (lock_)
     std::map<uint32, std::pair<uint32, WorldPosition>> mailPickup_;
+    // [eco199] members whose mailbox holds the members' gold its repair / supplies / role spec waits for, and of them
+    // those with a mailbox on their way now (the town it stands in or walks to; GuildTransfer's nearestMailbox)
+    std::unordered_set<uint32> needGoldMail_, needGoldOnWay_;
     std::map<uint32, std::vector<std::string>> mailTransit_;
     // [econ1] member -> (level, town task spots (x, y)) its own trip judge refused or its walk gave up on
     // (NewRpgBaseAction::TripRefused, judged in TownStops on the map thread): no mailbox / forge there is planned

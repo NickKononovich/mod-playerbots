@@ -1951,6 +1951,20 @@ void GuildCoordinator::UpdateFives()
                 if (!p || IsHuman(p) || !GET_PLAYERBOT_AI(p))
                     continue;
                 BotState& st = bots_[low];
+                // [eco199] coordinator 2026-11-11: the five's leader takes the members' gold its planned need waits for
+                // before the five goes in, when a mailbox is on its way (b430: Farret, five 8's leader, 27.3 g unread
+                // in 19 letters across b426-b430); with none on its way the five goes on and the gold waits
+                if (low == five.leaderLow && needGoldOnWay_.count(low))
+                {
+                    static std::set<std::pair<uint32, uint32>> goldWaitLogged;  // (five, leader) logged once
+                    if (goldWaitLogged.insert({id, low}).second)
+                        LOG_INFO("playerbots",
+                                 "[eco199] five {} ({}): waits for its leader {}: takes the members' gold its planned "
+                                 "need waits for at the mailbox on its way",
+                                 id, five.contentKey, Who(low));
+                    supplied = false;
+                    continue;
+                }
                 std::string shortOf;
                 uint32 const drink = p->GetMaxPower(POWER_MANA) ? CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK)
                                                                 : RESTOCK_FOOD_MIN;
@@ -2961,6 +2975,11 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
             return false;
     }
     GuildFive const& five = itr->second;
+    // [eco199] the five's leader with the members' gold its planned need waits for in its mailbox, a mailbox on its
+    // way (the town it stands in or walks to): the five step yields to its pickup there (its MAIL_TO, the town task
+    // after this one); the five's check waits for it (UpdateFives)
+    if (bot->GetGUID().GetCounter() == five.leaderLow && needGoldOnWay_.count(five.leaderLow))
+        return false;
     WorldPosition const& pos = five.entrance;
     // [lfg68] a five the walk in refuses (a member on another continent, the entrance in an enemy capital: Ragefire
     // Chasm for the Alliance) goes in by the Dungeon Finder only - no member walks to its entrance; it stands by out
