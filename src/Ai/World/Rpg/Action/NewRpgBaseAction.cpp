@@ -8685,7 +8685,7 @@ bool NewRpgBaseAction::StaticCampLoses(Player* bot, float x, float y, float z, s
         MobSpawn const* spawn;
         float gap;
     };
-    std::vector<Foe> near;
+    std::vector<Foe> nearFoes;  // [build152] "near" is a Windows macro (minwindef.h)
     for (int32 ox = -1; ox <= 1; ++ox)
         for (int32 oy = -1; oy <= 1; ++oy)
         {
@@ -8698,13 +8698,13 @@ bool NewRpgBaseAction::StaticCampLoses(Player* bot, float x, float y, float z, s
                 FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(spawn.tmpl->faction);
                 if (!faction || !faction->IsHostileTo(*own) || !SpawnPresent(spawn))
                     continue;
-                near.push_back({&spawn, std::hypot(spawn.x - x, spawn.y - y)});
+                nearFoes.push_back({&spawn, std::hypot(spawn.x - x, spawn.y - y)});
             }
         }
     // the pulled one: the nearest spawn whose reach (Creature::GetAggroRange, its wander area) covers the spot
     MobSpawn const* pulled = nullptr;
     float pulledGap = std::numeric_limits<float>::max();
-    for (Foe const& f : near)
+    for (Foe const& f : nearFoes)
     {
         CreatureTemplate const* t = f.spawn->tmpl;
         float const reach = std::clamp(t->detection_range + float(int32(t->maxlevel) - int32(level)), 5.0f,
@@ -8721,7 +8721,7 @@ bool NewRpgBaseAction::StaticCampLoses(Player* bot, float x, float y, float z, s
     FactionTemplateEntry const* pulledFaction = sFactionTemplateStore.LookupEntry(pulled->tmpl->faction);
     float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
     std::vector<MobSpawn const*> pack{pulled};
-    for (Foe const& f : near)
+    for (Foe const& f : nearFoes)
     {
         if (f.spawn == pulled || assist <= 0.0f ||
             std::hypot(f.spawn->x - pulled->x, f.spawn->y - pulled->y) > assist + f.spawn->wander)
