@@ -801,6 +801,38 @@ namespace Leader::Dungeon
                 LOG_INFO("playerbots", "[dun186] {}: self-lead {} ({})", tank->GetName(), livingFight ? "on" : "off",
                          livingFight ? "the leader is down and the living fight" : "the leader leads, or no fight");
             }
+            // [dun225] each leading itself, a member out of the fight takes on what attacks a living member - the
+            // healer's attackers first - as the game's assist does for a player: its target, combat, its rotation.
+            // b443 sfk-n five8-8: the tank and five-leader Bierya died at 222 s; a Shadowfang Moonwalker stood on the
+            // healer Nurlian 180 s while Ainne looted and Idunk summoned ("trash stalemate: 1 enemies ... 180 s")
+            if (livingFight)
+            {
+                Unit* threat = nullptr;
+                for (bool const healerFirst : {true, false})
+                    for (ObjectGuid const& groupMember : group.MemberGuids())
+                        if (Player* bot = ObjectAccessor::FindPlayer(groupMember);
+                            !threat && bot && bot != tank && bot->IsAlive() &&
+                            PlayerbotAI::IsHeal(bot) == healerFirst)
+                            for (Unit* attacker : bot->getAttackers())
+                                if (!threat && attacker && attacker->IsAlive())
+                                    threat = attacker;
+                for (ObjectGuid const& groupMember : group.MemberGuids())
+                {
+                    Player* bot = ObjectAccessor::FindPlayer(groupMember);
+                    PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+                    if (!threat || !botAI || bot == tank || !bot->IsAlive() || bot->IsInCombat() ||
+                        PlayerbotAI::IsHeal(bot) || bot->GetMap() != threat->GetMap() ||
+                        !bot->IsValidAttackTarget(threat))
+                        continue;
+                    botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(threat);
+                    bot->SetSelection(threat->GetGUID());
+                    botAI->ChangeEngine(BOT_STATE_COMBAT);
+                    bot->Attack(threat, PlayerbotAI::IsMelee(bot));
+                    LOG_INFO("playerbots", "[dun225] {}: self-led {} takes on {} (on {})", group.Run().runId,
+                             bot->GetName(), threat->GetName(),
+                             threat->GetVictim() ? threat->GetVictim()->GetName() : std::string("-"));
+                }
+            }
         }
         if (!tank->IsAlive())
         {
