@@ -474,6 +474,24 @@ namespace
 {
     // [trip52] (defined below) the trip by air; [fly97] walkRefused: no walk there, the flight at any length
     bool FlightTripSafe(Player* bot, WorldPosition const& dest, std::string& plan, bool walkRefused = false);
+    // [fly164] one line per bot, flight master and level: a log cadence, no decision reads it
+    void NoteFlightMasterGivenUp(Player* bot, WorldPosition const& masterPos)
+    {
+        static std::mutex lock;
+        static std::map<std::tuple<uint32, int32, int32>, uint8> logged;
+        std::tuple<uint32, int32, int32> const key{bot->GetGUID().GetCounter(), int32(masterPos.GetPositionX()),
+                                                   int32(masterPos.GetPositionY())};
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            uint8& level = logged[key];
+            if (level == bot->GetLevel())
+                return;
+            level = bot->GetLevel();
+        }
+        LOG_INFO("playerbots", "[fly164] {} L{} takes no flight from the flight master at ({:.0f},{:.0f}): its walk "
+                 "there is given up at this level",
+                 bot->GetName(), bot->GetLevel(), masterPos.GetPositionX(), masterPos.GetPositionY());
+    }
     // [fly109] (defined below) a party member's own flight to the known node nearest the destination
     bool StartMemberFlight(Player* member, WorldPosition const& dest);
 }
@@ -1953,6 +1971,15 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
     if (!master || !master->taxiNodeId || master->pos.GetMapId() != bot->GetMapId() ||
         !bot->m_taxi.IsTaximaskNodeKnown(master->taxiNodeId))
         return false;
+    // [fly164] a flight master whose walk is given up at this level is no flight from here: b438 Sycina L19 on a
+    // Stonetalon ridge (1764,-1019,246) gave the walk to the Astranaar flight master (2828,-284) up (MAZE dead end,
+    // MOVE_FAR_LOOP), and every next quest's walk chose the flight from it again - WALK_FAIL x89 from that spot, 37 %
+    // of the slow update time
+    if (WalkGivenUp(bot, master->pos.GetPositionX(), master->pos.GetPositionY()))
+    {
+        NoteFlightMasterGivenUp(bot, master->pos);
+        return false;
+    }
     TaxiNodesEntry const* from = sTaxiNodesStore.LookupEntry(master->taxiNodeId);
     TaxiNodesEntry const* to = nullptr;
     float toGap = std::numeric_limits<float>::max();
@@ -5259,6 +5286,12 @@ namespace
         if (!master || !master->taxiNodeId || master->pos.GetMapId() != bot->GetMapId() ||
             !bot->m_taxi.IsTaximaskNodeKnown(master->taxiNodeId))
             return false;
+        // [fly164] ... nor a trip by air from a flight master whose walk is given up at this level
+        if (NewRpgBaseAction::WalkGivenUp(bot, master->pos.GetPositionX(), master->pos.GetPositionY()))
+        {
+            NoteFlightMasterGivenUp(bot, master->pos);
+            return false;
+        }
         TaxiNodesEntry const* to = nullptr;
         float toGap = std::numeric_limits<float>::max();
         for (uint32 i = 0; i < sTaxiNodesStore.GetNumRows(); ++i)
