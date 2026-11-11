@@ -528,6 +528,11 @@ namespace FiveGate
                 d.burst = r.burstDps;
                 d.white = r.whiteDps;
                 d.oomSec = r.oomSec;
+                // [dps242] the five's healer heals: its damage is no part of the kill times (b436 / b437 fives: the
+                // healers dealt 0.0-0.7 dps in their pulls against 22-48 by the formula, 0.01 of it); its entry stays
+                // for its mana ([dun194])
+                if (p == healer)
+                    d.burst = d.white = 0.0f;
                 dps.push_back(d);
                 groupDps += d.burst;
             }
