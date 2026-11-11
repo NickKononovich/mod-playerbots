@@ -2730,13 +2730,13 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         // [hleft-door-chase] No chase through a closed door either (the navmesh holds no game objects): Blackrock
         // Depths 2026-10-25 - the group crossed the closed ArenaGate03 161524 and the garrison door 161516 in combat
         // chases and reached Ribbly / Hurley without the Ring of Law or the Shadowforge Lock.
+        // [sfk241] the path is in hand: its own doors (PathThroughClosedDoor), not the straight line's
         if (Map* map = bot->GetMap(); map && map->IsDungeon() && !bot->IsFlying() && !bot->GetVehicle() &&
-                                      !bot->GetTransport() &&
-                                      ClosedDoorNear(bot, bot->GetPositionX(), bot->GetPositionY(), tx, ty,
-                                                     CLOSED_DOOR_SEARCH))
+                                      !bot->GetTransport())
             if (ClosedDoorHit const hit = PathThroughClosedDoor(bot, path.points);
                 hit.Found() && !DoorOpensByUse(hit.door))  // a click door: MoveTo's guard walks up and opens it
             {
+                NoteDoorOffLine(bot, hit.door, G3D::Vector3(tx, ty, tz), CLOSED_DOOR_SEARCH, getName().c_str());
                 RefuseChase(target, Acore::StringFormat("the way runs through the closed door {} {}",
                                                         hit.door->GetName(), hit.door->GetEntry()));
                 return false;
@@ -4406,7 +4406,10 @@ bool MovementAction::GuardClosedDoor(float& x, float& y, float& z)
     // that opened since the last "stay" lets the walk go at once - Stratholme's key gates stand open 3 s, the memo
     // (1 s) ate a third of that (strat-n 20261026-014521-5C-2: the healer 0.7 yd from King's Square Gate 175353
     // missed five openings, "own path refused" at 2102 s with the gate open).
-    if (!ClosedDoorNear(bot, bot->GetPositionX(), bot->GetPositionY(), x, y, CLOSED_DOOR_SEARCH))
+    // [sfk241] the gate is any closed door at all: the path, not the straight line, meets the doors (b445 sfk-n: the
+    // tanks' engage walks up to the ramparts' Tormented Officer, 647 yd for 16 yd straight, ran through the closed
+    // Courtyard Door 50 yd off that line, alone into the courtyard: the first death of 26 b44x runs)
+    if (!AnyClosedDoor(bot))
         return true;
 
     if (_doorVetoMs && getMSTimeDiff(_doorVetoMs, now) < DOOR_VETO_MEMO_MS &&
@@ -4417,6 +4420,7 @@ bool MovementAction::GuardClosedDoor(float& x, float& y, float& z)
     ClosedDoorHit const hit = PathThroughClosedDoor(bot, path);
     if (!hit.Found())
         return true;
+    NoteDoorOffLine(bot, hit.door, G3D::Vector3(x, y, z), CLOSED_DOOR_SEARCH, getName().c_str());  // [sfk241]
 
     // A door a player opens by a click (TerrainHazard.h DoorOpensByUse: Scholomance's Iron Gates): the group's opener
     // walks up to it and uses it, out of combat; everyone else stops before it until it is open. An opened door is

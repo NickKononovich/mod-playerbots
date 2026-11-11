@@ -98,6 +98,12 @@ struct ClosedDoorHit
 // Any closed door whose bounds come within `radius` (2d) of the segment from (fromX, fromY) to (toX, toY): the cheap
 // gate before a path is built for PathThroughClosedDoor.
 bool ClosedDoorNear(Unit* mover, float fromX, float fromY, float toX, float toY, float radius);
+// [sfk241] Any closed door on the mover's map: the gate before a path is built for PathThroughClosedDoor where the
+// walk's path is not known yet (a path may run far off the straight line, round a door ClosedDoorNear never sees).
+bool AnyClosedDoor(Unit* mover);
+// [sfk241] logs once per mover and door a closed door the walk's path meets that ClosedDoorNear (the straight line
+// to `to` within `lineRadius`) did not see
+void NoteDoorOffLine(Unit* mover, GameObject const* door, G3D::Vector3 const& to, float lineRadius, char const* walk);
 // [lead93] the map's exit areatriggers (AreaTrigger.dbc entries on `mapId` whose areatrigger_teleport leads to another
 // map): a point within one (its sphere radius or its box, plus `margin`) ports whoever stands there out of the
 // instance. Returns the trigger's id, 0 when none. Cached per map (built once from the DBC)

@@ -342,6 +342,47 @@ namespace
     std::mutex heldShutLock;
     std::set<InstanceGuid> heldShut;
 
+    // A door of the mover's phase whose collision stands: closed, or held shut while open ([lead1570]).
+    bool ShutDoor(Unit* mover, GameObject* go)
+    {
+        if (!go || !go->IsInWorld() || !go->isSpawned() || !go->m_model || !mover->InSamePhase(go))
+            return false;
+        return (go->GetGoState() == GO_STATE_READY && go->m_model->isEnabled()) || DoorHeldShut(go);
+    }
+
+    // [sfk241] The closed doors whose bounds meet the path's own 2d bounds grown by `margin`: a navmesh path can run
+    // far off the straight line between its ends (b445 sfk-n: 647 yd for 16 yd straight, out through the Courtyard
+    // Door and up to the ramparts), so the doors a walk meets are looked for round the path, not round that line.
+    void CollectClosedDoorsOnPath(Unit* mover, std::vector<G3D::Vector3> const& path, float margin,
+                                  std::vector<GameObject*>& closed)
+    {
+        Map* map = mover->GetMap();
+        if (!map || path.empty())
+            return;
+
+        float lowX = path.front().x;
+        float lowY = path.front().y;
+        float highX = lowX;
+        float highY = lowY;
+        for (G3D::Vector3 const& point : path)
+        {
+            lowX = std::min(lowX, point.x);
+            lowY = std::min(lowY, point.y);
+            highX = std::max(highX, point.x);
+            highY = std::max(highY, point.y);
+        }
+        for (ObjectGuid const& guid : MapDoors(map))
+        {
+            GameObject* go = map->GetGameObject(guid);
+            if (!ShutDoor(mover, go))
+                continue;
+            G3D::AABox const& bounds = go->m_model->GetBounds();
+            if (bounds.high().x + margin >= lowX && bounds.low().x - margin <= highX &&
+                bounds.high().y + margin >= lowY && bounds.low().y - margin <= highY)
+                closed.push_back(go);
+        }
+    }
+
     // The closed doors whose bounds come within `radius` (2d) of the segment.
     void CollectClosedDoors(Unit* mover, float fromX, float fromY, float toX, float toY, float radius,
                             std::vector<GameObject*>& closed)
@@ -353,9 +394,7 @@ namespace
         for (ObjectGuid const& guid : MapDoors(map))
         {
             GameObject* go = map->GetGameObject(guid);
-            if (!go || !go->IsInWorld() || !go->isSpawned() || !go->m_model || !mover->InSamePhase(go))
-                continue;
-            if ((go->GetGoState() != GO_STATE_READY || !go->m_model->isEnabled()) && !DoorHeldShut(go))
+            if (!ShutDoor(mover, go))
                 continue;
 
             // The segment against the door's bounds grown by the radius (2d slabs).
@@ -473,6 +512,34 @@ bool ClosedDoorNear(Unit* mover, float fromX, float fromY, float toX, float toY,
     return !closed.empty();
 }
 
+void NoteDoorOffLine(Unit* mover, GameObject const* door, G3D::Vector3 const& to, float lineRadius,
+                     char const* walk)
+{
+    if (!mover || !door || ClosedDoorNear(mover, mover->GetPositionX(), mover->GetPositionY(), to.x, to.y, lineRadius))
+        return;
+    thread_local std::set<std::pair<ObjectGuid, ObjectGuid>> logged;  // (mover, door) once
+    if (logged.size() > 4096)
+        logged.clear();
+    if (logged.insert({mover->GetGUID(), door->GetGUID()}).second)
+        LOG_INFO("playerbots",
+                 "[sfk241] {}: {} to ({:.1f},{:.1f},{:.1f}) ({:.0f} yd straight) runs through the closed {} {} "
+                 "({:.1f} yd from it) off the straight line: the door is met",
+                 mover->GetName(), walk, to.x, to.y, to.z, mover->GetExactDist(to.x, to.y, to.z), door->GetName(),
+                 door->GetEntry(), door->GetExactDist2d(mover->GetPositionX(), mover->GetPositionY()));
+}
+
+bool AnyClosedDoor(Unit* mover)
+{
+    Map* map = mover ? mover->GetMap() : nullptr;
+    if (!map)
+        return false;
+
+    for (ObjectGuid const& guid : MapDoors(map))
+        if (ShutDoor(mover, map->GetGameObject(guid)))
+            return true;
+    return false;
+}
+
 // [b44_gerst]
 bool DoorNear(Unit* who, float x, float y, float z, float radius)
 {
@@ -531,8 +598,7 @@ ClosedDoorHit PathThroughClosedDoor(Unit* mover, std::vector<G3D::Vector3> const
         return hit;
 
     std::vector<GameObject*> closed;
-    CollectClosedDoors(mover, path.front().x, path.front().y, path.back().x, path.back().y,
-                       CLOSED_DOOR_SEARCH, closed);
+    CollectClosedDoorsOnPath(mover, path, HAZARD_DOOR_MARGIN, closed);  // [sfk241]
     if (closed.empty())
         return hit;
 

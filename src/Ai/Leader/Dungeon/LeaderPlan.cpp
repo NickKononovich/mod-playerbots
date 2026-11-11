@@ -2669,9 +2669,11 @@ namespace Leader::Dungeon
                 G3D::Vector3 doorAt;  // [lead11] DOOR_OPEN_BACK before the door on the crossing walk
                 auto const crosses = [&](Position const& from, Position const& to) -> GameObject*
                 {
-                    if (from.GetExactDist(to) < 1.0f ||
-                        !ClosedDoorNear(tank, from.GetPositionX(), from.GetPositionY(), to.GetPositionX(),
-                                        to.GetPositionY(), 5.0f))
+                    // [sfk241] any closed door gates the check, not one within 5 yd of the straight line: the
+                    // route from the tank can run far off it (b445 sfk-n five5-5 186.7 s: the engage on the
+                    // ramparts' Tormented Officer 44 yd off, 647 yd round through the closed Courtyard Door 18895
+                    // 50 yd off that line, went out; the tank walked through it alone and died in the courtyard)
+                    if (from.GetExactDist(to) < 1.0f || !AnyClosedDoor(tank))
                         return nullptr;
                     std::vector<G3D::Vector3> points{G3D::Vector3(from.GetPositionX(), from.GetPositionY(),
                                                                   from.GetPositionZ()),
@@ -2684,6 +2686,10 @@ namespace Leader::Dungeon
                             points = route.points;
                     }
                     ClosedDoorHit const hit = PathThroughClosedDoor(tank, points);
+                    if (hit.Found() && from.GetExactDist(here) < 1.0f)  // [sfk241]
+                        NoteDoorOffLine(tank, hit.door,
+                                        G3D::Vector3(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ()), 5.0f,
+                                        "the pull's walk");
                     if (hit.Found())
                         doorAt = PointOnPath(Movement::PointsArray(points.begin(), points.end()),
                                              std::max(0.0f, hit.walked - DOOR_OPEN_BACK));
