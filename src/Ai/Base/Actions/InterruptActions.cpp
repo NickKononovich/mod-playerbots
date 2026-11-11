@@ -359,6 +359,23 @@ bool LeaderExternalAction::Execute(Event /*event*/)
         AckLeader(bot, "external", std::string("shifts for ") + info->SpellName[0]);
         return true;
     }
+    // [dun221] a spell its shapeshift form forbids (SpellInfo::CheckShapeshift: SPELL_FAILED_NOT_SHAPESHIFT): out of a
+    // fight the member leaves the form first, as a player does, and casts on a later tick; in a fight the order is
+    // reported failed (the leader picks again). b442: 55 order_impossible "external 6756 on X:
+    // SPELL_FAILED_NOT_SHAPESHIFT" - the druids' buff pass Mark of the Wild ordered in their forms
+    if (bot->GetShapeshiftForm() != FORM_NONE && info->CheckShapeshift(bot->GetShapeshiftForm()) != SPELL_CAST_OK)
+    {
+        if (bot->IsInCombat())
+        {
+            Leader::Events::NoteExternalFailed(bot->GetGUID(), spell, "its form forbids it in the fight");
+            return false;
+        }
+        bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+        LOG_INFO("playerbots", "[dun221] [leader external] {} leaves its form for {} ({})", bot->GetName(),
+                 info->SpellName[0], spell);
+        AckLeader(bot, "external", std::string("leaves its form for ") + info->SpellName[0]);
+        return true;
+    }
     // [lead690] a leap (the mage's Blink, SPELL_EFFECT_LEAP) goes where the member faces: it faces the spot of the
     // walk the leader ordered first, and the walk goes on from where it lands (its last move is no move any more)
     // [lead691] a leap back (the hunter's Disengage, SPELL_EFFECT_LEAP_BACK) goes opposite the facing: it turns

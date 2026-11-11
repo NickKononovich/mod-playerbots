@@ -869,6 +869,10 @@ namespace Leader::Dungeon
             // takes and forward 0.5 x that heal as the healer's threat, AuraEffect::HandlePeriodicHealAurasTick,
             // past the leader's in-fight Heal gate) and it ends by itself: the aura's end readies the member, no
             // order is missing
+            // [dun221] the healer's TopUp holds the pull for the hurt member ([lead1511]): the healer's heal order
+            // readies it (b442: 9 wait_without_order "X at N % health < its line: Y tops it up")
+            if (!orderFor && waitWhy.find("[lead1511]") != std::string::npos)
+                orderFor = true;
             if (!orderFor && waitWhy.compare(0, 10, "[lead940] ") == 0)
                 if (Player* bot = ObjectAccessor::FindPlayer(guid))
                     for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_PERIODIC_HEAL))
@@ -908,8 +912,15 @@ namespace Leader::Dungeon
                               bot->GetMap() == tank->GetMap();
 
             // order_impossible: an order of the member the game refuses now (the orders' own check)
-            std::string const impossible =
+            std::string impossible =
                 here && hasEvents[i] ? LeaderOrderCheck::OrderRefusal(botAI, events[i]) : std::string();
+            // [dun221] the member's loss of control (stunned, feared, confused, silenced, pacified: the game's state
+            // for its duration) refuses every order alike - no wrong order, the order runs when it ends (b442: 8
+            // "external 14318 on itself: SPELL_FAILED_STUNNED")
+            for (char const* passing : {"SPELL_FAILED_STUNNED", "SPELL_FAILED_FLEEING", "SPELL_FAILED_CONFUSED",
+                                        "SPELL_FAILED_SILENCED", "SPELL_FAILED_PACIFIED"})
+                if (impossible.find(passing) != std::string::npos)
+                    impossible.clear();
             note(member, "order_impossible", impossible, impossible);
 
             // credit_unguaranteed: a tool or a potion the member's mana line counted ready now whose use the game
