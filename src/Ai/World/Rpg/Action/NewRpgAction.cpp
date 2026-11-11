@@ -825,6 +825,53 @@ bool NewRpgBaseAction::BindAtInnHere()
         bot->GetSession()->SendBindPoint(innkeeper);
         return true;
     }
+    // [lag322] the bind above needs the innkeeper within its interaction reach, and a bot stands there only by chance
+    // (b435: 0 BIND lines of 75 bots in 1.8 h). A player whose home lies on another landmass than the town it stands
+    // in (only a ride joins the two: its Hearthstone would take it off its questing land) walks up to the town's
+    // innkeeper and makes it home. b435 Sylaenas L13, bound at Auberdine (Darkshore), hearthed there out of Bloodmyst
+    // after a death and left q9624 at 22/24 and q9641 at 15/24 (6713 xp) on the isle; Rollothan L13 went to Loch Modan
+    // bound at Sentinel Hill (Westfall). Once per innkeeper and level, as [night305]'s walk to a flight master
+    WorldPosition const bind(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ);
+    if (bind.GetMapId() == bot->GetMapId() &&
+        TravelRouteMgr::Landmass(bind) == TravelRouteMgr::Landmass(WorldPosition(bot)))
+        return false;
+    if (bot->isMoving() || bot->IsInFlight() || bot->GetTransport() || bot->GetMap()->Instanceable() ||
+        !GuildHonest::IsHonestBot(bot))
+        return false;
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest npcs"))
+    {
+        Creature* innkeeper = ObjectAccessor::GetCreature(*bot, guid);
+        if (!innkeeper || !innkeeper->IsAlive() || !innkeeper->HasNpcFlag(UNIT_NPC_FLAG_INNKEEPER) ||
+            innkeeper->GetReactionTo(bot) <= REP_UNFRIENDLY || innkeeper->GetZoneId() != bot->GetZoneId())
+            continue;
+        // map thread: the bot -> (innkeeper spawn, level, steps taken: 1 the walk, 2 the last step up)
+        thread_local std::unordered_map<uint64, std::tuple<ObjectGuid::LowType, uint8, uint8>> tried;
+        auto& [spawn, level, steps] = tried[bot->GetGUID().GetRawValue()];
+        if (spawn != innkeeper->GetSpawnId() || level != bot->GetLevel())
+        {
+            spawn = innkeeper->GetSpawnId();
+            level = bot->GetLevel();
+            steps = 0;
+        }
+        float const x = innkeeper->GetPositionX(), y = innkeeper->GetPositionY(), z = innkeeper->GetPositionZ();
+        float const dist = bot->GetExactDist(innkeeper);
+        // GO_CAMP ends within its arrival reach of the spot (RPG_GO_CAMP's 10 yd): the last yards up to the innkeeper
+        constexpr float GO_CAMP_ARRIVAL = 10.0f;
+        if (dist <= GO_CAMP_ARRIVAL && steps < 2)
+        {
+            steps = 2;
+            return MoveTo(innkeeper->GetMapId(), x, y, z, false, false, false, true);
+        }
+        if (steps || WalkGivenUp(bot, x, y) || TripRefused(bot, x, y, z, "innkeeper"))
+            return false;
+        steps = 1;
+        LOG_INFO("playerbots", "[lag322] {} L{} walks to {}'s inn ({:.0f} yd) to make it home: its bind point (map "
+                 "{} ({:.0f},{:.0f})) lies on another landmass",
+                 bot->GetName(), bot->GetLevel(), innkeeper->GetName(), dist, bind.GetMapId(), bind.GetPositionX(),
+                 bind.GetPositionY());
+        botAI->rpgInfo.ChangeToGoCamp(WorldPosition(innkeeper));
+        return true;
+    }
     return false;
 }
 
@@ -1912,7 +1959,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     {
         case RPG_IDLE:
         {
-            BindAtInnHere();  // [regress10] its home is the town it quests from
+            if (BindAtInnHere())  // [regress10] its home is the town it quests from ([lag322] a walk up to it)
+                return true;
             // [night305] the town's flight master whose node it has not discovered: it learns it in passing
             if (SoloSafety::Applies(bot) && DiscoverTownFlightMaster("passes through the town"))
                 return true;
