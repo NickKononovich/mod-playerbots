@@ -1702,7 +1702,8 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
         if (auto const st = bots_.find(row.low); st != bots_.end() && st->second.ordersCall)
             for (GuildOrder const& o : st->second.orders)
                 if (o.type == GuildOrderType::PROFESSION && o.executable && o.townArea &&
-                    (o.profession == GuildProfessionKind::BUY || o.profession == GuildProfessionKind::TRAIN))
+                    (o.profession == GuildProfessionKind::BUY || o.profession == GuildProfessionKind::TRAIN ||
+                     o.profession == GuildProfessionKind::CRAFT))  // [lag342] its craft's town too
                     c.townStop = true;
         out.push_back(c);
     }

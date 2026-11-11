@@ -2315,6 +2315,15 @@ void GuildCoordinator::UpdateOrders()
                     o.executable = true;
                     o.status = "smelts at the town forge on its next visit";
                 }
+                // [lag342] a craft call: a convenient town task at its inn's town (the route's stop), run there by
+                // the profession executor as in any safe place
+                else if (pick.kind == GuildProfessionKind::CRAFT && pick.pos != WorldPosition())
+                {
+                    o.pos = pick.pos;
+                    o.cost = pick.cost;
+                    o.executable = true;
+                    o.status = "crafts in the town of its route's stop [lag342]";
+                }
                 // [prof272] a TRAIN call (a rank, a recipe, a tool) the bot's money pays: a convenient town task as
                 // the smelt - its trainer's / vendor's town is a stop of its route (TownStops), the executor learns /
                 // buys there (ProfessionCall due). Before, it stayed "on its next town visit" (executable false: no
@@ -4739,6 +4748,17 @@ void GuildCoordinator::UpdateProfessions()
                                 std::string(SkillShort(line)) + " " + std::to_string(skill) + "→" +
                                     std::to_string(judged) + ": crafts from what it has");
                             kinds += "craft";
+                            // [lag342] coordinator 2026-11-11: the craft runs in a safe place (a city or an inn's
+                            // rest area, NewRpgCraft::InSafePlace) - its town is the nearest inn on its map, a stop of
+                            // its route, weighed by the call's value ([lag337] / [lag340]: the walk's worth). Before,
+                            // it waited for a town the bot happened to stand in: b445 Dekorhan's "Insc 1→105: crafts
+                            // from what it has (a town)" after his parchment buy, then SFK five 13 took him. A smelt
+                            // keeps its forge ([econ1])
+                            if (line != SKILL_MINING)
+                            {
+                                picks.back().pos = sTravelRouteMgr.GetNearestInn(p, std::numeric_limits<float>::max());
+                                picks.back().cost = value > 0.0 ? uint32(value) : 0;  // its worth, not a price
+                            }
                         }
                         // [prof277] the item most units of the crafts below its rank cap take, its own count
                         auto const most = [](std::map<uint32, double> const& units)
