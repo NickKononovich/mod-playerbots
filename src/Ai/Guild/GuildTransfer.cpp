@@ -819,8 +819,24 @@ void GuildCoordinator::UpdateTransfers()
                 continue;
             for (auto const& [item, n] : r.reagents)
                 if (uint32 const have = c->GetItemCount(item, false); have < n)
+                {
                     lack[{row.low, item}] = {n - have,
                                              "skill-up " + std::to_string(value) + ": " + ItemText(r.product, 1)};
+                    // [lag341] ... and what it is made of (an ink of the pigment milled from herbs: ExpandReagent, the
+                    // vendors on its map, [lag329]): nobody holds the intermediate, the members hold the herbs. b445:
+                    // 73-80 Silverleaf in members' bags "held until the guild bank" (no tab), 0 sent to Dekorhan, the
+                    // scribe called for 16 glyph orders - his Ivory Ink's Alabaster Pigment lacked, not the herb.
+                    // A mill takes a whole stack: what the members hold goes, the transfer one holding at a time
+                    std::map<uint32, double> raw;
+                    ExpandReagent(item, double(n - have), raw, nullptr, 1.0f, 0, 0, c->GetMapId());
+                    for (auto const& [rawItem, units] : raw)
+                        if (rawItem != item)
+                            if (uint32 const own = c->GetItemCount(rawItem, false); double(own) < units)
+                                lack.try_emplace({row.low, rawItem},
+                                                 uint32(std::ceil(units - double(own))),
+                                                 "skill-up " + std::to_string(value) + ": " + ItemText(r.product, 1) +
+                                                     " via " + ItemText(item, 1) + " [lag341]");
+                }
         }
         // [smelt] a miner's next smelt that still gives it skill: the ore goes to it (it smelts and levels Mining)
         std::vector<std::pair<uint32, uint32>> ores;
