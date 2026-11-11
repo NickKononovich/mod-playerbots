@@ -257,6 +257,9 @@ public:
     // future) and why it stands still - asked only for the bot the BotControl detail pane shows
     void SendTasks(Player* player, uint32 num);
     bool IsPlanned(uint32 low) const { return planIndex_.count(low) != 0; }
+    // [ench162] any thread: a member's bags changed (an item stored or equipped, a transfer arrived) - its spare
+    // greens are looked at again (RouteSpareGreens)
+    void MarkBagsChanged(uint32 low);
     // [help] every member of the plan (read-only after Load: any thread)
     std::vector<uint32> PlannedLows() const
     {
@@ -1054,6 +1057,19 @@ private:
     std::string SpecRoleNow(Player* p) const;      // tank / healer / dps by its talents now
     mutable std::mutex lock_;
     std::mutex deferredLock_;  // [lock23] a leaf: nothing is called under it
+    // [ench162] the members whose bags changed since their last spare-green look (a leaf lock), the members online
+    // at the last sweep and what the routing depends on (the enchanters' skills, the gear plans' picks) - lock_
+    std::mutex bagsChangedLock_;
+    std::unordered_set<uint32> bagsChanged_;
+    std::unordered_set<uint32> greensOnline_;
+    std::unordered_map<uint32, std::vector<uint32>> greensPlanned_;  // member -> copies it keeps for a gear plan
+    uint64 greensSignature_{0};
+    struct GreensCost
+    {
+        uint32 since{0};
+        uint32 sweeps{0}, full{0}, members{0}, items{0}, routed{0};
+        uint64 us{0}, maxUs{0};
+    } greensCost_;
     std::vector<std::tuple<ObjectGuid, ObjectGuid, uint32>> deferredLoot_;  // player, item, count
     // [regress10] the REPAIR calls the map threads read (Repair), written by UpdateOrders
     mutable std::mutex repairLock_;

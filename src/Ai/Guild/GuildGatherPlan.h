@@ -31,7 +31,8 @@ enum class GatherKind : uint8
     NODE,   // herb / ore spawns (lock skill of the node)
     SKIN,   // skinnable mobs (creature_template skinloot; skill by the core's skinning formula)
     FISH,   // fishable water of an area (fishing_loot_template by area, then zone; skill_fishing_base_level)
-    CHEST   // lockable or plain chests (only when their loot is on the wanted list)
+    CHEST,  // lockable or plain chests (only when their loot is on the wanted list)
+    DROP    // [ench164] mobs whose own loot gives a trade good (meat, cloth): creature_loot_template, no skill
 };
 
 struct GatherPlace
@@ -57,6 +58,7 @@ struct GatherPlace
     // its pool weight); sorted
     std::vector<std::tuple<uint8, int32, float>> spawnReq;
     uint8 levelMin{0}, levelMax{0};  // SKIN: the mob's levels (display)
+    float killHp{0.0f};              // [ench164] SKIN / DROP: the mob's base health at its middle level
     float areaYd2{0.0f};             // [questrate] the box its spawns spread over (square yards)
 };
 
@@ -160,6 +162,7 @@ private:
     void LoadNodesAndChests();
     void LoadSkinning();
     void LoadFishing();
+    void LoadDrops();  // [ench164]
     void LoadConversions();
     void Finish(GatherPlace& place, std::vector<WorldPosition> const& points);
     uint8 DangerAt(uint32 mapId, float x, float y, float z) const;

@@ -8,6 +8,7 @@
 #include "GuildCoordinator.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <iterator>
@@ -325,6 +326,8 @@ namespace
                 return "Herb";
             case 393:
                 return "Skin";
+            case 356:  // [ench163]
+                return "Fish";
             default: return "?";
         }
     }
@@ -3061,28 +3064,83 @@ std::map<uint32, float> const& GuildCoordinator::DisenchantYield(uint32 disencha
     return out;
 }
 
+void GuildCoordinator::MarkBagsChanged(uint32 low)
+{
+    if (!IsPlanned(low))
+        return;
+    std::lock_guard<std::mutex> guard(bagsChangedLock_);
+    bagsChanged_.insert(low);
+}
+
 // [ench161] lock_ held. User rules: greens nobody wears are disenchanted, not sold; an upgrade a member needs is never
 // disenchanted; honest play (the holder mails / trades its own item, GuildTransfer). [ench153] routed only a green
 // looted from then on to the enchanter: b442 the members held 179 disenchantable greens / blues in their bags (160 of
 // skill 1) from earlier loot, quest rewards and plan picks that moved on, none went to the 5 enchanters (Enchanting
-// 8-10), and every enchanter's walk stopped at "Strange Dust x1: neither held nor gathered in the guild"
+// 8-10), and every enchanter's walk stopped at "Strange Dust x1: neither held nor gathered in the guild".
+// [ench162] incremental: only the bags of members whose bags changed (MarkBagsChanged), who came online, or all of
+// them when what the routing depends on changed (an enchanter's skill, the gear plans' picks); the copies a plan
+// takes that other members keep stay counted from their last look (greensPlanned_)
 void GuildCoordinator::RouteSpareGreens()
 {
+    auto const started = std::chrono::steady_clock::now();
+    uint32 const now = Now();
+    if (!greensCost_.since)
+        greensCost_.since = now;
+    uint32 scannedMembers = 0, scannedItems = 0, routed = 0;
+    bool full = false;
+    auto const account = [&]()
+    {
+        uint64 const us = uint64(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count());
+        GreensCost& c = greensCost_;
+        ++c.sweeps;
+        c.full += full ? 1 : 0;
+        c.members += scannedMembers;
+        c.items += scannedItems;
+        c.routed += routed;
+        c.us += us;
+        c.maxUs = std::max(c.maxUs, us);
+        if (now - c.since >= MINUTE)  // a log cadence, no decision
+        {
+            LOG_INFO("playerbots",
+                     "[ench162] spare-green routing, last {} s: {} sweeps ({} full), {} members / {} bag items looked "
+                     "at, {} routed, {} us ({} us max)",
+                     now - c.since, c.sweeps, c.full, c.members, c.items, c.routed, c.us, c.maxUs);
+            c = GreensCost();
+            c.since = now;
+        }
+    };
+
     struct Enchanter
     {
         uint32 low{0};
         uint32 skill{0};
         uint32 queued{0};
     };
+    auto const mix = [](uint64 a, uint64 b)
+    {
+        uint64 x = (a << 32) ^ b;
+        x ^= x >> 33;
+        x *= 0xff51afd7ed558ccdULL;
+        x ^= x >> 33;
+        return x;
+    };
+    uint64 signature = 0;  // a sum: the same whatever the maps' order
     std::vector<Enchanter> enchanters;
+    std::unordered_set<uint32> online;
     for (PlanRow const& row : plan_)
         if (Player* m = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low)))
-            if (m->IsInWorld() && GET_PLAYERBOT_AI(m) && !HumanCharacter(m) && m->HasSkill(SKILL_ENCHANTING) &&
-                m->HasSpell(SPELL_DISENCHANT))
+        {
+            if (!m->IsInWorld() || !GET_PLAYERBOT_AI(m) || HumanCharacter(m))
+                continue;  // a human's bags are his own
+            online.insert(row.low);
+            if (m->HasSkill(SKILL_ENCHANTING) && m->HasSpell(SPELL_DISENCHANT))
+            {
                 enchanters.push_back(
                     {row.low, m->GetPureSkillValue(SKILL_ENCHANTING), uint32(bots_[row.low].disenchant.size())});
-    if (enchanters.empty())
-        return;
+                signature += mix(row.low, enchanters.back().skill);
+            }
+        }
     // the copies the members' gear plans take (one per member and item), the ones held for a member first
     std::map<uint32, uint32> planned;
     for (auto const& [low, st] : bots_)
@@ -3092,8 +3150,35 @@ void GuildCoordinator::RouteSpareGreens()
             for (GearPick const& g : *list)
                 ids.insert(g.itemId);
         for (uint32 id : ids)
+        {
             ++planned[id];
+            signature += mix(low, id) ^ 1;
+        }
     }
+
+    std::unordered_set<uint32> dirty;
+    {
+        std::lock_guard<std::mutex> guard(bagsChangedLock_);
+        dirty.swap(bagsChanged_);
+    }
+    if (signature != greensSignature_)
+    {
+        greensSignature_ = signature;
+        full = true;
+        dirty = online;
+    }
+    for (uint32 low : online)
+        if (!greensOnline_.count(low))
+            dirty.insert(low);  // it came online: its bags may have changed meanwhile
+    greensOnline_ = online;
+    for (auto it = dirty.begin(); it != dirty.end();)
+        it = online.count(*it) ? std::next(it) : dirty.erase(it);
+    if (enchanters.empty() || dirty.empty())
+    {
+        account();
+        return;
+    }
+
     for (auto const& [low, st] : bots_)
         for (HeldItem const& h : st.held)
         {
@@ -3107,29 +3192,49 @@ void GuildCoordinator::RouteSpareGreens()
             if (auto const p = planned.find(h.itemId); p != planned.end() && p->second)
                 --p->second;
         }
+    for (auto const& [low, kept] : greensPlanned_)
+        if (!dirty.count(low))
+            for (uint32 id : kept)
+                if (auto const p = planned.find(id); p != planned.end() && p->second)
+                    --p->second;
+
+    std::vector<uint32> again;  // a green still waiting for its loot decision: looked at once it is decided
     for (PlanRow const& row : plan_)
     {
+        if (!dirty.count(row.low))
+            continue;
         Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
-        if (!p || !p->IsInWorld() || !GET_PLAYERBOT_AI(p) || HumanCharacter(p))
-            continue;  // a human's bags are his own
+        if (!p)
+            continue;
+        ++scannedMembers;
         BotState& st = bots_[row.low];
+        std::vector<uint32>& kept = greensPlanned_[row.low];
+        kept.clear();
         std::optional<StatsWeightCalculator> calc;
         auto const look = [&](Item* item)
         {
             ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
-            if (!proto || item->IsSoulBound() || !proto->DisenchantID || proto->Quality < ITEM_QUALITY_UNCOMMON ||
+            if (!proto)
+                return;
+            ++scannedItems;
+            if (item->IsSoulBound() || !proto->DisenchantID || proto->Quality < ITEM_QUALITY_UNCOMMON ||
                 proto->Quality > ITEM_QUALITY_RARE ||
                 (proto->Class != ITEM_CLASS_ARMOR && proto->Class != ITEM_CLASS_WEAPON) ||
                 proto->RequiredDisenchantSkill < 0)
                 return;
             uint32 const guid = item->GetGUID().GetCounter();
-            if (std::find(st.disenchant.begin(), st.disenchant.end(), guid) != st.disenchant.end() ||
-                std::any_of(st.held.begin(), st.held.end(), [&](HeldItem const& h) { return h.itemGuidLow == guid; }) ||
+            auto const held =
+                std::find_if(st.held.begin(), st.held.end(), [&](HeldItem const& h) { return h.itemGuidLow == guid; });
+            if (held != st.held.end() && held->purpose == "pending")
+                again.push_back(row.low);
+            if (held != st.held.end() ||
+                std::find(st.disenchant.begin(), st.disenchant.end(), guid) != st.disenchant.end() ||
                 TransferHolds(guid))
                 return;
             if (auto const pl = planned.find(proto->ItemId); pl != planned.end() && pl->second)
             {
                 --pl->second;  // this copy is a member's upgrade: kept
+                kept.push_back(proto->ItemId);
                 return;
             }
             uint32 const req = uint32(proto->RequiredDisenchantSkill);
@@ -3148,7 +3253,7 @@ void GuildCoordinator::RouteSpareGreens()
                         to = &e;
                 }
             if (!to)
-                return;  // no enchanter's skill disenchants it yet
+                return;  // no enchanter's skill disenchants it yet (a skill-up changes the signature: all again)
             if (!calc)
             {
                 calc.emplace(p);
@@ -3157,9 +3262,10 @@ void GuildCoordinator::RouteSpareGreens()
             }
             GuildGear::Eval ev;
             if (GuildGear::Evaluate(p, *calc, proto, ev) && ev.gain > 0.0f)
-                return;  // the holder wears it (its own equip takes it)
+                return;  // the holder wears it (its own equip takes it; the equip marks its bags changed)
             st.sell.erase(std::remove(st.sell.begin(), st.sell.end(), guid), st.sell.end());
             ++to->queued;
+            ++routed;
             if (to->low == row.low)
                 st.disenchant.push_back(guid);
             else
@@ -3177,6 +3283,12 @@ void GuildCoordinator::RouteSpareGreens()
                 for (uint32 j = 0; j < bag->GetBagSize(); ++j)
                     look(bag->GetItemByPos(uint8(j)));
     }
+    if (!again.empty())
+    {
+        std::lock_guard<std::mutex> guard(bagsChangedLock_);
+        bagsChanged_.insert(again.begin(), again.end());
+    }
+    account();
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -3970,7 +4082,7 @@ void GuildCoordinator::UpdateProfessions()
     std::map<uint32, float> guildPace;
     auto const gatherPace = [&](uint32 rawItem, uint32 gatherSkill, uint32 reqSkill, Player* only)
     {
-        float const measured = GatherPace(gatherSkill);
+        float const measured = gatherSkill ? GatherPace(gatherSkill) : 0.0f;
         if (measured > 0.0f)
             return measured;
         if (!only)
@@ -3978,8 +4090,17 @@ void GuildCoordinator::UpdateProfessions()
                 return known->second;
         float best = 0.0f;
         for (auto const& [gatherRow, g] : members)
-            if ((!only || g == only) && g->HasSkill(gatherSkill) && g->GetPureSkillValue(gatherSkill) >= reqSkill)
+        {
+            if (only && g != only)
+                continue;
+            // [ench164] a mob's own drop (no skill): the members the gathering plan sends (UpdateOrders' gatherers)
+            bool const can = gatherSkill
+                                 ? g->HasSkill(gatherSkill) && g->GetPureSkillValue(gatherSkill) >= reqSkill
+                                 : (gatherRow->grp == 'B' || gatherRow->grp == 'C' || fishers_.count(gatherRow->low)) &&
+                                       !HumanCharacter(g);
+            if (can)
                 best = std::max(best, sGuildGatherPlan.BestRate(rawItem, g) / 60.0f);
+        }
         if (!only)
             guildPace[rawItem] = best;
         return best;
@@ -4319,12 +4440,32 @@ void GuildCoordinator::UpdateProfessions()
                                     gmin += units / pace;
                                     continue;
                                 }
+                            // [ench163] skinning and fishing (GuildGatherPlan's SKIN / FISH places), [ench164] a
+                            // mob's own drop (DROP, no skill): the guild's gatherers at the plan's rate by formula -
+                            // b442 Light Hide, Oily Blackmouth, Coyote Meat, Wool Cloth "neither held nor gathered"
+                            // (gatherSource_ holds only herb / ore nodes). The crafter's own gathering stays the nodes
+                            // (its GATHER profession call runs DO_GATHER, no place)
+                            uint32 planSkill = 0;
+                            int32 planReq = 0;
+                            bool const planned = src == gatherSource_.end() &&
+                                                 sGuildGatherPlan.Gatherable(rawItem, &planSkill, &planReq);
+                            if (planned)
+                                if (float const pace =
+                                        gatherPace(rawItem, planSkill, uint32(std::max<int32>(0, planReq)), nullptr);
+                                    pace > 0.0f)
+                                {
+                                    gmin += units / pace;
+                                    continue;
+                                }
                             why = ItemName(rawItem) + " ×" + std::to_string(uint32(std::ceil(units))) + ": " +
-                                  (src != gatherSource_.end()
-                                       ? std::string("no member gatherer reaches it (") +
-                                             SkillShort(src->second.first) + " " +
-                                             std::to_string(src->second.second) + ")"
-                                       : std::string("neither held nor gathered in the guild"));
+                                  (src != gatherSource_.end() ? std::string("no member gatherer reaches it (") +
+                                                                    SkillShort(src->second.first) + " " +
+                                                                    std::to_string(src->second.second) + ")"
+                                   : planned && planSkill
+                                       ? std::string("no member gatherer reaches it (") + SkillShort(planSkill) + " " +
+                                             std::to_string(std::max<int32>(0, planReq)) + ") [ench163]"
+                                   : planned ? std::string("no gatherer of the guild kills its mobs safely [ench164]")
+                                             : std::string("neither held nor gathered in the guild"));
                             if (yield != disenchanted.end())  // [ench160] what the greens on their way gave
                                 why +=
                                     " (beyond the Disenchant of " + std::to_string(greens) + " guild greens [ench160])";
@@ -6750,7 +6891,9 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                     }
                     if (place->kind != GatherKind::CHEST)
                         st.gatherWalkPlace = 0;  // arrived (a chest place: its walks to the chests are checked below)
-                    if (place->kind == GatherKind::SKIN)
+                    // [ench164] a drop place is ground as a skinning place, its loot is the mobs' own
+                    bool const drop = place->kind == GatherKind::DROP;
+                    if (place->kind == GatherKind::SKIN || drop)
                     {
                         // [questrate] b338 Ainne: the skinning place of its own zone lay in its danger zone of Large
                         // Crag Boar; GO_GRIND refused the walk and the order sent it again (455 s, 36 alerts). The
@@ -6779,7 +6922,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                                     live = true;
                                     break;
                                 }
-                                if (Creature* corpse = bot->FindNearestCreature(entry, sight, false);
+                                if (Creature* corpse = drop ? nullptr : bot->FindNearestCreature(entry, sight, false);
                                     corpse && !corpse->IsAlive() && corpse->HasUnitFlag(UNIT_FLAG_SKINNABLE))
                                 {
                                     live = true;
@@ -6801,7 +6944,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                         step.kind = GuildRunStep::GRIND;
                         step.pos = place->spot;
                         step.entries = place->entries;  // [econ1] the mobs it grinds (New RPG may aim at them)
-                        step.reason = "GATHER skin " + order.details;
+                        step.reason = std::string(drop ? "GATHER drop " : "GATHER skin ") + order.details;
                         started(order);
                         return step;
                     }
@@ -8226,10 +8369,10 @@ class GuildCoordinatorPlayerScript : public PlayerScript
 {
 public:
     GuildCoordinatorPlayerScript()
-        : PlayerScript("GuildCoordinatorPlayerScript", {PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM,
-                                                         PLAYERHOOK_ON_PLAYER_JUST_DIED,
-                                                         PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE,
-                                                         PLAYERHOOK_ON_CREATE_ITEM})
+        : PlayerScript("GuildCoordinatorPlayerScript",
+                       {PLAYERHOOK_ON_LOOT_ITEM, PLAYERHOOK_ON_GROUP_ROLL_REWARD_ITEM, PLAYERHOOK_ON_PLAYER_JUST_DIED,
+                        PLAYERHOOK_ON_PLAYER_KILLED_BY_CREATURE, PLAYERHOOK_ON_CREATE_ITEM,
+                        PLAYERHOOK_ON_STORE_NEW_ITEM, PLAYERHOOK_ON_EQUIP})
     {
     }
 
@@ -8253,6 +8396,20 @@ public:
     void OnPlayerCreateItem(Player* player, Item* item, uint32 count) override
     {
         NewRpgCraft::OnCreateItem(player, item, count);
+    }
+
+    // [ench162] a new item in its bags (loot, quest reward, purchase, craft) or a piece equipped (the one it replaced
+    // goes to the bags): its spare greens are looked at again
+    void OnPlayerStoreNewItem(Player* player, Item* /*item*/, uint32 /*count*/) override
+    {
+        if (player)
+            sGuildCoordinator.MarkBagsChanged(player->GetGUID().GetCounter());
+    }
+
+    void OnPlayerEquip(Player* player, Item* /*it*/, uint8 /*bag*/, uint8 /*slot*/, bool /*update*/) override
+    {
+        if (player)
+            sGuildCoordinator.MarkBagsChanged(player->GetGUID().GetCounter());
     }
 
     void OnPlayerJustDied(Player* player) override { sGuildCoordinator.OnJustDied(player); }

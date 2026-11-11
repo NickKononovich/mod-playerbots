@@ -2156,6 +2156,11 @@ void GuildCoordinator::UpdateTransfers()
             }
             if (arrived || !pending)
             {
+                if (!t.gold)  // [ench162] the item reached the receiver, or went back to the sender
+                {
+                    MarkBagsChanged(t.toLow);
+                    MarkBagsChanged(t.fromLow);
+                }
                 if (arrived && t.purpose == "to disenchant")
                     bots_[t.toLow].disenchant.push_back(t.itemGuidLow);
                 if (!arrived && !t.gold)
@@ -2563,6 +2568,8 @@ void GuildCoordinator::RunTransfers(uint32 diff)
             t.money = o.money;
         if (o.done)
         {
+            if (!t.gold)  // [ench162] the traded item is in the receiver's bags
+                MarkBagsChanged(t.toLow);
             if (t.purpose == "to disenchant" && o.newGuid)
                 bots_[t.toLow].disenchant.push_back(o.newGuid);
             Decision(Who(t.fromLow) + " gave " + Who(t.toLow) +

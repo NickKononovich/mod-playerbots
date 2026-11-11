@@ -194,6 +194,14 @@ namespace
         return map->IsContinent() || instance;
     }
 
+    // the creature's base health at its middle level (CreatureBaseStats); 0: no stats for it
+    float MobHp(CreatureTemplate const* tmpl)
+    {
+        uint8 const level = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
+        CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(level, tmpl->unit_class);
+        return stats ? float(stats->GenerateHealth(tmpl)) : 0.0f;
+    }
+
     struct SpawnZone
     {
         uint32 zone{0};
@@ -237,6 +245,8 @@ char const* GuildGatherPlan::KindName(GatherKind kind)
             return "fish";
         case GatherKind::CHEST:
             return "chest";
+        case GatherKind::DROP:
+            return "drop";
     }
     return "?";
 }
@@ -275,13 +285,14 @@ void GuildGatherPlan::Load()
     LoadNodesAndChests();
     LoadSkinning();
     LoadFishing();
+    LoadDrops();
     // [ui11] the open-world harvest first (nodes, skinning, fishing): a chest never stands in for it. b-live: «Сбор:
     // Silverleaf x364 @ chest Tattered Chest» for every bot without Herbalism - the chest's loot group gives one of
     // seven herbs (~0.14 Silverleaf a chest), it opens without a skill, so it was the only place they could "gather" a
     // common herb at; and its skill 0 made Silverleaf read as gatherable by anyone (gatherSkill_)
     for (GatherPlace const& place : places_)
     {
-        if (place.instance || place.kind == GatherKind::CHEST)
+        if (place.instance || place.kind == GatherKind::CHEST || place.kind == GatherKind::DROP)
             continue;
         for (auto const* yield : {&place.yield, &place.poolYield})
             for (auto const& [item, amount] : *yield)
@@ -298,7 +309,8 @@ void GuildGatherPlan::Load()
         {
             if (amount <= 0.0f)
                 continue;
-            bool const chest = places_[i].kind == GatherKind::CHEST;
+            // [ench164] a mob's own drop never stands in for them either (a humanoid's Light Leather)
+            bool const chest = places_[i].kind == GatherKind::CHEST || places_[i].kind == GatherKind::DROP;
             if (chest && !places_[i].instance && harvest_.count(item))
                 continue;  // [ui11] a herb / ore / leather / fish: its nodes, mobs and waters only
             placesByItem_[item].push_back(uint32(i));
@@ -618,6 +630,7 @@ void GuildGatherPlan::LoadSkinning()
             place.reqSkill = SkinningReq(tmpl->minlevel);
             place.levelMin = tmpl->minlevel;
             place.levelMax = tmpl->maxlevel;
+            place.killHp = MobHp(tmpl);
             place.entries.push_back(data.id);
             place.yield = cached->second;
             itr = index.emplace(key, places_.size()).first;
@@ -635,6 +648,89 @@ void GuildGatherPlan::LoadSkinning()
         respawnSum[itr->second - base] += float(data.spawntimesecs);
         place.spawnReq.emplace_back(std::max({around, self, AreaSafeLevel(z.area)}), SkinningReq(tmpl->maxlevel),
                                     weight);
+        points[itr->second - base].emplace_back(data.mapid, data.posX, data.posY, data.posZ);
+    }
+    for (auto const& [key, i] : index)
+    {
+        GatherPlace& place = places_[i];
+        place.respawnSec = place.spawns ? respawnSum[i - base] / float(place.spawns) : 0.0f;
+        Finish(place, points[i - base]);
+    }
+}
+
+// [ench164] coordinator 2026-11-11: the trade goods a mob drops itself (meat, cloth) are a gathering source like a
+// skinnable mob - b442 the cooks', tailors' and blacksmiths' skill-up walks stopped at "Coyote Meat x1 / Crawler Meat /
+// Wool Cloth / Mageweave Cloth: neither held nor gathered in the guild" (196 such lines) while the members killed those
+// mobs. A place per map, zone and creature of the open world (no instance: a five's run is no solo grind), its
+// creature_loot_template's trade goods per kill (Expected: references unrolled, quest-only drops skipped); not a mob
+// friendly to the Alliance (its guards and townsfolk)
+void GuildGatherPlan::LoadDrops()
+{
+    std::unordered_map<uint32, SpawnZone> zones;
+    ReadZones("creature", zones);
+    std::map<std::tuple<uint32, uint32, uint32>, size_t> index;
+    std::vector<std::vector<WorldPosition>> points;
+    size_t const base = places_.size();
+    std::vector<float> respawnSum;
+    std::unordered_map<uint32, std::map<uint32, float>> lootCache;
+
+    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+    {
+        bool instance = false;
+        if (!GatherMap(data.mapid, instance) || instance)
+            continue;
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(data.id);
+        if (!tmpl || !tmpl->lootid || !Attackable(tmpl))
+            continue;
+        if (FactionTemplateEntry const* ft = sFactionTemplateStore.LookupEntry(tmpl->faction);
+            !ft || ((ft->ourMask | ft->friendlyMask) & FACTION_MASK_ALLIANCE))
+            continue;
+        auto cached = lootCache.find(tmpl->lootid);
+        if (cached == lootCache.end())
+        {
+            std::map<uint32, float> all, goods;
+            Expected(LootTemplates_Creature.GetLootFor(tmpl->lootid), all, 1.0f);
+            for (auto const& [item, amount] : all)
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
+                    proto && proto->Class == ITEM_CLASS_TRADE_GOODS && proto->Quality >= ITEM_QUALITY_NORMAL &&
+                    amount > 0.0f)
+                    goods[item] = amount;
+            cached = lootCache.emplace(tmpl->lootid, std::move(goods)).first;
+        }
+        if (cached->second.empty())
+            continue;
+        float const hp = MobHp(tmpl);
+        if (hp <= 0.0f)
+            continue;
+        SpawnZone const z = ZoneOf(zones, spawnId, data);
+        auto const key = std::make_tuple(uint32(data.mapid), z.zone, data.id);
+        auto itr = index.find(key);
+        if (itr == index.end())
+        {
+            GatherPlace place;
+            place.kind = GatherKind::DROP;
+            place.mapId = data.mapid;
+            place.zoneId = z.zone;
+            place.areaId = z.area;
+            place.levelMin = tmpl->minlevel;
+            place.levelMax = tmpl->maxlevel;
+            place.killHp = hp;
+            place.entries.push_back(data.id);
+            place.yield = cached->second;
+            itr = index.emplace(key, places_.size()).first;
+            places_.push_back(std::move(place));
+            points.emplace_back();
+            respawnSum.push_back(0.0f);
+        }
+        GatherPlace& place = places_[itr->second];
+        float const weight = SpawnWeight(spawnId, false);
+        // the mob is itself the fight: it counts like a hostile at its spot (its highest level), as a skinned mob
+        uint8 const around = DangerAt(data.mapid, data.posX, data.posY, data.posZ);
+        uint8 const self = Elite(tmpl) ? MinSafeBotLevel(0, tmpl->maxlevel) : MinSafeBotLevel(tmpl->maxlevel, 0);
+        ++place.spawns;
+        place.liveShare += weight;
+        respawnSum[itr->second - base] += float(data.spawntimesecs);
+        place.spawnReq.emplace_back(std::max({around, self, AreaSafeLevel(z.area)}), 0, weight);
         points[itr->second - base].emplace_back(data.mapid, data.posX, data.posY, data.posZ);
     }
     for (auto const& [key, i] : index)
@@ -867,7 +963,7 @@ std::string GuildGatherPlan::PlaceName(GatherPlace const& place) const
     std::string what;
     if (!place.entries.empty())
     {
-        if (place.kind == GatherKind::SKIN)
+        if (place.kind == GatherKind::SKIN || place.kind == GatherKind::DROP)
         {
             if (CreatureTemplate const* t = sObjectMgr->GetCreatureTemplate(place.entries.front()))
                 what = t->Name;
@@ -993,24 +1089,14 @@ float GuildGatherPlan::Rate(GatherPlace const& place, uint32 itemId, Player* bot
         castSpell = SPELL_MINING_BASE;
     if (SpellInfo const* cast = castSpell ? sSpellMgr->GetSpellInfo(castSpell) : nullptr)
         work += float(cast->CalcCastTime()) / 1000.0f;
-    if (place.kind == GatherKind::SKIN)
+    // the kill of a skinned mob, [ench164] of a mob whose own loot it is (a drop place: the loot chance per kill x the
+    // kills - Expected's chance x (min + max) / 2 per spawn): its base health over the bot's dps
+    if (place.kind == GatherKind::SKIN || place.kind == GatherKind::DROP)
     {
-        float hp = 0.0f;
-        uint32 mobs = 0;
-        for (uint32 const entry : place.entries)
-            if (CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry))
-            {
-                uint8 const mobLevel = uint8((uint32(tmpl->minlevel) + uint32(tmpl->maxlevel)) / 2);
-                if (CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(mobLevel, tmpl->unit_class))
-                {
-                    hp += float(stats->GenerateHealth(tmpl));
-                    ++mobs;
-                }
-            }
         float const dps = DpsEstimate::EstimateDps(bot, nullptr, DpsEstimate::BuffContext::Solo);
-        if (!mobs || dps <= 0.0f)
+        if (place.killHp <= 0.0f || dps <= 0.0f)
             return 0.0f;
-        work += hp / float(mobs) / dps;
+        work += place.killHp / dps;
     }
     return work > 0.0f ? std::min(rate, 3600.0f / work * perUnit) : rate;
 }
