@@ -238,6 +238,9 @@ protected:
     // again), or its Hearthstone takes it out; true from WalledHoldStep: the tick is the hold's
     void NoteWalledHold(WorldPosition const& camp, std::string const& why);
     bool WalledHoldStep();
+    // [lag352] a bot held where it stands (walled in, its Hearthstone's cooldown, its help on the way) fights the
+    // mob its judge wins in reach (the grind where it stands, WANDER_RANDOM) instead of sitting; false: none here
+    bool GrindWhileHeld(char const* why);
     // [vendor12] the cheapest usable stack of its ammo bought straight from the vendor's list
     void BuyAmmoDirect(Creature* vendor, uint32 subClass, uint32 have);
     // [stuck12] the guild's WALK / GRIND step goes to a spot whose walk the bot gave up at this level

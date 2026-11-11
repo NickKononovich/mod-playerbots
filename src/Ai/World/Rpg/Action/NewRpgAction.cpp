@@ -665,6 +665,8 @@ bool NewRpgBaseAction::HearthOut(std::string const& why, WorldPosition const* ca
         }
         if (bot->isMoving())
             return true;  // its step out of the reaches
+        if (GrindWhileHeld("its Hearthstone's cooldown"))  // [lag352]
+            return true;
         info.ChangeToRest();
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         return true;
@@ -783,6 +785,8 @@ bool NewRpgBaseAction::WalledHoldStep()
         }
         if (bot->isMoving())
             return true;
+        if (GrindWhileHeld("its help on the way"))  // [lag352]
+            return true;
         botAI->rpgInfo.ChangeToRest();
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         return true;
@@ -797,6 +801,48 @@ bool NewRpgBaseAction::WalledHoldStep()
     LOG_INFO("playerbots", "[hold58] {} L{} hold ends: no help and no Hearthstone to wait for ({})", bot->GetName(),
              bot->GetLevel(), botAI->rpgInfo.hearthNote);
     return false;
+}
+
+// [lag352] coordinator 2026-11-11 (user: a bot out of choices still has grinding near it - honest experience, never
+// an idle wait for a level it cannot reach): b446 Rollothan L14 walled in among the Westfall Riverpaws L14-15 sat
+// 1643 s for his Hearthstone's cooldown, the same-level mobs round him alive. The wait is spent on the mob its judge
+// wins in reach (GrindTargetValue under the grind where it stands, WANDER_RANDOM: its pack, links, assists and rest
+// priced as every pull); a fight's kills may clear the very camp that walls it. None in reach: it rests as before
+bool NewRpgBaseAction::GrindWhileHeld(char const* why)
+{
+    if (bot->IsInCombat() || !bot->IsAlive() || !SoloSafety::Applies(bot) || bot->IsNonMeleeSpellCast(false))
+        return false;
+    NewRpgInfo& info = botAI->rpgInfo;
+    bool const wandering = info.GetStatus() == RPG_WANDER_RANDOM;
+    NewRpgInfo::RpgData const before = info.data;
+    uint32 const beforeT = info.startT;
+    if (!wandering)
+        info.ChangeToWanderRandom();
+    Unit* const target = AI_VALUE(Unit*, "grind target");
+    if (!target)
+    {
+        if (!wandering)
+        {
+            info.data = before;  // no fight here: the state it held, no status change
+            info.startT = beforeT;
+        }
+        return false;
+    }
+    if (bot->IsSitState())
+        bot->SetStandState(UNIT_STAND_STATE_STAND);
+    static std::mutex heldLock;  // a log cadence per bot and target, no decision reads it
+    static std::unordered_map<uint32, ObjectGuid> heldLogged;
+    bool fresh = false;
+    {
+        std::lock_guard<std::mutex> guard(heldLock);
+        ObjectGuid& last = heldLogged[bot->GetGUID().GetCounter()];
+        fresh = last != target->GetGUID();
+        last = target->GetGUID();
+    }
+    if (fresh)
+        LOG_INFO("playerbots", "[lag352] {} L{} held ({}): grinds {} L{} {:.0f} yd off where it stands", bot->GetName(),
+                 bot->GetLevel(), why, target->GetName(), target->GetLevel(), bot->GetExactDist(target));
+    return true;
 }
 
 bool NewRpgBaseAction::BindAtInnHere()
