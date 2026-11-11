@@ -5115,7 +5115,14 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
     // the destination) and the straight tail of an INCOMPLETE path (past MAX_PATH_LENGTH 74 / 148 polygons or the
     // 1024-node query: the Dolanaar inn's 110-polygon stair, Ban'ethil's 356) climbed through towers and hills. No
     // complete path: no move (the walk's own search gives the spot up); a map with no navmesh keeps its straight walk
-    if (unit == bot && generatePath && !backwards && UsesLeaderRoute(bot) && !bot->GetMap()->Instanceable())
+    // [sfk242] ... in a dungeon too: the core's PointMovementGenerator moves straight to the destination whenever its
+    // path has two points or none (MoveTo(i_x, i_y, i_z)), and a path cut at its polygon limit that ends under the
+    // destination is such a path - b44x sfk-n: 22 tanks went from the floor (z 77-87) up the wall onto the ramparts
+    // (z 95-97.5) in under 5 s at (-205,2101) / (-190,2137), where the navmesh way up is ~750 yd long, and fought
+    // the Tormented Officers there alone (five3-3 167 s: (-190.4,2136.0,82.0) -> (-190.1,2137.8,97.1), dead at 193 s)
+    bool const dungeonWalk = bot->GetMap()->IsDungeon();
+    if (unit == bot && generatePath && !backwards && UsesLeaderRoute(bot) &&
+        (!bot->GetMap()->Instanceable() || dungeonWalk))
     {
         PathGenerator core(bot);
         bool const valid = core.CalculatePath(x, y, z, false);
@@ -5163,6 +5170,25 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
                              points.size(), points.back().x, points.back().y, points.back().z);
             }
         }
+        if (dungeonWalk && !complete)  // [sfk242] logged once per bot and destination
+        {
+            static std::mutex sfk242Lock;
+            static std::unordered_map<uint64, uint64> sfk242Logged;
+            uint64 const destKey = (uint64(uint32(int32(x))) << 32) ^ uint64(uint32(int32(y)));
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(sfk242Lock);
+                uint64& last = sfk242Logged[bot->GetGUID().GetRawValue()];
+                fresh = last != destKey;
+                last = destKey;
+            }
+            if (fresh)
+                LOG_INFO("playerbots",
+                         "[sfk242] {}: no leader route to ({:.1f},{:.1f},{:.1f}) ({:.0f} yd, {:+.1f} yd up), the "
+                         "core's path is not complete (type {:#x}): {} - no straight move",
+                         bot->GetName(), x, y, z, bot->GetExactDist(x, y, z), z - bot->GetPositionZ(), uint32(type),
+                         partial ? "walked as far as its polygons go" : "no move");
+        }
         if (!(type & PATHFIND_NOT_USING_PATH) && !complete && !partial)
         {
             LOG_DEBUG("playerbots", "[nav24] {} no move to ({:.1f},{:.1f},{:.1f}): no route, the core's path is not "
@@ -5171,6 +5197,8 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
         }
         if ((complete || partial) && WalkBotPoints(bot, points))
             return;
+        if (dungeonWalk && (complete || partial))
+            return;  // [sfk243] its path climbs a wall (WalkBotPoints refused it): no straight move either
     }
 
     mm->Clear();

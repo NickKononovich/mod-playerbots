@@ -7,8 +7,11 @@
 #include "BotPath.h"
 
 #include <cmath>
+#include <set>
+#include <utility>
 
 #include "GridDefines.h"
+#include "Log.h"
 #include "LeaderOrders.h"
 #include "Map.h"
 #include "MotionMaster.h"
@@ -148,6 +151,32 @@ bool WalkBotPoints(Player* bot, Movement::PointsArray points)
             return false;
     points[0] = G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
     Leader::Travel::NoteHeightGap(bot, points[0], points[0].z, "walker position");  // [lead144]
+    // [sfk243] no spline up a wall: a step that rises steeper than the navmesh's walkable slope by more than its
+    // step height is no walk on it (a straight tail or shortcut toward a spot on the level above, b44x sfk-n: the
+    // tanks up onto the ramparts, 15-20 yd up for 2-15 yd across). Facts: mmaps-config walkableSlopeAngle 60,
+    // walkableClimb 4 cells of 533.3333 / 1999 yd
+    constexpr float WALKABLE_SLOPE_TAN = 1.7320508f;          // tan(60 deg)
+    constexpr float WALKABLE_CLIMB = 4.0f * 533.3333f / 1999.0f;  // ~1.07 yd
+    if (bot->GetMap() && bot->GetMap()->IsDungeon())
+        for (size_t index = 1; index < points.size(); ++index)
+        {
+            G3D::Vector3 const& from = points[index - 1];
+            G3D::Vector3 const& to = points[index];
+            float const rise = to.z - from.z;
+            if (rise <= std::hypot(to.x - from.x, to.y - from.y) * WALKABLE_SLOPE_TAN + WALKABLE_CLIMB)
+                continue;
+            thread_local std::set<std::pair<ObjectGuid, uint64>> logged;  // (bot, the wall step's cell) once
+            if (logged.size() > 4096)
+                logged.clear();
+            uint64 const cell = (uint64(uint32(int32(to.x))) << 32) ^ uint64(uint32(int32(to.y)));
+            if (logged.insert({bot->GetGUID(), cell}).second)
+                LOG_INFO("playerbots",
+                         "[sfk243] {}: no walk up a wall: the step ({:.1f},{:.1f},{:.1f}) -> ({:.1f},{:.1f},{:.1f}) "
+                         "rises {:.1f} yd over {:.1f} yd across (point {} of {})",
+                         bot->GetName(), from.x, from.y, from.z, to.x, to.y, to.z, rise,
+                         std::hypot(to.x - from.x, to.y - from.y), index, points.size());
+            return false;
+        }
     mm->Clear();
     mm->MoveSplinePath(&points);
     return true;
