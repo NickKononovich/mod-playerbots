@@ -3320,7 +3320,6 @@ void GuildCoordinator::AutoFive()
                 std::vector<FiveCandidate> const& usedPool = fromFinder ? finderPool : walkPool;
                 std::vector<FiveCandidate const*> tanks, healers;
                 for (FiveCandidate const& c : usedPool)
-                for (FiveCandidate const& c : usedPool)
                 {
                     if (c.role == "tank")
                         tanks.push_back(&c);
