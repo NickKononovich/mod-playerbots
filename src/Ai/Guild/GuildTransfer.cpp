@@ -1547,6 +1547,7 @@ void GuildCoordinator::UpdateTransfers()
     // repairs, consumables, spells and travel back, less its next profession ranks) covers the need and the postage;
     // of equal spare the cheapest channel. Mailed or traded honestly (the core's mail / trade), one line per decision
     static std::map<std::string, std::string> goldLogged;  // want key -> decision last logged (a log cadence)
+    std::unordered_map<uint32, uint32> inMailbox;  // [eco195] member -> the members' gold in its mailbox, not used yet
     for (auto const& [low, st] : bots_)
         for (int kind = 0; kind < 3; ++kind)
         {
@@ -1558,6 +1559,30 @@ void GuildCoordinator::UpdateTransfers()
                     if (uint32 const roleSpec = RoleSpec(low, 0);
                         roleSpec && NewRpgProfession::NeedsRespec(r, roleSpec) && r->GetMoney() < r->resetTalentsCost())
                         shortBy = r->resetTalentsCost() - r->GetMoney();
+            // [eco195] coordinator 2026-11-11: the gold the members already mailed it (in its mailbox, not taken yet)
+            // is its money too - it rises only when it takes the letter, so each look planned the whole shortfall
+            // again from the next richest member. b430: 135 supply letters (13.4 g) for 24 shortfalls, Manue 21 x
+            // "short of its drink 15 s 50 c", Farret's 3 g 55 s 80 c unlearn sent in full by Bierya and Ellosera;
+            // 21 g mailed in 1.1 h, 5.9 g taken, the [health] gold -8.5 g/h; DB after it: 30.5 g in 57 letters, 27.3 g
+            // of it Farret's 19. The mailbox (the core's mail, across restarts) covers its needs in turn: repair,
+            // supplies, role spec
+            char const* const purpose = kind == 0 ? "repair" : kind == 1 ? "supplies" : "role spec";
+            if (shortBy)
+            {
+                auto mail = inMailbox.find(low);
+                if (mail == inMailbox.end())
+                {
+                    uint32 gold = 0;
+                    if (Player* r = Online(low))
+                        for (Mail const* m : r->GetMails())
+                            if (m && m->state != MAIL_STATE_DELETED && m->money && IsPlanned(m->sender))
+                                gold += m->money;
+                    mail = inMailbox.emplace(low, gold).first;
+                }
+                uint32 const covered = std::min(shortBy, mail->second);
+                shortBy -= covered;
+                mail->second -= covered;
+            }
             if (!shortBy || !IsPlanned(low))
                 continue;
             Player* r = Online(low);
@@ -1580,7 +1605,7 @@ void GuildCoordinator::UpdateTransfers()
                 w.from = row.low;
                 w.to = low;
                 w.money = shortBy;
-                w.purpose = kind == 0 ? "repair" : kind == 1 ? "supplies" : "role spec";
+                w.purpose = purpose;
                 w.why = kind == 0   ? "short of the repair " + Gold(shortBy)
                         : kind == 1 ? "short of its " + st.supplyWhat + " " + Gold(shortBy)
                                     : "short of its role spec's unlearn " + Gold(shortBy);
@@ -1628,11 +1653,7 @@ void GuildCoordinator::UpdateTransfers()
                 }
                 std::sort(donors.rbegin(), donors.rend());
                 std::vector<Want> shares;
-                uint32 left = shortBy;
-                // the shares already sent (in its mailbox, not taken yet) count: no second round for them
-                for (auto const& [tid, t] : transfers_)
-                    if (t.gold && t.mailed && t.toLow == low && t.purpose == "role spec")
-                        left -= std::min(left, t.money);
+                uint32 left = shortBy;  // the shares already sent (in its mailbox) are out of it [eco195]
                 for (auto const& [spare, from] : donors)
                 {
                     if (!left)

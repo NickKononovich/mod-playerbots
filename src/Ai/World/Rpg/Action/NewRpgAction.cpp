@@ -2456,11 +2456,15 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                         info.vendorRunEntry = 0;
                         info.vendorVisited = true;
                         info.vendorMissed = false;  // [vendor23]
-                        // [eco193] the visit did not fail to stock it: not out of food, nor of drink using mana -
-                        // or this vendor sells none of the kind it is out of (a sale's vendor: no try was made)
-                        bool const outFood = !CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
+                        // [eco193] the visit did not fail to stock it: not below the restock run's line of food, nor
+                        // of drink using mana - or this vendor sells none of the kind it lacks (a sale's vendor: no
+                        // try was made). [eco197] the run's own line: a five member's restock line (RESTOCK_FOOD_MIN),
+                        // not only an empty bag - b430 Manue (11 drinks, no money its budget let it spend) was
+                        // "stocked" at 1, went straight back and visited Innkeeper Heather again and again (LOOP)
+                        uint32 const line = sGuildCoordinator.SupplyWanted(bot) ? RESTOCK_FOOD_MIN : 1;
+                        bool const outFood = CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD) < line;
                         bool const outDrink =
-                            bot->GetMaxPower(POWER_MANA) && !CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK);
+                            bot->GetMaxPower(POWER_MANA) && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < line;
                         info.vendorVisitStocked =
                             (!outFood || !RestockPrice(bot, creature->GetEntry(), RESTOCK_SPELL_CATEGORY_FOOD)) &&
                             (!outDrink || !RestockPrice(bot, creature->GetEntry(), RESTOCK_SPELL_CATEGORY_DRINK));

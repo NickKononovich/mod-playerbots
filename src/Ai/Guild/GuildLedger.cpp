@@ -11,6 +11,7 @@
 #include <mutex>
 
 #include "GameTime.h"
+#include "Group.h"
 #include "GuildCoordinator.h"
 #include "Item.h"
 #include "ItemTemplate.h"
@@ -34,8 +35,18 @@ struct Pending
     uint32 low{0};
     uint64 ms{0};
     char const* cause{nullptr};
+    uint32 gold{0};  // [eco196] a letter's gold to a member: the rest of the change is its postage
 };
 thread_local Pending pending;
+// [eco196] a looted coin a group shares (WorldSession::HandleLootMoneyOpcode pays each member near the looter in the
+// same call, with no hook of their own): b430 "other in" 92 s - the five members' shares
+struct LootShare
+{
+    uint32 looter{0};
+    uint32 group{0};
+    uint64 ms{0};
+};
+thread_local LootShare lootShare;
 thread_local char const* scoped = nullptr;
 
 struct Book
@@ -49,13 +60,18 @@ uint32 firstAt = 0;
 uint32 lastLogAt = 0;
 std::string lastLogged;
 
-void Expect(Player* player, char const* cause)
+constexpr char const* MAIL_GOLD = "mail sent (gold to members)";
+constexpr char const* MAIL_TAKEN = "mail taken (gold from members)";
+constexpr char const* TRADE_GOLD = "trade (gold between members)";
+
+void Expect(Player* player, char const* cause, uint32 gold = 0)
 {
     if (!player || !sGuildCoordinator.IsPlanned(player->GetGUID().GetCounter()))
         return;
     pending.low = player->GetGUID().GetCounter();
     pending.ms = GameTime::GetGameTimeMS().count();
     pending.cause = cause;
+    pending.gold = gold;
 }
 
 std::string Gsc(int64 copper)
@@ -77,10 +93,18 @@ void BookChange(Player* player, int32 amount)
     if (!amount || !player || !sGuildCoordinator.IsPlanned(player->GetGUID().GetCounter()))
         return;
     char const* cause = scoped;
+    int32 gold = 0;  // [eco196] the part of a letter's change that is gold to a member
+    uint64 const nowMs = uint64(GameTime::GetGameTimeMS().count());
+    if (!cause && amount > 0 && lootShare.ms == nowMs &&
+        (lootShare.looter == player->GetGUID().GetCounter() ||
+         (lootShare.group && player->GetGroup() && player->GetGroup()->GetGUID().GetCounter() == lootShare.group)))
+        cause = "loot";
     if (pending.cause && pending.low == player->GetGUID().GetCounter() &&
         pending.ms == uint64(GameTime::GetGameTimeMS().count()))
     {
         cause = pending.cause;
+        if (amount < 0)
+            gold = -int32(std::min<uint32>(pending.gold, uint32(-amount)));
         pending.cause = nullptr;
     }
     if (!cause)
@@ -92,7 +116,9 @@ void BookChange(Player* player, int32 amount)
         if (!firstAt)
             firstAt = now;
         Book& b = books[cause];
-        (amount > 0 ? b.in : b.out) += amount;
+        (amount > 0 ? b.in : b.out) += amount - gold;
+        if (gold)
+            books[MAIL_GOLD].out += gold;
         if (now - lastLogAt >= LEDGER_LOG_SECONDS)
         {
             lastLogAt = now;
@@ -164,8 +190,11 @@ std::string TextLocked()
     float const hours = std::max(float(now - firstAt) / 3600.0f, 1.0f / 60.0f);
     std::string in, out;
     int64 net = 0;
+    int64 own = 0;  // [eco196] the members' gold to each other (letters, trades): the guild's money stays the same
     for (auto const& [cause, b] : books)
     {
+        if (cause == MAIL_GOLD || cause == MAIL_TAKEN || cause == TRADE_GOLD)
+            own += b.in + b.out;
         if (b.in)
             in += Acore::StringFormat("{}{} +{} ({}/h)", in.empty() ? "" : ", ", cause, Gsc(b.in),
                                       Gsc(int64(float(b.in) / hours)));
@@ -174,9 +203,13 @@ std::string TextLocked()
                                        Gsc(int64(float(b.out) / hours)));
         net += b.in + b.out;
     }
-    return Acore::StringFormat("guild money by cause over {:.1f} h: in {}; out {}; net {} ({}/h)", hours,
-                               in.empty() ? "-" : in, out.empty() ? "-" : out, Gsc(net),
-                               Gsc(int64(float(net) / hours)));
+    // [eco196] the gold letters not taken yet lower the members' money ([health] gold) but stay the guild's: the
+    // guild's own net leaves the members' transfers out
+    return Acore::StringFormat("guild money by cause over {:.1f} h: in {}; out {}; net {} ({}/h); the guild's own "
+                               "net (no gold between members) {} ({}/h), gold sent and not taken yet {}",
+                               hours, in.empty() ? "-" : in, out.empty() ? "-" : out, Gsc(net),
+                               Gsc(int64(float(net) / hours)), Gsc(net - own), Gsc(int64(float(net - own) / hours)),
+                               Gsc(-own));
 }
 }  // namespace
 
@@ -193,7 +226,15 @@ public:
 
     void OnPlayerMoneyChanged(Player* player, int32& amount) override { BookChange(player, amount); }
 
-    void OnPlayerBeforeLootMoney(Player* player, Loot* /*loot*/) override { Expect(player, "loot"); }
+    void OnPlayerBeforeLootMoney(Player* player, Loot* /*loot*/) override
+    {
+        Expect(player, "loot");
+        if (!player)
+            return;
+        lootShare.looter = player->GetGUID().GetCounter();
+        lootShare.group = player->GetGroup() ? player->GetGroup()->GetGUID().GetCounter() : 0;
+        lootShare.ms = GameTime::GetGameTimeMS().count();
+    }
 
     // Player::RewardQuest computes the XP right before it pays the quest's money
     void OnPlayerQuestComputeXP(Player* player, Quest const* /*quest*/, uint32& /*xpValue*/) override
@@ -223,10 +264,10 @@ public:
     }
 
     bool OnPlayerCanSendMail(Player* player, ObjectGuid /*receiverGuid*/, ObjectGuid /*mailbox*/,
-                             std::string& /*subject*/, std::string& /*body*/, uint32 /*money*/, uint32 /*COD*/,
+                             std::string& /*subject*/, std::string& /*body*/, uint32 money, uint32 /*COD*/,
                              Item* /*item*/) override
     {
-        Expect(player, "mail sent (postage, gold to members)");
+        Expect(player, "mail postage", money);
         return true;
     }
 

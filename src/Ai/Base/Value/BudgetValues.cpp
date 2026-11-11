@@ -5,7 +5,9 @@
  */
 
 #include "BudgetValues.h"
+#include "GuildHonest.h"
 #include "Playerbots.h"
+#include "World.h"
 
 uint32 MaxGearRepairCostValue::Calculate()
 {
@@ -150,7 +152,18 @@ uint32 MoneyNeededForValue::Calculate()
             moneyWanted = 0;
             break;
         case NeedMoneyFor::repair:
-            moneyWanted = AI_VALUE(uint32, "max repair cost");
+            // [eco198] coordinator 2026-11-11: a guild-plan bot keeps back the repair it faces, not the bill of every
+            // item at 0 durability: its repair now plus what its next death costs (the core's
+            // Rate.DurabilityLoss.OnDeath of each equipped item, Player::DurabilityLossAll). The worst case left most
+            // members no money for food or drink at all - b430: 47573 "buy drink" vendor visits bought nothing
+            // (Maronic 59 s, Pherua, Zharet), the leader mailed them supply gold they then kept back for the same
+            // bill; its REPAIR task and the leader's repair gold cover a bigger bill
+            if (GuildHonest::IsHonestBot(bot))
+                moneyWanted = AI_VALUE(uint32, "repair cost") +
+                              uint32(float(AI_VALUE(uint32, "max repair cost")) *
+                                     sWorld->getRate(RATE_DURABILITY_LOSS_ON_DEATH) / 100.0f);
+            else
+                moneyWanted = AI_VALUE(uint32, "max repair cost");
             break;
         case NeedMoneyFor::ammo:
             moneyWanted = (bot->getClass() == CLASS_HUNTER)
