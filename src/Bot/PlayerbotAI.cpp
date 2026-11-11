@@ -943,7 +943,10 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         {
             Leader::MemberEvents events;
             SpellInfo const* castInfo = currentSpell->GetSpellInfo();
-            Unit* castOn = currentSpell->m_targets.GetUnitTarget();
+            // [build149] b440 crash: the spell's cached target pointer outlived its mob (an instance despawn); the
+            // target is looked up by its guid
+            ObjectGuid const castOnGuid = currentSpell->m_targets.GetUnitTargetGUID();
+            Unit* castOn = castOnGuid ? ObjectAccessor::GetUnit(*bot, castOnGuid) : nullptr;
             if (castInfo && castOn && castOn != bot && !castOn->GetGUID().IsPlayer() && castOn->IsAlive() &&
                 !castInfo->IsPositive() && bot->IsHostileTo(castOn) && castOn->GetOwnerGUID() != bot->GetGUID() &&
                 Leader::Events::Get(bot->GetGUID(), events))
@@ -1005,7 +1008,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
             if (healCast && Leader::Events::Get(bot->GetGUID(), events) &&
                 events.attack != Leader::AttackEvent::Heal && castInfo->Id != events.externalSpell)
             {
-                Unit* castOn = currentSpell->m_targets.GetUnitTarget();
+                ObjectGuid const castOnGuid = currentSpell->m_targets.GetUnitTargetGUID();  // [build149]
+                Unit* castOn = castOnGuid ? ObjectAccessor::GetUnit(*bot, castOnGuid) : nullptr;
                 B44CastTrace(bot, "stop:leader heal", castInfo, castOn);  // [b44_cast]
                 LOG_INFO("playerbots", "[lead870] {} stops {} on {}: the leader's heals wait (no Heal command)",
                          bot->GetName(), castInfo->SpellName[0], castOn ? castOn->GetName() : std::string("-"));
@@ -1055,7 +1059,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
             if (spellInfo && !stopCastToInterrupt && !stopCastToDodge)
             {
-                Unit* spellTarget = currentSpell->m_targets.GetUnitTarget();
+                // [build149] the target by its guid: the cached pointer can outlive the unit
+                Unit* spellTarget = ObjectAccessor::GetUnit(*bot, currentSpell->m_targets.GetUnitTargetGUID());
                 // Interrupt if target is dead or spell can't target dead units
                 if (spellTarget && !spellTarget->IsAlive() && !spellInfo->IsAllowingDeadTarget())
                 {

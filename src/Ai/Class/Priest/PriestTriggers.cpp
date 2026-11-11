@@ -246,7 +246,7 @@ bool MindFlayClipTrigger::IsActive()
         AI_VALUE2(uint8, "mana", "self target") < sPlayerbotAIConfig.LowMana)
         return false;
 
-    Unit* target = channel->m_targets.GetUnitTarget();
+    Unit* target = ObjectAccessor::GetUnit(*bot, channel->m_targets.GetUnitTargetGUID());  // [build149]
     if (!target || !target->IsAlive())
         return false;
 
@@ -374,7 +374,7 @@ bool MindSearChannelCheckTrigger::IsActive()
         if (spell->m_spellInfo && MIND_SEAR_SPELL_IDS.count(spell->m_spellInfo->Id))
         {
             constexpr float MIND_SEAR_RADIUS = 10.0f;
-            Unit* searTarget = spell->m_targets.GetUnitTarget();
+            Unit* searTarget = ObjectAccessor::GetUnit(*bot, spell->m_targets.GetUnitTargetGUID());  // [build149]
             if (!searTarget || !searTarget->IsAlive())
                 return false;
 

@@ -1214,7 +1214,8 @@ void LeaderCommandMultiplier::Refresh()
                 Position center = bot->GetPosition();
                 if (channel->m_targets.HasDst() && channel->m_targets.GetDstPos())
                     center = *channel->m_targets.GetDstPos();
-                else if (Unit* on = channel->m_targets.GetUnitTarget())
+                // [build149] the target by its guid: the cached pointer can outlive the unit
+                else if (Unit* on = ObjectAccessor::GetUnit(*bot, channel->m_targets.GetUnitTargetGUID()))
                     center = on->GetPosition();
                 std::string spell = info->SpellName[0] ? info->SpellName[0] : "";
                 std::transform(spell.begin(), spell.end(), spell.begin(), ::tolower);

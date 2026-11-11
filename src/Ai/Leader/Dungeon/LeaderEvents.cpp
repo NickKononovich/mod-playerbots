@@ -4033,7 +4033,7 @@ namespace Leader::Dungeon
                                      IN_MILLISECONDS;
                 std::string const why = Acore::StringFormat("{} casts {} ({} damage)", mob->GetName(),
                                                             info->SpellName[LOCALE_enUS], damage);
-                Unit* victim = spell->m_targets.GetUnitTarget();
+                Unit* victim = ObjectAccessor::GetUnit(*mob, spell->m_targets.GetUnitTargetGUID());  // [build149]
                 for (Player* bot : everyone)
                 {
                     bool const hit = victim == bot ||
@@ -5843,7 +5843,7 @@ namespace Leader::Dungeon
                     PlayerbotAI::IsTank(bot))
                     continue;
                 Spell const* cast = bot->GetCurrentSpell(CURRENT_GENERIC_SPELL);
-                Unit* on = cast ? cast->m_targets.GetUnitTarget() : nullptr;
+                Unit* on = cast ? ObjectAccessor::GetUnit(*bot, cast->m_targets.GetUnitTargetGUID()) : nullptr;
                 if (cast && on && PrecastSpell(cast->GetSpellInfo()) && on->GetThreatMgr().GetThreat(bot) <= 0.0f)
                 {
                     lead.precast[bot->GetGUID()].opener = cast->GetSpellInfo()->Id;
@@ -6137,7 +6137,10 @@ namespace Leader::Dungeon
                             cast && cast->GetSpellInfo() && !cast->GetSpellInfo()->IsPositive())
                         {
                             SpellInfo const* castInfo = cast->GetSpellInfo();
-                            Unit* victim = cast->m_targets.GetUnitTarget() ? cast->m_targets.GetUnitTarget() : tank;
+                            // [build149] the target by its guid: the cached pointer can outlive the unit
+                            Unit* victim = ObjectAccessor::GetUnit(*caster, cast->m_targets.GetUnitTargetGUID());
+                            if (!victim)
+                                victim = tank;
                             float damage = 0.0f;
                             float controlSec = 0.0f;  // [dun183]
                             for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
