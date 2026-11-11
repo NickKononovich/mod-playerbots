@@ -1101,10 +1101,39 @@ void GuildCoordinator::UpdateTransfers()
         if (fills.size() < 2 || !lines)
             return;
         bool const covered = pool >= lines;
+        // [dun209b] the short pool's shares in whole drinks: pool x line / lines, the remainders handed out largest
+        // first (they sum to the pool); then, the pool holding one a member, a member whose share is 0 takes 1 from
+        // the largest share (b439 five 11: Febineysh 0/2 rounded to 0 beside 44 drinks). A member's share is both
+        // the most it receives to and the least it gives down to
+        std::vector<uint32> target(fills.size(), 0);
+        if (!covered)
+        {
+            uint64 given = 0;
+            std::vector<std::pair<uint64, size_t>> rest;  // (remainder, member)
+            for (size_t n = 0; n < fills.size(); ++n)
+            {
+                uint64 const exact = pool * fills[n].line;
+                target[n] = uint32(exact / lines);
+                given += target[n];
+                rest.emplace_back(exact % lines, n);
+            }
+            std::stable_sort(rest.begin(), rest.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
+            for (size_t k = 0; given < pool && k < rest.size(); ++k, ++given)
+                ++target[rest[k].second];
+            if (pool >= fills.size())
+                for (size_t n = 0; n < fills.size(); ++n)
+                    if (!target[n])
+                    {
+                        size_t const most = size_t(std::max_element(target.begin(), target.end()) - target.begin());
+                        if (target[most] < 2)
+                            break;
+                        --target[most];
+                        target[n] = 1;
+                    }
+        }
         // the most a member may hold after (a receiver's cap) and the least a giver keeps
-        auto const capOf = [&](Fill const& f) { return covered ? f.line : uint32(pool * f.line / lines); };
-        auto const keepOf = [&](Fill const& f)
-        { return covered ? f.line : uint32((pool * f.line + lines - 1) / lines); };
+        auto const capOf = [&](Fill const& f) { return covered ? f.line : target[size_t(&f - fills.data())]; };
+        auto const keepOf = capOf;
         auto const fillText = [](Fill const& f, uint32 n)
         { return f.p->GetName() + " " + std::to_string(n) + "/" + std::to_string(f.line); };
         // the giver's biggest stack the receiver can use (what is left of each this update)
