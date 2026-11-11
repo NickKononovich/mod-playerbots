@@ -21,6 +21,8 @@
 #include "StatsWeightCalculator.h"
 #include <algorithm>
 #include <cmath>
+#include <mutex>
+#include <unordered_map>
 
 bool BuyAction::Execute(Event event)
 {
@@ -356,10 +358,20 @@ float RestoredPoints(ItemTemplate const* proto, uint32 spellCategory, float& per
     bool const food = spellCategory == RESTOCK_SPELL_CATEGORY_FOOD;
     float const duration = float(std::max(spell->GetMaxDuration(), 0));
     float points = 0.0f;
+    // [eco204] the core's drink (Drink 430-432, 1133, 1135, ...: AuraEffect::UpdatePeriodic) holds 0 in its
+    // MOD_POWER_REGEN effect and moves its PERIODIC_DUMMY effect's amount onto it at the first tick (out of arena):
+    // read that amount, else every plain drink restored "0" mana and the restock bought none (b433: 53 "buy drink"
+    // visits, no drink bought since [eco192], only food)
+    float dummy = 0.0f;
+    for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
+        if (spell->Effects[i].ApplyAuraName == SPELL_AURA_PERIODIC_DUMMY)
+            dummy = float(spell->Effects[i].CalcValue());
     for (uint8 i = 0; i < MAX_SPELL_EFFECTS; ++i)
     {
         SpellEffectInfo const& effect = spell->Effects[i];
-        float const amount = float(effect.CalcValue());
+        float const amount = effect.ApplyAuraName == SPELL_AURA_MOD_POWER_REGEN && effect.CalcValue() <= 0
+                                 ? dummy
+                                 : float(effect.CalcValue());
         float const amplitude = float(effect.Amplitude);
         bool const mana = effect.MiscValue == POWER_MANA;
         if ((food && effect.ApplyAuraName == SPELL_AURA_MOD_REGEN) ||
@@ -521,22 +533,55 @@ bool RestockFoodAction::Execute(Event /*event*/)
     }
 
     if (!vendor)
+    {
+        if (!npcs.empty())
+            LogDeclined(Acore::StringFormat("no vendor within {:.0f} yd sells {} of its level it can use",
+                                            RESTOCK_VENDOR_RANGE,
+                                            needFood && needDrink ? "food or drink" : needFood ? "food" : "drink"));
         return false;
+    }
 
     if (!bot->GetNPCIfCanInteractWith(vendor->GetGUID(), UNIT_NPC_FLAG_VENDOR))
         return MoveNear(vendor, INTERACTION_DISTANCE - 1.0f);
 
     bool bought = false;
     GuildLedger::Cause const ledger("buy: food / drink");  // [eco190]
+    std::string why;
     if (drinkSlot >= 0)
-        bought |= Buy(vendor, drinkSlot, drink);
+        bought |= Buy(vendor, drinkSlot, drink, why);
+    else if (needDrink)
+        why += "no drink of its level it can use at " + std::string(vendor->GetName()) + "; ";
     if (foodSlot >= 0)
-        bought |= Buy(vendor, foodSlot, food);
+        bought |= Buy(vendor, foodSlot, food, why);
+    else if (needFood)
+        why += "no food of its level it can use at " + std::string(vendor->GetName()) + "; ";
+    if (!bought && !why.empty())
+        LogDeclined(why);
 
     return bought;
 }
 
-bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have)
+// [eco204] coordinator 2026-11-11: a restock that bought nothing says why, once per reason and money (b433: 53 "buy
+// drink" visits with no purchase and no line why)
+void RestockFoodAction::LogDeclined(std::string const& why)
+{
+    if (!GuildHonest::IsHonestBot(bot) || !botAI->rpgInfo.vendorRunEntry)  // its vendor run's visit only
+        return;
+    static std::mutex declinedLock;
+    static std::unordered_map<uint32, std::string> declined;  // bot -> its last reason and money
+    std::string const key = why + "|" + std::to_string(bot->GetMoney());
+    {
+        std::lock_guard<std::mutex> guard(declinedLock);
+        std::string& last = declined[bot->GetGUID().GetCounter()];
+        if (last == key)
+            return;
+        last = key;
+    }
+    LOG_INFO("playerbots", "[eco204] {} L{} restock bought nothing: {} (money {}c)", bot->GetName(), bot->GetLevel(),
+             why, bot->GetMoney());
+}
+
+bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have, std::string& why)
 {
     if (have >= RESTOCK_FOOD_TARGET)
         return false;
@@ -545,7 +590,10 @@ bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have)
     VendorItem const* vItem = items ? items->GetItem(static_cast<uint32>(vendorSlot)) : nullptr;
     ItemTemplate const* proto = vItem ? sObjectMgr->GetItemTemplate(vItem->item) : nullptr;
     if (!proto)
+    {
+        why += "no item in vendor slot " + std::to_string(vendorSlot) + "; ";
         return false;
+    }
 
     uint32 const perBuy = std::max<uint32>(1, proto->BuyCount);
     uint32 const unitPrice =
@@ -555,7 +603,11 @@ bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have)
     uint32 purchases = (RESTOCK_FOOD_TARGET - have + perBuy - 1) / perBuy;
     purchases = std::min(purchases, budget / unitPrice);
     if (!purchases)
+    {
+        why += Acore::StringFormat("{} costs {}c a pack of {}, it may spend {}c; ", proto->Name1, unitPrice, perBuy,
+                                   budget);
         return false;
+    }
 
     uint32 const stackPurchases = std::max<uint32>(1, proto->GetMaxStackSize() / perBuy);
     uint32 const before = bot->GetItemCount(proto->ItemId, false);
@@ -572,7 +624,12 @@ bool RestockFoodAction::Buy(Creature* vendor, int32 vendorSlot, uint32 have)
 
     uint32 const gained = bot->GetItemCount(proto->ItemId, false) - before;
     if (!gained)
+    {
+        why += Acore::StringFormat("the core refused {} at {} ({} free bag slots{}); ", proto->Name1, vendor->GetName(),
+                                   bot->GetFreeInventorySpace(),
+                                   vItem->maxcount && !vendor->GetVendorItemCurrentCount(vItem) ? ", sold out" : "");
         return false;
+    }
 
     std::ostringstream out;
     out << "Buying " << gained << "x " << ChatHelper::FormatItem(proto);

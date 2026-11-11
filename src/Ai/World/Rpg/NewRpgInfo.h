@@ -247,9 +247,15 @@ struct NewRpgInfo
     // that visit or look (a look that found no vendor holds on that map only)
     bool vendorVisitStocked{false};
     uint32 vendorVisitMap{0};
-    // [eco201] the cheapest food / drink package it lacked at that visit (or on that map, a look that found none it
-    // could pay): the restock waits until its consumables budget covers it; 0 = the money-gain rule
-    uint32 vendorRestockPrice{0};
+    // [eco205] the vendors that could not stock it on this map (the visit left it short, the vendor was missed or the
+    // run dropped) -> its consumables budget then: the restock's vendor choice skips each until the budget is more
+    std::unordered_map<uint32, uint32> restockRefused;
+    uint32 restockRefusedMap{0};
+    uint32 vendorRunLast{0};  // [eco205] the vendor of its last vendor run (kept after the run ends)
+    // [eco201] a look that found no vendor it could pay on that map: the restock waits until its consumables budget
+    // covers the cheapest there and is more than it was then; 0 = no such wait
+    uint32 restockLookPrice{0};
+    uint32 restockLookMap{0};
     // [regress10] the global leader's REPAIR task: a visit to a repairer for it was made at this money (tried again
     // after a money gain); cleared when the task ends
     bool repairVisited{false};

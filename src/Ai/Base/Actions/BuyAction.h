@@ -58,7 +58,9 @@ public:
     bool isUseful() override;
 
 private:
-    bool Buy(Creature* vendor, int32 vendorSlot, uint32 have);
+    // [eco204] why: what kept a purchase from happening (logged by Execute when nothing was bought)
+    bool Buy(Creature* vendor, int32 vendorSlot, uint32 have, std::string& why);
+    void LogDeclined(std::string const& why);
 };
 
 #endif

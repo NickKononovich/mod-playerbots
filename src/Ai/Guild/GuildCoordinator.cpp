@@ -7887,10 +7887,18 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
         if (!spell)
             return;
         float const duration = float(std::max(spell->GetMaxDuration(), 0));
+        // [eco204] the core's drink: its MOD_POWER_REGEN holds 0 until its PERIODIC_DUMMY's amount is moved onto it
+        // (AuraEffect::UpdatePeriodic) - the plain drinks restored "0" here and only a few newer ones were judged
+        float dummy = 0.0f;
+        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+            if (spell->Effects[e].ApplyAuraName == SPELL_AURA_PERIODIC_DUMMY)
+                dummy = float(spell->Effects[e].CalcValue());
         for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
         {
             SpellEffectInfo const& effect = spell->Effects[e];
-            float const amount = float(effect.CalcValue());
+            float const amount = effect.ApplyAuraName == SPELL_AURA_MOD_POWER_REGEN && effect.CalcValue() <= 0
+                                     ? dummy
+                                     : float(effect.CalcValue());
             float const amplitude = float(effect.Amplitude);
             switch (effect.ApplyAuraName)
             {

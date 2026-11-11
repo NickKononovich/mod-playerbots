@@ -254,6 +254,8 @@ namespace
     }
 
     thread_local uint32 restockWanted = 0;
+    // [eco205] the restock's refused vendors (NewRpgInfo::restockRefused) for the vendor choice below
+    thread_local NewRpgInfo const* restockRefusedBy = nullptr;
     // [eco201] the money its restock may spend (free money for consumables): a vendor whose cheapest food / drink of
     // its level costs more is no restock vendor for it
     thread_local uint32 restockBudget = 0;
@@ -280,6 +282,19 @@ namespace
                 drink = d;
         }
         return std::max(food, drink);
+    }
+
+    // [eco205] coordinator 2026-11-11: a vendor that could not stock it is skipped - that vendor only, not every
+    // vendor of its map - until its consumables budget is more than it was there; a new map, a new list
+    void RefuseRestockVendor(Player* bot, NewRpgInfo& info, uint32 entry, uint32 budget)
+    {
+        if (info.restockRefusedMap != bot->GetMapId())
+        {
+            info.restockRefused.clear();
+            info.restockRefusedMap = bot->GetMapId();
+        }
+        if (entry)
+            info.restockRefused[entry] = budget;
     }
     thread_local std::vector<uint32> const* reagentsWanted = nullptr;  // [supply27] the vendor sells one of them  // [pace25] the spell categories the vendor choice needs (bit 0 food, 1 drink)
 
@@ -351,6 +366,11 @@ namespace
                 if (((restockWanted & 1) && (!food || food > restockBudget)) ||
                     ((restockWanted & 2) && (!drink || drink > restockBudget)))
                     continue;
+                // [eco205] ... and not one that could not stock it with this budget
+                if (restockRefusedBy && restockRefusedBy->restockRefusedMap == bot->GetMapId())
+                    if (auto const refused = restockRefusedBy->restockRefused.find(spawn.entry);
+                        refused != restockRefusedBy->restockRefused.end() && restockBudget <= refused->second)
+                        continue;
             }
             candidates.emplace_back(bot->GetExactDist(spawn.x, spawn.y, spawn.z), &spawn);
         }
@@ -915,7 +935,8 @@ bool NewRpgBaseAction::StartVendorRun()
             // vendor 29 yd off was walked to, given up and chosen again every few seconds)
             info.vendorVisited = true;
             info.vendorVisitStocked = false;  // [eco193]
-            info.vendorRestockPrice = 0;  // [eco201]
+            RefuseRestockVendor(bot, info, info.vendorRunLast,  // [eco205]
+                                AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables)));
             info.vendorVisitMap = bot->GetMapId();
             info.vendorMissed = true;  // [vendor23]
             info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
@@ -1006,7 +1027,7 @@ bool NewRpgBaseAction::StartVendorRun()
     // vendor visit" (Alnia 46, Pherua 10562c and Orenem resting dry 810 / 784 times) - they had bought their drink
     // there, drunk it, and the gate waited for a coin that a healer resting dry does not loot
     // [eco201] coordinator 2026-11-11: ... and after one, the restock waits until the money it may spend covers the
-    // cheapest food / drink it lacked there (vendorRestockPrice), not for any coin: b432 each small loot gain sent
+    // cheapest food / drink it lacked there, not for any coin ([eco205]: that vendor only): b432 each loot gain sent
     // Ainne / Namwe / Galiver back to a vendor whose drink their budget could not pay
     uint32 const spendable =
         (noFood || noDrink) ? AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables)) : 0;
@@ -1020,11 +1041,13 @@ bool NewRpgBaseAction::StartVendorRun()
                                    need(NeedMoneyFor::ammo), need(NeedMoneyFor::spells), need(NeedMoneyFor::guild),
                                    need(NeedMoneyFor::travel));
     };
-    bool const budgetCovers = info.vendorRestockPrice ? spendable >= info.vendorRestockPrice
-                                                      : bot->GetMoney() > info.vendorVisitMoney;
-    bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 &&
-                         (fiveRetry || !info.vendorVisited || info.vendorVisitStocked ||
-                          info.vendorVisitMap != bot->GetMapId() || budgetCovers);
+    // [eco205] coordinator 2026-11-11: no map-wide gate after a visit - the vendor that could not stock it is skipped
+    // by the vendor choice (restockRefused), the others stay open. b433: Namwe (13439c), Ainne (may spend 4850c) held
+    // by "[eco193] its last vendor visit on this map could not stock it and no money was gained since". Only a look
+    // that found no vendor it could pay waits, for the budget that may find one (restockLookPrice)
+    bool const lookCovers = !info.restockLookPrice || info.restockLookMap != bot->GetMapId() ||
+                            spendable >= info.restockLookPrice;
+    bool const restock = (noFood || noDrink) && bot->GetMoney() > 0 && (fiveRetry || lookCovers);
     if (restock && fiveRetry)
         info.fiveRestockTried = true;
     // [supply34] why a bot out of food / drink makes no run: one line per money value it has (b386: 1.10 h sat
@@ -1050,12 +1073,9 @@ bool NewRpgBaseAction::StartVendorRun()
     {
         std::string const why =
             bot->GetMoney() == 0 ? std::string("no money")
-            : info.vendorRestockPrice
-                ? Acore::StringFormat("its last vendor visit or look on this map could not stock it: it may spend "
-                                      "{}c of its {}c ({}), the cheapest there costs {}c [eco201]",
-                                      spendable, bot->GetMoney(), reserveText(), info.vendorRestockPrice)
-                : std::string("its last vendor visit or look on this map could not stock it and no money was gained "
-                              "since [eco193]");
+            : Acore::StringFormat("its last look found no vendor on this map it could pay: it may spend {}c of its {}c "
+                                  "({}), it waits for {}c [eco205]",
+                                  spendable, bot->GetMoney(), reserveText(), info.restockLookPrice);
         noRunWhy(why.c_str());
     }
     // [supply27] a five member before its five goes in buys the vendor-sold reagents its spells use and has none of
@@ -1069,10 +1089,12 @@ bool NewRpgBaseAction::StartVendorRun()
     float dist = 0.0f;
     restockWanted = restock && !sell && !ammoSubClass && !repair ? (noFood ? 1u : 0u) | (noDrink ? 2u : 0u) : 0u;
     restockBudget = spendable;  // [eco201]
+    restockRefusedBy = &info;   // [eco205]
     uint32 const lookedFor = restockWanted;
     reagentsWanted = reagentRun && !sell && !ammoSubClass && !repair && !restock ? &reagents : nullptr;
     VendorSpawn const* vendor = repair ? NearestRepairer(bot, dist) : NearestVendor(bot, ammoSubClass, dist);
     restockWanted = 0;
+    restockRefusedBy = nullptr;
     reagentsWanted = nullptr;
     if (repair && !vendor)
     {
@@ -1099,11 +1121,14 @@ bool NewRpgBaseAction::StartVendorRun()
         // the map's vendors and their trips, not for every tick of its rest)
         info.vendorVisited = true;
         info.vendorVisitStocked = false;  // [eco193]
-        info.vendorRestockPrice = 0;  // [eco201]
         info.vendorVisitMap = bot->GetMapId();
         // [eco201] ... once its budget covers the cheapest of it on its map and is more than it is now (a vendor it
         // can pay may then be in reach; the same budget finds the same vendors)
-        info.vendorRestockPrice = lookedFor ? std::max(CheapestRestock(bot, lookedFor), spendable + 1) : 0;
+        if (lookedFor)
+        {
+            info.restockLookPrice = std::max(CheapestRestock(bot, lookedFor), spendable + 1);
+            info.restockLookMap = bot->GetMapId();
+        }
         info.vendorVisitBagUsed = bagUsed;
         info.vendorVisitMoney = bot->GetMoney();
         return false;
@@ -1122,6 +1147,7 @@ bool NewRpgBaseAction::StartVendorRun()
                   (noFood && noDrink ? "buy food and drink" : noFood ? "buy food" : "buy drink");
     info.ChangeToGoCamp(WorldPosition(vendor->mapId, vendor->x, vendor->y, vendor->z));
     info.vendorRunEntry = vendor->entry;
+    info.vendorRunLast = vendor->entry;  // [eco205]
     info.vendorRunReason = reason;
     CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(vendor->entry);
     QuestStats::TownStart(bot, "vendor run");  // [log28]
@@ -2434,7 +2460,8 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         info.vendorRunEntry = 0;
         info.vendorVisited = true;
         info.vendorVisitStocked = false;  // [eco193]
-        info.vendorRestockPrice = 0;  // [eco201]
+        RefuseRestockVendor(bot, info, info.vendorRunLast,  // [eco205]
+                            AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables)));
         info.vendorVisitMap = bot->GetMapId();
         info.vendorMissed = true;  // [vendor23]
         info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
@@ -2551,8 +2578,15 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                         // more than the budget this visit could not buy with: bags full, a sold-out stock)
                         uint32 const budgetNow =
                             AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables));
-                        info.vendorRestockPrice =
-                            info.vendorVisitStocked ? 0 : std::max(std::max(foodPrice, drinkPrice), budgetNow + 1);
+                        // [eco205] that vendor only: skipped until the budget is more than now; stocked, the
+                        // vendor and the map's look are open again
+                        if (info.vendorVisitStocked)
+                        {
+                            info.restockRefused.erase(creature->GetEntry());
+                            info.restockLookPrice = 0;
+                        }
+                        else
+                            RefuseRestockVendor(bot, info, creature->GetEntry(), budgetNow);
                         info.vendorVisitMap = bot->GetMapId();
                         info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                         info.vendorVisitMoney = bot->GetMoney();
@@ -2614,7 +2648,8 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 info.vendorRunEntry = 0;
                 info.vendorVisited = true;
                 info.vendorVisitStocked = false;  // [eco193]
-                info.vendorRestockPrice = 0;  // [eco201]
+                RefuseRestockVendor(bot, info, info.vendorRunLast,  // [eco205]
+                                    AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables)));
                 info.vendorVisitMap = bot->GetMapId();
                 info.vendorMissed = true;  // [vendor23]
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
@@ -2686,7 +2721,8 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 info.vendorRunEntry = 0;
                 info.vendorVisited = true;
                 info.vendorVisitStocked = false;  // [eco193]
-                info.vendorRestockPrice = 0;  // [eco201]
+                RefuseRestockVendor(bot, info, info.vendorRunLast,  // [eco205]
+                                    AI_VALUE2(uint32, "free money for", uint32(NeedMoneyFor::consumables)));
                 info.vendorVisitMap = bot->GetMapId();
                 info.vendorMissed = true;  // [vendor23]
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
