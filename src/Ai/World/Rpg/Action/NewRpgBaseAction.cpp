@@ -5813,6 +5813,9 @@ bool NewRpgBaseAction::RedAreaEscape()
                                       out.GetPositionY());
     if (HearthOut(why, nullptr))
         return true;
+    // [night305] the town's flight master first, when its node is unknown: the flight below starts there
+    if (DiscoverTownFlightMaster(why))
+        return true;
     // [red73] no Hearthstone way out (bound here, none, on its cooldown): a flight from the town's flight master to its
     // nearest known node outside every area red for it, as a player leaves (b406 Gilduck L14 in Darkshire, bound
     // there, every walk out through Brightwood Grove)
@@ -5850,6 +5853,45 @@ bool NewRpgBaseAction::RedAreaEscape()
         return false;
     LOG_INFO("playerbots", "[red73] {} L{} {}: flies out from the flight master of node {} to known node {} ({:.0f} yd)",
              bot->GetName(), bot->GetLevel(), why, master->taxiNodeId, bestNode, bestYd);
+    return true;
+}
+
+// [night305] coordinator 2026-11-11: a player passing through a town talks to its flight master and so learns the
+// node; the bots learned one only within DISCOVER_FLIGHT_MASTER_DISTANCE of a master their walk happened to pass.
+// b432 Gilduck L14 stood 1.15 h in Darkshire (bound there, every walk out refused) 100 yd from Felicia Maline with
+// the Darkshire node unknown: [red73]'s flight out needs the start node, so it never flew
+bool NewRpgBaseAction::DiscoverTownFlightMaster(std::string const& why)
+{
+    if (bot->IsInCombat() || !bot->IsAlive() || bot->isMoving() || bot->IsInFlight() || bot->GetTransport() ||
+        bot->GetMap()->Instanceable() || !GuildHonest::IsHonestBot(bot))
+        return false;
+    // the town it stands in: a town (an inn, its guards) or a capital, the master in the bot's own area
+    uint32 const areaId = bot->GetAreaId();
+    AreaTableEntry const* area = sAreaTableStore.LookupEntry(areaId);
+    AreaTableEntry const* zone = area && area->zone ? sAreaTableStore.LookupEntry(area->zone) : area;
+    if (!area || !((area->flags & AREA_FLAG_TOWN) || (zone && (zone->flags & AREA_FLAG_CAPITAL))))
+        return false;
+    TravelMgr::FlightMasterInfo const* master = sTravelMgr.GetNearestFlightMasterInfo(bot);
+    if (!master || !master->taxiNodeId || master->pos.GetMapId() != bot->GetMapId() ||
+        bot->m_taxi.IsTaximaskNodeKnown(master->taxiNodeId) ||
+        bot->GetMap()->GetAreaId(bot->GetPhaseMask(), master->pos.GetPositionX(), master->pos.GetPositionY(),
+                                 master->pos.GetPositionZ()) != areaId)
+        return false;
+    // once per node and level (a walk that ends without the node is not taken again until a fact changes); map thread
+    thread_local std::unordered_map<uint64, std::pair<uint32, uint8>> tried;
+    auto& last = tried[bot->GetGUID().GetRawValue()];
+    if (last.first == master->taxiNodeId && last.second == bot->GetLevel())
+        return false;
+    last = {master->taxiNodeId, bot->GetLevel()};
+    float const x = master->pos.GetPositionX(), y = master->pos.GetPositionY(), z = master->pos.GetPositionZ();
+    if (WalkGivenUp(bot, x, y) || TripRefused(bot, x, y, z, "flight master"))
+        return false;
+    TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(master->taxiNodeId);
+    LOG_INFO("playerbots", "[night305] {} L{} walks to the flight master of {} (node {}, {:.0f} yd) to learn its "
+             "node: {}",
+             bot->GetName(), bot->GetLevel(), node ? node->name[0] : "?", master->taxiNodeId, bot->GetExactDist(x, y, z),
+             why);
+    botAI->rpgInfo.ChangeToGoCamp(master->pos);
     return true;
 }
 

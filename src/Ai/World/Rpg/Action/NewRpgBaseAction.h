@@ -253,6 +253,10 @@ protected:
     // [red63] it stands in an area red for its level (AreaTable area_level) and its walk out to its bind point / hub
     // is refused (zone38: every way passes red areas, or mobs it must not fight): its Hearthstone; true when cast
     bool RedAreaEscape();
+    // [night305] a friendly flight master in the town (area) the bot stands in whose node it has not discovered: it
+    // walks to it (the discover trigger learns the node there), as a player passing through talks to it; true when
+    // it walks. Once per node and level; a walk there that the bot gave up or would refuse is not taken
+    bool DiscoverTownFlightMaster(std::string const& why);
 
     /* MOVEMENT RELATED */
     bool MoveFarTo(WorldPosition dest);

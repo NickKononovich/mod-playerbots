@@ -1884,6 +1884,9 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         case RPG_IDLE:
         {
             BindAtInnHere();  // [regress10] its home is the town it quests from
+            // [night305] the town's flight master whose node it has not discovered: it learns it in passing
+            if (SoloSafety::Applies(bot) && DiscoverTownFlightMaster("passes through the town"))
+                return true;
             // [roles59] the role the global leader planned for the fives: its spec, at the class trainer
             if (sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) &&
                 NewRpgProfession::StartRoleSpec(botAI, bot))
