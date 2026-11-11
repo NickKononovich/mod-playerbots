@@ -1467,7 +1467,8 @@ namespace SoloSafety
                     LOG_INFO("playerbots",
                              "[deaths139] {} L{} add {} L{} joins its judged fight on {} (attacker {} of {} judged, "
                              "{:.1f} s in): {}, home ({:.0f},{:.0f}) {:.0f} yd from the fight spot (reach {:.0f}: {}), "
-                             "now {:.0f} yd from the bot, {:.0f} yd from {} (an attacker), its victim {}",
+                             "now {:.0f} yd from the bot, {:.0f} yd from {} (an attacker), its victim {}; [deaths148] "
+                             "the bot {:.0f} yd from the fight spot, its home {:.0f} yd from the bot",
                              bot->GetName(), bot->GetLevel(), track.name, track.level, state.engage.targetName,
                              state.attackers.size(), state.engage.mobs,
                              float(getMSTimeDiff(state.firstMs, now)) / IN_MILLISECONDS,
@@ -1477,7 +1478,8 @@ namespace SoloSafety
                              home.GetPositionX(), home.GetPositionY(), homeGap, reach,
                              homeGap <= reach ? "covers it" : "short of it", mob->GetExactDist2d(bot),
                              nearestAttacker, nearestName,
-                             mob->GetVictim() ? mob->GetVictim()->GetName() : std::string("none"));
+                             mob->GetVictim() ? mob->GetVictim()->GetName() : std::string("none"),
+                             bot->GetExactDist2d(fight.x, fight.y), home.GetExactDist2d(bot));
                 }
             }
             track.lastMs = now;
