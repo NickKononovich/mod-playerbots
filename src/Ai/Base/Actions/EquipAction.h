@@ -30,7 +30,9 @@ protected:
 
 private:
     void EquipItem(FindItemVisitor* visitor);
-    uint8 GetSmallestBagSlot();
+    // [inv375] a bag into a free bag slot, else a bigger generic bag in place of the smallest generic one (its
+    // contents moved out first); true: handled as a bag (equipped or not)
+    bool EquipBag(Item* item);
     void EquipItem(Item* item);
 };
 

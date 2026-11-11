@@ -584,25 +584,25 @@ ParsedItemUsage ItemUsageValue::GetItemIdFromQualifier()
     return parsed;
 }
 // Return smaltest bag size equipped
+// [inv375] of the generic bags in all four bag slots (0: a free slot): the first slot was skipped, and a quiver or a
+// special bag counted as the bag a generic one replaces (EquipAction::EquipBag never replaces those)
 uint32 ItemUsageValue::GetSmallestBagSize()
 {
-    int8 curSlot = 0;
     uint32 curSlots = 0;
-    for (uint8 bag = INVENTORY_SLOT_BAG_START + 1; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    bool generic = false;
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
     {
-        if (Bag const* pBag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag))
-        {
-            if (curSlot > 0 && curSlots < pBag->GetBagSize())
-                continue;
-
-            curSlot = pBag->GetSlot();
-            curSlots = pBag->GetBagSize();
-        }
-        else
+        Bag const* pBag = bot->GetBagByPos(bag);
+        if (!pBag)
             return 0;
+        ItemTemplate const* proto = pBag->GetTemplate();
+        if (proto->Class != ITEM_CLASS_CONTAINER || proto->SubClass != ITEM_SUBCLASS_CONTAINER)
+            continue;
+        if (!generic || pBag->GetBagSize() < curSlots)
+            curSlots = pBag->GetBagSize();
+        generic = true;
     }
-
-    return curSlots;
+    return generic ? curSlots : UINT32_MAX;  // only special bags worn: nothing a generic bag can replace
 }
 
 bool ItemUsageValue::IsItemUsefulForQuest(Player* player, ItemTemplate const* proto)

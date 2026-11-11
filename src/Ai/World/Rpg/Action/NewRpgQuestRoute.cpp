@@ -550,6 +550,28 @@ float QuestRoute::XpPerSecond(uint32 botLow)
 
 }
 
+std::vector<QuestRoute::Point> QuestRoute::RouteStops(uint32 botLow)
+{
+    std::vector<Point> out;
+    std::lock_guard<std::mutex> guard(routesLock);
+    auto const found = routes.find(botLow);
+    if (found == routes.end() || !found->second.built)
+        return out;
+    BotRoute const& r = found->second;
+    size_t from = 0;
+    if (r.hasCurrent)
+        for (size_t i = 0; i < r.plan.stops.size(); ++i)
+            if (r.plan.stops[i].x == r.current.x && r.plan.stops[i].y == r.current.y)
+            {
+                from = i;
+                break;
+            }
+    for (size_t i = from; i < r.plan.stops.size(); ++i)
+        if (r.plan.stops[i].kind != StopKind::Town)
+            out.push_back({r.plan.stops[i].x, r.plan.stops[i].y, r.plan.stops[i].z});
+    return out;
+}
+
 
 void QuestRoute::NoteQuestEvent(Player* bot, uint32 questId)
 {

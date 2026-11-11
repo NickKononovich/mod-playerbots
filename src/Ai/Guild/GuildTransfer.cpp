@@ -28,6 +28,7 @@
 #include "GuildCoordinator.h"
 #include "BuyAction.h"  // [share92] RESTOCK_FOOD_MIN
 #include "NewRpgProfession.h"  // [roles62] NeedsRespec
+#include "NewRpgQuestRoute.h"  // [inv372] the route a pickup's mailbox is measured against
 #include "QuestStats.h"  // [log28]
 
 #include <algorithm>
@@ -412,6 +413,57 @@ namespace
     char const* ChannelName(uint8 channel) { return channel == 0 ? "trade" : channel == 1 ? "mail" : "bank"; }
 
     char const* ChannelLog(uint8 channel) { return channel == 0 ? "trade" : channel == 1 ? "mail" : "bank"; }
+
+    // [inv370] who sent a game letter: the creature / game object by its name, the auction house
+    std::string GameSender(Mail const* m)
+    {
+        if (m->messageType == MAIL_CREATURE)
+            if (CreatureTemplate const* c = sObjectMgr->GetCreatureTemplate(m->sender))
+                return c->Name;
+        if (m->messageType == MAIL_GAMEOBJECT)
+            if (GameObjectTemplate const* go = sObjectMgr->GetGameObjectTemplate(m->sender))
+                return go->name;
+        return m->messageType == MAIL_AUCTION ? "the auction house" : "entry " + std::to_string(m->sender);
+    }
+
+    // [inv372] the yards a visit to x adds to the bot's way: from where it stands along its route's stops (the
+    // cheapest leg to put it in, or after the last one); no route: there from where it stands
+    float RouteDetour(Player* p, std::vector<QuestRoute::Point> const& stops, WorldPosition const& x)
+    {
+        WorldPosition a = Pos(p);
+        float best = Dist(a, x);
+        for (QuestRoute::Point const& s : stops)
+        {
+            WorldPosition const b(p->GetMapId(), s.x, s.y, s.z);
+            best = std::min(best, std::max(0.0f, Dist(a, x) + Dist(x, b) - Dist(a, b)));
+            a = b;
+        }
+        return std::min(best, Dist(a, x));
+    }
+}
+
+bool GuildCoordinator::GameLetter(Mail const* m)
+{
+    return m && (m->messageType == MAIL_CREATURE || m->messageType == MAIL_GAMEOBJECT ||
+                 m->messageType == MAIL_AUCTION);
+}
+
+// [inv370] b446: Gubber Blump's Shiny Bauble 43239 (no price, no quest, no use) is not worth a slot; the race
+// trainer's Riding Training Pamphlet (no price) opens "Learn to Ride"
+bool GuildCoordinator::LetterItemWorth(Player* p, ItemTemplate const* proto)
+{
+    if (!p || !proto)
+        return false;
+    if (proto->SellPrice || proto->Class == ITEM_CLASS_CONTAINER || proto->Class == ITEM_CLASS_QUIVER ||
+        proto->Class == ITEM_CLASS_RECIPE)
+        return true;
+    if (proto->StartQuest)
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(proto->StartQuest))
+            if (p->GetQuestStatus(proto->StartQuest) == QUEST_STATUS_NONE && p->CanTakeQuest(quest, false))
+                return true;
+    if (p->HasQuestForItem(proto->ItemId))
+        return true;
+    return proto->InventoryType != INVTYPE_NON_EQUIP && p->CanUseItem(proto) == EQUIP_ERR_OK;
 }
 
 void GuildCoordinator::LoadMailboxes()
@@ -475,6 +527,54 @@ void GuildCoordinator::LoadMailboxes()
         }
         forges_.push_back(forge);
     }
+    // [inv373] a town of a contested zone has no side in AreaTable (Splintertree Post, Hammerfall, Stonard,
+    // Bloodvenom Post: team 0 in a team-0 zone), so its mailbox counted as friendly for both: b446 Alliance Bami's 4
+    // letters waited "MAIL_TO waits town Splintertree Post". Its side: the service NPCs spawned in its area
+    // (innkeeper, vendor, flight master, repairer) hostile to one side's players and to none of the other's
+    std::map<uint32, std::pair<uint32, uint32>> hostile;  // area -> NPCs hostile to (the Alliance, the Horde)
+    for (Mailbox const& box : mailboxes_)
+        if (box.areaId && !box.areaTeam)
+            hostile[box.areaId];
+    ChrRacesEntry const* human = sChrRacesStore.LookupEntry(RACE_HUMAN);
+    ChrRacesEntry const* orc = sChrRacesStore.LookupEntry(RACE_ORC);
+    FactionTemplateEntry const* ally = human ? sFactionTemplateStore.LookupEntry(human->FactionID) : nullptr;
+    FactionTemplateEntry const* horde = orc ? sFactionTemplateStore.LookupEntry(orc->FactionID) : nullptr;
+    constexpr uint32 SERVICE = UNIT_NPC_FLAG_INNKEEPER | UNIT_NPC_FLAG_VENDOR | UNIT_NPC_FLAG_FLIGHTMASTER |
+                               UNIT_NPC_FLAG_REPAIR;
+    if (ally && horde && !hostile.empty())
+        for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+        {
+            CreatureTemplate const* c = sObjectMgr->GetCreatureTemplate(data.id);
+            if (!c || !(c->npcflag & SERVICE))
+                continue;
+            MapEntry const* map = sMapStore.LookupEntry(data.mapid);
+            if (!map || map->Instanceable())
+                continue;
+            auto const town = hostile.find(
+                sMapMgr->GetAreaId(PHASEMASK_NORMAL, data.mapid, data.posX, data.posY, data.posZ));
+            FactionTemplateEntry const* f = sFactionTemplateStore.LookupEntry(c->faction);
+            if (town == hostile.end() || !f)
+                continue;
+            town->second.first += f->IsHostileTo(*ally) ? 1 : 0;
+            town->second.second += f->IsHostileTo(*horde) ? 1 : 0;
+        }
+    uint32 sided = 0;
+    for (std::vector<Mailbox>* list : {&mailboxes_, &forges_})
+        for (Mailbox& box : *list)
+        {
+            auto const town = hostile.find(box.areaId);
+            if (box.areaTeam || town == hostile.end() || (town->second.first > 0) == (town->second.second > 0))
+                continue;
+            box.areaTeam = town->second.first ? AREATEAM_HORDE : AREATEAM_ALLY;
+            ++sided;
+            if (list == &mailboxes_)
+                if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(box.areaId))
+                    LOG_INFO("playerbots", "[inv373] mailbox at {} ({:.0f},{:.0f}): a {} town by its NPCs ({} hostile "
+                             "to the Alliance, {} to the Horde)", area->area_name[0], box.pos.GetPositionX(),
+                             box.pos.GetPositionY(), box.areaTeam == AREATEAM_HORDE ? "Horde" : "Alliance",
+                             town->second.first, town->second.second);
+        }
+    LOG_INFO("playerbots", "[inv373] {} mailboxes / forges of contested-zone towns given their side", sided);
     LOG_INFO("playerbots", "[econ1] smelting: {} town forges on the continents", forges_.size());
     // [econ2] b353 Ryarii L7 walked 3378 yd (and took the boat) to learn Mining, Namwe 1556 yd for Herbalism: the
     // TRAIN call had no place, so it ran wherever the bot stood. The trainers of every skill line (a tradeskill
@@ -635,10 +735,24 @@ void GuildCoordinator::UpdateTransfers()
         }
         return best;
     };
-    auto const NearestFriendlyMailbox = [&](Player* p)
+    // [inv372] the friendly mailbox nearest the bot's route (RouteDetour: the yards a visit adds to its quest stops as
+    // last built), not the straight-line nearest from where it stands: [lag344] b445 that one was kept as the pickup's
+    // after the bot quested away from it, a town stop the route put last and rebuilt before it was reached. Once per
+    // bot and plan (memo)
+    struct RouteBox
     {
-        WorldPosition best{};
-        float bestDist = NONE;
+        std::vector<QuestRoute::Point> stops;
+        WorldPosition box{};
+        float yd{NONE};
+    };
+    std::map<uint32, RouteBox> routeBoxes;
+    auto const RouteBoxOf = [&](Player* p) -> RouteBox const&
+    {
+        uint32 const low = p->GetGUID().GetCounter();
+        if (auto const found = routeBoxes.find(low); found != routeBoxes.end())
+            return found->second;
+        RouteBox& rb = routeBoxes[low];
+        rb.stops = QuestRoute::RouteStops(low);
         for (Mailbox const& box : mailboxes_)
         {
             if (box.pos.GetMapId() != p->GetMapId())
@@ -646,17 +760,18 @@ void GuildCoordinator::UpdateTransfers()
             if ((box.areaTeam == AREATEAM_ALLY && p->GetTeamId() != TEAM_ALLIANCE) ||
                 (box.areaTeam == AREATEAM_HORDE && p->GetTeamId() != TEAM_HORDE))
                 continue;
-            if (TownRefused(p->GetGUID().GetCounter(), box.pos))
+            if (TownRefused(low, box.pos))
                 continue;  // [econ1] its walk there was refused / given up at this level
-            float const d = Dist(Pos(p), box.pos);
-            if (d < bestDist)
+            float const d = RouteDetour(p, rb.stops, box.pos);
+            if (d < rb.yd)
             {
-                bestDist = d;
-                best = box.pos;
+                rb.yd = d;
+                rb.box = box.pos;
             }
         }
-        return best;
+        return rb;
     };
+    auto const NearestFriendlyMailbox = [&](Player* p) { return RouteBoxOf(p).box; };
     auto const vaultWalk = [&](Player* p)
     {
         WorldPosition pos;
@@ -694,18 +809,30 @@ void GuildCoordinator::UpdateTransfers()
         uint32 goldIn = 0;  // [eco199] the members' gold delivered to its mailbox
         for (Mail const* m : p->GetMails())
         {
-            if (!m || m->state == MAIL_STATE_DELETED || m->messageType != MAIL_NORMAL || m->COD ||
-                !IsPlanned(m->sender) || (m->items.empty() && !m->money))
+            if (!m || m->state == MAIL_STATE_DELETED || m->COD || (m->items.empty() && !m->money))
                 continue;
+            // [inv370] b446: 59 of the members' 73 unread letters were the game's own (43 Riding Training Pamphlets
+            // of the level-20 mail, 18 Shiny Baubles, 2 of the Postmaster's recovered quest rewards - Peny's Old
+            // Blanchy's Feed Pouch 56 h) and the pickup counted members' letters only: no task, never taken. A game
+            // letter counts when it holds gold or an item worth its bag slot
+            bool const game = GameLetter(m);
+            if (!game && (m->messageType != MAIL_NORMAL || !IsPlanned(m->sender)))
+                continue;
+            bool worthItems = !game && !m->items.empty();
+            for (MailItemInfo const& info : m->items)
+                worthItems |= game && LetterItemWorth(p, sObjectMgr->GetItemTemplate(info.item_template));
+            if (game && !m->money && !worthItems)
+                continue;  // nothing in it worth a stop: cleared at the next mailbox it stands at (RunTransfers)
+            std::string const from = game ? GameSender(m) : Who(m->sender);
             uint8 bag = 0, slot = 0;
             if (uint32(m->deliver_time) <= now)
                 goldIn += m->money;
-            if (uint32(m->deliver_time) <= now && (m->money || FreeSlot(p, bag, slot)))
+            if (uint32(m->deliver_time) <= now && (m->money || !worthItems || FreeSlot(p, bag, slot)))
                 ++delivered;  // bags full: an item mail waits (no stand at the mailbox it cannot empty)
             else if (uint32(m->deliver_time) <= now)
-                mailTransit_[row.low].push_back(Who(m->sender) + ": delivered, bags full");
+                mailTransit_[row.low].push_back(from + ": delivered, bags full");
             else
-                mailTransit_[row.low].push_back(Who(m->sender) + ": in " +
+                mailTransit_[row.low].push_back(from + ": in " +
                                                 std::to_string((uint32(m->deliver_time) - now + 59) / 60) + " min");
         }
         WorldPosition box;
@@ -743,20 +870,35 @@ void GuildCoordinator::UpdateTransfers()
         // straight line changes as the bot walks (b354 Rollothan L10: "mailbox Goldshire" became Lakeshire, then
         // Darkshire as it quested east - each trip refused through Redridge Mongrels / Venom Web Spiders, 7 letters
         // never taken)
+        // [inv372] ... the mailbox nearest its route now (RouteBoxOf), the last one kept only while it lies as near
+        // (a tie): the straight-line nearest of [town14] was kept after the bot quested away from it
         else if (delivered)
         {
             auto const last = lastPickup.find(row.low);
+            RouteBox const& rb = RouteBoxOf(p);
+            WorldPosition pick = rb.box;
+            float pickYd = rb.yd;
             if (last != lastPickup.end() && Valid(last->second.second) &&
-                last->second.second.GetMapId() == p->GetMapId() &&
-                !TownRefused(row.low, last->second.second))
-                mailPickup_[row.low] = {delivered, last->second.second};
-            else if (WorldPosition const any = NearestFriendlyMailbox(p); Valid(any))
+                last->second.second.GetMapId() == p->GetMapId() && !TownRefused(row.low, last->second.second))
+                if (float const lastYd = RouteDetour(p, rb.stops, last->second.second); lastYd <= pickYd)
+                {
+                    pick = last->second.second;
+                    pickYd = lastYd;
+                }
+            if (Valid(pick))
             {
-                if (last != lastPickup.end() && last->second.second != any)
-                    LOG_INFO("playerbots", "[town14] {} L{} mail pickup moves to the mailbox at ({:.0f},{:.0f}): the "
-                             "last one's walk was refused", p->GetName(), p->GetLevel(), any.GetPositionX(),
-                             any.GetPositionY());
-                mailPickup_[row.low] = {delivered, any};
+                if (last == lastPickup.end() || last->second.second != pick)
+                {
+                    uint32 const area = sMapMgr->GetAreaId(PHASEMASK_NORMAL, pick.GetMapId(), pick.GetPositionX(),
+                                                           pick.GetPositionY(), pick.GetPositionZ());
+                    AreaTableEntry const* entry = sAreaTableStore.LookupEntry(area);
+                    LOG_INFO("playerbots", "[inv372] {} L{} mail pickup ({} letters) at the mailbox of {} "
+                             "({:.0f},{:.0f}): {:.0f} yd off its route of {} quest stops{}", p->GetName(),
+                             p->GetLevel(), delivered, entry ? entry->area_name[0] : "?", pick.GetPositionX(),
+                             pick.GetPositionY(), pickYd, rb.stops.size(),
+                             last != lastPickup.end() ? " (the last one lies farther off it)" : "");
+                }
+                mailPickup_[row.low] = {delivered, pick};
             }
         }
     }
@@ -2382,8 +2524,10 @@ void GuildCoordinator::RunTransfers(uint32 diff)
         for (auto const& [id, t] : transfers_)
             if (t.channel != Transfer::BANK && !t.mailed)
                 list.push_back(t);
-        for (auto const& [low, pick] : mailPickup_)
-            pickups.push_back(low);
+        // [inv370] every member at any mailbox it stands at takes its letters (not only one with a pickup task:
+        // a bot passing a mailbox or standing at one in a town empties it)
+        for (PlanRow const& row : plan_)
+            pickups.push_back(row.low);
     }
     // [econ2] member -> (taught spell, recipe name) of a Learning cast begun (world thread only)
     static std::map<uint32, std::pair<uint32, std::string>> recipeCast;
@@ -2554,38 +2698,58 @@ void GuildCoordinator::RunTransfers(uint32 diff)
         }
     }
     // the delivered mails of members, taken at the mailbox the receiver stands at
+    // [inv370] ... and the game's own letters: what is worth a bag slot taken, a letter left with nothing of worth
+    // deleted as a player clears it (b446: 18 Shiny Baubles 43239, no price, no quest, no use)
+    static std::map<uint32, size_t> waitLogged;  // [inv370] member -> its letters when "mail waits" was last logged
     for (uint32 low : pickups)
     {
         Player* r = Online(low);
-        // [human] a human takes his mail himself
-        GameObject* box = r && r->IsAlive() && !HumanCharacter(r) ? MailboxAt(r) : nullptr;
-        if (!box)
-            continue;
+        if (!r || !r->IsAlive() || HumanCharacter(r) || r->IsInFlight())
+            continue;  // [human] a human takes his mail himself
         std::vector<uint32> ids;
         for (Mail const* m : r->GetMails())
-            if (m && m->state != MAIL_STATE_DELETED && m->messageType == MAIL_NORMAL && !m->COD &&
-                IsPlanned(m->sender) && uint32(m->deliver_time) <= now)
+            if (m && m->state != MAIL_STATE_DELETED && !m->COD && uint32(m->deliver_time) <= now &&
+                (GameLetter(m) || (m->messageType == MAIL_NORMAL && IsPlanned(m->sender))))
                 ids.push_back(m->messageID);
+        GameObject* box = ids.empty() ? nullptr : MailboxAt(r);
+        if (!box)
+            continue;
+        bool stuck = false;
         for (uint32 mailId : ids)
         {
             Mail* m = r->GetMail(mailId);
             if (!m)
                 continue;
             uint32 const sender = m->sender;
+            bool const game = GameLetter(m);
+            uint32 const deliveredAt = std::min<uint32>(now, uint32(m->deliver_time));
+            std::string const from = game ? GameSender(m) : Who(sender);
             std::vector<MailItemInfo> const items = m->items;
             uint32 taken = 0;
-            std::string got;
-            bool full = false;
+            std::string got, junk;
+            bool full = false, kept = false;
             for (MailItemInfo const& info : items)
             {
                 Item* it = r->GetMItem(info.item_guid);
                 std::string const name =
                     it ? ItemText(it->GetEntry(), it->GetCount()) : ItemText(info.item_template, 1);
+                if (game && !LetterItemWorth(r, sObjectMgr->GetItemTemplate(info.item_template)))
+                {
+                    junk += (junk.empty() ? "" : ", ") + name;
+                    continue;  // [inv370] not worth its slot: goes with the letter
+                }
                 // [econ1] b350: Idunk "could not take ... (bags full?)" 11 times a letter, every second at the box -
                 // the core's own check first (HandleMailTakeItem: CanStoreItem); full bags end the take here, the
                 // rest stays in the mail for the next visit (its vendor visit makes room)
                 ItemPosCountVec dest;
-                if (it && r->CanStoreItem(NULL_BAG, NULL_SLOT, dest, it, false) != EQUIP_ERR_OK)
+                InventoryResult const res =
+                    it ? r->CanStoreItem(NULL_BAG, NULL_SLOT, dest, it, false) : EQUIP_ERR_OK;
+                if (res != EQUIP_ERR_OK && game && res != EQUIP_ERR_INVENTORY_FULL)
+                {
+                    kept = true;  // [inv370] a game letter's item it cannot carry (a unique one it holds): left there
+                    continue;
+                }
+                if (res != EQUIP_ERR_OK)
                 {
                     full = true;
                     break;
@@ -2605,7 +2769,7 @@ void GuildCoordinator::RunTransfers(uint32 diff)
                 }
                 else
                 {
-                    logs.push_back(r->GetName() + " could not take " + name + " from the mail of " + Who(sender) +
+                    logs.push_back(r->GetName() + " could not take " + name + " from the mail of " + from +
                                    " (the core refused it)");
                     full = true;
                     break;
@@ -2617,34 +2781,50 @@ void GuildCoordinator::RunTransfers(uint32 diff)
                 uint32 const money = m->money;
                 WorldPacket take(CMSG_MAIL_TAKE_MONEY);
                 take << box->GetGUID() << mailId;
-                GuildLedger::Cause const ledger("mail taken (gold from members)");  // [eco190]
+                GuildLedger::Cause const ledger(game ? "mail taken (gold from the game)"
+                                                     : "mail taken (gold from members)");  // [eco190]
                 r->GetSession()->HandleMailTakeMoney(take);
                 m = r->GetMail(mailId);
                 if (!m || !m->money)
                     got += (got.empty() ? "" : ", ") + Gold(money);
             }
             m = r->GetMail(mailId);
-            if (m && m->items.empty() && !m->money)
+            // [inv370] a game letter whose rest is worth nothing to it is deleted with that rest
+            bool const onlyJunk = m && game && !full && !kept && !m->money && !junk.empty();
+            if (m && ((m->items.empty() && !m->money) || onlyJunk))
             {
                 WorldPacket del(CMSG_MAIL_DELETE);
                 del << box->GetGUID() << mailId << uint32(0);
                 r->GetSession()->HandleMailDelete(del);
+                if (onlyJunk)
+                    LOG_INFO("playerbots", "[inv370] {} L{} deletes the letter of {}: {} - no price, no quest, no use "
+                             "to it", r->GetName(), r->GetLevel(), from, junk);
             }
             if (!got.empty())
-                logs.push_back(Who(low) + " takes the mail of " + Who(sender) + " at a mailbox: " + got);
+            {
+                logs.push_back(Who(low) + " takes the mail of " + from + " at a mailbox: " + got);
+                if (game)
+                    LOG_INFO("playerbots", "[inv370] {} L{} takes the game's letter of {} at a mailbox: {} ({} min "
+                             "after its delivery)", r->GetName(), r->GetLevel(), from, got,
+                             (now - deliveredAt) / 60);
+            }
             if (taken)
             {
-                LOG_INFO("playerbots", "[econ1] mail collected: {} took {} item(s) from {}", Who(low), taken,
-                         Who(sender));
+                LOG_INFO("playerbots", "[econ1] mail collected: {} took {} item(s) from {}", Who(low), taken, from);
                 if (Player* taker = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low)))
                     QuestStats::TownDone(low, taker->GetName(), "mail");  // [log28]
             }
             if (full)
             {
-                LOG_INFO("playerbots", "[econ1] mail waits: {} has no bag room for the rest of its mail", Who(low));
+                if (waitLogged[low] != ids.size())
+                    LOG_INFO("playerbots", "[econ1] mail waits: {} has no bag room for the rest of its mail", Who(low));
+                waitLogged[low] = ids.size();
+                stuck = true;
                 break;
             }
         }
+        if (!stuck)
+            waitLogged.erase(low);
     }
 
     CoordLock guard(lock_, __func__);

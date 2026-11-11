@@ -5,6 +5,7 @@
  */
 
 #include "EquipAction.h"
+#include "Bag.h"
 #include "GuildCoordinator.h"
 #include "GuildGear.h"
 #include "GuildHonest.h"
@@ -13,9 +14,12 @@
 #include "ItemPackets.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
+#include "Log.h"
 #include "Playerbots.h"
 #include "StatsWeightCalculator.h"
 #include <algorithm>
+#include <mutex>
+#include <unordered_map>
 #include <utility>
 
 bool EquipAction::Execute(Event event)
@@ -35,27 +39,121 @@ void EquipAction::EquipItems(ItemIds ids)
     }
 }
 
-// Return bagslot with smalest bag.
-uint8 EquipAction::GetSmallestBagSlot()
+namespace
 {
-    int8 curBag = 0;
-    uint32 curSlots = 0;
-    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+    bool GenericBag(ItemTemplate const* proto)
     {
-        Bag const* const pBag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bag);
-        if (pBag)
-        {
-            if (curBag > 0 && curSlots < pBag->GetBagSize())
-                continue;
-
-            curBag = bag;
-            curSlots = pBag->GetBagSize();
-        }
-        else
-            return bag;
+        return proto && proto->Class == ITEM_CLASS_CONTAINER && proto->SubClass == ITEM_SUBCLASS_CONTAINER;
     }
 
-    return curBag;
+    // [inv375] a failed bag swap logged once per bot and reason (the equip pass runs again on every random tick)
+    std::mutex bagFailLock;
+    std::unordered_map<uint32, std::string> bagFailLogged;
+}
+
+// [inv375] b446: 5 members carried an 8-slot bag in their bags while wearing a 6-slot one (Rumanatol, Thokhen:
+// Nolkai's Bag; Gilduck, Uraela, Jurdogs) - each time inside the very bag it was to replace (the last of the
+// smallest, where the loot landed), and the core refuses to equip a bag into the slot of the bag it lies in
+// (SwapItem: "prevent equipping bag in the same slot from its inside"), silently, every pass. A player empties the
+// small bag first: its items (the bigger bag among them) go to free slots elsewhere (a special bag only takes what
+// fits it), then the bigger bag takes its slot and the small one lands where the bigger lay. Special bags (soul,
+// herb, ammo pouch) only go into a free bag slot and are never replaced by a generic one; a quiver is no generic bag
+bool EquipAction::EquipBag(Item* item)
+{
+    ItemTemplate const* proto = item->GetTemplate();
+    for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+        if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+        {
+            bot->SwapItem(item->GetPos(), (INVENTORY_SLOT_BAG_0 << 8) | slot);
+            return true;
+        }
+    if (!GenericBag(proto))
+        return true;
+    Bag* oldBag = nullptr;
+    uint8 oldSlot = 0;
+    for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+        if (Bag* bag = bot->GetBagByPos(slot); bag && bag != item && GenericBag(bag->GetTemplate()) &&
+                                                 bag->GetBagSize() < proto->ContainerSlots &&
+                                                 (!oldBag || bag->GetBagSize() < oldBag->GetBagSize()))
+        {
+            oldBag = bag;
+            oldSlot = slot;
+        }
+    if (!oldBag)
+        return true;
+    auto const fail = [&](std::string const& why)
+    {
+        std::string const key = std::to_string(proto->ItemId) + ":" + why;
+        std::lock_guard<std::mutex> guard(bagFailLock);
+        std::string& last = bagFailLogged[bot->GetGUID().GetCounter()];
+        if (last == key)
+            return;
+        last = key;
+        LOG_INFO("playerbots", "[inv375] {} L{} keeps {} ({} slots) in its bags: {}", bot->GetName(), bot->GetLevel(),
+                 oldBag->GetTemplate()->Name1, oldBag->GetBagSize(), why);
+    };
+    // the free slots outside the old bag: the backpack and the other worn bags
+    std::vector<std::pair<uint8, uint8>> room;
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            room.emplace_back(INVENTORY_SLOT_BAG_0, slot);
+    for (uint8 slot = INVENTORY_SLOT_BAG_START; slot < INVENTORY_SLOT_BAG_END; ++slot)
+        if (Bag* bag = bot->GetBagByPos(slot); bag && slot != oldSlot)
+            for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                if (!bag->GetItemByPos(uint8(j)))
+                    room.emplace_back(slot, uint8(j));
+    uint32 inside = 0;
+    for (uint32 j = 0; j < oldBag->GetBagSize(); ++j)
+        inside += oldBag->GetItemByPos(uint8(j)) ? 1 : 0;
+    if (room.size() < inside)
+    {
+        fail("no room to empty " + std::string(oldBag->GetTemplate()->Name1) + " (" + std::to_string(inside) +
+             " items, " + std::to_string(room.size()) + " free slots elsewhere)");
+        return true;
+    }
+    uint32 moved = 0;
+    for (uint32 j = 0; j < oldBag->GetBagSize(); ++j)
+    {
+        Item* content = oldBag->GetItemByPos(uint8(j));
+        if (!content)
+            continue;
+        for (auto spot = room.begin(); spot != room.end(); ++spot)
+        {
+            ItemPosCountVec dest;
+            if (bot->CanStoreItem(spot->first, spot->second, dest, content, false) != EQUIP_ERR_OK)
+                continue;  // a special bag that does not take it
+            bot->SwapItem(content->GetPos(), (spot->first << 8) | spot->second);
+            room.erase(spot);
+            break;
+        }
+        if (oldBag->GetItemByPos(uint8(j)))
+        {
+            fail(std::string(content->GetTemplate()->Name1) + " fits no free slot outside it");
+            return true;
+        }
+        ++moved;
+    }
+    if (!oldBag->IsEmpty())
+    {
+        fail("it did not empty");
+        return true;
+    }
+    std::string const oldName = oldBag->GetTemplate()->Name1;
+    uint32 const oldSize = oldBag->GetBagSize();
+    bot->SwapItem(item->GetPos(), (INVENTORY_SLOT_BAG_0 << 8) | oldSlot);
+    if (bot->GetBagByPos(oldSlot) != item)
+    {
+        fail("the core refused the swap");
+        return true;
+    }
+    {
+        std::lock_guard<std::mutex> guard(bagFailLock);
+        bagFailLogged.erase(bot->GetGUID().GetCounter());
+    }
+    LOG_INFO("playerbots", "[inv375] {} L{} equips {} ({} slots) in place of {} ({} slots): {} items moved out of it "
+             "first", bot->GetName(), bot->GetLevel(), proto->Name1, proto->ContainerSlots, oldName, oldSize,
+             moved);
+    return true;
 }
 
 void EquipAction::EquipItem(FindItemVisitor* visitor)
@@ -68,8 +166,6 @@ void EquipAction::EquipItem(FindItemVisitor* visitor)
 
 void EquipAction::EquipItem(Item* item)
 {
-    uint8 bagIndex = item->GetBagSlot();
-    uint8 slot = item->GetSlot();
     ItemTemplate const* itemProto = item->GetTemplate();
     uint32 itemId = itemProto->ItemId;
     uint8 invType = itemProto->InventoryType;
@@ -84,21 +180,10 @@ void EquipAction::EquipItem(Item* item)
         return;
     }
 
-    // Handle bags first
+    // Handle bags first ([inv375] EquipBag)
     bool equippedBag = false;
     if (itemProto->Class == ITEM_CLASS_CONTAINER)
-    {
-        // Attempt to equip as a bag
-        uint8 newBagSlot = GetSmallestBagSlot();
-
-        if (newBagSlot > 0)
-        {
-            uint16 src = ((bagIndex << 8) | slot);
-            uint16 dst = ((INVENTORY_SLOT_BAG_0 << 8) | newBagSlot);
-            bot->SwapItem(src, dst);
-            equippedBag = true;
-        }
-    }
+        equippedBag = EquipBag(item);
 
     // If we didn't equip as a bag, try to equip as gear
     if (!equippedBag)

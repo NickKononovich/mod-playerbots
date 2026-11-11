@@ -532,16 +532,48 @@ namespace
         return text + std::to_string(copper % SILVER) + "c";
     }
 
-    // the smallest bag size in the member's bag slots (0 = a slot is empty)
+    // [inv376] a generic bag (not a quiver, soul, herb or other special bag)
+    bool GenericBagProto(ItemTemplate const* proto)
+    {
+        return proto && proto->Class == ITEM_CLASS_CONTAINER && proto->SubClass == ITEM_SUBCLASS_CONTAINER;
+    }
+
+    // the smallest bag size in the member's bag slots (0 = a slot is empty); [inv376] of its generic bags only: a
+    // quiver or a special bag is no place for a generic one
     uint32 SmallestBag(Player* p)
     {
         uint32 smallest = UINT32_MAX;
         for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
         {
             Bag* bag = p->GetBagByPos(b);
-            smallest = std::min<uint32>(smallest, bag ? bag->GetBagSize() : 0);
+            if (!bag || GenericBagProto(bag->GetTemplate()))
+                smallest = std::min<uint32>(smallest, bag ? bag->GetBagSize() : 0);
         }
         return smallest == UINT32_MAX ? 0 : smallest;
+    }
+
+    // [inv376] the bag slots a generic bag of `slots` gains `p` once its own spare bags and those coming to it are worn
+    // (each into its smallest generic slot or a free one): 0 when it gains nothing
+    uint32 BagGain(Player* p, uint32 slots, std::vector<uint32> spares)
+    {
+        std::vector<uint32> worn;  // free bag slots as 0
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+        {
+            Bag* bag = p->GetBagByPos(b);
+            if (!bag || GenericBagProto(bag->GetTemplate()))
+                worn.push_back(bag ? bag->GetBagSize() : 0);
+        }
+        if (worn.empty())
+            return 0;
+        std::sort(spares.rbegin(), spares.rend());
+        for (uint32 spare : spares)
+        {
+            auto const least = std::min_element(worn.begin(), worn.end());
+            if (spare > *least)
+                *least = spare;
+        }
+        uint32 const least = *std::min_element(worn.begin(), worn.end());
+        return slots > least ? slots - least : 0;
     }
 
     // the generic bags in the backpack and in the bags (not worn as a bag)
@@ -1989,16 +2021,90 @@ void GuildCoordinator::UpdateOrders()
             std::vector<Item*> spare;
             if (smallest)
                 SpareBags(p, spare);
+            auto const online = [](uint32 low) -> Player*
+            {
+                Player* m = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+                return m && m->IsInWorld() ? m : nullptr;
+            };
+            // [inv376] the bags a member will wear anyway: its own spare ones and those held for it by others
+            auto const sparesOf = [&](Player* m, uint32 skipGuid)
+            {
+                std::vector<uint32> sizes;
+                std::vector<Item*> own;
+                SpareBags(m, own);
+                for (Item* b : own)
+                    sizes.push_back(b->GetTemplate()->ContainerSlots);
+                uint32 const mLow = m->GetGUID().GetCounter();
+                for (auto const& [holder, hs] : bots_)
+                    for (HeldItem const& h : hs.held)
+                        if (h.forLow == mLow && h.itemGuidLow != skipGuid)
+                            if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(h.itemId);
+                                GenericBagProto(proto))
+                                sizes.push_back(proto->ContainerSlots);
+                return sizes;
+            };
             for (Item* bag : spare)
             {
                 uint32 const guidLow = bag->GetGUID().GetCounter();
-                bool const held = std::any_of(st.held.begin(), st.held.end(),
-                                              [&](HeldItem const& h) { return h.itemGuidLow == guidLow; });
+                uint32 const slots = bag->GetTemplate()->ContainerSlots;
+                auto heldIt = std::find_if(st.held.begin(), st.held.end(),
+                                           [&](HeldItem const& h) { return h.itemGuidLow == guidLow; });
+                bool held = heldIt != st.held.end();
                 Bag* asBag = bag->ToBag();
-                if (held || bag->GetTemplate()->ContainerSlots > smallest || (asBag && !asBag->IsEmpty()) ||
-                    std::find(st.sell.begin(), st.sell.end(), guidLow) != st.sell.end())
+                if (slots > smallest || (asBag && !asBag->IsEmpty()))
+                    continue;
+                // [inv376] a bag freed by a bigger one (EquipAction::EquipBag) or one it never wore: to the member it
+                // gains most bag slots (an empty bag slot, a smaller generic bag), by the transfer flow (trade /
+                // mail); sold only when nobody gains from it. Its holder's earlier pick is dropped once that member
+                // gains nothing from it any more
+                if (held && heldIt->purpose.rfind("upgrade bag", 0) == 0)
+                {
+                    Player* to = online(heldIt->forLow);
+                    if (to && BagGain(to, slots, sparesOf(to, guidLow)))
+                        continue;
+                    LOG_INFO("playerbots", "[inv376] {}: {} ({} slots) no longer gains {} a bag slot - its pick "
+                             "is dropped", Who(row.low), ItemName(bag->GetEntry()), slots, Who(heldIt->forLow));
+                    st.held.erase(heldIt);
+                    held = false;
+                }
+                if (held)
+                    continue;
+                if (!bag->IsSoulBound())
+                {
+                    uint32 bestLow = 0, bestGain = 0;
+                    float bestDist = 0.0f;
+                    for (PlanRow const& other : plan_)
+                    {
+                        Player* m = other.low == row.low ? nullptr : online(other.low);
+                        if (!m || !GET_PLAYERBOT_AI(m) || HumanCharacter(m))
+                            continue;
+                        uint32 const gain = BagGain(m, slots, sparesOf(m, guidLow));
+                        float const dist = m->GetMapId() == p->GetMapId() ? p->GetExactDist(m)
+                                                                         : std::numeric_limits<float>::max();
+                        if (gain > bestGain || (gain && gain == bestGain && dist < bestDist))
+                        {
+                            bestLow = other.low;
+                            bestGain = gain;
+                            bestDist = dist;
+                        }
+                    }
+                    if (bestLow)
+                    {
+                        st.sell.erase(std::remove(st.sell.begin(), st.sell.end(), guidLow), st.sell.end());
+                        st.held.push_back({guidLow, bag->GetEntry(), 1, bestLow, "upgrade bag " + Who(bestLow)});
+                        Decision(Who(row.low) + ": spare bag " + ItemName(bag->GetEntry()) + " → " + Who(bestLow) +
+                                 " (+" + std::to_string(bestGain) + " bag slots)");
+                        LOG_INFO("playerbots", "[inv376] {}: spare bag {} ({} slots) goes to {}: +{} bag slots there",
+                                 Who(row.low), ItemName(bag->GetEntry()), slots, Who(bestLow), bestGain);
+                        continue;
+                    }
+                }
+                if (std::find(st.sell.begin(), st.sell.end(), guidLow) != st.sell.end())
                     continue;
                 st.sell.push_back(guidLow);
+                LOG_INFO("playerbots", "[inv376] {}: spare bag {} ({} slots) is sold: {}", Who(row.low),
+                         ItemName(bag->GetEntry()), slots,
+                         bag->IsSoulBound() ? "soulbound" : "no member gains a bag slot from it");
                 Decision(Who(row.low) + ": old bag " + ItemName(bag->GetEntry()) + " → sell (" +
                          std::to_string(bag->GetTemplate()->ContainerSlots) + " slots, smallest worn " +
                          std::to_string(smallest) + ")");
@@ -5581,10 +5687,62 @@ double GuildCoordinator::TownStopCopper(Player* bot, WorldPosition const& pos) c
                 copper += double(proto->BuyPrice) * std::max<uint32>(1, o.count);
         pickup |= o.type == GuildOrderType::MAIL_TO && !o.transferId;
     }
+    // [inv374] the pickup by what its delivered letters carry: their gold, the vendor price of a member's item (as
+    // the sender's mail above), what a game letter's item sells for or the quest it opens is worth at the bot's
+    // copper per quest XP, and the worth of the craft call a reagent / supply or a profession orders' gold waits for
+    // (b446: the pickup weighed the members' gold only - 4 upgrades, 7 greens to disenchant and 43 riding
+    // pamphlets weighed nothing, a town stop the route put last)
     if (pickup)
+    {
+        uint32 const low = bot->GetGUID().GetCounter();
+        uint32 const now = Now();
+        double gold = 0.0, items = 0.0, quests = 0.0, call = 0.0;
         for (Mail const* m : bot->GetMails())
-            if (m && m->state != MAIL_STATE_DELETED && m->money && IsPlanned(m->sender))
-                copper += double(m->money);
+        {
+            if (!m || m->state == MAIL_STATE_DELETED || m->COD || uint32(m->deliver_time) > now)
+                continue;
+            bool const game = GameLetter(m);
+            if (!game && (m->messageType != MAIL_NORMAL || !IsPlanned(m->sender)))
+                continue;
+            gold += double(m->money);
+            for (MailItemInfo const& info : m->items)
+            {
+                ItemTemplate const* proto = game ? sObjectMgr->GetItemTemplate(info.item_template) : nullptr;
+                if (!proto || !LetterItemWorth(bot, proto))
+                    continue;
+                Item const* it = bot->GetMItem(info.item_guid);
+                items += double(proto->SellPrice) * (it ? it->GetCount() : 1);
+                if (Quest const* quest = proto->StartQuest ? sObjectMgr->GetQuestTemplate(proto->StartQuest) : nullptr)
+                    if (bot->GetQuestStatus(proto->StartQuest) == QUEST_STATUS_NONE)
+                        quests += double(quest->XPValue(bot->GetLevel())) * itr->second.copperPerXp;
+            }
+        }
+        bool fundsCall = false;
+        for (auto const& [id, t] : transfers_)
+        {
+            if (t.toLow != low || !t.mailed || t.deliverAt > now)
+                continue;
+            if (!t.gold)
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(t.itemId))
+                    items += double(proto->BuyPrice) * std::max<uint32>(1, t.count);
+            fundsCall |= (!t.gold && (t.purpose == "reagent" || t.purpose == "supply")) ||
+                         (t.gold && t.purpose == "profession orders");
+        }
+        if (fundsCall)
+            for (GuildOrder const& o : itr->second.orders)
+                if (o.type == GuildOrderType::PROFESSION && o.profession == GuildProfessionKind::CRAFT)
+                    call = std::max(call, double(o.cost));
+        double const worth = gold + items + quests + call;
+        copper += worth;
+        static std::map<uint32, uint32> logged;  // [inv374] member -> the pickup's worth last logged (under lock_)
+        if (uint32 const w = uint32(std::min(worth, double(UINT32_MAX))); logged[low] != w)
+        {
+            logged[low] = w;
+            LOG_INFO("playerbots", "[inv374] {} L{} mail pickup worth {}c: gold {:.0f}c, items {:.0f}c, quests "
+                     "opened {:.0f}c, the craft call it waits for {:.0f}c", bot->GetName(), bot->GetLevel(), w, gold,
+                     items, quests, call);
+        }
+    }
     return copper;
 }
 
@@ -6475,7 +6633,8 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
             for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
             {
                 Bag* bag = m->GetBagByPos(b);
-                need += (!bag || bag->GetBagSize() < bagSlots) ? 1 : 0;
+                // [inv376] a quiver / special bag slot needs no generic bag
+                need += (!bag || (GenericBagProto(bag->GetTemplate()) && bag->GetBagSize() < bagSlots)) ? 1 : 0;
             }
             std::vector<Item*> spare;
             SpareBags(m, spare);

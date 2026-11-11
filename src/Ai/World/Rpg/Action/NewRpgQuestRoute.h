@@ -197,6 +197,9 @@ namespace QuestRoute
     // [help20] the bot's own route: its experience over its seconds (0: no route built) - what an hour of its own plan
     // is worth, the price of the time it gives a help party
     float XpPerSecond(uint32 botLow);
+    // [inv372] the bot's route as last built, from the stop it is on: its quest stops in order (no town task) - the
+    // way a town task's spot is measured against (empty: no route built). Any thread: a copy under the lock
+    std::vector<Point> RouteStops(uint32 botLow);
     // [help25] the experience of `questId` and of the quests its hand-in opens after it, as far as the chain goes
     // (UnlockedBy, the ones the bot has not done): what a quest it cannot do alone walls off
     float ChainXp(Player* bot, uint32 questId);

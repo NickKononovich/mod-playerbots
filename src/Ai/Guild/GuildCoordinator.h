@@ -30,6 +30,7 @@ class Player;
 class PlayerbotAI;
 class Quest;
 struct ItemTemplate;  // [eco194]
+struct Mail;          // [inv370]
 
 // [guild30] The global leader of the guild project = the server itself (no character). It runs on the world thread
 // every few seconds over the players in memory (no DB query after startup) and holds:
@@ -413,6 +414,12 @@ public:
     // [lag340] the same tasks' worth in copper (their game prices), and its questing's copper per minute ([econ1]
     // QuestPace; 0: none priced)
     double TownStopCopper(Player* bot, WorldPosition const& pos) const;
+    // [inv370] a letter of the game itself (a creature's, a game object's, the auction house's): taken at a mailbox
+    // like a member's
+    static bool GameLetter(Mail const* m);
+    // [inv370] an item of a game letter worth its bag slot to `p`: it sells, opens a quest it can take, is a bag, a
+    // recipe or gear it can use, or a quest of its log needs it
+    static bool LetterItemWorth(Player* p, ItemTemplate const* proto);
     float QuestCopperPerMinute(Player* bot);
     // [questroute] map thread, read only (the table is built at startup): a quest's work by the formula for `bot` at
     // `dps` - the kill seconds of its units left (all of them for a quest not taken: health of the cheapest source,
