@@ -1172,11 +1172,26 @@ void GuildCoordinator::UpdateTransfers()
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
                   { return uint64(fills[a].held) * fills[b].line < uint64(fills[b].held) * fills[a].line; });
         std::string planned;
+        // [dun210] b441: Lanbuzz -> Almored 22 trades of one Ice Cold Milk each, Almored at 7/8 drinking them as they
+        // came; Ainne <-> Geefeelli 4 / 2, Aevmae <-> Zharet 2 / 2, Aevmae <-> Galiver 2 / 1 back and forth. A member
+        // eating / drinking now (the food / drink aura on it: SPELL_AURA_MOD_REGEN / SPELL_AURA_MOD_POWER_REGEN) takes
+        // nothing until its rest ends, then its whole deficit at once. And a pair that traded one way trades back only
+        // once the two hold less together than right after it (they ate / drank since): the order of the fills of
+        // one update holds across the updates until consumption changes it
+        static std::map<std::tuple<std::string, uint8, uint32, uint32>, std::pair<uint32, uint32>> lastMove;
+        if (lastMove.size() > 4096)
+            lastMove.clear();
+        auto const pairKey = [&](Player* a, Player* b)
+        {
+            uint32 const x = a->GetGUID().GetCounter(), y = b->GetGUID().GetCounter();
+            return std::make_tuple(five.runId, kind, std::min(x, y), std::max(x, y));
+        };
+        AuraType const resting = kind == FOOD ? SPELL_AURA_MOD_REGEN : SPELL_AURA_MOD_POWER_REGEN;
         for (size_t r : order)
         {
             Fill& to = fills[r];
             uint32 const cap = capOf(to);
-            if (to.after >= cap)
+            if (to.after >= cap || to.p->HasAuraType(resting))
                 continue;
             size_t giver = fills.size();
             uint32 spare = 0;
@@ -1188,6 +1203,11 @@ void GuildCoordinator::UpdateTransfers()
                 if (g != r && above > spare &&
                     uint64(fills[g].held) * to.line > uint64(to.held) * fills[g].line)
                 {
+                    // [dun210] no trade back while the pair holds what it held after its last trade
+                    if (auto const last = lastMove.find(pairKey(fills[g].p, to.p));
+                        last != lastMove.end() && last->second.first == to.p->GetGUID().GetCounter() &&
+                        fills[g].held + to.held >= last->second.second)
+                        continue;
                     giver = g;
                     spare = above;
                 }
@@ -1203,6 +1223,8 @@ void GuildCoordinator::UpdateTransfers()
             left[from] -= give;
             fills[giver].after -= give;
             to.after += give;
+            lastMove[pairKey(fills[giver].p, to.p)] = {fills[giver].p->GetGUID().GetCounter(),
+                                                       fills[giver].held + to.held};
             Want w;
             w.key = "c" + std::to_string(to.p->GetGUID().GetCounter()) + ":" + std::to_string(kind);
             w.tradeOnly = true;
