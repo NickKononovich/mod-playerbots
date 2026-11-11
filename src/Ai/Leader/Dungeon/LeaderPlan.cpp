@@ -2422,7 +2422,10 @@ namespace Leader::Dungeon
                 }
                 // [lead43] one verdict: a route target the leader does not pick is a contradiction - logged with the
                 // store that refuses it (the route then has no planner to stop for)
-                if (inputs.pick.IsEmpty() && !group.RouteTarget().IsEmpty() &&
+                // [dun237] ... not an event starter's NPC (the route walks to it, there is nothing to pull): b446
+                // wc-n five1-1 2250 s, the Disciple of Naralex [dun231] chose was skipped "the leader does not pick
+                // it (the route target out of the pick)" for 0x3FFFFFFF ms
+                if (inputs.pick.IsEmpty() && !group.RouteTarget().IsEmpty() && !group.RouteTargetIsStarter() &&
                     lead.pickConflictFor != group.RouteTarget())
                     if (Creature* routeMob = idleAlive(group.RouteTarget()))
                     {
