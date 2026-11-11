@@ -1802,7 +1802,7 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
     std::vector<FiveCandidate> fits;
     for (FiveCandidate const& c : Candidates(*d, true))
         if (c.role == role && DungeonRefusal(*d, c.player, true).empty() &&
-            (role != "dps" || c.needsClear || !NeededUpgrade(*d, c.player).empty()))
+            (c.needsClear || !NeededUpgrade(*d, c.player).empty() || (role != "dps" && GivesXp(*d, c.player))))
             fits.push_back(c);
     // PickFive's order: an open clear first, then the highest level
     std::stable_sort(fits.begin(), fits.end(),
@@ -1896,7 +1896,7 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
         LOG_INFO("playerbots", "[lag321] five {} ({}): {} {} leaves it (no safe walk to the entrance), {} L{} takes "
                  "its place ({}): {}",
                  five.id, five.contentKey, role, Who(refusedLow), Who(c.low), c.player->GetLevel(),
-                 c.needsClear ? "an open clear" : "a needed upgrade or a carrier", verdict.why);
+                 c.needsClear ? "an open clear" : "a needed upgrade or the dungeon's experience", verdict.why);
         Decision("five " + std::to_string(five.id) + " (" + five.dungeon + "): " + Who(refusedLow) +
                  " has no safe way to the entrance — " + Who(c.low) + " " + RoleRu(role) +
                  " takes its place, the others walk on");
@@ -2557,7 +2557,7 @@ void GuildCoordinator::AutoFive()
             Player* p;
             bool cleared;
             bool inBand;
-            bool healer;  // [roles108]
+            bool healer;  // [roles108] (a tank too: [lag324])
         };
         std::vector<Probe> probes;
         {
@@ -2571,7 +2571,7 @@ void GuildCoordinator::AutoFive()
                     if (!p || IsHuman(p) || p->GetLevel() > d.maxLevel)
                         continue;
                     probes.push_back({&d, row.low, p, Cleared(d.contentKey, row.low),
-                                      p->GetLevel() >= d.walkMinLevel, PlanRole(row.low, p) == "healer"});
+                                      p->GetLevel() >= d.walkMinLevel, PlanRole(row.low, p) != "dps"});
                 }
         }
         // [need115] per dungeon option (a content key may have several, one per level band: b421 'sfk-n: band 78-82:
@@ -2591,6 +2591,8 @@ void GuildCoordinator::AutoFive()
                     need = "upgrade " + item;
             // [roles108] user design 2026-11-10: a healer levels in dungeons (a heal spec kills slowly outside) - an
             // in-band dungeon whose mobs still give it experience is a need of its own
+            // [lag324] ... a tank's too: with no carrier left (below) a tank or healer goes for a clear, an upgrade or
+            // the dungeon's experience of its own
             if (need.empty() && probe.healer && probe.inBand && GivesXp(*probe.d, probe.p))
                 need = "xp";
             std::string const option = optionKey(*probe.d);
@@ -2753,12 +2755,12 @@ void GuildCoordinator::AutoFive()
                         c.upgrade = !c.needsClear && m->second.rfind("upgrade ", 0) == 0;
                         c.xp = m->second == "xp";  // [roles108]
                     }
-            // the dps slots go to members with a need (user rule 2026-11-10: no repeat for nothing to gain); a tank or
-            // healer with no need of its own goes again to carry the needy ones - PickFive takes a needy tank /
-            // healer first, else the carrier with the fewest repeats of the dungeon
+            // the dps slots go to members with a need (user rule 2026-11-10: no repeat for nothing to gain).
+            // [lag324] coordinator decision 2026-11-11: every member goes for progress of its own at its level - a
+            // clear or an upgrade it needs, or (a tank / healer) the dungeon's experience; no carrier with none (a
+            // five's time is that member's questing time: the laggards' rule of the global leader)
             pool.erase(std::remove_if(pool.begin(), pool.end(),
-                                      [](FiveCandidate const& c)
-                                      { return !c.needsClear && !c.upgrade && c.role == "dps"; }),
+                                      [](FiveCandidate const& c) { return !c.needsClear && !c.upgrade && !c.xp; }),
                        pool.end());
             std::vector<FiveCandidate> five;
             // [five58] the finder's band first (the five may queue); else a five that walks in: every member of it

@@ -2434,6 +2434,14 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             ++skipped["the camp is red for it"];
             continue;
         }
+        // [lag324] coordinator decision 2026-11-11: a helper goes for progress of its own - the camp's experience. A
+        // camp whose top mob is grey for it (Acore::XP::GetGrayLevel: no experience from any of its mobs) is no help
+        // of it: its questing time would go for nothing of its own
+        if (r.topLevel && r.topLevel <= Acore::XP::GetGrayLevel(p->GetLevel()))
+        {
+            ++skipped["the camp is grey for it"];
+            continue;
+        }
         pool.push_back({p, 0.0f, 0.0f, false});
     }
     // [help21] the inputs of the price: unchanged since its last refusal by price - no new pricing.
