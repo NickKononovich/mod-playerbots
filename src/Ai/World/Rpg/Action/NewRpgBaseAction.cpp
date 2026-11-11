@@ -40,6 +40,7 @@
 #include "QuestLevelRules.h"
 #include "NewRpgStrategy.h"
 #include "SoloSafety.h"  // [guild13]
+#include "SurvivalKit.h"  // [lag356] the run past's heal kit
 #include "NewRpgCoop.h"  // [coop]
 #include "NewRpgQuestUse.h"  // [questitems]
 #include "PerfMonitor.h"  // [guild15]
@@ -5327,34 +5328,48 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
     // the walk takes within one sight of it summed (the live leg's span: the mobs met on one leg chase together),
     // refused only where that sum is no longer survived (SoloSafety::SurvivesRunPast, the core's leash and daze)
     std::sort(chases.begin(), chases.end(), [](Chase const& a, Chase const& b) { return a.along < b.along; });
+    // [lag356] the health a run past may cost, looked up once for the longest chase (SurvivesRunPast's test; the kit
+    // look scans its bags), and the sight window walked by two indices: one pass over the reaches
+    float longest = 0.0f;
+    for (Chase const& c : chases)
+        longest = std::max(longest, c.chase.seconds);
+    float const budget = chases.empty() ? 0.0f
+                                        : float(bot->GetHealth()) +
+                                              SurvivalKit::HealPoints(bot, std::floor(longest),
+                                                                      float(bot->GetPower(POWER_MANA)), true, true);
     std::vector<bool> refused(chases.size(), false);
+    float sum = 0.0f;  // the window's damage, the refused left out
+    size_t first = 0;
     for (size_t i = 0; i < chases.size(); ++i)
     {
-        SoloSafety::RunPast sum;
-        for (size_t j = 0; j <= i; ++j)
+        while (chases[i].along - chases[first].along > sPlayerbotAIConfig.SightDistance)
         {
-            if (refused[j] || chases[i].along - chases[j].along > sPlayerbotAIConfig.SightDistance)
-                continue;
-            SoloSafety::RunPast const& chase = chases[j].chase;
-            sum.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage : sum.damage + chase.damage;
-            sum.seconds = std::max(sum.seconds, chase.seconds);
+            if (!refused[first])
+                sum -= chases[first].chase.damage;
+            ++first;
         }
-        if (!SoloSafety::SurvivesRunPast(bot, sum.damage, sum.seconds))
+        float const damage = chases[i].chase.damage;
+        if (damage == std::numeric_limits<float>::max() || sum + damage >= budget)
         {
             refused[i] = true;
             discs.push_back(chases[i].disc);
         }
+        else
+            sum += damage;
     }
-    if (size_t const ranPast = size_t(std::count(refused.begin(), refused.end(), false)))
+    size_t const ranPast = size_t(std::count(refused.begin(), refused.end(), false));
+    if (!chases.empty())
     {
-        static std::mutex staticLogLock;  // a log cadence per bot and count, no decision reads it
-        static std::unordered_map<uint32, size_t> staticLogged;
+        // [lag356] once per bot and verdict (every reach run past / some refused): b447 logged each count change
+        uint8 const verdict = ranPast == chases.size() ? 1 : 2;
+        static std::mutex staticLogLock;
+        static std::unordered_map<uint32, uint8> staticLogged;
         bool fresh = false;
         {
             std::lock_guard<std::mutex> guard(staticLogLock);
-            size_t& last = staticLogged[bot->GetGUID().GetCounter()];
-            fresh = last != ranPast;
-            last = ranPast;
+            uint8& last = staticLogged[bot->GetGUID().GetCounter()];
+            fresh = last != verdict;
+            last = verdict;
         }
         if (fresh)
             LOG_INFO("playerbots", "[lag354] {} L{} walk beyond sight: {} orange / red spawn reach(es) priced as run "

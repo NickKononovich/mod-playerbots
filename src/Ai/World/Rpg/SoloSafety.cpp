@@ -3552,6 +3552,21 @@ namespace SoloSafety
                     return true;
             return false;
         };
+        // [lag356] the health a run past may cost: its health now with the heal kit it uses on the move over the
+        // chase's seconds (SurvivesRunPast's test) - one kit look per whole second for the search, not one per mob
+        std::unordered_map<int32, float> budgetOf;
+        auto const budget = [&](float seconds)
+        {
+            int32 const key = int32(std::floor(std::max(seconds, 0.0f)));
+            auto found = budgetOf.find(key);
+            if (found == budgetOf.end())
+                found = budgetOf
+                            .emplace(key, float(bot->GetHealth()) +
+                                              SurvivalKit::HealPoints(bot, float(key), float(bot->GetPower(POWER_MANA)),
+                                                                      true, true))
+                            .first;
+            return found->second;
+        };
         auto const tryRunPast = [&](Creature* mob, PullModel const& model, float& price, float& hp)
         {
             RunPast with = runPast;
@@ -3650,7 +3665,8 @@ namespace SoloSafety
                             std::lock_guard<std::mutex> guard(stopLogLock);
                             if (stopLogged.size() > 65536)
                                 stopLogged.clear();
-                            fresh = stopLogged.insert(chaser->GetGUID().GetCounter() * 1000003ull +
+                            // [lag356] once per bot and mob kind (b447: 934 lines in 13 min per spawn)
+                            fresh = stopLogged.insert(uint64(chaser->GetEntry()) * 1000003ull +
                                                       bot->GetGUID().GetCounter()).second;
                         }
                         if (fresh)
@@ -3665,8 +3681,14 @@ namespace SoloSafety
                                                                                  : with.damage + chase.damage;
                 with.seconds = std::max(with.seconds, chase.seconds);
                 added.push_back({key, chase.damage});
-                if (chase.damage == std::numeric_limits<float>::max())
-                    continue;
+                // [lag356] the sum is past its health already: no more chasers to grow (each one's assistance look
+                // samples the whole stretch round every idle mob - b447: route costs 71-76 % of the searches' time)
+                if (with.damage >= budget(with.seconds))
+                {
+                    price = with.damage;
+                    hp = budget(with.seconds);
+                    return false;
+                }
                 // [runpast61] the chase's assistance calls only when the chaser makes them; a mob whose aggro reach the
                 // stretch crosses comes at the running bot by itself either way (its own aggro, no call)
                 bool const calls =
@@ -3678,9 +3700,8 @@ namespace SoloSafety
                         chasers.push_back(c);  // its own chase and calls are counted in turn
             }
             price = with.damage;
-            hp = float(bot->GetHealth()) +
-                 SurvivalKit::HealPoints(bot, with.seconds, float(bot->GetPower(POWER_MANA)), true, true);
-            if (!SurvivesRunPast(bot, with.damage, with.seconds))
+            hp = budget(with.seconds);
+            if (with.damage >= hp)
                 return false;
             runPast = with;
             for (auto const& [key, damage] : added)
