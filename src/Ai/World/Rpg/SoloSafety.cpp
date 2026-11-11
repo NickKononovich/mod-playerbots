@@ -2005,11 +2005,11 @@ namespace SoloSafety
             verdict.kind = Verdict::Kind::Refuse;
             verdict.why = "an elite in the pack";
         }
-        else if (verdict.above >= 2)
-        {
-            verdict.kind = Verdict::Kind::Refuse;
-            verdict.why = Acore::StringFormat("{} mobs above its level at once", verdict.above);
-        }
+        // [lag353] user 2026-11-11: two or more mobs above its level are judged by the fight's numbers as one is, no
+        // fixed refusal ("never two above at once"): the judge's margin for a mob above its level holds - fought only
+        // from full health and mana and won there (its heals, potions and bandages in the ehp); a death in such a fight
+        // is a bug of the estimate, fixed there. b446 Rollothan L14 refused 2 Riverpaw Herbalists L15, "495 dmg
+        // expected over 41 s ... ehp 1900", and stood walled in by them
         else if (winNow && (!verdict.above || full))
             verdict.kind = Verdict::Kind::Win;
         else if (winFull)
@@ -2021,6 +2021,29 @@ namespace SoloSafety
         {
             verdict.kind = Verdict::Kind::Refuse;
             verdict.why = "loses even at full";
+        }
+        if (verdict.above >= 2 && verdict.kind != Verdict::Kind::Refuse)
+        {
+            static std::mutex aboveLogLock;  // a log cadence per bot, target and verdict, no decision reads it
+            static std::unordered_set<uint64> aboveLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(aboveLogLock);
+                if (aboveLogged.size() > 65536)
+                    aboveLogged.clear();
+                fresh = aboveLogged
+                            .insert((target->GetGUID().GetCounter() * 1000003ull + bot->GetGUID().GetCounter()) * 3ull +
+                                    uint64(verdict.kind))
+                            .second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[lag353] {} L{} {} {} L{}: {} mobs above its level at once, judged by the "
+                         "fight's numbers ({:.0f} dmg expected over {:.0f} s, ehp {:.0f} now / {:.0f} full) - the old "
+                         "rule refused it",
+                         bot->GetName(), bot->GetLevel(),
+                         verdict.kind == Verdict::Kind::Win ? "takes" : "rests first for",
+                         target->GetName(), target->GetLevel(), verdict.above, damage, seconds, verdict.ehpNow,
+                         verdict.ehpFull);
         }
         std::string const numbers = Acore::StringFormat(
             "{} mobs ({} above), {:.0f} dmg expected over {:.0f} s at {:.1f} dps ({:.1f} without mana; full: {:.0f} "
@@ -3813,17 +3836,12 @@ namespace SoloSafety
                             auto const start = std::chrono::steady_clock::now();
                             model.Grow(&meet, nullptr);
                             std::vector<RouteFoe> grown;
-                            uint32 grownAbove = 0;
                             for (PullModel::Member const& m : model.pack)
-                            {
                                 grown.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});
-                                grownAbove += m.mob->GetLevel() > level ? 1 : 0;
-                            }
                             std::sort(grown.begin() + 1, grown.end(), [](RouteFoe const& x, RouteFoe const& y)
                                       { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
-                            if (grownAbove >= 2)
-                                why = RouteWall::Why::Above;
-                            else if (LosesAtFull(bot, own, grown, petHealth))
+                            // [lag353] two above its level at once are priced by the fight's numbers too
+                            if (LosesAtFull(bot, own, grown, petHealth))
                                 why = RouteWall::Why::Loses;
                             wallPack = uint32(grown.size());
                             if (grownCache.size() > 65536)
@@ -3843,18 +3861,13 @@ namespace SoloSafety
                 if (!priced)  // a mob off the leg: its linked pack, as before
                 {
                     std::vector<RouteFoe> foes;
-                    uint32 above = 0;
                     for (PullModel::Member const& m : model.pack)
-                    {
                         foes.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});  // [dps1]
-                        above += m.mob->GetLevel() > level ? 1 : 0;
-                    }
                     // the judge's kill order: the mob met first, then the most damage per health
                     std::sort(foes.begin() + 1, foes.end(), [](RouteFoe const& x, RouteFoe const& y)
                               { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
-                    if (above >= 2)
-                        why = RouteWall::Why::Above;
-                    else if (LosesAtFull(bot, own, foes, petHealth))
+                    // [lag353] the fight's numbers decide, no fixed refusal of two above its level
+                    if (LosesAtFull(bot, own, foes, petHealth))
                         why = RouteWall::Why::Loses;
                     wallPack = uint32(foes.size());
                 }
