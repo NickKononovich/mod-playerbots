@@ -448,15 +448,16 @@ namespace Leader::Travel
         float _nearest[3] = {0.0f, 0.0f, 0.0f};
     };
 
-    bool LongRoute(Unit* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
-                   Movement::PointsArray& corners, bool& complete, std::vector<G3D::AABox> const* avoidBoxes,
-                   std::vector<G3D::Vector4> const* avoidDiscs, float sampleStep, Movement::PointsArray* samples,
-                   std::vector<RoutePenalty> const* penalties, LongRouteInfo* info)
+    static bool LongRouteUncached(dtNavMesh const* navMesh, G3D::Vector3 const& start, G3D::Vector3 const& dest,
+                                  bool steep, Movement::PointsArray& corners, bool& complete,
+                                  std::vector<G3D::AABox> const* avoidBoxes,
+                                  std::vector<G3D::Vector4> const* avoidDiscs, float sampleStep,
+                                  Movement::PointsArray* samples, std::vector<RoutePenalty> const* penalties,
+                                  LongRouteInfo* info)
     {
         complete = false;
         if (info)
             *info = LongRouteInfo{};
-        dtNavMesh const* navMesh = owner->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
         if (!navMesh)
             return false;
         // One query per navmesh, kept: it only holds the navmesh pointer and its node pool, cleared by every
@@ -736,6 +737,208 @@ namespace Leader::Travel
         return true;
     }
 
+    namespace
+    {
+        // [perf213] a long search kept with its exact inputs: the same navmesh (its loaded tiles counted: a tile only
+        // ever loads), the same ends to the last bit, steep, the same boxes, discs and penalties, the same sampling -
+        // the same corridor, samples and answer. b438: a bot that stands (a walk refused or given up, the next choice
+        // the same unreachable spot: Sycina, 129 of the 250 "[perf212] slow bot update" lines, the same 1300 / 4888
+        // yd walks from (1764,-1019) every few seconds) searched each one again from scratch, to the 65535-node
+        // pool; a moving walker or a moved mob is another key. Per thread, a few entries
+        struct LongRouteMemo
+        {
+            dtNavMesh const* navMesh = nullptr;
+            uint32 tiles = 0;
+            G3D::Vector3 start;
+            G3D::Vector3 dest;
+            bool steep = false;
+            float sampleStep = 0.0f;
+            bool sampled = false;
+            std::vector<G3D::AABox> boxes;
+            std::vector<G3D::Vector4> discs;
+            std::vector<RoutePenalty> penalties;
+            bool found = false;
+            bool complete = false;
+            bool noComplete = false;
+            Movement::PointsArray corners;
+            Movement::PointsArray samples;
+            uint64 used = 0;
+        };
+        // entries per thread: a standing walker's island / maze look searches up to 16 landings x 2-6 long routes
+        constexpr size_t LONG_ROUTE_MEMO = 96;
+        constexpr size_t LONG_ROUTE_MEMO_POINTS = 16384;   // a longer sampled walk is not kept (memory bound)
+        constexpr size_t LONG_ROUTE_MEMO_BUDGET = 196608;  // the points kept per thread at most (~2.4 MB)
+
+        uint32 LoadedTiles(dtNavMesh const* navMesh)
+        {
+            uint32 count = 0;
+            for (int i = 0; i < navMesh->getMaxTiles(); ++i)
+                if (dtMeshTile const* tile = navMesh->getTile(i); tile && tile->header)
+                    ++count;
+            return count;
+        }
+
+        // the count an entry is kept with: counted at most once per tick and navmesh (a continent holds ~37k tile
+        // slots). Taken before the search, it is at most the tiles the search saw - a tile loaded since makes the
+        // kept entry differ from the fresh count a reuse checks against (no reuse), never the reverse
+        uint32 LoadedTilesThisTick(dtNavMesh const* navMesh)
+        {
+            struct Counted
+            {
+                dtNavMesh const* navMesh;
+                uint64 tick;
+                uint32 count;
+            };
+            thread_local std::vector<Counted> counted;
+            uint64 const tick = uint64(GameTime::GetGameTimeMS().count());
+            for (Counted& c : counted)
+                if (c.navMesh == navMesh)
+                {
+                    if (c.tick != tick)
+                    {
+                        c.tick = tick;
+                        c.count = LoadedTiles(navMesh);
+                    }
+                    return c.count;
+                }
+            counted.push_back({navMesh, tick, LoadedTiles(navMesh)});
+            return counted.back().count;
+        }
+
+        bool SameVector(G3D::Vector3 const& a, G3D::Vector3 const& b)
+        {
+            return a.x == b.x && a.y == b.y && a.z == b.z;
+        }
+
+        // a kept list against the asked one (none asked: an empty list, as the filter reads it)
+        template <typename T, typename Eq>
+        bool SameList(std::vector<T> const& kept, std::vector<T> const* asked, Eq const& eq)
+        {
+            size_t const n = asked ? asked->size() : 0;
+            if (kept.size() != n)
+                return false;
+            for (size_t i = 0; i < n; ++i)
+                if (!eq(kept[i], (*asked)[i]))
+                    return false;
+            return true;
+        }
+    }
+
+    bool LongRoute(Unit* owner, G3D::Vector3 const& start, G3D::Vector3 const& dest, bool steep,
+                   Movement::PointsArray& corners, bool& complete, std::vector<G3D::AABox> const* avoidBoxes,
+                   std::vector<G3D::Vector4> const* avoidDiscs, float sampleStep, Movement::PointsArray* samples,
+                   std::vector<RoutePenalty> const* penalties, LongRouteInfo* info)
+    {
+        dtNavMesh const* navMesh = owner->GetMap()->GetMapCollisionData().GetMMapData().GetNavMesh();
+        if (!navMesh)
+        {
+            complete = false;
+            if (info)
+                *info = LongRouteInfo{};
+            return false;
+        }
+        bool const sampled = samples && sampleStep > 0.0f;
+        auto const sameBox = [](G3D::AABox const& a, G3D::AABox const& b)
+        { return SameVector(a.low(), b.low()) && SameVector(a.high(), b.high()); };
+        auto const sameDisc = [](G3D::Vector4 const& a, G3D::Vector4 const& b)
+        { return a.x == b.x && a.y == b.y && a.z == b.z && a.w == b.w; };
+        auto const samePenalty = [](RoutePenalty const& a, RoutePenalty const& b)
+        { return a.x == b.x && a.y == b.y && a.z == b.z && a.r == b.r && a.cost == b.cost; };
+        thread_local std::vector<LongRouteMemo> memo;
+        thread_local uint64 memoClock = 0;
+        uint32 tiles = 0;
+        bool tilesCounted = false;
+        for (LongRouteMemo& m : memo)
+        {
+            if (m.navMesh != navMesh || m.steep != steep || m.sampled != sampled ||
+                (sampled && m.sampleStep != sampleStep) || !SameVector(m.start, start) || !SameVector(m.dest, dest) ||
+                !SameList(m.boxes, avoidBoxes, sameBox) || !SameList(m.discs, avoidDiscs, sameDisc) ||
+                !SameList(m.penalties, penalties, samePenalty))
+                continue;
+            if (!tilesCounted)
+            {
+                tiles = LoadedTiles(navMesh);  // a reuse is checked against the tiles loaded now
+                tilesCounted = true;
+            }
+            if (m.tiles != tiles)
+                continue;
+            m.used = ++memoClock;
+            complete = m.complete;
+            if (m.found)
+            {
+                corners = m.corners;
+                if (sampled)
+                    *samples = m.samples;
+            }
+            if (info)
+            {
+                *info = LongRouteInfo{};
+                info->noComplete = m.noComplete;
+                info->memoHit = true;
+            }
+            return m.found;
+        }
+        if (!tilesCounted)
+            tiles = LoadedTilesThisTick(navMesh);
+        LongRouteInfo own;
+        LongRouteInfo* const searched = info ? info : &own;
+        bool const found = LongRouteUncached(navMesh, start, dest, steep, corners, complete, avoidBoxes, avoidDiscs,
+                                             sampleStep, samples, penalties, searched);
+        size_t const points = found ? corners.size() + (sampled ? samples->size() : 0) : 0;
+        if (points > LONG_ROUTE_MEMO_POINTS)
+            return found;
+        // the least recently used entries make room (their count and their points within the bounds)
+        thread_local size_t keptPoints = 0;
+        auto const pointsOf = [](LongRouteMemo const& m) { return m.corners.size() + m.samples.size(); };
+        auto const oldest = [&]()
+        {
+            return std::min_element(memo.begin(), memo.end(),
+                                    [](LongRouteMemo const& a, LongRouteMemo const& b) { return a.used < b.used; });
+        };
+        while (!memo.empty() && (memo.size() >= LONG_ROUTE_MEMO || keptPoints + points > LONG_ROUTE_MEMO_BUDGET))
+        {
+            auto const victim = oldest();
+            keptPoints -= pointsOf(*victim);
+            if (victim != memo.end() - 1)
+                *victim = std::move(memo.back());
+            memo.pop_back();
+        }
+        LongRouteMemo* slot = &memo.emplace_back();
+        slot->navMesh = navMesh;
+        slot->tiles = tiles;
+        slot->start = start;
+        slot->dest = dest;
+        slot->steep = steep;
+        slot->sampleStep = sampleStep;
+        slot->sampled = sampled;
+        if (avoidBoxes)
+            slot->boxes = *avoidBoxes;
+        else
+            slot->boxes.clear();
+        if (avoidDiscs)
+            slot->discs = *avoidDiscs;
+        else
+            slot->discs.clear();
+        if (penalties)
+            slot->penalties = *penalties;
+        else
+            slot->penalties.clear();
+        slot->found = found;
+        slot->complete = complete;
+        slot->noComplete = searched->noComplete;
+        slot->corners.clear();
+        slot->samples.clear();
+        if (found)
+        {
+            slot->corners = corners;
+            if (sampled)
+                slot->samples = *samples;
+        }
+        slot->used = ++memoClock;
+        keptPoints += pointsOf(*slot);
+        return found;
+    }
+
     G3D::Vector3 PointOnPath(Movement::PointsArray const& points, float walk)
     {
         float walked = 0.0f;
@@ -842,6 +1045,7 @@ namespace Leader
             uint64 longRoutes = 0, findPaths = 0, reverse = 0, big = 0, nodes = 0;
             uint64 filterTests = 0, filterMemo = 0;
             uint64 pass3Skipped = 0, passesReused = 0, costsReused = 0, staticSearches = 0;
+            uint64 memoHits = 0;  // [perf213] long routes answered from the per-thread memo
 
             void Add(SearchProfile const& o)
             {
@@ -863,6 +1067,7 @@ namespace Leader
                 passesReused += o.passesReused;
                 costsReused += o.costsReused;
                 staticSearches += o.staticSearches;
+                memoHits += o.memoHits;
             }
         };
         thread_local SearchProfile routeProfile;
@@ -906,13 +1111,15 @@ namespace Leader
                 "time: route costs {:.0f} %, pull walk {:.0f} %, findPath {:.0f} % ({} long routes: {} forward / "
                 "{} back / {} big pool, {:.0f} nodes per long route), samples {:.0f} %, open air {:.0f} %, unseen "
                 "spawns {:.0f} %, areas {:.0f} %, rest {:.0f} %; saved: {} pass-3 searches, {} passes and {} "
-                "route costs of the {} unseen-spawn searches reused; filter memo {:.0f} % of {} polygon tests",
+                "route costs of the {} unseen-spawn searches reused, {} long routes from the [perf213] memo; "
+                "filter memo {:.0f} % of {} polygon tests",
                 elapsed / IN_MILLISECONDS, times.size(), at(0.5f), at(0.95f), float(times.back()) / 1000.0f,
                 double(sumUs) / 1000.0, pct(sum.costsUs), pct(sum.pullUs), pct(sum.findPathUs), sum.longRoutes,
                 sum.findPaths, sum.reverse, sum.big, sum.longRoutes ? double(sum.nodes) / double(sum.longRoutes) : 0.0,
                 pct(sum.samplesUs), pct(sum.openAirUs), pct(sum.staticUs), pct(sum.zoneUs),
                 staged < sumUs ? pct(sumUs - staged) : 0.0, sum.pass3Skipped, sum.passesReused, sum.costsReused,
-                sum.staticSearches, sum.filterTests ? 100.0 * double(sum.filterMemo) / double(sum.filterTests) : 0.0,
+                sum.staticSearches, sum.memoHits,
+                sum.filterTests ? 100.0 * double(sum.filterMemo) / double(sum.filterTests) : 0.0,
                 sum.filterTests);
             times.clear();
             sum = SearchProfile{};
@@ -1206,6 +1413,7 @@ namespace Leader
                     own.noComplete = info.noComplete;
                     if (record)
                     {
+                        routeProfile.memoHits += info.memoHit ? 1 : 0;
                         ++routeProfile.longRoutes;
                         routeProfile.findPaths += info.findPaths;
                         routeProfile.reverse += info.reverse;

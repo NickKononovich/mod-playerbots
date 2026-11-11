@@ -60,6 +60,7 @@ namespace Leader::Travel
         uint64 samplesUs = 0;
         uint64 filterTests = 0;  // polygon tests against the refused discs / boxes
         uint64 filterMemo = 0;   // ... answered from the search's memo
+        bool memoHit = false;    // [perf213] answered from the per-thread memo of exact inputs (no search ran)
     };
 
     // The long search: an own dtNavMeshQuery on the walker's map navmesh (per thread), the player filter flags
