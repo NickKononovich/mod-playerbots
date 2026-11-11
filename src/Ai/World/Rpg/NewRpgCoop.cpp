@@ -1222,6 +1222,10 @@ public:
         Group* group = sGroupMgr->GetGroupByGUID(_group.GetCounter());
         if (!group || !group->IsMember(_member))
             return false;
+        // [coop259] a co-op / help party's leave never takes a member out of a guild five's group (a party's group
+        // the five's leader went on with)
+        if (sGuildCoordinator.InSameActiveFive(_member.GetCounter(), group->GetLeaderGUID().GetCounter()))
+            return false;
         group->RemoveMember(_member);
         group = sGroupMgr->GetGroupByGUID(_group.GetCounter());
         if (group && _newLeader && group->IsMember(_newLeader) && !group->IsLeader(_newLeader))
@@ -3922,6 +3926,51 @@ bool PartyLeaderOf(uint32 low, ObjectGuid& leader)
         return false;
     leader = party->second.leader;
     return true;
+}
+
+void LeaveForFive(uint32 low, uint32 fiveId)
+{
+    // [coop259] b428 Rollothan L12 was assigned to Gnetlibozz's help request (q168) 3 s before Gnetlibozz joined
+    // five 16 (Ragefire Chasm): its party ended "its group is gone" 1329 s later, the requester's own exit check is
+    // its New RPG tick and a five member runs none (the run's strategies). Rollothan stood the whole time
+    Out out;
+    {
+        std::lock_guard<std::recursive_mutex> guard(lock);
+        uint32 const now = getMSTime();
+        std::string const reason = "taken into guild five " + std::to_string(fiveId) + " [coop259]";
+        auto const me = postings.find(low);
+        if (me != postings.end() && me->second.party)
+        {
+            auto const party = parties.find(me->second.party);
+            if (party != parties.end())
+            {
+                bool const help = party->second.help;
+                bool const requester = party->second.requester.GetCounter() == low;
+                char const* const kind = !help ? "its co-op party" : requester ? "its help party (its request)"
+                                                                                 : "its help party (a helper)";
+                out.logs.push_back(Acore::StringFormat("[coop259] {} taken into guild five {}: {} group={} ends for "
+                                                       "it{}",
+                                                       me->second.name, fiveId, kind, party->second.id,
+                                                       help && requester ? ", every helper freed" : ""));
+                LeaveLocked(me->second, reason, now, out);
+            }
+            else
+                me->second.party = 0;
+        }
+        for (auto itr = helpRequests.begin(); itr != helpRequests.end();)
+        {
+            HelpRequest const& r = itr->second;
+            if (r.requester.GetCounter() != low || r.party)
+            {
+                ++itr;
+                continue;
+            }
+            out.logs.push_back(Acore::StringFormat("[help] leave {} request={} quest=q{} helpers=0{} reason={}", r.name,
+                                                   r.id, r.obj.questId, Stamp(), reason));
+            itr = helpRequests.erase(itr);
+        }
+    }
+    out.Flush();
 }
 
 bool LeaveStaleGroup(Player* bot, std::string const& why)

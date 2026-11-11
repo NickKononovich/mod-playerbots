@@ -110,6 +110,9 @@ bool InParty(uint32 low);
 bool LeaveStaleGroup(Player* bot, std::string const& why);
 // [group19] the leader of the co-op / help party that holds the bot (false: none)
 bool PartyLeaderOf(uint32 low, ObjectGuid& leader);
+// [coop259] a member the global leader took into a guild five (world thread, no GuildCoordinator lock held): its help
+// party (requester: every helper freed; helper: it leaves), its co-op party and its open help request end now
+void LeaveForFive(uint32 low, uint32 fiveId);
 // [camp63] an objective camp priced at route planning from the static spawns (the solo judge's formula against the
 // bot at full): true when it loses even at full (`why` the numbers); `out` the camp's mobs and price
 struct StaticCampPrice

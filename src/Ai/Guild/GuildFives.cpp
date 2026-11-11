@@ -1732,6 +1732,20 @@ void GuildCoordinator::UpdateFives()
                      p->GetMap()->GetMapName(), lfg ? "the Dungeon Finder's teleport out" : "back where it entered");
         }
     }
+    // [coop259] a member the global leader took into a five leaves its help / co-op party and its open help request
+    // at once (the party's own exits are New RPG ticks, and a five member runs none): its helpers go free
+    {
+        std::vector<std::pair<uint32, uint32>> taken;  // (member, five)
+        {
+            CoordLock guard(lock_, __func__);
+            for (auto const& [id, five] : fives_)
+                if (five.stage == GuildFive::Stage::Gather || five.stage == GuildFive::Stage::Run)
+                    for (uint32 low : five.members)
+                        taken.emplace_back(low, id);
+        }
+        for (auto const& [low, id] : taken)
+            NewRpgCoop::LeaveForFive(low, id);
+    }
     // [group132] a planned bot with no five of its own left in a five's old group - a Dungeon Finder group, or one
     // whose leader is no longer its member - leaves it: a grouped bot that does not lead gets "follow" in place of New
     // RPG (AiFactory) and follows nobody. b424/b425: Keenonk, Ainne, Dandolar, Kylanor, Mytaeleas, Blahadrin logged
