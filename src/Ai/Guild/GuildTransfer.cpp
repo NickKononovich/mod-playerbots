@@ -918,6 +918,15 @@ void GuildCoordinator::UpdateTransfers()
                 }
             }
             used.insert(best.guid);
+            // [lag330] each supply step of a crafter's chain, logged once per want and source
+            static std::map<std::string, uint32> supplyLogged;  // want key -> its source member (a log cadence)
+            if (supplyLogged[best.key] != best.from)
+            {
+                supplyLogged[best.key] = best.from;
+                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(best.itemId);
+                LOG_INFO("playerbots", "[lag330] supply: {} -> {} {} x{} ({}): {}", Who(best.from), Who(best.to),
+                         proto ? proto->Name1 : std::to_string(best.itemId), best.count, best.purpose, best.why);
+            }
             wants.push_back(best);
         }
     }
@@ -1761,11 +1770,15 @@ void GuildCoordinator::UpdateTransfers()
     static std::map<std::string, std::string> goldLogged;  // want key -> decision last logged (a log cadence)
     std::unordered_map<uint32, uint32> inMailbox;  // [eco195] member -> the members' gold in its mailbox, not used yet
     for (auto const& [low, st] : bots_)
-        for (int kind = 0; kind < 3; ++kind)
+        for (int kind = 0; kind < 4; ++kind)
         {
             // [roles62] kind 2: the unlearn its planned role spec needs (Player::resetTalentsCost) it cannot pay -
             // b401 Shalaeth L11 "unlearning its talents costs 10000c, it has 7922c"
-            uint32 shortBy = kind == 0 ? st.repairShort : kind == 1 ? st.supplyGoldShort : 0;
+            // [lag330] kind 3: a crafter's skill-up costs for the members' orders it holds (UpdateProfessions)
+            uint32 shortBy = kind == 0   ? st.repairShort
+                             : kind == 1 ? st.supplyGoldShort
+                             : kind == 3 ? st.profGoldShort
+                                         : 0;
             if (kind == 2)
                 if (Player* r = Online(low); r && r->IsAlive())
                     if (uint32 const roleSpec = RoleSpec(low, 0);
@@ -1778,7 +1791,10 @@ void GuildCoordinator::UpdateTransfers()
             // 21 g mailed in 1.1 h, 5.9 g taken, the [health] gold -8.5 g/h; DB after it: 30.5 g in 57 letters, 27.3 g
             // of it Farret's 19. The mailbox (the core's mail, across restarts) covers its needs in turn: repair,
             // supplies, role spec
-            char const* const purpose = kind == 0 ? "repair" : kind == 1 ? "supplies" : "role spec";
+            char const* const purpose = kind == 0   ? "repair"
+                                        : kind == 1 ? "supplies"
+                                        : kind == 2 ? "role spec"
+                                                    : "profession orders";
             if (shortBy)
             {
                 auto mail = inMailbox.find(low);
@@ -1812,7 +1828,7 @@ void GuildCoordinator::UpdateTransfers()
                 if (spare < shortBy + MAIL_POSTAGE || spare < bestSpare)
                     continue;
                 Want w;
-                w.key = (kind == 0 ? "p" : kind == 1 ? "q" : "t") + std::to_string(low);
+                w.key = (kind == 0 ? "p" : kind == 1 ? "q" : kind == 2 ? "t" : "f") + std::to_string(low);
                 w.gold = true;
                 w.from = row.low;
                 w.to = low;
@@ -1820,7 +1836,8 @@ void GuildCoordinator::UpdateTransfers()
                 w.purpose = purpose;
                 w.why = kind == 0   ? "short of the repair " + Gold(shortBy)
                         : kind == 1 ? "short of its " + st.supplyWhat + " " + Gold(shortBy)
-                                    : "short of its role spec's unlearn " + Gold(shortBy);
+                        : kind == 2 ? "short of its role spec's unlearn " + Gold(shortBy)
+                                    : "short of its " + st.profGoldWhat + " " + Gold(shortBy) + " [lag330]";
                 Choice const c = choose(w, nullptr);
                 if (c.cost >= NONE)
                     continue;
@@ -1838,12 +1855,13 @@ void GuildCoordinator::UpdateTransfers()
                     Gold(best.money),
                     kind == 0   ? std::string("its repair")
                     : kind == 1 ? "its " + st.supplyWhat
-                                : std::string("its role spec's unlearn at its trainer [roles62]"),
+                    : kind == 2 ? std::string("its role spec's unlearn at its trainer [roles62]")
+                                : "its " + st.profGoldWhat,
                     Gold(bestSpare));
                 if (goldLogged[best.key] != decision)
                 {
                     goldLogged[best.key] = decision;
-                    LOG_INFO("playerbots", "[gold41] the global leader: {}", decision);
+                    LOG_INFO("playerbots", "[{}] the global leader: {}", kind == 3 ? "lag330" : "gold41", decision);
                 }
                 wants.push_back(best);
             }
@@ -1852,7 +1870,7 @@ void GuildCoordinator::UpdateTransfers()
             // covered the 4 g 43 s alone, so no gold went and it stayed a tank all run (314 roster lines "respec at
             // its trainer"). The user's priority is the healer roster: a role spec's unlearn no single member covers
             // is shared by the richest members, each its spare less the postage, when together they cover it
-            else if (kind == 2)
+            else if (kind == 2 || kind == 3)  // [lag330] a crafter's orders are shared the same way
             {
                 std::vector<std::pair<uint32, uint32>> donors;  // (spare, member)
                 for (PlanRow const& row : plan_)
@@ -1871,37 +1889,40 @@ void GuildCoordinator::UpdateTransfers()
                     if (!left)
                         break;
                     Want w;
-                    w.key = "t" + std::to_string(low) + ":" + std::to_string(from);
+                    w.key = (kind == 2 ? "t" : "f") + std::to_string(low) + ":" + std::to_string(from);
                     w.gold = true;
                     w.from = from;
                     w.to = low;
                     w.money = std::min(left, spare - MAIL_POSTAGE);
-                    w.purpose = "role spec";
-                    w.why = "a share of its role spec's unlearn " + Gold(shortBy) + " [respec116]";
+                    w.purpose = purpose;
+                    w.why = kind == 2 ? "a share of its role spec's unlearn " + Gold(shortBy) + " [respec116]"
+                                      : "a share of its " + st.profGoldWhat + " " + Gold(shortBy) + " [lag330]";
                     if (choose(w, nullptr).cost >= NONE)
                         continue;
                     left -= w.money;
                     shares.push_back(std::move(w));
                 }
                 std::string decision;
+                std::string const what = kind == 2 ? std::string("its role spec's unlearn") : "its " + st.profGoldWhat;
                 if (left)
-                    decision = Acore::StringFormat("{} short of its role spec's unlearn {}: the members' spare money "
-                                                   "together covers {} - no gold goes",
-                                                   Who(low), Gold(shortBy), Gold(shortBy - left));
+                    decision = Acore::StringFormat("{} short of {} {}: the members' spare money together covers {} - "
+                                                   "no gold goes",
+                                                   Who(low), what, Gold(shortBy), Gold(shortBy - left));
                 else
                 {
-                    decision = Acore::StringFormat("{} gets its role spec's unlearn {} from {} members:", Who(low),
-                                                   Gold(shortBy), shares.size());
+                    decision = Acore::StringFormat("{} gets {} {} from {} members:", Who(low), what, Gold(shortBy),
+                                                   shares.size());
                     for (Want const& w : shares)
                         decision += " " + Who(w.from) + " " + Gold(w.money) + ",";
                     decision.pop_back();
                     for (Want& w : shares)
                         wants.push_back(std::move(w));
                 }
-                if (goldLogged["t" + std::to_string(low)] != decision)
+                std::string const logKey = (kind == 2 ? "t" : "f") + std::to_string(low);
+                if (goldLogged[logKey] != decision)
                 {
-                    goldLogged["t" + std::to_string(low)] = decision;
-                    LOG_INFO("playerbots", "[respec116] the global leader: {}", decision);
+                    goldLogged[logKey] = decision;
+                    LOG_INFO("playerbots", "[{}] the global leader: {}", kind == 2 ? "respec116" : "lag330", decision);
                 }
             }
         }

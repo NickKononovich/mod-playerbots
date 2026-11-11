@@ -611,6 +611,10 @@ private:
         // copper its money lacks for a stack of each of its level, and what for
         uint32 supplyGoldShort{0};
         std::string supplyWhat;
+        // [lag330] a crafter holding members' orders ([lag328]): the copper its spare money lacks for the skill-up
+        // walk's costs (trainer fees, vendor reagents at their game prices), funded by the members' gold, and what for
+        uint32 profGoldShort{0};
+        std::string profGoldWhat;
         // [human] the suggestions sent to a human member: key -> text (sent again only when the text changes)
         std::map<std::string, std::string> suggested;
         // [tasks] the bag pressure last logged (free slots class: 0 full, 1 low, 2 ok; -1 not logged yet)

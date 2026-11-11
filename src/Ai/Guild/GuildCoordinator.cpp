@@ -1254,9 +1254,9 @@ void GuildCoordinator::SkillUpCrafts(Player* crafter, uint32 skillLine, uint32 s
 }
 
 // [lag329] a vendor item is a source for a crafter only when a vendor of it stands on the crafter's map (a buy on
-// another continent is no plan of its: "the vendor is on another map ... no route of its own goes there"). b440: Ivory
-// Ink is sold without limit only by Jessica Sellers in Dalaran (map 571): every scribe's Inscription walk from 1 counted
-// its ink as bought there at 0c, so no herb was wanted, gathered or milled for it ("gather 0.0")
+// another continent is no plan of its: "the vendor is on another map ... no route of its own goes there"). b440:
+// Ivory Ink is sold without limit only by Jessica Sellers in Dalaran (map 571): every scribe's Inscription walk from 1
+// counted its ink as bought there at 0c, so no herb was wanted, gathered or milled for it ("gather 0.0")
 bool GuildCoordinator::VendorSource(uint32 item, uint32 mapId) const
 {
     if (!vendorItems_.count(item))
@@ -3830,6 +3830,8 @@ void GuildCoordinator::UpdateProfessions()
         BotState& st = bots_[row->low];
         uint8 const level = p->GetLevel();
         bool const levelsFirst = level < medianLevel;  // [lag325]
+        st.profGoldShort = 0;  // [lag330] summed below over its lines with members' orders
+        st.profGoldWhat.clear();
         std::vector<ProfessionPick> picks;
         std::vector<uint32> lines;
         for (auto const* list : {&row->profs, &row->secondary})
@@ -4213,6 +4215,16 @@ void GuildCoordinator::UpdateProfessions()
                     }
                     else if (memberNeeds || (value > 0 && value > double(questPace) * minutes))
                     {
+                        // [lag330] user rule 2026-11-11: guild orders mean the guild helps its crafter - the walk's
+                        // costs its spare money does not cover come from the members' gold ([gold41] transfers)
+                        if (memberNeeds)
+                            if (uint32 const spare = FoundingFreeMoney(p); vendorCost > double(spare))
+                            {
+                                st.profGoldShort += uint32(std::ceil(vendorCost)) - spare;
+                                st.profGoldWhat += (st.profGoldWhat.empty() ? "" : ", ") +
+                                                   std::string(SkillShort(line)) + " to " + std::to_string(reach) +
+                                                   " for " + std::to_string(unlockedUnits) + " members' orders";
+                            }
                         double const perMinute = minutes > 0 ? value / minutes : value;
                         char pace[120];
                         if (value > 0 && value > double(questPace) * minutes)
