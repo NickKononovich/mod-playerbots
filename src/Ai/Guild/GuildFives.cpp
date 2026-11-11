@@ -249,6 +249,8 @@ namespace FiveGate
         float wander = 0.0f;
         std::vector<G3D::Vector3> path;  // empty: it stands (or wanders) at its spawn point
         float callRadius = 0.0f;         // [dun191] its scripted call for help (the planner's ScriptedCallRadius)
+        bool keepsRange = false;         // [dun205] it stands and casts where it is (the planner's KeepsRange)
+        float detection = 0.0f;          // [dun205] its template's detection range (Creature::GetAggroRange's base)
     };
 
     // [dun170] what one pull of a spawn brings as the core brings it: its formation (CreatureGroup: every member
@@ -371,6 +373,8 @@ namespace FiveGate
                               tmpl->DamageModifier / swing;
                 s.mob.boss = credits.count(tmpl->Entry) || tmpl->rank == CREATURE_ELITE_WORLDBOSS;
                 s.callRadius = PullPlanning::ScriptedCallRadius(tmpl->Entry);
+                s.keepsRange = PullPlanning::KeepsRangeEntry(tmpl->Entry);
+                s.detection = tmpl->detection_range;
                 data.topLevel = std::max(data.topLevel, s.mob.level);
                 spawns.push_back(std::move(s));
             } while (result->NextRow());
@@ -640,6 +644,33 @@ namespace FiveGate
         std::vector<char> apartNow(n, 0);
         std::vector<uint32> in(n, 0);  // the pull a spawn was last added to
         uint32 stamp = 0;
+        // [dun205] a caster that keeps its range is fought where it stands: the members on it there wake what reaches
+        // them - each standing mob by the core's aggro radius (Creature::GetAggroRange: its detection range, a yard
+        // for each level it stands above the five's lowest member, at most 45, times the server's aggro rate), its
+        // wander radius on top - with that mob's own engage call (the planner's "reaches #N, which keeps its range")
+        std::vector<std::vector<uint32>> draws(n);
+        {
+            uint8 lowest = 255;
+            for (Damage const& d : dps)
+                lowest = std::min(lowest, d.level);
+            float const aggroRate = sWorld->getRate(RATE_CREATURE_AGGRO);
+            for (size_t i = 0; i < n; ++i)
+            {
+                if (!spawns[i].keepsRange || Patrols(spawns[i]))
+                    continue;
+                for (size_t j = 0; j < n; ++j)
+                {
+                    if (j == i || Patrols(spawns[j]))
+                        continue;
+                    float const aggro =
+                        std::clamp(spawns[j].detection + float(int32(spawns[j].mob.level) - int32(lowest)), 0.0f,
+                                   45.0f) *
+                        aggroRate;
+                    if (aggro > 0.0f && (spawns[j].pos - spawns[i].pos).length() <= aggro + spawns[j].wander)
+                        draws[i].push_back(uint32(j));
+                }
+            }
+        }
         auto const pullOf = [&](size_t i, std::vector<uint32>& members)
         {
             members.clear();
@@ -693,6 +724,13 @@ namespace FiveGate
                 for (uint32 j : map.formation[member])
                     add(j);
                 for (uint32 j : map.calls[member])
+                    if (left[j] && in[j] != stamp)
+                    {
+                        add(j);
+                        for (uint32 helped : map.assists[j])
+                            add(helped);
+                    }
+                for (uint32 j : draws[member])  // [dun205]
                     if (left[j] && in[j] != stamp)
                     {
                         add(j);

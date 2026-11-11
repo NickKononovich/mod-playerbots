@@ -52,6 +52,8 @@ namespace PullPlanning
     // (the core's assistance radius plus the fight's drift), and an entry's scripted call for help radius (0: none)
     float PackSocialRadius();
     float ScriptedCallRadius(uint32 entry);
+    // [dun205] a template that stands and casts once it fights (the planner's KeepsRange by entry)
+    bool KeepsRangeEntry(uint32 entry);
 }
 
 // the tank's commit of a pull, posted to the leader's order registry

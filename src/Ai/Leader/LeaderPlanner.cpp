@@ -2560,6 +2560,23 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float summonDamage = 1.0f;
     };
 
+    // [dun205] the planner's KeepsRange by template (the five gate): a SmartAI damage cast with SMARTCAST_COMBAT_MOVE
+    // (it stands and casts), or a caster class (mage) with no SmartAI script
+    bool KeepsRangeEntry(uint32 entry)
+    {
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        if (!tmpl)
+            return false;
+        if (tmpl->AIName != "SmartAI")
+            return tmpl->unit_class == CLASS_MAGE;
+        for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+            if (holder.GetActionType() == SMART_ACTION_CAST && (holder.action.cast.castFlags & SMARTCAST_COMBAT_MOVE))
+                if (SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell);
+                    info && !info->IsPositive())
+                    return true;
+        return false;
+    }
+
     // [dun191] the planner's pack grouping for the five gate (templates, no live creature): the social radius
     // CollectPack counts an engage call within, and an entry's scripted call for help (SMART_ACTION_CALL_FOR_HELP)
     float PackSocialRadius()
