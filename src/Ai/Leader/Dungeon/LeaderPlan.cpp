@@ -873,6 +873,33 @@ namespace Leader::Dungeon
             // readies it (b442: 9 wait_without_order "X at N % health < its line: Y tops it up")
             if (!orderFor && waitWhy.find("[lead1511]") != std::string::npos)
                 orderFor = true;
+            // [dun222] the wait's member is under the leader's verdict or on its own ordered way back: a dead member
+            // whose resurrection the leader judged ([lead1367]: a resurrecter comes - it drinks or its fight ends -
+            // or none can, and it releases and runs back, AutoReleaseSpiritAction reading that verdict); a member
+            // out of the instance or trailing that walks to the group (its ghost run / portal walk / follow, the
+            // walk ending nearer the leader); one that sits eating or drinking (its rest's aura). b442: 4 "is dead",
+            // 3 "is not in the instance", 4 "trails the group", 3 "sits" without an order
+            if (!orderFor)
+                if (Player* member = ObjectAccessor::FindPlayer(guid))
+                {
+                    if (!member->IsAlive())
+                        orderFor = RaidLeader::GetResurrectVerdict(member) != RaidLeader::ResurrectVerdict::Unknown;
+                    else if (member->HasAuraType(SPELL_AURA_MOD_REGEN) ||
+                             member->HasAuraType(SPELL_AURA_MOD_POWER_REGEN))
+                        orderFor = true;
+                    else if (member->isMoving() &&
+                             (member->GetMap() != tank->GetMap() || Leader::Dungeon::MemberClosing(member, tank)))
+                        orderFor = true;
+                    if (orderFor)
+                    {
+                        static std::set<uint64> logged;  // world thread
+                        if (logged.size() > 4096)
+                            logged.clear();
+                        if (logged.insert(guid.GetRawValue()).second)
+                            LOG_INFO("playerbots", "[dun222] {}: the wait for {} ({}) is its own ordered way: no "
+                                     "missing order", run.runId, member->GetName(), waitWhy);
+                    }
+                }
             if (!orderFor && waitWhy.compare(0, 10, "[lead940] ") == 0)
                 if (Player* bot = ObjectAccessor::FindPlayer(guid))
                     for (AuraEffect const* effect : bot->GetAuraEffectsByType(SPELL_AURA_PERIODIC_HEAL))
