@@ -5608,7 +5608,8 @@ namespace
 {
     // [holds9] bot -> spot (map, x, y) given up -> the level it was given up at
     std::mutex givenUpLock;
-    std::unordered_map<uint32, std::map<std::tuple<uint32, int32, int32>, uint8>> givenUp;
+    // [craft387] (map, x, y) -> (the level, the zone it stood in) of the give-up
+    std::unordered_map<uint32, std::map<std::tuple<uint32, int32, int32>, std::pair<uint8, uint32>>> givenUp;
 }
 
 void NewRpgBaseAction::NoteWalkGivenUp(Player* bot, WorldPosition const& dest, std::string const& why)
@@ -5628,9 +5629,9 @@ void NewRpgBaseAction::NoteWalkGivenUp(Player* bot, WorldPosition const& dest, s
         std::lock_guard<std::mutex> guard(givenUpLock);
         auto& spots = givenUp[bot->GetGUID().GetCounter()];
         auto const found = spots.find(key);
-        if (found != spots.end() && found->second == bot->GetLevel())
+        if (found != spots.end() && found->second.first == bot->GetLevel() && found->second.second == bot->GetZoneId())
             return;
-        spots[key] = bot->GetLevel();
+        spots[key] = {bot->GetLevel(), bot->GetZoneId()};
     }
     LOG_INFO("playerbots", "[rpg] {} L{} GIVE_UP walk to ({:.0f},{:.0f},{:.0f}) {:.0f} yd reason: {}; out of its "
              "choices until L{}",
@@ -5659,12 +5660,27 @@ bool NewRpgBaseAction::WalkGivenUp(Player* bot, float x, float y)
 {
     if (!bot)
         return false;
-    std::lock_guard<std::mutex> guard(givenUpLock);
-    auto const spots = givenUp.find(bot->GetGUID().GetCounter());
-    if (spots == givenUp.end())
-        return false;
-    auto const found = spots->second.find({bot->GetMapId(), int32(x), int32(y)});
-    return found != spots->second.end() && found->second == bot->GetLevel();
+    uint32 zone = 0;
+    {
+        std::lock_guard<std::mutex> guard(givenUpLock);
+        auto const spots = givenUp.find(bot->GetGUID().GetCounter());
+        if (spots == givenUp.end())
+            return false;
+        auto const found = spots->second.find({bot->GetMapId(), int32(x), int32(y)});
+        if (found == spots->second.end() || found->second.first != bot->GetLevel())
+            return false;
+        // [craft387] the verdict is the maze search's from where the bot stood: in another zone now (a hearth, a
+        // flight, a boat) the way there is another way. b447 Dekorhan gave up the Auberdine pier and Darnassus from
+        // the Zoram Strand (a Wrathtail camp on the coast road), hearthed to Auberdine 300 yd from the pier, and both
+        // stayed given up until L23 - his Virtuoso Inking Set trip ended there
+        if (found->second.second == bot->GetZoneId())
+            return true;
+        zone = found->second.second;
+        spots->second.erase(found);
+    }
+    LOG_INFO("playerbots", "[craft387] {} L{} WALK_RETRY ({:.0f},{:.0f}): given up from zone {}, it stands in zone {} "
+             "now", bot->GetName(), bot->GetLevel(), x, y, zone, bot->GetZoneId());
+    return false;
 }
 
 namespace

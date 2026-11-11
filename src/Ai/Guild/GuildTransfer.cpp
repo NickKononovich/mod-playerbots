@@ -1054,6 +1054,43 @@ void GuildCoordinator::UpdateTransfers()
     for (auto const& [id, t] : transfers_)
         if (t.mailed && !t.gold)
             incoming[{t.toLow, t.itemId}] += std::max<uint32>(1, t.count);  // already in its mailbox
+    // [craft388] what the members hold of a lacked material: every stack in their bags not held for a member, not
+    // pending the leader's decision and not sold off - not only the stacks the loot hook registered (st.held) since
+    // the server started, and each at its count now. b447: 155 Silverleaf in 24 members' bags, three stacks of 3, 1
+    // and 2 ever offered to Dekorhan ("short 140"), the rest looted before the restart and never held
+    std::set<uint32> lackItems;
+    for (auto const& [key, need] : lack)
+        lackItems.insert(key.second);
+    std::set<uint32> heldFor;
+    for (auto const& [low, st] : bots_)
+        for (HeldItem const& h : st.held)
+            if (h.forLow || h.purpose == "pending")
+                heldFor.insert(h.itemGuidLow);
+    struct MemberStack
+    {
+        uint32 from{0};
+        uint32 guid{0};
+        uint32 count{0};
+    };
+    std::map<uint32, std::vector<MemberStack>> stacksOf;
+    if (!lackItems.empty())
+        for (auto const& [low, st] : bots_)
+        {
+            Player* h = Online(low);
+            if (!h || !GET_PLAYERBOT_AI(h) || HumanCharacter(h))
+                continue;
+            uint32 const holder = low;
+            std::vector<uint32> const& sold = st.sell;
+            ForEachBagItem(h,
+                           [&](Item* i)
+                           {
+                               uint32 const guid = i->GetGUID().GetCounter();
+                               if (lackItems.count(i->GetEntry()) && !heldFor.count(guid) &&
+                                   !h->HasQuestForItem(i->GetEntry()) &&
+                                   std::find(sold.begin(), sold.end(), guid) == sold.end())
+                                   stacksOf[i->GetEntry()].push_back({holder, guid, i->GetCount()});
+                           });
+        }
     for (auto const& [key, need] : lack)
     {
         auto const& [crafter, item] = key;
@@ -1069,22 +1106,18 @@ void GuildCoordinator::UpdateTransfers()
         {
             float dist{NONE};
             uint32 from{0};
-            HeldItem const* held{nullptr};
+            MemberStack const* held{nullptr};
         };
         std::vector<Holding> holdings;
-        for (auto const& [low, st] : bots_)
-        {
-            if (low == crafter || ownNeed.count({low, item}))
-                continue;
-            Player* h = Online(low);
-            for (HeldItem const& held : st.held)
+        if (auto const stacks = stacksOf.find(item); stacks != stacksOf.end())
+            for (MemberStack const& held : stacks->second)
             {
-                if (held.itemId != item || held.forLow || held.purpose == "pending" || used.count(held.itemGuidLow))
+                if (held.from == crafter || ownNeed.count({held.from, item}) || used.count(held.guid))
                     continue;
+                Player* h = Online(held.from);
                 holdings.push_back(
-                    {h && c && h->GetMapId() == c->GetMapId() ? h->GetExactDist(c) : NONE / 2, low, &held});
+                    {h && c && h->GetMapId() == c->GetMapId() ? h->GetExactDist(c) : NONE / 2, held.from, &held});
             }
-        }
         std::stable_sort(holdings.begin(), holdings.end(),
                          [](Holding const& a, Holding const& b) { return a.dist < b.dist; });
         std::map<uint32, uint32> perHolder;  // a holder's holdings taken: their want keys
@@ -1092,13 +1125,13 @@ void GuildCoordinator::UpdateTransfers()
         {
             if (!left)
                 break;
-            HeldItem const& held = *holding.held;
+            MemberStack const& held = *holding.held;
             Want best;
             best.key = "r" + std::to_string(crafter) + ":" + std::to_string(item) + ":" +
                        std::to_string(holding.from) + ":" + std::to_string(perHolder[holding.from]++);
             best.from = holding.from;
             best.to = crafter;
-            best.guid = held.itemGuidLow;
+            best.guid = held.guid;
             best.itemId = item;
             best.count = held.count;
             best.purpose = "reagent";
@@ -1291,13 +1324,14 @@ void GuildCoordinator::UpdateTransfers()
                 (from->cook ? "the guild cook" : "a member") + " with " +
                 std::to_string(from->surplus + give) + " above its own line fills it [craft385]";
         wants.push_back(w);
-        // [craft385] each fill once per change of its numbers
-        static std::map<uint32, std::string> fillLogged;  // receiver -> its fill line (world thread)
-        std::string const line = Who(w.from) + " -> " + Who(to) + " " + ItemText(w.itemId, give) + ": " + w.why;
-        if (std::string& logged = fillLogged[to]; logged != line)
+        // [craft385] each fill once per change of its giver or food ([craft389]: b447 logged 192 lines in 13 min - the
+        // counts in the line changed with every meal and every other fill from the same giver)
+        static std::map<uint32, std::pair<uint32, uint32>> fillLogged;  // receiver -> (giver, food) (world thread)
+        if (std::pair<uint32, uint32>& logged = fillLogged[to]; logged != std::make_pair(w.from, w.itemId))
         {
-            logged = line;
-            LOG_INFO("playerbots", "[craft385] food fill: {}", line);
+            logged = {w.from, w.itemId};
+            LOG_INFO("playerbots", "[craft385] food fill: {} -> {} {}: {}", Who(w.from), Who(to),
+                     ItemText(w.itemId, give), w.why);
         }
     }
 

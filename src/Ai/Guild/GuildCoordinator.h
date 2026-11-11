@@ -891,7 +891,8 @@ private:
     // [econ1] member -> (level, town task spots (x, y)) its own trip judge refused or its walk gave up on
     // (NewRpgBaseAction::TripRefused, judged in TownStops on the map thread): no mailbox / forge there is planned
     // for it until its next level (lock_; mutable: TownStops is const)
-    mutable std::map<uint32, std::pair<uint8, std::set<std::pair<int32, int32>>>> townRefused_;
+    // [craft387] ... and while it stands in the zone of the refusal: spot -> that zone
+    mutable std::map<uint32, std::pair<uint8, std::map<std::pair<int32, int32>, uint32>>> townRefused_;
     bool TownRefused(uint32 low, WorldPosition const& pos) const;  // lock_ held
     std::string CampText(uint32 requesterLow, uint32 helperLow) const;  // [econ1] "camp <area>, <zone>"
     std::string donationState_;  // the pooling for the first bank tab (lock_)

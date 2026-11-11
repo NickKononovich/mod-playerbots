@@ -5829,7 +5829,7 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
     if (entry.first != bot->GetLevel())
         entry = {bot->GetLevel(), {}};
     for (auto const& xy : refused)
-        if (entry.second.insert(xy).second)
+        if (entry.second.insert_or_assign(xy, bot->GetZoneId()).second)
             LOG_INFO("playerbots", "[econ1] {} L{} town stop refused at ({},{}): its walk there is refused or "
                      "given up - another mailbox / forge or channel is planned", bot->GetName(), bot->GetLevel(),
                      xy.first, xy.second);
@@ -5843,7 +5843,9 @@ bool GuildCoordinator::TownRefused(uint32 low, WorldPosition const& pos) const
     Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
     if (!p || p->GetLevel() != itr->second.first)
         return false;
-    return itr->second.second.count({int32(pos.GetPositionX()), int32(pos.GetPositionY())}) != 0;
+    // [craft387] a refusal judged in another zone than the one it stands in now: the way there is another way
+    auto const spot = itr->second.second.find({int32(pos.GetPositionX()), int32(pos.GetPositionY())});
+    return spot != itr->second.second.end() && spot->second == p->GetZoneId();
 }
 
 bool GuildCoordinator::QuestWorkOf(Player* bot, uint32 questId, float dps, QuestWork& out) const
