@@ -18,6 +18,7 @@
 #include "Playerbots.h"
 #include "Queue.h"
 #include "Strategy.h"
+#include "SlowUpdate.h"  // [perf212]
 #include "Timer.h"
 #include "Value.h"
 
@@ -201,7 +202,9 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
 
     // Update triggers and push default actions
     MapWorkerTrace::SetStage("triggers", nullptr);
+    SlowUpdate::Stage("triggers");  // [perf212]
     ProcessTriggers(minimal);
+    SlowUpdate::Stage("default actions");  // [perf212]
     PushDefaultActions();
 
     uint32 iterations = 0;
@@ -229,6 +232,8 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
         if (intentTick)
             intentPushBy.clear();
 
+        if (action)
+            SlowUpdate::Stage("checks ", action);  // [perf212] its isUseful, multipliers, isPossible
         if (!action)
         {
             LogAction("A:%s - UNKNOWN", actionNode->getName().c_str());
@@ -713,6 +718,7 @@ void Engine::ProcessTriggers(bool minimal)
             if (minimal && node->getFirstRelevance() < 100)
                 continue;
 
+            SlowUpdate::Stage("trigger ", trigger);  // [perf212]
             PerfMonitorOperation* pmo =
                 sPerfMonitor.start(PERF_MON_TRIGGER, trigger->getName(), &aiObjectContext->performanceStack);
             Event event = trigger->Check();
@@ -860,6 +866,7 @@ bool Engine::ListenAndExecute(Action* action, Event event)
     if (actionExecutionListeners.Before(action, event))
     {
         MapWorkerTrace::SetStage("action ", action->getName().c_str());
+        SlowUpdate::Stage("action ", action);  // [perf212]
         actionExecuted = actionExecutionListeners.AllowExecution(action, event) ? action->Execute(event) : true;
     }
 

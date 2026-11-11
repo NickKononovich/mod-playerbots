@@ -67,6 +67,7 @@
 #include "ScriptMgr.h"
 #include "ServerFacade.h"
 #include "SharedDefines.h"
+#include "SlowUpdate.h"  // [perf212]
 #include "SmartEnum.h"  // [lead1390] EnumUtils: SpellCastResult names
 #include "SocialMgr.h"
 #include "SpellAuraEffects.h"
@@ -869,6 +870,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     // [guild8] stages before the engine, so a freeze trace names the step (b288 18:29: 60 s hang, stage empty)
     MapWorkerTrace::SetStage("pre: fall", nullptr);
+    SlowUpdate::Stage("pre: fall");  // [perf212]
     UpdateFall();
     GuardAirborneSpline();
 
@@ -914,10 +916,12 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     bool doMinimalReaction = minimal || !AllowActivity(REACT_ACTIVITY);
     MapWorkerTrace::SetStage("pre: reaction", nullptr);
+    SlowUpdate::Stage("pre: reaction");  // [perf212]
     if (UpdateAIReaction(elapsed, doMinimalReaction, !bot->IsInFlight()))
         return;
 
     MapWorkerTrace::SetStage("pre: spell", nullptr);
+    SlowUpdate::Stage("pre: spell");  // [perf212]
     if (!CanUpdateAI())
         return;
 
@@ -1142,6 +1146,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     }
 
     MapWorkerTrace::SetStage("pre: transport", nullptr);
+    SlowUpdate::Stage("pre: transport");  // [perf212]
     // Handle transport check delay
     if (nextTransportCheck > elapsed)
         nextTransportCheck -= elapsed;
@@ -1207,14 +1212,17 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
 
     // Update the bot's group status (moved to helper function)
     MapWorkerTrace::SetStage("pre: group master", nullptr);
+    SlowUpdate::Stage("pre: group master");  // [perf212]
     UpdateAIGroupMaster();
     MapWorkerTrace::SetStage("pre: internal", nullptr);
+    SlowUpdate::Stage("pre: internal");  // [perf212]
 
     // Update internal AI
     idleDiag.tickCast = false;
     idleDiag.tickAction.clear();
     UpdateAIInternal(elapsed, minimal);
     MapWorkerTrace::SetStage("after ai", nullptr);
+    SlowUpdate::Stage("after ai");  // [perf212]
     UpdateIdleDiag(false);
     UpdateHealDiag();
 
@@ -1373,6 +1381,7 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     for (ChatQueuedReply& reply : dueReplies)
         ChatReplyAction::ChatReplyDo(bot, reply.m_type, reply.m_guid1, reply.m_msg, reply.m_chanName, reply.m_name);
 
+    SlowUpdate::Stage("commands");  // [perf212]
     HandleCommands();
 
     // logout if logout timer is ready or if instant logout is possible
@@ -1418,11 +1427,13 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
         return;
     }
 
+    SlowUpdate::Stage("packets");  // [perf212]
     botOutgoingPacketHandlers.Handle(helper);
     masterIncomingPacketHandlers.Handle(helper);
     masterOutgoingPacketHandlers.Handle(helper);
 
     DoNextAction(minimal);
+    SlowUpdate::Stage("pet control");  // [perf212]
 
     // pets in a dungeon group: passive, on the owner's target once the tank holds it, else at the owner's heel. After
     // the tick's actions, so a guardian summoned by one of them (it starts aggressive) is passive before its first
@@ -2524,6 +2535,7 @@ void PlayerbotAI::ReleaseIdleTargetNobodyReaches(bool acted)
 
 void PlayerbotAI::DoNextAction(bool min)
 {
+    SlowUpdate::Stage("next action");  // [perf212] the engine's choice before it runs
     if (!bot->IsInWorld() || bot->IsBeingTeleported() || (GetMaster() && GetMaster()->IsBeingTeleported()))
     {
         SetNextCheckDelay(sPlayerbotAIConfig.GlobalCoolDown);
@@ -2636,6 +2648,7 @@ void PlayerbotAI::DoNextAction(bool min)
     bool minimal = !this->AllowActivity();
 
     bool const acted = currentEngine->DoNextAction(nullptr, 0, (minimal || min));
+    SlowUpdate::Stage("after the engine");  // [perf212]
     ReleaseIdleTargetNobodyReaches(acted);  // [stuck258]
 
     if (minimal)
