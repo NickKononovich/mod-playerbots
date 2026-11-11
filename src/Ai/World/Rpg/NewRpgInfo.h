@@ -95,6 +95,7 @@ struct NewRpgInfo
         uint32 lastPassiveCheck{0};
         ObjectGuid::LowType lastSwitchedFrom{0};
         uint8 level{0};  // [timers] its level when the run began: a level-up ends a non-guild bot's run
+        bool sweepPaused{false};  // [perf215] its node sweep stopped at its search budget: the next node next tick
     };
     // RPG_DO_PROFESSION [guild20]: a walk to a profession trainer (learn a rank) or a vendor (buy a tool)
     struct DoProfession

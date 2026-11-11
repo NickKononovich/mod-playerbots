@@ -17,6 +17,7 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
+#include "RouteSearch.h"  // [perf215] Leader::RouteSearchesOnThread
 #include "SharedDefines.h"
 #include "SpellAuraDefines.h"
 #include "SpellInfo.h"
@@ -193,8 +194,12 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
             if (itr != unreachableNodes.end())
                 data.visited.insert(itr->second.begin(), itr->second.end());
         }
+        // [perf215] a node sweep stopped at its search budget goes on with the next node, as the sweep went on
+        bool const resumed = data.sweepPaused;
+        data.sweepPaused = false;
         // Prefer a node we can already see to be up over an unverified pick.
-        GatherNodeSpawn const* node = sGatherNodeMgr.GetNearestLiveNode(bot, data.visited, nodeSwitchDistance);
+        GatherNodeSpawn const* node =
+            resumed ? nullptr : sGatherNodeMgr.GetNearestLiveNode(bot, data.visited, nodeSwitchDistance);
         if (!node)
             node = sGatherNodeMgr.GetNextNode(bot, data.visited);
         if (!node)
@@ -209,11 +214,26 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
         }
         // [guild14] a node whose walk passes mobs of orange / red con (b303 Laaral L10 among the L15-16 mobs of
         // Bloodmyst) is not walked to: the next one
-        // [guild15] ... and the next node at once in the same tick, not one refused node per tick
-        while (node && (NewRpgBaseAction::TripRefused(bot, node->pos.GetPositionX(), node->pos.GetPositionY(),
-                                                      node->pos.GetPositionZ(), "gather node") ||
-                        UnderWaterOutOfReach(bot, node)))
+        // [guild15] ... and the next node at once in the same tick, not one refused node per tick.
+        // [perf215] coordinator 2026-11-11: paced at its route searches - a call judges at least one node and stops
+        // at its search budget; the refused nodes are in `visited` and the next call goes on with the next one (the
+        // same nodes in the same order, the same choice). b439 Zharet L16: 50+ refused Ashenvale nodes 2000-3500 yd
+        // off, ~87 ms each, in one 4671 ms update
+        constexpr uint64 NODE_SWEEP_SEARCHES_PER_TICK = 2;  // compute pacing per call, not a behaviour rule
+        uint64 const searchesBefore = Leader::RouteSearchesOnThread();
+        uint32 judged = 0;
+        while (node)
         {
+            if (judged > 0 && Leader::RouteSearchesOnThread() - searchesBefore >= NODE_SWEEP_SEARCHES_PER_TICK)
+            {
+                data.sweepPaused = true;
+                return true;
+            }
+            ++judged;
+            if (!NewRpgBaseAction::TripRefused(bot, node->pos.GetPositionX(), node->pos.GetPositionY(),
+                                               node->pos.GetPositionZ(), "gather node") &&
+                !UnderWaterOutOfReach(bot, node))
+                break;
             data.visited.insert(node->spawnId);
             node = sGatherNodeMgr.GetNextNode(bot, data.visited);
         }

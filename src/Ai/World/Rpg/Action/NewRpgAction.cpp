@@ -77,6 +77,7 @@ namespace
 #include "TerrainHazard.h"  // [guild15] SafeFloorZ
 #include "NewRpgCoop.h"  // [coop]
 #include "LeaderOrders.h"  // [deaths20] Leader::Route
+#include "RouteSearch.h"  // [perf215] Leader::RouteSearchesOnThread
 #include "AreaDefines.h"
 #include "Group.h"
 #include "NewRpgTriggers.h"
@@ -2901,6 +2902,28 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
     return true;
 }
 
+namespace
+{
+    // [perf215] coordinator 2026-11-11: the objective spot sweep (the nearest unspent spot with a walk: a route
+    // search each) paced over ticks while the bot stands - the walk verdicts found are kept per bot, quest and spot it
+    // stands on, a call adds at least one and stops at its search budget; the next call goes on where it stopped (the
+    // same spots in the same order, the same verdicts, the same choice). b439 Peny L19: 21 unspent spots of q20, 28
+    // searches in one 1052 ms update; Gilduck L14 q263, 1016 ms
+    struct SpotSweep
+    {
+        uint32 questId = 0;
+        std::tuple<uint32, int32, int32, int32> from{0, 0, 0, 0};  // map, x, y, z of the bot
+        std::vector<std::pair<G3D::Vector3, uint8>> verdicts;      // spot -> SPOT_NO_WALK / _REFUSED / _WALK
+        bool pending = false;                                      // stopped at its budget, taken up next call
+    };
+    constexpr uint8 SPOT_NO_WALK = 0;
+    constexpr uint8 SPOT_REFUSED = 1;
+    constexpr uint8 SPOT_WALK = 2;
+    constexpr uint64 SPOT_SWEEP_SEARCHES_PER_TICK = 2;  // compute pacing per call, not a behaviour rule
+    std::mutex spotSweepLock;
+    std::unordered_map<uint32, SpotSweep> spotSweeps;
+}
+
 bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
 {
     uint32 questId = data.questId;
@@ -3067,6 +3090,23 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
         std::optional<WorldPosition> roamerSpot;  // [spot35] the first spot a roamer's round covers
         std::optional<WorldPosition> dangerSpot;  // [danger46] the first spot in one of its danger zones
         std::string roamerWho;
+        // [perf215] the sweep taken up where the last call stopped it, else a new one (its verdicts afresh)
+        {
+            std::lock_guard<std::mutex> guard(spotSweepLock);
+            SpotSweep& sweep = spotSweeps[bot->GetGUID().GetCounter()];
+            std::tuple<uint32, int32, int32, int32> const from{bot->GetMapId(), int32(bot->GetPositionX()),
+                                                               int32(bot->GetPositionY()),
+                                                               int32(bot->GetPositionZ())};
+            if (!sweep.pending || sweep.questId != questId || sweep.from != from)
+            {
+                sweep = SpotSweep();
+                sweep.questId = questId;
+                sweep.from = from;
+            }
+            sweep.pending = false;
+        }
+        uint64 const sweepSearchesBefore = Leader::RouteSearchesOnThread();
+        uint32 sweepSearched = 0;
         for (POIInfo const& poi : poiInfo)
         {
             if (IsSpentSpot(bot, questId, poi.pos.x, poi.pos.y))  // [guild13]
@@ -3113,14 +3153,43 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                     dangerSpot = WorldPosition(bot->GetMapId(), dx, dy, dz);
                 continue;
             }
-            BotPath const spotPath = FindBotPath(bot, dx, dy, dz);
-            if (spotPath.type & PATHFIND_NOPATH)
+            // [perf215] the spot's walk verdict kept by this sweep, else searched within the call's budget
+            uint8 verdict = SPOT_NO_WALK;
+            bool known = false;
+            {
+                std::lock_guard<std::mutex> guard(spotSweepLock);
+                for (auto const& [at, kept] : spotSweeps[bot->GetGUID().GetCounter()].verdicts)
+                    if (at.x == dx && at.y == dy && at.z == dz)
+                    {
+                        verdict = kept;
+                        known = true;
+                        break;
+                    }
+            }
+            if (!known)
+            {
+                if (sweepSearched > 0 &&
+                    Leader::RouteSearchesOnThread() - sweepSearchesBefore >= SPOT_SWEEP_SEARCHES_PER_TICK)
+                {
+                    std::lock_guard<std::mutex> guard(spotSweepLock);
+                    spotSweeps[bot->GetGUID().GetCounter()].pending = true;
+                    return true;  // the tick is the sweep's: the next call goes on from this spot
+                }
+                BotPath const spotPath = FindBotPath(bot, dx, dy, dz);
+                verdict = (spotPath.type & PATHFIND_NOPATH) ? SPOT_NO_WALK
+                          : spotPath.throughRefused        ? SPOT_REFUSED
+                                                           : SPOT_WALK;
+                ++sweepSearched;
+                std::lock_guard<std::mutex> guard(spotSweepLock);
+                spotSweeps[bot->GetGUID().GetCounter()].verdicts.emplace_back(G3D::Vector3(dx, dy, dz), verdict);
+            }
+            if (verdict == SPOT_NO_WALK)
                 continue;
             // [sweep33] user 2026-11-09: a spot whose only walk passes the reach of a mob the bot must never fight
             // (orange / red, elite, a danger zone: RouteCosts' refusals, no complete walk round) is no sweep spot -
             // the walk is priced like any other. b385 Kianey L14 (Bami following) swept q116 to a spot 798 yd off
             // through The Darkened Bank's L18-21 spiders and wolves: both died there
-            if (spotPath.throughRefused)
+            if (verdict == SPOT_REFUSED)
             {
                 static std::mutex sweepLogLock;  // one line per bot and spot: a log cadence, no decision reads it
                 static std::unordered_map<uint32, std::pair<int32, int32>> sweepLogged;
