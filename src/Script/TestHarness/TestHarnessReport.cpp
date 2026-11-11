@@ -1269,10 +1269,35 @@ namespace TestHarness
         }
         // [lead140] b164: 8 "unplanned" pulls each had the leader's open pull order (orders 4, 11, 13, 15, 20, 27,
         // 31, 48): the mob came during the order's own walk. A pull under the leader's open order is the leader's
+        // [diag265] ... and says what happened: "planned (the leader's order: engage; no planner pull)" told nothing
+        // (b442). A mob already on a member before any member hit it is a defensive start; a first mob that is not
+        // the order's target joined its planned pull; else the order's pull, with its method and age
         if (Leader::PullOrder openOrder; planned && first && starter.rfind("unplanned (", 0) == 0 &&
                                          Leader::Orders::GetOpen(first->guid, openOrder))
-            starter = std::string("planned (the leader's order: ") + Leader::MethodName(openOrder.method) + "; " +
-                      starter.substr(11);
+        {
+            // (a body pull: the target on the order's tank before its hit is the pull itself)
+            bool const mobFirst = fresh(note.mobMs) && FindMember(party, note.mobVictimGuid) &&
+                                  note.mobVictimGuid != openOrder.tank &&
+                                  (!fresh(note.hitMs) || !note.hitByMember || int32(note.hitMs - note.mobMs) > 0);
+            Player* const tank = ObjectAccessor::FindPlayer(first->guid);
+            Creature* const target = tank ? ObjectAccessor::GetCreature(*tank, openOrder.target) : nullptr;
+            bool const other = fresh(note.mobMs) && note.mobSpawnId &&
+                               ((target && target->GetSpawnId() != note.mobSpawnId) ||
+                                (!target && openOrder.targetEntry && note.mobEntry != openOrder.targetEntry));
+            if (mobFirst && other)
+                starter = "defensive: " + note.mob + " attacks " + note.mobVictim;
+            else if (other)
+                starter = "join: " + note.mob + " joined the planned pull of " + openOrder.targetName;
+            else if (mobFirst)
+                starter = "defensive: " + note.mob + " attacks " + note.mobVictim;
+            else
+                starter = Acore::StringFormat("planned (pull_order: {}, {:.0f} s before)",
+                                              Leader::MethodName(openOrder.method),
+                                              openOrder.openedMs && int32(party.pullStartMs - openOrder.openedMs) >= 0
+                                                  ? float(getMSTimeDiff(openOrder.openedMs, party.pullStartMs)) /
+                                                        IN_MILLISECONDS
+                                                  : 0.0f);
+        }
         if (!planned)
             starter = "unplanned: " + first->name + " " +
                       (firstMember ? std::string(firstMember->spec->label) + "/" + RoleName(firstMember->spec->role)
@@ -1406,6 +1431,8 @@ namespace TestHarness
                                           .Raw("opener", opener));
         if (party.pullStarter.rfind("planned", 0) != 0 && party.pullStarter != "chain")
             LOG_INFO("playerbots", "[pull start] pull {}: {}", party.pullSeq, party.pullStarter);
+        // [diag266] every pull's start with its run (the triage counts the joins and defensive starts per run)
+        LOG_INFO("playerbots", "[pull266] {} pull {}: {}", party.id, party.pullSeq, party.pullStarter);
     }
 
     void TestHarnessMgr::LogAttemptEnd(Party& party, BossTrack& boss, std::string const& result)
