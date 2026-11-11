@@ -9936,8 +9936,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     TankSave const* PickTankSave(Player* tank, std::vector<TankSave> const& saves, PackEstimate& estimate,
                                  GroupSupport const& support, std::string& why)
     {
-        bool const noBoss = NoBossLeftOf(tank);
-        float const toBoss = BossPullSecOf(tank);
+        bool const noBoss = RestState::NoBossLeftOf(tank);
+        float const toBoss = RestState::BossPullSecOf(tank);
         TankSave const* picked = nullptr;
         PackEstimate pickedEstimate;
         for (TankSave const& save : saves)
