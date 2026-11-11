@@ -4082,7 +4082,11 @@ namespace SoloSafety
         // [deaths] its danger zones (where it died, a pack it refused) are refused whether or not their mobs are in
         // sight now (b338 Keenonk L11 died twice at the same Black Slime L20 and twice among the same Dragonmaw Scouts:
         // "unseen" in the route search before each death)
-        NewRpgBaseAction::DangerDiscs(bot, bot->GetPositionX(), bot->GetPositionY(), range, refuse);
+        // [lag365] coordinator 2026-11-12 (b448 Dekorhan L22: "MAZE no way to (2252,-1356) ... walls: no mob wall"):
+        // a zone of a pull it refused is no wall of its own - its mobs are the ones this search prices above, each
+        // run past or judged as any mob on the way (the zone keeps its quest spots and pulls out, InDangerZone); only
+        // where it died stays refused
+        NewRpgBaseAction::DangerDiscs(bot, bot->GetPositionX(), bot->GetPositionY(), range, refuse, false);
         // [runpast11] the packs this leg runs past, one line per change of them
         std::string runPastLine;
         if (!ranPastNames.empty())
@@ -4168,7 +4172,14 @@ namespace SoloSafety
         }
         if (walls.size() > LOGGED_WALLS)
             out += Acore::StringFormat(" +{} more", walls.size() - LOGGED_WALLS);
-        return out.empty() ? std::string("no mob wall (a danger zone's disc or the pull spot's walk)") : out;
+        if (!out.empty())
+            return out;
+        // [lag365] no mob wall: the refused discs are its death zones or the pull spot's walk - named
+        std::string const zones = bot ? NewRpgBaseAction::DangerNames(bot, bot->GetPositionX(), bot->GetPositionY(),
+                                                                       bot->GetMap()->GetVisibilityRange())
+                                      : std::string();
+        return zones.empty() ? std::string("no mob wall: the pull spot's walk")
+                             : "no mob wall: its danger zones " + zones;
     }
 
     bool PatrolWait(Player* bot, std::vector<G3D::Vector3> const& points, float& waitSec, std::string& who)

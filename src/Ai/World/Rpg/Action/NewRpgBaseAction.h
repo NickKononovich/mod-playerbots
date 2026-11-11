@@ -105,7 +105,11 @@ public:
     static bool SameDangerZone(Player* bot, float ax, float ay, float bx, float by);
     // [deaths] the bot's danger zones on its map within `range` of (x, y): the killer's and the death spot as discs
     // (x, y, z = the bot's height, radius) - refused by its route search whether or not it sees their mobs
-    static void DangerDiscs(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& out);
+    // [lag365] `refusedToo`: the zones of refused pulls too (else only where it died)
+    static void DangerDiscs(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& out,
+                            bool refusedToo = true);
+    // [lag365] its danger zones within `range` of (x, y), named: "<mob> L<n> (died|refused) at (x,y) r yd"
+    static std::string DangerNames(Player* bot, float x, float y, float range);
     // [guild13] a class quest whose purpose is a spell (its reward or its chain's: AutoLearnQuestSpells grants it):
     // never taken, abandoned when in the log. Letters to the class trainer and the like stay.
     static bool IsSpellUnlockClassQuest(Quest const* quest);

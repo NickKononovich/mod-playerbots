@@ -6490,7 +6490,8 @@ bool NewRpgBaseAction::SameDangerZone(Player* bot, float ax, float ay, float bx,
     return false;
 }
 
-void NewRpgBaseAction::DangerDiscs(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& out)
+void NewRpgBaseAction::DangerDiscs(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& out,
+                                   bool refusedToo)
 {
     if (!bot)
         return;
@@ -6502,12 +6503,35 @@ void NewRpgBaseAction::DangerDiscs(Player* bot, float x, float y, float range, s
     ClearRestedZones(bot, zones->second);  // [deaths143]
     for (DeathZone const& zone : zones->second)
     {
-        if (zone.mapId != bot->GetMapId() || level > zone.level)
+        if (zone.mapId != bot->GetMapId() || level > zone.level || (zone.refused && !refusedToo))
             continue;
         for (auto const& [zx, zy] : {std::pair<float, float>{zone.killerX, zone.killerY}, {zone.deathX, zone.deathY}})
             if (std::hypot(zx - x, zy - y) <= range + zone.radius)
                 out.emplace_back(zx, zy, bot->GetPositionZ(), zone.radius);
     }
+}
+
+std::string NewRpgBaseAction::DangerNames(Player* bot, float x, float y, float range)
+{
+    std::string out;
+    if (!bot)
+        return out;
+    uint8 const level = bot->GetLevel();
+    std::lock_guard<std::mutex> guard(deathZonesLock);
+    auto const zones = deathZones.find(bot->GetGUID().GetCounter());
+    if (zones == deathZones.end())
+        return out;
+    for (DeathZone const& zone : zones->second)
+    {
+        if (zone.mapId != bot->GetMapId() || level > zone.level ||
+            std::hypot(zone.killerX - x, zone.killerY - y) > range + zone.radius)
+            continue;
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(zone.entry);
+        out += Acore::StringFormat("{}{} until L{} ({}) at ({:.0f},{:.0f}) {:.0f} yd", out.empty() ? "" : ", ",
+                                   tmpl ? tmpl->Name : std::to_string(zone.entry), zone.level + 1,
+                                   zone.refused ? "refused" : "died", zone.killerX, zone.killerY, zone.radius);
+    }
+    return out;
 }
 
 bool NewRpgBaseAction::NeedsItemUseCredit(Quest const* quest, std::string* why)
