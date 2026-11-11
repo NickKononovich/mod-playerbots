@@ -2559,6 +2559,26 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float summonDamage = 1.0f;
     };
 
+    // [dun191] the planner's pack grouping for the five gate (templates, no live creature): the social radius
+    // CollectPack counts an engage call within, and an entry's scripted call for help (SMART_ACTION_CALL_FOR_HELP)
+    float PackSocialRadius()
+    {
+        float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        return assist > 0.0f ? std::min(PACK_SOCIAL_RADIUS, assist + PACK_SOCIAL_DRIFT) : 0.0f;
+    }
+
+    float ScriptedCallRadius(uint32 entry)
+    {
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        if (!tmpl || tmpl->AIName != "SmartAI")
+            return 0.0f;
+        float radius = 0.0f;
+        for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+            if (holder.GetActionType() == SMART_ACTION_CALL_FOR_HELP)
+                radius = std::max(radius, float(holder.action.callHelp.range));
+        return radius;
+    }
+
     ScriptedHelp const& GetScriptedHelp(Creature* creature)
     {
         static ScriptedHelp const none;

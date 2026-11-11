@@ -246,6 +246,7 @@ namespace FiveGate
         bool noAssist = false;  // [gate94] CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE
         float wander = 0.0f;
         std::vector<G3D::Vector3> path;  // empty: it stands (or wanders) at its spawn point
+        float callRadius = 0.0f;         // [dun191] its scripted call for help (the planner's ScriptedCallRadius)
     };
 
     // [dun170] what one pull of a spawn brings as the core brings it: its formation (CreatureGroup: every member
@@ -261,6 +262,7 @@ namespace FiveGate
                                                                  // its call reaches there
         std::vector<std::vector<uint32>> pathAny;  // per patrol: the standing spawns whose call reaches it somewhere
         std::vector<uint32> patrols;               // the spawns on a waypoint patrol
+        std::vector<std::vector<uint32>> calls;    // [dun191] per standing spawn: the standing spawns its call reaches
         uint8 topLevel = 0;
     };
 
@@ -366,6 +368,7 @@ namespace FiveGate
                 s.mob.melee = ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) *
                               tmpl->DamageModifier / swing;
                 s.mob.boss = credits.count(tmpl->Entry) || tmpl->rank == CREATURE_ELITE_WORLDBOSS;
+                s.callRadius = PullPlanning::ScriptedCallRadius(tmpl->Entry);
                 data.topLevel = std::max(data.topLevel, s.mob.level);
                 spawns.push_back(std::move(s));
             } while (result->NextRow());
@@ -376,10 +379,12 @@ namespace FiveGate
             if (s.leader && s.leader != s.guid && !pathOf.count(s.leader))
                 s.path.clear();
 
-        float const radius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        // [dun191] the planner's social radius (CollectPack: the core's assistance radius plus the fight's drift)
+        float const radius = PullPlanning::PackSocialRadius();
         size_t const n = spawns.size();
         data.formation.assign(n, {});
         data.assists.assign(n, {});
+        data.calls.assign(n, {});
         data.pathNear.assign(n, {});
         data.pathAny.assign(n, {});
         for (size_t i = 0; i < n; ++i)
@@ -396,6 +401,15 @@ namespace FiveGate
                     data.formation[i].push_back(uint32(j));
                 else if (!Patrols(s) && !Patrols(o) && Answers(s, s.pos, o, o.pos, radius))
                     data.assists[i].push_back(uint32(j));
+                // [dun191] its scripted call for help (Creature::CallForHelp: CanAssistTo within the radius, no
+                // assistance flag read) from where it stands - the planner's "call for help" of the pull
+                if (!formation && s.callRadius > 0.0f && !Patrols(s) && !Patrols(o))
+                {
+                    Spawn caller = s;
+                    caller.noAssist = false;
+                    if (Answers(caller, s.pos, o, o.pos, s.callRadius))
+                        data.calls[i].push_back(uint32(j));
+                }
             }
             if (!Patrols(s))
                 continue;
@@ -419,8 +433,14 @@ namespace FiveGate
             }
             data.pathAny[i].assign(any.begin(), any.end());
         }
-        LOG_INFO("playerbots", "[dun170] five gate: map {} - {} hostile spawns, {} of them on a waypoint patrol", mapId,
-                 n, data.patrols.size());
+        size_t callers = 0;
+        for (Spawn const& s : spawns)
+            if (s.callRadius > 0.0f)
+                ++callers;
+        LOG_INFO("playerbots",
+                 "[dun170] five gate: map {} - {} hostile spawns, {} of them on a waypoint patrol, [dun191] {} with a "
+                 "scripted call for help, social radius {:.1f}",
+                 mapId, n, data.patrols.size(), callers, radius);
         return data;
     }
 
@@ -649,10 +669,21 @@ namespace FiveGate
                         std::binary_search(map.pathAny[p].begin(), map.pathAny[p].end(), uint32(i)))
                         add(p);
             }
-            // every member's formation engages with it
+            // every member's formation engages with it; [dun191] a member's scripted call for help brings what it
+            // reaches, and each helper's own engage call where it stands (the planner's chain of the pull)
             for (size_t k = 0; k < members.size(); ++k)
-                for (uint32 j : map.formation[members[k]])
+            {
+                uint32 const member = members[k];
+                for (uint32 j : map.formation[member])
                     add(j);
+                for (uint32 j : map.calls[member])
+                    if (left[j] && in[j] != stamp)
+                    {
+                        add(j);
+                        for (uint32 helped : map.assists[j])
+                            add(helped);
+                    }
+            }
         };
 
         PullLoad worst;

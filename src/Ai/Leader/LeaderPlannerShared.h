@@ -48,6 +48,10 @@ namespace PullPlanning
     // [dun180] the damage per second `mob` lands on `victim` as the planner reads it (LandedMeleeDps: its melee
     // through the game's attack table and armor, its spells from its spell data)
     float MobLandedDps(Unit* mob, Player* victim);
+    // [dun191] the planner's pack grouping, read by the five gate: the radius of an engage call CollectPack counts
+    // (the core's assistance radius plus the fight's drift), and an entry's scripted call for help radius (0: none)
+    float PackSocialRadius();
+    float ScriptedCallRadius(uint32 entry);
 }
 
 // the tank's commit of a pull, posted to the leader's order registry
