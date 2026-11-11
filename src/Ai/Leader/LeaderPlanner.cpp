@@ -10008,7 +10008,15 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         std::vector<PackOverlap> fewestOverlaps(overlaps);
         auto fewestHops = lastPackHops;  // [b33_brs] the hops of the pack kept, not of the last look
         Position fewestKill = kill;
-        for (uint32 i = 1; i <= KILL_SPOT_RETREATS && fewest.size() > 1; ++i)
+        // [dun188] a scripted call for help (SMART_ACTION_CALL_FOR_HELP at low health) reaches its radius from where
+        // the mob fights: the way back is searched as far as that radius clears, not three steps. b434 wc-n: every
+        // Deviate Guardian near Lady Anacondra (17-32 yd off her; "call for help 40" at 15 %) was refused as "the pack
+        // brings a boss" (30 yd of retreat), the boss was pulled with all of them and two fives wiped
+        float const callRadius = GetScriptedHelp(creature).callRadius;
+        uint32 const retreats =
+            std::max(KILL_SPOT_RETREATS,
+                     uint32(std::ceil((callRadius + KILL_SPOT_DRIFT) / KILL_SPOT_RETREAT_STEP)));
+        for (uint32 i = 1; i <= retreats && fewest.size() > 1; ++i)
         {
             float const back = KILL_SPOT_RETREAT_STEP * float(i);
             float const x = bot->GetPositionX() + dx / length * back;
@@ -10046,11 +10054,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 Leader::Leads(Leader::LEADER_FIGHT_SPOT_COUNT) && _snap ? _snap->Leader() : nullptr;
             inputs && fewest.size() > 1 && !inputs->cleared.empty())
         {
-            constexpr float CLEARED_SPOT_MAX = KILL_SPOT_RETREAT_STEP * float(KILL_SPOT_RETREATS) + 5.0f;
+            float const clearedSpotMax = KILL_SPOT_RETREAT_STEP * float(retreats) + 5.0f;  // [dun188]
             constexpr size_t CLEARED_SPOT_TRIES = 3;
             std::vector<Position> cleared;
             for (Position const& spot : inputs->cleared)
-                if (bot->GetExactDist(spot) <= CLEARED_SPOT_MAX &&
+                if (bot->GetExactDist(spot) <= clearedSpotMax &&
                     std::fabs(spot.GetPositionZ() - bot->GetPositionZ()) <= PULL_PATH_HEIGHT &&
                     spot.GetExactDist(fewestKill) > CAREFUL_AGGRO_MARGIN)
                     cleared.push_back(spot);
@@ -11637,12 +11645,21 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         _planCached = target->GetGUID();
         _planPullBack = false;
         _planLos = false;
-        chosen = PackEstimate();
-        chosenPack.clear();
+        // [dun188] the boss pull priced with what comes with him where he stands (his engage call's adds, what
+        // reaches the spot, the scripted calls for help): the readiness lines hold the pull for that fight, not an
+        // empty one. b434 wc-n: "boss pulled where it stands, expected 0, cost 0.0" for Lady Anacondra with three
+        // Deviate Guardians that came with her
+        CollectPack(botAI, bot, target, target->GetPosition(), possible, pack, FightHere(target->GetPosition()),
+                    measured, false, nullptr);
+        chosenPack = pack;
+        chosen = pack.empty() ? PackEstimate() : EstimatePack(pack, bot, groupDps, estimateMode);
         chosenOverlaps.clear();
         chosen.danger = danger;
         chosen.boss = true;
         found = true;
+        LOG_INFO("playerbots",
+                 "[dun188] {}: {} pulled where he stands with {} mobs, cost {:.2f} tank hp, fight {:.0f} s",
+                 bot->GetName(), target->GetName(), chosen.mobs, chosen.cost, chosen.fightSec);
         _planReason = manageable ? std::string("boss pulled where it stands")
                                  : Acore::StringFormat("boss pulled where it stands: over the capacity estimate "
                                                        "(danger {:.2f}), the boss is the route's goal", danger);
