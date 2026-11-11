@@ -1957,6 +1957,15 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // [build147] the steps above can change the state without returning (b438 crash: std::get<GoCamp> on another
     // state, bad_variant_access): the switch dispatches on the state the bot is in now
     status = info.GetStatus();
+    // [build148] a case whose state is not the one held (it cannot be now, the status is read just above): no throw,
+    // the bot goes IDLE (the next tick picks its target) and the line names both
+    auto const mismatch = [&](char const* expected)
+    {
+        LOG_ERROR("playerbots", "[build148] {} L{} status switch: case {} but the state is {} - back to IDLE",
+                  bot->GetName(), bot->GetLevel(), expected, uint32(info.GetStatus()));
+        info.ChangeToIdle();
+        return true;
+    };
     switch (status)
     {
         case RPG_IDLE:
@@ -2179,7 +2188,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
 
         case RPG_GO_GRIND:
         {
-            auto& data = std::get<NewRpgInfo::GoGrind>(info.data);
+            auto* const state = std::get_if<NewRpgInfo::GoGrind>(&info.data);  // [build148]
+            if (!state)
+                return mismatch("GoGrind");
+            auto& data = *state;
             WorldPosition& originalPos = data.pos;
             assert(data.pos != WorldPosition());
             // GO_GRIND -> WANDER_RANDOM: at the grind spot the bot fights the mobs there, no random walk
@@ -2198,7 +2210,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_GO_CAMP:
         {
-            auto& data = std::get<NewRpgInfo::GoCamp>(info.data);
+            auto* const state = std::get_if<NewRpgInfo::GoCamp>(&info.data);  // [build148]
+            if (!state)
+                return mismatch("GoCamp");
+            auto& data = *state;
             WorldPosition& originalPos = data.pos;
             assert(data.pos != WorldPosition());
             // GO_CAMP -> WANDER_NPC only to visit the vendor this walk came for; else the next purposeful target
@@ -2228,7 +2243,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // [timers] WANDER_RANDOM -> IDLE by facts, no status duration: the grind was chosen for the level a quest
             // needs (or quests postponed round it until the next level); a level-up re-runs the choice. No mob of its
             // level left in reach also ends it (NewRpgWanderRandomAction); the global leader's URGENT task interrupts
-            auto& data = std::get<NewRpgInfo::WanderRandom>(info.data);
+            auto* const state = std::get_if<NewRpgInfo::WanderRandom>(&info.data);  // [build148]
+            if (!state)
+                return mismatch("WanderRandom");
+            auto& data = *state;
             // [help13] a camp party's grind: at the camp's live mobs while the party lasts (the nearest one beyond
             // sight: walked to), over with the party (camp cleared, party gone). b353 Dandolar: GO_GRIND to the camp,
             // then WANDER_RANDOM on the Pygmy Tide Crawlers round it for 15 min, ended only by its level-up
@@ -2268,7 +2286,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             break;
         case RPG_DO_QUEST:
         {
-            auto& data = std::get<NewRpgInfo::DoQuest>(info.data);
+            auto* const state = std::get_if<NewRpgInfo::DoQuest>(&info.data);  // [build148]
+            if (!state)
+                return mismatch("DoQuest");
+            auto& data = *state;
 
             // [tasks] passing through a town: its town tasks run now (NextStep runs a convenient task only in its own
             // town, the bot's quests go on after it)
@@ -2294,7 +2315,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         }
         case RPG_TRAVEL_FLIGHT:
         {
-            auto& data = std::get<NewRpgInfo::TravelFlight>(info.data);
+            auto* const state = std::get_if<NewRpgInfo::TravelFlight>(&info.data);  // [build148]
+            if (!state)
+                return mismatch("TravelFlight");
+            auto& data = *state;
             if (data.inFlight && !bot->IsInFlight())
             {
                 // flight arrival
@@ -2324,7 +2348,10 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // bags (NewRpgDoGatherAction); a guild member's gather task gone or outranked
             // (GuildCoordinator::UpdateOrders);
             // a bot outside the guild plan gathers because no quest of its level was there: a level-up re-runs that
-            auto& data = std::get<NewRpgInfo::DoGather>(info.data);
+            auto* const state = std::get_if<NewRpgInfo::DoGather>(&info.data);  // [build148]
+            if (!state)
+                return mismatch("DoGather");
+            auto& data = *state;
             if (!data.level)
                 data.level = bot->GetLevel();
             else if (data.level != bot->GetLevel() && !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()))
