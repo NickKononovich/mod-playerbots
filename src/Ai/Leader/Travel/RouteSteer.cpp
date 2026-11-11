@@ -347,6 +347,62 @@ namespace Leader::Travel
             unseenRouteEndUntilMs[InstanceKey(mob)] = untilMs ? untilMs : 1;
     }
 
+    // [dun214] a mob behind closed doors the leader cannot see: no line of sight from the leader to it (the game's
+    // check, the doors' models included), and no walk between them round the closed doors near it (DoorFreeRoute:
+    // the navmesh with the closed doors' boxes refused - the walk is the same both ways). It neither aggroes (no
+    // sight: Creature::MoveInLineOfSight) nor can be pulled, so it stops no approach. b442 sfk-n five3-8: the leader
+    // stood 22 yd from Deathstalker Adamant in his locked cell on its way to the Lever at Sorcerer Ashcrombe's cell
+    // ("approach_stop ... unseenStop", "stop_wait Deathstalker Adamant" 45 -> 135 s, no planner verdict) until the
+    // stall. Memo per mob while the leader stays within APPROACH_FOLLOW_SPREAD and the doors keep their count
+    bool CagedBlocker(Player* leader, Creature* mob)
+    {
+        if (!leader || !mob || leader->IsWithinLOSInMap(mob))
+            return false;
+        float const range = leader->GetExactDist(mob);
+        std::vector<GameObject*> doors;
+        {
+            struct ClosedDoor
+            {
+                Creature* mob;
+                float range;
+                bool operator()(GameObject* go) const
+                {
+                    return go->GetGoType() == GAMEOBJECT_TYPE_DOOR && go->GetGoState() == GO_STATE_READY &&
+                           go->IsWithinDistInMap(mob, range);
+                }
+            };
+            std::list<GameObject*> found;
+            ClosedDoor check{mob, range};
+            Acore::GameObjectListSearcher<ClosedDoor> searcher(mob, found, check);
+            Cell::VisitObjects(mob, searcher, range);
+            doors.assign(found.begin(), found.end());
+        }
+        if (doors.empty())
+            return false;
+        struct Memo
+        {
+            G3D::Vector3 at;
+            size_t doors = 0;
+            bool caged = false;
+        };
+        static std::map<InstanceGuid, Memo> memo;  // world thread
+        if (memo.size() > 4096)
+            memo.clear();
+        G3D::Vector3 const here(leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ());
+        Memo& entry = memo[InstanceKey(mob)];
+        if (entry.doors == doors.size() && (entry.at - here).length() <= APPROACH_FOLLOW_SPREAD)
+            return entry.caged;
+        entry.at = here;
+        entry.doors = doors.size();
+        G3D::Vector3 const to(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ());
+        entry.caged = !DoorFreeRoute(leader, to, doors).complete;
+        if (entry.caged)
+            LOG_INFO("playerbots", "[dun214] {}: {} ({:.1f} yd) stops no approach: out of sight behind {} closed "
+                     "door(s), no walk to it round them",
+                     leader->GetName(), mob->GetName(), range, doors.size());
+        return entry.caged;
+    }
+
     bool UnseenRouteEnd(Player* leader, Creature* mob)
     {
         if (!ROUTE_UNSEEN_ROUTE_END_PASS)
@@ -518,6 +574,8 @@ namespace Leader::Travel
         reaches.reserve(mobs.size());
         for (Creature* mob : mobs)
         {
+            if (CagedBlocker(leader, mob))  // [dun214]
+                continue;
             float const reach = AggroReach(mob, leader);
             float const distance = leader->GetExactDist(mob);
             reaches.push_back({mob, reach, std::min(reach, distance),
