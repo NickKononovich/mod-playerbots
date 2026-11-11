@@ -56,9 +56,16 @@ public:
 // Dancing Rune Weapon) is stopped on a mob no player of the group fights. Called every AI tick after the tick's
 // actions from PlayerbotAI::UpdateAIInternal, and by "set pet stance"; a command goes out only when the pet does
 // something else. Outside such a group the stance set here is restored.
+class Player;
+enum ReactStates : uint8;  // Unit.h
+
 namespace DungeonPetControl
 {
 void Update(PlayerbotAI* botAI);
+// [dps236] the control holds this bot's pets now (a dungeon group, outside a raid boss encounter)
+bool Controls(Player* bot);
+// [dps236] the stance the config gives a bot's pet (Playerbots.DefaultPetStance)
+ReactStates ConfigStance();
 }
 
 #endif

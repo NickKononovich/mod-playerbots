@@ -19,6 +19,7 @@
 #include "ItemVisitors.h"
 #include "LastSpellCastValue.h"
 #include "PartyStrengthValue.h"
+#include "PetsAction.h"  // [dps236] DungeonPetControl::Controls / ConfigStance
 #include "ObjectGuid.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -1280,25 +1281,44 @@ bool AmmoCountTrigger::IsActive()
 bool NewPetTrigger::IsActive()
 {
     ObjectGuid currentPetGuid = ObjectGuid::Empty;
+    Creature* current = nullptr;
 
     if (Pet* pet = bot->GetPet())
+    {
         currentPetGuid = pet->GetGUID();
+        current = pet;
+    }
     else if (Guardian* guardian = bot->GetGuardianPet())
+    {
         currentPetGuid = guardian->GetGUID();
+        current = guardian;
+    }
 
     if (currentPetGuid != lastPetGuid)
     {
         triggered = false;
+        fired = false;
         lastPetGuid = currentPetGuid;
     }
 
-    if (currentPetGuid != ObjectGuid::Empty && !triggered)
+    if (currentPetGuid == ObjectGuid::Empty || triggered)
+        return false;
+
+    // [dps236] settled: the config stance on it, or the dungeon pet control holds it (it sets its own stance)
+    bool const settled = DungeonPetControl::Controls(bot) ||
+                         (current && current->GetReactState() == DungeonPetControl::ConfigStance());
+    if (!fired)
     {
-        triggered = true;
+        fired = true;
+        triggered = settled;
         return true;
     }
-
-    return false;
+    if (settled)
+    {
+        triggered = true;
+        return false;
+    }
+    return true;
 }
 
 bool ForceRebuffPendingTrigger::IsActive()

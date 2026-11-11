@@ -1194,6 +1194,10 @@ public:
     bool IsActive() override { return !bot->IsAlive() && bot->GetUInt32Value(PLAYER_SELF_RES_SPELL); }
 };
 
+// A pet summoned or resummoned (a new GUID): "set pet stance" gives it the config stance. [dps236] It fires on until
+// the pet wears that stance or the dungeon pet control holds it: one fire lost to higher actions for the queue's
+// ExpireActionTime (5 s: "pet stance (not evaluated: reset botAI (100.00) ran first)") left a demon loaded with the
+// passive stance its save kept passive for good (b426-b429 warlocks' demons idle in every solo fight after a dungeon)
 class NewPetTrigger : public Trigger
 {
 public:
@@ -1204,6 +1208,7 @@ public:
 private:
     ObjectGuid lastPetGuid;
     bool triggered;
+    bool fired = false;  // [dps236] it fired once for this pet
 };
 
 class ForceRebuffPendingTrigger : public Trigger

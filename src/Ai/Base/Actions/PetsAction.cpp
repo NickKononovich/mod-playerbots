@@ -497,10 +497,23 @@ struct PetControlState
     // [rot44] by (instance, GUID): a guardian (Raise Dead ghoul, Army ghouls, Feral Spirits, Shadowfiend, Mirror
     // Image, treants) gets a per-map GUID, so the parallel instances' guardians collided in this one global table
     std::set<InstanceGuid> passivated;                   // pets this control set passive (restored outside)
+    // [dps236] ... and by (owner, pet number): the pet that leaves the instance with its owner is a new object (a new
+    // GUID on the new map) loaded with the passive stance its save kept (Pet::SavePetToDB / LoadPetFromDB), so the
+    // (instance, GUID) entry never found it: b426-b429 the warlocks' demons dealt nothing in every solo fight after
+    // some dungeon runs (Mutil 23 of 23 in b429, Lanbuzz 54 of 110, Manue 28 of 46; formula pet 7-12 dps)
+    std::set<std::pair<uint64, uint32>> passivatedOwned;
     std::map<InstanceGuid, ObjectGuid> logged;           // pet -> last victim it was called back from (log once)
     std::map<InstanceGuid, PetApproach> approaches;      // pet -> its wait for the tank's lead
     std::map<InstanceGuid, PetClearSpot> clear;          // pet -> its place out of idle mobs' reach
 };
+
+// [dps236] a pet by its owner and its pet number (kept across its save and load), a guardian by its entry
+std::pair<uint64, uint32> OwnedPetKey(Player* owner, Creature* pet)
+{
+    CharmInfo* charm = pet->GetCharmInfo();
+    uint32 const number = charm ? charm->GetPetNumber() : 0;
+    return {owner->GetGUID().GetRawValue(), number ? number : pet->GetEntry()};
+}
 
 PetControlState& ControlState()
 {
@@ -1633,6 +1646,10 @@ ReactStates ConfigPetStance()
 
 namespace DungeonPetControl
 {
+bool Controls(Player* bot) { return bot && bot->IsAlive() && InDungeonGroup(bot); }  // [dps236]
+
+ReactStates ConfigStance() { return ConfigPetStance(); }  // [dps236]
+
 void Update(PlayerbotAI* botAI)
 {
     Player* bot = botAI ? botAI->GetBot() : nullptr;
@@ -1666,11 +1683,15 @@ void Update(PlayerbotAI* botAI)
 
             std::lock_guard<std::mutex> guard(state.lock);
             auto const itr = state.passivated.find(InstanceKey(pet));
-            if (itr != state.passivated.end())
+            auto const owned = state.passivatedOwned.find(OwnedPetKey(bot, pet));
+            if (itr != state.passivated.end() || owned != state.passivatedOwned.end())
             {
                 if (pet->HasReactState(REACT_PASSIVE))
                     pet->SetReactState(ConfigPetStance());
-                state.passivated.erase(itr);
+                if (itr != state.passivated.end())
+                    state.passivated.erase(itr);
+                if (owned != state.passivatedOwned.end())
+                    state.passivatedOwned.erase(owned);
             }
             continue;
         }
@@ -1682,6 +1703,7 @@ void Update(PlayerbotAI* botAI)
             pet->SetReactState(REACT_PASSIVE);
             std::lock_guard<std::mutex> guard(state.lock);
             state.passivated.insert(InstanceKey(pet));
+            state.passivatedOwned.insert(OwnedPetKey(bot, pet));  // [dps236]
         }
 
         // [pet-quick-engage] the pet's taunt stays off in a group with a tank, also for a pet called mid-fight
