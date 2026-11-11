@@ -4360,6 +4360,7 @@ void GuildCoordinator::UpdateProfessions()
                 {
                     uint32 reach{0};
                     double craftMin{0}, gatherMin{0}, vendorCost{0};
+                    std::map<uint32, double> buyNow, gatherNow;  // [ench171] what the calls buy / gather up to it
                 };
                 std::vector<Stop> stops;
                 std::set<uint32> rankCaps;
@@ -4532,10 +4533,10 @@ void GuildCoordinator::UpdateProfessions()
                     gatherMin += gmin;
                     reach = v + 1;
                     if (reach == r.yellow || reach == r.gray || rankCaps.count(reach))
-                        stops.push_back({reach, craftMin, gatherMin, vendorCost});
+                        stops.push_back({reach, craftMin, gatherMin, vendorCost, buyNow, gatherNow});
                 }
                 if (reach > skill && (stops.empty() || stops.back().reach != reach))
-                    stops.push_back({reach, craftMin, gatherMin, vendorCost});
+                    stops.push_back({reach, craftMin, gatherMin, vendorCost, buyNow, gatherNow});
                 // [insc144] the fees of the ranks the walk passes (the rank's cap less one step is the cap it lifts)
                 if (auto const ranks = trainerRanks_.find(line); ranks != trainerRanks_.end())
                     for (TrainerRank const& tr : ranks->second)
@@ -4589,7 +4590,6 @@ void GuildCoordinator::UpdateProfessions()
                     // minute, not only at its end - b443 every cook's walk to 175 read "150616 min" from Tangy Clam
                     // Meat past 160 (ench167), which hid the cheap part below it. Each point counts the members' needs
                     // it unlocks, its own costs and minutes; none of positive value: the whole walk as before
-                    double const fullCost = vendorCost;  // [lag330] the members' gold funds the whole walk
                     uint32 judged = reach;
                     {
                         double bestRate = 0.0;
@@ -4612,6 +4612,10 @@ void GuildCoordinator::UpdateProfessions()
                                 gatherMin = stop.gatherMin;
                                 vendorCost = stop.vendorCost;
                                 unlocked = stopUnlocked;
+                                // [ench171] the calls buy and gather for the judged point only (judged again from
+                                // there once it is reached: the walk runs every update from the skill it holds)
+                                buyNow = stop.buyNow;
+                                gatherNow = stop.gatherNow;
                             }
                         }
                         if (judged != reach)  // the needs the judged point unlocks
@@ -4684,11 +4688,11 @@ void GuildCoordinator::UpdateProfessions()
                         // [lag330] user rule 2026-11-11: guild orders mean the guild helps its crafter - the walk's
                         // costs its spare money does not cover come from the members' gold ([gold41] transfers)
                         if (memberNeeds)
-                            if (uint32 const spare = FoundingFreeMoney(p); fullCost > double(spare))
+                            if (uint32 const spare = FoundingFreeMoney(p); vendorCost > double(spare))
                             {
-                                st.profGoldShort += uint32(std::ceil(fullCost)) - spare;
+                                st.profGoldShort += uint32(std::ceil(vendorCost)) - spare;
                                 st.profGoldWhat += (st.profGoldWhat.empty() ? "" : ", ") +
-                                                   std::string(SkillShort(line)) + " to " + std::to_string(reach) +
+                                                   std::string(SkillShort(line)) + " to " + std::to_string(judged) +
                                                    " for " + std::to_string(unlockedUnits) + " members' orders";
                             }
                         double const perMinute = minutes > 0 ? value / minutes : value;
@@ -4717,7 +4721,7 @@ void GuildCoordinator::UpdateProfessions()
                         {
                             add(GuildProfessionKind::CRAFT, 0, 0,
                                 std::string(SkillShort(line)) + " " + std::to_string(skill) + "→" +
-                                    std::to_string(reach) + ": crafts from what it has");
+                                    std::to_string(judged) + ": crafts from what it has");
                             kinds += "craft";
                         }
                         // [prof277] the item most units of the crafts below its rank cap take, its own count
@@ -4734,8 +4738,9 @@ void GuildCoordinator::UpdateProfessions()
                         if (below && buyNowItem)
                         {
                             add(GuildProfessionKind::BUY, buyNowItem, buyNowUnits,
-                                ItemName(buyNowItem) + " ×" + std::to_string(uint32(std::ceil(buyNowUnits))) +
-                                    " for " + SkillShort(line) + " to " + std::to_string(maxSkill) + " [prof277]");
+                                ItemName(buyNowItem) + " ×" + std::to_string(uint32(std::ceil(buyNowUnits))) + " for " +
+                                    SkillShort(line) + " to " + std::to_string(std::min(judged, maxSkill)) +
+                                    " [prof277][ench171]");
                             kinds += kinds.empty() ? "buy" : "+buy";
                             // [lag326] the nearest vendor that sells it (npc_vendor, its own map, no token cost) is
                             // the call's town: a stop of its route, as a TRAIN call's trainer ([prof272]). Before, the
@@ -4759,7 +4764,8 @@ void GuildCoordinator::UpdateProfessions()
                         {
                             add(GuildProfessionKind::GATHER, gatherNowItem, gatherNowUnits,
                                 ItemName(gatherNowItem) + " ×" + std::to_string(uint32(std::ceil(gatherNowUnits))) +
-                                    " for " + SkillShort(line) + " to " + std::to_string(maxSkill) + " [prof277]");
+                                    " for " + SkillShort(line) + " to " + std::to_string(std::min(judged, maxSkill)) +
+                                    " [prof277][ench171]");
                             kinds += kinds.empty() ? "gather" : "+gather";
                         }
                         key = "profession:" + kinds;
