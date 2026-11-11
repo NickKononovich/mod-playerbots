@@ -3839,8 +3839,13 @@ void GuildCoordinator::UpdateProfessions()
                     }
                     return it->second;
                 };
-                double craftMin = 0, gatherMin = 0, vendorCost = 0, sales = 0, gatherUnits = 0, buyUnits = 0;
+                double craftMin = 0, gatherMin = 0, vendorCost = 0, sales = 0, gatherUnits = 0;
                 uint32 gatherItem = 0, buyItem = 0;
+                // [prof277] what it buys / gathers now: the skill-ups below its held rank's cap, per item (a rank
+                // past it is the trainer's first; the walk still values the whole way to the need). b430 Rollothan
+                // Insc 1/75 "Common Parchment x316": the units of the walk to 150 through the next rank, every
+                // vendor reagent of the walk summed under the last one's name
+                std::map<uint32, double> buyNow, gatherNow;
                 bool held = false;
                 std::string block;
                 uint32 reach = skill;
@@ -3913,7 +3918,8 @@ void GuildCoordinator::UpdateProfessions()
                                 cost += units *
                                         (proto ? double(proto->BuyPrice) / std::max<uint32>(1, proto->BuyCount) : 0.0);
                                 buyItem = rawItem;
-                                buyUnits += units;
+                                if (v < maxSkill)
+                                    buyNow[rawItem] += units;
                                 continue;
                             }
                             auto const src = gatherSource_.find(rawItem);
@@ -3929,6 +3935,8 @@ void GuildCoordinator::UpdateProfessions()
                                         gatherItem = rawItem;
                                         gatherUnits = units;
                                     }
+                                    if (v < maxSkill)
+                                        gatherNow[rawItem] += units;
                                     continue;
                                 }
                                 why = ItemName(rawItem) + ": no gathering pace measured (" +
@@ -4077,18 +4085,29 @@ void GuildCoordinator::UpdateProfessions()
                                     std::to_string(reach) + ": crafts from what it has");
                             kinds += "craft";
                         }
-                        if (below && buyItem)
+                        // [prof277] the item most units of the crafts below its rank cap take, its own count
+                        auto const most = [](std::map<uint32, double> const& units)
                         {
-                            add(GuildProfessionKind::BUY, buyItem, buyUnits,
-                                ItemName(buyItem) + " ×" + std::to_string(uint32(std::ceil(buyUnits))) + " for " +
-                                    SkillShort(line));
+                            std::pair<uint32, double> best{0, 0.0};
+                            for (auto const& [item, n] : units)
+                                if (n > best.second)
+                                    best = {item, n};
+                            return best;
+                        };
+                        auto const [buyNowItem, buyNowUnits] = most(buyNow);
+                        auto const [gatherNowItem, gatherNowUnits] = most(gatherNow);
+                        if (below && buyNowItem)
+                        {
+                            add(GuildProfessionKind::BUY, buyNowItem, buyNowUnits,
+                                ItemName(buyNowItem) + " ×" + std::to_string(uint32(std::ceil(buyNowUnits))) +
+                                    " for " + SkillShort(line) + " to " + std::to_string(maxSkill) + " [prof277]");
                             kinds += kinds.empty() ? "buy" : "+buy";
                         }
-                        if (gatherItem)
+                        if (gatherNowItem)
                         {
-                            add(GuildProfessionKind::GATHER, gatherItem, gatherUnits,
-                                ItemName(gatherItem) + " ×" + std::to_string(uint32(std::ceil(gatherUnits))) + " for " +
-                                    SkillShort(line));
+                            add(GuildProfessionKind::GATHER, gatherNowItem, gatherNowUnits,
+                                ItemName(gatherNowItem) + " ×" + std::to_string(uint32(std::ceil(gatherNowUnits))) +
+                                    " for " + SkillShort(line) + " to " + std::to_string(maxSkill) + " [prof277]");
                             kinds += kinds.empty() ? "gather" : "+gather";
                         }
                         key = "profession:" + kinds;
@@ -7915,6 +7934,27 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
     std::set<std::pair<uint32, uint32>> bands;
     for (DungeonOption const& d : dungeons_)
         bands.emplace(d.walkMinLevel, d.maxLevel);
+    // [prof276] the guild's real supply need: the dungeon bands overlap (b430: 12 bands 8-21 ... 20-45, every one with
+    // its own cook), and each band counted every member in it - Coyote Meat "need 3185-4951 have 13" for 12 Coyote
+    // Steak cooks. A member's restock of a kind is one band's job (the first band holding it), and a job is what its
+    // cook can make: the units its looted reagents' stock in the members' bags gives (each unit claimed by one job),
+    // plus what it holds already
+    std::set<std::pair<uint32, uint32>> counted;  // (member, restock category) in a job already
+    std::map<uint32, uint32> guildStock;          // looted reagent -> what the members hold (bags + bank)
+    std::map<uint32, uint32> claimed;             // looted reagent -> the units the jobs before took
+    auto const stock = [&](uint32 item) -> uint32
+    {
+        auto it = guildStock.find(item);
+        if (it == guildStock.end())
+        {
+            uint32 n = 0;
+            for (auto const& [row, m] : members)
+                n += m->GetItemCount(item, true);
+            it = guildStock.emplace(item, n).first;
+        }
+        uint32 const taken = claimed[item];
+        return it->second > taken ? it->second - taken : 0u;
+    };
     for (auto const& [lo, hi] : bands)
     {
         uint32 inBand = 0;
@@ -7986,19 +8026,6 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
                 bandCook = cook;
         }
         uint32 const cookSkill = bandCook ? bandCook->GetPureSkillValue(SKILL_COOKING) : 0;
-        std::map<uint32, uint32> guildStock;  // looted reagent -> what the members hold (bags + bank)
-        auto const stock = [&](uint32 item)
-        {
-            auto it = guildStock.find(item);
-            if (it == guildStock.end())
-            {
-                uint32 n = 0;
-                for (auto const& [row, m] : members)
-                    n += m->GetItemCount(item, true);
-                it = guildStock.emplace(item, n).first;
-            }
-            return it->second;
-        };
         // the cooked food / drink of the band's level: the cheapest per point of those with the highest level
         std::string cookedText = "no cooking recipe of the level";
         float cookedPer = -1.0f;
@@ -8145,19 +8172,80 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
         if (!bandCook)
             continue;
         uint32 const cookLow = bandCook->GetGUID().GetCounter();
+        // [prof276] the members' lack counted once (the first band holding a member), capped by what the cook can
+        // make: what it holds of the product (bags, bank, its letters on the way) plus the crafts its looted
+        // reagents' unclaimed stock gives (a vendor reagent is bought, a fish is the fishers' catch: no stock bound)
+        uint32 lack = 0;
+        std::vector<uint32> lackers;
+        for (auto const& [row, m] : members)
+            if (m->GetLevel() >= lo && m->GetLevel() <= hi && row->grp >= 'A' && row->grp <= 'C' &&
+                (job.category != RESTOCK_SPELL_CATEGORY_DRINK || m->GetMaxPower(POWER_MANA) > 0) &&
+                !counted.count({row->low, job.category}))
+                if (uint32 const have = CountBagFood(m, job.category); have < RESTOCK_FOOD_TARGET)
+                {
+                    lack += RESTOCK_FOOD_TARGET - have;
+                    lackers.push_back(row->low);
+                }
+        uint32 heldProduct = bandCook->GetItemCount(job.product, true);
+        for (auto const& [id, t] : transfers_)
+            if (t.fromLow == cookLow && t.itemId == job.product && t.mailed)
+                heldProduct += t.count;
+        uint32 crafts = UINT32_MAX;
+        std::string limit;
+        std::vector<uint32> bounded;  // its looted reagents
+        for (auto const& [item, n] : job.reagents)
+        {
+            ItemTemplate const* reagent = sObjectMgr->GetItemTemplate(item);
+            uint32 skill = 0;
+            if ((reagent && sold.count(item) && reagent->BuyPrice) ||
+                (sGuildGatherPlan.Gatherable(item, &skill) && skill == SKILL_FISHING))
+                continue;
+            bounded.push_back(item);
+            if (uint32 const left = stock(item); left / n < crafts)
+            {
+                crafts = left / n;
+                limit = ItemName(item) + " " + std::to_string(left);
+            }
+        }
+        uint32 const canMake = crafts == UINT32_MAX ? lack : heldProduct + uint32(float(crafts) * job.made);
+        job.target = std::min(lack, canMake);
+        uint32 const owedCrafts =
+            job.target > heldProduct ? uint32(std::ceil(float(job.target - heldProduct) / job.made)) : 0;
+        std::string const sized =
+            Acore::StringFormat("{} units: lack {} of {} members not in an earlier band's job, it holds {}{}",
+                                job.target, lack, lackers.size(), heldProduct,
+                                limit.empty() ? std::string() : ", the members' unclaimed " + limit);
+        if (!job.target)
+        {
+            if (auto const was = supplyCook_.find(key); was != supplyCook_.end())
+            {
+                LOG_INFO("playerbots", "[prof276] band {}: {} cooks nothing for it ({})", key, Who(was->second),
+                         sized);
+                supplyCook_.erase(was);
+                supplySized_.erase(key);
+            }
+            continue;
+        }
+        for (uint32 low : lackers)
+            counted.insert({low, job.category});
+        for (uint32 item : bounded)
+            for (auto const& [reagentItem, n] : job.reagents)
+                if (reagentItem == item)
+                    claimed[item] += owedCrafts * n;
         if (auto const was = supplyCook_.find(key); was == supplyCook_.end() || was->second != cookLow)
             LOG_INFO("playerbots", "[supply112] band {}: {} (cooking {}) is its cook: {} [prof274]", key, Who(cookLow),
                      cookSkill, ItemName(job.product));
+        if (supplySized_[key] != sized)
+        {
+            supplySized_[key] = sized;
+            LOG_INFO("playerbots", "[prof276] band {}: {} cooks {} {}", key, Who(cookLow), ItemName(job.product),
+                     sized);
+        }
         supplyCook_[key] = cookLow;
         job.band = key;
         job.lo = lo;
         job.hi = hi;
         job.savedPerUnit = std::max(0.0f, vendorPer * (cookedHp + cookedMana) - jobUnitCost);
-        for (auto const& [row, m] : members)
-            if (m->GetLevel() >= lo && m->GetLevel() <= hi && row->grp >= 'A' && row->grp <= 'C' &&
-                (job.category != RESTOCK_SPELL_CATEGORY_DRINK || m->GetMaxPower(POWER_MANA) > 0))
-                if (uint32 const have = CountBagFood(m, job.category); have < RESTOCK_FOOD_TARGET)
-                    job.target += RESTOCK_FOOD_TARGET - have;
         jobs[cookLow].push_back(job);
     }
     supplyCrafts_ = std::move(jobs);

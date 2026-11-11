@@ -905,6 +905,7 @@ private:
     // [eco194] lock_ held: the members' owed potions -> the alchemists' potion jobs (potionCrafts_)
     void JudgePotionSupply(std::vector<std::pair<PlanRow const*, Player*>> const& members);
     std::map<std::string, uint32> supplyCook_;                           // band -> its cook (kept while it can)
+    std::map<std::string, std::string> supplySized_;  // [prof276] band -> its job's last sizing line (lock_)
     uint32 SupplyOwed(Player* cook, SupplyCraft const& job) const;       // crafts still owed
     // lock_ held: the cook's supply jobs for its Cooking value (copper, minutes, text)
     void SupplyWork(uint32 low, Player* p, double& value, double& minutes, std::string& text) const;
