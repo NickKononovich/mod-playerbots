@@ -1118,12 +1118,50 @@ void GuildCoordinator::UpdateTransfers()
             };
             uint32 qHas = 0;
             Player* q = pickGiver(qHas);
+            // the giver's stacks of the kind it may hand to the needy (their lowest level), and their sum
+            std::vector<Item*> stacks;
+            uint32 total = 0;
+            auto const stockOf = [&](Player* giver)
+            {
+                stacks.clear();
+                total = 0;
+                ForEachBagItem(giver, [&](Item* i)
+                               {
+                                   ItemTemplate const* proto = i->GetTemplate();
+                                   if (ConsumableKind(proto) == kind && proto->RequiredLevel <= level &&
+                                       !used.count(i->GetGUID().GetCounter()))
+                                   {
+                                       stacks.push_back(i);
+                                       total += i->GetCount();
+                                   }
+                               });
+            };
+            // the giver keeps an equal share; [share92] inside the dungeon it keeps its own restock line and shares
+            // only what lies above it (no member is pushed below the line that made another needy: no ping-pong)
+            bool const lineStage = (five.stage == GuildFive::Stage::Run && q && q->GetMap()->IsDungeon()) ||
+                                   (five.stage == GuildFive::Stage::Gather && kind == DRINK);
+            uint32 share = 0;
+            if (q)
+            {
+                stockOf(q);
+                uint32 const keep = RunLine(five, q->GetGUID().GetCounter(), kind);  // [dun194] its own line
+                share = lineStage ? (total > keep ? (total - keep) / uint32(needy.size()) : 0)
+                                  : total / uint32(needy.size() + 1);
+            }
             // [dun193] inside the run every member below its restock line is needy, so with all of them below it
             // nobody gave: a member that ran out stood dry beside members holding some (b435 wc-n five 11: Salleas
             // "no drink in the bags, spirit regen only (drinks 0)" while the others held 7-11). Then the members that
-            // ran out are the needy ones and the one holding the most shares equally (the rule outside the run)
+            // ran out are the needy ones and the one holding the most gives.
+            // [dun208] ... also when the member above its line holds too little above it to give (b439 dm-n five 11:
+            // Febineysh 3 drinks of its line 2 was the giver, its share 0, while Bhogagnuth, Jurdogs and later
+            // Febineysh itself stood at 0 beside Relara's 24-64 for the rest of the run). And the giver hands each
+            // member that ran out the part of its stock that member's priced line ([dun194]) is of their lines
+            // together with its own: an equal half pushed the giver below its own line, it ran out in turn and took
+            // drinks back (Relara -> Bhogagnuth 14, Bhogagnuth -> Relara 9 and 2, Febineysh -> Relara 16 and 5)
             bool outOnly = false;
-            if (!q && five.stage == GuildFive::Stage::Run)
+            std::vector<uint32> lines;  // [dun208] the members' lines in the fallback, in `needy` order
+            uint32 giverLine = 0;
+            if (!share && five.stage == GuildFive::Stage::Run)
             {
                 std::vector<Player*> out;
                 for (Player* p : needy)
@@ -1131,51 +1169,74 @@ void GuildCoordinator::UpdateTransfers()
                         out.push_back(p);
                 if (!out.empty() && out.size() < needy.size())
                 {
+                    std::vector<Player*> const belowLine = needy;
                     needy = out;
                     level = 255;
                     for (Player* p : needy)
                         level = std::min<uint8>(level, p->GetLevel());
                     q = pickGiver(qHas);
-                    outOnly = q != nullptr;
+                    if (q)
+                    {
+                        stockOf(q);
+                        outOnly = true;
+                        giverLine = RunLine(five, q->GetGUID().GetCounter(), kind);
+                        uint32 sum = giverLine;
+                        for (Player* p : needy)
+                        {
+                            lines.push_back(RunLine(five, p->GetGUID().GetCounter(), kind));
+                            sum += lines.back();
+                        }
+                        for (uint32& line : lines)  // each one's part: the stock x its line / the lines' sum
+                            line = sum ? uint32(uint64(total) * line / sum) : 0;
+                        share = std::any_of(lines.begin(), lines.end(), [](uint32 n) { return n > 0; }) ? 1 : 0;
+                    }
+                    else
+                        needy = belowLine;
                 }
             }
-            if (!q)
-                continue;
-            std::vector<Item*> stacks;
-            uint32 total = 0;
-            ForEachBagItem(q, [&](Item* i)
-                           {
-                               ItemTemplate const* proto = i->GetTemplate();
-                               if (ConsumableKind(proto) == kind && proto->RequiredLevel <= level &&
-                                   !used.count(i->GetGUID().GetCounter()))
-                               {
-                                   stacks.push_back(i);
-                                   total += i->GetCount();
-                               }
-                           });
-            // the giver keeps an equal share; [share92] inside the dungeon it keeps its own restock line and shares
-            // only what lies above it (no member is pushed below the line that made another needy: no ping-pong)
-            bool const inRun = ((five.stage == GuildFive::Stage::Run && q->GetMap()->IsDungeon()) ||
-                                (five.stage == GuildFive::Stage::Gather && kind == DRINK)) &&
-                               !outOnly;
-            uint32 const keep = RunLine(five, q->GetGUID().GetCounter(), kind);  // [dun194] its own line
-            uint32 const share = inRun ? (total > keep ? (total - keep) / uint32(needy.size()) : 0)
-                                       : total / uint32(needy.size() + 1);
+            // [dun208] the five's share judged: who is short, who gives and how much (logged when it changes)
+            {
+                std::string judged = "five " + std::to_string(id) + " " + (kind == FOOD ? "food" : "drink") + ": ";
+                for (size_t n = 0; n < needy.size(); ++n)
+                    judged += (n ? ", " : "") + needy[n]->GetName() + " " +
+                              std::to_string(CountKind(needy[n], kind, needy[n]->GetLevel())) + "/" +
+                              std::to_string(RunLine(five, needy[n]->GetGUID().GetCounter(), kind));
+                judged += " short; " + (q ? q->GetName() + " gives from " + std::to_string(total) +
+                                                (outOnly ? " by the lines (its own " + std::to_string(giverLine) + ")"
+                                                         : " " + std::to_string(share) + " each")
+                                          : std::string("nobody gives"));
+                // a new line when the verdict changes (the text without its counts, as the donation plan's [econ1])
+                std::string verdict = judged;
+                verdict.erase(std::remove_if(verdict.begin(), verdict.end(),
+                                             [](char ch) { return ch >= '0' && ch <= '9'; }),
+                              verdict.end());
+                static std::map<uint64, std::string> shareJudged;  // five and kind -> its last verdict (lock_ held)
+                if (std::string& last = shareJudged[uint64(id) << 8 | kind];
+                    last != verdict && five.stage == GuildFive::Stage::Run)
+                {
+                    last = verdict;
+                    LOG_INFO("playerbots", "[dun208] {}", judged);
+                }
+            }
             if (!share)
                 continue;
             std::sort(stacks.begin(), stacks.end(), [](Item* a, Item* b) { return a->GetCount() > b->GetCount(); });
             std::map<Item*, uint32> left;
             for (Item* i : stacks)
                 left[i] = i->GetCount();
-            for (Player* p : needy)
+            for (size_t n = 0; n < needy.size(); ++n)
             {
+                Player* p = needy[n];
+                uint32 const due = outOnly ? lines[n] : share;  // [dun208] its part by the lines in the fallback
+                if (!due)
+                    continue;
                 Item* from = nullptr;
                 for (Item* i : stacks)
                     if (!from || left[i] > left[from])
                         from = i;
                 if (!from || !left[from])
                     break;
-                uint32 const give = std::min(share, left[from]);
+                uint32 const give = std::min(due, left[from]);
                 left[from] -= give;
                 Want w;
                 w.key = "c" + std::to_string(p->GetGUID().GetCounter()) + ":" + std::to_string(kind);
@@ -1188,8 +1249,9 @@ void GuildCoordinator::UpdateTransfers()
                 w.purpose = "consumable";
                 w.why = std::string(kind == FOOD ? "food" : "drink") + " ran out; five " + std::to_string(id) + "'s " +
                         (q->GetGUID().GetCounter() == five.quartermasterLow ? "quartermaster" : "member") + " " +
-                        Who(q->GetGUID().GetCounter()) + " shares equally: " + std::to_string(total) + " among " +
-                        std::to_string(needy.size() + 1) + " [share83]";
+                        Who(q->GetGUID().GetCounter()) +
+                        (outOnly ? " shares by the run's lines: " : " shares equally: ") + std::to_string(total) +
+                        " among " + std::to_string(needy.size() + 1) + (outOnly ? " [dun208]" : " [share83]");
                 wants.push_back(w);
             }
         }
