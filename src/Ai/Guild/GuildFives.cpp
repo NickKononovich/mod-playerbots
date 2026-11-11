@@ -2117,8 +2117,14 @@ void GuildCoordinator::UpdateFives()
             // waits lasted up to ~1290 s (Ellosera, five 4, "the guild's supply gold is on its way"), ~1050 s
             // (Dekorhan, five 10), ~810 s (Selalleas, five 10), ~330 s (Mutil, five 1)
             // [dun194] a mana user's drink line: the drinks the run needs it to carry (priced at the five's forming)
+            // [dun198] a mage that knows Conjure Water covers its own line (it conjures, in the run too), never the
+            // five's: the others' drink is counted in their bags (b436 dm-n five 7: "a mage conjures water" let the
+            // five in, the mage Feeli then stood at 6 % mana with no drink)
             auto const drinkLine = [&five](uint32 low) -> uint32
             {
+                Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+                if (p && p->getClass() == CLASS_MAGE && p->HasSpell(5504))  // Conjure Water
+                    return 0;
                 auto const priced = five.drinkNeed.find(low);
                 return priced != five.drinkNeed.end() ? priced->second : RESTOCK_FOOD_MIN;
             };
@@ -2144,7 +2150,7 @@ void GuildCoordinator::UpdateFives()
                     food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
                     mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
                 }
-                bool const pooled = noRoom.empty() && (mages || drinks >= drinksNeeded);
+                bool const pooled = noRoom.empty() && drinks >= drinksNeeded;
                 if (!noRoom.empty() && !five.poolGoesIn)
                     if (std::string& logged = fiveLfgWhy[id + 1000000]; logged != noRoom)
                     {
@@ -2156,7 +2162,7 @@ void GuildCoordinator::UpdateFives()
                 std::string const poolText = Acore::StringFormat("pool {} drinks for {} mana users ([dun194] {} the "
                                                                  "run needs){}, {} food",
                                                                  drinks, manaUsers, drinksNeeded,
-                                                                 mages ? ", a mage conjures water" : "", food);
+                                                                 mages ? ", a mage conjures its own" : "", food);
                 if (pooled || five.poolGoesIn)
                 {
                     if (!five.poolGoesIn)
@@ -2193,13 +2199,13 @@ void GuildCoordinator::UpdateFives()
                     food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
                     mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
                 }
-                bool const pooled = mages || drinks >= drinksNeeded;
+                bool const pooled = drinks >= drinksNeeded;
                 if ((pooled || five.poolGoesIn) && !five.poolGoesIn)
                 {
                     LOG_INFO("playerbots", "[supply100] five {} ({}): its supplies pooled carry the run: {} drinks for {} "
                              "mana users ([dun194] {} the run needs){}, {} food; goes in, topped up inside",
                              id, five.contentKey, drinks, manaUsers, drinksNeeded,
-                             mages ? ", a mage conjures water" : "", food);
+                             mages ? ", a mage conjures its own" : "", food);
                     five.poolGoesIn = true;
                 }
                 if (five.poolGoesIn)

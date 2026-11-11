@@ -20,6 +20,7 @@
 #include <cmath>
 #include <mutex>
 #include <set>
+#include <string_view>
 
 namespace
 {
@@ -303,6 +304,24 @@ bool MageConjureAllowed(PlayerbotAI* botAI, Player* bot, bool ownStockEmpty, cha
         bool const groupRests = RestState::GroupResting(bot) || RestState::IsEating(bot) || RestState::IsDrinking(bot);
         if (ownStockEmpty && groupRests)
             return true;
+        // [dun198] its own water (or food) gone in the run: it conjures for itself whatever the group does - with no
+        // drink and no conjure it waits on spirit regen alone and the group does not wait for it (b436 dm-n five 7:
+        // Feeli "no drink in the bags, spirit regen only" at 6 % mana, knowing Conjure Water)
+        std::string_view const kind(what);
+        if (ownStockEmpty && (kind == "conjure water" || kind == "conjure food"))
+        {
+            static std::mutex selfLogLock;
+            static std::set<std::pair<uint32, uint32>> selfLogged;  // (bot, instance): once per run
+            bool first = false;
+            {
+                std::lock_guard<std::mutex> guard(selfLogLock);
+                first = selfLogged.insert({bot->GetGUID().GetCounter(), map->GetInstanceId()}).second;
+            }
+            if (first)
+                LOG_INFO("playerbots", "[dun198] {} conjures for itself in instance map {} ({}): its own stock is gone",
+                         bot->GetName(), map->GetId(), what);
+            return true;
+        }
 
         LogConjureSkipOnce(bot, what);
         return false;
