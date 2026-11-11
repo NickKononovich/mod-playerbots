@@ -738,13 +738,40 @@ namespace FiveGate
                 uint32 const member = members[k];
                 for (uint32 j : map.formation[member])
                     add(j);
-                for (uint32 j : map.calls[member])
-                    if (left[j] && in[j] != stamp)
-                    {
-                        add(j);
-                        for (uint32 helped : map.assists[j])
-                            add(helped);
-                    }
+                // [dun233] a scripted call for help goes out where its caller fights (SmartAI: Deviate Guardian
+                // 3637 "Between 0-15% Health - Call for help" 40 yd): the pull's own spawn and a caster that keeps its
+                // range fight where they stand, every other member comes to the pull's spawn - its call reaches from
+                // there, not from its own spawn. Judged from each member's spawn, the calls chained round the map:
+                // b443 / b444 wc-n's "boss pull Druid of the Fang x13 (18059 hp)" was Lady Anacondra's five
+                // Guardians chained by four calls to the Guardians, Druids and Ravagers 60-130 yd off; called from
+                // the fight, her pull is herself and her five Guardians (8900 hp)
+                Spawn const& caller = spawns[member];
+                if (member == i || caller.keepsRange || Patrols(caller) || Patrols(spawns[i]))
+                {
+                    for (uint32 j : map.calls[member])
+                        if (left[j] && in[j] != stamp)
+                        {
+                            add(j);
+                            for (uint32 helped : map.assists[j])
+                                add(helped);
+                        }
+                }
+                else if (caller.callRadius > 0.0f)
+                {
+                    Spawn calling = caller;
+                    calling.noAssist = false;
+                    calling.wander = 0.0f;  // it calls from the fight, not from its wander disc
+                    for (size_t j = 0; j < n; ++j)
+                        if (j != member && left[j] && in[j] != stamp && !Patrols(spawns[j]) &&
+                            std::find(map.formation[member].begin(), map.formation[member].end(), uint32(j)) ==
+                                map.formation[member].end() &&
+                            Answers(calling, spawns[i].pos, spawns[j], spawns[j].pos, caller.callRadius))
+                        {
+                            add(uint32(j));
+                            for (uint32 helped : map.assists[j])
+                                add(helped);
+                        }
+                }
                 for (uint32 j : draws[member])  // [dun205]
                     if (left[j] && in[j] != stamp)
                     {
@@ -863,8 +890,8 @@ namespace FiveGate
         out.why = Acore::StringFormat(
             "{} of {} pulls over capacity ([dun170] as the leader splits them, {} patrols pulled apart, each from full "
             "after a rest); worst {:.2f}: {}; group burst dps {:.0f}, healer {} {:.0f} hps (gap {:.1f} s, {:.1f} "
-            "hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{} [mob melee from templates; spells and area "
-            "damage not counted]",
+            "hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{} [mob melee from templates; [dun233] calls for "
+            "help from the fight; spells and area damage not counted]",
             failed, judged, apart, worst.load, worstWhy, groupDps, healer->GetName(), heal.hps,
             gap, heal.healPerMana, tank->GetName(), tankHealth, armor, avoid,
             bear ? " (the bear seen in form)" : "");
