@@ -83,6 +83,7 @@
 #include "InstanceSaveMgr.h"
 #include "SelfTravelActions.h"
 #include "TemporarySummon.h"
+#include "LeaderGround.h"  // [dun206] LeaderGroundZ
 #include "TerrainHazard.h"
 #include "Transport.h"
 #include "UKTriggers.h"
@@ -303,8 +304,7 @@ namespace Leader::Travel
             {
                 float const x = leader->GetPositionX() + std::cos(away + turn) * step;
                 float const y = leader->GetPositionY() + std::sin(away + turn) * step;
-                float const ground = leader->GetMap()->GetHeight(leader->GetPhaseMask(), x, y,
-                                                                 leader->GetPositionZ() + 3.0f, true, 10.0f);
+                float const ground = LeaderGroundZ(leader, x, y, leader->GetPositionZ() + 3.0f, 10.0f);  // [dun206]
                 if (ground <= INVALID_HEIGHT || !DirectLineOverGround(leader, x, y, ground) ||
                     reaches(x, y, ground))
                     continue;
@@ -4953,7 +4953,7 @@ namespace Leader::Travel
             if (routeState.gapTries < GAP_CROSS_TRIES && distance > stop + 1.0f)
             {
                 G3D::Vector3 dest = here + (goal - here) * ((distance - stop) / distance);
-                float const ground = map->GetHeight(leader->GetPhaseMask(), dest.x, dest.y, dest.z + 2.0f, true, 10.0f);
+                float const ground = LeaderGroundZ(leader, dest.x, dest.y, dest.z + 2.0f, 10.0f);  // [dun206]
                 if (ground > INVALID_HEIGHT && (!swimming || ground > dest.z))
                     dest.z = ground;
                 bool const lineOk = swimming ? ground > INVALID_HEIGHT || WaterSurfaceAt(leader, dest) > INVALID_HEIGHT
@@ -5004,8 +5004,7 @@ namespace Leader::Travel
                     if (length < 1.0f)
                         continue;
                     G3D::Vector3 step = here + ahead * (std::min(length, DRIVE_STEP) / length);
-                    float const ground =
-                        map->GetHeight(leader->GetPhaseMask(), step.x, step.y, step.z + 3.0f, true, 10.0f);
+                    float const ground = LeaderGroundZ(leader, step.x, step.y, step.z + 3.0f, 10.0f);  // [dun206]
                     if (ground > INVALID_HEIGHT && std::fabs(ground - step.z) <= 3.0f &&
                         DirectLineOverGround(leader, step.x, step.y, ground) && (step - next).length() > 2.0f)
                     {

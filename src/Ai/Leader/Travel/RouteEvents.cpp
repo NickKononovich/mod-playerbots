@@ -83,6 +83,7 @@
 #include "InstanceSaveMgr.h"
 #include "SelfTravelActions.h"
 #include "TemporarySummon.h"
+#include "LeaderGround.h"  // [dun206] LeaderGroundZ
 #include "TerrainHazard.h"
 #include "Transport.h"
 #include "UKTriggers.h"
@@ -1414,8 +1415,7 @@ namespace Leader::Travel
                 float const angle = opener->GetOrientation() + float(M_PI) + (float(slot++ % 5) - 2.0f) * 0.9f;
                 float const x = opener->GetPositionX() + std::cos(angle) * DOOR_GATHER_SPREAD;
                 float const y = opener->GetPositionY() + std::sin(angle) * DOOR_GATHER_SPREAD;
-                float const ground =
-                    map->GetHeight(bot->GetPhaseMask(), x, y, opener->GetPositionZ() + 3.0f, true, 10.0f);
+                float const ground = LeaderGroundZ(bot, x, y, opener->GetPositionZ() + 3.0f, 10.0f);  // [dun206]
                 group.SetMemberWaypoint(member.guid, bot, x, y,
                                         ground > INVALID_HEIGHT ? ground : opener->GetPositionZ());
                 walked[key].insert(member.guid);
@@ -1859,8 +1859,7 @@ namespace Leader::Travel
                 float const angle = near2d > 0.3f ? go->GetAngle(leader) : leader->GetOrientation() + float(M_PI);
                 G3D::Vector3 dest(go->GetPositionX() + std::cos(angle) * STARTER_ITEM_STEP_OUT,
                                   go->GetPositionY() + std::sin(angle) * STARTER_ITEM_STEP_OUT, leader->GetPositionZ());
-                float const ground = leader->GetMap()->GetHeight(leader->GetPhaseMask(), dest.x, dest.y,
-                                                                 dest.z + 3.0f, true, 10.0f);
+                float const ground = LeaderGroundZ(leader, dest.x, dest.y, dest.z + 3.0f, 10.0f);  // [dun206]
                 if (ground > INVALID_HEIGHT && DirectLineOverGround(leader, dest.x, dest.y, ground))
                 {
                     dest.z = ground;
@@ -1948,8 +1947,7 @@ namespace Leader::Travel
                     G3D::Vector3 dest(go->GetPositionX() + std::cos(toLeader) * EXPECT_DOOR_STEP,
                                       go->GetPositionY() + std::sin(toLeader) * EXPECT_DOOR_STEP,
                                       leader->GetPositionZ());
-                    float const ground = leader->GetMap()->GetHeight(leader->GetPhaseMask(), dest.x, dest.y,
-                                                                     dest.z + 3.0f, true, 10.0f);
+                    float const ground = LeaderGroundZ(leader, dest.x, dest.y, dest.z + 3.0f, 10.0f);  // [dun206]
                     if (ground > INVALID_HEIGHT)
                     {
                         dest.z = ground;
@@ -2051,8 +2049,7 @@ namespace Leader::Travel
                     wayX += toGateX / toGate * step;
                     wayY += toGateY / toGate * step;
                 }
-                float const ground =
-                    leader->GetMap()->GetHeight(leader->GetPhaseMask(), wayX, wayY, useZ + 3.0f, true, 10.0f);
+                float const ground = LeaderGroundZ(leader, wayX, wayY, useZ + 3.0f, 10.0f);  // [dun206]
                 // [b32_strat_gate] the use point of the leader's side
                 group.SetLeaderWaypoint(leader, wayX, wayY, ground > INVALID_HEIGHT ? ground : useZ);
                 routeState.waypointHoldUntilMs = now + STARTER_ITEM_RETRY_MS;
@@ -2135,8 +2132,7 @@ namespace Leader::Travel
                     float const angle = away + (float(slot++ % 5) - 2.0f) * 0.7f;
                     float const x = pass->useX + std::cos(angle) * KEY_PASS_SPREAD;
                     float const y = pass->useY + std::sin(angle) * KEY_PASS_SPREAD;
-                    float const ground =
-                        bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, pass->useZ + 3.0f, true, 10.0f);
+                    float const ground = LeaderGroundZ(bot, x, y, pass->useZ + 3.0f, 10.0f);  // [dun206]
                     group.SetMemberWaypoint(member.guid, bot, x, y, ground > INVALID_HEIGHT ? ground : pass->useZ);
                     waitFor += (waitFor.empty() ? "" : ",") + member.name;
                 }
@@ -2578,8 +2574,7 @@ namespace Leader::Travel
                 G3D::Vector3 dest(go->GetPositionX() + std::cos(toLeader) * KEY_DOOR_CAST_RANGE,
                                   go->GetPositionY() + std::sin(toLeader) * KEY_DOOR_CAST_RANGE,
                                   leader->GetPositionZ());
-                float const ground = leader->GetMap()->GetHeight(leader->GetPhaseMask(), dest.x, dest.y,
-                                                                 dest.z + 3.0f, true, 10.0f);
+                float const ground = LeaderGroundZ(leader, dest.x, dest.y, dest.z + 3.0f, 10.0f);  // [dun206]
                 if (ground > INVALID_HEIGHT)
                 {
                     dest.z = ground;

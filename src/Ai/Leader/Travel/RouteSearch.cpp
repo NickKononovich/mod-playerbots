@@ -35,6 +35,7 @@
 #include <list>
 #include <mutex>
 #include <optional>
+#include <string_view>  // [dun206] the [lead804] caller's file
 #include <unordered_map>
 #include <unordered_set>
 
@@ -1697,7 +1698,7 @@ namespace Leader
     // [lead804] b221 rfc-h 5A / 5D / 5H: the Ragefire Trogg ramp engage was priced as a 44 yd straight walk, the route
     // up the ramp was 86-130 yd - every walk in the leader's estimates (CornerVsStand, the engage and pull-back walks,
     // GroupWalkTo, the seconds to a boss) read GetExactDist. They read the navmesh walk now
-    float WalkYd(Unit* walker, Position const& from, Position const& to)
+    float WalkYd(Unit* walker, Position const& from, Position const& to, std::source_location const where)
     {
         float const straight = from.GetExactDist(to);
         Map* map = walker ? walker->GetMap() : nullptr;
@@ -1767,11 +1768,16 @@ namespace Leader
             if (length / straight > stats.worstRatio)
             {
                 stats.worstRatio = length / straight;
+                // [dun206] the caller's file and line (b438b dm-n five 9: "Ganna 346 yd for 41 straight" to the
+                // cove water under the ship named no caller)
+                std::string_view file = where.file_name();
+                if (size_t const slash = file.find_last_of("/\\"); slash != std::string_view::npos)
+                    file.remove_prefix(slash + 1);
                 stats.worst = Acore::StringFormat("{} {:.0f} yd for {:.0f} straight ({:.1f},{:.1f},{:.1f} -> "
-                                                  "{:.1f},{:.1f},{:.1f})",
+                                                  "{:.1f},{:.1f},{:.1f}) from {}:{}",
                                                   walker->GetName(), length, straight, from.GetPositionX(),
                                                   from.GetPositionY(), from.GetPositionZ(), to.GetPositionX(),
-                                                  to.GetPositionY(), to.GetPositionZ());
+                                                  to.GetPositionY(), to.GetPositionZ(), file, where.line());
             }
         }
         uint32 const now = getMSTime();
@@ -1787,9 +1793,9 @@ namespace Leader
         return length;
     }
 
-    float WalkYd(Unit* walker, Position const& to)
+    float WalkYd(Unit* walker, Position const& to, std::source_location const where)
     {
-        return walker ? WalkYd(walker, walker->GetPosition(), to) : 0.0f;
+        return walker ? WalkYd(walker, walker->GetPosition(), to, where) : 0.0f;
     }
 }
 

@@ -94,6 +94,7 @@
 #include "InstanceSaveMgr.h"
 #include "SelfTravelActions.h"
 #include "TemporarySummon.h"
+#include "LeaderGround.h"  // [dun206] LeaderGroundZ
 #include "TerrainHazard.h"
 #include "LeaderKnowledge.h"  // [lead234] boss kills
 #include "Transport.h"
@@ -12812,7 +12813,7 @@ namespace Leader::Dungeon
                             float const y = mob->GetPositionY() + std::sin(angle) * radius;
                             float z = mob->GetPositionZ();
                             float const ground =
-                                map->GetHeight(bot->GetPhaseMask(), x, y, z + bot->GetCollisionHeight(), true);
+                                Leader::Travel::LeaderGroundZ(bot, x, y, z + bot->GetCollisionHeight());  // [dun206]
                             if (ground > INVALID_HEIGHT)
                                 z = ground;
                             points.emplace_back(x, y, z);

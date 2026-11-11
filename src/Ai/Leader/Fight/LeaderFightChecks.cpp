@@ -32,6 +32,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
+#include "LeaderGround.h"  // [dun206] LeaderGroundZ
 #include "TerrainHazard.h"
 #include "Timer.h"  // [lead1121] getMSTime
 #include <algorithm>
@@ -196,7 +197,7 @@ namespace Leader::Fight
             // no floor under it (grid and vmap: none; the navmesh 2.9 yd above, [height_gap]) - its walk never ended
             // there and it stepped 0-2 yd every tick, 3 Bloodthirsts in 48 s. A place the game has no ground under
             // (Map::GetHeight from the member's height above it: INVALID_HEIGHT) is no place to stand
-            if (map->GetHeight(bot->GetPhaseMask(), x, y, z + bot->GetCollisionHeight(), true) <= INVALID_HEIGHT)
+            if (Leader::Travel::LeaderGroundZ(bot, x, y, z + bot->GetCollisionHeight()) <= INVALID_HEIGHT)  // [dun206]
             {
                 thread_local std::set<uint64> groundLogged;
                 if (groundLogged.size() > 4096)
@@ -3338,8 +3339,8 @@ namespace Leader::Fight
     bool LeaderSpotOk(Player* tank, Position const& fight, Position& spot, std::vector<ObjectGuid> const& pack)
     {
         Map* map = tank->GetMap();
-        float const ground = map->GetHeight(tank->GetPhaseMask(), spot.GetPositionX(), spot.GetPositionY(),
-                                            fight.GetPositionZ() + 5.0f, true, 15.0f);
+        float const ground = Leader::Travel::LeaderGroundZ(tank, spot.GetPositionX(), spot.GetPositionY(),
+                                                           fight.GetPositionZ() + 5.0f, 15.0f);  // [dun206]
         if (ground <= INVALID_HEIGHT || std::fabs(ground - fight.GetPositionZ()) > 6.0f)
             return false;
         spot.Relocate(spot.GetPositionX(), spot.GetPositionY(), ground);
