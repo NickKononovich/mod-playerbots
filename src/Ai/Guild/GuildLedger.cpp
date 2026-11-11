@@ -18,6 +18,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "ScriptMgr.h"
+#include "Spell.h"
 #include "SpellInfo.h"
 #include "StringFormat.h"
 
@@ -186,7 +187,7 @@ public:
         : PlayerScript("GuildLedgerPlayerScript",
                        {PLAYERHOOK_ON_MONEY_CHANGED, PLAYERHOOK_ON_BEFORE_LOOT_MONEY, PLAYERHOOK_ON_QUEST_COMPUTE_EXP,
                         PLAYERHOOK_ON_BEFORE_DURABILITY_REPAIR, PLAYERHOOK_ON_BEFORE_BUY_ITEM_FROM_VENDOR,
-                        PLAYERHOOK_CAN_SELL_ITEM, PLAYERHOOK_CAN_SEND_MAIL})
+                        PLAYERHOOK_CAN_SELL_ITEM, PLAYERHOOK_CAN_SEND_MAIL, PLAYERHOOK_ON_SPELL_CAST})
     {
     }
 
@@ -227,6 +228,17 @@ public:
     {
         Expect(player, "mail sent (postage, gold to members)");
         return true;
+    }
+
+    // [eco194] a potion a guild member drinks: the alchemists' potion need (GuildCoordinator::NotePotionUse)
+    void OnPlayerSpellCast(Player* player, Spell* spell, bool /*skipCheck*/) override
+    {
+        if (!player || !spell || !spell->m_CastItem)
+            return;
+        ItemTemplate const* proto = spell->m_CastItem->GetTemplate();
+        if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || proto->SubClass != ITEM_SUBCLASS_POTION)
+            return;
+        sGuildCoordinator.NotePotionUse(player, proto->ItemId);
     }
 };
 

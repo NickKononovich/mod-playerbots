@@ -810,20 +810,22 @@ void GuildCoordinator::UpdateTransfers()
                                                 "craft " + ItemText(job.itemId, 1) + " for " + Who(job.forLow)};
     }
     // [supply112] the guild cook's supply crafts: their reagents go to it (the guild fishers' fish, the looted meat)
-    for (auto const& [cookLow, jobs] : supplyCrafts_)
-    {
-        Player* c = Online(cookLow);
-        if (!c)
-            continue;
-        for (SupplyCraft const& job : jobs)
+    // [eco194] ... and the alchemists' potion jobs: the herbs other members hold go to them
+    for (auto const* crafts : {&supplyCrafts_, &potionCrafts_})
+        for (auto const& [cookLow, jobs] : *crafts)
         {
-            uint32 const owed = c->HasSpell(job.spellId) ? SupplyOwed(c, job) : 0;
-            for (auto const& [item, n] : job.reagents)
-                if (uint32 const have = c->GetItemCount(item, false); owed && have < owed * n)
-                    lack[{cookLow, item}] = {owed * n - have, "supply craft " + ItemText(job.product, owed) +
-                                                                " for band " + job.band};
+            Player* c = Online(cookLow);
+            if (!c)
+                continue;
+            for (SupplyCraft const& job : jobs)
+            {
+                uint32 const owed = c->HasSpell(job.spellId) ? SupplyOwed(c, job) : 0;
+                for (auto const& [item, n] : job.reagents)
+                    if (uint32 const have = c->GetItemCount(item, false); owed && have < owed * n)
+                        lack[{cookLow, item}] = {owed * n - have, "supply craft " + ItemText(job.product, owed) +
+                                                                    " for band " + job.band};
+            }
         }
-    }
     std::set<std::pair<uint32, uint32>> ownNeed, incoming;
     for (auto const& [key, need] : lack)
         ownNeed.insert(key);
@@ -1188,6 +1190,65 @@ void GuildCoordinator::UpdateTransfers()
                                                 RESTOCK_FOOD_TARGET);
                     wants.push_back(w);
                 }
+            }
+        }
+    }
+
+    // d2. [eco194] the alchemists' potions go to the members whose drunk potions are not replaced yet: each member up
+    // to its owed potions of the kind, a potion it can use (its level), its letters on the way counting as its own
+    for (auto const& [makerLow, jobs] : potionCrafts_)
+    {
+        Player* c = Online(makerLow);
+        if (!c || !GET_PLAYERBOT_AI(c) || HumanCharacter(c))
+            continue;
+        for (SupplyCraft const& job : jobs)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(job.product);
+            if (!proto || !job.potionKind)
+                continue;
+            uint8 const kind = job.potionKind - 1;
+            std::vector<Item*> stacks;
+            ForEachBagItem(c, [&](Item* i)
+                           {
+                               if (i->GetEntry() == job.product && !used.count(i->GetGUID().GetCounter()))
+                                   stacks.push_back(i);
+                           });
+            std::map<Item*, uint32> left;
+            for (Item* i : stacks)
+                left[i] = i->GetCount();
+            for (auto const& [m, book] : potions_)
+            {
+                uint32 owed = book.Owed(kind);
+                Player* p = Online(m);
+                if (!owed || m == makerLow || !p || !GET_PLAYERBOT_AI(p) || HumanCharacter(p) ||
+                    p->GetLevel() < proto->RequiredLevel)
+                    continue;
+                for (auto const& [tid, t] : transfers_)
+                    if (t.toLow == m && t.mailed && t.itemId &&
+                        PotionKindOf(sObjectMgr->GetItemTemplate(t.itemId)) == kind)
+                        owed -= std::min(owed, t.count);
+                if (!owed)
+                    continue;
+                Item* from = nullptr;
+                for (Item* i : stacks)
+                    if (!from || left[i] > left[from])
+                        from = i;
+                if (!from || !left[from])
+                    break;
+                uint32 const give = std::min(owed, left[from]);
+                left[from] -= give;
+                Want w;
+                w.key = "p" + std::to_string(m) + ":" + std::to_string(job.product);
+                w.from = makerLow;
+                w.to = m;
+                w.guid = from->GetGUID().GetCounter();
+                w.itemId = job.product;
+                w.count = give;
+                w.purpose = "consumable";
+                w.why = Acore::StringFormat("[eco194] the alchemist replaces the {} potions {} drank ({} of {} not "
+                                            "replaced yet)",
+                                            kind == POTION_HEAL ? "healing" : "mana", Who(m), give, book.Owed(kind));
+                wants.push_back(w);
             }
         }
     }

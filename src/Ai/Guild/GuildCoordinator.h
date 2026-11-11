@@ -29,6 +29,7 @@ class Item;
 class Player;
 class PlayerbotAI;
 class Quest;
+struct ItemTemplate;  // [eco194]
 
 // [guild30] The global leader of the guild project = the server itself (no character). It runs on the world thread
 // every few seconds over the players in memory (no DB query after startup) and holds:
@@ -317,6 +318,8 @@ public:
     // [supply112] the crafts of a guild supply recipe this cook still owes the fives' bands (its target less what it
     // holds of the product), 0 = none (map thread: NewRpgCraft weighs them with its skill-ups)
     uint32 SupplyCrafts(Player* cook, uint32 spellId) const;
+    // [eco194] map thread (the cast hook): a guild member drinks a healing / mana potion - the alchemists' potion need
+    void NotePotionUse(Player* bot, uint32 itemId);
     // [guild70] a crafter's skill-up reagent lies in the guild bank: it takes it out on the next BANK_WITHDRAW run
     void RequestWithdraw(Player* bot, uint32 itemId, std::string const& why);
     void OnCrafted(Player* bot, uint32 spellId, uint32 before, uint32 after);  // [guild70] the «План» tab's done
@@ -868,12 +871,45 @@ private:
         uint32 recipeItem{0};
         uint32 recipePrice{0};
         std::vector<std::pair<uint32, uint32>> reagents;
+        uint8 potionKind{0};  // [eco194] a potion job: POTION_HEAL / POTION_MANA + 1 (0: a cooked supply)
     };
     std::unordered_map<uint32, std::vector<SupplyCraft>> supplyCrafts_;  // cook -> its jobs (lock_)
+    // [eco194] coordinator 2026-11-11 (the user: Alchemy had no valued need, so no herb was wanted for it): the
+    // potions the members drink are replaced by the guild's alchemists. Per member and kind (healing / mana) the
+    // potions it drank this session (the cast hook) against those it got since (its bags' count rising between two
+    // looks, net of what it drank in between): the rest is owed. Each owed potion goes to an alchemist that knows a
+    // recipe of the kind the member can use (the best such potion, the alchemist with the fewest units first), as a
+    // SupplyCraft worth the vendor's price of the same points (the cheapest vendor potion of the kind per point) less
+    // its reagents (vendor price; herbs at the best herbalist's time per unit at its quest pace) and the cast at the
+    // alchemist's pace. The jobs feed the wanted list (herbs), Alchemy's value, the craft loop and the transfer.
+    enum PotionKind : uint8
+    {
+        POTION_HEAL = 0,
+        POTION_MANA = 1,
+        POTION_KINDS = 2
+    };
+    struct PotionBook
+    {
+        uint32 used[POTION_KINDS]{};      // drunk this session
+        uint32 got[POTION_KINDS]{};       // gained since (bags rising net of the drinks in between)
+        uint32 held[POTION_KINDS]{};      // in its bags at the last look
+        uint32 usedAtLook[POTION_KINDS]{};  // `used` at that look
+        bool looked{false};
+        uint32 Owed(uint8 kind) const { return used[kind] > got[kind] ? used[kind] - got[kind] : 0; }
+    };
+    std::unordered_map<uint32, PotionBook> potions_;                      // member -> its potions (lock_)
+    std::unordered_map<uint32, std::vector<SupplyCraft>> potionCrafts_;  // alchemist -> its potion jobs (lock_)
+    std::string potionJudged_;                                           // the last [eco194] line
+    // the potion kind of an item (a healing / mana potion), POTION_KINDS = none; its points (the effect's amount)
+    static uint8 PotionKindOf(ItemTemplate const* proto, float* points = nullptr);
+    // [eco194] lock_ held: the members' owed potions -> the alchemists' potion jobs (potionCrafts_)
+    void JudgePotionSupply(std::vector<std::pair<PlanRow const*, Player*>> const& members);
     std::map<std::string, uint32> supplyCook_;                           // band -> its cook (kept while it can)
     uint32 SupplyOwed(Player* cook, SupplyCraft const& job) const;       // crafts still owed
     // lock_ held: the cook's supply jobs for its Cooking value (copper, minutes, text)
     void SupplyWork(uint32 low, Player* p, double& value, double& minutes, std::string& text) const;
+    // [eco194] lock_ held: the alchemist's potion jobs for its Alchemy value (copper, minutes, text)
+    void PotionWork(uint32 low, Player* p, double& value, double& minutes, std::string& text) const;
     // [questrate] the member's questing value by formula (no measurements): per quest the core's quest XP at its
     // copper per XP + the money + the reward items' price over the time it takes now (the walk to the objective area
     // and the ender, or to the giver for a quest it may take; the kills by the source's health at its EstimateDps,
