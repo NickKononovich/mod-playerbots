@@ -331,9 +331,9 @@ namespace
                         return item;
         return nullptr;
     }
-
-    // [ench157] the recipe makes a tool (Totem / TotemCategory) that a known recipe of its line, one that still gives
-    // skill, needs and the bot has none of
+    // [ench157] the recipe makes a tool (Totem / TotemCategory) that a known recipe of its line needs ([craft408]: gray
+    // or not) and the bot has none of
+    bool MissingTool(Player* bot, CraftRecipe const& r)
     bool MissingTool(Player* bot, CraftRecipe const& r, uint32 value)
     {
         if (!r.product || !index.tools.count(r.product) || bot->HasItemCount(r.product, 1, true))
@@ -344,8 +344,10 @@ namespace
             return false;
         for (uint32 spell : list->second)
         {
-            CraftRecipe const& other = index.recipes.at(spell);
-            if (other.spellId == r.spellId || !bot->HasSpell(spell) || !Tier(other, value) || ToolsOk(bot, other))
+            // [craft408] any known recipe of the line, gray or not: the members' enchants ([craft386]) cast gray ones
+            // too. b461 Emdyl bought the Copper Rod, but its only rod recipes were gray: no Runed Copper Rod made
+            // b461 Emdyl bought the Copper Rod, but its only rod recipes were gray, so no Runed Copper Rod was made
+            if (other.spellId == r.spellId || !bot->HasSpell(spell) || ToolsOk(bot, other))
                 continue;
             if (std::find(other.totem.begin(), other.totem.end(), r.product) != other.totem.end() ||
                 (proto->TotemCategory && std::find(other.totemCategory.begin(), other.totemCategory.end(),
@@ -393,12 +395,12 @@ namespace
         uint32 const supply = sGuildCoordinator.SupplyCrafts(bot, r.spellId);
         // [ench157] a tool a skill-up recipe of this line lacks (Runed Copper Rod for Enchant Bracer - Minor Health):
         // made once, gray or not - without it that recipe gives no skill at all
-        bool const tool = !supply && MissingTool(bot, r, value);
+        bool const tool = !supply && MissingTool(bot, r);
         uint32 const intermediate =
             !supply && !tool && Tier(r, value) <= 1 ? IntermediateNeed(bot, r, value, cap) : 0;  // [craft395] green too
         uint8 const tier =
             supply || tool || intermediate ? std::max<uint8>(Tier(r, value), 1) : Tier(r, value);
-        if (!tier || (value >= cap && !supply) || !ToolsOk(bot, r))
+        if (!tier || (value >= cap && !supply && !tool) || !ToolsOk(bot, r))  // [craft408] a tool at the cap too
             return false;
         // [ench156] an enchant needs an item to go on (EnchantTarget: no other enchantment overwritten)
         bool emptySlot = false;
