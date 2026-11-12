@@ -2103,6 +2103,7 @@ void GuildCoordinator::UpdateDungeonOrder()
         std::string gone;
         uint32 count = 0;
         uint32 goneCount = 0;
+        std::vector<uint32> below;  // [lag368] its uncleared members below its band
         for (PlanRow const& row : plan_)
         {
             if (row.grp < 'A' || row.grp > 'C' || Cleared(d.contentKey, row.low))
@@ -2122,6 +2123,8 @@ void GuildCoordinator::UpdateDungeonOrder()
                     continue;
                 }
             ++count;
+            if (p && p->GetLevel() < d.minLevel)
+                below.push_back(row.low);
             names += " " + Who(row.low) + (p ? " L" + std::to_string(p->GetLevel()) : std::string(" offline")) + ",";
         }
         if (goneCount)
@@ -2139,7 +2142,16 @@ void GuildCoordinator::UpdateDungeonOrder()
         held = names.substr(1);
         heldCount = count;
         open = &d;
+        {
+            std::lock_guard<std::mutex> guard(orderHeldLock_);
+            orderHeldBelow_ = std::unordered_set<uint32>(below.begin(), below.end());
+        }
         break;
+    }
+    if (!open)
+    {
+        std::lock_guard<std::mutex> guard(orderHeldLock_);
+        orderHeldBelow_.clear();
     }
     std::string const line =
         (open ? Acore::StringFormat("open up to {} ({} L{}-{}), held by {}: {} members not cleared ({})",
@@ -2160,6 +2172,12 @@ void GuildCoordinator::UpdateDungeonOrder()
             Decision("[order360] the guild's dungeon is now " + open->name + ": no five goes elsewhere until every "
                      "member has cleared it");
     }
+}
+
+bool GuildCoordinator::HoldsGuildDungeon(uint32 low) const
+{
+    std::lock_guard<std::mutex> guard(orderHeldLock_);
+    return orderHeldBelow_.count(low) > 0;
 }
 
 std::string GuildCoordinator::OrderHold(DungeonOption const& d, uint32 low, Player* p)

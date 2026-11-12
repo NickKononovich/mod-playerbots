@@ -2392,6 +2392,7 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         bool exact = false;  // [help34] eta / walkYd from its searched walk (else the straight line's lower bound)
     };
     std::vector<Candidate> pool;
+    std::vector<Candidate> holding;  // [lag368] the members the guild's open dungeon waits on (their levels)
     std::map<std::string, uint32> skipped;  // why not, counted (the reply and the refuse line)
     for (uint32 low : sGuildCoordinator.PlannedLows())
     {
@@ -2442,8 +2443,20 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             ++skipped["the camp is grey for it"];
             continue;
         }
+        // [lag368] coordinator 2026-11-12 (user rules: laggards first, dungeons in order): a member below the guild's
+        // open dungeon's band and not cleared there is what the guild waits on - its time goes to its own levels; it
+        // helps only when no other member fits. b449 Rollothan L14 (with Gilduck and Sylaenas the last three for RFC)
+        // was sent as healer to Januel L18's q167 camp
+        if (sGuildCoordinator.HoldsGuildDungeon(low))
+        {
+            ++skipped["the guild's open dungeon waits on its level"];
+            holding.push_back({p, 0.0f, 0.0f, false});
+            continue;
+        }
         pool.push_back({p, 0.0f, 0.0f, false});
     }
+    if (pool.empty())
+        pool.swap(holding);  // [lag368] the only fits
     // [help21] the inputs of the price: unchanged since its last refusal by price - no new pricing.
     // [help28] ... read before the walks are searched: the candidates' walks (a long route each, every update, for
     // every open request) were the help update's cost - b377: 253 updates, 87 ms each, max 811 ms

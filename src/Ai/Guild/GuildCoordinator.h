@@ -759,6 +759,13 @@ private:
     // [order360] the dungeon order (Playerbots.Guild.DungeonOrderPerMember), lock_ held: the guild's one open dungeon
     // (guild-wide), and why a member may not go into a dungeon ("" = it may)
     void UpdateDungeonOrder();
+
+public:
+    // [lag368] the member holds the guild's open dungeon back: not cleared and below its band (the guild waits on its
+    // level). Its own lock: read from the help pricing (NewRpgCoop) without lock_
+    bool HoldsGuildDungeon(uint32 low) const;
+
+private:
     std::string OrderHold(DungeonOption const& d, uint32 low, Player* p);
     // [lag321] a gathering five's member refused its walk in: a free member of its role takes its place (lock_ held)
     bool ReplaceRefusedMember(GuildFive& five, uint32 refusedLow);
@@ -1154,6 +1161,8 @@ private:
     std::vector<size_t> orderIdx_;
     std::vector<size_t> orderPos_;
     std::string orderOpenKey_;
+    mutable std::mutex orderHeldLock_;            // [lag368]
+    std::unordered_set<uint32> orderHeldBelow_;   // [lag368] the open dungeon's uncleared members below its band
     std::string orderLogged_;
     uint32 orderGen_{0};
     struct OrderOpen
