@@ -2682,6 +2682,66 @@ namespace SoloSafety
         }
         why = Acore::StringFormat("{:.0f} yd past the judged fight spot ({:.0f},{:.0f}, safe {:.0f} yd): the reach of {}",
                                   off - radius, at.x, at.y, radius, entered);
+        // [death413] a melee bot whose target hits it from beyond its reach (a caster standing to cast) loses by
+        // standing: the step past is judged as the fight it is - the target's health left and every idle mob whose
+        // reach covers `to`, at the high end against its health now. b455 Ganna L22 (prot) stood 41 s "does not
+        // chase Redridge Mystic L19 (3 % hp): the reach of Black Dragon Whelp L18" under its bolts and died
+        if (!PlayerbotAI::IsRanged(bot) && target->GetVictim() == bot && !bot->IsWithinMeleeRange(target))
+        {
+            float const botDps = std::max(OwnDamage(bot, target).burstDps, 1.0f);
+            struct Foe
+            {
+                float hp, dps, variance;
+            };
+            std::vector<Foe> foes{{float(target->GetHealth()), MobDps(target, bot), DamageVariancePerSec(target, bot)}};
+            float const look = sPlayerbotAIConfig.SightDistance;
+            std::list<Unit*> units;
+            Acore::AnyUnitInObjectRangeCheck check(bot, look);
+            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+            Cell::VisitObjects(bot, searcher, look);
+            for (Unit* unit : units)
+                if (Creature* mob = unit->ToCreature())
+                    if (mob != target && mob->IsAlive() && !mob->IsInCombat() && mob->IsHostileTo(bot) &&
+                        mob->HasReactState(REACT_AGGRESSIVE) && !mob->GetCharmerOrOwnerGUID() &&
+                        InDisc(AggroDisc(mob, bot), to))
+                        foes.push_back({float(mob->GetHealth()), MobDps(mob, bot), DamageVariancePerSec(mob, bot)});
+            float aliveDps = 0.0f;
+            float aliveVariance = 0.0f;
+            for (Foe const& foe : foes)
+            {
+                aliveDps += foe.dps;
+                aliveVariance += foe.variance;
+            }
+            float seconds = 0.0f;
+            float damage = 0.0f;
+            float variance = 0.0f;
+            for (Foe const& foe : foes)
+            {
+                float const kill = foe.hp / botDps;
+                seconds += kill;
+                damage += aliveDps * kill;
+                variance += aliveVariance * kill;
+                aliveDps -= foe.dps;
+                aliveVariance -= foe.variance;
+            }
+            float const high = damage + 2.0f * std::sqrt(std::max(variance, 0.0f));
+            float const mana = float(bot->GetPower(POWER_MANA));
+            float const ehp = float(bot->GetHealth()) +
+                              SurvivalKit::HealPoints(bot, seconds, mana, true, false,
+                                                      damage / std::max(seconds, 1.0f));
+            if (high < ehp)
+            {
+                LOG_INFO("playerbots", "[death413] {} L{} steps past its judged fight spot after {} L{} out of its "
+                         "reach: {} mob(s) there, {:.0f} dmg at the high end over {:.0f} s at ehp {:.0f}",
+                         bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), foes.size(), high,
+                         seconds, ehp);
+                std::lock_guard<std::mutex> guard(lock);
+                auto& engage = states[bot->GetGUID().GetCounter()].engage;
+                engage.fightAt = to;
+                engage.safeRadius = 0.0f;
+                return false;
+            }
+        }
         return true;
     }
 
