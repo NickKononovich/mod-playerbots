@@ -38,6 +38,7 @@
 #include "SpellMgr.h"
 #include "StatsWeightCalculator.h"
 #include "Timer.h"
+#include "Trainer.h"  // [craft420] the recipes' trainer skill
 
 namespace
 {
@@ -368,9 +369,57 @@ namespace
         }
     }
 
+    // [craft420] the skill a recipe really needs: the lowest trainer ReqSkillRank, else its recipe items'
+    // RequiredSkillRank. SkillLineAbility MinSkillLineRank is 1 for most Tailoring / Leatherworking recipes, so every
+    // need read "craft (Tail 1)": a skill-up walk never unlocked one ("unlocks 0c") and crafters were sent to train
+    // recipes their trainer refuses (b462 Eraelor LW 13: "recipe Fletcher's Gloves", LW 125)
+    std::unordered_map<uint32, uint32> RecipeSkills()
+    {
+        std::unordered_map<uint32, uint32> req;
+        auto const taught = [](uint32 spellId)
+        {
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId))
+                for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+                    if (info->Effects[e].Effect == SPELL_EFFECT_LEARN_SPELL && info->Effects[e].TriggerSpell)
+                        return info->Effects[e].TriggerSpell;
+            return spellId;
+        };
+        auto const lower = [&req](uint32 spellId, uint32 rank)
+        {
+            auto const [itr, added] = req.emplace(spellId, rank);
+            if (!added)
+                itr->second = std::min(itr->second, rank);
+        };
+        std::unordered_set<uint32> trained;
+        for (auto const& [entry, creature] : *sObjectMgr->GetCreatureTemplates())
+            if (Trainer::Trainer const* trainer = sObjectMgr->GetTrainer(entry))
+                for (Trainer::Spell const& spell : trainer->GetSpells())
+                    if (spell.ReqSkillLine)
+                    {
+                        uint32 const recipe = taught(spell.SpellId);
+                        lower(recipe, spell.ReqSkillRank);
+                        trained.insert(recipe);
+                    }
+        constexpr uint32 SPELL_LEARNING = 483;  // a recipe item's first spell, the second is the recipe
+        constexpr uint32 SPELL_LEARNING_ALT = 55884;
+        for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
+        {
+            if (proto.Class != ITEM_CLASS_RECIPE || !proto.RequiredSkillRank)
+                continue;
+            uint32 const first = uint32(proto.Spells[0].SpellId);
+            uint32 const recipe = first == SPELL_LEARNING || first == SPELL_LEARNING_ALT
+                                      ? uint32(proto.Spells[1].SpellId)
+                                      : taught(first);
+            if (recipe && !trained.count(recipe))
+                lower(recipe, proto.RequiredSkillRank);
+        }
+        return req;
+    }
+
     void LoadCrafts(std::vector<uint32> const& craftLines)
     {
         std::unordered_set<uint32> lines(craftLines.begin(), craftLines.end());
+        std::unordered_map<uint32, uint32> const skills = RecipeSkills();  // [craft420]
         for (uint32 i = 0; i < sSkillLineAbilityStore.GetNumRows(); ++i)
         {
             SkillLineAbilityEntry const* ability = sSkillLineAbilityStore.LookupEntry(i);
@@ -392,6 +441,8 @@ namespace
                 recipe.spellId = ability->Spell;
                 recipe.skillLine = ability->SkillLine;
                 recipe.reqSkill = ability->MinSkillLineRank;
+                if (auto const req = skills.find(recipe.spellId); req != skills.end())  // [craft420]
+                    recipe.reqSkill = std::max(recipe.reqSkill, req->second);
                 recipe.itemId = item;
                 recipe.made = uint32(std::max(1, info->Effects[e].CalcValue()));
                 for (uint8 r = 0; r < MAX_SPELL_REAGENTS; ++r)
