@@ -7225,6 +7225,25 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
             case GuildOrderType::BANK_DEPOSIT:
             case GuildOrderType::BANK_WITHDRAW:
             {
+                // [bank407] the order lives until the next plan: once its items are in (or taken out) there is
+                // nothing left for the vault, so no empty visit (b453 Brelir: 4 visits "put 0 from 0 items")
+                uint32 const selfLow = bot->GetGUID().GetCounter();
+                bool const work =
+                    order.type == GuildOrderType::BANK_DEPOSIT
+                        ? std::any_of(st.held.begin(), st.held.end(),
+                                      [&](HeldItem const& h)
+                                      {
+                                          return h.purpose != "pending" && h.forLow != selfLow &&
+                                                 !TransferHolds(h.itemGuidLow);
+                                      })
+                        : !withdraw_[selfLow].empty();
+                if (!work)
+                {
+                    LOG_INFO("playerbots", "[bank407] {}: {} has nothing left to move, no vault visit",
+                             bot->GetName(),
+                             order.type == GuildOrderType::BANK_DEPOSIT ? "BANK_DEPOSIT" : "BANK_WITHDRAW");
+                    continue;
+                }
                 WorldPosition pos;
                 float dist = 0;
                 // [guild14] a solo bot walks to the vault only on a safe walk (b303 Laaral L10 died twice on its bank
