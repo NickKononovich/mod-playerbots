@@ -908,7 +908,21 @@ Swing WhiteSwing(Model const& m, Unit* attacker, WeaponAttackType att, float raw
     float crit = std::max(0.0f, attacker->GetUnitCriticalChance(att, m.target));
     if (attacker == m.bot)
         crit += m.meleeCritGain + m.bonus.critTaken;
-    float const before = miss + dodge + parry + glance;
+    // [death445] Unit::RollMeleeOutcomeAgainst: a creature blocks from the front (Unit::GetUnitBlockChance 5 % plus
+    // its block auras, less the skill bonus; not with CREATURE_FLAG_EXTRA_NO_BLOCK, controlled or casting), the hit
+    // less its block value (Creature::GetShieldBlockValue: level / 2 + strength / 20) and never a crit
+    float block = 0.0f;
+    float blockValue = 0.0f;
+    if (att != RANGED_ATTACK && !m.standIn && m.front && !m.target->HasUnitState(UNIT_STATE_CONTROLLED))
+        if (Creature* creature = m.target->ToCreature();
+            creature && !creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_BLOCK))
+        {
+            float const skillBonus = SKILL_BONUS_PCT * float(int32(attacker->GetWeaponSkillValue(att, m.target)) -
+                                                             int32(m.target->GetMaxSkillValueForLevel(attacker)));
+            block = std::max(0.0f, m.target->GetUnitBlockChance() - skillBonus);
+            blockValue = float(m.target->GetShieldBlockValue());
+        }
+    float const before = miss + dodge + parry + block + glance;
     crit = std::clamp(crit, 0.0f, std::max(0.0f, 100.0f - before));
     float const hit = std::max(0.0f, 100.0f - before - crit);
 
@@ -922,8 +936,9 @@ Swing WhiteSwing(Model const& m, Unit* attacker, WeaponAttackType att, float raw
              float(attacker->GetTotalAuraModifierByMiscMask(SPELL_AURA_MOD_CRIT_PERCENT_VERSUS,
                                                             m.target->GetCreatureTypeMask()))) /
                 100.0f;
-    out.damage = done * (hit + glance * glanceMult + crit * critMult) / 100.0f;
-    out.landed = (hit + glance + crit) / 100.0f;
+    out.damage = (done * (hit + glance * glanceMult + crit * critMult) + std::max(0.0f, done - blockValue) * block) /
+                 100.0f;
+    out.landed = (hit + glance + crit + block) / 100.0f;
     out.crit = crit / 100.0f;
 
     // Unit::RewardRage on the landed hit: (damage / conversion x 7.5 + speed factor) / 2, the factor doubled on a
@@ -938,7 +953,7 @@ Swing WhiteSwing(Model const& m, Unit* attacker, WeaponAttackType att, float raw
         float const part = done / conversion * 7.5f;
         float const normal = std::min((part + factor) / 2.0f, part * 2.0f);
         float const critical = std::min((part * WHITE_CRIT_MULT + factor * 2.0f) / 2.0f, part * 4.0f);
-        float rage = ((hit + glance) * normal + crit * critical) / 100.0f;
+        float rage = ((hit + glance + block) * normal + crit * critical) / 100.0f;
         AddPct(rage, float(m.bot->GetTotalAuraModifier(SPELL_AURA_MOD_RAGE_FROM_DAMAGE_DEALT)));
         out.rage = rage * sWorld->getRate(RATE_POWER_RAGE_INCOME) * RAGE_UNITS;
     }
