@@ -2490,14 +2490,11 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     if (why)
         *why = Acore::StringFormat("{:.0f} % = {:.2f} %/s ({}) x {:.0f} s + {:.0f} reserve ({}) - {:.0f} cooldowns{}",
                                    line, rate, measured ? source : "spell data", fightSec, reserve,
-                                   (uncertainSec >= 0.0f && measured
-                                        ? Acore::StringFormat("x {:.1f} s uncertainty", uncertainSec)
-                                        : Acore::StringFormat("one more mob, {:.1f} s", oneMobSec)) +
-                                       healFloorWhy,
+                                   Acore::StringFormat("one more mob, {:.1f} s", oneMobSec) + healFloorWhy,
                                    returned, pick.empty() ? std::string() : " (" + pick + ")");
     if (why)
         *why += timeline;
-    if (why && (rotation >= 0.0f || (nonstop >= 0.0f && rate == nonstop)))  // [lead855] [lead1162]
+    if (why && rotation >= 0.0f)  // [lead855]
         *why += "; its rotation " + rotationWhy;
     if (why && perTankHealth > 0.0f)  // [lead258]
         *why += Acore::StringFormat("; heals {:.1f} % per tank health ({}) x {:.2f} cost{}", perTankHealth,
