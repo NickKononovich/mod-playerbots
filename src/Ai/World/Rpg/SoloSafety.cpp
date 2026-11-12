@@ -161,6 +161,8 @@ namespace
         uint32 fights = 0;
         // rest and recovery
         bool rest = false;
+        bool restAfterDeath = false;  // [death397] the rest after a death outlives a fight met on the way
+        bool loggedDeathRest = false;
         std::string restWhy;
         bool recover = false;
         // one log line per target and verdict
@@ -561,6 +563,19 @@ namespace
         state.formula = DpsEstimate::Estimate(bot, mob, state.formulaCtx);
         state.formulaEntry = mob ? mob->GetEntry() : 0;
         state.formulaLevel = mob ? mob->GetLevel() : 0;
+        // [death398] an engage whose target is not in this fight (its pull was dropped, never made): the fight is not
+        // that engage's. b453 Keenonk L22 died to 5 Redridge gnolls "pulled Blackrock Grunt judged 2 mobs", its fight
+        // spot 650 yd off - the deaths139 lines and the LOST line read the stale engage's numbers
+        if (state.engaged && mob && state.engage.target != mob->GetGUID())
+        {
+            Creature* engaged = ObjectAccessor::GetCreature(*bot, state.engage.target);
+            if (!engaged || !engaged->IsAlive() || engaged->GetVictim() != bot)
+            {
+                LOG_INFO("playerbots", "[death398] {} L{} fight on {} L{} opens apart from its stale engage of {}",
+                         bot->GetName(), bot->GetLevel(), mob->GetName(), mob->GetLevel(), state.engage.targetName);
+                state.engaged = false;
+            }
+        }
         // [deaths12] a fight the judge did not open (b350 Geron L10 at Frostmane Hold, Lyleria L9 at Ban'ethil
         // Hollow: "no judged pull (attacked)", nothing in the log says what came): the first mob, how it moves
         // (wanderer: its home and area; patrol; idle), where it stood against its aggro reach, the bot's state
@@ -1139,6 +1154,7 @@ namespace
         float seconds = 0.0f;
         float damage = 0.0f;
         float targetDamage = 0.0f;
+        float variance = 0.0f;
         for (RouteFoe const& foe : foes)
         {
             float hp = foe.hp + HealToCome(foe.mob, foe.hp / botDps);
@@ -1151,16 +1167,43 @@ namespace
             }
             seconds += hp / whiteDps;
             damage += foe.dps * seconds;
+            // [death396] the judge's high end ([death386]): the swings' and casts' spread over the seconds each one
+            // lives. Before, the mean: b453 Maronic L21 "Redridge Brute: wins on the mean (2949 dmg) but not at the
+            // high end (3610 dmg) at ehp 3370 full" - its walks were priced through the camps the judge refused
+            float swings = 0.0f;
+            MeleeDps(foe.mob, bot, &swings);
+            variance += (swings + SpellVarianceOf(foe.mob)) * seconds;
             if (&foe == &foes.front())
                 targetDamage = foe.dps * seconds;
         }
+        constexpr float HIGH_END_DEVIATIONS = 2.0f;  // the judge's one-sided 97.7 % bound
+        float const high = damage + HIGH_END_DEVIATIONS * std::sqrt(variance);
         float const health = float(bot->GetMaxHealth());
-        if (damage < health)
+        if (high < health)
             return false;  // no heal needed (the heal kit is read only for a close call)
         float const spare = spends ? std::max(0.0f, maxMana - own.manaPerSec * seconds) : maxMana;
         float const heals = SurvivalKit::HealPoints(bot, seconds, spare, true);
         float const ehp = health + std::min(petHealth, targetDamage) + heals;
-        return damage >= ehp;
+        if (damage < ehp && high >= ehp && !foes.empty())
+        {
+            static std::mutex highLogLock;  // a log cadence per bot and mob kind, no decision reads it
+            static std::unordered_set<uint64> highLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(highLogLock);
+                if (highLogged.size() > 65536)
+                    highLogged.clear();
+                fresh = highLogged.insert(uint64(foes.front().mob->GetEntry()) * 1000003ull +
+                                          bot->GetGUID().GetCounter())
+                            .second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[death396] {} L{} walls its walk at {} L{} ({} mobs): wins on the mean ({:.0f} "
+                         "dmg) but not at the high end ({:.0f} dmg, +2 sd) at ehp {:.0f} full",
+                         bot->GetName(), bot->GetLevel(), foes.front().mob->GetName(), foes.front().mob->GetLevel(),
+                         foes.size(), damage, high, ehp);
+        }
+        return high >= ehp;
     }
 
     char const* KindName(SoloSafety::Verdict::Kind kind)
@@ -1535,6 +1578,17 @@ namespace SoloSafety
     }
 
     float MapWanderReach(uint32 mapId) { return MaxWanderDistance(mapId); }
+
+    float DamageVariancePerSec(Unit* mob, Player* victim)
+    {
+        if (!mob || !victim)
+            return 0.0f;
+        float variance = 0.0f;
+        MeleeDps(mob, victim, &variance);
+        if (Creature* caster = mob->ToCreature())
+            variance += SpellVarianceOf(caster);
+        return variance;
+    }
 
     std::vector<Creature*> PackAt(Player* bot, Creature* target, G3D::Vector3 const& fight,
                                   std::vector<G3D::Vector3> const& stands)
@@ -2703,8 +2757,16 @@ namespace SoloSafety
         SoloBotState& state = found->second;
         if (bot->IsInCombat() || !bot->IsAlive())
         {
-            if (bot->IsInCombat())
+            // [death397] ... but the rest after a death: b453 Maronic L21 rose at half health, a 2.6 s fight cleared
+            // that rest, its hub walk went on unrested into the Redridge Bashers' camp and it died again
+            if (bot->IsInCombat() && !state.restAfterDeath)
                 state.rest = false;
+            else if (bot->IsInCombat() && !state.loggedDeathRest)
+            {
+                state.loggedDeathRest = true;
+                LOG_INFO("playerbots", "[death397] {} L{} keeps its rest after a death through a fight (hp {:.0f} %)",
+                         bot->GetName(), bot->GetLevel(), bot->GetHealthPct());
+            }
             return false;
         }
         bool const healthFull = bot->GetHealth() >= bot->GetMaxHealth();
@@ -2713,6 +2775,7 @@ namespace SoloSafety
         if (healthFull && manaFull)
         {
             state.rest = false;
+            state.restAfterDeath = false;
             return false;
         }
         bool const wants = mana ? !manaFull : !healthFull;
@@ -2866,6 +2929,8 @@ namespace SoloSafety
         CloseFight(bot, state, true);
         state.recover = true;
         state.rest = true;
+        state.restAfterDeath = true;
+        state.loggedDeathRest = false;
         state.restWhy = "after a death";
     }
 

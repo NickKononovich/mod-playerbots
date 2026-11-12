@@ -58,6 +58,9 @@ namespace SoloSafety
     // target itself is not in it. Judged with `bot`'s level and reach
     std::vector<Creature*> PackAt(Player* bot, Creature* target, G3D::Vector3 const& fight,
                                   std::vector<G3D::Vector3> const& stands);
+    // [death396] the spread of `mob`'s damage on `victim` per second of the fight (its swings' rolls and its casts'):
+    // the variance the judge's high end (two standard deviations) sums over the seconds it lives
+    float DamageVariancePerSec(Unit* mob, Player* victim);
 
     // DeathRecorder's DealDamage hook (map thread): the bot's dealt and taken damage, per fight and per attacker
     void NoteDamage(Unit* attacker, Unit* victim, uint32 damage);

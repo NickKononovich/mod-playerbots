@@ -4206,11 +4206,17 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         std::sort(pack.begin() + 1, pack.end(), [](Mob const& a, Mob const& b)
                   { return a.dps / std::max(a.hp, 1.0f) > b.dps / std::max(b.hp, 1.0f); });
         Priced p{holder, 0.0f, 0.0f, 0.0f, 0.0f};
+        float variance = 0.0f;
         for (Mob const& mob : pack)
         {
             p.seconds += mob.hp / sumDps;
             p.damage += mob.dps * p.seconds;
+            variance += SoloSafety::DamageVariancePerSec(mob.unit, holder) * p.seconds;
         }
+        // [death396] the party's pulls at the solo judge's high end ([death386]: two standard deviations of the
+        // mobs' rolls), not their mean: b453 Irorm L21 / Keenonk L22 fought the Redridge Canyons camp on the mean
+        constexpr float HIGH_END_DEVIATIONS = 2.0f;
+        p.damage += HIGH_END_DEVIATIONS * std::sqrt(variance);
         // its heals: the holder's own and the healers', per fight second, as far as their mana lasts (a co-op
         // party's measured rates; an open-world group's kit, [deaths12])
         float healNow = 0.0f, healFull = 0.0f;
