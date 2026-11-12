@@ -9,6 +9,7 @@
 
 #include "Battleground.h"
 #include "Group.h"
+#include "LeaderOrders.h"  // [dun253]
 #include "ObjectAccessor.h"
 #include "PathGenerator.h"
 #include "Playerbots.h"
@@ -113,7 +114,14 @@ Unit* PartyMemberToResurrect::Calculate()
         Player* member = ObjectAccessor::FindPlayer(first);
         if (!member || member->IsAlive() || !group->IsMember(first))
             RaidLeader::SetResurrectFirst(bot, ObjectGuid::Empty);
-        else if (member != bot && member->IsInWorld() && finder.Check(member) && Check(member))
+        // [dun253] b461 wc-n five5-5 3277-3338 s: the hunter's body lay 240 yd from the shaman and the paladins
+        // (the fight had drawn them off); the leader judged a walk to it (its route) and ordered the resurrection,
+        // each resurrecter dropped it at once ("no walk into range and sight": outside RESURRECT_WALK_RANGE) and
+        // the body released into a ghost that never got back. The leader's named body is walked to on the
+        // leader's own route, however far
+        else if (member != bot && member->IsInWorld() && finder.Check(member) &&
+                 (Check(member) || (!bot->IsInCombat() && member->GetMapId() == bot->GetMapId() &&
+                                    Leader::Route(bot, member->GetPosition()).complete)))
             return member;
     }
 
