@@ -4173,6 +4173,32 @@ std::string GuildCoordinator::FiveWait(BotState const& st) const
                : "five " + std::to_string(itr->first) + " runs " + itr->second.dungeon + " (the dungeon leader leads)";
 }
 
+// [stat1] lock_ held. A five member's status label: "DUNGEON <dungeon> five N (<role>): <what the five does>", the
+// run's phase from its dungeon leader ("in the dungeon: boss fight Lord Cobrahn (bosses 1/8)"); "" outside a five
+std::string GuildCoordinator::FiveLabel(BotState const& st, uint32 low) const
+{
+    if (!st.fiveId)
+        return "";
+    auto const itr = fives_.find(st.fiveId);
+    if (itr == fives_.end())
+        return "";
+    GuildFive const& five = itr->second;
+    auto const role = five.roles.find(low);
+    std::string doing;
+    if (five.stage == GuildFive::Stage::Gather)
+        doing = five.arrived.count(low) ? "waits at the entrance " + std::to_string(five.arrived.size()) + "/" +
+                                              std::to_string(five.members.size())
+                                        : "walks to the entrance";
+    else
+    {
+        std::string const phase = Leader::Dungeon::DungeonRuns::Instance().Phase(five.id);
+        doing = phase.empty() ? "hands in the report" : phase;
+    }
+    return "DUNGEON " + five.dungeon + " five " + std::to_string(five.id) + " (" +
+           RoleRu(role != five.roles.end() ? role->second : "dps") + (low == five.leaderLow ? " leader" : "") +
+           "): " + doing;
+}
+
 void GuildCoordinator::SendFives(Player* player) const
 {
     // OF;id;dungeon;status;leader;members;why

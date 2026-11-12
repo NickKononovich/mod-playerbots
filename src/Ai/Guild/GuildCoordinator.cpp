@@ -1041,20 +1041,70 @@ uint32 GuildCoordinator::QuestProgress(Player* bot)
     return progress;
 }
 
+// lock_ held. [stat1] what the bot does now: its owner's label (UpdateHealth's, BotState::ownerLabel) over the New
+// RPG status it keeps under a five / party / task (b461 Emdyl: 6400 s in two Wailing Caverns fives read as its quest)
 std::string GuildCoordinator::StatusName(Player* bot, PlayerbotAI* botAI) const
 {
     if (!botAI)
         return "human playing";
+    auto const st = bots_.find(bot->GetGUID().GetCounter());
+    std::string const owner = st != bots_.end() ? st->second.ownerLabel : "";
     if (!bot->IsAlive())
-        return bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? "ghost" : "dead";
-    std::string text = RpgName(uint32(botAI->rpgInfo.GetStatus()));
+        return std::string(bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? "ghost" : "dead") +
+               (owner.empty() ? "" : " / " + owner);
+    std::string text = owner.empty() ? RpgName(uint32(botAI->rpgInfo.GetStatus())) : owner;
     if (bot->IsInCombat())
         text = "combat/" + text;
+    if (!owner.empty())
+        return text;
     if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
         text += " q" + std::to_string(quest->questId) + (quest->quest ? " " + quest->quest->GetTitle() : "");
     if (botAI->rpgInfo.vendorRunEntry)
         text += " vendor: " + botAI->rpgInfo.vendorRunReason;
     return text;
+}
+
+// lock_ held. [stat1] the owner that runs the bot now where its New RPG status would not say it: a five, a help /
+// co-op party, a followed group (each with its time bucket), a guild task its last NextStep ran, a trip, a rest (the
+// status label only); "" = its New RPG status says it
+std::string GuildCoordinator::OwnerLabel(Player* bot, PlayerbotAI* botAI, BotState const& st,
+                                         std::string& bucket) const
+{
+    bucket.clear();
+    uint32 const low = bot->GetGUID().GetCounter();
+    if (std::string const five = FiveLabel(st, low); !five.empty())
+    {
+        bucket = "DUNGEON";
+        return five;
+    }
+    Group* group = bot->GetGroup();
+    Player* leader = group ? ObjectAccessor::FindPlayer(group->GetLeaderGUID()) : nullptr;
+    if (NewRpgCoop::InParty(low))
+    {
+        bucket = "HELP";
+        for (GuildOrder const& e : st.external)
+            if (e.type == GuildOrderType::COOP)
+                return "PARTY " + e.details;
+        return "PARTY help party" + (leader && leader != bot ? " of " + leader->GetName() : std::string());
+    }
+    if (leader && leader != bot && !bot->InBattleground())
+    {
+        bucket = "FOLLOW";
+        return "FOLLOW " + leader->GetName() + (IsRealPlayer(leader) ? " (player)" : "");
+    }
+    if (bot->IsInFlight())
+        return "TRAVEL flight";
+    NewRpgInfo const& info = botAI->rpgInfo;
+    if (bot->GetTransport() || info.trip.phase == NewRpgInfo::TripPhase::Wait ||
+        info.trip.phase == NewRpgInfo::TripPhase::Ride || info.trip.phase == NewRpgInfo::TripPhase::Board)
+        return "TRAVEL boat / zeppelin / tram";
+    NewRpgStatus const status = info.GetStatus();
+    bool const ownPlan = status == RPG_DO_QUEST || status == RPG_GO_GRIND || status == RPG_WANDER_RANDOM;
+    if (!st.stepTask.empty() && !ownPlan)
+        return "TASK " + st.stepTask + (st.run ? " (walks there)" : "");
+    if (bot->getStandState() == UNIT_STAND_STATE_SIT && status != RPG_REST)
+        return std::string("REST eats / drinks (") + RpgName(uint32(status)) + ")";
+    return "";
 }
 
 // the legitimate waits a bot is in by its own state
@@ -7955,8 +8005,13 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                      }))
         NewRpgFishing::Stop(botAI, bot);
     // [tasks] the first step of a task: the start log, the town metrics (wait since creation, tasks per visit)
+    st.stepTask.clear();  // [stat1] set again by the task this step runs
     auto const started = [&](GuildOrder const& o)
     {
+        st.stepTask = std::string(OrderName(o.type)) +
+                      (o.type == GuildOrderType::PROFESSION ? std::string("/") + ProfessionKindName(o.profession)
+                                                            : "") +
+                      (o.townName.empty() ? "" : " " + o.townName) + ": " + OrdersText(o.details, 60);
         if (!st.ranTasks.insert(TaskKey(o)).second)
             return;
         uint32 const now = Now();
@@ -8867,6 +8922,29 @@ void GuildCoordinator::UpdateHealth()
         ++online;
         PlayerbotAI* ai = GET_PLAYERBOT_AI(p);
 
+        // [stat1] its owner, cached for the status label (StatusName) and the stuck check below; its time goes to the
+        // owner's bucket ([qstat] budget DUNGEON / HELP / FOLLOW); a [status] line when the owner changes
+        {
+            std::string bucket;
+            std::string label = ai && !IsRealPlayer(p) ? OwnerLabel(p, ai, st, bucket) : "";
+            std::replace(label.begin(), label.end(), ',', ';');  // the alerts' status= field ends at a comma
+            size_t const role = label.find("): ");  // a five's head ends at its role (a dungeon name may hold ':')
+            std::string const head = bucket.empty() && label.rfind("TASK ", 0) != 0 ? ""
+                                     : role != std::string::npos           ? label.substr(0, role + 1)
+                                                                           : label.substr(0, label.find(':'));
+            if (head != st.ownerLogged)
+            {
+                st.ownerLogged = head;
+                LOG_INFO("playerbots", "[status] {} L{} {} t={}", p->GetName(), uint32(p->GetLevel()),
+                         head.empty() ? std::string("RPG ") + RpgName(ai ? uint32(ai->rpgInfo.GetStatus()) : 0)
+                                      : label,
+                         QuestStats::NowMs());
+            }
+            st.ownerLabel = std::move(label);
+            st.ownerBucket = bucket;
+            QuestStats::NoteOwner(p, bucket);
+        }
+
         // per-hour totals from the deltas of characters online at both samples
         uint64 const xp = XpTotal(p);
         uint32 const quests = uint32(p->getRewardedQuests().size());
@@ -8997,6 +9075,18 @@ void GuildCoordinator::UpdateHealth()
         // [diag253] a legitimate wait (Resurrection Sickness, a flight, a boat / zeppelin / tram, a rest, ...) is no
         // stuck time: the anchor moves on with it, the 60 s count from the wait's end. b424 Dekorhan L17: "STUCK 440 s"
         // right after its 416 s sickness wait ([deaths14] RECOVER) and its rest to full - the waits were counted
+        // [stat1] a member of a help / co-op party or of a followed group stands where its leader stands: it is
+        // judged by its leader's own watch (a five member by its dungeon leader's: FiveWait below)
+        if (st.ownerBucket == "HELP" || st.ownerBucket == "FOLLOW")
+            if (Group* group = p->GetGroup(); group && group->GetLeaderGUID() != p->GetGUID())
+            {
+                auto const lead = bots_.find(group->GetLeaderGUID().GetCounter());
+                bool const leaderStands = lead != bots_.end() && lead->second.anchorAt &&
+                                          now - lead->second.anchorAt >= STUCK_SECONDS;
+                st.anchorAt = now;
+                st.stillWhy = (leaderStands ? "its leader stands (judged there): " : "waits: ") + st.ownerLabel;
+                continue;
+            }
         std::string const wait = WaitReason(p, ai, st);
         if (!wait.empty())
         {
@@ -9084,7 +9174,9 @@ void GuildCoordinator::UpdateHealth()
             auto const st = bots_.find(row.low);
             if (st == bots_.end() || st->second.orders.size() < 2 || !st->second.seen)
                 continue;
-            LOG_INFO("playerbots", "[tasks] {}: {}", Who(row.low), TasksText(st->second));
+            LOG_INFO("playerbots", "[tasks] {}{}: {}", Who(row.low),  // [stat1] what owns it now, if not its New RPG
+                     st->second.ownerLabel.empty() ? "" : " (now " + st->second.ownerLabel + ")",
+                     TasksText(st->second));
         }
     }
 

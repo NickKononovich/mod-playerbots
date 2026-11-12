@@ -28,6 +28,10 @@ namespace QuestStats
     void LogEvent(Player* bot, char const* event, uint32 questId, std::string const& extra);
     // [budget12] a fight's (or a death's: died, from the death to the rise) milliseconds, for the time budget
     void NoteCombat(Player* bot, uint32 combatMs, bool died);
+    // [stat1] the owner that runs the bot instead of its New RPG (DUNGEON: a five, HELP: a help / co-op party, FOLLOW:
+    // a followed group), called with its current owner every few seconds: its time goes to that bucket, fights
+    // included, until "" ends it. A bot never owned costs a map lookup
+    void NoteOwner(Player* bot, std::string const& bucket);
     uint64 NowMs();
     // [log28] the triage's event lines, one per event: a town errand's start / done ("[town] <bot> <errand> done
     // after N s"), a trip's boarding / landing ("[trip] <bot> boards <what>", "[trip] <bot> lands at map M after N s")

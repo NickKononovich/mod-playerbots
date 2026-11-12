@@ -588,6 +588,13 @@ private:
         uint64 combatFoesHp{0};
         bool combatAlerted{false};
         std::string waitReason;
+        // [stat1] its status label while something other than its New RPG owns it (a five, a help / co-op party, a
+        // followed group, a guild task): "" = its New RPG status is the label; the owner's time bucket ("" = its New
+        // RPG status books it); the label's head last logged; the guild task its last NextStep step ran
+        std::string ownerLabel;
+        std::string ownerBucket;
+        std::string ownerLogged;
+        std::string stepTask;
         uint32 skillSum{0};         // [guild15] its profession skills at the last health sample (crafting = progress)
         uint32 casts{0};            // [econ2] its smelt casts (NextStep): a cast is progress, a skill-up or not
         uint32 castsSeen{0};        // [econ2] casts at the last health sample
@@ -1089,6 +1096,9 @@ private:
     static uint32 QuestProgress(Player* bot);
     std::string WaitReason(Player* bot, PlayerbotAI* botAI, BotState const& state) const;
     std::string StatusName(Player* bot, PlayerbotAI* botAI) const;
+    // [stat1] lock_ held: the owner's label and time bucket (see BotState::ownerLabel), FiveLabel its five's part
+    std::string OwnerLabel(Player* bot, PlayerbotAI* botAI, BotState const& st, std::string& bucket) const;
+    std::string FiveLabel(BotState const& st, uint32 low) const;
 
     std::vector<PlanRow> plan_;
     std::unordered_map<uint32, size_t> planIndex_;  // low -> plan_ index; read-only after Load

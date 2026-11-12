@@ -73,7 +73,38 @@ namespace
         uint32 combatMs = 0;  // [budget12] the combat time noted since the last tick (QuestStats::NoteCombat)
         uint32 deadMs = 0;
         uint32 diedAtMs = 0;  // [budget12] its death's time while it is dead
+        // [stat1] the bucket of the owner that runs it instead of its New RPG (a five, a help / co-op party, a
+        // followed group): its time goes there, fights included; "" = its New RPG owns it
+        std::string owner;
     };
+
+    // [budget12] the time since the last booking: its fights and its time dead as noted, the rest the last bucket's;
+    // [stat1] under an owner all but the time dead is the owner's
+    void Book(Counters& c, Player* bot, uint32 ms)
+    {
+        if (!c.diedAtMs && !bot->IsAlive())  // logged in dead: its time dead from here
+            c.diedAtMs = ms;
+        if (c.diedAtMs)  // still dead (a ghost's tick): its time so far
+        {
+            c.deadMs += getMSTimeDiff(c.diedAtMs, ms);
+            c.diedAtMs = ms;
+        }
+        if (c.lastTickMs)
+        {
+            uint32 const gap = getMSTimeDiff(c.lastTickMs, ms);
+            uint32 const fight = c.owner.empty() ? std::min(gap, c.combatMs) : 0;
+            uint32 const dead = std::min(gap - fight, c.deadMs);
+            c.budget["COMBAT"] += fight;
+            c.budget["DEAD"] += dead;
+            std::string const& into = !c.owner.empty()      ? c.owner
+                                      : c.lastBucket.empty() ? std::string("IDLE")
+                                                             : c.lastBucket;
+            c.budget[into] += gap - fight - dead;
+        }
+        c.combatMs = 0;
+        c.deadMs = 0;
+        c.lastTickMs = ms;
+    }
 
     std::mutex lock;
     std::unordered_map<uint32, Counters> counters;  // bot guid counter
@@ -399,6 +430,27 @@ void QuestStats::NoteCombat(Player* bot, uint32 combatMs, bool died)
     (died ? c.deadMs : c.combatMs) += combatMs;
 }
 
+void QuestStats::NoteOwner(Player* bot, std::string const& bucket)
+{
+    if (!Tracked(bot))
+        return;
+    std::lock_guard<std::mutex> guard(lock);
+    auto const itr = counters.find(bot->GetGUID().GetCounter());
+    if (bucket.empty() && (itr == counters.end() || itr->second.owner.empty()))
+        return;  // its New RPG owns it: its own ticks book
+    Counters& c = itr != counters.end() ? itr->second : counters[bot->GetGUID().GetCounter()];
+    uint32 const ms = getMSTime();
+    Book(c, bot, ms);  // the time so far: the last owner's, or the New RPG bucket's up to the owner's start
+    if (bucket.empty())
+        c.lastBucket = "IDLE";  // from the owner's end to its New RPG's next tick
+    c.owner = bucket;
+    if (!c.lastLog || getMSTimeDiff(c.lastLog, ms) >= QSTAT_LOG_MS)  // no New RPG tick logs it while owned
+    {
+        c.lastLog = ms;
+        LogCounters(bot, c, "tick");
+    }
+}
+
 void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* bucket)
 {
     // the quest log against the one of the last tick: accepted, progressed (per objective), completed, abandoned
@@ -446,7 +498,7 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
                     if (bot->IsWalking())
                         c.walkFlagMs += dt;
                 }
-                else if (!c.sampleMoving && !movingNow && walkingState && !bot->IsSitState() &&
+                else if (!c.sampleMoving && !movingNow && walkingState && c.owner.empty() && !bot->IsSitState() &&
                          !bot->IsNonMeleeSpellCast(false))
                 {
                     c.standingMs += dt;
@@ -515,26 +567,7 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
         c.hasLog = true;
 
         uint32 const ms = getMSTime();
-        // [budget12] the gap since the last tick: its fights and its time dead as noted, the rest the last bucket's
-        if (!c.diedAtMs && !bot->IsAlive())  // logged in dead: its time dead from here
-            c.diedAtMs = ms;
-        if (c.diedAtMs)  // still dead (a ghost's tick): its time so far
-        {
-            c.deadMs += getMSTimeDiff(c.diedAtMs, ms);
-            c.diedAtMs = ms;
-        }
-        if (c.lastTickMs)
-        {
-            uint32 const gap = getMSTimeDiff(c.lastTickMs, ms);
-            uint32 const fight = std::min(gap, c.combatMs);
-            uint32 const dead = std::min(gap - fight, c.deadMs);
-            c.budget["COMBAT"] += fight;
-            c.budget["DEAD"] += dead;
-            c.budget[c.lastBucket.empty() ? std::string("IDLE") : c.lastBucket] += gap - fight - dead;
-        }
-        c.combatMs = 0;
-        c.deadMs = 0;
-        c.lastTickMs = ms;
+        Book(c, bot, ms);
         c.lastBucket = bucket ? bucket : "IDLE";
         if (!c.lastLog || getMSTimeDiff(c.lastLog, ms) >= QSTAT_LOG_MS)
         {

@@ -1776,7 +1776,27 @@ namespace TestHarness
     {
         for (auto const& party : _parties)
             if (!IsTerminal(party->phase) && party->guild && party->guildFiveId == fiveId)
-                return PhaseName(party->phase);
+            {
+                // [stat1] the members' status label: the boss it fights, the creature it escorts, its bosses so far
+                std::string phase = PhaseName(party->phase);
+                uint32 killed = 0;
+                bool named = party->phase != Phase::BossFight;
+                for (BossTrack const& boss : party->bosses)
+                {
+                    killed += boss.killed ? 1 : 0;
+                    if (!named && boss.engaged && !boss.killed && !boss.name.empty())
+                    {
+                        phase += " " + boss.name;
+                        named = true;
+                    }
+                }
+                if (!party->escort.IsEmpty())
+                    if (CreatureTemplate const* escorted = sObjectMgr->GetCreatureTemplate(party->escortEntry))
+                        phase += " / escort " + escorted->Name;
+                if (!party->bosses.empty())
+                    phase += " (bosses " + std::to_string(killed) + "/" + std::to_string(party->bosses.size()) + ")";
+                return phase;
+            }
         return "";
     }
 
