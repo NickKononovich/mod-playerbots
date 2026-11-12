@@ -1532,6 +1532,11 @@ namespace SurvivalKit
         if (!botAI)
             return false;
         SoloSafety::Projection const p = SoloSafety::Project(bot);
+        // [death437] the heals it casts on the run (instant spells, item uses: the run-past price's), out of the lock
+        // (HealPoints takes it)
+        float const runHeals = p.open && !p.foes.empty()
+                                   ? HealPoints(bot, p.leashSec, float(bot->GetPower(POWER_MANA)), true, true)
+                                   : 0.0f;
         std::lock_guard<std::mutex> guard(lock);
         KitState& state = states[bot->GetGUID().GetCounter()];
         state.active = false;
@@ -1750,6 +1755,15 @@ namespace SurvivalKit
             flee.why = "no way out clear of other mobs";
         else
             flee = PlanFlee(botAI, bot, p, pieces, state);
+        // [death437] the run's price against its health and the heals it casts on the run (the executor casts them as
+        // the chase to come would kill it), as a run past is priced. b462 Zharet L19 ran "run costs 420 at hp 290"
+        // with a 620 hp potion / stone counted in its run-past price, never used it, and died on the run
+        if (!flee.ok && flee.damage > 0.0f && flee.why.rfind("the run costs", 0) == 0 &&
+            flee.damage < p.health + runHeals)
+        {
+            flee.ok = true;
+            flee.why.clear();
+        }
         // [lag355] user 2026-11-11 (in the open world a run almost always escapes; a death is a bug of the estimate,
         // not a fight to its end): a run the leash prices above its health is still the lesser loss when the fight's
         // damage to come is more - it runs (its way out clear, the same leash, daze and casts priced) rather than
@@ -1912,6 +1926,15 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
             Pet* pet = bot->GetPet();
             if (pet->GetVictim())
                 botAI->PetFollow();
+        }
+        // [death437] its heals on the run (instant spells, item uses), cast as the chases still to come would kill it
+        {
+            float toCome = 0.0f;
+            for (Unit* attacker : bot->getAttackers())
+                if (Creature* mob = attacker ? attacker->ToCreature() : nullptr)
+                    toCome += SoloSafety::RunPastChase(bot, mob).damage;
+            if (SurvivalKit::RunPastHeal(bot, toCome))
+                return true;
         }
         if (bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
         {
