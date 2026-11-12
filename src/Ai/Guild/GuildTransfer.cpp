@@ -2690,6 +2690,8 @@ void GuildCoordinator::RunTransfers(uint32 diff)
                     continue;
                 }
             }
+            uint32 handBack = 0;  // [dun254] what the receiver gives back of a whole stack it took
+            uint32 const entry = item ? item->GetEntry() : 0;
             if (item && t.count && t.count < item->GetCount())
             {
                 Item* const whole = item;
@@ -2704,6 +2706,16 @@ void GuildCoordinator::RunTransfers(uint32 diff)
                     uint32 const giverHas = CountKind(s, kind, s->GetLevel());
                     if (kind && giverHas >= 2 * whole->GetCount())
                         item = whole;
+                    // [dun254] b461 wc-n five4-4: Idunk's bags full, its one stack of 19 Ice Cold Milk under the
+                    // rule above - "no free bag slot to split the stack" on every update, the healer Pherua at 0-2
+                    // drinks for an hour (537 regen stalls on spirit regen), the run timed out at 7/8. The whole
+                    // stack goes and the receiver hands the rest back in a second trade: the given stack's slot
+                    // is free in the giver's bags, the split is the receiver's
+                    else if (kind && r->GetFreeInventorySpace() > 0)
+                    {
+                        item = whole;
+                        handBack = whole->GetCount() - t.count;
+                    }
                 }
                 if (!item)
                 {
@@ -2713,6 +2725,22 @@ void GuildCoordinator::RunTransfers(uint32 diff)
             }
             uint32 const guid = item ? item->GetGUID().GetCounter() : 0;
             std::string const err = DoTrade(s, r, item, money);
+            if (err.empty() && handBack)
+            {
+                // [dun254] the rest of the whole stack back to the giver (the receiver's own split)
+                Item* stack = nullptr;
+                ForEachBagItem(r, [&](Item* i)
+                               {
+                                   if (i->GetEntry() == entry && i->GetCount() > handBack &&
+                                       (!stack || i->GetCount() > stack->GetCount()))
+                                       stack = i;
+                               });
+                Item* back = stack ? Split(r, stack, handBack) : nullptr;
+                std::string const backErr = back ? DoTrade(r, s, back, 0) : "no stack to split";
+                logs.push_back("trade " + Who(t.toLow) + " -> " + Who(t.fromLow) + ": " + ItemText(entry, handBack) +
+                               " back of the whole stack [dun254]" +
+                               (backErr.empty() ? std::string() : " refused: " + backErr + " (the receiver keeps it)"));
+            }
             if (err.empty())
             {
                 logs.push_back("trade " + Who(t.fromLow) + " -> " + Who(t.toLow) + ": " + what + " (" + t.purpose +
@@ -2720,7 +2748,13 @@ void GuildCoordinator::RunTransfers(uint32 diff)
                 outcomes.push_back({t.id, true, false, 0, guid, "", money, -1});
             }
             else
-                outcomes.push_back({t.id, false, false, 0, 0, err, 0, int32(r->GetFreeInventorySpace())});
+            {
+                // [dun254] a refusal of the core's trade opening (a stun, a trade of the other's) passes: tried again
+                // at once; b461 five4-4 waited the rest of the run on the receiver's free slots changing
+                bool const passing = err == "the core did not open the trade";
+                outcomes.push_back(
+                    {t.id, false, false, 0, 0, err, 0, passing ? -1 : int32(r->GetFreeInventorySpace())});
+            }
         }
         else if (t.channel == Transfer::MAIL)
         {
