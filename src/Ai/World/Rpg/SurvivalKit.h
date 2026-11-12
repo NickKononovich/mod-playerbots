@@ -53,6 +53,9 @@ namespace SurvivalKit
     // cooldown, mana, form), its aura not on the bot yet, lasting `seconds`, and no daze of its own on being struck
     // (Aspect of the Cheetah); 0: none. `pct`: its speed share (0.7 for Sprint)
     uint32 RunPastSpeed(Player* bot, float seconds, float& pct);
+    // [death385] the run-past executor's heal: the biggest on-the-move heal HealPoints counts, cast when the chases
+    // to come (`damageToCome`) reach its health
+    bool RunPastHeal(Player* bot, float damageToCome);
 }
 
 class SoloSurvivalTrigger : public Trigger

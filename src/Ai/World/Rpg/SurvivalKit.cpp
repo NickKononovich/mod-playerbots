@@ -1362,6 +1362,47 @@ namespace SurvivalKit
         return c.spell;
     }
 
+    bool RunPastHeal(Player* bot, float damageToCome)
+    {
+        PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+        if (!botAI || damageToCome < float(bot->GetHealth()) || bot->IsNonMeleeSpellCast(false))
+            return false;
+        std::vector<Piece> pieces;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            pieces = KitOf(bot).pieces;
+            ItemPieces(bot, pieces);
+        }
+        // the pieces HealPoints counts on the move: instant spells and item uses, no channel, castable now
+        Piece const* best = nullptr;
+        for (Piece const& piece : pieces)
+            if (piece.kind == Kind::Heal && piece.amount > 0.0f && !piece.needsWindow && (piece.item || piece.instant) &&
+                (piece.item || !bot->HasSpellCooldown(piece.spell)) && (!best || piece.amount > best->amount) &&
+                (piece.item ? FindItem(bot, piece.item) != nullptr : Castable(botAI, bot, piece, bot)))
+                best = &piece;
+        if (!best)
+            return false;
+        bool cast = false;
+        if (best->item)
+        {
+            Item* item = FindItem(bot, best->item);
+            if (item && bot->CanUseItem(item) == EQUIP_ERR_OK)
+            {
+                SpellCastTargets targets;
+                targets.SetUnitTarget(bot);
+                bot->CastItemUseSpell(item, targets, 1, 0);
+                cast = true;
+            }
+        }
+        else
+            cast = botAI->CastSpell(best->spell, bot);
+        if (cast)
+            LOG_INFO("playerbots", "[death385] {} L{} run past: heals on the move ({} {}, {:.0f} hp) - {:.0f} dmg to "
+                     "come at hp {}", bot->GetName(), bot->GetLevel(), best->item ? "item" : "spell",
+                     best->item ? best->item : best->spell, best->amount, damageToCome, bot->GetHealth());
+        return cast;
+    }
+
     bool Evaluate(Player* bot)
     {
         if (!bot || !bot->IsInCombat() || !SoloSafety::Applies(bot))
@@ -2008,6 +2049,18 @@ bool SoloRunPastAction::Execute(Event /*event*/)
             botAI->PetFollow();
     if (bot->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_CONTROLLED))
         return true;
+    // [death385] the heals its price counted on the move (SurvivesRunPast's HealPoints: instant spells, item uses)
+    // are cast when the chases still to come would kill it. b449 Namwe L18 "run-past chase priced 691 dmg against hp
+    // 1168, took 584 since" and Uraela L19 (hp 946 at 491 max) ran past with their potions and Gift of the Naaru
+    // counted and never used them
+    {
+        float toCome = 0.0f;
+        for (Unit* attacker : bot->getAttackers())
+            if (Creature* mob = attacker ? attacker->ToCreature() : nullptr)
+                toCome += SoloSafety::RunPastChase(bot, mob).damage;
+        if (SurvivalKit::RunPastHeal(bot, toCome))
+            return true;
+    }
     // [lag360] the speed piece the run's price counted (instant, castable now, its aura not on yet): cast first
     {
         float pct = 0.0f;
