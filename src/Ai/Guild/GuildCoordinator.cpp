@@ -262,6 +262,8 @@ namespace
         return free;
     }
 
+    constexpr uint32 TOTEM_CATEGORY_RUNED_COPPER_ROD = 6;  // [craft400] TotemCategory.dbc: Runed Copper Rod
+
     // [econ2] the tool a profession's work needs (NewRpgProfession's list), 0 = none
     uint32 ProfessionTool(uint32 line)
     {
@@ -274,6 +276,10 @@ namespace
             case SKILL_JEWELCRAFTING: return 20815;  // Jeweler's Kit
             case SKILL_INSCRIPTION:   return 39505;  // Virtuoso Inking Set
             case SKILL_FISHING:       return 6256;   // Fishing Pole
+            // [craft400] the Copper Rod (trade vendors) the enchanter makes its Runed Copper Rod of (Copper Rod,
+            // Strange Dust, Lesser Magic Essence: [ench157]); every first enchant of the line needs that rod. b456:
+            // none of the five enchanters held a rod, the bracer / chest enchants never castable
+            case SKILL_ENCHANTING:    return 6217;
             default:                  return 0;
         }
     }
@@ -285,6 +291,8 @@ namespace
             return true;
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(tool);
         if (proto && proto->TotemCategory && p->HasItemTotemCategory(proto->TotemCategory))
+            return true;
+        if (line == SKILL_ENCHANTING && p->HasItemTotemCategory(TOTEM_CATEGORY_RUNED_COPPER_ROD))  // [craft400]
             return true;
         return p->HasItemCount(tool, 1, false);
     }

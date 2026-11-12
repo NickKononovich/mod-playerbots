@@ -108,6 +108,8 @@ namespace
     };
 
     // The tool a profession's work needs, bought at a vendor (the game's own items).
+    constexpr uint32 TOTEM_CATEGORY_RUNED_COPPER_ROD = 6;  // [craft400] TotemCategory.dbc: Runed Copper Rod
+
     uint32 ToolFor(uint32 skill)
     {
         switch (skill)
@@ -119,6 +121,7 @@ namespace
             case SKILL_JEWELCRAFTING:  return 20815;  // Jeweler's Kit
             case SKILL_INSCRIPTION:    return 39505;  // Virtuoso Inking Set
             case SKILL_FISHING:        return 6256;   // Fishing Pole
+            case SKILL_ENCHANTING:     return 6217;   // [craft400] Copper Rod (made into the Runed Copper Rod)
             default:                   return 0;
         }
     }
@@ -160,7 +163,7 @@ namespace
             std::unordered_map<uint32, bool> seen;  // trainer entry -> teaches a rank
             std::unordered_map<uint32, bool> tools;
             for (uint32 skill : {SKILL_MINING, SKILL_SKINNING, SKILL_BLACKSMITHING, SKILL_ENGINEERING,
-                                 SKILL_JEWELCRAFTING, SKILL_INSCRIPTION, SKILL_FISHING})
+                                 SKILL_JEWELCRAFTING, SKILL_INSCRIPTION, SKILL_FISHING, SKILL_ENCHANTING})
                 tools[ToolFor(skill)] = true;
 
             // [vendor60] the quests' required items no loot gives (q116 Dry Times: 1262 / 1941 / 1942 are sold by
@@ -297,6 +300,10 @@ namespace
     {
         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
         if (proto && proto->TotemCategory && bot->HasItemTotemCategory(proto->TotemCategory))
+            return true;
+        // [craft400] the Copper Rod is held as a rod too once it is runed (Runed Copper Rod's totem category 6, the
+        // core's category chain counts every higher rod)
+        if (itemId == ToolFor(SKILL_ENCHANTING) && bot->HasItemTotemCategory(TOTEM_CATEGORY_RUNED_COPPER_ROD))
             return true;
         return bot->HasItemCount(itemId, 1, false);
     }

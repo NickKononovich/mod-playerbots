@@ -586,7 +586,7 @@ void GuildCoordinator::LoadMailboxes()
     toolVendors_.clear();
     // the professions' tools (NewRpgProfession's list): Mining Pick, Skinning Knife, Blacksmith Hammer, Arclight
     // Spanner, Jeweler's Kit, Virtuoso Inking Set, Fishing Pole
-    std::set<uint32> const tools{2901, 7005, 5956, 6219, 20815, 39505, 6256};
+    std::set<uint32> const tools{2901, 7005, 5956, 6219, 20815, 39505, 6256, 6217};  // [craft400] Copper Rod
     auto const spotOf = [](CreatureData const& data)
     {
         NpcSpot n;

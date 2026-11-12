@@ -188,7 +188,32 @@ bool EatAction::Execute(Event event)
 
     std::string why;
     RestState::WantsFood(bot, &why);
-    if (!UseItemAction::Execute(event))
+    // [craft400] the food of the least worth that still covers the rest's health need (its restore, at most the max
+    // health, against the missing health), the old food first while it fills; none covers it: the one restoring
+    // most. Before, the highest-level food went first (the "inventory items" order) and the outgrown stacks stayed
+    Item* pick = nullptr;
+    if (event.getParam().empty())
+    {
+        float const missing = float(bot->GetMaxHealth() - std::min(bot->GetHealth(), bot->GetMaxHealth()));
+        float const maxHealth = float(std::max<uint32>(1, bot->GetMaxHealth()));
+        float pickRestore = 0.0f;
+        bool pickCovers = false;
+        for (Item* item : AI_VALUE2(std::vector<Item*>, "inventory items", "food"))
+        {
+            float const restore = item ? FoodItemRests(bot, item->GetTemplate()) * maxHealth : 0.0f;
+            if (restore <= 0.0f)
+                continue;
+            bool const covers = restore >= missing;
+            if (!pick || (covers && (!pickCovers || restore < pickRestore)) || (!covers && !pickCovers &&
+                                                                                  restore > pickRestore))
+            {
+                pick = item;
+                pickRestore = restore;
+                pickCovers = covers;
+            }
+        }
+    }
+    if (pick ? !UseItemAuto(pick) : !UseItemAction::Execute(event))
         return false;
 
     LOG_INFO("playerbots", "[rest] {} eats: {}", bot->GetName(), why);
