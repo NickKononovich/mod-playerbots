@@ -3367,7 +3367,7 @@ void GuildCoordinator::ClaimBankItems()
         if (!GuildBankRun::BankState(p, false).empty() || free <= queued || !GuildBankRun::NearestVault(p, pos, dist))
             continue;  // no rights / bag room / withdraw slots, or in an instance
         bool const enchanter = p->HasSkill(SKILL_ENCHANTING) && p->HasSpell(SPELL_DISENCHANT);
-        takers.push_back({row.low, free - queued, dist, enchanter ? p->GetPureSkillValue(SKILL_ENCHANTING) : 0});
+        takers.push_back({row.low, free - queued, dist, enchanter ? uint32(p->GetPureSkillValue(SKILL_ENCHANTING)) : 0u});
     }
     if (!guild || takers.empty())
         return;
