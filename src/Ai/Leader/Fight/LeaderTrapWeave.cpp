@@ -236,11 +236,11 @@ bool Decide(Player* hunter, Player* tank, Unit* target, std::vector<Player*> con
         return false;
     spot = TrapSpot(hunter, target, data.triggerRadius);
     float const walkSec = hunter->GetExactDist(spot) / std::max(hunter->GetSpeed(MOVE_RUN), 0.1f);
-    float const hunterDps = GroupDamage::MemberSustainedDps(hunter);
-    float const groupDps = GroupDamage::SustainedDps(tank);
+    float const hunterDps = GroupDamage::MemberFormulaDps(hunter);  // [lead1303] the formula's
+    float const groupDps = GroupDamage::GroupFormulaDps(tank);
     if (hunterDps <= 0.0f || groupDps <= 0.0f)
     {
-        why = "no measured damage yet";
+        why = "no damage by the formula";
         return false;
     }
     // the mobs the trap covers; none crowd-controlled, none unpulled within its radius

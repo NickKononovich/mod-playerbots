@@ -2401,14 +2401,15 @@ namespace Leader::Fight
         // victim takes 1 + (1 / 0.6 - 1) x P(a parry in a window of 0.6 of the mob's swing) of the mob's damage. The
         // member's parryable attacks: its white swings (main / off hand) and one ability per global cooldown (1.5 s,
         // the game's GCD). The extra damage is the mob hitting that much longer - seconds of the fight, set against
-        // the member's own seconds by its share of the group's damage (GroupDamage::MemberSustainedDps / SustainedDps)
+        // the member's own seconds by its share of the group's damage ([lead1303] the formula's: GroupDamage's
+        // MemberFormulaDps / GroupFormulaDps)
         float hasteSec = 0.0f;
         float share = 0.0f;
         if (parry > 0.0f && victim != bot && victim->IsPlayer() &&
             !mob->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_PARRY_HASTEN))
         {
-            float const groupDps = GroupDamage::SustainedDps(bot);
-            share = groupDps > 0.0f ? GroupDamage::MemberSustainedDps(bot) / groupDps : 0.0f;
+            float const groupDps = GroupDamage::GroupFormulaDps(bot);
+            share = groupDps > 0.0f ? GroupDamage::MemberFormulaDps(bot) / groupDps : 0.0f;
             float rate = 1.0f / 1.5f;
             if (uint32 const mainHand = bot->GetAttackTime(BASE_ATTACK))
                 rate += 1000.0f / float(mainHand);

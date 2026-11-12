@@ -1841,14 +1841,15 @@ namespace
         return high;
     }
 
-    // [lead850] the share of the group's damage this member deals (GroupDamage, measured), else one of its damage
-    // dealers'; a healer's cast stops the healing the whole group's damage goes on under: 1
+    // [lead850] the share of the group's damage this member deals ([lead1303] by the formula: GroupDamage's
+    // MemberFormulaDps / GroupFormulaDps), else one of its damage dealers'; a healer's cast stops the healing the whole
+    // group's damage goes on under: 1
     float DamageShare(Player* bot, uint32 dealers)
     {
         if (PlayerbotAI::IsHeal(bot))
             return 1.0f;
-        float const group = GroupDamage::SustainedDps(bot);
-        float const own = GroupDamage::MemberSustainedDps(bot);
+        float const group = GroupDamage::GroupFormulaDps(bot);
+        float const own = GroupDamage::MemberFormulaDps(bot);
         if (group > 0.0f && own > 0.0f)
             return std::min(own / group, 1.0f);
         return 1.0f / float(std::max<uint32>(dealers, 1));

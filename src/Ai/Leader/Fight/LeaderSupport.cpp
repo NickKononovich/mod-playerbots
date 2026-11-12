@@ -180,7 +180,8 @@ std::vector<Player*> Everyone(std::vector<Player*> const& seats, Player* tank)
     return all;
 }
 
-// the member's damage taken per second in this fight (DamageTaken since the fight's start); 0: none measured
+// the member's damage taken per second in this fight (DamageTaken since the fight's start); 0: none measured.
+// [lead1303] log lines only: a decision reads PullPlanning::FormulaTakenDps
 float TakenPerSec(DungeonLeaderState::Support const& st, Player* bot, uint32 now)
 {
     if (!st.fightStartMs)
@@ -194,7 +195,8 @@ float TakenPerSec(DungeonLeaderState::Support const& st, Player* bot, uint32 now
 }
 
 // [lead400] the healer has a global cooldown to spare by its heals: every member outlives the dispel's global
-// cooldown plus the healer's gap between two heals at its measured damage taken rate
+// cooldown plus the healer's gap between two heals at the damage it takes now ([lead1303] the formula: its attackers'
+// MobLandedDps; the measured rate is logged beside it)
 bool HealerSpares(Player* healer, Player* tank, std::vector<Player*> const& members,
                   DungeonLeaderState::Support const& st, SpellInfo const* dispel, uint32 now, std::string& why)
 {
@@ -202,14 +204,15 @@ bool HealerSpares(Player* healer, Player* tank, std::vector<Player*> const& memb
     RestState::HealerFacts const facts = RestState::HealerThroughput(healer, tank ? tank : healer);
     for (Player* member : members)
     {
-        float const dtps = TakenPerSec(st, member, now);
+        float const dtps = PullPlanning::FormulaTakenDps(member);
         float const needs = dtps * (gcdSec + facts.gapSec);
         if (dtps > 0.0f && float(member->GetHealth()) <= needs)
         {
             why = Acore::StringFormat(
                 "{} would not outlive the GCD and the heal gap ({:.0f} health < {:.0f} dtps x "
-                "{:.1f} s)",
-                member->GetName(), float(member->GetHealth()), dtps, gcdSec + facts.gapSec);
+                "{:.1f} s; measured {:.0f})",
+                member->GetName(), float(member->GetHealth()), dtps, gcdSec + facts.gapSec,
+                TakenPerSec(st, member, now));
             return false;
         }
     }
@@ -824,15 +827,17 @@ void TickPotions(LeaderGroup& group, Player* tank, std::vector<Player*> const& s
         if (uint32 const potion = RaidConsumables::FindRestorePotion(bot, false, amount);
             potion && bot->GetMaxHealth() - bot->GetHealth() >= amount)
         {
-            float const dtps = TakenPerSec(st, bot, now);
+            float const dtps = PullPlanning::FormulaTakenDps(bot);  // [lead1303] the formula, not the fight's rate
             float const gapSec =
                 healer && healer != bot ? RestState::HealerThroughput(healer, bot).gapSec : lead.fightSecLeft;
             if (dtps > 0.0f && float(bot->GetHealth()) <= dtps * gapSec)
             {
                 item = potion;
                 verdict = Acore::StringFormat(
-                    "health potion: {:.0f} health < {:.0f} dtps x {:.1f} s ({})", float(bot->GetHealth()), dtps, gapSec,
-                    healer && healer != bot ? "the healer's gap between heals" : "the fight left, no healer");
+                    "health potion: {:.0f} health < {:.0f} dtps x {:.1f} s ({}; measured {:.0f} dtps)",
+                    float(bot->GetHealth()), dtps, gapSec,
+                    healer && healer != bot ? "the healer's gap between heals" : "the fight left, no healer",
+                    TakenPerSec(st, bot, now));
             }
         }
         // [lead840] b223 rfc-h 5C Taragaman 671.8-676.7 s: the fire mage's Evocation (the boss line's 60 %) ran 2 ->
@@ -1678,7 +1683,8 @@ std::string HealerOutOfMana(std::vector<Player*> const& members, float fightSecL
 
 float MemberTakenPerSec(LeaderGroup& group, Player* member)
 {
-    return member ? TakenPerSec(group.State().support, member, getMSTime() ? getMSTime() : 1) : 0.0f;
+    (void)group;
+    return PullPlanning::FormulaTakenDps(member);  // [lead1303] the formula; TakenPerSec is the log's
 }
 
 RestManaWay BestRestManaTool(Player* bot, std::vector<Player*> const& members, float needPct, float drinkRate,

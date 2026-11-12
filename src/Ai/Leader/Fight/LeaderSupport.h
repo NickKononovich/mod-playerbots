@@ -59,8 +59,8 @@ std::string BuffPassWork(LeaderGroup& group);
 void TickRaidBuffPass(LeaderGroup& group, std::vector<Player*> const& members, LogFn const& logEvent);
 void EndRaidBuffPass(LeaderGroup& group, std::vector<Player*> const& members);
 
-// [lead780] the member's measured damage taken per second in the fight under way (DamageTaken since its start); 0:
-// none measured (out of a fight, nothing taken yet)
+// [lead780] the member's damage taken per second now: [lead1303] by the formula (PullPlanning::FormulaTakenDps, its
+// attackers' MobLandedDps); the measured rate (DamageTaken since the fight's start) goes to the log lines only
 float MemberTakenPerSec(LeaderGroup& group, Player* member);
 
 // [lead903] user 2026-11-03 (36): a healer out of mana counts as critical for the cooldown rule: a living healer of

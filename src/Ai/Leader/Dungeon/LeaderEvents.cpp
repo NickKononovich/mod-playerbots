@@ -236,7 +236,7 @@ namespace Leader::Dungeon
             read(proc);
         if (perStack <= 0.0f)
             return false;
-        float const own = GroupDamage::MemberSustainedDps(who);
+        float const own = GroupDamage::MemberFormulaDps(who);  // [lead1303] the formula's
         if (own <= 0.0f)
             return false;
         // the crit chain (Rawr: up to 13 casts)
@@ -2746,11 +2746,13 @@ namespace Leader::Dungeon
                 }
                 // [lead513] b210 rfc-h 5C 944 s: the plan to Bazzalan (5 stops, 232 yd) was estimated 86.6 s, his
                 // pull came 148 s later - its 12 mobs fought 91 s, the estimate gave them about half (the expected
-                // group dps: no run-in, no ramp, no switch). The trash seconds go by the run's measured trash fights
-                // (the full health of the mobs they killed over their seconds) once there is one
-                float const trashRate = lead.trashFightSec > 0.0f && lead.trashKilledHealth > 0.0f
-                                            ? lead.trashKilledHealth / lead.trashFightSec
-                                            : groupDps;
+                // group dps: no run-in, no ramp, no switch). [lead1303] user rule 2026-11-08: the trash seconds go by
+                // the formula's group dps; the run's measured trash rate (its killed health over its fight seconds) is
+                // logged beside it only
+                float const trashRate = groupDps;
+                float const measuredTrashRate = lead.trashFightSec > 0.0f && lead.trashKilledHealth > 0.0f
+                                                    ? lead.trashKilledHealth / lead.trashFightSec
+                                                    : 0.0f;
                 float const trashSec = trashHealth / std::max(trashRate, 1.0f);
                 float restSec = 0.0f;
                 if (trashSec > 0.0f)
@@ -2797,8 +2799,9 @@ namespace Leader::Dungeon
                 // Gargoyle, Icy Veins "back before the pull" on trash that was not back. The estimate's parts are
                 // logged with each verdict to find the part that overshoots
                 lead.bossPullParts += Acore::StringFormat(
-                    "fight {:.0f} + trash {:.0f} ({:.0f} hp at {:.0f}/s{}) + rest {:.0f} + walk {:.0f} ({:.0f} yd{})",
-                    fightLeft, trashSec, trashHealth, trashRate, lead.trashFightSec > 0.0f ? " measured" : "",
+                    "fight {:.0f} + trash {:.0f} ({:.0f} hp at {:.0f}/s, measured {:.0f}/s) + rest {:.0f} + walk {:.0f} "
+                    "({:.0f} yd{})",
+                    fightLeft, trashSec, trashHealth, trashRate, measuredTrashRate,
                     restSec, lead.bossWalkSec, walkYd, planToHim ? ", the route's plan" : ", straight");
             }
             // [lead1092] b234 rfc-h: the estimate was -1 224 times, every one in the run's last boss fight - the next
@@ -7405,7 +7408,7 @@ namespace Leader::Dungeon
         };
         if (fighting && Leader::LEADER_ATTACK_EVENTS)
         {
-            float const groupDps = lead.trashFightSec > 0.0f ? lead.trashKilledHealth / lead.trashFightSec : 0.0f;
+            float const groupDps = GroupDamage::GroupFormulaDps(tank);  // [lead1303] the formula, no measured rate
             float const gcdSec = HEADROOM_GCD_SEC;  // the game's global cooldown
             std::vector<Player*> stoppers = seats;
             stoppers.push_back(tank);
@@ -10769,7 +10772,7 @@ namespace Leader::Dungeon
                                 executeSec += cast.executeMs / 1000.0f;
                                 dots += (dots.empty() ? "" : ", ") + std::string(name);
                             }
-                            float const own = GroupDamage::MemberSustainedDps(bot);
+                            float const own = GroupDamage::MemberFormulaDps(bot);  // [lead1303]
                             float const delaySec = executeSec * (own > 0.0f ? std::min(own / groupDps, 1.0f) : 1.0f);
                             float const extraTaken = addsHits * delaySec;
                             float onTank = 0.0f;
@@ -11436,11 +11439,10 @@ namespace Leader::Dungeon
                     Player* stopper = kept != lead.fleeStoppers.end() ? ObjectAccessor::FindPlayer(kept->second)
                                                                       : nullptr;
                     // [lead1230] the race the leader runs: the run to the help the core's flee finds (FleeHelp) vs
-                    // the runner's health at the group's measured trash damage (its kill seconds)
+                    // the runner's health at the group's formula damage (its kill seconds) [lead1303]
                     float helpSec = -1.0f;
                     Creature* help = Leader::Fight::FleeHelp(fleer, helpSec);
-                    float const groupDps = lead.trashFightSec > 0.0f ? lead.trashKilledHealth / lead.trashFightSec
-                                                                     : 0.0f;
+                    float const groupDps = GroupDamage::GroupFormulaDps(tank);
                     float const killSec = groupDps > 0.0f ? float(fleer->GetHealth()) / groupDps : -1.0f;
                     Decisions().Write(run, "leader", "flee_focus", fightMob, fleer->GetName(), true,
                                       JsonObject()
@@ -11544,13 +11546,11 @@ namespace Leader::Dungeon
             facts.routePathIndex = lead.routePathIndex;
             // [lead905] the route plan's legs ahead (stop to stop to the boss, the navmesh walk): each begins after
             // the fight now, the walks before it at the tank's speed and each stop's fight (its mobs' health at the
-            // run's measured trash rate)
+            // group's formula dps, [lead1303] no measured rate)
             {
                 GroupRouteState const& plan = group.Route();
                 float const speed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
-                float const trashRate = lead.trashFightSec > 0.0f && lead.trashKilledHealth > 0.0f
-                                            ? lead.trashKilledHealth / lead.trashFightSec
-                                            : 0.0f;
+                float const trashRate = GroupDamage::GroupFormulaDps(tank);
                 float startSec = fighting ? lead.fightSecLeft : 0.0f;
                 Position from = tank->GetPosition();
                 auto const addLeg = [&](Position const& to)
@@ -12035,16 +12035,16 @@ namespace Leader::Dungeon
                 std::string why;
             };
             // [lead761] user 2026-11-03: a mana tool goes where it gains the most damage - each receiver's fight
-            // seconds gained times that member's own measured dps (GroupDamage::MemberSustainedDps), not the seconds
-            // alone (a healer's seconds keep the whole group's damage going: the group's sustained dps). A member with
-            // no measured damage yet counts the group's per-member average
-            float const groupDamage = GroupDamage::SustainedDps(tank);
+            // seconds gained times that member's own dps ([lead1303] the formula's: GroupDamage::MemberFormulaDps),
+            // not the seconds alone (a healer's seconds keep the whole group's damage going: the group's dps). A member
+            // with no damage by it counts the group's per-member average
+            float const groupDamage = GroupDamage::GroupFormulaDps(tank);
             float const memberAverage = groupDamage / float(std::max<size_t>(everyone.size(), 1));
             auto const damageWeight = [&](Player* member) -> float
             {
                 if (PlayerbotAI::IsHeal(member))
                     return groupDamage > 0.0f ? groupDamage : 1.0f;
-                float const own = GroupDamage::MemberSustainedDps(member);
+                float const own = GroupDamage::MemberFormulaDps(member);
                 return own > 0.0f ? own : (memberAverage > 0.0f ? memberAverage : 1.0f);
             };
             // [lead440] b203 rfc-h: the burn verdict held every mana tool for a boss "that needs it more" (overload)

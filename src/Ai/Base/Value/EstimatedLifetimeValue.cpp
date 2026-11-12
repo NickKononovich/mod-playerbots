@@ -486,6 +486,27 @@ namespace GroupDamage
         return groupDps * float(own->second) / float(found->second.memberAll);
     }
 
+    float MemberFormulaDps(Player* member)
+    {
+        if (!member || !member->IsInWorld() || !member->IsAlive() || PlayerbotAI::IsHeal(member))
+            return 0.0f;
+        return DpsEstimate::Estimate(member, member->GetVictim(), DpsEstimate::ContextOf(member)).burstDps;
+    }
+
+    float GroupFormulaDps(Player* bot)
+    {
+        if (!bot)
+            return 0.0f;
+        Group* group = bot->GetGroup();
+        if (!group)
+            return MemberFormulaDps(bot);
+        float dps = 0.0f;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource(); member && member->GetMap() == bot->GetMap())
+                dps += MemberFormulaDps(member);
+        return dps;
+    }
+
     float SustainedDps(Player* bot)
     {
         Group* group = bot ? bot->GetGroup() : nullptr;

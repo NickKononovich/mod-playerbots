@@ -4548,6 +4548,17 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 
     float MobLandedDps(Unit* mob, Player* victim) { return mob && victim ? LandedMeleeDps(mob, victim) : 0.0f; }
 
+    float FormulaTakenDps(Player* victim)
+    {
+        float dps = 0.0f;
+        if (!victim)
+            return dps;
+        for (Unit* attacker : victim->getAttackers())
+            if (attacker && attacker->IsAlive() && attacker->GetVictim() == victim)
+                dps += LandedMeleeDps(attacker, victim);
+        return dps;
+    }
+
     struct PackEstimate
     {
         float danger = 0.0f;     // MobDanger sum, as IsPackManageable counts it

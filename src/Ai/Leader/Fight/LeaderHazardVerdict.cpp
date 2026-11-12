@@ -229,7 +229,7 @@ Verdict Decide(Facts const& facts, Player* member, Unit* target, std::string con
 {
     Verdict verdict;
     verdict.heal = taken + toCome;
-    float const dps = facts.fighting ? GroupDamage::MemberSustainedDps(member) : 0.0f;
+    float const dps = facts.fighting ? GroupDamage::MemberFormulaDps(member) : 0.0f;  // [lead1303] the formula's
     std::string rotation;
     float const lostDps = dps * awaySec;
     float const lost = std::max(lostDps + RotationTerm(member, target, awaySec, dps, rotation), 0.0f);

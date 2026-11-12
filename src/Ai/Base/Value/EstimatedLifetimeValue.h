@@ -69,6 +69,11 @@ namespace GroupDamage
     // [lead271] one member's part of it: the group's sustained dps times the member's share of the group's measured
     // hits (its pet / totem included); 0 when none is known
     float MemberSustainedDps(Player* member);
+    // [lead1303] user rule 2026-11-08: the rates a decision reads instead of the two above (log lines only) - a
+    // member's formula damage (DpsEstimate on its victim, its group context; a healer heals: 0) and the sum of its
+    // group's members present on its map (`bot` included)
+    float MemberFormulaDps(Player* member);
+    float GroupFormulaDps(Player* bot);
     // [combat_no_damage_release] True while the holds that keep a bot from fighting are lifted: the group of `bot`
     // (in a dungeon) is in combat - a member has a victim or attackers - and no member (nor its pet / totem) has dealt
     // damage for NO_DAMAGE_RELEASE_AFTER_MS; the release lasts NO_DAMAGE_RELEASE_MS, then the clock starts again.

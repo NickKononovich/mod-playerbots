@@ -48,6 +48,9 @@ namespace PullPlanning
     // [dun180] the damage per second `mob` lands on `victim` as the planner reads it (LandedMeleeDps: its melee
     // through the game's attack table and armor, its spells from its spell data)
     float MobLandedDps(Unit* mob, Player* victim);
+    // [lead1303] the damage per second `victim` takes now by the formula: MobLandedDps of every living attacker whose
+    // victim it is (who attacks whom is state; no measured intake)
+    float FormulaTakenDps(Player* victim);
     // [dun191] the planner's pack grouping, read by the five gate: the radius of an engage call CollectPack counts
     // (the core's assistance radius plus the fight's drift), and an entry's scripted call for help radius (0: none)
     float PackSocialRadius();
