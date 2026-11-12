@@ -55,10 +55,10 @@ float EstimatedGroupDpsValue::Calculate()
         _modelMs = now ? now : 1;
     }
 
-    // [lifetime-calibrated] The group's measured damage once a fight of it is known: the model put a level 45-50
-    // group at ~500 dps where it did 848 (Sunken Temple 2026-10-25), at 269 against 550-1100 (Zul'Farrak).
-    float const calibrated = GroupDamage::CalibratedDps(bot);
-    return calibrated > 0.0f ? calibrated : _modelDps;
+    // [lead1300] user rule 2026-11-08: the formula alone (DpsEstimate). What the dungeon's fights dealt goes to the
+    // [lifetime-calibrated] log line only; reading it here closes a fight that ended for that line
+    GroupDamage::CalibratedDps(bot);
+    return _modelDps;
 }
 
 namespace
@@ -287,174 +287,44 @@ float EstimatedGroupDpsValue::GetBasicGs(uint32 level)
     return basic_gs;
 }
 
-namespace
-{
-    constexpr uint32 LIFE_SAMPLE_MS = 500;        // a health sample is kept this often per unit
-    constexpr uint32 LIFE_MIN_WINDOW_MS = 700;    // a rate over less than this is noise
-    constexpr uint32 LIFE_MAX_WINDOW_MS = 4000;   // and over more than this is history
-    constexpr uint32 LIFE_FORGET_MS = 10000;      // a unit not looked at for this long is forgotten
-    constexpr size_t LIFE_MAX_TRACKED = 512;      // the table is swept of forgotten units past this size
-    constexpr size_t LIFE_SAMPLES = 8;
+float ExpectedFightLifetime(PlayerbotAI* botAI, Unit* target) { return ExpectedLifetime(botAI, target); }
 
-    struct HealthTrack
-    {
-        std::array<uint32, LIFE_SAMPLES> ms{};
-        std::array<uint32, LIFE_SAMPLES> health{};
-        size_t count = 0;
-        uint32 lastSeenMs = 0;
-        uint32 startMs = 0;      // [rot341] the track's first sample: the whole observed loss
-        uint32 startHealth = 0;
-    };
-}
-
-static float ObservedLifetimeOf(Unit* target, bool wholeFight)
-{
-    float const unknown = std::numeric_limits<float>::max();
-    if (!target || !target->IsAlive() || !target->IsInWorld())
-        return unknown;
-
-    // Map threads tick their units; each keeps its own table. [rot42] Keyed by the instance too: one thread updates
-    // several instances of the same dungeon, and their creatures share low GUIDs (b180: 8 parallel rfc-h runs, one
-    // Oggleflint's samples mixed with another's - "37 % health, lives 1.8 s" for a 448k boss at 15k group dps).
-    thread_local std::map<std::pair<uint32, ObjectGuid>, HealthTrack> tracks;
-    uint32 const now = getMSTime();
-    if (tracks.size() > LIFE_MAX_TRACKED)
-    {
-        for (auto it = tracks.begin(); it != tracks.end();)
-        {
-            if (getMSTimeDiff(it->second.lastSeenMs, now) > LIFE_FORGET_MS)
-                it = tracks.erase(it);
-            else
-                ++it;
-        }
-    }
-
-    HealthTrack& track = tracks[{target->GetInstanceId(), target->GetGUID()}];
-    uint32 const health = target->GetHealth();
-    // Healed, reset or evaded since: start over.
-    if (track.count && (health > track.health[track.count - 1] ||
-                        getMSTimeDiff(track.lastSeenMs, now) > LIFE_FORGET_MS))
-        track.count = 0;
-
-    track.lastSeenMs = now;
-    if (!track.count || getMSTimeDiff(track.ms[track.count - 1], now) >= LIFE_SAMPLE_MS)
-    {
-        if (track.count == LIFE_SAMPLES)
-        {
-            for (size_t i = 1; i < LIFE_SAMPLES; ++i)
-            {
-                track.ms[i - 1] = track.ms[i];
-                track.health[i - 1] = track.health[i];
-            }
-            --track.count;
-        }
-
-        if (!track.count)
-        {
-            track.startMs = now;
-            track.startHealth = health;
-        }
-
-        track.ms[track.count] = now;
-        track.health[track.count] = health;
-        ++track.count;
-    }
-
-    if (wholeFight)
-    {
-        uint32 const age = getMSTimeDiff(track.startMs, now);
-        if (age < LIFE_MIN_WINDOW_MS || track.startHealth <= health)
-            return unknown;
-
-        float const perSecond = static_cast<float>(track.startHealth - health) * IN_MILLISECONDS / age;
-        return static_cast<float>(health) / perSecond;
-    }
-
-    // The oldest sample inside the window gives the rate.
-    for (size_t i = 0; i < track.count; ++i)
-    {
-        uint32 const age = getMSTimeDiff(track.ms[i], now);
-        if (age > LIFE_MAX_WINDOW_MS)
-            continue;
-        if (age < LIFE_MIN_WINDOW_MS)
-            break;
-
-        if (track.health[i] <= health)
-            return unknown;
-
-        float const perSecond = static_cast<float>(track.health[i] - health) * IN_MILLISECONDS / age;
-        return static_cast<float>(health) / perSecond;
-    }
-
-    return unknown;
-}
-
-float ObservedLifetime(Unit* target) { return ObservedLifetimeOf(target, false); }
-
-float ExpectedFightLifetime(PlayerbotAI* botAI, Unit* target)
-{
-    float const lifetime = target && target->IsAlive() ? ObservedLifetimeOf(target, true)
-                                                       : std::numeric_limits<float>::max();
-    return lifetime < std::numeric_limits<float>::max() ? lifetime : ExpectedLifetime(botAI, target);
-}
-
-namespace
-{
-    // [lifetime-calibrated] Against a mob above the group's level more of its damage misses and is resisted: the
-    // measured dps is slowed by this much per level above the bot, to at most LEVEL_DPS_FLOOR of it.
-    constexpr float LEVEL_DPS_STEP = 0.05f;
-    constexpr float LEVEL_DPS_FLOOR = 0.75f;
-}
-
+// [lead1300] user rule 2026-11-08: the target's health now (a fact) over the formula damage of the members on it now
+// (DpsEstimate against that target: its level, armor and avoidance; its pet), the bot's own included (it is about to
+// hit it). Its observed health loss is a measured rate: no decision reads it
 float ExpectedLifetime(PlayerbotAI* botAI, Unit* target, std::string* source)
 {
     if (!target || !target->IsAlive())
         return 0.0f;
+    Player* bot = botAI ? botAI->GetBot() : nullptr;
+    if (!bot || !bot->IsInWorld() || !target->IsInWorld())
+        return std::numeric_limits<float>::max();
 
-    // [b35_mvaway] The rate its health really falls at is the damage dealt to this target: it alone counts once known.
-    float lifetime = ObservedLifetime(target);
-    if (lifetime < std::numeric_limits<float>::max())
+    float dps = DpsEstimate::Estimate(bot, target, DpsEstimate::ContextOf(bot)).burstDps;
+    uint32 members = 1;
+    uint32 onTarget = 1;
+    if (Group* group = bot->GetGroup())
     {
-        if (source)
-            *source = "its observed health loss";
-        return lifetime;
-    }
-
-    float dps = botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get();
-    uint32 members = 0;
-    uint32 onTarget = 0;
-    if (Player* bot = botAI->GetBot())
-    {
-        int32 const above = static_cast<int32>(target->GetLevel()) - static_cast<int32>(bot->GetLevel());
-        if (above > 0)
-            dps *= std::max(LEVEL_DPS_FLOOR, 1.0f - LEVEL_DPS_STEP * static_cast<float>(above));
-
-        // [b35_mvaway] Before that, the group's dps by the share of its members on the target (the bot counts: it is
-        // about to hit it).
-        if (Group* group = bot->GetGroup())
+        for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
         {
-            for (GroupReference* gref = group->GetFirstMember(); gref; gref = gref->next())
-            {
-                Player* member = gref->GetSource();
-                if (!member || !member->IsAlive() || !member->IsInWorld() || member->GetMapId() != bot->GetMapId())
-                    continue;
-
-                ++members;
-                if (member == bot || member->GetVictim() == target || member->GetTarget() == target->GetGUID())
-                    ++onTarget;
-            }
-
-            if (members > 0 && onTarget < members)
-                dps *= static_cast<float>(std::max<uint32>(onTarget, 1)) / static_cast<float>(members);
+            Player* member = gref->GetSource();
+            if (!member || member == bot || !member->IsAlive() || !member->IsInWorld() ||
+                member->GetMapId() != bot->GetMapId())
+                continue;
+            ++members;
+            // a healer counts when it hits the target itself (its target is its heal's)
+            bool const on = member->GetVictim() == target ||
+                            (!PlayerbotAI::IsHeal(member) && member->GetTarget() == target->GetGUID());
+            if (!on)
+                continue;
+            ++onTarget;
+            dps += DpsEstimate::Estimate(member, target, DpsEstimate::ContextOf(member)).burstDps;
         }
     }
 
     if (source)
-        *source = members ? Acore::StringFormat("{} of {} member(s) on it", onTarget, members) : "no group";
-
-    if (dps > 0.0f)
-        lifetime = std::min(lifetime, static_cast<float>(target->GetHealth()) / dps);
-    return lifetime;
+        *source = Acore::StringFormat("{} of {} member(s) on it, {:.0f} dps by the formula", onTarget, members, dps);
+    return dps > 0.0f ? float(target->GetHealth()) / dps : std::numeric_limits<float>::max();
 }
 
 namespace

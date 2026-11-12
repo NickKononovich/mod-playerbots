@@ -243,8 +243,7 @@ public:
             foundHighPriority = true;
             return;
         }
-        // [cast-short-life] The lifetime the group's actual damage shows when it is shorter than the model's: a
-        // caster leaves a mob that melts for a fresh one instead of starting a long cast that never lands.
+        // [lead1300] its health now over the group's formula dps (no observed health loss: a measured rate)
         float expectedLifeTime = LifeTime(attacker);
         // Unit* victim = attacker->GetVictim();
         if (!result || IsBetter(attacker, result))
@@ -255,7 +254,7 @@ public:
     }
     float LifeTime(Unit* unit) const
     {
-        return std::min(static_cast<float>(unit->GetHealth()) / dps_, ObservedLifetime(unit));
+        return static_cast<float>(unit->GetHealth()) / dps_;
     }
     bool IsBetter(Unit* new_unit, Unit* old_unit)
     {

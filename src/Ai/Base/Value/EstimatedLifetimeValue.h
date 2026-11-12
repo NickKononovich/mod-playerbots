@@ -29,9 +29,8 @@ public:
     float Calculate() override;
 };
 
-// [lifetime-calibrated] The group's damage per second: what this dungeon's fights actually dealt (GroupDamage below)
-// once one is measured, else the members' own model ([lead265] their weapons and spells). Re-read every 2 s so the
-// next pull already uses the fight that just ended; the model itself is rebuilt every 20 s only (a cache).
+// The group's damage per second by the formula (DpsEstimate per member); [lead1300] what this dungeon's fights dealt
+// (GroupDamage below) goes to the log only. The model is rebuilt every 20 s (a cache).
 class EstimatedGroupDpsValue : public FloatCalculatedValue
 {
 public:
@@ -78,24 +77,13 @@ namespace GroupDamage
     bool NoDamageRelease(Player* bot);
 }
 
-// [cast-short-life] How long `target` still lives, in seconds: the model above (its health over the expected group
-// dps, [lifetime-calibrated]: the group's measured dps, slowed against a mob of a higher level) or, when it is
-// lower, the rate its health actually fell at over the last seconds. Sunken Temple 2026-10-25
-// (st-n-5A-92): the model put the group at ~500 dps where it did 848, so a Slime Maggot dying in 2 s still looked
-// worth a 2.5 s Frostbolt to the mage (32 pulls without a hit). Cheap: a few samples per unit on the map thread.
-// [b35_mvaway] Once its health is seen falling the observed rate alone counts (the damage really dealt to it); the
-// group's dps only stands in before that, cut to the share of the group on `target`. gd-h 20261026-024524-gd-h-5H-27:
-// the whole group's 7855 dps put a Snake Wrap, hit by one or two members, at "lives 0.1 s" with 13 % health, and the
-// mage held Fireball on it. `source` (optional) names the estimate for the log.
+// [cast-short-life] How long `target` still lives, in seconds. [lead1300] user rule 2026-11-08: its health now over
+// the formula damage (DpsEstimate against it) of the members on it now, the bot's own included; no measured rate (its
+// observed health loss, the group's measured dps) is read. `source` (optional) names the estimate for the log.
 // [guild13] a solo bot's own modelled damage per second (MemberModelDps, healers included)
 float SoloModelDps(Player* member);
-float ObservedLifetime(Unit* target);
 float ExpectedLifetime(PlayerbotAI* botAI, Unit* target, std::string* source = nullptr);
-// [rot341] The same by the rate over the target's whole observed health loss (since its track began: first seen,
-// healed or forgotten), not the last 0.7-4 s: wowsims' simTimeRemain for a decision on a dot's full duration
-// (feral rotation.go ripNow endThresh). The 4 s rate swung with bursts: b221 rfc-h 5H Rtdruaf Bit at 5 points with
-// Rip down on Oggleflint at ~37 % health (it lost 2.1 %/s over the fight and lived 18 s more), no Rip that fight.
-// Falls back to ExpectedLifetime while no loss was seen.
+// [rot341] the same for a decision on a dot's full duration (wowsims' simTimeRemain); [lead1300] by the formula too
 float ExpectedFightLifetime(PlayerbotAI* botAI, Unit* target);
 
 // [lead451] A member's held cast (CastTimeMultiplier): the target it would not live to the cast's landing on and the

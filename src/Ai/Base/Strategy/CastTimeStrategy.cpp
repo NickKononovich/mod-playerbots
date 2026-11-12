@@ -77,7 +77,7 @@ float CastTimeMultiplier::GetValue(Action* action)
         // [cast-short-life] Sunken Temple 2026-10-25 (st-n-5A-92): the mage opened every pull with a 2.5-3 s
         // Frostbolt on mobs that died 2-4 s into it, 32 pulls without a hit ("fire blast (not evaluated: frostbolt
         // (5.40) ran first)"). A cast is worth starting only when the target lives until it lands: its cast time and
-        // its flight, against the lifetime the group's actual damage shows (ExpectedLifetime), not the model alone.
+        // its flight, against the lifetime the formula damage of the members on it gives (ExpectedLifetime).
         // Else the instants of the rotation (Fire Blast, Ice Lance, Arcane Barrage, procs, the wand) go first, and
         // the caster's target choice moves on to a fresh mob (CasterFindTargetSmartStrategy).
         // [guild15] a bot that fights alone is the damage that would end the target: holding its cast for a lifetime
@@ -109,7 +109,7 @@ float CastTimeMultiplier::GetValue(Action* action)
                 flight = bot->GetDistance(target) / spellInfo->Speed;
 
             float const lands = static_cast<float>(castTime) / IN_MILLISECONDS + flight + CAST_LAND_MARGIN;
-            std::string estimate;  // [b35_mvaway] observed loss, or the group's dps by its share on the target
+            std::string estimate;  // [lead1300] the formula dps of the members on the target
             float const lifetime = ExpectedLifetime(botAI, target, &estimate);
             if (lands > lifetime)
             {
@@ -120,17 +120,14 @@ float CastTimeMultiplier::GetValue(Action* action)
                 if (!last || getMSTimeDiff(last, now) >= CAST_SHORT_LIFE_LOG_MS)
                 {
                     last = now ? now : 1;
-                    // [lifetime-calibrated] Where the lifetime came from: before the target's health moves (the
-                    // opener) only the group's dps, measured over its recent fights or else the gear model.
+                    // [lead1300] the lifetime is the formula's; the group's measured dps is logged beside it only
                     uint32 fights = 0;
                     float const calibrated = GroupDamage::CalibratedDps(bot, &fights);
                     std::string const source =
-                        (calibrated > 0.0f
-                             ? Acore::StringFormat("[lifetime-calibrated] group {:.0f} dps over {} fight(s)",
-                                                   calibrated, fights)
-                             : Acore::StringFormat("group {:.0f} dps by the gear model",
-                                                   AI_VALUE(float, "estimated group dps"))) +
-                        ", [b35_mvaway] by " + estimate;
+                        "by " + estimate +
+                        (calibrated > 0.0f ? Acore::StringFormat(", measured {:.0f} dps over {} fight(s)", calibrated,
+                                                                 fights)
+                                           : std::string());
                     LOG_INFO("playerbots",
                              "[cast-short-life] {} holds {} on {}: it lands in {:.1f} s, the target lives {:.1f} s "
                              "({:.0f} % health; {}{})",
