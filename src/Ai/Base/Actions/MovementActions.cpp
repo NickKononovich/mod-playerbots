@@ -2614,9 +2614,23 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
 
     // [pullplan] a solo bot's pull from its pull spot: it pulls from there and meets the target there, not in its camp
     // [lag370] ... when a walk reaches the spot from here; else the spot and the engage are dropped
+    // [dun245] only its own drop ends the walk: a led tank's engage walk is made before it targets anything (b456
+    // wc-n five10-10 / five8-6 / five2-8: every such walk refused, the straight MoveToLOS fallback found no route)
+    bool const hadTarget = !bot->GetTarget().IsEmpty();
     SoloSafety::CheckPullSpotWalk(bot, target);
-    if (!bot->GetTarget())
+    if (hadTarget && bot->GetTarget().IsEmpty())
         return false;
+    if (!hadTarget && Leader::LedBot(bot))
+    {
+        thread_local std::unordered_map<uint64, ObjectGuid> untargetedLogged;  // one line per bot and target
+        ObjectGuid& last = untargetedLogged[bot->GetGUID().GetRawValue()];
+        if (last != target->GetGUID())
+        {
+            last = target->GetGUID();
+            LOG_INFO("playerbots", "[dun245] {}: walks in to {} ({:.1f} yd) before it targets it", bot->GetName(),
+                     target->GetName(), bot->GetExactDist(target));
+        }
+    }
     {
         G3D::Vector3 spot;
         switch (SoloSafety::PullStep(bot, target, spot))
