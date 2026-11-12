@@ -4071,6 +4071,31 @@ namespace SoloSafety
                 // nearer than the chase's seconds at the bot's run speed from where the chaser meets the walk) stops
                 // with the chaser on it: a fight it never judged. b354 Thelengyl L10 "keeps walking past" a Rabid
                 // Thistle Bear L13, stopped at its objective 26 yd from the bear's home, fought it there and died
+                // [death393] the walk's stop inside its reach (the objective, the camp it walks to): the bot stops
+                // and stands there with the chaser on it - a fight at the stop, the judge's, no run past. b451 Laaral
+                // L23 (twice at Render's Camp): "refuse Kazon L27: loses even at full: 6 mobs", then "RUN_PAST keeps
+                // walking past Kazon L27 (chase priced 205, hp 2418)" to its DO_QUEST spot 4 yd from Kazon's home
+                if (G3D::Vector3 const stop = walkStopSet ? walkStop : to; reachCovers(chaser, stop, 0.0f))
+                {
+                    static std::mutex stopReachLogLock;  // a log cadence per bot and mob kind, no decision reads it
+                    static std::unordered_set<uint64> stopReachLogged;
+                    bool fresh = false;
+                    {
+                        std::lock_guard<std::mutex> guard(stopReachLogLock);
+                        if (stopReachLogged.size() > 65536)
+                            stopReachLogged.clear();
+                        fresh = stopReachLogged.insert(uint64(chaser->GetEntry()) * 1000003ull +
+                                                       bot->GetGUID().GetCounter())
+                                    .second;
+                    }
+                    if (fresh)
+                        LOG_INFO("playerbots", "[death393] {} L{} no run past {} L{}: its walk stops at "
+                                 "({:.0f},{:.0f}) inside its reach", bot->GetName(), bot->GetLevel(), chaser->GetName(),
+                                 chaser->GetLevel(), stop.x, stop.y);
+                    price = std::numeric_limits<float>::max();
+                    hp = budget(with.seconds);
+                    return false;
+                }
                 if (chase.damage != std::numeric_limits<float>::max())
                 {
                     float const meets = std::clamp(((chaser->GetPositionX() - from.x) * leg.x +
