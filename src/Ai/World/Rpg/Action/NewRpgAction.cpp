@@ -4055,6 +4055,34 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
     else if (!behind)
         _meetLogged.Clear();
 
+    // [death436] the wait is taken out of every idle mob's reach (its walk priced a run past, not a stand there): b461
+    // Brelir L24 met Thyllyn inside Zoram'gar Outpost, both stood in a Splintertree Guard's (L40) reach, it engaged
+    // Thyllyn; b462 Brelir logged in there and died to it
+    if (_stepOut && bot->isMoving() && !bot->IsInCombat())
+        return true;
+    _stepOut = false;
+    if (!bot->IsInCombat())
+    {
+        std::string who;
+        std::vector<G3D::Vector3> spots;
+        if (SoloSafety::StandsInReach(bot, who, spots))
+            for (G3D::Vector3 const& at : spots)
+            {
+                Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+                if (!route.found || !route.complete || route.throughRefused)
+                    continue;
+                if (!MoveTo(bot->GetMapId(), at.x, at.y, at.z, false, false, false, true))
+                    continue;
+                LOG_INFO("playerbots", "[death436] {} L{} waits for its group out of the reach of {}: steps to "
+                         "({:.0f},{:.0f}), {:.0f} yd walk",
+                         bot->GetName(), bot->GetLevel(), who, at.x, at.y, route.length);
+                _stepOut = true;
+                return true;
+            }
+        if (!who.empty())
+            SoloSafety::NoteNoWayOut(bot, who, spots.size(), "group wait");  // [deaths140]
+    }
+
     if (bot->isMoving())
         bot->StopMoving();
 

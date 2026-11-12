@@ -75,6 +75,7 @@ public:
 
 private:
     ObjectGuid _meetLogged;  // [wait14] one line per member it walks to meet
+    bool _stepOut = false;   // [death436] its walk out of the reaches is under way
 };
 
 // Out to the nearest inn and sit there while the selfbot leader is away (rested experience).
