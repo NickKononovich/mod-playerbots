@@ -4297,6 +4297,13 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
                 LogQuestObject(bot, lootable, "skipped: it lies among mobs it does not pull");
                 return false;
             }
+            // [death407] its linked trap's summons are the object's fight (b453 Sycina L21: the Deepmoss Eggs' trap
+            // summoned the Hatchlings beside a Deepmoss Matriarch, "unseen" by every search, dead)
+            if (std::string why; SoloSafety::QuestObjectSummonsLose(bot, lootable, why))
+            {
+                LogQuestObject(bot, lootable, "[death407] skipped: " + why + ", a fight it loses");
+                return false;
+            }
             // [objreach67] b406: 38.9 min of "[quest] wait ... quest object in reach" - Sand Pears and Ancient Relics
             // 4-17 yd off, "used: walks up to it" / "skipped: the walk ... not started" in turn: each walk-up ended
             // out of the object's interact reach (up in a tree, on a ledge), the spot stayed unspent for it. A
@@ -4353,6 +4360,11 @@ bool NewRpgBaseAction::UseQuestGameObject(uint32 questId)
         if (DestinationRefused(WorldPosition(nearest)))  // [guild15] as above
         {
             LogQuestObject(bot, nearest, "skipped: it lies among mobs it does not pull");
+            return false;
+        }
+        if (std::string why; SoloSafety::QuestObjectSummonsLose(bot, nearest, why))  // [death407] as above
+        {
+            LogQuestObject(bot, nearest, "[death407] skipped: " + why + ", a fight it loses");
             return false;
         }
         MoveWorldObjectTo(nearest->GetGUID(), 1.5f);

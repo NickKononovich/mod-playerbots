@@ -31,6 +31,7 @@
 #include <vector>
 
 class Creature;
+class GameObject;  // [death407]
 struct CreatureTemplate;
 class Player;
 class Unit;
@@ -230,6 +231,10 @@ namespace SoloSafety
     // [lag360] `withSpeed`: with the speed piece the run-past executor casts first (the price); false: without it
     RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed = true);
     RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl);
+    // [death407] using `go` (a quest object) fires its linked trap (GameObjectTemplate::GetLinkedGameObjectEntry): the
+    // creatures its trap spell summons are that objective's fight - true when the bot loses it from its health now
+    // with the heals its mana holds (`why`: the summons and the price)
+    bool QuestObjectSummonsLose(Player* bot, GameObject* go, std::string& why);
     // the bot lives through `damage` over `seconds` from its health now with its heal kit (the flee's test)
     bool SurvivesRunPast(Player* bot, float damage, float seconds);
     // [death400] the walk `points` (from the bot on) out of reaches it stands in: every idle mob whose reach (wander

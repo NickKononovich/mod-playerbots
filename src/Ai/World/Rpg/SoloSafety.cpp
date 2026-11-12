@@ -44,6 +44,7 @@
 #include "SpellInfo.h"
 #include "SurvivalKit.h"  // [deaths3] its heals now
 #include "QuestStats.h"   // [budget12] the time budget
+#include "GameObject.h"  // [death407] a quest object's linked trap
 #include "SpellMgr.h"
 #include "SmartScriptMgr.h"  // [guild14] creature casts
 #include "StringFormat.h"
@@ -3623,6 +3624,61 @@ namespace SoloSafety
         return out;
     }
 
+    bool QuestObjectSummonsLose(Player* bot, GameObject* go, std::string& why)
+    {
+        why.clear();
+        if (!bot || !go || !Applies(bot))
+            return false;
+        uint32 const trapEntry = go->GetGOInfo()->GetLinkedGameObjectEntry();
+        GameObjectTemplate const* trap = trapEntry ? sObjectMgr->GetGameObjectTemplate(trapEntry) : nullptr;
+        if (!trap || trap->type != GAMEOBJECT_TYPE_TRAP)
+            return false;
+        SpellInfo const* spell = sSpellMgr->GetSpellInfo(trap->trap.spellId);
+        if (!spell)
+            return false;
+        // the trap's summons (SPELL_EFFECT_SUMMON: the creature in its misc value, its points the count), fought one
+        // after another at the bot's damage from where it stands: the template's health and melee (RunPastTemplate's
+        // numbers), against its health now and the heals its mana holds
+        DpsEstimate::Result const own = OwnDamage(bot, nullptr);
+        float const botDps = std::max(own.burstDps, 1.0f);
+        float seconds = 0.0f;
+        float damage = 0.0f;
+        uint32 count = 0;
+        CreatureTemplate const* named = nullptr;
+        for (SpellEffectInfo const& effect : spell->GetEffects())
+        {
+            if (effect.Effect != SPELL_EFFECT_SUMMON || effect.MiscValue <= 0)
+                continue;
+            CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(uint32(effect.MiscValue));
+            CreatureBaseStats const* stats =
+                tmpl ? sObjectMgr->GetCreatureBaseStats(tmpl->maxlevel, tmpl->unit_class) : nullptr;
+            if (!tmpl || !stats)
+                continue;
+            int32 const n = std::max(1, effect.CalcValue());
+            float const swing = std::max(float(tmpl->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
+            float const base = stats->GenerateBaseDamage(tmpl);
+            float const melee =
+                ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier /
+                swing;
+            float const health = float(stats->GenerateHealth(tmpl));
+            for (int32 i = 0; i < n; ++i)
+            {
+                seconds += health / botDps;
+                damage += melee * float(n - i) * health / botDps;  // the ones alive hit on while it kills each
+            }
+            count += uint32(n);
+            named = tmpl;
+        }
+        if (!count)
+            return false;
+        float const mana = float(bot->GetPower(POWER_MANA));
+        float const spare = own.manaPerSec > 0.0f ? std::max(0.0f, mana - own.manaPerSec * seconds) : mana;
+        float const ehp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, spare, true);
+        why = Acore::StringFormat("its trap summons {} x {} L{}: {:.0f} dmg over {:.0f} s at ehp {:.0f}", count,
+                                  named->Name, named->maxlevel, damage, seconds, ehp);
+        return damage >= ehp;
+    }
+
     RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl)
     {
         RunPast out;
@@ -3865,8 +3921,15 @@ namespace SoloSafety
         {
             std::lock_guard<std::mutex> guard(lock);
             auto found = states.find(bot->GetGUID().GetCounter());
-            if (found == states.end() || !found->second.runPastWalking ||
-                !found->second.legRunPast.count(target->GetGUID().GetRawValue()))
+            if (found == states.end())
+                return false;
+            bool const runPast = found->second.runPastWalking &&
+                                 found->second.legRunPast.count(target->GetGUID().GetRawValue());
+            // [death409] ... and a survival flee on the move: its price is the leash from the flee's start, a stun or
+            // hit on a chaser renews it (Unit::AtTargetAttacked; UNIT_STATE_LOST_CONTROL extends it while stunned,
+            // shared with its assistants) - b453 Geron L19 took 1722 against a chase priced 486
+            bool const flees = found->second.fleeing && target->GetVictim() == bot;
+            if (!runPast && !flees)
                 return false;
             chaser = true;
             fresh = !found->second.runPastHitLogged;

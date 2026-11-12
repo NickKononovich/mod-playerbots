@@ -1611,8 +1611,20 @@ namespace SurvivalKit
         }
         float planned = 0.0f;
         Scored const* now = nullptr;
-        for (Scored const& s : scored)
+        // [death408] the mana heals share one pool: each one's gain (Gain) is its casts on the bot's whole mana, so
+        // the plan counts the mana once - b453 Ryarii L19 (resto, 3.8 dps) "Rejuvenation: turns it (1142 of 1885
+        // short)" with Healing Touch / Regrowth each on the same mana, healed 190 s until it was out of mana, dead
+        float manaLeft = float(bot->GetPower(POWER_MANA));
+        for (Scored& s : scored)
         {
+            if (s.piece->kind == Kind::Heal && s.piece->cost > 0.0f && !s.piece->item)
+            {
+                float const each = std::max(s.piece->amount - p.incoming * s.piece->castSec, 1.0f);
+                float const spent = s.gain / each * s.piece->cost;
+                if (spent > manaLeft)
+                    s.gain *= manaLeft / std::max(spent, 1.0f);
+                manaLeft = std::max(0.0f, manaLeft - spent);
+            }
             planned += s.gain;
             if (!now && s.due)
                 now = &s;
