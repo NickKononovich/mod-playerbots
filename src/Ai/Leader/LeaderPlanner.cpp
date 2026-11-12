@@ -14013,8 +14013,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                   best.estimate.cost, best.estimate.fightSec, groupDps, support.healHps, maxHealth, PlanTankArmor(bot),
                   mitigation.avoidance, mitigation.block, mitigation.blockValue, best.terms.holdMobs, maxMobs,
                   best.terms.size, best.terms.hold, best.terms.peak, best.terms.drain, best.terms.drop,
-                  best.terms.comfort, best.estimate.spellCost, MeasuredGroupDps(bot), LandedCalibration(bot).trash.melee,
-                  LandedCalibration(bot).trash.spell);
+                  best.terms.comfort, best.estimate.spellCost, MeasuredGroupDps(bot),
+                  LandedCalibration(bot).trash.melee, LandedCalibration(bot).trash.spell);
         if (packWhyRecorder.on && !targetPack.empty() && PackWhyDue(_packWhyMs, target->GetGUID(), now))
             LOG_INFO("playerbots", "{}",
                      DescribePackWhy(bot, target, targetPack, FindPackWhy(targetPack), adds.size() + 1, "refused"));
@@ -14948,8 +14948,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                   support.healerFacts.empty() ? std::string("none") : support.healerFacts);
         LOG_DEBUG("playerbots",
                   "[lead259] {} estimate drop {:.2f} = {:.2f} (landed {:.0f}/s over {:.0f} s, heals {:.0f}/s after "
-                  "{:.1f} s), measured ratio {:.2f} (log only); most {:.2f}; group dps {:.0f} (measured {:.0f}, weapons "
-                  "{:.0f})",
+                  "{:.1f} s), measured ratio {:.2f} (log only); most {:.2f}; group dps {:.0f} (measured {:.0f}, "
+                  "weapons {:.0f})",
                   bot->GetName(), chosen.drop, chosen.dropRaw, chosen.landedDps, chosen.fightSec, support.healHps,
                   support.healGapSec, DropCalibration(bot), chosen.maxDrop, groupDps, MeasuredGroupDps(bot),
                   GroupWeaponDps(bot));

@@ -296,8 +296,9 @@ struct HealerFacts
     float manaPctPerSec = 0.0f;  // [lead264] the best rate's heal cast on and on: % of max mana per second
     std::string spell;      // the best rate's heal (logged)
     float castPct = 0.0f;   // [lead1400] the best rate's heal: one cast's cost, % of max mana
-    float upkeepPctPerSec = 0.0f;  // [lead1431] its upkeep (casts that heal nothing): % of max mana per s; [lead1300] no
-                                   // formula term yet (the measured one is no decision's)
+    // [lead1431] its upkeep (casts that heal nothing): % of max mana per s; [lead1300] no formula term yet (the
+    // measured one is no decision's)
+    float upkeepPctPerSec = 0.0f;
     float mainHealPerMana = 0.0f;  // [lead1434] the best rate's heal: its average heal over its cost (spell data)
     float measuredHealed = 0.0f;   // [lead1434] the effective healing its measurement holds
     // [lead1300] this dungeon's measured healing per mana and upkeep (% of max mana per s): log lines only

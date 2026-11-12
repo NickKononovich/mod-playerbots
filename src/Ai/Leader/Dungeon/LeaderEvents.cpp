@@ -2799,8 +2799,8 @@ namespace Leader::Dungeon
                 // Gargoyle, Icy Veins "back before the pull" on trash that was not back. The estimate's parts are
                 // logged with each verdict to find the part that overshoots
                 lead.bossPullParts += Acore::StringFormat(
-                    "fight {:.0f} + trash {:.0f} ({:.0f} hp at {:.0f}/s, measured {:.0f}/s) + rest {:.0f} + walk {:.0f} "
-                    "({:.0f} yd{})",
+                    "fight {:.0f} + trash {:.0f} ({:.0f} hp at {:.0f}/s, measured {:.0f}/s) + rest {:.0f} + walk "
+                    "{:.0f} ({:.0f} yd{})",
                     fightLeft, trashSec, trashHealth, trashRate, measuredTrashRate,
                     restSec, lead.bossWalkSec, walkYd, planToHim ? ", the route's plan" : ", straight");
             }
@@ -10212,14 +10212,23 @@ namespace Leader::Dungeon
                         // before its first hit; time to death = health + absorbs over that sum
                         float incoming = 0.0f;
                         std::vector<std::pair<float, std::string>> byAttacker;
+                        // [lead1305] each attacker on it by the higher of two formulas: its swings and the cast it is
+                        // on (AttackerDps), and the planner's MobLandedDps (its swings and off-hand through the
+                        // member's armor and attack table, its weapon specials, its SmartAI / template spells at the
+                        // instance's rescale factor) - the spells a mob casts between its casts now (b276 ac-h 5F-14:
+                        // a Raging Soul read 340/s by its swings, ~1.1k/s landed)
                         for (Unit* attacker : member->getAttackers())
                             if (attacker && attacker->IsAlive() && attacker->GetVictim() == member)
                             {
                                 float spellPart = 0.0f;
-                                float const dps = AttackerDps(attacker, member, spellPart);
+                                float const now = AttackerDps(attacker, member, spellPart);
+                                float const landed = PullPlanning::MobLandedDps(attacker, member);
+                                float const dps = std::max(now, landed);
                                 incoming += dps;
                                 byAttacker.emplace_back(dps, Acore::StringFormat("{} {:.0f}{}", attacker->GetName(),
-                                                                                  dps, spellPart > 0.0f ? " (cast)" : ""));
+                                                                                  dps, landed > now   ? " (its data)"
+                                                                                       : spellPart > 0.0f ? " (cast)"
+                                                                                                          : ""));
                             }
                         // [lead980] b228 rfc-h 5D-4 336.7 s: the mage at 18 % stood among Troggs whose victim was the
                         // healer on the level above (no path to it); with no attacker "on" it the mage was no
@@ -10243,9 +10252,9 @@ namespace Leader::Dungeon
                         }
                         // [lead1553] b276 ac-h 5F-14 449-452 s: the heals waited «no headroom on Raging Soul» while
                         // the hunter fell 92 -> 67 % in 4 s (~1.1k per second) - its attacker's model read 340 per
-                        // second (Rthunac "dies in 35.1 s"). The member's measured loss counts as well: its health
-                        // drop since its health last rose (a heal landed, the riseRate rule of lead574) over those
-                        // seconds, read once they span a global cooldown
+                        // second (Rthunac "dies in 35.1 s"). [lead1305] user rule 2026-11-08: the member's measured
+                        // loss (its health drop since its health last rose, over those seconds) goes to the log only;
+                        // the formula above carries the mob's spells (MobLandedDps), its health now is the state
                         {
                             struct LossSeen
                             {
@@ -10269,10 +10278,9 @@ namespace Leader::Dungeon
                             if (sec >= HEADROOM_GCD_SEC && seen.anchorHealth > health)
                                 if (float const measured = float(seen.anchorHealth - health) / sec; measured > incoming)
                                 {
-                                    byAttacker.emplace_back(measured - incoming,
-                                                            Acore::StringFormat("measured loss {:.0f}/s [lead1553]",
-                                                                                measured));
-                                    incoming = measured;
+                                    byAttacker.emplace_back(
+                                        measured,
+                                        Acore::StringFormat("measured loss {:.0f}/s [lead1553] (log only)", measured));
                                 }
                         }
                         if (incoming <= 0.0f)
