@@ -186,6 +186,16 @@ struct NewRpgInfo
             G3D::Vector3 const& last = trail[(trailHead + TRAIL_SPOTS - 1) % TRAIL_SPOTS];
             if ((last - at).squaredLength() < spacing * spacing)
                 return;
+            // [death435] back at an older spot: the walk since is a loop, the way it came is that spot. b462 Septimon
+            // L17's run "spot 1..4 back" went (-9501,-2316) -> (-9558,-2332) -> (-9531,-2319) -> (-9501,-2316), 20 s
+            // in a Black Dragon Whelp's Fireball range, and died on it
+            for (uint8 n = uint8(trailCount - 1); n >= 1; --n)
+                if ((TrailBack(n) - at).squaredLength() < spacing * spacing)
+                {
+                    trailHead = uint8((trailHead + TRAIL_SPOTS - n) % TRAIL_SPOTS);
+                    trailCount = uint8(trailCount - n);
+                    return;
+                }
         }
         trail[trailHead] = at;
         trailHead = uint8((trailHead + 1) % TRAIL_SPOTS);
