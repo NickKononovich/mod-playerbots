@@ -2064,9 +2064,12 @@ bool SoloFightDriftTrigger::IsActive()
     if (!target || !target->IsAlive() || !SoloSafety::JudgedFightSpot(bot, target, spot))
         return false;
     std::string why;
-    return SoloSafety::FightPastJudged(bot, target,
-                                       G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()),
-                                       why);
+    if (SoloSafety::FightPastJudged(bot, target,
+                                    G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()), why))
+        return true;
+    // [death395] its attackers off the judged spot beside an idle mob they would call: the fight goes back there
+    constexpr float AT_SPOT = 3.0f;  // the spot reached: a walk's arrival tolerance
+    return bot->GetExactDist2d(spot.x, spot.y) > AT_SPOT && SoloSafety::AttackerWakes(bot, target, why);
 }
 
 bool SoloFightDriftAction::Execute(Event /*event*/)
@@ -2074,9 +2077,11 @@ bool SoloFightDriftAction::Execute(Event /*event*/)
     Unit* target = context->GetValue<Unit*>("current target")->Get();
     G3D::Vector3 back;
     std::string why;
-    if (!target || !SoloSafety::JudgedFightSpot(bot, target, back) ||
-        !SoloSafety::FightPastJudged(bot, target,
-                                     G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()), why))
+    if (!target || !SoloSafety::JudgedFightSpot(bot, target, back))
+        return false;
+    G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    if (!SoloSafety::FightPastJudged(bot, target, here, why) &&
+        !SoloSafety::AttackerWakes(bot, target, why))  // [death395]
         return false;
     Leader::RouteResult const route = Leader::Route(bot, Position(back.x, back.y, back.z));
     if (!route.found || !route.complete || route.throughRefused ||

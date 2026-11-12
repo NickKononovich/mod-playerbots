@@ -2477,6 +2477,43 @@ namespace SoloSafety
         }
     }
 
+    bool AttackerWakes(Player* bot, Unit* target, std::string& why)
+    {
+        if (!bot || !target)
+            return false;
+        std::vector<ObjectGuid> counted;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end() || !found->second.engaged || found->second.engage.target != target->GetGUID())
+                return false;
+            counted = found->second.engage.counted;
+        }
+        float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        if (assist <= 0.0f)
+            return false;
+        for (Unit* attacker : bot->getAttackers())
+        {
+            Creature* mob = attacker ? attacker->ToCreature() : nullptr;
+            if (!mob || !mob->IsAlive() || mob->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE))
+                continue;
+            std::list<Creature*> nearby;
+            Acore::AnyAssistCreatureInRangeCheck check(mob, bot, assist);
+            Acore::CreatureListSearcher<Acore::AnyAssistCreatureInRangeCheck> searcher(mob, nearby, check);
+            Cell::VisitObjects(mob, searcher, assist);
+            for (Creature* helper : nearby)
+                if (helper && helper->IsAlive() && !helper->IsInCombat() &&
+                    std::find(counted.begin(), counted.end(), helper->GetGUID()) == counted.end())
+                {
+                    why = Acore::StringFormat("{} L{} fights {:.0f} yd from {} L{} the judge did not count",
+                                              mob->GetName(), mob->GetLevel(), mob->GetExactDist2d(helper),
+                                              helper->GetName(), helper->GetLevel());
+                    return true;
+                }
+        }
+        return false;
+    }
+
     bool JudgedFightSpot(Player* bot, Unit* target, G3D::Vector3& at)
     {
         if (!bot || !target)

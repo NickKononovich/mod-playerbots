@@ -102,6 +102,10 @@ namespace SoloSafety
     bool FightPastJudged(Player* bot, Unit* target, G3D::Vector3 const& to, std::string& why);
     // [fight50] the judged fight spot of its engage of `target`; false when none
     bool JudgedFightSpot(Player* bot, Unit* target, G3D::Vector3& at);
+    // [death395] an attacker of the judged fight stands within the assistance radius of an idle mob that assists it
+    // and the judge did not count (Creature::Update's periodic CallAssistance from where each one fights): true with
+    // the two named in `why`
+    bool AttackerWakes(Player* bot, Unit* target, std::string& why);
     // [deaths18] a party judge's engaged pull (the leader's grind target, NewRpgCoop::JudgePull): the death line of a
     // member names a party fight only when this target hit it
     void NotePartyPull(Player* leader, Unit* target);
