@@ -1534,6 +1534,47 @@ namespace
         }
     };
 
+    // [death427] a ranged-role bot without a rotation of ranged spells (a healer spec): the longest reach of a damage
+    // spell it knows, 0 with none. LeaderSpellReach's fixed 30 yd for it is a heal's reach: b460 Rollothan L15 (holy
+    // paladin, no ranged damage spell) was given pull spots 27 yd from the target, made no pull there and walked on
+    // to melee - 8 of its 8 pulls 7-23 yd off the spot, the last one into a trogg camp (6 came, dead)
+    float KnownDamageReach(Player* bot)
+    {
+        struct Known
+        {
+            uint64 key;
+            float reach;
+        };
+        thread_local std::unordered_map<ObjectGuid, Known> known;
+        PlayerSpellMap const& spells = bot->GetSpellMap();
+        uint64 const key = uint64(bot->GetLevel()) << 48 | uint64(bot->GetActiveSpec()) << 40 | uint64(spells.size());
+        if (auto const it = known.find(bot->GetGUID()); it != known.end() && it->second.key == key)
+            return it->second.reach;
+        float reach = 0.0f;
+        for (auto const& [spellId, spell] : spells)
+        {
+            if (!spell || spell->State == PLAYERSPELL_REMOVED || !spell->Active ||
+                !spell->IsInSpec(bot->GetActiveSpec()))
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            if (!info || info->IsPassive() || info->IsPositive())
+                continue;
+            bool damage = false;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                damage = damage || effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE ||
+                         (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
+                          effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE);
+            if (damage)
+                reach = std::max(reach, info->GetMaxRange(false, bot));
+        }
+        if (reach <= NOMINAL_MELEE_RANGE)
+            reach = 0.0f;
+        if (known.size() > 4096)
+            known.clear();
+        known[bot->GetGUID()] = {key, reach};
+        return reach;
+    }
+
     // [pullplan] the bot's pull from range: its rotation's reach for a ranged bot; else Throw / Shoot with the ranged
     // weapon (and ammunition) that spell needs; 0 when it has none (a body pull at the target's aggro edge)
     float PullReach(Player* bot, uint32* spellOut = nullptr)
@@ -1541,7 +1582,8 @@ namespace
         if (spellOut)
             *spellOut = 0;
         if (PlayerbotAI::IsRanged(bot))
-            return Leader::Fight::LeaderSpellReach(bot);
+            return Leader::Fight::LeaderRotationSpellNames(bot).empty() ? KnownDamageReach(bot)  // [death427]
+                                                                        : Leader::Fight::LeaderSpellReach(bot);
         constexpr uint32 SPELL_THROW = 2764;
         constexpr uint32 SPELL_SHOOT = 3018;  // bows, guns, crossbows
         Item* weapon = bot->GetWeaponForAttack(RANGED_ATTACK, true);

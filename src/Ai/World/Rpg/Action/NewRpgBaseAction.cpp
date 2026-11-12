@@ -2779,6 +2779,27 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                                (floorZ <= INVALID_HEIGHT || floorZ + bot->GetCollisionHeight() < liquid.Level);
         if (openWater)
         {
+            // [death428] deep under the surface the sea floor's polygons can be an island below the surface's (the
+            // navmesh links them nowhere, the swim needs no link): it swims straight up first, the surface walk on
+            // from there. b460 Shalaeth L20 at Mist's Edge (7031,403,-17): 508 floor polygons 17 yd under the water
+            // polygons, "no clear stretch of surface in sight" from the floor, then "on a navmesh island" and a hearth
+            float const height = bot->GetCollisionHeight();
+            if (here.z + 2.0f * height < liquid.Level &&
+                map->isInLineOfSight(here.x, here.y, here.z + height, here.x, here.y, liquid.Level, bot->GetPhaseMask(),
+                                     LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing))
+            {
+                bot->GetMotionMaster()->MovePoint(0, here.x, here.y, liquid.Level, FORCED_MOVEMENT_NONE, 0.0f, 0.0f,
+                                                  false, true);
+                float const rise = liquid.Level - here.z;
+                float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(rise), 0.0f,
+                                               float(sPlayerbotAIConfig.MaxWaitForMove));
+                AI_VALUE(LastMovement&, "last movement")
+                    .Set(bot->GetMapId(), here.x, here.y, liquid.Level, bot->GetOrientation(), delay,
+                         MovementPriority::MOVEMENT_NORMAL);
+                return logged(Acore::StringFormat("[death428] {:.0f} yd under the surface (z {:.1f}): swims straight "
+                                                  "up",
+                                                  rise, liquid.Level));
+            }
             float const toDest = bot->GetExactDist2d(dest.GetPositionX(), dest.GetPositionY());
             float const step = std::min(toDest, float(sPlayerbotAIConfig.SightDistance));
             float const heading = bot->GetAngle(dest.GetPositionX(), dest.GetPositionY());
