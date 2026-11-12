@@ -4905,7 +4905,11 @@ void GuildCoordinator::UpdateProfessions()
                                     zoneOf(inn) != p->GetZoneId())
                                     if (WorldPosition const here =
                                             sTravelRouteMgr.GetNearestInn(p, std::numeric_limits<float>::max(), off);
-                                        here != WorldPosition() && here != inn && zoneOf(here) == p->GetZoneId())
+                                        here != WorldPosition() && here != inn && zoneOf(here) == p->GetZoneId() &&
+                                        // [craft391] ... on the landmass it stands on: b452 Dekorhan's pick flipped
+                                        // between the Darnassus and Dolanaar inns 8 times as the Rut'theran portal
+                                        // took him between the zones, each flip a town stop across the water
+                                        TravelRouteMgr::Landmass(here) == TravelRouteMgr::Landmass(WorldPosition(p)))
                                     {
                                         std::string const text = Acore::StringFormat(
                                             "{} L{} {} craft inn ({:.0f},{:.0f}) in another zone: the inn of its zone "

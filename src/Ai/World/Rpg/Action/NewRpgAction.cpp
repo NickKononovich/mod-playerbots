@@ -2133,11 +2133,22 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 // [guild20] after the hand-ins: the planned profession's trainer or tool vendor
                 // [tasks] single decider: a guild member works its profession only on the global leader's PROFESSION
                 // call, never on its own choice (a bot outside the guild plan leads itself)
-                if ((!quest || bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE) &&
-                    (!sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) ||
-                     sGuildCoordinator.ProfessionCall(bot) != GuildProfessionKind::NONE) &&
-                    NewRpgProfession::StartTask(botAI, bot))
+                // [craft390] ... and a leader's call due where it stands (ProfessionCall: a craft in this safe place, a
+                // trainer / vendor of this town) runs before a hand-in elsewhere: the town stop was walked for it.
+                // b452 Dekorhan reached the Darnassus and Dolanaar inns with the Virtuoso Inking Set, 85 Light
+                // Parchment and 40 Silverleaf, and each time "QUEST q9432 hand in (hand-in first)" - its ender 9655 yd
+                // off in Astranaar - took him away before the executor looked: Inscription stayed 1, no mill
+                bool const planned = sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter());
+                bool const handIn = quest && bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
+                bool const callDue = planned && sGuildCoordinator.ProfessionCall(bot) != GuildProfessionKind::NONE;
+                if ((planned ? callDue : !handIn) && NewRpgProfession::StartTask(botAI, bot))
+                {
+                    static thread_local std::set<std::pair<uint32, uint32>> logged;  // (bot, quest): once
+                    if (handIn && logged.emplace(bot->GetGUID().GetCounter(), questId).second)
+                        LOG_INFO("playerbots", "[craft390] {} L{} works its due profession call here before the hand-in"
+                                 " of q{}", bot->GetName(), bot->GetLevel(), questId);
                     return true;
+                }
                 // [lag361] the route's next stop is a pickup or an objective, and the grind of its level nearby earns
                 // more over the route's time: it grinds there (a hand-in of a complete quest is taken as planned)
                 if (quest && bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)
