@@ -8588,7 +8588,15 @@ namespace
     // sitting), else the core's spirit regeneration (Player::OCTRegenHPPerSpirit, per second)
     float GrindRegen(Player* bot)
     {
-        float best = bot->OCTRegenHPPerSpirit() * float(bot->GetStat(STAT_SPIRIT));
+        // [lag367] Player::RegenerateHealth: every 2 s OCTRegenHPPerSpirit() (spirit already in it) times the health
+        // rate (the low-level boost below L15), a third more sitting. Before, spirit was multiplied in again: b449
+        // [lag361] lines read 560-729 hp/s back, rest 0 s, and every grind looked restless
+        float rate = sWorld->getRate(RATE_HEALTH);
+        if (sWorld->getBoolConfig(CONFIG_LOW_LEVEL_REGEN_BOOST) && bot->GetLevel() < 15)
+            rate *= 2.066f - float(bot->GetLevel()) * 0.066f;
+        constexpr float SITTING = 1.33f;      // Player::RegenerateHealth's sitting factor
+        constexpr float TICK_SECONDS = 2.0f;  // its regen tick (m_regenTimerCount)
+        float best = bot->OCTRegenHPPerSpirit() * rate * SITTING / TICK_SECONDS;
         for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
             best = std::max(best, FoodRegen(bot, bot->GetItemByPos(INVENTORY_SLOT_BAG_0, i)));
         for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
