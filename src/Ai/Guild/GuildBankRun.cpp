@@ -16,6 +16,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 
+#include <algorithm>
 #include <mutex>
 #include <unordered_map>
 
@@ -58,17 +59,29 @@ namespace
         return -1;
     }
 
-    // [bank408] the first tab with deposit rights and an empty slot: a full tab takes nothing (b460: the only tab held
-    // 98/98 and members stood at the vault for 1400 s, "could not deposit" on every visit)
-    int32 DepositTab(Guild* guild, Player* bot)
+    // [bank408] the first tab with deposit rights that takes `count` of the item: a full tab takes nothing (b460: the
+    // only tab held 98/98 and members stood at the vault for 1400 s, "could not deposit" on every visit). [bank411]
+    // as the core's auto-store (Guild::BankMoveItemData::CanStore): onto its partial stacks, then into empty slots.
+    // itemId 0: any item, an empty slot
+    int32 DepositTab(Guild* guild, Player* bot, uint32 itemId, uint32 count)
     {
+        ItemTemplate const* proto = itemId ? sObjectMgr->GetItemTemplate(itemId) : nullptr;
+        uint32 const maxStack = proto ? std::max<uint32>(1, proto->GetMaxStackSize()) : 1;
         for (uint8 tab = 0; tab < guild->GetPurchasedTabsSize(); ++tab)
         {
             if (!guild->MemberHasTabRights(bot->GetGUID(), tab, GUILD_BANK_RIGHT_DEPOSIT_ITEM))
                 continue;
-            for (uint8 slot = 0; slot < GUILD_BANK_MAX_SLOTS; ++slot)
-                if (!guild->GetBankItem(tab, slot))
-                    return tab;
+            uint32 room = 0;
+            for (uint8 slot = 0; slot < GUILD_BANK_MAX_SLOTS && room < count; ++slot)
+            {
+                Item* item = guild->GetBankItem(tab, slot);
+                if (!item)
+                    room += maxStack;
+                else if (item->GetEntry() == itemId && item->GetCount() < maxStack)
+                    room += maxStack - item->GetCount();
+            }
+            if (room >= count)
+                return tab;
         }
         return -1;
     }
@@ -111,7 +124,7 @@ namespace GuildBankRun
         if (TabWithRights(guild, bot, deposit ? GUILD_BANK_RIGHT_DEPOSIT_ITEM : GUILD_BANK_RIGHT_VIEW_TAB) < 0)
             return "no rights to the bank tab";
         if (deposit)
-            return DepositTab(guild, bot) < 0 ? "the guild bank is full" : "";  // [bank408]
+            return "";  // the room is the item's own question: DepositState
         if (!bot->GetFreeInventorySpace())
             return "no free bag slot for a withdrawal";
         std::lock_guard<std::mutex> guard(refusedLock);
@@ -128,6 +141,14 @@ namespace GuildBankRun
         }
         return "the bank refused a withdrawal: no withdraw slots left today on tab " +
                std::to_string(uint32(itr->second.first) + 1);
+    }
+
+    std::string DepositState(Player* bot, uint32 itemId, uint32 count)
+    {
+        std::string why = BankState(bot, true);
+        if (why.empty() && DepositTab(BotGuild(bot), bot, itemId, std::max<uint32>(1, count)) < 0)
+            why = "the guild bank is full";  // [bank408] [bank411] no empty slot, no partial stack of it with room
+        return why;
     }
 
     bool NearestVault(Player* bot, WorldPosition& pos, float& dist)
@@ -169,7 +190,8 @@ namespace GuildBankRun
             Item* item = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(low));
             if (!item || item->IsSoulBound())
                 continue;
-            int32 const tab = DepositTab(guild, bot);  // [bank408] each item into a tab that still has room
+            // [bank408] each item into a tab that still has room for it
+            int32 const tab = DepositTab(guild, bot, item->GetEntry(), item->GetCount());
             if (tab < 0)
             {
                 LOG_INFO("playerbots", "[bank408] {} could not deposit item {}: the guild bank is full",
@@ -187,7 +209,7 @@ namespace GuildBankRun
         return moved;
     }
 
-    std::string Withdraw(Player* bot, uint32 itemId)
+    std::string Withdraw(Player* bot, uint32 itemId, uint32* itemGuidLow)
     {
         Guild* guild = BotGuild(bot);
         if (!guild)
@@ -209,12 +231,16 @@ namespace GuildBankRun
                     return "no bag room";
                 }
                 uint32 const before = bot->GetItemCount(itemId, false);
+                uint32 const movedGuid = item->GetGUID().GetCounter();  // [bank410] a whole stack keeps its item
                 int32 const withdrawn = WithdrawnToday(guild, bot, tab);
                 guild->SwapItemsWithInventory(bot, true, tab, slot, NULL_BAG, NULL_SLOT, 0);
                 if (bot->GetItemCount(itemId, false) > before)
                 {
                     LOG_INFO("playerbots", "[bank400] {} took item {} from tab {} slot {} (withdrawals today {})",
                              bot->GetName(), itemId, uint32(tab) + 1, uint32(slot), withdrawn + 1);
+                    Item* taken = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(movedGuid));
+                    if (itemGuidLow)
+                        *itemGuidLow = taken ? movedGuid : 0;
                     return "";
                 }
                 // the core moves nothing without a word when the rank has no withdraw slots left on the tab

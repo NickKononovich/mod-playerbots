@@ -926,6 +926,9 @@ private:
     // [ench161] the members' spare greens / blues (unbound, no member's gear plan takes the copy, the holder does not
     // wear it better) go to an enchanter whose skill disenchants them: its own list, else held for the transfer
     void RouteSpareGreens();
+    // [bank409] a bank item no member claims (no upgrade, wanted list, cook, gear plan, withdraw): an enchanter takes
+    // a green it disenchants, else the member nearest a vault takes it to sell - the loot decision runs on it then
+    void ClaimBankItems();
     // [ench160] the expected items of one Disenchant of an item of this DisenchantID (disenchant_loot_template)
     std::map<uint32, float> const& DisenchantYield(uint32 disenchantId);
     static bool TownReady(Player* bot, GuildOrder const& o);

@@ -1949,9 +1949,9 @@ void GuildCoordinator::UpdateTransfers()
                 if (needed && c.mail < NONE)
                     c.mail += float(c.delay);
             }
-            // bank: both walks to the vaults (only with the guild's tab and the rights)
-            if (!w.gold && r && GuildBankRun::BankState(s, true).empty() && GuildBankRun::BankState(r, false).empty() &&
-                canWalk(s) && canWalk(r))
+            // bank: both walks to the vaults (only with the guild's tab, the rights and room for it [bank411])
+            if (!w.gold && r && GuildBankRun::DepositState(s, w.itemId, w.count).empty() &&
+                GuildBankRun::BankState(r, false).empty() && canWalk(s) && canWalk(r))
             {
                 float const ys = vaultWalk(s), yr = vaultWalk(r);
                 if (ys < NONE && yr < NONE)

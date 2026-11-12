@@ -252,6 +252,26 @@ namespace
         return others ? name + " (tasks " + std::to_string(others) + ")" : name;
     }
 
+    // [bank409] the withdraw purpose of a bank item nobody claims: its new holder gets the loot decision for it
+    constexpr char const* UNCLAIMED_BANK = "[bank409] unclaimed";
+
+    // [bank411] "" = the bank takes at least one of the held items now (room per item: its stacks, empty slots),
+    // else why not
+    template <class Held>
+    std::string DepositStateOf(Player* p, Held const& items)
+    {
+        std::string why;
+        for (auto const& h : items)
+        {
+            std::string const w = GuildBankRun::DepositState(p, h.itemId, h.count);
+            if (w.empty())
+                return w;
+            if (why.empty())
+                why = w;
+        }
+        return why;
+    }
+
     uint32 FreeBagSlots(Player* p)
     {
         uint32 free = 0;
@@ -1995,7 +2015,9 @@ void GuildCoordinator::UpdateOrders()
                 st->second.held.push_back({item->GetGUID().GetCounter(), e.itemId, item->GetCount(), e.forLow,
                                            e.purpose});
                 Decision(Who(row.low) + ": " + ItemName(e.itemId) + " — " + e.purpose +
-                         (GuildBankRun::BankState(p, true).empty() ? ", to the bank" : ", holds until the guild bank"));
+                         (GuildBankRun::DepositState(p, e.itemId, item->GetCount()).empty()
+                              ? ", to the bank"
+                              : ", holds until the guild bank"));
             }
             else if (!item && p->IsNonMeleeSpellCast(false))
                 keep.push_back(e);
@@ -2003,6 +2025,7 @@ void GuildCoordinator::UpdateOrders()
         st->second.expect = std::move(keep);
     }
     UpdateCrafts(now);  // [guild50]
+    ClaimBankItems();                                     // [bank409]
     RouteSpareGreens();                                   // [ench161]
     std::map<std::pair<uint32, uint32>, bool> withdrawn;  // (member, item) already on its withdraw list
     for (auto const& [low, list] : withdraw_)
@@ -2340,7 +2363,7 @@ void GuildCoordinator::UpdateOrders()
                 !TransferHolds(h.itemGuidLow))  // [guild81] trade / mail moves it; [tasks] its own plan stays
                 bankHeld.push_back(h);
         // [guild16] no bank order while the guild or its bank tab does not exist: the bot just holds the items
-        std::string const bankWhy = bankHeld.empty() ? std::string() : GuildBankRun::BankState(p, true);
+        std::string const bankWhy = bankHeld.empty() ? std::string() : DepositStateOf(p, bankHeld);
         if (bankWhy != st.bankBlocked)
         {
             // [bank408] e.g. a full bank: no vault visit, the bot quests on; full bags release the held items
@@ -2829,7 +2852,8 @@ void GuildCoordinator::UpdateOrders()
                     if (!bag->GetTemplate()->BagFamily)
                         total += bag->GetBagSize();
             int8 const cls = freeSlots == 0 ? 0 : (freeSlots * 5 <= total ? 1 : 2);
-            bool const noBank = !GuildBankRun::BankState(p, true).empty();
+            // [bank411] a full bank (no empty slot) relieves nothing either
+            bool const noBank = !GuildBankRun::DepositState(p, 0, 1).empty();
             uint32 heldBank = 0;
             for (HeldItem const& h : st.held)
                 if (!h.forLow && h.purpose != "pending")
@@ -2921,7 +2945,8 @@ void GuildCoordinator::UpdateOrders()
                 for (auto it = st.held.begin(); it != st.held.end();)
                 {
                     if (it->forLow || it->purpose == "pending" || TransferHolds(it->itemGuidLow) ||
-                        PlannedFor(it->itemId) || adopted.count(it->itemGuidLow))
+                        PlannedFor(it->itemId) || adopted.count(it->itemGuidLow) ||
+                        GuildBankRun::DepositState(p, it->itemId, it->count).empty())  // [bank411] onto its stack
                     {
                         ++it;
                         continue;
@@ -3310,6 +3335,94 @@ void GuildCoordinator::MarkBagsChanged(uint32 low)
 // [ench162] incremental: only the bags of members whose bags changed (MarkBagsChanged), who came online, or all of
 // them when what the routing depends on changed (an enchanter's skill, the gear plans' picks); the copies a plan
 // takes that other members keep stay counted from their last look (greensPlanned_)
+// [bank409] b460: the only tab held 98/98, 72 of them greens for #22 Idunk's Disenchant, and none came out: the
+// claims (withdraw_) live in memory only, a restart lost them, and every deposit since failed. Each plan the claims
+// are rebuilt from the bank's items as the global leader's loot decision would make them (lock_ held)
+void GuildCoordinator::ClaimBankItems()
+{
+    struct Taker
+    {
+        uint32 low{0};
+        uint32 room{0};   // free bag slots less its queued withdrawals
+        float vault{0};   // yd to its nearest vault
+        uint32 skill{0};  // Enchanting with Disenchant, else 0
+    };
+    Guild* guild = nullptr;
+    std::vector<Taker> takers;
+    std::set<std::pair<uint32, uint32>> claims;  // (member, item)
+    for (PlanRow const& row : plan_)
+    {
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+        if (!p || !p->IsInWorld() || !GET_PLAYERBOT_AI(p) || HumanCharacter(p))
+            continue;
+        if (!guild)
+            guild = GuildBankRun::BotGuild(p);
+        for (GearPick const& g : bots_[row.low].gearNow)  // the gear loop's withdrawals, made after this pass
+            if (g.kind == GuildGear::SRC_BANK && !p->GetItemCount(g.itemId, true))
+                claims.insert({row.low, g.itemId});
+        WorldPosition pos;
+        float dist = 0;
+        uint32 const queued = uint32(withdraw_[row.low].size());
+        uint32 const free = FreeBagSlots(p);
+        if (!GuildBankRun::BankState(p, false).empty() || free <= queued || !GuildBankRun::NearestVault(p, pos, dist))
+            continue;  // no rights / bag room / withdraw slots, or in an instance
+        bool const enchanter = p->HasSkill(SKILL_ENCHANTING) && p->HasSpell(SPELL_DISENCHANT);
+        takers.push_back({row.low, free - queued, dist, enchanter ? p->GetPureSkillValue(SKILL_ENCHANTING) : 0});
+    }
+    if (!guild || takers.empty())
+        return;
+    for (auto const& [low, list] : withdraw_)
+        for (auto const& [item, why] : list)
+            claims.insert({low, item});
+    std::map<uint32, uint32> claimed;  // item -> copies claimed
+    for (auto const& [low, item] : claims)
+        ++claimed[item];
+    for (uint8 tab = 0; tab < guild->GetPurchasedTabsSize(); ++tab)
+        for (uint8 slot = 0; slot < GUILD_BANK_MAX_SLOTS; ++slot)
+        {
+            Item* item = guild->GetBankItem(tab, slot);
+            ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+            if (!proto)
+                continue;
+            uint32 const entry = proto->ItemId;
+            if (uint32& n = claimed[entry]; n)
+            {
+                --n;
+                continue;
+            }
+            // the bank's own job: a crafter's wanted material, a cook's ingredient, a later gear plan's piece
+            if (CookNeeds(entry) || PlannedFor(entry) ||
+                std::any_of(wanted_.begin(), wanted_.end(),
+                            [&](WantedItem const& w) { return w.itemId == entry && (w.need || w.optional); }))
+                continue;
+            bool const greens = (proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON) &&
+                                proto->DisenchantID && proto->Quality >= ITEM_QUALITY_UNCOMMON &&
+                                proto->Quality <= ITEM_QUALITY_RARE && proto->RequiredDisenchantSkill >= 0;
+            Taker* to = nullptr;
+            if (greens)  // as [ench165]: the highest Disenchant skill-up chance, then the most room
+                for (Taker& t : takers)
+                    if (t.room && t.skill && t.skill >= uint32(proto->RequiredDisenchantSkill) &&
+                        (!to || DisenchantSkillUpChance(t.skill) > DisenchantSkillUpChance(to->skill) ||
+                         (DisenchantSkillUpChance(t.skill) == DisenchantSkillUpChance(to->skill) &&
+                          t.room > to->room)))
+                        to = &t;
+            bool const disenchant = to != nullptr;
+            if (!to)
+                for (Taker& t : takers)
+                    if (t.room && (!to || t.vault < to->vault))
+                        to = &t;
+            if (!to)
+                return;  // nobody has bag room left
+            --to->room;
+            withdraw_[to->low].emplace_back(entry,
+                                            std::string(UNCLAIMED_BANK) + (disenchant ? ": disenchant" : ": sell"));
+            LOG_INFO("playerbots",
+                     "[bank409] {} ×{} in the guild bank (tab {} slot {}): nobody claims it → {} takes it {}",
+                     ItemName(entry), item->GetCount(), uint32(tab) + 1, uint32(slot), Who(to->low),
+                     disenchant ? "to disenchant" : "to sell (the loot decision then)");
+        }
+}
+
 void GuildCoordinator::RouteSpareGreens()
 {
     auto const started = std::chrono::steady_clock::now();
@@ -7253,7 +7366,9 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
             if (held != st.held.end())
                 held->purpose = "wanted";
             Decision(what +
-                     (GuildBankRun::BankState(looter, true).empty() ? " → bank" : " → holds until the guild bank") +
+                     (GuildBankRun::DepositState(looter, report.itemId, report.count).empty()
+                          ? " → bank"
+                          : " → holds until the guild bank") +
                      ": in the wanted list" + (w.optional ? " (optional)" : "") + " (" + std::to_string(w.have) + "/" +
                      std::to_string(w.need) + ": " + OrdersText(w.forWhom, 90) + ")");
             return;
@@ -7560,9 +7675,18 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                 }
                 // [bank408] the bank changed since the plan (filled up, rights gone): the order is dropped until the
                 // next plan instead of a vault visit that moves nothing
-                if (std::string const why =
-                        GuildBankRun::BankState(bot, order.type == GuildOrderType::BANK_DEPOSIT);
-                    !why.empty())
+                std::string why;
+                if (order.type == GuildOrderType::BANK_DEPOSIT)
+                {
+                    std::vector<HeldItem> items;
+                    for (HeldItem const& h : st.held)
+                        if (h.purpose != "pending" && h.forLow != selfLow && !TransferHolds(h.itemGuidLow))
+                            items.push_back(h);
+                    why = DepositStateOf(bot, items);  // [bank411] room for one of them at least
+                }
+                else
+                    why = GuildBankRun::BankState(bot, false);
+                if (!why.empty())
                 {
                     LOG_INFO("playerbots", "[bank408] {}: {} dropped ({}), quests on", bot->GetName(),
                              OrderName(order.type), why);
@@ -7991,15 +8115,14 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
                 moving.push_back(h);
             }
         uint32 const moved = GuildBankRun::Deposit(bot, guids);
-        // [bank408] a full bank keeps the order off (BankState); any other refusal releases the item, so the next
+        // [bank408] a full bank keeps the order off (DepositState); any other refusal releases the item, so the next
         // plan sends the bot to no vault visit that moves nothing again
-        bool const bankUsable = GuildBankRun::BankState(bot, true).empty();
         for (HeldItem const& h : moving)
         {
-            if (bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(h.itemGuidLow)))
+            if (Item* left = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(h.itemGuidLow)))
             {
-                if (!bankUsable)
-                    continue;  // still in the bags: not deposited, waits for room in the bank
+                if (!GuildBankRun::DepositState(bot, h.itemId, left->GetCount()).empty())
+                    continue;  // still in the bags: not deposited, waits for room in the bank [bank411]
                 LOG_INFO("playerbots", "[bank408] {}: the vault refused {} ({}), released from the bank order",
                          bot->GetName(), ItemName(h.itemId), h.purpose);
                 st.held.erase(std::remove_if(st.held.begin(), st.held.end(),
@@ -8016,18 +8139,28 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
         Decision(Who(low) + " put into the guild bank " + std::to_string(moved) + " from " +
                  std::to_string(guids.size()) + " items");
     }
-    else if (st.runType == GuildOrderType::BANK_WITHDRAW)
+    // [bank410] one vault visit takes all its withdrawals, after a deposit too: b460 a member's BANK_DEPOSIT went
+    // first, and a withdraw run took one item per visit
+    auto& list = withdraw_[low];
+    while (!list.empty())
     {
-        auto& list = withdraw_[low];
-        if (!list.empty())
-        {
-            uint32 const itemId = list.front().first;
-            // [bank401] a refusal is the game's answer: BankState(withdraw) keeps the order off until it changes
-            std::string const why = GuildBankRun::Withdraw(bot, itemId);
-            list.erase(list.begin());
-            Decision(Who(low) + (why.empty() ? " took from the bank " : " could not take from the bank ") +
-                     ItemName(itemId) + (why.empty() ? "" : " (" + why + ")"));
-        }
+        auto const [itemId, purpose] = list.front();
+        list.erase(list.begin());
+        // [bank401] a refusal is the game's answer: BankState(withdraw) keeps the order off until it changes
+        uint32 taken = 0;
+        std::string const why = GuildBankRun::Withdraw(bot, itemId, &taken);
+        Decision(Who(low) + (why.empty() ? " took from the bank " : " could not take from the bank ") +
+                 ItemName(itemId) + (why.empty() ? "" : " (" + why + ")"));
+        // [bank410] an unclaimed bank item gets the global leader's loot decision in its new bags (disenchant
+        // itself, sell, ...), as fresh loot
+        if (why.empty() && taken && purpose.rfind(UNCLAIMED_BANK, 0) == 0)
+            if (Item* item = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(taken)))
+            {
+                st.held.push_back({taken, itemId, item->GetCount(), 0, "pending"});
+                lootQueue_.push_back({low, taken, itemId, item->GetCount()});
+            }
+        if (!why.empty() && why != "not in the bank")
+            break;  // no bag room, no withdraw slots left today: the rest waits
     }
     return 1;
 }
