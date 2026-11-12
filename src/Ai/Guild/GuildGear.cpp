@@ -616,6 +616,18 @@ namespace GuildGear
         return text;
     }
 
+    bool HoldsExtendedCost(Player* member, uint32 extendedCost)
+    {
+        ItemExtendedCostEntry const* cost = sItemExtendedCostStore.LookupEntry(extendedCost);
+        if (!cost)
+            return true;
+        for (uint32 r = 0; r < MAX_ITEM_EXTENDED_COST_REQUIREMENTS; ++r)
+            if (cost->reqitem[r] && !member->GetItemCount(cost->reqitem[r], true))
+                return false;
+        return (!cost->reqhonorpoints || member->GetHonorPoints()) &&
+               (!cost->reqarenapoints || member->GetArenaPoints()) && !cost->reqpersonalarenarating;
+    }
+
     std::string ExtendedCostMissing(Player* member, uint32 extendedCost)
     {
         ItemExtendedCostEntry const* cost = sItemExtendedCostStore.LookupEntry(extendedCost);

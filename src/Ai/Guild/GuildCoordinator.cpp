@@ -6644,9 +6644,19 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
                     GuildGear::VendorSpawn const* elsewhere = nullptr;
                     float nearDist = 0.0f;
                     static std::vector<GuildGear::VendorSpawn> const none;
+                    // [craft404] a vendor's item for the level it has (not the quests' ahead), at a vendor it can
+                    // reach (another continent: the game's continent rule, Outland from 58, Northrend from 68) and
+                    // for a currency it holds. b458: 57 [craft401] lines named emblem items for L15-23 members -
+                    // "#49 Nelaeleas L22 two-hand Repurposed Lava Dredger ... vendor Enchanter Isian (Northrend), for
+                    // 65x Emblem of Heroism"
+                    if (proto->RequiredLevel > level)
+                        break;
                     for (GuildGear::VendorSpawn const& s : spawns ? *spawns : none)
                     {
-                        if (!FriendlyNpc(m, s.entry) || NewRpgProfession::BuyFailed(m, s.entry, proto->ItemId))
+                        if (!FriendlyNpc(m, s.entry) || NewRpgProfession::BuyFailed(m, s.entry, proto->ItemId) ||
+                            (s.extendedCost && !GuildGear::HoldsExtendedCost(m, s.extendedCost)) ||
+                            (s.mapId != m->GetMapId() && (s.mapId == MAP_OUTLAND || s.mapId == MAP_NORTHREND) &&
+                             !GuildGatherPlan::ContinentAllowed(m, s.mapId, WorldPosition(s.mapId, s.x, s.y, s.z))))
                             continue;
                         if (s.mapId != m->GetMapId())
                         {

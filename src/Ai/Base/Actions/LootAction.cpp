@@ -592,7 +592,11 @@ bool StoreLootAction::Execute(Event event)
             continue;
         }
 
-        if (loot_type != LOOT_SKINNING && !IsLootAllowed(itemid, botAI))
+        // [craft405] the loot of its own item (its Disenchant, Milling, Prospecting, a container it opened) is its own
+        // product, taken whatever its loot strategy: b458 "[loot] Thamesh loots item q0 items=0/1" after "[ench151]
+        // Thamesh disenchants Outrunner's Gloves" - the Strange Dust left "not allowed by its loot strategy", the
+        // release kept the gloves (not looted: no destroy) and no dust ever reached the guild's enchanters
+        if (loot_type != LOOT_SKINNING && !guid.IsItem() && !IsLootAllowed(itemid, botAI))
         {
             leave("not allowed by its loot strategy");
             continue;

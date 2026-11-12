@@ -94,6 +94,9 @@ namespace GuildGear
     std::vector<uint32> const& ItemsOfGroup(uint8 group);
     std::vector<VendorSpawn> const* VendorsOf(uint32 itemId);
     CraftRecipe const* Recipe(uint32 spellId);
+    // [craft404] the member holds some of every currency / token the extended cost asks for (honor, arena points,
+    // emblems, badges); a personal arena rating is never held by a guild bot
+    bool HoldsExtendedCost(Player* member, uint32 extendedCost);
     std::vector<uint32> const& BagRecipes();  // recipe spells that make a generic bag
     RefInfo const* Reference(uint32 refId);
     std::string MapName(uint32 mapId);
