@@ -5293,6 +5293,11 @@ void GuildCoordinator::UpdateProfessions()
                 if (pick.kind == GuildProfessionKind::CRAFT && ProfessionTool(pick.skillLine) &&
                     !HasProfessionTool(p, pick.skillLine))
                     toolLines.insert(pick.skillLine);
+            // [craft407] the enchanter's rod is its trade's tool, not only its skill-up's: the members' enchants
+            // ([craft386]) and every enchant recipe need it. b460: the five enchanters' Enchanting calls lost to
+            // questing (value -1s 14c), so no Copper Rod was ever called and none bought
+            if (p->HasSkill(SKILL_ENCHANTING) && !HasProfessionTool(p, SKILL_ENCHANTING))
+                toolLines.insert(SKILL_ENCHANTING);
             for (uint32 line : toolLines)
             {
                 ProfessionPick pick;
