@@ -2831,6 +2831,35 @@ namespace Leader::Dungeon
                     }
                     return;
                 }
+                // [dun246] b456 wc-n five10-10: the tank's walk to Deviate Guardian was refused at 4.9 s and the
+                // same pull was committed, issued and refused again 81151 times in 243 s with nothing changed. A pull
+                // whose walk the tank refused is committed again only when the tank, the mob or the route target
+                // changed (each a new walk to judge)
+                if (mob && lead.walkRefused.mob == mobGuid)
+                {
+                    auto& refused = lead.walkRefused;
+                    bool const unchanged = tank->GetExactDist(refused.tankAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
+                                           mob->GetExactDist(refused.mobAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
+                                           group.RouteTarget() == refused.routeTarget;
+                    if (unchanged)
+                    {
+                        if (!refused.logged)
+                        {
+                            refused.logged = true;
+                            Decisions().Write(run, "leader", "commit_held", mobGuid, mob->GetName(), true,
+                                              JsonObject()
+                                                  .Str("why", "the tank refused its walk: " + refused.why)
+                                                  .Str("until", "the tank, the mob or the route target changes")
+                                                  .Str("kind", decision.kind)
+                                                  .Str("tag", "[dun246]"));
+                            LOG_INFO("playerbots", "[dun246] {}: no new commit of {} ({:.0f} yd): the tank refused its "
+                                     "walk ({}) and nothing changed since", tank->GetName(), mob->GetName(),
+                                     tank->GetExactDist(mob), refused.why);
+                        }
+                        return;
+                    }
+                    refused = {};
+                }
                 if (mob)
                 {
                     lead.routeFirstFor.Clear();

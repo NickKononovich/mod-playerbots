@@ -177,6 +177,17 @@ namespace Leader::Dungeon
             bool const walkState = report.why.find("IsWaitingForLastMove") != std::string::npos ||
                                    report.why.find("IsDuplicateMove") != std::string::npos ||
                                    report.why.find("IsMovingAllowed") != std::string::npos;
+            if (report.what == "commit_failed" && !report.target.IsEmpty() && !walkState)
+                if (Unit* refused = ObjectAccessor::GetUnit(*leader, report.target))  // [dun246]
+                {
+                    auto& walkRefused = group.State().walkRefused;
+                    walkRefused.mob = report.target;
+                    walkRefused.tankAt = leader->GetPosition();
+                    walkRefused.mobAt = refused->GetPosition();
+                    walkRefused.routeTarget = group.RouteTarget();
+                    walkRefused.why = report.why;
+                    walkRefused.logged = false;
+                }
             if (report.what == "commit_failed" && !report.target.IsEmpty() && !walkState &&
                 !group.State().unreachable.count(report.target))
             {

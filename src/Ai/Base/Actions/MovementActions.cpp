@@ -1305,6 +1305,32 @@ bool MovementAction::MoveToLOS(WorldObject* target, bool ranged)
     if (type != PATHFIND_NORMAL && type != PATHFIND_INCOMPLETE)
         return false;
 
+    // [dun246] a bot on the leader's route walks that route: to its first point that sees the target, else its end.
+    // The straight point toward the target (MoveTo(Unit*, distance)) lay off the navmesh: b456 wc-n five10-10 Ganna
+    // "no walk ... to (-141.0,150.4,-75.4)", no polygon within 11 yd of it
+    if (!ranged && path.leaderRoute && path.points.size() >= 2)
+    {
+        G3D::Vector3 dest = path.points.back();
+        for (std::size_t i = 1; i < path.points.size(); ++i)
+        {
+            G3D::Vector3 const& point = path.points[i];
+            if (target->IsWithinLOS(point.x, point.y, point.z + bot->GetCollisionHeight()))
+            {
+                dest = point;
+                break;
+            }
+        }
+        thread_local std::unordered_map<uint64, ObjectGuid> routeLosLogged;  // one line per bot and target
+        ObjectGuid& last = routeLosLogged[bot->GetGUID().GetRawValue()];
+        if (last != target->GetGUID())
+        {
+            last = target->GetGUID();
+            LOG_INFO("playerbots", "[dun246] {}: walks its route for sight of {} to ({:.1f},{:.1f},{:.1f}), {:.1f} yd "
+                     "from it", bot->GetName(), target->GetName(), dest.x, dest.y, dest.z,
+                     target->GetExactDist(dest.x, dest.y, dest.z));
+        }
+        return MoveTo(target->GetMapId(), dest.x, dest.y, dest.z);
+    }
     if (!ranged)
         return MoveTo((Unit*)target, target->GetCombatReach());
 
