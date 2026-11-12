@@ -106,6 +106,8 @@ void RestParty(Player* leader, std::string const& why);
 // the bot is in a co-op party (its group is a co-op one; the global leader may take it out). Its own lock, never held
 // while waiting on another: callable with GuildCoordinator::lock_ held
 bool InParty(uint32 low);
+// [death426] the bot's party ended since the last ask (taken once): a walk it started in the party was priced for it
+bool TakePartyEnded(uint32 low);
 // [group18] the bot leaves its group (the world thread's leave): a group the session restored, its purpose gone
 bool LeaveStaleGroup(Player* bot, std::string const& why);
 // [group19] the leader of the co-op / help party that holds the bot (false: none)

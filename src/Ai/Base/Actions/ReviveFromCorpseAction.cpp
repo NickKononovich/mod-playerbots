@@ -23,6 +23,7 @@
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
+#include "NewRpgBaseAction.h"  // [death425] DangerDiscs
 #include "PathGenerator.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -253,6 +254,24 @@ namespace
         return level < start ? 0 : uint32(std::min(10, level - start + 1));
     }
 
+    // [death425] the margin (yd) the point keeps from the zones where the bot died (NewRpgBaseAction::DangerDiscs): the
+    // route search refuses them, and a walk that starts inside one judges the mobs there one by one ([pull9]
+    // SameDangerZone). b460 Galiver L18 rose 3 times 8-12 yd from its last death spot at Longshore ("the spot is
+    // safe" by the live murlocs' reaches), each walk out started "inside 2-3 refused reaches", went on through the
+    // camp and met the murlocs again: 4 deaths. Counted while a spirit healer is left (else the ghost could wait for
+    // good) and not in an instance (the corpse is the only way back there)
+    float ZoneMargin(Player* bot, float x, float y)
+    {
+        if (bot->GetMap()->Instanceable() || !HealerLeft(bot))
+            return FLT_MAX;
+        std::vector<G3D::Vector4> zones;
+        NewRpgBaseAction::DangerDiscs(bot, x, y, 0.0f, zones, false);
+        float margin = FLT_MAX;
+        for (G3D::Vector4 const& zone : zones)
+            margin = std::min(margin, std::hypot(zone.x - x, zone.y - y) - zone.w);
+        return margin;
+    }
+
     // [deaths3] it rises here: nothing reaches the spot (Full), or - no healer left for this death - the window is
     // open: no mob that stays reaches it and the wanderers / patrols are out of its reach now
     bool RisesHere(PlayerbotAI* botAI, Player* bot, GuidVector const& hostiles, bool& window)
@@ -261,6 +280,13 @@ namespace
         float const y = bot->GetPositionY();
         float const z = bot->GetPositionZ();
         window = false;
+        if (float const zone = ZoneMargin(bot, x, y); zone < 0.0f)  // [death425]
+        {
+            LogGhost(bot, Acore::StringFormat("[death425] no rise here: the zone where it died covers the spot ({:.0f} "
+                                              "yd inside)",
+                                              -zone));
+            return false;
+        }
         if (SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Full) >= 0.0f)
             return true;
         window = (!HealerLeft(bot) || HealerSickens(bot)) &&  // [ghost14] the healer's sickness: the window first
@@ -609,7 +635,7 @@ bool FindCorpseAction::SafeSpot(Corpse* corpse, GuidVector const& hostiles, floa
     _spotMs = now;
     _spotWindow = window;
     _spotFound = false;
-    if (hostiles.empty())
+    if (hostiles.empty() && ZoneMargin(bot, corpse->GetPositionX(), corpse->GetPositionY()) >= 0.0f)  // [death425]
         return false;
 
     struct Candidate
@@ -634,9 +660,10 @@ bool FindCorpseAction::SafeSpot(Corpse* corpse, GuidVector const& hostiles, floa
             // [ghost36] a window spot is one whose window can open: out of every roamer's round too ([rise33] refuses
             // the rise inside one) - else the ghost waited there for good (b387: 157 "[rise33] no window here",
             // Aestymro 45 at (-10244,1936), Irrua 43). With none in the corpse's ring, the spirit healer below
-            float const margin = window ? std::min(SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Fixed),
-                                                   SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Paths))
-                                        : SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Full);
+            float margin = window ? std::min(SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Fixed),
+                                             SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Paths))
+                                  : SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Full);
+            margin = std::min(margin, ZoneMargin(bot, x, y));  // [death425] as RisesHere counts it
             if (margin >= 0.0f)
                 candidates.push_back({margin, G3D::Vector3(x, y, z)});
         }

@@ -226,14 +226,16 @@ std::unordered_map<uint64, std::string> lastRefusal;  // pair -> the last refusa
 // InParty while it holds its own lock, and the board's lock is held while it asks the global leader
 std::mutex partyLowsLock;
 std::unordered_set<uint32> partyLows;
+std::unordered_set<uint32> partyEnded;  // [death426] under partyLowsLock
+std::atomic<uint32> partyEndedCount{0};  // [death426] the per-tick ask's no-lock answer while none is pending
 
 void MarkParty(uint32 low, bool in)
 {
     std::lock_guard<std::mutex> guard(partyLowsLock);
     if (in)
         partyLows.insert(low);
-    else
-        partyLows.erase(low);
+    else if (partyLows.erase(low) && partyEnded.insert(low).second)
+        ++partyEndedCount;
 }
 
 // what a locked section leaves to do after the lock: log lines and world-thread operations
@@ -3994,6 +3996,17 @@ bool InParty(uint32 low)
 {
     std::lock_guard<std::mutex> guard(partyLowsLock);
     return partyLows.count(low) != 0;
+}
+
+bool TakePartyEnded(uint32 low)
+{
+    if (!partyEndedCount.load(std::memory_order_relaxed))
+        return false;
+    std::lock_guard<std::mutex> guard(partyLowsLock);
+    if (!partyEnded.erase(low))
+        return false;
+    --partyEndedCount;
+    return true;
 }
 
 bool PartyLeaderOf(uint32 low, ObjectGuid& leader)

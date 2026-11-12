@@ -18,6 +18,7 @@
 #include "CheckMountStateAction.h"
 #include "ChooseTargetActions.h"  // [healer_audit_b30] DpsAssistAction::HealerGroupUnderAttack
 #include "SoloSafety.h"  // [death384] RunPastChaser
+#include "NewRpgCoop.h"  // [death426] TakePartyEnded
 #include "ReachTargetActions.h"  // [lead960] StopPullWalkInFight
 #include "Common.h"
 #include "CreatureData.h"
@@ -1390,6 +1391,20 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     SlowUpdate::Stage("commands");  // [perf212]
     HandleCommands();
+
+    // [death426] a walk started in a co-op / help party was priced for the party (RouteCosts: the party judge's walls,
+    // no death417 refusal for a member) - its party gone, the bot stops and plans its next walk for itself. b460
+    // Maronic L21 (holy) stepped out 99 yd in Ravelandy's help party at Stonewatch Tower; 4 s on both were taken into
+    // fives, Ravelandy ported away, Maronic walked on alone into a Blackrock Scout's reach: 8 came, dead
+    if (NewRpgCoop::TakePartyEnded(bot->GetGUID().GetCounter()) && bot->IsAlive() && !bot->IsInCombat() &&
+        !bot->IsInFlight() && bot->isMoving())
+    {
+        LOG_INFO("playerbots", "[death426] {} L{} its party ended mid-walk at ({:.0f},{:.0f}): stops, its next walk "
+                 "priced for itself",
+                 bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY());
+        bot->GetMotionMaster()->Clear();
+        bot->StopMoving();
+    }
 
     // logout if logout timer is ready or if instant logout is possible
     if (bot->GetSession()->IsLoggingOut())
