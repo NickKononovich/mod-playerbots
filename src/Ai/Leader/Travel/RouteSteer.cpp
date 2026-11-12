@@ -1978,6 +1978,14 @@ namespace Leader::Travel
                              leader->GetName(), committed ? committed->GetName() : std::string("?"));
                 routeState.target = group.State().commitMob;
                 routeState.targetIsBoss = isBoss;
+                // [dun247] ... and the starter flag too: b458 wc-n five4-6 4205-4445 s (stalled), the route target
+                // Disciple of Naralex became the committed Deviate Guardian 274 with targetIsStarter still set; out
+                // of the pick after its order, [dun237]'s starter exemption kept it from the route skip and the
+                // leader's pick ignored it as a starter - nothing was picked or walked for 240 s
+                if (routeState.targetIsStarter)
+                    LOG_INFO("playerbots", "[dun247] {}: the committed pull's {} is the route target, no event starter",
+                             leader->GetName(), committed ? committed->GetName() : std::string("?"));
+                routeState.targetIsStarter = false;
             }
             group.ClearWaypoint(group.LeaderGuid());
             return;

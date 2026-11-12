@@ -235,6 +235,7 @@ namespace Leader
             bool logged = false;
         };
         WalkRefusal walkRefused;
+        std::set<std::pair<ObjectGuid, ObjectGuid>> blockedReadyLogged;  // [dun248] (commit mob, member) logged
         std::string lingeringSig;          // [lead84] the lingering combat's mob set (lingering_combat logged)
         ObjectGuid lingeringUnreachable;   // [lead84] the lingering mob the tank's walk was refused to
         bool outsideLogged = false;        // [lead93] leader_outside logged for this stay outside

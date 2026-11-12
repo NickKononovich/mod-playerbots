@@ -1947,8 +1947,41 @@ namespace Leader::Dungeon
                     return false;
                 };
                 // [lead1370] the wait names its member (cannotFollow)
+                // [dun248] b458 wc-n five5-5 2087-2327 s (stalled): the Druid of the Fang commit waited on Blahadrin,
+                // whose walk along with the tank would wake Skum, while Skum's pull waited for that patrol first. A
+                // ranged member that already reaches the pull's spot from where it stands, out of every idle reach,
+                // takes part from there: its blocked walk is no wait for this pull
+                auto const readyWhereItStands = [&](ObjectGuid const& guid)
+                {
+                    Player* member = ObjectAccessor::FindPlayer(guid);
+                    if (!member || !member->IsAlive() || member->GetMapId() != tank->GetMapId() ||
+                        PlayerbotAI::IsTank(member))
+                        return false;
+                    bool const healer = PlayerbotAI::IsHeal(member);
+                    if (!healer && !PlayerbotAI::IsRanged(member))
+                        return false;
+                    Position const& at = lead.commitSpot;
+                    float const reach = healer ? Leader::LEADER_HEALER_TANK_YD - 4.0f : LeaderSpellReach(member) - 4.0f;
+                    if (member->GetExactDist(at) > reach ||
+                        !member->IsWithinLOS(at.GetPositionX(), at.GetPositionY(),
+                                             at.GetPositionZ() + member->GetCollisionHeight()) ||
+                        LeaderAggroAt(member, member->GetPosition()))
+                        return false;
+                    if (lead.blockedReadyLogged.size() > 4096)
+                        lead.blockedReadyLogged.clear();
+                    if (lead.blockedReadyLogged.insert({lead.commitMob, guid}).second)
+                        Decisions().Write(run, "leader", "blocked_member_ready", guid, member->GetName(), true,
+                                          JsonObject()
+                                              .Str("why", "reaches the pull's spot from where it stands")
+                                              .Real("distance", member->GetExactDist(at))
+                                              .Real("reach", reach)
+                                              .Str("tag", "[dun248]"));
+                    return true;
+                };
                 if (waitFor.empty())
-                    waitFor = cannotFollow([&ofThisPull](auto const& blocked) { return !ofThisPull(blocked.second); });
+                    waitFor = cannotFollow(
+                        [&](auto const& blocked)
+                        { return !ofThisPull(blocked.second) && !readyWhereItStands(blocked.first); });
                 if (waitFor.empty() && !windowOpen)
                     waitFor = Acore::StringFormat("the patrol window: {} {:.0f} yd (reach {:.0f})", patrol->GetName(),
                                                   patrolGap, patrolReach);
