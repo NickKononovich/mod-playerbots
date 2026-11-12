@@ -4395,8 +4395,38 @@ void GuildCoordinator::UpdateProfessions()
         uint32 forLow{0};  // BoP: only this member can craft it for itself
         bool bop{false};
         std::string label;
+        double value{0.0};  // [craft428] copper: what the members gain by it (stat weight at the guild's vendor rate)
     };
     std::vector<Need> needs;
+    // [craft428] the copper a stat-weight point is worth to the guild: what its members pay for weight at the vendors
+    // (the vendor picks of their plans: price over the weight each one adds). b462 an unlocked craft was valued at its
+    // vendor tag times the members it serves - a ring that fills an empty slot for 0 c of BuyPrice weighed nothing
+    double copperPerWeight = 0.0;
+    {
+        double paid = 0.0, weight = 0.0;
+        for (auto const& [low, state] : bots_)
+            for (auto const* list : {&state.gearNow, &state.gearPlan})
+                for (GearPick const& g : *list)
+                    if (g.kind == GuildGear::SRC_VENDOR && !g.extendedCost && g.aux && g.score > g.current)
+                    {
+                        paid += double(g.aux);
+                        weight += double(g.score - g.current);
+                    }
+        if (weight > 0.0)
+            copperPerWeight = paid / weight;
+        if (uint32(copperPerWeight) != copperPerWeightLogged_)
+        {
+            copperPerWeightLogged_ = uint32(copperPerWeight);
+            LOG_INFO("playerbots", "[craft428] a stat-weight point is worth {} c to the guild ({} c paid for {:.1f} "
+                     "weight in its members' vendor picks)",
+                     copperPerWeightLogged_, uint64(paid), weight);
+        }
+    }
+    auto const priceOf = [](uint32 itemId)
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        return proto ? double(proto->BuyPrice) : 0.0;
+    };
     for (auto const& [row, m] : members)
     {
         auto const st = bots_.find(row->low);
@@ -4415,7 +4445,10 @@ void GuildCoordinator::UpdateProfessions()
                     continue;  // a recipe found elsewhere: the skill alone does not unlock it
                 needs.push_back({recipe->skillLine, recipe->reqSkill, recipe->spellId, g.itemId, 1, row->low,
                                  proto->Bonding == BIND_WHEN_PICKED_UP,
-                                 std::string("upgrade ") + GuildGear::GroupName(g.group) + " for " + Who(row->low)});
+                                 std::string("upgrade ") + GuildGear::GroupName(g.group) + " for " + Who(row->low),
+                                 copperPerWeight > 0.0 && g.score > g.current
+                                     ? double(g.score - g.current) * copperPerWeight
+                                     : priceOf(g.itemId)});
             }
     }
     // bags: the next bag size above the biggest one a guild crafter knows, for every smaller bag slot
@@ -4452,7 +4485,8 @@ void GuildCoordinator::UpdateProfessions()
             if (!count)
                 continue;
             needs.push_back({next->skillLine, next->reqSkill, next->spellId, next->itemId, count, 0, false,
-                             "bag " + std::to_string(nextSlots) + " slots ×" + std::to_string(count)});
+                             "bag " + std::to_string(nextSlots) + " slots ×" + std::to_string(count),
+                             priceOf(next->itemId) * count});
             break;
         }
     }
@@ -4479,7 +4513,8 @@ void GuildCoordinator::UpdateProfessions()
                 if (auto const g = glyphs.find(r.product); g != glyphs.end() && (r.trainer || r.autoLearned))
                     needs.push_back({SKILL_INSCRIPTION, r.reqSkill, r.spellId, r.product, g->second, 0, false,
                                      "glyph for " + std::to_string(g->second) + " member" +
-                                         (g->second > 1 ? "s" : "")});
+                                         (g->second > 1 ? "s" : ""),
+                                     priceOf(r.product) * g->second});
         if (glyphs != glyphNeeds_)
         {
             std::string text;
@@ -4528,11 +4563,40 @@ void GuildCoordinator::UpdateProfessions()
     // of the recipe's reagents. b437: all 7 scribes at Inscription 1/75 (a tie) and every glyph need went to the first
     // of them, Rollothan L13 below the median: no scribe was ever called, Inscription could not start
     std::map<std::pair<uint32, uint32>, std::vector<Need const*>> assigned;  // (crafter, line) -> needs
+    // [craft426] fight by numbers: a need goes to the crafter that delivers it first - the minutes a held member
+    // still quests to the median level (its XP left at its own XP per minute) plus the skill points it lacks at the
+    // line's measured minutes per point (its walks' last figure). b462 the Leatherworking needs went to Eraelor
+    // (LW 13, free) over Bierya (LW 33, L20 below the median L21 with ~2100 XP left, ~55 min at 38 XP/min): 20 more
+    // points at ~5.5 min each. No pace measured for the line yet: the free member, then the highest skill, as before
+    std::map<uint32, double> waitMinutes;  // held member -> minutes to the median level
+    auto const waitFor = [&](PlanRow const& row, Player* m) -> double
+    {
+        if (m->GetLevel() >= medianLevel)
+            return 0.0;
+        auto const known = waitMinutes.find(row.low);
+        if (known != waitMinutes.end())
+            return known->second;
+        double minutes = std::numeric_limits<double>::infinity();
+        float copper = 0.0f, xpPerMinute = 0.0f;
+        if (QuestPace(bots_[row.low], m, copper, nullptr, &xpPerMinute) && xpPerMinute > 0.0f)
+        {
+            double xp = 0.0;
+            for (uint8 l = m->GetLevel(); l < medianLevel; ++l)
+                xp += double(sObjectMgr->GetXPForLevel(l));
+            xp -= double(m->GetUInt32Value(PLAYER_XP));
+            minutes = std::max(0.0, xp) / xpPerMinute;
+        }
+        waitMinutes[row.low] = minutes;
+        return minutes;
+    };
     for (Need const& n : needs)
     {
         uint32 best = 0, bestSkill = 0;
         bool bestHeld = true;
         float bestYards = std::numeric_limits<float>::max();
+        double bestMinutes = std::numeric_limits<double>::infinity();
+        auto const pace = lineMinPerPoint_.find(n.line);
+        bool const priced = pace != lineMinPerPoint_.end() && pace->second > 0.0;
         for (auto const& [row, m] : members)
         {
             if (HumanCharacter(m) || (n.bop && row->low != n.forLow) || !plansLine(*row, m, n.line))
@@ -4540,9 +4604,17 @@ void GuildCoordinator::UpdateProfessions()
             uint32 const skill = m->HasSkill(n.line) ? m->GetPureSkillValue(n.line) : 0;
             bool const held = m->GetLevel() < medianLevel;
             float const yards = vendorYards(m, n.spellId);
+            double const minutes =
+                priced ? waitFor(*row, m) + double(n.reqSkill > skill ? n.reqSkill - skill : 0) * pace->second
+                       : 0.0;
             if (best)
             {
-                if (held != bestHeld)
+                if (priced && minutes != bestMinutes)
+                {
+                    if (minutes > bestMinutes)
+                        continue;
+                }
+                else if (!priced && held != bestHeld)
                 {
                     if (held)
                         continue;  // a free member beats a held one
@@ -4559,6 +4631,7 @@ void GuildCoordinator::UpdateProfessions()
             bestSkill = skill;
             bestHeld = held;
             bestYards = yards;
+            bestMinutes = minutes;
         }
         if (best)
             assigned[{best, n.line}].push_back(&n);
@@ -4674,8 +4747,7 @@ void GuildCoordinator::UpdateProfessions()
                     }
                 for (Need const* n : lineNeeds)
                     if (n->reqSkill > skill && n->reqSkill <= skill + points)
-                        if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(n->itemId))
-                            unlocked += double(proto->BuyPrice) * n->count;
+                        unlocked += n->value;  // [craft428]
                 uint64 const key = (uint64(row->low) << 16) | line;
                 // [econ1] user rule 2026-11-08: gathering is weighed against the guild's levelling, so a material is
                 // worth what it unlocks for the members (the planned upgrade / bag crafts the walk reaches), not the
@@ -4768,6 +4840,17 @@ void GuildCoordinator::UpdateProfessions()
                         }
                     }
                 }
+                // [craft427] the trainer recipes the walk took instead of a blocked plan recipe (its last update)
+                if (auto const alts = st.walkRecipes.find(line); alts != st.walkRecipes.end())
+                    if (auto const altList = recipesBySkill_.find(line); altList != recipesBySkill_.end())
+                        for (Recipe const& r : altList->second)
+                            if (alts->second.count(r.spellId) && r.trainer && !r.autoLearned &&
+                                !p->HasSpell(r.spellId) && r.reqSkill <= skill && r.reqLevel <= level)
+                            {
+                                train("recipe " + NewRpgCraft::RecipeName(r.spellId),
+                                      "its skill-up walk's recipe past a blocked one [craft427]", r.price, r.spellId);
+                                break;
+                            }
                 // [prof274] the guild cook's supply recipe a trainer teaches (no recipe item to buy): learned there
                 if (line == SKILL_COOKING)
                     if (auto const jobs = supplyCrafts_.find(row->low); jobs != supplyCrafts_.end())
@@ -4852,6 +4935,7 @@ void GuildCoordinator::UpdateProfessions()
                 // costs): b426-b429 it stopped at the held rank's cap (Inscription 75) while the needs it is valued
                 // by lie past it (the glyphs from 80), so the line never valued what it unlocks
                 uint32 const top = need;
+                st.walkRecipes[line].clear();  // [craft427] the alternatives this walk takes (TRAIN reads them)
                 // [ench170] the walk's stopping points: a recipe's yellow or grey edge, a trainer rank's cap, its end -
                 // the sums up to there (the rank fees added below)
                 struct Stop
@@ -4873,149 +4957,207 @@ void GuildCoordinator::UpdateProfessions()
                         block = "no skill-up recipe at the trainer at " + std::to_string(v);
                         break;
                     }
-                    Recipe const& r = list->second[size_t(skillPlan->second[v])];
-                    int32 const chance = CraftChance(v, r.gray, r.yellow);
-                    if (r.reqLevel > level || chance <= 0)
-                    {
-                        block = NewRpgCraft::RecipeName(r.spellId) + " from level " + std::to_string(r.reqLevel);
-                        break;
-                    }
-                    double const crafts = 1000.0 / chance;
+                    // [craft427] the plan's recipe at this value, else the next cheapest trainer / auto-learned one (or
+                    // one it knows) whose materials the guild reaches: b462 Thelengyl's Blacksmithing walk stopped at
+                    // 125 on "Heavy Stone: no member gatherer reaches it (Mine 125)" while bronze recipes of the same
+                    // values take none
+                    std::vector<size_t> tries{size_t(skillPlan->second[v])};
+                    bool alternatives = false;
+                    Recipe const* chosen = nullptr;
+                    double crafts = 0, cost = 0, gmin = 0;
                     std::map<uint32, double> take, takeOthers;
-                    double cost = 0, gmin = 0;
-                    std::string why;
-                    for (auto const& [item, n] : r.reagents)
+                    std::string firstWhy;
+                    static std::vector<std::pair<uint32, uint32>> const noReagents;
+                    for (size_t t = 0; t < tries.size() && !chosen; ++t)
                     {
-                        double want = crafts * n;
-                        double const fromPool = std::clamp(avail(item) - take[item], 0.0, want);
-                        take[item] += fromPool;
-                        want -= fromPool;
-                        held |= fromPool > 0;
-                        if (want <= 0)
-                            continue;
-                        std::map<uint32, double> raw;
-                        ExpandReagent(item, want, raw, nullptr, 1.0f, 0, 0, p->GetMapId());  // [lag329]
-                        for (auto const& [rawItem, rawUnits] : raw)
+                        Recipe const& r = list->second[tries[t]];
+                        int32 const chance = CraftChance(v, r.gray, r.yellow);
+                        std::string why;
+                        if (r.reqLevel > level || chance <= 0)
+                            why = NewRpgCraft::RecipeName(r.spellId) + " from level " + std::to_string(r.reqLevel);
+                        auto const savedBuy = buyNow, savedGather = gatherNow, savedGatherMin = gatherItemMin,
+                                   savedDisenchanted = takeDisenchanted;
+                        uint32 const savedGatherItem = gatherItem, savedBuyItem = buyItem;
+                        double const savedGatherUnits = gatherUnits;
+                        crafts = why.empty() ? 1000.0 / chance : 0.0;
+                        take.clear();
+                        takeOthers.clear();
+                        cost = gmin = 0;
+                        for (auto const& [item, n] : why.empty() ? r.reagents : noReagents)
                         {
-                            double units = rawUnits;
-                            if (rawItem != item)
-                            {
-                                double const fromRaw = std::clamp(avail(rawItem) - take[rawItem], 0.0, units);
-                                take[rawItem] += fromRaw;
-                                units -= fromRaw;
-                                held |= fromRaw > 0;
-                            }
-                            if (units <= 0)
+                            double want = crafts * n;
+                            double const fromPool = std::clamp(avail(item) - take[item], 0.0, want);
+                            take[item] += fromPool;
+                            want -= fromPool;
+                            held |= fromPool > 0;
+                            if (want <= 0)
                                 continue;
-                            if (VendorSource(rawItem, p->GetMapId()))  // [lag329]
+                            std::map<uint32, double> raw;
+                            ExpandReagent(item, want, raw, nullptr, 1.0f, 0, 0, p->GetMapId());  // [lag329]
+                            for (auto const& [rawItem, rawUnits] : raw)
                             {
-                                ItemTemplate const* proto = sObjectMgr->GetItemTemplate(rawItem);
-                                cost += units *
-                                        (proto ? double(proto->BuyPrice) / std::max<uint32>(1, proto->BuyCount) : 0.0);
-                                buyItem = rawItem;
-                                if (v < maxSkill)
-                                    buyNow[rawItem] += units;
-                                continue;
-                            }
-                            auto const src = gatherSource_.find(rawItem);
-                            if (src != gatherSource_.end() && p->HasSkill(src->second.first) &&
-                                p->GetPureSkillValue(src->second.first) >= src->second.second)
-                            {
-                                float const pace = gatherPace(rawItem, src->second.first, src->second.second, p);
-                                if (pace > 0.0f)
+                                double units = rawUnits;
+                                if (rawItem != item)
                                 {
-                                    gmin += units / pace;
-                                    gatherItemMin[rawItem] += units / pace;
-                                    if (units > gatherUnits)
-                                    {
-                                        gatherItem = rawItem;
-                                        gatherUnits = units;
-                                    }
+                                    double const fromRaw = std::clamp(avail(rawItem) - take[rawItem], 0.0, units);
+                                    take[rawItem] += fromRaw;
+                                    units -= fromRaw;
+                                    held |= fromRaw > 0;
+                                }
+                                if (units <= 0)
+                                    continue;
+                                if (VendorSource(rawItem, p->GetMapId()))  // [lag329]
+                                {
+                                    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(rawItem);
+                                    cost += units * (proto ? double(proto->BuyPrice) /
+                                                                 std::max<uint32>(1, proto->BuyCount)
+                                                           : 0.0);
+                                    buyItem = rawItem;
                                     if (v < maxSkill)
-                                        gatherNow[rawItem] += units;
+                                        buyNow[rawItem] += units;
                                     continue;
                                 }
-                                why = ItemName(rawItem) + ": no gathering pace measured (" +
-                                      SkillShort(src->second.first) + ")";
+                                auto const src = gatherSource_.find(rawItem);
+                                if (src != gatherSource_.end() && p->HasSkill(src->second.first) &&
+                                    p->GetPureSkillValue(src->second.first) >= src->second.second)
+                                {
+                                    float const pace = gatherPace(rawItem, src->second.first, src->second.second, p);
+                                    if (pace > 0.0f)
+                                    {
+                                        gmin += units / pace;
+                                        gatherItemMin[rawItem] += units / pace;
+                                        if (units > gatherUnits)
+                                        {
+                                            gatherItem = rawItem;
+                                            gatherUnits = units;
+                                        }
+                                        if (v < maxSkill)
+                                            gatherNow[rawItem] += units;
+                                        continue;
+                                    }
+                                    why = ItemName(rawItem) + ": no gathering pace measured (" +
+                                          SkillShort(src->second.first) + ")";
+                                    break;
+                                }
+                                // [insc144] b426-b429 a scribe without Herbalism stopped here ("waits for the transfer"
+                                // / "others gather it") - but a material is wanted and sent only for a line the leader
+                                // calls, and the line was called only past this point: nobody ever sent or gathered the
+                                // herbs (sold as "not in the wanted list"). What other members hold comes by the
+                                // transfer, the rest the guild's gatherers bring at their pace
+                                double const fromOthers =
+                                    std::clamp(othersAvail(rawItem) - takeOthers[rawItem], 0.0, units);
+                                takeOthers[rawItem] += fromOthers;
+                                units -= fromOthers;
+                                fromGuild = true;
+                                // [ench160] then what its Disenchant makes of the greens on their way to it
+                                auto const yield = disenchanted.find(rawItem);
+                                if (double const fromGreens =
+                                        yield == disenchanted.end()
+                                            ? 0.0
+                                            : std::clamp(yield->second - takeDisenchanted[rawItem], 0.0, units);
+                                    fromGreens > 0)
+                                {
+                                    takeDisenchanted[rawItem] += fromGreens;
+                                    units -= fromGreens;
+                                    if (guildText.empty() && fromOthers <= 0)
+                                        guildText = ItemName(rawItem) + " (Disenchant of " + std::to_string(greens) +
+                                                    " guild greens [ench160])";
+                                }
+                                if (guildText.empty())
+                                    guildText = ItemName(rawItem);
+                                if (units <= 0)
+                                    continue;
+                                if (src != gatherSource_.end())
+                                    if (float const pace = gatherPace(rawItem, src->second.first, src->second.second,
+                                                                      nullptr);
+                                        pace > 0.0f)
+                                    {
+                                        gmin += units / pace;
+                                        gatherItemMin[rawItem] += units / pace;
+                                        continue;
+                                    }
+                                // [ench163] skinning and fishing (GuildGatherPlan's SKIN / FISH places), [ench164]
+                                // a mob's own drop (DROP, no skill): the guild's gatherers at the plan's rate by
+                                // formula - b442 Light Hide, Oily Blackmouth, Coyote Meat, Wool Cloth "neither held
+                                // nor gathered" (gatherSource_ holds only herb / ore nodes). The crafter's own
+                                // gathering stays the nodes (its GATHER profession call runs DO_GATHER, no place)
+                                uint32 planSkill = 0;
+                                int32 planReq = 0;
+                                bool const planned = src == gatherSource_.end() &&
+                                                     sGuildGatherPlan.Gatherable(rawItem, &planSkill, &planReq);
+                                if (planned)
+                                    if (float const pace = gatherPace(rawItem, planSkill,
+                                                                      uint32(std::max<int32>(0, planReq)), nullptr);
+                                        pace > 0.0f)
+                                    {
+                                        gmin += units / pace;
+                                        gatherItemMin[rawItem] += units / pace;
+                                        continue;
+                                    }
+                                std::string const unreached =
+                                    src != gatherSource_.end()
+                                        ? std::string("no member gatherer reaches it (") +
+                                              SkillShort(src->second.first) + " " +
+                                              std::to_string(src->second.second) + ")"
+                                    : planned && planSkill
+                                        ? std::string("no member gatherer reaches it (") + SkillShort(planSkill) + " " +
+                                              std::to_string(std::max<int32>(0, planReq)) + ") [ench163]"
+                                    : planned ? std::string("no gatherer of the guild kills its mobs safely [ench164]")
+                                              : std::string("neither held nor gathered in the guild");
+                                why = ItemName(rawItem) + " ×" + std::to_string(uint32(std::ceil(units))) + ": " +
+                                      unreached;
+                                if (yield != disenchanted.end())  // [ench160] what the greens on their way gave
+                                    why += " (beyond the Disenchant of " + std::to_string(greens) +
+                                           " guild greens [ench160])";
                                 break;
                             }
-                            // [insc144] b426-b429 a scribe without Herbalism stopped here ("waits for the transfer"
-                            // / "others gather it") - but a material is wanted and sent only for a line the leader
-                            // calls, and the line was called only past this point: nobody ever sent or gathered the
-                            // herbs (sold as "not in the wanted list"). What other members hold comes by the
-                            // transfer, the rest the guild's gatherers bring at their pace
-                            double const fromOthers =
-                                std::clamp(othersAvail(rawItem) - takeOthers[rawItem], 0.0, units);
-                            takeOthers[rawItem] += fromOthers;
-                            units -= fromOthers;
-                            fromGuild = true;
-                            // [ench160] then what its Disenchant makes of the greens on their way to it
-                            auto const yield = disenchanted.find(rawItem);
-                            if (double const fromGreens =
-                                    yield == disenchanted.end()
-                                        ? 0.0
-                                        : std::clamp(yield->second - takeDisenchanted[rawItem], 0.0, units);
-                                fromGreens > 0)
-                            {
-                                takeDisenchanted[rawItem] += fromGreens;
-                                units -= fromGreens;
-                                if (guildText.empty() && fromOthers <= 0)
-                                    guildText = ItemName(rawItem) + " (Disenchant of " + std::to_string(greens) +
-                                                " guild greens [ench160])";
-                            }
-                            if (guildText.empty())
-                                guildText = ItemName(rawItem);
-                            if (units <= 0)
-                                continue;
-                            if (src != gatherSource_.end())
-                                if (float const pace = gatherPace(rawItem, src->second.first, src->second.second,
-                                                                  nullptr);
-                                    pace > 0.0f)
-                                {
-                                    gmin += units / pace;
-                                    gatherItemMin[rawItem] += units / pace;
-                                    continue;
-                                }
-                            // [ench163] skinning and fishing (GuildGatherPlan's SKIN / FISH places), [ench164] a
-                            // mob's own drop (DROP, no skill): the guild's gatherers at the plan's rate by formula -
-                            // b442 Light Hide, Oily Blackmouth, Coyote Meat, Wool Cloth "neither held nor gathered"
-                            // (gatherSource_ holds only herb / ore nodes). The crafter's own gathering stays the nodes
-                            // (its GATHER profession call runs DO_GATHER, no place)
-                            uint32 planSkill = 0;
-                            int32 planReq = 0;
-                            bool const planned = src == gatherSource_.end() &&
-                                                 sGuildGatherPlan.Gatherable(rawItem, &planSkill, &planReq);
-                            if (planned)
-                                if (float const pace =
-                                        gatherPace(rawItem, planSkill, uint32(std::max<int32>(0, planReq)), nullptr);
-                                    pace > 0.0f)
-                                {
-                                    gmin += units / pace;
-                                    gatherItemMin[rawItem] += units / pace;
-                                    continue;
-                                }
-                            why = ItemName(rawItem) + " ×" + std::to_string(uint32(std::ceil(units))) + ": " +
-                                  (src != gatherSource_.end() ? std::string("no member gatherer reaches it (") +
-                                                                    SkillShort(src->second.first) + " " +
-                                                                    std::to_string(src->second.second) + ")"
-                                   : planned && planSkill
-                                       ? std::string("no member gatherer reaches it (") + SkillShort(planSkill) + " " +
-                                             std::to_string(std::max<int32>(0, planReq)) + ") [ench163]"
-                                   : planned ? std::string("no gatherer of the guild kills its mobs safely [ench164]")
-                                             : std::string("neither held nor gathered in the guild"));
-                            if (yield != disenchanted.end())  // [ench160] what the greens on their way gave
-                                why +=
-                                    " (beyond the Disenchant of " + std::to_string(greens) + " guild greens [ench160])";
-                            break;
+                            if (!why.empty())
+                                break;
                         }
                         if (!why.empty())
+                        {
+                            buyNow = savedBuy;
+                            gatherNow = savedGather;
+                            gatherItemMin = savedGatherMin;
+                            takeDisenchanted = savedDisenchanted;
+                            gatherItem = savedGatherItem;
+                            buyItem = savedBuyItem;
+                            gatherUnits = savedGatherUnits;
+                        }
+                        if (why.empty())
+                        {
+                            chosen = &r;
                             break;
+                        }
+                        if (firstWhy.empty())
+                            firstWhy = why;
+                        if (alternatives)
+                            continue;
+                        alternatives = true;
+                        std::vector<std::pair<double, size_t>> altOrder;
+                        for (size_t i = 0; i < list->second.size(); ++i)
+                        {
+                            Recipe const& alt = list->second[i];
+                            double altCost = 0, altUnits = 0;
+                            int32 altChance = 0;
+                            if (i == tries.front() || alt.reqSkill > v || alt.reqLevel > level ||
+                                !((alt.trainer || alt.autoLearned) || p->HasSpell(alt.spellId)) ||
+                                !SkillUpCost(alt, v, vendorItems_, altCost, altUnits, altChance) || altChance <= 0)
+                                continue;
+                            altOrder.emplace_back(altCost, i);
+                        }
+                        std::sort(altOrder.begin(), altOrder.end());
+                        for (auto const& [altCost, i] : altOrder)
+                            tries.push_back(i);
                     }
-                    if (!why.empty())
+                    if (!chosen)
                     {
-                        block = why;
+                        block = firstWhy;
                         break;
                     }
+                    Recipe const& r = *chosen;
+                    if (chosen != &list->second[tries.front()])
+                        st.walkRecipes[line].insert(r.spellId);  // [craft427] trained as the walk's own recipe
                     for (auto const& [item, n] : take)
                         pool[item] -= n;
                     for (auto const& [item, n] : takeOthers)
@@ -5070,9 +5212,8 @@ void GuildCoordinator::UpdateProfessions()
                     for (Need const* n : lineNeeds)
                         if (n->reqSkill > skill && n->reqSkill <= reach)
                         {
-                            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(n->itemId);
                             unlockedUnits += n->count;
-                            unlocked += double(proto ? proto->BuyPrice : 0) * n->count;
+                            unlocked += n->value;  // [craft428]
                             if (unlockedText.size() < 80)
                                 unlockedText +=
                                     (unlockedText.empty() ? "" : ", ") + ItemName(n->itemId) + " (" + n->label + ")";
@@ -5096,8 +5237,7 @@ void GuildCoordinator::UpdateProfessions()
                             double stopUnlocked = 0;
                             for (Need const* n : lineNeeds)
                                 if (n->reqSkill > skill && n->reqSkill <= stop.reach)
-                                    if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(n->itemId))
-                                        stopUnlocked += double(proto->BuyPrice) * n->count;
+                                    stopUnlocked += n->value;  // [craft428]
                             double const stopValue = stopUnlocked + supplyValue - stop.vendorCost;
                             double const stopMinutes = stop.craftMin + stop.gatherMin + supplyMin;
                             if (stopValue <= 0 || stopMinutes <= 0)
@@ -5127,6 +5267,8 @@ void GuildCoordinator::UpdateProfessions()
                     }
                     double const value = unlocked + supplyValue - vendorCost;
                     double const minutes = craftMin + gatherMin + supplyMin;
+                    if (judged > skill && craftMin + gatherMin > 0.0)  // [craft426]
+                        lineMinPerPoint_[line] = (craftMin + gatherMin) / double(judged - skill);
                     float questPace = 0.0f;
                     std::string questWhy;
                     char numbers[320];

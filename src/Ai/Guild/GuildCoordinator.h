@@ -653,6 +653,7 @@ private:
         std::map<uint32, WorldPosition> craftInn;
         // [craft381] [craft383] tag -> the line last logged for this bot (a log once per change)
         std::map<std::string, std::string> craftLogged;
+        std::map<uint32, std::set<uint32>> walkRecipes;  // [craft427] skill line -> recipes its walk took past a block
         std::string profGoldWhat;
         // [human] the suggestions sent to a human member: key -> text (sent again only when the text changes)
         std::map<std::string, std::string> suggested;
@@ -1107,6 +1108,8 @@ private:
     std::unordered_map<uint32, std::map<uint32, float>> disenchantYield_;  // [ench160] DisenchantID -> item -> units
     // [guild70] per skill line and skill value: the best trainer / auto-learned skill-up recipe (index, -1 none)
     std::unordered_map<uint32, std::vector<int32>> skillPlan_;
+    std::map<uint32, double> lineMinPerPoint_;  // [craft426] skill line -> minutes per skill point of its last walk
+    uint32 copperPerWeightLogged_{0};           // [craft428] the guild's copper per stat-weight point, last logged
     std::unordered_map<uint32, std::vector<size_t>> extraRecipes_;  // per line: recipes learned elsewhere (drops)
     std::unordered_map<uint64, uint32> lastSkill_;  // (low << 16 | line) -> skill when last seen (offline members)
     std::unordered_map<uint64, uint32> lastCap_;    // [gather] (low << 16 | line) -> the skill it could reach then
