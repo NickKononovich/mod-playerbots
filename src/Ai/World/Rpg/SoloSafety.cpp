@@ -857,7 +857,7 @@ namespace
     // weapon skill point of the mob over the bot's level (none while the victim casts: a caster bot fights casting),
     // crit (the core's chance, double damage), crushing blow (a mob 4+ levels above whose skill is 15+ over the bot's
     // defense: 2 % a point less 15 %, 150 % damage), the rest plain hits; a block takes off its block value
-    float MeleeDps(Unit* unit, Player* bot)
+    float MeleeDps(Unit* unit, Player* bot, float* variancePerSec = nullptr)
     {
         float const raw = std::max(
             0.0f, (unit->GetFloatValue(UNIT_FIELD_MINDAMAGE) + unit->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f);
@@ -897,6 +897,19 @@ namespace
         float const blocked = std::min(hit, float(bot->GetShieldBlockValue()));
         float const perSwing =
             (hit * (left + block) - blocked * block + 2.0f * hit * crit + 1.5f * hit * crush) / 100.0f;
+        // [death386] the spread of a swing: its weapon roll (Unit::CalculateDamage: uniform min..max, after the bot's
+        // armor) under the table's outcomes (none, plain, crit x2, crush x1.5); swings are independent, so the variance
+        // of a fight adds up per second of swings
+        if (variancePerSec)
+        {
+            float const reduce = raw > 0.0f ? hit / raw : 0.0f;
+            float const low = unit->GetFloatValue(UNIT_FIELD_MINDAMAGE) * reduce;
+            float const high = unit->GetFloatValue(UNIT_FIELD_MAXDAMAGE) * reduce;
+            float const square = (low * low + low * high + high * high) / 3.0f;  // E[h^2] of the uniform roll
+            float const second =
+                (square * (left + block) + 4.0f * square * crit + 2.25f * square * crush) / 100.0f;
+            *variancePerSec = std::max(second - perSwing * perSwing, 0.0f) / SwingSec(unit);
+        }
         return std::max(perSwing, 0.0f) / SwingSec(unit);
     }
 
@@ -1945,6 +1958,7 @@ namespace SoloSafety
             Unit* unit;
             float hp;
             float dps;
+            float variance = 0.0f;  // [death386] of its melee per second of the fight
         };
         std::vector<Mob> mobs;
         bool elite = false;
@@ -1963,7 +1977,9 @@ namespace SoloSafety
                 if (unit->GetLevel() > bot->GetLevel())
                     ++verdict.above;
                 verdict.topLevel = std::max<uint8>(verdict.topLevel, unit->GetLevel());
-                mobs.push_back({unit, float(unit->GetHealth()), dps});
+                float variance = 0.0f;
+                MeleeDps(unit, bot, &variance);  // [death386] its swings' spread
+                mobs.push_back({unit, float(unit->GetHealth()), dps, variance});
             }
         }
         verdict.mobs = mobs.size();
@@ -2012,6 +2028,7 @@ namespace SoloSafety
             float seconds = 0.0f;
             float damage = 0.0f;
             float targetDamage = 0.0f;  // the target's part (a taunting pet's to take)
+            float variance = 0.0f;      // [death386] of the damage: the mobs' swings over their seconds alive
         };
         auto const project = [&](float mana) -> Projection
         {
@@ -2038,6 +2055,7 @@ namespace SoloSafety
                 }
                 out.seconds += hp / whiteDps;
                 out.damage += mob.dps * out.seconds;
+                out.variance += mob.variance * out.seconds;
                 if (&mob == &mobs.front())
                     out.targetDamage = mob.dps * out.seconds;
             }
@@ -2052,6 +2070,7 @@ namespace SoloSafety
         // [deaths3] user 2026-11-08 (no fight history in decisions): its heals are what its kit holds now - each heal
         // item once, its spell heals as far as the mana its rotation leaves pays for them (SurvivalKit::HealPoints),
         // not the heals measured over its past fights (b341 Ravelandy L9: past potions read as 1.4 hp/s)
+        constexpr float HIGH_END_DEVIATIONS = 2.0f;  // a one-sided 97.7 % bound of a sum of independent swings
         auto const effective = [&](Projection const& fight, float health, float mana, bool& wins) -> float
         {
             float spare = mana;
@@ -2059,7 +2078,9 @@ namespace SoloSafety
                 spare = std::max(0.0f, mana - manaPerSec * fight.seconds);
             float const heals = SurvivalKit::HealPoints(bot, fight.seconds, spare, true);
             float const ehp = health + std::min(petHealth, fight.targetDamage) + heals;
-            wins = fight.damage < ehp;
+            // [death386] user 2026-11-12 "survives with a margin": the high end of its rolls, not their mean - two
+            // standard deviations of the mobs' swings (weapon roll, miss / dodge / parry, crit, crush) over the fight
+            wins = fight.damage + HIGH_END_DEVIATIONS * std::sqrt(fight.variance) < ehp;
             return ehp;
         };
         bool winNow = false;
@@ -2067,6 +2088,24 @@ namespace SoloSafety
         verdict.ehpNow = effective(now, float(bot->GetHealth()), float(bot->GetPower(POWER_MANA)), winNow);
         verdict.ehpFull =
             effective(atFull, float(bot->GetMaxHealth()), float(bot->GetMaxPower(POWER_MANA)), winFull);
+        if (!winFull && atFull.damage < verdict.ehpFull)
+        {
+            static std::mutex marginLogLock;  // a log cadence per bot and target kind, no decision reads it
+            static std::unordered_set<uint64> marginLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(marginLogLock);
+                if (marginLogged.size() > 65536)
+                    marginLogged.clear();
+                fresh = marginLogged.insert(uint64(target->GetEntry()) * 1000003ull + bot->GetGUID().GetCounter())
+                            .second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[death386] {} L{} {} L{}: wins on the mean ({:.0f} dmg) but not at the high "
+                         "end of its rolls ({:.0f} dmg, +2 sd) at ehp {:.0f} full",
+                         bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), atFull.damage,
+                         atFull.damage + HIGH_END_DEVIATIONS * std::sqrt(atFull.variance), verdict.ehpFull);
+        }
         bool const full = bot->GetHealth() >= bot->GetMaxHealth() &&
                           (!bot->GetMaxPower(POWER_MANA) || bot->GetPower(POWER_MANA) >= bot->GetMaxPower(POWER_MANA));
 
@@ -3167,6 +3206,22 @@ namespace SoloSafety
         }
     }
 
+    float RunPast::High() const
+    {
+        if (damage == std::numeric_limits<float>::max())
+            return damage;
+        return damage + 2.0f * std::sqrt(std::max(variance, 0.0f));
+    }
+
+    void RunPast::Add(RunPast const& chase)
+    {
+        damage = chase.damage == std::numeric_limits<float>::max() || damage == std::numeric_limits<float>::max()
+                     ? std::numeric_limits<float>::max()
+                     : damage + chase.damage;
+        variance += chase.variance;
+        seconds = std::max(seconds, chase.seconds);
+    }
+
     RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed)
     {
         RunPast out;
@@ -3175,12 +3230,14 @@ namespace SoloSafety
             out.damage = std::numeric_limits<float>::max();
             return out;
         }
-        float const melee = MeleeDps(mob, bot);
+        float variance = 0.0f;
+        float const melee = MeleeDps(mob, bot, &variance);
         float exposure = 0.0f;
         ChaseTimes(bot, mob->GetSpeed(MOVE_RUN), float(mob->GetLeashTimer()), melee, mob->GetMeleeRange(bot),
                    out.seconds, exposure, withSpeed);
         float const casts = ChaseSpellDamage(mob, out.seconds);
         out.damage = melee * BehindFactor(bot) * exposure + (casts > 0.0f ? casts : SpellDpsOf(mob) * out.seconds);
+        out.variance = variance * BehindFactor(bot) * BehindFactor(bot) * exposure;
         return out;
     }
 
@@ -3507,9 +3564,7 @@ namespace SoloSafety
             Creature* mob = attacker->ToCreature();
             if (!mob || !set.count(mob->GetGUID().GetRawValue()))
                 return false;  // a mob it did not price: the fight as before
-            RunPast const chase = RunPastChase(bot, mob);
-            left.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage : left.damage + chase.damage;
-            left.seconds = std::max(left.seconds, chase.seconds);
+            left.Add(RunPastChase(bot, mob));
             chasers.push_back(mob);
         }
         // [runpast81] user rule 2026-11-10: the chase is priced on the pack the judge counts - each chaser and every
@@ -3537,11 +3592,10 @@ namespace SoloSafety
                         left.damage = chase.damage;
                         break;
                     }
-                    left.damage += chase.damage;
-                    left.seconds = std::max(left.seconds, chase.seconds);
+                    left.Add(chase);
                     ++joiners;
                 }
-            if (joiners && !SurvivesRunPast(bot, left.damage, left.seconds))
+            if (joiners && !SurvivesRunPast(bot, left.High(), left.seconds))
             {
                 thread_local std::unordered_map<uint64, uint64> refusedLogged;  // a log cadence only
                 uint64 const key = chasers.front()->GetGUID().GetRawValue() * 31 + joiners;
@@ -3556,7 +3610,7 @@ namespace SoloSafety
                 return false;
             }
         }
-        if (chasers.empty() || !SurvivesRunPast(bot, left.damage, left.seconds))
+        if (chasers.empty() || !SurvivesRunPast(bot, left.High(), left.seconds))
             return false;  // nothing chases, or the kit's turn (it does not live through the chase now)
         // one attacker the judge beats here for less damage than its chase: the fight is the cheaper way
         if (chasers.size() == 1)
@@ -3832,15 +3886,13 @@ namespace SoloSafety
                                      chase.seconds, chase.seconds * speed);
                     }
                 }
-                with.damage = chase.damage == std::numeric_limits<float>::max() ? chase.damage
-                                                                                 : with.damage + chase.damage;
-                with.seconds = std::max(with.seconds, chase.seconds);
+                with.Add(chase);
                 added.push_back({key, chase.damage});
                 // [lag356] the sum is past its health already: no more chasers to grow (each one's assistance look
                 // samples the whole stretch round every idle mob - b447: route costs 71-76 % of the searches' time)
-                if (with.damage >= budget(with.seconds))
+                if (with.High() >= budget(with.seconds))
                 {
-                    price = with.damage;
+                    price = with.High();
                     hp = budget(with.seconds);
                     return false;
                 }
@@ -3854,9 +3906,9 @@ namespace SoloSafety
                         chaseCovers(chaser, chase.seconds, c, calls))
                         chasers.push_back(c);  // its own chase and calls are counted in turn
             }
-            price = with.damage;
+            price = with.High();
             hp = budget(with.seconds);
-            if (with.damage >= hp)
+            if (with.High() >= hp)
                 return false;
             runPast = with;
             for (auto const& [key, damage] : added)

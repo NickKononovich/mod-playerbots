@@ -210,6 +210,10 @@ namespace SoloSafety
     {
         float damage = 0.0f;
         float seconds = 0.0f;
+        float variance = 0.0f;  // [death386] of the chasers' swings over their exposure
+        // [death386] the high end of its rolls (two standard deviations): the price a run past is judged on
+        float High() const;
+        void Add(RunPast const& chase);  // one more chaser: damage and variance add, the longest chase
     };
     // [lag360] `withSpeed`: with the speed piece the run-past executor casts first (the price); false: without it
     RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed = true);
