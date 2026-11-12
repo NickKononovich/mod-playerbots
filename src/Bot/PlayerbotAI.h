@@ -428,6 +428,8 @@ public:
     void ReleaseIdleTargetNobodyReaches(bool acted);
     // [stuck258] the grind picker leaves that mob alone while it stays idle (picked again, the same stand followed)
     ObjectGuid ReleasedIdleTarget() const { return releasedIdleTarget; }
+    // [lag370] an engage given up for a fact of the moment (its pull spot has no walk): the grind picker leaves it too
+    void ReleaseIdleTarget(ObjectGuid guid) { releasedIdleTarget = guid; }
     virtual bool DoSpecificAction(std::string const name, Event event = Event(), bool silent = false,
                                   std::string const qualifier = "");
     void ChangeStrategy(std::string const name, BotState type);

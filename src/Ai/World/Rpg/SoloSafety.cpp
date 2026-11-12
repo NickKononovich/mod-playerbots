@@ -40,6 +40,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "RouteSearch.h"
+#include "LeaderOrders.h"  // [lag370] Leader::Route
 #include "SpellInfo.h"
 #include "SurvivalKit.h"  // [deaths3] its heals now
 #include "QuestStats.h"   // [budget12] the time budget
@@ -2257,6 +2258,48 @@ namespace SoloSafety
         float const spotGap = target->GetExactDist2d(spot.x, spot.y);
         return target->GetExactDist2d(to.x, to.y) <= spotGap + bot->GetCombatReach() &&
                bot->GetExactDist2d(spot.x, spot.y) > bot->GetCombatReach();
+    }
+
+    // [lag370] coordinator 2026-11-12 (b449 Gilduck L14: from "engages Defias Smuggler ... fought at its pull spot
+    // (-10535,1240), 28 yd from the target" at 07:00 no state change for 50 min - no attack, no hit taken, a route
+    // search every 2-5 s priced to that spot): the combat walk goes to the pull spot (PullWalk ends the target's walk
+    // there) and when no walk reaches it from where the bot stands, every tick asks the same search again and the bot
+    // stands. The spot's walk is a fact of the moment: none, the spot is dropped and the engage released (its next
+    // look judges the pull from here)
+    void CheckPullSpotWalk(Player* bot, Unit* target)
+    {
+        if (!bot || !target || bot->IsInCombat() || !Applies(bot))
+            return;
+        G3D::Vector3 spot;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end() || !found->second.pullSpot || found->second.pullTarget != target->GetGUID())
+                return;
+            spot = found->second.pull;
+        }
+        if (bot->GetExactDist2d(spot.x, spot.y) <= bot->GetCombatReach() || bot->isMoving())
+            return;
+        Leader::RouteResult const route = Leader::Route(bot, Position(spot.x, spot.y, spot.z));
+        if (route.found && !route.throughRefused)
+            return;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            SoloBotState& state = states[bot->GetGUID().GetCounter()];
+            state.pullSpot = false;
+            state.engaged = false;
+            state.pullTarget = ObjectGuid::Empty;
+        }
+        LOG_INFO("playerbots", "[lag370] {} L{} drops its pull spot ({:.0f},{:.0f}) for {} L{}: {} from where it "
+                 "stands",
+                 bot->GetName(), bot->GetLevel(), spot.x, spot.y, target->GetName(), target->GetLevel(),
+                 route.found ? "its only walk passes a refused reach" : "no walk reaches it");
+        if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot))
+        {
+            ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
+            ai->ReleaseIdleTarget(target->GetGUID());  // the grind picker leaves it while it stays idle
+        }
+        bot->SetTarget(ObjectGuid::Empty);
     }
 
     PullMove PullStep(Player* bot, Unit* target, G3D::Vector3& spot)

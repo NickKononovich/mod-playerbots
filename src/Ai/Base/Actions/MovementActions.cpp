@@ -2613,6 +2613,10 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
     }
 
     // [pullplan] a solo bot's pull from its pull spot: it pulls from there and meets the target there, not in its camp
+    // [lag370] ... when a walk reaches the spot from here; else the spot and the engage are dropped
+    SoloSafety::CheckPullSpotWalk(bot, target);
+    if (!bot->GetTarget())
+        return false;
     {
         G3D::Vector3 spot;
         switch (SoloSafety::PullStep(bot, target, spot))
