@@ -87,6 +87,7 @@
 #include <cstdlib>
 #include <map>
 #include <mutex>
+#include <unordered_set>
 #include <shared_mutex>
 #include <sstream>
 #include <string>
@@ -2588,7 +2589,34 @@ void PlayerbotAI::DoNextAction(bool min)
     // non-combat engine (no Holy Shock, no Lay on Hands, no emergency band) while the tank died. See
     // DpsAssistAction::HealerGroupUnderAttack.
     if (currentEngine == engines[BOT_STATE_NON_COMBAT] && DpsAssistAction::HealerGroupUnderAttack(this))
+    {
+        // [death383] alone, it has to kill what attacks it too: the nearest attacker is its target (its own "dps
+        // assist" waits while its health is short, so nothing else names one)
+        if (!bot->GetGroup() && !aiObjectContext->GetValue<Unit*>("current target")->Get())
+        {
+            Unit* nearest = nullptr;
+            for (Unit* attacker : bot->getAttackers())
+                if (attacker && attacker->IsAlive() &&
+                    (!nearest || bot->GetExactDist(attacker) < bot->GetExactDist(nearest)))
+                    nearest = attacker;
+            if (nearest)
+            {
+                aiObjectContext->GetValue<Unit*>("current target")->Set(nearest);
+                bot->SetSelection(nearest->GetGUID());
+                static std::mutex soloLogLock;  // a log cadence per bot, no decision reads it
+                static std::unordered_set<uint32> soloLogged;
+                bool fresh = false;
+                {
+                    std::lock_guard<std::mutex> guard(soloLogLock);
+                    fresh = soloLogged.insert(bot->GetGUID().GetCounter()).second;
+                }
+                if (fresh)
+                    LOG_INFO("playerbots", "[death383] {} L{}: a healer alone under attack takes the combat engine "
+                             "on {} L{}", bot->GetName(), bot->GetLevel(), nearest->GetName(), nearest->GetLevel());
+            }
+        }
         ChangeEngine(BOT_STATE_COMBAT);
+    }
     // [lead112] a tank joins the combat engine as soon as a mob it can take back is on a member (TankIncomingMob):
     // its take-back ("tank open incoming") is a combat action; b147 rfc-h the tank stood 18 s in its non-combat
     // engine (its last action a blessing) while the healer and the shaman died

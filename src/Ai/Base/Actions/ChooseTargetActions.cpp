@@ -858,8 +858,13 @@ bool DpsAssistAction::HealerGroupUnderAttack(PlayerbotAI* botAI)
 {
     Player* bot = botAI->GetBot();
     Group* group = bot->GetGroup();
-    if (!group || !bot->IsAlive() || !botAI->IsHeal(bot))
+    if (!bot->IsAlive() || !botAI->IsHeal(bot))
         return false;
+    // [death383] a healer alone under attack: its own hurt health is "healing work", so "dps assist" never took it
+    // into the combat engine - it stood in the non-combat engine casting nothing. b449/b450 resto shamans Ellosera
+    // (5 fights), Nurlian (2) dealt 0 damage over 43 s fights, "casts: -", and died to mobs at 100 % health
+    if (!group)
+        return !bot->getAttackers().empty();
 
     float const reach = sPlayerbotAIConfig.HealDistance * 2.0f;
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
