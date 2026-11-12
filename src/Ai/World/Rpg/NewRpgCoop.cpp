@@ -186,9 +186,8 @@ struct Party
     std::vector<ObjectGuid> members;  // the leader included
     ObjectGuid group{};
     bool formed = false;
-    std::unordered_map<uint32, float> healRate;  // member -> heals per fight second (its solo judge)
-    Camp camp;                                   // the camp it was formed for (a seeker's objective)
-    ObjectGuid campFor{};                        // the seeker whose camp it is
+    Camp camp;             // the camp it was formed for (a seeker's objective)
+    ObjectGuid campFor{};  // the seeker whose camp it is
     WorldPosition spot{};                        // a holder leads: the nearest spawn of the objective it held
     bool spotSet = false;
     // [help] a party the global leader formed for a member's help request (its helpers need not hold the quest)
@@ -664,7 +663,6 @@ struct Plan
     float walkSec = 0.0f;  // P's walk to L at its run speed
     float xphSoloL = 0.0f, xphGroupL = 0.0f, xphSoloP = 0.0f, xphGroupP = 0.0f;
     float leadWalkYd = 0.0f;  // L's walk to the spot the party works first
-    std::unordered_map<uint32, float> healRate;
     Camp camp;
     ObjectGuid campFor{};
 };
@@ -1078,7 +1076,6 @@ Plan Forecast(Side const& l, std::vector<Side> const& others, Side const& pr, fl
         for (Member const& m : with)
         {
             float const rate = mob && mob->IsAlive() ? HealRate(m.side.p, mob) : 0.0f;
-            plan.healRate[m.side.p->GetGUID().GetCounter()] = rate;
             if (m.side.p == lp || PlayerbotAI::IsHeal(m.side.p))
                 heals += rate * seconds;
         }
@@ -1567,8 +1564,6 @@ void EvaluateLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint64 key
         me.party = id;
         me.partyObj = mine.obj;
     }
-    for (auto const& [low, rate] : best.healRate)
-        party.healRate[low] = rate;
     party.members.push_back(bestPartner->GetGUID());
     Posting& other = postings[bestPartner->GetGUID().GetCounter()];
     other.party = id;
@@ -2737,15 +2732,6 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     else
         HelpUnits(req, r.obj.questId, r.obj.index, r.wholeQuest, party_.haveAtAssign);
     party_.formed = r.human;  // a bot requester: once its group is made (HelpFormOperation)
-    for (Player* m : party)
-        if (m == v.taker || PlayerbotAI::IsHeal(m))
-            party_.healRate[m->GetGUID().GetCounter()] =
-                v.seconds > 0.0f
-                    ? (PlayerbotAI::IsHeal(m)
-                           ? SurvivalKit::HealPoints(m, v.seconds, float(m->GetPower(POWER_MANA)), false)
-                           : SurvivalKit::ItemHealPoints(m)) /  // [death440]
-                          v.seconds
-                    : 0.0f;
     r.party = id;
     r.lastRefusal.clear();
     std::string coming;
@@ -4098,24 +4084,15 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
     if (!botAI || !target)
         return verdict;
     std::vector<ObjectGuid> members;
-    std::unordered_map<uint32, float> healRate;
-    bool openGroup = false;  // [deaths12] an open-world group, no co-op party: its heals from the kit below
     {
         std::lock_guard<std::recursive_mutex> guard(lock);
         auto const me = postings.find(leader->GetGUID().GetCounter());
         auto const party = me != postings.end() ? parties.find(me->second.party) : parties.end();
         if (party != parties.end())
-        {
             members = party->second.members;
-            healRate = party->second.healRate;
-        }
     }
-    if (members.empty())
-    {
-        if (!OpenWorldGroupLeader(leader, &members))
-            return verdict;
-        openGroup = true;
-    }
+    if (members.empty() && !OpenWorldGroupLeader(leader, &members))
+        return verdict;
 
     // [deaths17] the pack lands on the member it goes for: the leader that pulls (the puller holds it until the tank
     // takes it off), then the party's tank in sight - each prices it with its own armour, health, pet and its own heals
@@ -4257,8 +4234,9 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
         // mobs' rolls), not their mean: b453 Irorm L21 / Keenonk L22 fought the Redridge Canyons camp on the mean
         constexpr float HIGH_END_DEVIATIONS = 2.0f;
         p.damage += HIGH_END_DEVIATIONS * std::sqrt(variance);
-        // its heals: the holder's own and the healers', per fight second, as far as their mana lasts (a co-op
-        // party's measured rates; an open-world group's kit, [deaths12])
+        // its heals: the holder's own and the healers', per fight second, as far as their mana lasts - their kit's
+        // spells and mana now ([deaths12]). [death447] user rule (formula-only rates): a co-op party read a rate stored
+        // when it formed (each member's solo judge then, scaled by its mana share) in place of the kit now
         float healNow = 0.0f, healFull = 0.0f;
         for (ObjectGuid const& guid : members)
         {
@@ -4277,32 +4255,10 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
                 healFull += items;
                 continue;
             }
-            if (openGroup)
-            {
-                healNow += SurvivalKit::HealPoints(m, p.seconds, float(m->GetPower(POWER_MANA)), m == holder) /
-                           std::max(p.seconds, 1.0f);
-                healFull += SurvivalKit::HealPoints(m, p.seconds, float(m->GetMaxPower(POWER_MANA)), m == holder) /
-                            std::max(p.seconds, 1.0f);
-                continue;
-            }
-            auto const rate = healRate.find(guid.GetCounter());
-            if (rate == healRate.end())
-                continue;
-            float const share = m->GetMaxPower(POWER_MANA)
-                                    ? float(m->GetPower(POWER_MANA)) / float(m->GetMaxPower(POWER_MANA))
-                                    : 1.0f;
-            // [party65] the measured rate holds only as far as the healer's mana lasts: the fight's heals are at most
-            // what its mana pool casts (SurvivalKit::HealPoints, the kit's own spell costs). b400 Kianey / Rollothan
-            // L11 (help party, Stendel's Pond): 5 Riverpaw mobs priced 1456 dmg on Rollothan over 49 s against ehp
-            // 1534 - 248 health and 1286 of heals, his measured rate kept up for 49 s on a pool of a few hundred mana;
-            // he died first, Kianey after him
-            float const seconds = std::max(p.seconds, 1.0f);
-            healNow += std::min(rate->second * share * seconds,
-                                SurvivalKit::HealPoints(m, p.seconds, float(m->GetPower(POWER_MANA)), m == holder)) /
-                       seconds;
-            healFull += std::min(rate->second * seconds,
-                                 SurvivalKit::HealPoints(m, p.seconds, float(m->GetMaxPower(POWER_MANA)), m == holder)) /
-                        seconds;
+            healNow += SurvivalKit::HealPoints(m, p.seconds, float(m->GetPower(POWER_MANA)), m == holder) /
+                       std::max(p.seconds, 1.0f);
+            healFull += SurvivalKit::HealPoints(m, p.seconds, float(m->GetMaxPower(POWER_MANA)), m == holder) /
+                        std::max(p.seconds, 1.0f);
         }
         p.ehpNow = float(holder->GetHealth()) + PetHealth(holder, false) + healNow * p.seconds;
         p.ehpFull = float(holder->GetMaxHealth()) + PetHealth(holder, true) + healFull * p.seconds;
