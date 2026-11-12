@@ -4406,6 +4406,35 @@ void GuildCoordinator::UpdateProfessions()
                         train("recipe " + ItemName(n->itemId), n->label, recipeFee(line, n->spellId), n->spellId);
                         break;
                     }
+                // [craft392] the skill-up walk's own trainer recipes its skill and level reach now, up to its held
+                // rank's cap: learned at the trainer at their fee (the walk below values them; the craft executor
+                // makes only what it knows). b453 Dekorhan crafted Inscription 1 -> 25 from the recipes learned with
+                // the skill, then "crafting done here: nothing here still gives skill" - the walk's next recipes
+                // (Feyden Darkin, Darnassus) were never called
+                if (auto const walkList = recipesBySkill_.find(line), walkPlan = skillPlan_.find(line);
+                    walkList != recipesBySkill_.end() && walkPlan != skillPlan_.end())
+                {
+                    std::set<uint32> called;
+                    for (uint32 v = std::max<uint32>(1, skill); v < maxSkill && v < walkPlan->second.size(); ++v)
+                    {
+                        if (walkPlan->second[v] < 0)
+                            break;
+                        Recipe const& r = walkList->second[size_t(walkPlan->second[v])];
+                        if (!r.trainer || r.autoLearned || p->HasSpell(r.spellId) || r.reqSkill > skill ||
+                            r.reqLevel > level || !called.insert(r.spellId).second)
+                            continue;
+                        train("recipe " + NewRpgCraft::RecipeName(r.spellId),
+                              "[craft392] its skill-up walk's next recipe at " + std::to_string(v), r.price, r.spellId);
+                        if (std::string& logged = st.craftLogged["craft392:" + std::to_string(r.spellId)];
+                            logged.empty())
+                        {
+                            logged = "called";
+                            LOG_INFO("playerbots", "[craft392] {} L{} {} {}: TRAIN {} ({}), the walk's recipe at {}",
+                                     p->GetName(), uint32(level), SkillShort(line), skill,
+                                     NewRpgCraft::RecipeName(r.spellId), Gsc(r.price), v);
+                        }
+                    }
+                }
                 // [prof274] the guild cook's supply recipe a trainer teaches (no recipe item to buy): learned there
                 if (line == SKILL_COOKING)
                     if (auto const jobs = supplyCrafts_.find(row->low); jobs != supplyCrafts_.end())
