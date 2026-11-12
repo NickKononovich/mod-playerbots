@@ -1233,10 +1233,12 @@ void GuildCoordinator::UpdateTransfers()
     // takes first, its whole shortfall, from the giver with the most above its line - the guild's supply cooks
     // (supplyCrafts_: the band food they cooked) before the other members who hold food. Before, a member got food
     // only at 0 left, and every holder of the Cooking skill shared its whole stock by the use weights
+    // [craft399] the fills in full rests (BagFoodRests: each item's restored health over the member's max health),
+    // the giver's best food first - an outgrown food is a filler only, never a full share
     struct FoodFill
     {
         Player* p{nullptr};
-        uint32 held{0};
+        float held{0.0f};
     };
     std::vector<FoodFill> fills;
     for (PlanRow const& m : plan_)
@@ -1246,26 +1248,26 @@ void GuildCoordinator::UpdateTransfers()
             continue;
         if (auto const st = bots_.find(m.low); st != bots_.end() && st->second.fiveId)
             continue;
-        fills.push_back({p, CountKind(p, FOOD, p->GetLevel())});
+        fills.push_back({p, BagFoodRests(p)});
     }
     std::stable_sort(fills.begin(), fills.end(), [](FoodFill const& a, FoodFill const& b) { return a.held < b.held; });
     struct FoodGiver
     {
         Player* p{nullptr};
         bool cook{false};
-        uint32 surplus{0};
+        float surplus{0.0f};                           // rests above its line
         std::vector<std::pair<Item*, uint32>> stacks;  // its food stacks and what is left of each to give
     };
     std::vector<FoodGiver> givers;
     for (FoodFill const& f : fills)
     {
-        if (f.held <= RESTOCK_FOOD_MIN)
+        if (f.held <= float(RESTOCK_FOOD_MIN))
             continue;
         uint32 const low = f.p->GetGUID().GetCounter();
         FoodGiver g;
         g.p = f.p;
         g.cook = supplyCrafts_.count(low) != 0;
-        g.surplus = f.held - RESTOCK_FOOD_MIN;
+        g.surplus = f.held - float(RESTOCK_FOOD_MIN);
         auto const giverState = bots_.find(low);
         ForEachBagItem(f.p,
                        [&](Item* i)
@@ -1287,19 +1289,23 @@ void GuildCoordinator::UpdateTransfers()
                      { return a.cook != b.cook ? a.cook : a.surplus > b.surplus; });
     for (FoodFill const& f : fills)
     {
-        if (f.held >= RESTOCK_FOOD_MIN || givers.empty())
+        if (f.held >= float(RESTOCK_FOOD_MIN) || givers.empty())
             break;  // sorted by fill: the rest stand at their line
-        uint32 const shortfall = RESTOCK_FOOD_MIN - f.held;
+        float const shortfall = float(RESTOCK_FOOD_MIN) - f.held;
         FoodGiver* from = nullptr;
         std::pair<Item*, uint32>* stack = nullptr;
+        float stackShare = 0.0f;  // what one item of it gives the receiver, of a rest
         for (FoodGiver& g : givers)
         {
-            if (g.p == f.p || !g.surplus)
+            if (g.p == f.p || g.surplus <= 0.0f)
                 continue;
             for (auto& entry : g.stacks)
-                if (entry.second && entry.first->GetTemplate()->RequiredLevel <= f.p->GetLevel() &&
-                    (!stack || entry.second > stack->second))
+                if (float const share = entry.second ? FoodItemRests(f.p, entry.first->GetTemplate()) : 0.0f;
+                    share > stackShare)
+                {
                     stack = &entry;
+                    stackShare = share;
+                }
             if (stack)
             {
                 from = &g;
@@ -1308,8 +1314,12 @@ void GuildCoordinator::UpdateTransfers()
         }
         if (!from)
             continue;
-        uint32 const give = std::min({shortfall, from->surplus, stack->second});
-        from->surplus -= give;
+        float const giverShare = std::max(FoodItemRests(from->p, stack->first->GetTemplate()), 0.0001f);
+        uint32 const give = std::min({uint32(std::ceil(shortfall / stackShare)),
+                                      uint32(from->surplus / giverShare), stack->second});
+        if (!give)
+            continue;
+        from->surplus -= float(give) * giverShare;
         stack->second -= give;
         uint32 const to = f.p->GetGUID().GetCounter();
         Want w;
@@ -1320,9 +1330,10 @@ void GuildCoordinator::UpdateTransfers()
         w.itemId = stack->first->GetEntry();
         w.count = give;
         w.purpose = "supply";
-        w.why = "food " + std::to_string(f.held) + " of its line " + std::to_string(RESTOCK_FOOD_MIN) + "; " +
-                (from->cook ? "the guild cook" : "a member") + " with " +
-                std::to_string(from->surplus + give) + " above its own line fills it [craft385]";
+        w.why = Acore::StringFormat("food {:.1f} of its line {} rests; {} with {:.1f} rests above its own line "
+                                    "fills it [craft385][craft399]",
+                                    f.held, RESTOCK_FOOD_MIN, from->cook ? "the guild cook" : "a member",
+                                    from->surplus + float(give) * giverShare);
         wants.push_back(w);
         // [craft385] each fill once per change of its giver or food ([craft389]: b447 logged 192 lines in 13 min - the
         // counts in the line changed with every meal and every other fill from the same giver)

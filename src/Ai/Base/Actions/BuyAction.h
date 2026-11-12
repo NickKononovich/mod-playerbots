@@ -49,6 +49,12 @@ uint32 CountBagFood(Player* bot, uint32 spellCategory);
 // [dun194] the most one usable item of that kind in the bags restores (RestoredPoints, at most the bot's max health /
 // mana: a drink stops at a full pool); 0 when it holds none
 float BestBagRestore(Player* bot, uint32 spellCategory);
+// [craft399] the share of a full rest one item of this food gives the bot (its restored health, at most the bot's max
+// health, over its max health); 0 for no food it can eat
+float FoodItemRests(Player* bot, ItemTemplate const* proto);
+// [craft399] the full rests the usable food in the bags covers: each item's restored health (at most the bot's max
+// health) over its max health, summed - a low-level food counts its share of a rest, not a whole item
+float BagFoodRests(Player* bot);
 // [dun199] the conjured water a mage of a gathering guild five conjures up to before the run (its own priced line plus
 // what the five's other mana users lack of theirs), set by the global leader (world thread), read by the mage's "no
 // drink" trigger (map thread); 0: none (it conjures only when it holds no conjured water)

@@ -942,6 +942,9 @@ private:
         float gain{0.0f};
         std::string text;  // what for, as logged
     };
+    // [craft398] lock_ held: the item is an ingredient of a guild cook's (a member with supply jobs) supply job or of
+    // a Cooking recipe it knows that is not gray for it - the cook's, never the vendor's
+    bool CookNeeds(uint32 itemId) const;
     void UpdateEnchantOrders();
     void RunEnchantOrders(uint32 diff);
     std::vector<EnchantOrder> enchantOrders_;  // world thread

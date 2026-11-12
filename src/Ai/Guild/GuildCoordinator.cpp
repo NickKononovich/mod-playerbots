@@ -2485,6 +2485,8 @@ void GuildCoordinator::UpdateOrders()
                                          if (!item || (item->GetTemplate()->Class != ITEM_CLASS_TRADE_GOODS &&
                                                        item->GetTemplate()->Class != ITEM_CLASS_REAGENT))
                                              return false;
+                                         if (CookNeeds(item->GetEntry()))  // [craft398]
+                                             return true;
                                          for (auto const& [line, recipes] : recipesBySkill_)
                                              if (p->HasSkill(line))
                                                  for (Recipe const& r : recipes)
@@ -2495,6 +2497,49 @@ void GuildCoordinator::UpdateOrders()
                                          return false;
                                      }),
                       st.sell.end());
+        // [craft399] user decision 2026-11-12: outgrown low food is sold, kept only while it is really needed - a food
+        // whose one item gives a smaller share of a full rest than another food it holds goes once the better foods
+        // alone cover its food line in full rests (RESTOCK_FOOD_MIN, BagFoodRests); below that line it stays as the
+        // filler. A five's member keeps its food for the run
+        if (!st.fiveId)
+        {
+            struct FoodStack
+            {
+                uint32 guid{0};
+                float share{0.0f};
+                uint32 count{0};
+            };
+            std::vector<FoodStack> foods;
+            auto const look = [&](Item* item)
+            {
+                if (float const share = item ? FoodItemRests(p, item->GetTemplate()) : 0.0f; share > 0.0f)
+                    foods.push_back({item->GetGUID().GetCounter(), share, item->GetCount()});
+            };
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                look(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+            for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+                if (Bag* bag = p->GetBagByPos(b))
+                    for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                        look(bag->GetItemByPos(uint8(j)));
+            std::string sold;
+            for (FoodStack const& f : foods)
+            {
+                float better = 0.0f;
+                for (FoodStack const& g : foods)
+                    if (g.share > f.share)
+                        better += g.share * float(g.count);
+                if (better < float(RESTOCK_FOOD_MIN) ||
+                    std::find(st.sell.begin(), st.sell.end(), f.guid) != st.sell.end())
+                    continue;
+                st.sell.push_back(f.guid);
+                if (Item* item = p->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(f.guid)))
+                    sold += (sold.empty() ? "" : ", ") + ItemName(item->GetEntry()) + " ×" + std::to_string(f.count) +
+                            Acore::StringFormat(" ({:.2f} of a rest each)", f.share);
+            }
+            if (!sold.empty())
+                LOG_INFO("playerbots", "[craft399] {} L{} sells outgrown food: {} - its better food covers its {} "
+                         "rests", Who(row.low), p->GetLevel(), sold, RESTOCK_FOOD_MIN);
+        }
         // [tasks] SELL: what the global leader gave up goes at the next vendor visit (SellMarked), never a trip
         if (!st.sell.empty())
         {
@@ -4852,7 +4897,18 @@ void GuildCoordinator::UpdateProfessions()
                     // for its money [prof272]) - b440 Dekorhan held 1g 64s against the whole walk's 4g 40s to 225.
                     // The copper comparison decides the rest
                     bool const memberNeeds = !levelsFirst && unlockedUnits;
-                    if (!QuestPace(st, p, questPace, &questWhy) && !memberNeeds)
+                    // [craft397] questing without a value weighs 0 c/min: a profession of positive value (the cook's
+                    // supply jobs) takes the call. b456: "Bami: Cook 103/150 ... quests without a value (no quest with
+                    // data on the map): quests (... supplies 5s 76c ...)" - his Coyote Steak x29 job and Gnetlibozz's
+                    // Crab Cake x24 never had a CRAFT call, 0 [guild70] cook lines, the guild's food came from members'
+                    // surplus only
+                    bool const questPriced = QuestPace(st, p, questPace, &questWhy);
+                    if (!questPriced && value > 0)
+                    {
+                        questPace = 0.0f;
+                        questWhy = "no quest with data on the map: questing weighs 0 c/min [craft397]";
+                    }
+                    if (!questPriced && !memberNeeds && value <= 0)
                     {
                         key = "noquestpace";
                         decision = head + lag + " — quests without a value (no quest with data on the map): quests (" +
@@ -5885,6 +5941,28 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
             LOG_INFO("playerbots", "[econ1] {} L{} town stop refused at ({},{}): its walk there is refused or "
                      "given up - another mailbox / forge or channel is planned", bot->GetName(), bot->GetLevel(),
                      xy.first, xy.second);
+}
+
+bool GuildCoordinator::CookNeeds(uint32 itemId) const
+{
+    auto const cooking = recipesBySkill_.find(SKILL_COOKING);
+    for (auto const& [cookLow, jobs] : supplyCrafts_)
+    {
+        for (SupplyCraft const& job : jobs)
+            for (auto const& [item, n] : job.reagents)
+                if (item == itemId)
+                    return true;
+        Player* cook = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(cookLow));
+        if (!cook || !cook->IsInWorld() || !cook->HasSkill(SKILL_COOKING) || cooking == recipesBySkill_.end())
+            continue;
+        uint32 const skill = cook->GetPureSkillValue(SKILL_COOKING);
+        for (Recipe const& r : cooking->second)
+            if (skill < r.gray && cook->HasSpell(r.spellId))
+                for (auto const& [item, n] : r.reagents)
+                    if (item == itemId)
+                        return true;
+    }
+    return false;
 }
 
 bool GuildCoordinator::TownRefused(uint32 low, WorldPosition const& pos) const
@@ -7020,6 +7098,15 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
                          " [craft393]");
                 return;
             }
+    }
+    // [craft398] ... and an ingredient a guild cook cooks with stays in the guild (the transfer brings it to the
+    // cook, [craft388]): b456 Bear Meat, Big Bear Meat, Crocolisk Meat, Crunchy Spider Leg on the members' SELL
+    // tasks while "Bami cooks Coyote Steak ... lack 517"
+    if (CookNeeds(report.itemId))
+    {
+        release();
+        Decision(what + " → keeps: a guild cook's ingredient [craft398]");
+        return;
     }
     // the looter uses it itself (its profession, a spell, a quest): no decision needed
     if (GET_PLAYERBOT_AI(looter))

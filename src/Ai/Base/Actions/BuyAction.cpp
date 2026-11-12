@@ -494,6 +494,34 @@ float BestBagRestore(Player* bot, uint32 spellCategory)
     return best;
 }
 
+float FoodItemRests(Player* bot, ItemTemplate const* proto)
+{
+    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
+        (proto->SubClass != ITEM_SUBCLASS_CONSUMABLE && proto->SubClass != ITEM_SUBCLASS_FOOD) ||
+        proto->Spells[0].SpellCategory != RESTOCK_SPELL_CATEGORY_FOOD || bot->CanUseItem(proto) != EQUIP_ERR_OK)
+        return 0.0f;
+    float const maxHealth = float(std::max<uint32>(1, bot->GetMaxHealth()));
+    float perSecond = 0.0f;
+    return std::min(RestoredPoints(proto, RESTOCK_SPELL_CATEGORY_FOOD, perSecond), maxHealth) / maxHealth;
+}
+
+float BagFoodRests(Player* bot)
+{
+    float rests = 0.0f;
+    auto look = [&](Item* item)
+    {
+        if (item)
+            rests += float(item->GetCount()) * FoodItemRests(bot, item->GetTemplate());
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        look(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+        if (Bag* bag = bot->GetBagByPos(bagSlot))
+            for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                look(bag->GetItemByPos(static_cast<uint8>(slot)));
+    return rests;
+}
+
 uint32 CountBagFood(Player* bot, uint32 spellCategory)
 {
     uint32 count = 0;
@@ -536,7 +564,10 @@ bool RestockFoodAction::isUseful()
 bool RestockFoodAction::Execute(Event /*event*/)
 {
     bool const usesMana = bot->GetMaxPower(POWER_MANA) > 0;
-    uint32 const food = CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
+    // [craft399] the food line counts full rests (BagFoodRests), not items: b456 members L15-23 held Herb Baked Egg
+    // (L1) x194, Longjaw Mud Snapper (L5) x367, Freshly Baked Bread (L5) x190 - "20 items" while each healed a share
+    // of a rest - and never bought their level's food
+    uint32 const food = uint32(BagFoodRests(bot));
     // [eco206] a member of a gathering five: the drinks its run needs ([dun194]) are its line and its target
     uint32 const fiveDrinks = usesMana ? sGuildCoordinator.FiveDrinkTarget(bot) : 0;
     uint32 const drinkTarget = fiveDrinks ? fiveDrinks : RESTOCK_FOOD_TARGET;
