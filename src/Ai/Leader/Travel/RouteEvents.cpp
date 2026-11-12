@@ -118,6 +118,8 @@ namespace Leader::Travel
     using Leader::Dungeon::PULL_ABORT_HOLD_MS;
 
     std::unordered_map<uint32, std::pair<uint32, uint32>> starterGatherMs;  // instance -> (wait since, last log)
+    thread_local std::unordered_map<uint32, std::string> escortWaveLogged;  // [dun251] instance -> last wait logged
+    thread_local std::set<uint32> escortWaveReadyLogged;                    // [dun251] instance: ready logged
 
     // [b35_ss2] Where a key gate's bars stand along its facing, measured from its spawn point. The bars are not on
     // the spawn's plane: strat-h 20261026-024524-strat-h-5C-1, King's Square Gate 175352, the leader held at
@@ -1576,6 +1578,63 @@ namespace Leader::Travel
                 sinceMs = 0;
             }
         }
+        // [dun251] an escort's waves are one fight on one pool: the NPC walks on between them (its pauses are its
+        // script's, not a rest). Priced before the talk: the mobs its own SmartAI summons on its escort points up to
+        // the boss phase are the next fight the members' rest lines read (CarefulPlanVerdict), and the escort starts
+        // only with every member at its line for it. b458 wc-n five6-4: the wave of point 12 (Deviate Viper and two
+        // Adders, summon group 1) joined a planned 1-2 mob pull, the tank died, the Disciple with him
+        if (starter.def->kind == StarterKind::Escort)
+            if (Creature* escortNpc = object->ToCreature())
+            {
+                uint32 const npcEntry = starter.def->escortEntry ? starter.def->escortEntry : escortNpc->GetEntry();
+                uint32 waveMobs = 0;
+                std::string waves;
+                for (Knowledge::EscortWave const& wave : Knowledge::EscortWaves(npcEntry))
+                {
+                    waveMobs += uint32(wave.entries.size());
+                    waves += Acore::StringFormat("{}point {}: {}", waves.empty() ? "" : ", ", wave.point,
+                                                 wave.entries.size());
+                }
+                Group* party = leader->GetGroup();
+                Player* tank = party ? ObjectAccessor::FindPlayer(PlayerbotAI::GetMainTankGuid(party)) : nullptr;
+                if (waveMobs && tank)
+                {
+                    CarefulPlanVerdict::Fight fight;
+                    fight.mobs = waveMobs;
+                    CarefulPlanVerdict::Set(tank, escortNpc->GetGUID(), true, waveMobs, {}, fight, false,
+                                            "[dun251] the escort's waves: " + waves);
+                    std::string below;
+                    for (LeaderGroup::MemberInfo const& member : group.Members())
+                        if (Player* bot = ObjectAccessor::FindPlayer(member.guid); bot && bot->IsAlive())
+                        {
+                            std::string why;
+                            if (RestState::BelowOwnLine(bot, &why))
+                                below += (below.empty() ? "" : "; ") + member.name + " " + why;
+                        }
+                    auto& logged = escortWaveLogged[group.InstanceId()];
+                    if (!below.empty())
+                    {
+                        if (logged != below.substr(0, below.find_first_of("0123456789")))
+                        {
+                            logged = below.substr(0, below.find_first_of("0123456789"));
+                            group.LogEvent("escort_wave_wait", JsonObject().Str("note", starter.def->note)
+                                                                    .Num("mobs", waveMobs).Str("waves", waves)
+                                                                    .Str("below", below).Str("tag", "[dun251]"));
+                            LOG_INFO("playerbots", "[dun251] {}: {} waits: its waves ({}; {} mobs) are the next "
+                                     "fight, below the line: {}", group.Run().runId, starter.def->note, waves,
+                                     waveMobs, below);
+                        }
+                        starter.nextAllowedMs = now + STARTER_GATHER_RETRY_MS;
+                        group.NoteProgress(now);  // the group rests for the event: no stall
+                        return false;
+                    }
+                    if (!logged.empty() || escortWaveReadyLogged.insert(group.InstanceId()).second)
+                        group.LogEvent("escort_wave_ready", JsonObject().Str("note", starter.def->note)
+                                                                 .Num("mobs", waveMobs).Str("waves", waves)
+                                                                 .Str("tag", "[dun251]"));
+                    logged.clear();
+                }
+            }
         ++starter.uses;
         starter.wipesAtUse = group.Wipes();
         starter.nextAllowedMs = now + starter.def->cooldownMs;

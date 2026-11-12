@@ -1444,6 +1444,73 @@ namespace Leader::Knowledge
                 itr->second = itr->second || cone(holder.action.cast.spell);
         return itr->second;
     }
+
+    namespace
+    {
+        constexpr uint32 ESCORT_WAVE_DEPTH = 6;  // links / timed events / action lists followed this deep
+
+        // the creatures the action `holder` (and what it starts) summons, appended to `out`
+        void EscortSummons(uint32 npcEntry, SmartScriptHolder const& holder, SmartAIEventList const& own,
+                           std::vector<uint32>& out, uint32 depth)
+        {
+            if (depth > ESCORT_WAVE_DEPTH)
+                return;
+            switch (holder.GetActionType())
+            {
+                case SMART_ACTION_SUMMON_CREATURE:
+                    if (holder.action.summonCreature.creature)
+                        out.push_back(holder.action.summonCreature.creature);
+                    break;
+                case SMART_ACTION_SUMMON_CREATURE_GROUP:
+                    if (std::vector<TempSummonData> const* group = sObjectMgr->GetSummonGroup(
+                            npcEntry, SUMMONER_TYPE_CREATURE, uint8(holder.action.creatureGroup.group)))
+                        for (TempSummonData const& summon : *group)
+                            out.push_back(summon.entry);
+                    break;
+                case SMART_ACTION_CREATE_TIMED_EVENT:
+                    for (SmartScriptHolder const& timed : own)
+                        if (timed.GetEventType() == SMART_EVENT_TIMED_EVENT_TRIGGERED &&
+                            timed.event.timedEvent.id == holder.action.timeEvent.id)
+                            EscortSummons(npcEntry, timed, own, out, depth + 1);
+                    break;
+                case SMART_ACTION_CALL_TIMED_ACTIONLIST:
+                    for (SmartScriptHolder const& listed : sSmartScriptMgr->GetScript(
+                             int32(holder.action.timedActionList.id), SMART_SCRIPT_TYPE_TIMED_ACTIONLIST))
+                        EscortSummons(npcEntry, listed, own, out, depth + 1);
+                    break;
+                default:
+                    break;
+            }
+            if (holder.link)  // the linked event runs with this one
+                for (SmartScriptHolder const& linked : own)
+                    if (linked.event_id == holder.link && linked.GetEventType() == SMART_EVENT_LINK)
+                        EscortSummons(npcEntry, linked, own, out, depth + 1);
+        }
+    }
+
+    std::vector<EscortWave> const& EscortWaves(uint32 npcEntry)
+    {
+        static std::mutex lock;
+        static std::unordered_map<uint32, std::vector<EscortWave>> known;
+        std::lock_guard<std::mutex> guard(lock);
+        auto [itr, fresh] = known.try_emplace(npcEntry);
+        if (!fresh)
+            return itr->second;
+        SmartAIEventList const own = sSmartScriptMgr->GetScript(int32(npcEntry), SMART_SCRIPT_TYPE_CREATURE);
+        for (SmartScriptHolder const& holder : own)
+        {
+            if (holder.GetEventType() != SMART_EVENT_ESCORT_REACHED)
+                continue;
+            EscortWave wave;
+            wave.point = holder.event.waypoint.pointID;
+            EscortSummons(npcEntry, holder, own, wave.entries, 0);
+            if (!wave.entries.empty())
+                itr->second.push_back(std::move(wave));
+        }
+        std::sort(itr->second.begin(), itr->second.end(),
+                  [](EscortWave const& a, EscortWave const& b) { return a.point < b.point; });
+        return itr->second;
+    }
 }
 
 namespace Leader::Knowledge

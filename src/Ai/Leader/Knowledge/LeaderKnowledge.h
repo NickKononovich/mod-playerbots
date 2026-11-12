@@ -407,6 +407,16 @@ namespace Leader::Knowledge
     // cast); read once per entry. A tank turns such a mob away from the group; any other mob needs no turning
     bool HasFrontalAttack(uint32 creatureEntry);
 
+    // [dun251] the waves an escort NPC's own SmartAI brings along its walk: per escort point
+    // (SMART_EVENT_ESCORT_REACHED) the creatures its linked actions summon (SUMMON_CREATURE, SUMMON_CREATURE_GROUP,
+    // through its timed events and timed action lists). Read once per entry from the loaded scripts and summon groups
+    struct EscortWave
+    {
+        uint32 point = 0;
+        std::vector<uint32> entries;
+    };
+    std::vector<EscortWave> const& EscortWaves(uint32 npcEntry);
+
     // [lead234] the group's measured damage per second on the bosses it killed in this run (their max health over
     // the fights' seconds, all its boss kills together); 0 before its first boss kill
     void NoteBossKill(ObjectGuid group, float bossHealth, float fightSec);
