@@ -55,7 +55,14 @@ float EstimateTps(Player* bot, Unit* target, BuffContext ctx);
 // [lead1309] the threat it builds on `target` within the next `horizonSec`: its rotation's tps, a rage user's spells
 // held to the rage it has now plus what its swings landing within the horizon bring (a warrior / bear opens at 0
 // rage: b191 rfc-h warrior tanks ~740 tps in a pull's first 2 s against ~1690 later). Mana and rune users: the tps
-float ThreatWithin(Player* bot, Unit* target, BuffContext ctx, float horizonSec);
+// [lead1310] `takenDamage`: the damage it takes within the horizon, whose rage (Unit::RewardRage) a rage user spends
+float ThreatWithin(Player* bot, Unit* target, BuffContext ctx, float horizonSec, float takenDamage = 0.0f);
+// [lead1310] the threat its area spells build within `horizonSec` on `mob`, one it does not target (`target`: the one
+// it does, its profile): `areaDps` (its area spells' damage a target a second) held to its rotation's area parts that
+// reach the mob from where it stands, at its threat per damage (tps / dps), never above its spells' threat rate, and
+// a rage user's to the same rage within the horizon as ThreatWithin
+float AreaThreatWithin(Player* bot, Unit* target, Unit* mob, BuffContext ctx, float horizonSec, float areaDps,
+                       float takenDamage = 0.0f);
 
 // [rot603] A cooldown nuke cast only where it pays (Fire Blast, Mind Blast while levelling): one cast's damage on
 // `target` (SpellPayoff::Read) at least the filler's in the cast's execute time (SpellPayoff::FillerDps). The bot's

@@ -2465,16 +2465,16 @@ float EstimateDps(Player* bot, Unit* target, BuffContext ctx, float fightSec)
 
 float EstimateTps(Player* bot, Unit* target, BuffContext ctx) { return Estimate(bot, target, ctx).tps; }
 
-float ThreatWithin(Player* bot, Unit* target, BuffContext ctx, float horizonSec)
+namespace
 {
-    if (!bot || horizonSec <= 0.0f || !bot->IsInWorld() || (target && !target->IsInWorld()))
-        return 0.0f;
-    Profile const p = ProfileOf(bot, target, ctx);
-    float const steady = p.tps * horizonSec;
+// [lead1309] the share of `horizonSec` its rotation's spells run at their steady rate: 1 for mana and rune users; a
+// rage user's spells held to the rage it has now, what its swings landing within the horizon bring (the next one at
+// its attack timer, then one per attack time) and [lead1310] the rage of the damage it takes within it
+// (`takenDamage`, Unit::RewardRage: damage / rage conversion x 2.5 x the rage income rate, core units x 10)
+float SpellShareWithin(Player* bot, Profile const& p, float horizonSec, float takenDamage)
+{
     if (!bot->HasActivePowerType(POWER_RAGE) || p.rageSpend <= 0.0f)
-        return steady;  // mana (a paladin's pool), runes (full at a pull): its rotation from the first GCD
-    // the rage it can spend within the horizon: its rage now and what its swings landing within it bring (the next
-    // one at its attack timer, then one per attack time); rage from damage taken is left out (the safe side)
+        return 1.0f;  // mana (a paladin's pool), runes (full at a pull): its rotation from the first GCD
     float const horizonMs = horizonSec * float(IN_MILLISECONDS);
     auto const swingsWithin = [bot, horizonMs](WeaponAttackType att) -> float
     {
@@ -2484,11 +2484,101 @@ float ThreatWithin(Player* bot, Unit* target, BuffContext ctx, float horizonSec)
         float const nextMs = bot->isAttackReady(att) ? 0.0f : float(bot->getAttackTimer(att));
         return horizonMs < nextMs ? 0.0f : 1.0f + std::floor((horizonMs - nextMs) / float(attackMs));
     };
-    float const rage = float(bot->GetPower(POWER_RAGE)) + swingsWithin(BASE_ATTACK) * p.ragePerSwing +
-                       swingsWithin(OFF_ATTACK) * p.offRagePerSwing;
+    float rage = float(bot->GetPower(POWER_RAGE)) + swingsWithin(BASE_ATTACK) * p.ragePerSwing +
+                 swingsWithin(OFF_ATTACK) * p.offRagePerSwing;
+    if (takenDamage > 0.0f)
+    {
+        float const level = float(bot->GetLevel());
+        float conversion = 0.0091107836f * level * level + 3.225598133f * level + 4.2652911f;
+        if (level > 70.0f)
+            conversion += 13.27f * (level - 70.0f);  // Unit::RewardRage
+        rage += takenDamage / conversion * 2.5f * sWorld->getRate(RATE_POWER_RAGE_INCOME) * 10.0f;
+    }
+    return std::min(1.0f, rage / (p.rageSpend * horizonSec));
+}
+
+float DegToRad(float degrees) { return degrees * float(M_PI) / 180.0f; }
+
+// [lead1310] the core's cone of a cone-targeted effect (Spell::SelectImplicitConeTargets: spell_cone, else by target)
+float ConeAngleOf(SpellInfo const* info, SpellImplicitTargetInfo const& target)
+{
+    if (SpellCone const* cone = sSpellMgr->GetSpellCone(info->Id))
+        return DegToRad(float(cone->cone_degrees));
+    switch (target.GetTarget())
+    {
+        case TARGET_UNIT_CONE_ENEMY_24:
+            return DegToRad(24.0f);
+        case TARGET_UNIT_CONE_ENEMY_54:
+            return DegToRad(54.0f);
+        case TARGET_UNIT_CONE_ENEMY_104:
+            return DegToRad(104.0f);
+        default:
+            return DegToRad(60.0f);
+    }
+}
+
+// [lead1310] an area spell of its rotation reaches `mob` from where the bot stands: within an area effect's radius
+// (the mob's size and the caster's leeway left out: the safe side), in front within the cone of a cone; a capped
+// spell only while the bot's attackers fit its cap (the core picks its targets at random)
+bool AreaReaches(Player* bot, SpellInfo const* info, Unit* mob)
+{
+    if (info->MaxAffectedTargets && bot->getAttackers().size() > info->MaxAffectedTargets)
+        return false;
+    for (SpellEffectInfo const& effect : info->GetEffects())
+    {
+        if (!effect.IsTargetingArea() && effect.Effect != SPELL_EFFECT_PERSISTENT_AREA_AURA)
+            continue;
+        if (bot->GetExactDist(mob) > effect.CalcRadius(bot))
+            continue;
+        bool cone = false;
+        for (SpellImplicitTargetInfo const& target : {effect.TargetA, effect.TargetB})
+            if (target.GetSelectionCategory() == TARGET_SELECT_CATEGORY_CONE)
+            {
+                cone = true;
+                if (bot->isInFront(mob, ConeAngleOf(info, target)))
+                    return true;
+            }
+        if (!cone)
+            return true;
+    }
+    return false;
+}
+}  // namespace
+
+float ThreatWithin(Player* bot, Unit* target, BuffContext ctx, float horizonSec, float takenDamage)
+{
+    if (!bot || horizonSec <= 0.0f || !bot->IsInWorld() || (target && !target->IsInWorld()))
+        return 0.0f;
+    Profile const p = ProfileOf(bot, target, ctx);
+    float const steady = p.tps * horizonSec;
     float const spellTps = std::max(p.tps - p.whiteTps, 0.0f);
-    float const spell = std::min(spellTps * horizonSec, rage * spellTps / p.rageSpend);
+    float const spell = spellTps * horizonSec * SpellShareWithin(bot, p, horizonSec, takenDamage);
     return std::min(steady, p.whiteTps * horizonSec + spell);
+}
+
+float AreaThreatWithin(Player* bot, Unit* target, Unit* mob, BuffContext ctx, float horizonSec, float areaDps,
+                       float takenDamage)
+{
+    if (!bot || !mob || horizonSec <= 0.0f || areaDps <= 0.0f || !bot->IsInWorld() || !mob->IsInWorld() ||
+        (target && !target->IsInWorld()))
+        return 0.0f;
+    Profile const p = ProfileOf(bot, target, ctx);
+    float const own = p.burst - p.pet;  // the pet's damage is not in its tps
+    if (own <= 0.0f || p.tps <= 0.0f)
+        return 0.0f;
+    // what its rotation's area spells deal a target a second (their parts), those reaching the mob
+    float rotationArea = 0.0f;
+    for (auto const& [spellId, dps] : p.parts)
+        if (SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+            info && dps > 0.0f && info->IsAffectingArea() && AreaReaches(bot, info, mob))
+            rotationArea += dps;
+    float const perTarget = std::min(areaDps, rotationArea);
+    if (perTarget <= 0.0f)
+        return 0.0f;
+    // at its threat per damage (tps / dps), never above its rotation's spell threat
+    float const spellTps = std::max(p.tps - p.whiteTps, 0.0f);
+    float const areaTps = std::min(perTarget * p.tps / own, spellTps);
+    return areaTps * horizonSec * SpellShareWithin(bot, p, horizonSec, takenDamage);
 }
 
 namespace

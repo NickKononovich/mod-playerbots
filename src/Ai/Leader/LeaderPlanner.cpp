@@ -8761,6 +8761,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return best;
     }
 
+    float MemberAreaPerTargetDps(Player* member, Unit* victim)  // [lead1310]
+    {
+        return member && victim ? MemberAreaDps(member, victim).perTarget : 0.0f;
+    }
+
     float MemberAreaReach(Player* member)
     {
         struct Cached

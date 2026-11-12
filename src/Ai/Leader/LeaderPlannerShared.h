@@ -70,6 +70,9 @@ namespace PullPlanning
     // [split250] the widest reach of the area spells (hostile, affecting an area) the member knows, from their spell
     // data: what a crowd-controlled mob must stand beyond, from the fight, not to be broken (0: none)
     float MemberAreaReach(Player* member);
+    // [lead1310] what the member's area spells deal each mob of a stack per second (MemberAreaDps: the best known one
+    // at the fastest it comes again), read by the leader's threat headroom for the tank's area threat
+    float MemberAreaPerTargetDps(Player* member, Unit* victim);
     // [split250] the yards a fight drifts from where it is planned (CollectPack's)
     float FightDriftYd();
     // [split254] the tank has a ranged pull (its pull strategy's spell, known, reaching CAREFUL_MIN_PULL_RANGE, as

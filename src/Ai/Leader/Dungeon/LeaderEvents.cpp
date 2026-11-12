@@ -444,9 +444,40 @@ namespace Leader::Dungeon
         }
 
         // [lead1309] the tank's threat on `mob` within `horizonSec` (DpsEstimate::ThreatWithin: its rage now)
-        float TankThreatWithin(Player* tank, Unit* mob, float horizonSec)
+        // [lead1310] with the damage it takes within the horizon (its rage from damage taken)
+        float TankThreatWithin(Player* tank, Unit* mob, float horizonSec, float takenDamage = 0.0f)
         {
-            return tank && mob ? DpsEstimate::ThreatWithin(tank, mob, DpsEstimate::ContextOf(tank), horizonSec) : 0.0f;
+            return tank && mob ? DpsEstimate::ThreatWithin(tank, mob, DpsEstimate::ContextOf(tank), horizonSec,
+                                                           takenDamage)
+                               : 0.0f;
+        }
+
+        // [lead1310] the formula's intake of the tank now: each living attacker on it, its landed damage per second
+        // (PullPlanning::MobLandedDps) from its next swing on (its attack timer: the opening on the safe side)
+        struct TankIntake
+        {
+            float landed = 0.0f;
+            float nextSec = 0.0f;
+        };
+        std::vector<TankIntake> TankIntakeNow(Player* tank)
+        {
+            std::vector<TankIntake> intake;
+            if (!tank)
+                return intake;
+            for (Unit* attacker : tank->getAttackers())
+                if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank && !IsCrowdControlled(attacker))
+                    intake.push_back({PullPlanning::MobLandedDps(attacker, tank),
+                                      attacker->isAttackReady(BASE_ATTACK)
+                                          ? 0.0f
+                                          : float(attacker->getAttackTimer(BASE_ATTACK)) / float(IN_MILLISECONDS)});
+            return intake;
+        }
+        float TakenWithin(std::vector<TankIntake> const& intake, float horizonSec)
+        {
+            float damage = 0.0f;
+            for (TankIntake const& one : intake)
+                damage += one.landed * std::max(0.0f, horizonSec - one.nextSec);
+            return damage;
         }
 
         // [lead1308] the game's healing threat: half the healing (ThreatManager), times the healer's threat auras
@@ -9929,11 +9960,43 @@ namespace Leader::Dungeon
                 auto const tankOpensOn = [&](Unit* mob)
                 { return tank->GetVictim() == mob || (mob && tank->GetTarget() == mob->GetGUID()); };
                 // [lead1308] the tank's threat grows by its rotation's rate on the mob it attacks or has selected;
-                // on another one by nothing the formula knows (its area threat is not counted: the safe side).
+                // on another one by its area spells (lead1310, below).
                 // [lead1309] over a horizon, held to the rage it has and its swings bring (TankThreatWithin); a rate
                 // is that threat over a GCD, never above the steady rotation's
-                auto const tankThreatOn = [&](Unit* mob, float horizonSec)
-                { return tankOpensOn(mob) ? TankThreatWithin(tank, mob, horizonSec) : 0.0f; };
+                // [lead1310] coordinator 2026-11-13: packs the tank holds by its area spells stalled on "no mob with
+                // headroom" - its threat on a mob it does not target counted 0. On such a mob within its area reach
+                // (MemberAreaReach) its area spells' damage a target a second (MemberAreaDps) builds threat
+                // (DpsEstimate::AreaThreatWithin: held to its rotation's area parts reaching the mob, at its tps / dps,
+                // to its rage within the horizon); none while a crowd-controlled mob is in that reach (the area would
+                // break it) or on a crowd-controlled mob. Its rage from the damage it takes counts (TankIntakeNow)
+                std::vector<TankIntake> const tankIntake = TankIntakeNow(tank);
+                float const tankAreaReach = PullPlanning::MemberAreaReach(tank);
+                bool const tankAreaHeld = tankAreaReach <= 0.0f || IsCrowdControlledMobNear(botAI, tank, tankAreaReach);
+                Unit* const tankAim = tank->GetVictim() ? tank->GetVictim() : botAI->GetUnit(tank->GetTarget());
+                auto const tankThreatOn = [&](Unit* mob, float horizonSec) -> float
+                {
+                    if (!mob)
+                        return 0.0f;
+                    float const taken = TakenWithin(tankIntake, horizonSec);
+                    if (tankOpensOn(mob))
+                        return TankThreatWithin(tank, mob, horizonSec, taken);
+                    if (tankAreaHeld || IsCrowdControlled(mob) || tank->GetExactDist(mob) > tankAreaReach)
+                        return 0.0f;
+                    float const areaDps = PullPlanning::MemberAreaPerTargetDps(tank, mob);
+                    float const area = DpsEstimate::AreaThreatWithin(tank, tankAim, mob, DpsEstimate::ContextOf(tank),
+                                                                     horizonSec, areaDps, taken);
+                    if (area > 0.0f)
+                    {
+                        thread_local std::set<std::pair<uint64, uint64>> areaLogged;
+                        if (areaLogged.size() > 4096)
+                            areaLogged.clear();
+                        if (areaLogged.insert({tank->GetGUID().GetRawValue(), mob->GetGUID().GetRawValue()}).second)
+                            LOG_INFO("playerbots", "[lead1310] [threat] {}: its area threat on {} counts {:.0f} over "
+                                     "{:.1f} s (area {:.0f}/s a target, reach {:.1f} yd, intake {:.0f} within)",
+                                     tank->GetName(), mob->GetName(), area, horizonSec, areaDps, tankAreaReach, taken);
+                    }
+                    return area;
+                };
                 auto const tankRateOn = [&](Unit* mob)
                 { return tankThreatOn(mob, HEADROOM_GCD_SEC) / HEADROOM_GCD_SEC; };
                 struct Projection
