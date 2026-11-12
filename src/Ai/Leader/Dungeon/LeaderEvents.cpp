@@ -5158,13 +5158,22 @@ namespace Leader::Dungeon
                 {
                     std::string const why = stuck ? "the tank goes to its mob out of its sight"
                                                   : "the tank goes to its mob its melee cannot reach";
-                    checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, unreachedMob->GetPosition(),
-                                unreachedEvades ? std::max(CONTACT_DISTANCE, unreachedMob->GetCombatReach())
-                                                : NOMINAL_MELEE_RANGE,
-                                why);  // [lead1520] on its ground
-                    if (Leader::Events::Get(tank->GetGUID(), tankMove) && tankMove.moveWhy == why)
-                        option = "the tank walks to it";
-                    else if (float const arrive = LeaderTauntReach(tank); stuck && arrive > 0.0f)
+                    float const walkEnd = unreachedEvades
+                                              ? std::max(CONTACT_DISTANCE, unreachedMob->GetCombatReach())
+                                              : NOMINAL_MELEE_RANGE;
+                    // [dun252] b461 wc-n five9-9 1331-1516 s: a Deviate Python 1.5 yd from the tank, out of its
+                    // sight both ways (the core's melee needs the sight too: neither swung for 180 s); the walk to
+                    // it ended where the tank stood, the order stood as the option and the stall watchdog ended
+                    // the run at 1/8. A tank already at the walk's end goes to a spot in the mob's sight instead
+                    bool const walkEndsHere = stuck && tank->GetExactDist(unreachedMob) <= walkEnd;
+                    if (!walkEndsHere)
+                    {
+                        checkedMove(tank->GetGUID(), Leader::MoveEvent::MoveTo, unreachedMob->GetPosition(), walkEnd,
+                                    why);  // [lead1520] on its ground
+                        if (Leader::Events::Get(tank->GetGUID(), tankMove) && tankMove.moveWhy == why)
+                            option = "the tank walks to it";
+                    }
+                    if (float const arrive = LeaderTauntReach(tank); option.empty() && stuck && arrive > 0.0f)
                     {
                         // lead983's ring: a place in its taunt's reach and sight out of every idle mob's reach
                         std::vector<Position> ring;
