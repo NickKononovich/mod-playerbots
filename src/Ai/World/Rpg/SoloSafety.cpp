@@ -1208,9 +1208,8 @@ namespace
         float const health = float(bot->GetMaxHealth());
         if (high < health)
             return false;  // no heal needed (the heal kit is read only for a close call)
-        float const spare = spends ? std::max(0.0f, maxMana - own.manaPerSec * seconds) : maxMana;
-        float const heals = SurvivalKit::HealPoints(bot, seconds, spare, true, false,
-                                                    damage / std::max(seconds, 1.0f));  // [death411]
+        float const heals = SurvivalKit::FightHeals(bot, seconds, health, maxMana, spends ? own.manaPerSec : 0.0f,
+                                                    high / std::max(seconds, 1.0f), true);  // [death442]
         float const ehp = health + std::min(petHealth, targetDamage) + heals;
         if (damage < ehp && high >= ehp && !foes.empty())
         {
@@ -2441,15 +2440,16 @@ namespace SoloSafety
         constexpr float HIGH_END_DEVIATIONS = 2.0f;  // a one-sided 97.7 % bound of a sum of independent swings
         auto const effective = [&](Projection const& fight, float health, float mana, bool& wins) -> float
         {
-            float spare = mana;
-            if (bot->GetMaxPower(POWER_MANA) && manaPerSec > 0.0f)
-                spare = std::max(0.0f, mana - manaPerSec * fight.seconds);
-            float const heals = SurvivalKit::HealPoints(bot, fight.seconds, spare, true, false,
-                                                        fight.damage / std::max(fight.seconds, 1.0f));  // [death411]
+            // [death442] its heals as its play pays them: the rotation's mana first, the kit's heals as they fall due
+            // under the high end of the hits (b462 Septimon L17: 990 heal points from the mana its rotation spent)
+            float const high = fight.damage + HIGH_END_DEVIATIONS * std::sqrt(fight.variance);
+            float const heals = SurvivalKit::FightHeals(bot, fight.seconds, health, mana,
+                                                        bot->GetMaxPower(POWER_MANA) ? manaPerSec : 0.0f,
+                                                        high / std::max(fight.seconds, 1.0f), true);
             float const ehp = health + std::min(petHealth, fight.targetDamage) + heals;
             // [death386] user 2026-11-12 "survives with a margin": the high end of its rolls, not their mean - two
             // standard deviations of the mobs' swings (weapon roll, miss / dodge / parry, crit, crush) over the fight
-            wins = fight.damage + HIGH_END_DEVIATIONS * std::sqrt(fight.variance) < ehp;
+            wins = high < ehp;
             return ehp;
         };
         bool winNow = false;
@@ -3205,9 +3205,8 @@ namespace SoloSafety
         out.health = float(bot->GetHealth());
         guard.unlock();
         float const mana = float(bot->GetPower(POWER_MANA));
-        float const spare = own.manaPerSec > 0.0f ? std::max(0.0f, mana - own.manaPerSec * out.seconds) : mana;
-        out.heals = SurvivalKit::HealPoints(bot, out.seconds, spare, true, false,
-                                            out.damage / std::max(out.seconds, 1.0f));
+        out.heals = SurvivalKit::FightHeals(bot, out.seconds, out.health, mana, own.manaPerSec,
+                                            out.damage / std::max(out.seconds, 1.0f), true);  // [death442]
         out.lost = out.damage >= out.health + out.heals;
         return out;
     }
@@ -3870,9 +3869,9 @@ namespace SoloSafety
         constexpr float HIGH_END_DEVIATIONS = 2.0f;
         float const highEnd = damage + HIGH_END_DEVIATIONS * std::sqrt(std::max(variance, 0.0f));
         float const mana = float(bot->GetPower(POWER_MANA));
-        float const spare = own.manaPerSec > 0.0f ? std::max(0.0f, mana - own.manaPerSec * seconds) : mana;
-        float const ehp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, spare, true, false,
-                                                                            damage / std::max(seconds, 1.0f));
+        float const ehp = float(bot->GetHealth()) +
+                          SurvivalKit::FightHeals(bot, seconds, float(bot->GetHealth()), mana, own.manaPerSec,
+                                                  highEnd / std::max(seconds, 1.0f), true);  // [death442]
         why = Acore::StringFormat("its trap summons {} x {} L{}{}{}: {:.0f} dmg at the high end over {:.0f} s at ehp "
                                   "{:.0f}",
                                   count, named->Name, named->maxlevel, standing.empty() ? "" : " beside ", standing,

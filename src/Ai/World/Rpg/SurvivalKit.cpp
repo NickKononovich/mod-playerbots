@@ -27,6 +27,7 @@
 #include "Playerbots.h"
 #include "SoloSafety.h"
 #include "Spell.h"
+#include "SpellAuras.h"
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
@@ -39,10 +40,13 @@
 #include <list>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace
 {
+    constexpr uint32 SPELL_POWER_WORD_SHIELD_RANK_1 = 17;
+
     enum class Kind : uint8
     {
         None,
@@ -1427,6 +1431,163 @@ namespace SurvivalKit
             total += amount * casts;
         }
         return total;
+    }
+
+    float FightHeals(Player* bot, float fightSec, float health, float mana, float manaPerSec, float incomingDps,
+                     bool items)
+    {
+        if (!bot || fightSec <= 0.0f || incomingDps <= 0.0f)
+            return 0.0f;
+        std::vector<Piece> pieces;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            pieces = KitOf(bot).pieces;
+            if (items)
+                ItemPieces(bot, pieces);
+        }
+        struct Heal
+        {
+            Piece piece;
+            uint32 category = 0;  // an item's shared cooldown (one potion, one healthstone)
+            float readySec = 0.0f;
+        };
+        std::vector<Heal> heals;
+        Piece const* shield = nullptr;
+        float shieldReadySec = 0.0f;
+        for (Piece const& piece : pieces)
+        {
+            if (piece.amount <= 0.0f || piece.needsWindow)
+                continue;
+            if (!piece.item)
+            {
+                if (bot->HasSpellCooldown(piece.spell))
+                    continue;
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(piece.spell);
+                if (info && ((info->ExcludeCasterAuraSpell && bot->HasAura(info->ExcludeCasterAuraSpell)) ||
+                             (info->ExcludeTargetAuraSpell && bot->HasAura(info->ExcludeTargetAuraSpell))) &&
+                    piece.kind == Kind::Heal)
+                    continue;
+                // the solo priest's rotation shields itself whenever it is attacked and Weakened Soul is off
+                // (GenericPriestStrategy "being attacked", PowerWordShieldPays alone): its mana, its absorb
+                if (piece.kind == Kind::Absorb && bot->getClass() == CLASS_PRIEST && info &&
+                    info->GetFirstRankSpell()->Id == SPELL_POWER_WORD_SHIELD_RANK_1 &&
+                    (!shield || piece.amount > shield->amount))
+                {
+                    shield = &piece;
+                    if (uint32 const locked = ExclusionGroup(piece.spell))
+                        if (Aura const* aura = bot->GetAura(locked))
+                            shieldReadySec = float(std::max(aura->GetDuration(), 0)) / float(IN_MILLISECONDS);
+                }
+            }
+            if (piece.kind != Kind::Heal)
+                continue;
+            Heal heal;
+            heal.piece = piece;
+            if (piece.item)
+            {
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(piece.spell);
+                heal.category = info && info->GetCategory() ? info->GetCategory() : piece.spell;
+            }
+            heals.push_back(heal);
+        }
+        float shieldLockSec = 0.0f;  // Weakened Soul's duration: the shield's own period
+        if (shield)
+            if (uint32 const locked = ExclusionGroup(shield->spell))
+                if (SpellInfo const* aura = sSpellMgr->GetSpellInfo(locked))
+                    shieldLockSec = Sec(aura->GetMaxDuration());
+
+        float const maxHealth = float(bot->GetMaxHealth());
+        constexpr float STEP_SEC = 0.25f;
+        float hp = health;
+        float endSec = fightSec;
+        float castSum = 0.0f;  // the fight runs this much longer: no rotation while the bot casts its kit
+        float gained = 0.0f;
+        float busyUntil = 0.0f;
+        float landAt = -1.0f;
+        float landAmount = 0.0f;
+        float absorbLeft = 0.0f;
+        float absorbUntil = 0.0f;
+        std::vector<std::pair<float, float>> hots;  // (heal per second, until)
+        std::unordered_set<uint32> usedCategories;
+        float const lastSec = 4.0f * fightSec + 60.0f;  // a compute bound only: free heals recast without end
+        for (float t = 0.0f; t < endSec && t < lastSec && hp > 0.0f; t += STEP_SEC)
+        {
+            if (t >= busyUntil)
+            {
+                // the kit's due heal first (its survival action outranks the rotation): SurvivalKit::Evaluate's pick
+                Heal* due = nullptr;
+                for (Heal& heal : heals)
+                {
+                    Piece const& piece = heal.piece;
+                    if (t < heal.readySec || (piece.item && usedCategories.count(heal.category)) ||
+                        (!piece.item && mana < piece.cost))
+                        continue;
+                    if (maxHealth - hp < piece.amount && hp > incomingDps * (piece.castSec + piece.castSec))
+                        continue;  // HealDue's rule
+                    float const net = piece.amount - incomingDps * piece.castSec;
+                    if (!due || (due->piece.item && !piece.item) ||
+                        (!due->piece.item == !piece.item && net > due->piece.amount - incomingDps * due->piece.castSec))
+                        due = &heal;
+                }
+                if (due)
+                {
+                    Piece const& piece = due->piece;
+                    if (piece.item)
+                        usedCategories.insert(due->category);
+                    else
+                        mana -= piece.cost;
+                    due->readySec = t + std::max(piece.cooldownSec, piece.castSec);
+                    if (piece.durationSec > 0.0f && piece.durationSec < std::numeric_limits<float>::max())
+                        due->readySec = std::max(due->readySec, t + piece.durationSec);  // a HoT refreshes, no stack
+                    busyUntil = t + piece.castSec;
+                    endSec += piece.castSec;
+                    castSum += piece.castSec;
+                    if (piece.durationSec > 0.0f && piece.durationSec < std::numeric_limits<float>::max())
+                        hots.emplace_back(piece.amount / piece.durationSec, t + piece.durationSec);
+                    else
+                    {
+                        landAt = t + (piece.instant ? 0.0f : piece.castSec);
+                        landAmount = piece.amount;
+                    }
+                }
+                else if (shield && t >= shieldReadySec && mana >= shield->cost)
+                {
+                    mana -= shield->cost;
+                    absorbLeft = shield->amount;
+                    absorbUntil = t + shield->durationSec;
+                    shieldReadySec = t + std::max(shieldLockSec, shield->castSec);
+                    busyUntil = t + shield->castSec;
+                    endSec += shield->castSec;
+                    castSum += shield->castSec;
+                }
+                else
+                    mana = std::max(0.0f, mana - manaPerSec * STEP_SEC);
+            }
+            float hit = incomingDps * STEP_SEC;
+            if (absorbLeft > 0.0f && t < absorbUntil)
+            {
+                float const soaked = std::min(absorbLeft, hit);
+                absorbLeft -= soaked;
+                hit -= soaked;
+                gained += soaked;
+            }
+            hp -= hit;
+            if (landAt >= 0.0f && t >= landAt && hp > 0.0f)
+            {
+                float const healed = std::min(landAmount, maxHealth - hp);
+                hp += healed;
+                gained += healed;
+                landAt = -1.0f;
+            }
+            for (auto const& [rate, until] : hots)
+                if (t < until && hp > 0.0f)
+                {
+                    float const healed = std::min(rate * STEP_SEC, maxHealth - hp);
+                    hp += healed;
+                    gained += healed;
+                }
+        }
+        return std::max(0.0f, gained - incomingDps * castSum);
     }
 
     float ItemHealPoints(Player* bot)

@@ -52,6 +52,14 @@ namespace SurvivalKit
     // the bot deals no damage, the fight runs that much longer: SurvivalKit::Gain's own rule)
     float HealPoints(Player* bot, float fightSec, float spareMana, bool items, bool onTheMove = false,
                      float incomingDps = 0.0f);
+    // [death442] a solo fight's heals and its rotation's own shield with the mana split the way its play spends it:
+    // the rotation spends `manaPerSec` from the start, the kit casts a heal only when HealDue's rule holds (its pick:
+    // a spell before an item, the most net of its cast's hits) on the mana left then, each heal up to max health,
+    // the solo priest's Power Word: Shield whenever Weakened Soul is off; net of the fight's longer run under the
+    // attackers while it casts. b462 Septimon L17 judged "ehp 1245 at hp 256" on four Heals into a 312 hp body paid
+    // from the mana the rotation spent first
+    float FightHeals(Player* bot, float fightSec, float health, float mana, float manaPerSec, float incomingDps,
+                     bool items);
     // [death440] its heal items alone (one per shared cooldown): what a grouped bot's combat casts on itself without
     // the kit (the "potions" strategy at critical health)
     float ItemHealPoints(Player* bot);
