@@ -2349,6 +2349,7 @@ namespace
         WorldPosition dest;
         G3D::Vector3 from;
         uint32 mapId = 0;
+        uint32 questId = 0;  // [lag372] the quest whose walk the dead end gave up (postponed with it)
     };
     std::mutex pocketLock;
     std::unordered_map<uint32, std::shared_ptr<PocketRescueState>> pocketRescues;
@@ -2378,6 +2379,8 @@ void NewRpgBaseAction::RequestPocketRescue(WorldPosition const& dest)
     state->dest = dest;
     state->from = G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
     state->mapId = bot->GetMapId();
+    if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
+        state->questId = quest->questId;
     std::string why;
     if (!state->search.Start(bot, state->from,
                              G3D::Vector3(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()),
@@ -2439,6 +2442,16 @@ bool NewRpgBaseAction::PocketRescue()
                  bot->GetName(), bot->GetLevel(), state->from.x, state->from.y, state->dest.GetPositionX(),
                  state->dest.GetPositionY(), state->search.Length(), state->search.Why(), info.rescueRoute.size(),
                  state->search.Steps());
+        // [lag372] coordinator 2026-11-12 (b452 Rollothan L14 out of Ironforge for Loch Modan: "MAZE no way to
+        // (-4975,-2937): its walk there ends in a dead end" -> GIVE_UP "out of its choices until L15", POSTPONE q307;
+        // 66 s later "deep search ... found its way ... 3631 yd; walks it"): the dead end that gave the walk up is the
+        // very fact the deep search disproved - the spot and its quest are its choices again
+        ForgetWalkGivenUp(bot, state->dest);
+        if (state->questId)
+            botAI->lowPriorityQuest.erase(state->questId);
+        LOG_INFO("playerbots", "[lag372] {} L{} its walk to ({:.0f},{:.0f}) has a way after all: given up no more{}",
+                 bot->GetName(), bot->GetLevel(), state->dest.GetPositionX(), state->dest.GetPositionY(),
+                 state->questId ? Acore::StringFormat(", q{} back in its choices", state->questId) : std::string());
     }
     std::vector<G3D::Vector3>& route = info.rescueRoute;
     if (route.size() < 2)
