@@ -28,6 +28,7 @@
 #include "Timer.h"
 #include "Unit.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -535,6 +536,7 @@ namespace Leader::Travel
         thread_local std::vector<dtPolyRef> back(LONG_ROUTE_MAX_POLYS);
         thread_local std::vector<dtPolyRef> wide(LONG_ROUTE_MAX_POLYS);
         thread_local std::vector<float> straight(size_t(LONG_ROUTE_MAX_CORNERS) * 3);
+        thread_local std::vector<dtPolyRef> straightRefs(LONG_ROUTE_MAX_CORNERS);  // [nav170]
         int polyCount = 0;
         auto const searchStart = timeNow();
         dtStatus const status = query->findPath(startRef, endRef, startNearest, endNearest, &filter, polys.data(),
@@ -628,7 +630,8 @@ namespace Leader::Travel
 
         int cornerCount = 0;
         if (dtStatusFailed(query->findStraightPath(startNearest, target, polys.data(), polyCount, straight.data(),
-                                                   nullptr, nullptr, &cornerCount, LONG_ROUTE_MAX_CORNERS)) ||
+                                                   nullptr, straightRefs.data(), &cornerCount,
+                                                   LONG_ROUTE_MAX_CORNERS)) ||
             cornerCount < 1)
             return false;
 
@@ -679,12 +682,29 @@ namespace Leader::Travel
                     c.maxZ = std::max(c.maxZ, vertex[2]);
                 }
             }
-            size_t cursor = 0;
-            auto const onSurface = [&](G3D::Vector3& point)
+            // [nav170] b458 Sylaenas, Darkshore Stormscale camp: a corner lies on a portal's vertex, where no
+            // polygon's point test holds, and the scan on to the corridor's end took a polygon of the lower path
+            // the walk reaches later, 15 yd below the ledge: one step read as a drop over open air and every pass
+            // was refused. A sample between two corners lies in the corridor's polygons from the first corner's
+            // (findStraightPath's ref: the polygon the walk enters there) to the second's, so the scan stops there,
+            // and a point no polygon holds takes the 3D-nearest of the polygons at the range's two ends
+            thread_local std::vector<size_t> cornerAt;
+            cornerAt.assign(size_t(cornerCount), size_t(polyCount - 1));
+            for (size_t index = 0, from = 0; index < size_t(cornerCount); ++index)
             {
+                size_t at = from;
+                while (at < size_t(polyCount) && polys[at] != straightRefs[index])
+                    ++at;
+                if (at < size_t(polyCount))  // the end corner has no ref: the corridor's last polygon
+                    cornerAt[index] = from = at;
+            }
+            size_t cursor = 0;
+            auto const onSurface = [&](G3D::Vector3& point, size_t last)
+            {
+                last = std::max(last, cursor);
                 float const position[3] = {point.y, point.z, point.x};
                 for (bool const offMesh : {false, true})
-                    for (size_t index = cursor; index < size_t(polyCount); ++index)
+                    for (size_t index = cursor; index <= last; ++index)
                     {
                         CorridorPoly const& c = corridor[index];
                         if (!c.usable || c.offMesh != offMesh)
@@ -701,21 +721,47 @@ namespace Leader::Travel
                         }
                     }
                 float best = -1.0f;
-                for (size_t index = cursor; index < size_t(polyCount) && index <= cursor + 1; ++index)
+                float bestHeight = point.z;
+                size_t const ends[4] = {cursor, cursor + 1, last > 0 ? last - 1 : 0, last};
+                for (size_t const index : ends)
                 {
+                    if (index < cursor || index > last)
+                        continue;
                     float closest[3];
                     if (dtStatusFailed(query->closestPointOnPoly(polys[index], position, closest, nullptr)))
                         continue;
-                    float const distance = dtVdist2DSqr(position, closest);
+                    float const distance = dtVdistSqr(position, closest);
                     if (best < 0.0f || distance < best)
                     {
                         best = distance;
-                        point.z = closest[1];
+                        bestHeight = closest[1];
                     }
                 }
+                // [nav170] the first point the old unbounded scan would have put on a polygon past the range, logged
+                // once per process (a log cadence: the scan runs only until it has logged, at most LOG_CHECKS times)
+                constexpr uint32 LOG_CHECKS = 4096;
+                static std::atomic<bool> boundLogged{false};
+                static std::atomic<uint32> boundChecks{0};
+                if (!boundLogged.load(std::memory_order_relaxed) &&
+                    boundChecks.fetch_add(1, std::memory_order_relaxed) < LOG_CHECKS)
+                    for (size_t index = last + 1; index < size_t(polyCount); ++index)
+                    {
+                        float height = 0.0f;
+                        if (corridor[index].usable && !corridor[index].offMesh &&
+                            dtStatusSucceed(query->getPolyHeight(polys[index], position, &height)) &&
+                            std::fabs(height - bestHeight) > 2.0f && !boundLogged.exchange(true))
+                        {
+                            LOG_INFO("playerbots",
+                                     "[nav170] walk sample ({:.1f},{:.1f}) takes height {:.1f} of its corridor range "
+                                     "(polygons {}-{} of {}), not {:.1f} of polygon {} the walk reaches later",
+                                     point.x, point.y, bestHeight, cursor, last, polyCount, height, index);
+                            break;
+                        }
+                    }
+                point.z = bestHeight;
             };
             G3D::Vector3 first = corners.front();
-            onSurface(first);
+            onSurface(first, cornerAt.front());
             samples->push_back(first);
             for (size_t index = 1; index < corners.size(); ++index)
             {
@@ -725,12 +771,13 @@ namespace Leader::Travel
                 for (float at = sampleStep; at < length; at += sampleStep)
                 {
                     G3D::Vector3 point = a + (b - a) * (at / length);
-                    onSurface(point);
+                    onSurface(point, cornerAt[index]);
                     samples->push_back(point);
                 }
                 G3D::Vector3 corner = b;
-                onSurface(corner);
+                onSurface(corner, cornerAt[index]);
                 samples->push_back(corner);
+                cursor = std::max(cursor, cornerAt[index]);  // the walk on from this corner enters its polygon
             }
             if (info)
                 info->samplesUs += micros(samplesStart);
