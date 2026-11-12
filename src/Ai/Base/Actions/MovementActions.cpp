@@ -4870,13 +4870,39 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
 {
     bool found = false;
     modified_z = INVALID_HEIGHT;
+    // [death417] a priced walk (a solo / co-op bot's: SoloSafety::RouteCosts) that passes a reach its route search
+    // refused is no walk: MoveFarTo's maze search goes round, the run past or the refusal is the caller's. Every other
+    // MoveTo took it: b456 Febineysh L18 walked to its engaged Redridge Basher "complete, through a refused reach"
+    // past a Basher and a Mystic it had refused, the fight opened at 3 yd of them and it died there
+    bool refusedSeen = false;
+    auto const walkable = [&refusedSeen](BotPath const& path, int ok)
+    {
+        if (!(path.type & ok))
+            return false;
+        refusedSeen = refusedSeen || path.throughRefused;
+        return !path.throughRefused;
+    };
+    auto const refusedLine = [&]()
+    {
+        thread_local std::unordered_map<uint64, uint64> logged;  // bot -> destination cell, a log cadence
+        if (logged.size() > 4096)
+            logged.clear();
+        uint64 const cell = (uint64(uint32(int32(x))) << 32) | uint32(int32(y));
+        uint64& last = logged[bot->GetGUID().GetRawValue()];
+        if (last == cell)
+            return;
+        last = cell;
+        LOG_INFO("playerbots", "[death417] {} L{} no walk to ({:.0f},{:.0f}) {:.0f} yd: its route passes a reach it "
+                 "refused ({})", bot->GetName(), bot->GetLevel(), x, y, bot->GetExactDist2d(x, y),
+                 SoloSafety::RouteWalls(bot));
+    };
     float tempZ = bot->GetMapHeight(x, y, z);
     // Over deep water path to the water column, not to the bottom; on land (or if that fails) search as before.
     float const waterZ = WaterDestinationZ(bot, x, y, z, tempZ);
     if (waterZ != INVALID_HEIGHT)
     {
         BotPath const waterGen = FindBotPath(bot, x, y, waterZ);  // [lead109]
-        if (waterGen.type & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE))
+        if (walkable(waterGen, PATHFIND_NORMAL | PATHFIND_INCOMPLETE))
         {
             modified_z = waterZ;
             return waterGen.points;
@@ -4888,23 +4914,24 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
     if (UsesLeaderRoute(bot))
     {
         BotPath const route = FindBotPath(bot, x, y, z);
-        if (route.leaderRoute && (route.type & PATHFIND_NORMAL) && !route.points.empty())
+        if (route.leaderRoute && walkable(route, PATHFIND_NORMAL) && !route.points.empty())
         {
             modified_z = route.points.back().z;
             return route.points;
         }
     }
     BotPath const gen = FindBotPath(bot, x, y, tempZ);  // [lead109]
-    Movement::PointsArray result = gen.points;
-    float min_length = gen.length;
     int typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE;
-    if ((gen.type & typeOk) && abs(tempZ - z) < 0.5f)
+    bool const genWalkable = walkable(gen, typeOk);
+    Movement::PointsArray result = genWalkable ? gen.points : Movement::PointsArray{};
+    float min_length = genWalkable ? gen.length : std::numeric_limits<float>::max();
+    if (genWalkable && abs(tempZ - z) < 0.5f)
     {
         modified_z = tempZ;
         return result;
     }
     // Start searching
-    if (gen.type & typeOk)
+    if (genWalkable)
     {
         modified_z = tempZ;
         found = true;
@@ -4918,7 +4945,7 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
             continue;
         }
         BotPath const gen = FindBotPath(bot, x, y, tempZ);  // [lead109]
-        if ((gen.type & typeOk) && gen.length < min_length)
+        if (walkable(gen, typeOk) && gen.length < min_length)
         {
             found = true;
             min_length = gen.length;
@@ -4934,7 +4961,7 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
             continue;
         }
         BotPath const gen = FindBotPath(bot, x, y, tempZ);  // [lead109]
-        if ((gen.type & typeOk) && gen.length < min_length)
+        if (walkable(gen, typeOk) && gen.length < min_length)
         {
             found = true;
             min_length = gen.length;
@@ -4942,8 +4969,10 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
             modified_z = tempZ;
         }
     }
-    if (!found && normal_only)
+    if (!found && (normal_only || refusedSeen))
     {
+        if (refusedSeen)
+            refusedLine();
         modified_z = INVALID_HEIGHT;
         return Movement::PointsArray{};
     }

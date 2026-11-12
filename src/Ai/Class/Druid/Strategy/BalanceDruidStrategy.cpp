@@ -119,12 +119,16 @@ private:
         );
     }
 
+    // [death416] the prerequisite of every Balance spell: before Moonkin Form is learned (talent, level 40) it is
+    // impossible and its own "caster form" prerequisite never ran - the druid stayed in Aquatic / Travel Form and every
+    // cast failed (b456 Salleas L19 under the Zoram Strand: 15 "[stuck258] ... no action that runs", then 39 s in a
+    // fight without a cast, dead). It leaves the animal form instead
     static ActionNode* moonkin_form([[maybe_unused]] PlayerbotAI* botAI)
     {
         return new ActionNode(
             "moonkin form",
             /*P*/ { NextAction("caster form") },
-            /*A*/ {},
+            /*A*/ { NextAction("leave animal form") },
             /*C*/ {}
         );
     }

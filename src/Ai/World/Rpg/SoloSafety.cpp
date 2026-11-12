@@ -2588,6 +2588,17 @@ namespace SoloSafety
         return SafeMargin(bot, nullptr, at, who, none) < 0.0f && SafeMargin(bot, nullptr, stands, here, none) >= 0.0f;
     }
 
+    // [death418] a mob of the judged fight: its engaged target, a mob its judge counted, or one on the bot now. The
+    // judged area held only for the engaged target: b456 Maronic L21 (holy) judged 4 Shadowhide Gnolls at
+    // (-9287,-3183); its target dead, it chased the other three 23-41 yd off the spot into the camp, 10 came, dead
+    static bool OfEngage(Player* bot, SoloBotState const& state, Unit* target)
+    {
+        ObjectGuid const guid = target->GetGUID();
+        return state.engaged && (state.engage.target == guid || target->GetVictim() == bot ||
+                                 std::find(state.engage.counted.begin(), state.engage.counted.end(), guid) !=
+                                     state.engage.counted.end());
+    }
+
     bool AttackerWakes(Player* bot, Unit* target, std::string& why)
     {
         if (!bot || !target)
@@ -2596,7 +2607,7 @@ namespace SoloSafety
         {
             std::lock_guard<std::mutex> guard(lock);
             auto const found = states.find(bot->GetGUID().GetCounter());
-            if (found == states.end() || !found->second.engaged || found->second.engage.target != target->GetGUID())
+            if (found == states.end() || !OfEngage(bot, found->second, target))
                 return false;
             counted = found->second.engage.counted;
         }
@@ -2631,7 +2642,7 @@ namespace SoloSafety
             return false;
         std::lock_guard<std::mutex> guard(lock);
         auto const found = states.find(bot->GetGUID().GetCounter());
-        if (found == states.end() || !found->second.engaged || found->second.engage.target != target->GetGUID())
+        if (found == states.end() || !OfEngage(bot, found->second, target))
             return false;
         at = found->second.engage.fightAt;
         return true;
@@ -2647,7 +2658,7 @@ namespace SoloSafety
         {
             std::lock_guard<std::mutex> guard(lock);
             auto const found = states.find(bot->GetGUID().GetCounter());
-            if (found == states.end() || !found->second.engaged || found->second.engage.target != target->GetGUID())
+            if (found == states.end() || !OfEngage(bot, found->second, target))
                 return false;
             at = found->second.engage.fightAt;
             radius = found->second.engage.safeRadius;
@@ -3059,7 +3070,7 @@ namespace SoloSafety
         if (!bot || !bot->IsAlive() || !bot->IsInCombat() || !Applies(bot))
             return out;
         uint32 const now = getMSTime();
-        std::lock_guard<std::mutex> guard(lock);
+        std::unique_lock<std::mutex> guard(lock);
         auto const found = states.find(bot->GetGUID().GetCounter());
         if (found == states.end() || !found->second.open)
             return out;
@@ -3099,7 +3110,8 @@ namespace SoloSafety
         // its damage: the higher of the formula (against its victim) and this fight's once it has swung (b304 run 1:
         // this fight's first seconds alone - a caster's first bolt still in flight - sent 9 bots running in 10 min)
         float const elapsed = float(getMSTimeDiff(state.firstMs, now)) / IN_MILLISECONDS;
-        float botDps = OwnDamage(bot, bot->GetVictim()).dps;  // [dps1] no fight history
+        DpsEstimate::Result const own = OwnDamage(bot, bot->GetVictim());
+        float botDps = own.dps;  // [dps1] no fight history
         if (state.dealt && elapsed >= SwingSec(bot))
             botDps = std::max(botDps, float(state.dealt) / (elapsed + SwingSec(bot)));
         // [guild80] ... and this fight's alone once it covers two of its swings: b319 Rumanatol L11 dealt 5.0 dps to a
@@ -3135,10 +3147,17 @@ namespace SoloSafety
             out.seconds += foe.hp / out.botDps;
             out.damage += foe.dps * out.seconds;
         }
-        // [deaths3] no measured heal rate (no fight history): the projection is the fight without its kit; the kit's
-        // heals are the pieces that turn it won
-        out.heals = 0.0f;
+        // [death415] its heals as the judge counts them (SurvivalKit::HealPoints on the mana its rotation leaves, each
+        // cast net of its time under the attackers): b456 Jurdogs L17 (holy) engaged a Black Dragon Whelp "433 dmg at
+        // ehp 1326"; this projection read "444 dmg to come at hp 442 (+0 heals)" lost, no heal castable mid-cast
+        // turned it, it ran before two swings and the whelp killed it on the run. Outside the solo lock: HealPoints
+        // takes the kit's lock, and the kit calls into this file under its own
         out.health = float(bot->GetHealth());
+        guard.unlock();
+        float const mana = float(bot->GetPower(POWER_MANA));
+        float const spare = own.manaPerSec > 0.0f ? std::max(0.0f, mana - own.manaPerSec * out.seconds) : mana;
+        out.heals = SurvivalKit::HealPoints(bot, out.seconds, spare, true, false,
+                                            out.damage / std::max(out.seconds, 1.0f));
         out.lost = out.damage >= out.health + out.heals;
         return out;
     }

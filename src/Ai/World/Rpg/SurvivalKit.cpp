@@ -501,6 +501,20 @@ namespace
         return false;
     }
 
+    // [death416] a spell its form forbids (Castable passes NOT_SHAPESHIFT: the form is left first) is cast out of the
+    // form: PlayerbotAI::CastSpell does not leave it. b456 Salleas L19 (balance) fought a Wrathtail Myrmidon under the
+    // Zoram Strand in Aquatic Form: "survival Rejuvenation (heal)" chosen, nothing cast in 39 s, dead
+    void LeaveFormFor(PlayerbotAI* botAI, Player* bot, uint32 spell)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spell);
+        if (!info || bot->GetShapeshiftForm() == FORM_NONE ||
+            info->CheckShapeshift(bot->GetShapeshiftForm()) == SPELL_CAST_OK)
+            return;
+        LOG_INFO("playerbots", "[death416] {} L{} leaves form {} for its survival cast of {}", bot->GetName(),
+                 bot->GetLevel(), uint32(bot->GetShapeshiftForm()), info->SpellName[0]);
+        botAI->RemoveShapeshift();
+    }
+
     bool Castable(PlayerbotAI* botAI, Player* bot, Piece const& piece, Unit* target)
     {
         if (!target)
@@ -1429,7 +1443,10 @@ namespace SurvivalKit
             }
         }
         else
+        {
+            LeaveFormFor(botAI, bot, best->spell);  // [death416]
             cast = botAI->CastSpell(best->spell, bot);
+        }
         if (cast)
             LOG_INFO("playerbots", "[death385] {} L{} run past: heals on the move ({} {}, {:.0f} hp) - {:.0f} dmg to "
                      "come at hp {}", bot->GetName(), bot->GetLevel(), best->item ? "item" : "spell",
@@ -1483,7 +1500,9 @@ namespace SurvivalKit
         BotKit const& kit = KitOf(bot);
         std::vector<Piece> pieces = kit.pieces;
         bool const lost = p.lost;
-        if (!lost && !state.window)
+        // [death415] the fight is won only with the heals the projection counted (p.heals): the kit casts them as due
+        bool const healsNeeded = !lost && p.damage >= p.health;
+        if (!lost && !state.window && !healsNeeded)
             return false;
         ItemPieces(bot, pieces);
 
@@ -1525,8 +1544,33 @@ namespace SurvivalKit
                 return true;
             }
             state.window = false;
-            if (!lost)
+            if (!lost && !healsNeeded)
                 return false;
+        }
+
+        if (!lost)
+        {
+            // its counted heals, one as it falls due (HealDue): a spell first (mana), an item (a potion) else
+            Piece const* due = nullptr;
+            for (Piece const& piece : pieces)
+            {
+                if (piece.kind != Kind::Heal || piece.needsWindow || piece.amount <= 0.0f ||
+                    !HealDue(bot, piece, p) || !Castable(botAI, bot, piece, bot))
+                    continue;
+                if (!due || (due->item && !piece.item) ||
+                    (!due->item == !piece.item &&
+                     piece.amount - p.incoming * piece.castSec > due->amount - p.incoming * due->castSec))
+                    due = &piece;
+            }
+            if (!due)
+                return false;
+            state.choice = *due;
+            state.target = bot->GetGUID();
+            state.why = Acore::StringFormat("[death415] a counted heal due: {:.0f} dmg to come at hp {:.0f} + {:.0f} "
+                                            "heals",
+                                            p.damage, p.health, p.heals);
+            state.active = true;
+            return true;
         }
 
         float const deficit = p.damage - (p.health + p.heals);
@@ -1615,19 +1659,15 @@ namespace SurvivalKit
         }
         float planned = 0.0f;
         Scored const* now = nullptr;
-        // [death408] the mana heals share one pool: each one's gain (Gain) is its casts on the bot's whole mana, so
-        // the plan counts the mana once - b453 Ryarii L19 (resto, 3.8 dps) "Rejuvenation: turns it (1142 of 1885
-        // short)" with Healing Touch / Regrowth each on the same mana, healed 190 s until it was out of mana, dead
-        float manaLeft = float(bot->GetPower(POWER_MANA));
+        // [death415] the heals are in the projection already (p.heals: HealPoints, the mana counted once as [death408]
+        // wanted): a due one is cast, its gain not counted twice
         for (Scored& s : scored)
         {
-            if (s.piece->kind == Kind::Heal && s.piece->cost > 0.0f && !s.piece->item)
+            if (s.piece->kind == Kind::Heal)
             {
-                float const each = std::max(s.piece->amount - p.incoming * s.piece->castSec, 1.0f);
-                float const spent = s.gain / each * s.piece->cost;
-                if (spent > manaLeft)
-                    s.gain *= manaLeft / std::max(spent, 1.0f);
-                manaLeft = std::max(0.0f, manaLeft - spent);
+                if (!now && s.due)
+                    now = &s;
+                continue;
             }
             planned += s.gain;
             if (!now && s.due)
@@ -1797,6 +1837,8 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
         if (piece.kind != Kind::Flee)
         {
             Unit* target = ObjectAccessor::GetUnit(*bot, targetGuid);
+            if (target)
+                LeaveFormFor(botAI, bot, piece.spell);  // [death416]
             if (target && botAI->CastSpell(piece.spell, target))
                 return true;
         }
@@ -2047,6 +2089,7 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                 bot->GetMotionMaster()->MoveIdle();
                 return true;
             }
+    LeaveFormFor(botAI, bot, piece.spell);  // [death416]
     bool const cast = botAI->CastSpell(piece.spell, target);
     if (cast)
     {
