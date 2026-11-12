@@ -24,6 +24,7 @@
 #include "Define.h"
 #include "G3D/Vector3.h"
 #include "G3D/Vector4.h"
+#include "ObjectGuid.h"  // [build153] Verdict / EngageNote::counted ([death392])
 #include "Position.h"
 
 #include <string>
