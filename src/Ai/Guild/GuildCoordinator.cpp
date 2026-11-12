@@ -4411,7 +4411,8 @@ void GuildCoordinator::UpdateProfessions()
                 // makes only what it knows). b453 Dekorhan crafted Inscription 1 -> 25 from the recipes learned with
                 // the skill, then "crafting done here: nothing here still gives skill" - the walk's next recipes
                 // (Feyden Darkin, Darnassus) were never called
-                if (auto const walkList = recipesBySkill_.find(line), walkPlan = skillPlan_.find(line);
+                auto const walkPlan = skillPlan_.find(line);  // [build154] its own type (C3538)
+                if (auto const walkList = recipesBySkill_.find(line);
                     walkList != recipesBySkill_.end() && walkPlan != skillPlan_.end())
                 {
                     std::set<uint32> called;
