@@ -640,8 +640,11 @@ namespace
     // adds irand(1, DieSides) each call, and the casts' caches kept that one roll per entry for the server's life
     // (Redridge Mystic's Lightning Bolt 74-98, Deepmoss Venomspitter's Toxic Spit 38-62). The midrange of a few
     // samples of the core's own value (level scaling and all): the roll is uniform, its midrange centred
-    float MeanCalcValue(SpellInfo const* info, SpellEffectInfo const& effect, Creature* creature)
+    float MeanCalcValue(SpellInfo const* info, SpellEffectInfo const& effect, Creature* creature,
+                        float* variance = nullptr)
     {
+        if (variance)
+            *variance = 0.0f;
         if (effect.DieSides <= 1 && effect.DieSides >= -1)
             return float(effect.CalcValue(creature));
         constexpr int ROLL_SAMPLES = 16;  // a cached look per entry: the midrange's spread is the range over 17
@@ -664,6 +667,11 @@ namespace
             LOG_INFO("playerbots", "[death382] {} L{} spell {} effect {}: priced at {:.1f}, the mean of its roll {}-{}",
                      creature->GetName(), creature->GetLevel(), info->Id, uint32(effect.EffectIndex),
                      (float(low) + float(high)) / 2.0f, low, high);
+        if (variance)  // [death390] of a discrete uniform roll low..high
+        {
+            float const span = float(high - low) + 1.0f;
+            *variance = (span * span - 1.0f) / 12.0f;
+        }
         return (float(low) + float(high)) / 2.0f;
     }
 
@@ -743,6 +751,46 @@ namespace
         std::lock_guard<std::mutex> guard(cacheLock);
         cache[entry] = dps;
         return dps;
+    }
+
+    // [death390] the spread of a creature's SmartAI casts per second (the casts SpellDpsOf counts): each direct school
+    // damage roll's variance (MeanCalcValue's uniform roll), once per its repeat
+    float SpellVarianceOf(Creature* creature)
+    {
+        static std::mutex cacheLock;
+        static std::unordered_map<uint32, float> cache;  // entry -> variance per second
+        uint32 const entry = creature->GetEntry();
+        {
+            std::lock_guard<std::mutex> guard(cacheLock);
+            auto const found = cache.find(entry);
+            if (found != cache.end())
+                return found->second;
+        }
+        float perSec = 0.0f;
+        if (creature->GetAIName() == "SmartAI")
+            for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+            {
+                if (holder.event.type != SMART_EVENT_UPDATE_IC || holder.action.type != SMART_ACTION_CAST)
+                    continue;
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell);
+                if (!info || info->IsPositive())
+                    continue;
+                float const repeatSec =
+                    float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f /
+                    float(IN_MILLISECONDS);
+                if (repeatSec <= 0.0f)
+                    continue;
+                for (SpellEffectInfo const& effect : info->GetEffects())
+                    if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
+                    {
+                        float variance = 0.0f;
+                        MeanCalcValue(info, effect, creature, &variance);
+                        perSec += variance / std::max(repeatSec, CastEverySec(info, creature));
+                    }
+            }
+        std::lock_guard<std::mutex> guard(cacheLock);
+        cache[entry] = perSec;
+        return perSec;
     }
 
     // [deaths] the casts of a creature's SmartAI that reach a bot running from it (SoloSafety::ChaseSpellDamage)
@@ -2060,6 +2108,8 @@ namespace SoloSafety
                 verdict.topLevel = std::max<uint8>(verdict.topLevel, unit->GetLevel());
                 float variance = 0.0f;
                 MeleeDps(unit, bot, &variance);  // [death386] its swings' spread
+                if (Creature* caster = unit->ToCreature())
+                    variance += SpellVarianceOf(caster);  // [death390] its casts' rolls
                 mobs.push_back({unit, float(unit->GetHealth()), dps, variance});
             }
         }
@@ -2122,14 +2172,44 @@ namespace SoloSafety
             float targetDamage = 0.0f;  // the target's part (a taunting pet's to take)
             float variance = 0.0f;      // [death386] of the damage: the mobs' swings over their seconds alive
         };
+        // [death390] the bot's own spread: the kill time of each mob varies with its hits' crit (x2 melee, x1.5 a
+        // spell) and miss shares - a renewal of one hit per swing / global cooldown: the variance of a kill of T
+        // seconds is T x relative variance of a hit x its period, and the mobs alive meanwhile hit on for it
+        float killVariancePerSec = 0.0f;
+        {
+            bool const caster = PlayerbotAI::IsCaster(bot);
+            float crit = 0.0f;
+            if (caster)
+                for (uint8 school = SPELL_SCHOOL_HOLY; school < MAX_SPELL_SCHOOL; ++school)
+                    crit = std::max(crit, bot->GetFloatValue(PLAYER_SPELL_CRIT_PERCENTAGE1 + school));
+            else
+                crit = bot->GetFloatValue(PLAYER_CRIT_PERCENTAGE);
+            int32 const above = std::max<int32>(0, int32(target->GetLevel()) - int32(bot->GetLevel()));
+            // the 3.3.5 hit tables against a mob: spells 4 / 5 / 6 / 17 % at +0..+3; melee 5 % miss and 5 % dodge,
+            // 0.5 % more each per level above
+            float const miss = caster ? (above < 3 ? 4.0f + float(above) : 17.0f + 11.0f * float(above - 3))
+                                      : 10.0f + 1.0f * float(above);
+            float const hitShare = std::clamp(1.0f - miss / 100.0f, 0.01f, 1.0f);
+            float const critShare = std::clamp(crit / 100.0f, 0.0f, 1.0f);
+            float const multiplier = caster ? 1.5f : 2.0f;
+            float const mean = hitShare * (1.0f + critShare * (multiplier - 1.0f));
+            float const second = hitShare * (1.0f + critShare * (multiplier * multiplier - 1.0f));
+            float const period =
+                caster ? 1.5f : std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.5f);
+            killVariancePerSec = std::max(second / (mean * mean) - 1.0f, 0.0f) * period;
+        }
         auto const project = [&](float mana) -> Projection
         {
             float const spellSec = bot->GetMaxPower(POWER_MANA) && manaPerSec > 0.0f
                                        ? mana / manaPerSec
                                        : std::numeric_limits<float>::max();
             Projection out;
+            float aliveDps = 0.0f;
+            for (Mob const& mob : mobs)
+                aliveDps += mob.dps;
             for (Mob const& mob : mobs)
             {
+                float const started = out.seconds;
                 float hp = mob.hp;
                 if (out.seconds < spellSec)
                 {
@@ -2148,6 +2228,9 @@ namespace SoloSafety
                 out.seconds += hp / whiteDps;
                 out.damage += mob.dps * out.seconds;
                 out.variance += mob.variance * out.seconds;
+                // [death390] its kill time's spread, under every mob still alive
+                out.variance += aliveDps * aliveDps * killVariancePerSec * (out.seconds - started);
+                aliveDps -= mob.dps;
                 if (&mob == &mobs.front())
                     out.targetDamage = mob.dps * out.seconds;
             }
