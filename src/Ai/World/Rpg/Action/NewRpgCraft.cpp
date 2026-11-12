@@ -102,19 +102,27 @@ namespace
         return grey + int32(int64(gray - value) * (orange - grey) / (gray - yellow));
     }
 
-    // 2 orange, 1 yellow, 0 green / gray (not crafted for skill)
+    // 3 orange, 2 yellow, 1 green, 0 gray (not crafted for skill)
+    // [craft395] a green recipe still gives skill (Chance: falling to 0 at its gray rank) and is the walk's own step
+    // where no orange / yellow one is known (GuildCoordinator's skill plan prices it by the same chance): b455
+    // Dekorhan at Inscription 42 with 19 Alabaster Pigment and 73 Light Parchment - Scroll of Recall and Armor Vellum
+    // green past their midpoint - "crafting done here: 2 crafts, nothing here still gives skill"
     uint8 Tier(CraftRecipe const& r, uint32 value)
     {
-        if (!r.gray || value >= (r.yellow + r.gray) / 2)
+        if (!r.gray || value >= r.gray)
             return 0;
-        return value <= r.yellow ? 2 : 1;
+        if (value >= (r.yellow + r.gray) / 2)
+            return 1;
+        return value <= r.yellow ? 3 : 2;
     }
 
     // the crafts this recipe takes from `value` until it turns green (or the rank cap)
     uint32 ExpectedCrafts(CraftRecipe const& r, uint32 value, uint32 cap)
     {
-        uint32 const end = std::min(cap, (r.yellow + r.gray) / 2);
         uint32 const gain = std::max<uint32>(1, sWorld->getIntConfig(CONFIG_SKILL_GAIN_CRAFTING));
+        // [craft395] a green one: the crafts of its next point (its chance there)
+        uint32 const mid = (r.yellow + r.gray) / 2;
+        uint32 const end = value >= mid ? std::min({cap, r.gray, value + gain}) : std::min(cap, mid);
         double crafts = 0;
         for (uint32 v = value; v < end; v += gain)
             crafts += 1000.0 / std::max(1, Chance(v, r.gray, r.yellow));
@@ -386,7 +394,8 @@ namespace
         // [ench157] a tool a skill-up recipe of this line lacks (Runed Copper Rod for Enchant Bracer - Minor Health):
         // made once, gray or not - without it that recipe gives no skill at all
         bool const tool = !supply && MissingTool(bot, r, value);
-        uint32 const intermediate = !supply && !tool && !Tier(r, value) ? IntermediateNeed(bot, r, value, cap) : 0;
+        uint32 const intermediate =
+            !supply && !tool && Tier(r, value) <= 1 ? IntermediateNeed(bot, r, value, cap) : 0;  // [craft395] green too
         uint8 const tier =
             supply || tool || intermediate ? std::max<uint8>(Tier(r, value), 1) : Tier(r, value);
         if (!tier || (value >= cap && !supply) || !ToolsOk(bot, r))
@@ -1011,7 +1020,8 @@ namespace NewRpgCraft
                  "[guild70] {} L{} CRAFT reason: {} skill {}/{} ({}), ~{} crafts, product use {}, {:.0f}c per "
                  "point, {}",
                  bot->GetName(), bot->GetLevel(), RecipeName(task.spellId), now.value, now.cap,
-                 now.tier == 2 ? "orange" : "yellow", now.crafts, now.useful, now.perPoint, where);
+                 now.tier == 3 ? "orange" : now.tier == 2 ? "yellow" : "green", now.crafts, now.useful, now.perPoint,
+                 where);
         botAI->rpgInfo.ChangeToDoProfession(task);
         return true;
     }
