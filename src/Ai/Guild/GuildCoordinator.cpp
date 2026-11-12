@@ -1094,7 +1094,7 @@ std::string GuildCoordinator::OwnerLabel(Player* bot, PlayerbotAI* botAI, BotSta
     }
     if (bot->IsInFlight())
         return "TRAVEL flight";
-    NewRpgInfo const& info = botAI->rpgInfo;
+    NewRpgInfo& info = botAI->rpgInfo;  // GetStatus() is not const
     if (bot->GetTransport() || info.trip.phase == NewRpgInfo::TripPhase::Wait ||
         info.trip.phase == NewRpgInfo::TripPhase::Ride || info.trip.phase == NewRpgInfo::TripPhase::Board)
         return "TRAVEL boat / zeppelin / tram";
