@@ -1493,12 +1493,7 @@ float RotationSpendPctPerSec(Player* bot, float fightSec, std::string* why)
 
 float BossRotationRate(Player* bot, float fightSec, std::string* why)
 {
-    {
-        std::lock_guard<std::mutex> lock(manaRateLock);
-        uint64 const key = bot->GetGUID().GetRawValue();
-        if (bossManaRate.count(key) || bossActingManaRate.count(key))
-            return -1.0f;  // [lead610] a boss fight measured: its own rate
-    }
+    // [lead1304] user rule 2026-11-08: its rotation's spend by the formula always (no boss fight's measured rate)
     return RotationSpendPctPerSec(bot, fightSec, why);
 }
 
@@ -1539,27 +1534,11 @@ float FightSecNoted(Player* bot)
 
 float FightSecOf(Player* bot, NextFight const& fight)
 {
+    // [lead1304] user rule 2026-11-08: the plan's estimate as it is, else the formula's per mob; this group's measured
+    // fight lengths and estimate errors (lead362) are no decision's
     if (fight.fightSec > 0.0f)
-    {
-        float scale = 1.0f;  // [lead362] the plan's estimate as this group's fights measured it
-        if (Group* group = bot->GetGroup())
-        {
-            std::lock_guard<std::mutex> lock(manaRateLock);
-            if (auto const found = fightLengthErrors.find(group->GetGUID().GetRawValue());
-                found != fightLengthErrors.end())
-                scale = EstimateScale(found->second, fight.fightSec);
-        }
-        return fight.fightSec * scale;
-    }
+        return fight.fightSec;
     float const mobs = float(std::max<uint32>(fight.mobs, 1));
-    if (Group* group = bot->GetGroup())
-    {
-        std::lock_guard<std::mutex> lock(manaRateLock);
-        if (auto const found = fightLengths.find(group->GetGUID().GetRawValue());
-            found != fightLengths.end() && found->second.instanceId == bot->GetInstanceId() &&
-            found->second.mobs > 0.0f)
-            return found->second.sec / found->second.mobs * mobs;
-    }
     // the game's: a creature of the bot's level (base health of its expansion's table) per mob over the group's damage
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
     float const groupDps = botAI ? botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get() : 0.0f;
@@ -1891,7 +1870,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
 {
     float rate = SpellManaRate(bot);  // [lead264] nothing measured: the bot's spell data
     bool measured = false;
-    char const* source = "measured";
+    char const* source = "its spell data";  // [lead1304]
     // [lead855] a boss line before any boss fight of the member is measured: its rotation cast nonstop (spell data),
     // not the trash's acting rate
     std::string rotationWhy;
@@ -1910,92 +1889,14 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // measured on a boss the caster came to short of mana is the fight it could not cast (lead563's words): its
     // potion, gem and drinks went first and its rotation waited. On a boss a damage caster casts its rotation the
     // whole fight (wowsims): its line's rate is never below the rotation's nonstop spend
-    std::string nonstopWhy;
-    float const nonstop = boss && rotation < 0.0f && !PlayerbotAI::IsHeal(bot)
-                              ? RotationSpendPctPerSec(bot, fightSec, &nonstopWhy)
-                              : -1.0f;
-    bool bossMeasured = false;  // [lead855] the boss line reads a boss fight's measured rate
+    // [lead1304] user rule 2026-11-08: the rate is the formula's - its rotation cast nonstop (a damage caster's boss
+    // line always; a trash line when above its spell data's), else its spell data (SpellManaRate). The rates measured
+    // over this run's fights (trash, bosses, acting seconds, peaks) are no decision's
+    if (boss ? !PlayerbotAI::IsHeal(bot) && rotation >= 0.0f : rotation > rate)
     {
-        std::lock_guard<std::mutex> lock(manaRateLock);
-        uint64 const key = bot->GetGUID().GetRawValue();
-        if (auto const found = measuredManaRate.find(key); found != measuredManaRate.end())
-        {
-            rate = found->second;
-            measured = true;
-        }
-        // [lead232] b187 rfc-h: the arcane mage's boss gate "mana 26 % < 26 % = 0.23 %/s (measured) x 105 s" - the
-        // trash rate (few casts per pull) while on a boss it runs its whole rotation (Arcane Blast 14/min vs the sim's
-        // 27). A boss fight reads the rate measured on boss fights, else its highest full-length fight's rate
-        if (boss)
-        {
-            if (auto const found = bossManaRate.find(key); found != bossManaRate.end())
-            {
-                rate = found->second;
-                measured = true;
-                source = "measured on bosses";
-            }
-            else if (auto const peak = peakManaRate.find(key); peak != peakManaRate.end() && peak->second > rate)
-            {
-                rate = peak->second;
-                measured = true;
-                source = "its full fights";
-            }
-            // [lead520] b211 rfc-h 5H: the fire mage came to Oggleflint (the first boss) on "0.45 %/s (its full
-            // fights) x 79 s" and burnt ~1.5 %/s there, dry before the end - its trash fights' seconds were held by
-            // the threat headroom, moved and waited for the first hit. On a boss it runs its rotation the whole fight
-            // (wowsims): before a boss is measured its rate per second it acted, when higher. Not a healer's: it
-            // casts as the fight's damage asks (its heal term below), not a rotation
-            // [lead563] b214 rfc-h 5H: Oggleflint's line read the fire mage's acting rate (1.18 %/s), it ran dry there
-            // (Frostbolt, the wand: 1102 of the sim's 1581 Fireball DPS) and that starved fight became its rate
-            // "measured on bosses" (0.70 %/s): Taragaman's line was 17 % for 102 s, the trash Evocation verdict saw
-            // no boss short of mana from a full pool and spent it at 514 s (back at 754 s, the fight ended at 753 s),
-            // the mage came at 17 % and ran dry again (Taragaman 61 % of wowsims). A boss rate measured while the
-            // member could not cast is below what its rotation spends: the acting rate holds when higher
-            // [lead610] b217 rfc-h 5H: Taragaman's line read "0.78 %/s (its acting seconds) x 84 s" - every fight's
-            // acting rate, the trash pulls in it - while the fire mage's boss rotation burnt ~1.3 %/s there (64 -> 1 %
-            // in ~50 s, dry ~15 s before the kill). Once a boss fight is measured, its acting rate on bosses is the
-            // boss rotation's (the more specific fact); before that every fight's acting rate
-            if (!PlayerbotAI::IsHeal(bot))
-            {
-                if (auto const acting = actingManaRate.find(key);
-                    acting != actingManaRate.end() && acting->second > rate)
-                {
-                    rate = acting->second;
-                    measured = true;
-                    source = "its acting seconds";
-                }
-                if (auto const bossActing = bossActingManaRate.find(key);
-                    bossActing != bossActingManaRate.end() && bossActing->second > 0.0f)
-                {
-                    auto const bossRate = bossManaRate.find(key);
-                    rate = std::max(bossActing->second, bossRate != bossManaRate.end() ? bossRate->second : 0.0f);
-                    measured = true;
-                    source = "its acting seconds on bosses";
-                }
-                bossMeasured = bossManaRate.count(key) || bossActingManaRate.count(key);
-            }
-            // [lead855] b223 rfc-h: before a boss was measured the line read the trash's acting rate (5D arcane 1.44
-            // %/s, 5C fire 1.02 %/s; Oggleflint took ~2.6 %/s of the arcane mage): its rotation cast nonstop
-            if (rotation >= 0.0f)
-            {
-                rate = rotation;
-                measured = true;
-                source = "its rotation nonstop, no boss measured";
-            }
-            else if (nonstop > rate)  // [lead1162] a boss rate below its rotation's: a starved fight
-            {
-                rate = nonstop;
-                measured = true;
-                source = "its rotation nonstop (above its rate measured on bosses) [lead1162]";
-                rotationWhy = nonstopWhy;
-            }
-        }
-        else if (rotation > rate)  // [lead990] a trash line: the rotation's nonstop rate when higher
-        {
-            rate = rotation;
-            measured = true;
-            source = "its rotation nonstop";
-        }
+        rate = rotation;
+        measured = true;
+        source = "its rotation nonstop";
     }
     float need = rate * fightSec;
     // [lead393] b201 rfc-h 5C: the disc priest drank to 100 % three times (768.9 s 62 -> 100 % in 19 s, 779-819 s
@@ -2004,22 +1905,9 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // the plan costs, while the blood DK healed itself and the absorbs took the rest. Once a healer's net use per
     // costed tank health is measured in this run's fights, the term reads it (the same unit, the plan's cost)
     float perTankHealth = PlayerbotAI::IsHeal(bot) ? HealerPctPerTankHealth(bot) : 0.0f;  // [lead258]
-    bool perCostMeasured = false;
-    // [lead1294] b251 rfc-h 5E-5 t=1098: the gate passed the disc priest into Bazzalan at 32 % on a 6 % line - "heals
-    // 9.4 % per tank health (measured) x 1.29 cost". The 1.29 was the boss's real damage on the tank (it took 1.43,
-    // the priest healed 1.28), the 9.4 % its use per tank health of the trash plans' cost (20.4 planned against 7.9
-    // healed over the run): its measured mana per tank health it healed was 32 % (lead258, 204041 healed for 32888
-    // mana), the fight took 27 % + 8 % returned and asked 42 %. A cost in tank damage reads the mana per healed tank
-    // health
-    if (PlayerbotAI::IsHeal(bot) && !damageCost)
-    {
-        std::lock_guard<std::mutex> lock(manaRateLock);
-        if (auto const found = healerPctPerCost.find(bot->GetGUID().GetRawValue()); found != healerPctPerCost.end())
-        {
-            perTankHealth = found->second;
-            perCostMeasured = true;
-        }
-    }
+    // [lead1304] the healer's mana per tank health is its heal's spell data (HealerPctPerTankHealth); its use per
+    // costed tank health measured in this run's fights (lead393 / lead1294) is no decision's
+    bool const perCostMeasured = false;
     // [lead1431] a healer's mana per tank health healed is its heals' alone (lead258 notes its upkeep apart): the
     // heal term adds its measured upkeep over the fight's seconds. The trash term measured per costed tank health
     // (lead393) already holds it
@@ -2041,20 +1929,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     float reserve = rate * oneMobSec;
     if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
         reserve += perTankHealth * cost * oneMobSec / fightSec + upkeep * oneMobSec;
-    float uncertainSec = -1.0f;
-    if (Group* group = bot->GetGroup())
-    {
-        std::lock_guard<std::mutex> lock(manaRateLock);
-        if (auto const found = fightLengthErrors.find(group->GetGUID().GetRawValue());
-            found != fightLengthErrors.end() && found->second.fights)
-            uncertainSec = found->second.sum / float(found->second.fights);
-    }
-    if (uncertainSec >= 0.0f && measured)
-    {
-        reserve = rate * uncertainSec;
-        if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
-            reserve += perTankHealth * cost * uncertainSec / fightSec + upkeep * uncertainSec;
-    }
+    // [lead1304] the measured fight-length error (lead88) is fight history: the reserve stays one more mob's fight
     // [lead1400] b261 rfc-h 5B: the gate passed the holy paladin into Taragaman at 2 % (5B-2, lowest 2 %) and Jergosh
     // at 3 % (5B-2 / 5B-10, lowest 3-4 %) on 0 % lines: the line's bottom was 0 mana, where the game refuses every
     // heal (Spell::CheckPower: a cast needs its whole cost) until a return comes. A healer's boss line ends with the
@@ -2304,15 +2179,8 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // [lead367] b198 rfc-h 5A: the tank's rate came from its opening fight alone, no Divine Plea up yet (first cast
     // in fight 2), and the credit was skipped as soon as any rate was measured. The credit is skipped only when the
     // measured fights had Plea up
-    bool pleaInRate = false;
-    if (measured)
-    {
-        std::lock_guard<std::mutex> lock(manaRateLock);
-        auto const found = pleaMeasured.find(bot->GetGUID().GetRawValue());
-        pleaInRate = found != pleaMeasured.end() && found->second;
-    }
-    if (!pleaInRate)
-        credit(SPELL_DIVINE_PLEA, ManaToolPct(bot, bot, SPELL_DIVINE_PLEA), "Divine Plea");
+    // [lead1304] the rate is the formula's, no measured fight's: Divine Plea's mana is never in it
+    credit(SPELL_DIVINE_PLEA, ManaToolPct(bot, bot, SPELL_DIVINE_PLEA), "Divine Plea");
     // [lead361] b196 rfc-h 5E: the BM hunter sat to drink before trash ("Rthunab rests below its line (mana 23 %,
     // need 46 %)") - a WotLK hunter regenerates in the fight with Aspect of the Viper (wowsims: Viper below 10 %,
     // Dragonhawk again above 30 %). Viper's mana counts in the fight when a Viper second costs the group less than
@@ -2493,7 +2361,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // nothing, the potion and the gem come where the pool has room), not only a raise. The other lines (a trash
     // fight, a healer, a member whose boss line still reads a trash rate) keep the raise-only rule. A cooldown back
     // within the fight (lead634: Shadowfiend, Innervate - spread over the fight on the timeline) still floors it
-    bool const honestRate = boss && !PlayerbotAI::IsHeal(bot) && (rotation >= 0.0f || bossMeasured);
+    bool const honestRate = boss && !PlayerbotAI::IsHeal(bot) && rotation >= 0.0f;
     std::string timeline;
     if (!bursts.empty() && fightSec > 0.0f)
     {
