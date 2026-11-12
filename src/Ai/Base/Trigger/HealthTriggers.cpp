@@ -611,6 +611,107 @@ void NoteHealing(Player* healer, float healed, float manaSpent, float fightSec, 
         entry.bestHps = std::max(entry.bestHps, healed / fightSec);
 }
 
+namespace
+{
+// [lead1306] the spells a healer's rotation keeps up on the main tank (first ranks; the strategies' "<spell> on main
+// tank" triggers): Discipline's Power Word: Shield, Holy's Renew, a paladin's Sacred Shield, a druid's Lifebloom and
+// Rejuvenation. Shaman Earth Shield (charges spent per hit taken) is not priced yet
+constexpr uint32 SPELL_POWER_WORD_SHIELD_FIRST = 17;
+constexpr uint32 SPELL_RENEW_FIRST = 139;
+constexpr uint32 SPELL_SACRED_SHIELD_FIRST = 53601;
+constexpr uint32 SPELL_LIFEBLOOM_FIRST = 33763;
+constexpr uint32 SPELL_REJUVENATION_FIRST = 774;
+constexpr uint32 SPELL_WEAKENED_SOUL_DEBUFF = 6788;  // a shield's target takes no new one while it lasts
+constexpr uint8 TAB_DISCIPLINE = 0;
+constexpr uint8 TAB_HOLY_PRIEST = 1;
+
+std::vector<uint32> KeptUpFirstRanks(Player* healer)
+{
+    switch (healer->getClass())
+    {
+        case CLASS_PRIEST:
+        {
+            uint8 const tab = AiFactory::GetPlayerSpecTab(healer);
+            if (tab == TAB_DISCIPLINE)
+                return {SPELL_POWER_WORD_SHIELD_FIRST};
+            if (tab == TAB_HOLY_PRIEST)
+                return {SPELL_RENEW_FIRST};
+            return {};
+        }
+        case CLASS_PALADIN:
+            return {SPELL_SACRED_SHIELD_FIRST};
+        case CLASS_DRUID:
+            return {SPELL_LIFEBLOOM_FIRST, SPELL_REJUVENATION_FIRST};
+        default:
+            return {};
+    }
+}
+
+// [lead1306] the mana per second the kept-up spells cost beyond the healing they do: each one's highest known rank,
+// its cost once per its period (its duration, its cooldown, a shield's Weakened Soul: the longest), less the mana the
+// main heal would spend on the health a heal over time restores (`mainHealPerMana`; a shield heals nothing)
+float KeptUpManaPerSec(Player* healer, Unit* target, float mainHealPerMana, std::string* why)
+{
+    std::vector<uint32> const firsts = KeptUpFirstRanks(healer);
+    if (firsts.empty())
+        return 0.0f;
+    std::unordered_map<uint32, SpellInfo const*> best;  // first rank -> its highest known rank
+    for (auto const& [spellId, known] : healer->GetSpellMap())
+    {
+        if (!known || known->State == PLAYERSPELL_REMOVED || !known->Active)
+            continue;
+        uint32 const first = sSpellMgr->GetFirstSpellInChain(spellId);
+        if (std::find(firsts.begin(), firsts.end(), first) == firsts.end())
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        if (!info || info->PowerType != POWER_MANA)
+            continue;
+        SpellInfo const*& kept = best[first];
+        if (!kept || info->GetRank() > kept->GetRank())
+            kept = info;
+    }
+    float perSec = 0.0f;
+    for (auto const& [first, info] : best)
+    {
+        int32 const cost = info->CalcPowerCost(healer, info->GetSchoolMask());
+        if (cost <= 0)
+            continue;
+        float periodMs = float(std::max({info->GetMaxDuration(), int32(info->RecoveryTime),
+                                         int32(info->CategoryRecoveryTime), int32(info->CalcCastTime(healer))}));
+        if (first == SPELL_POWER_WORD_SHIELD_FIRST)
+            if (SpellInfo const* weakened = sSpellMgr->GetSpellInfo(SPELL_WEAKENED_SOUL_DEBUFF))
+                periodMs = std::max(periodMs, float(weakened->GetMaxDuration()));
+        if (periodMs <= 0.0f)
+            continue;
+        float healed = 0.0f;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+        {
+            int32 const base = effect.CalcValue(healer);
+            if (base <= 0)
+                continue;
+            if (effect.Effect == SPELL_EFFECT_HEAL)
+                healed += float(target->SpellHealingBonusTaken(
+                    healer, info, healer->SpellHealingBonusDone(target, info, uint32(base), HEAL, effect.EffectIndex),
+                    HEAL));
+            else if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL &&
+                     effect.Amplitude)
+                healed += float(info->GetMaxDuration()) / float(effect.Amplitude) *
+                          float(target->SpellHealingBonusTaken(
+                              healer, info,
+                              healer->SpellHealingBonusDone(target, info, uint32(base), DOT, effect.EffectIndex), DOT));
+        }
+        float const saved = mainHealPerMana > 0.0f ? healed / mainHealPerMana : 0.0f;
+        float const net = std::max(float(cost) - saved, 0.0f);
+        perSec += net * float(IN_MILLISECONDS) / periodMs;
+        if (why)
+            *why += Acore::StringFormat("{}{} {} mana / {:.0f} s{}", why->empty() ? "" : ", ",
+                                        info->SpellName[LOCALE_enUS], cost, periodMs / float(IN_MILLISECONDS),
+                                        saved > 0.0f ? Acore::StringFormat(" - {:.0f} it heals", saved) : "");
+    }
+    return perSec;
+}
+}  // namespace
+
 HealerFacts HealerThroughput(Player* healer, Unit* target)
 {
     HealerFacts facts;
@@ -688,6 +789,12 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
                 game.spell = info->SpellName[0] ? info->SpellName[0] : "?";
                 game.castPct = facts.maxMana > 0.0f && cost > 0 ? 100.0f * float(cost) / facts.maxMana : 0.0f;
             }
+        }
+        // [lead1306] the upkeep its rotation's kept-up spells cost (the formula; the measured one is logged only)
+        if (game.maxMana > 0.0f)
+        {
+            float const mainHpm = game.mainHealPerMana > 0.0f ? game.mainHealPerMana : game.healPerMana;
+            game.upkeepPctPerSec = 100.0f * KeptUpManaPerSec(healer, target, mainHpm, &game.upkeepWhy) / game.maxMana;
         }
         cached = {healer->GetSpellMap().size(), power, healer->GetMaxPower(POWER_MANA), game};
     }

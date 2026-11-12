@@ -849,9 +849,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                     support.healGapSec =
                         support.healGapSec > 0.0f ? std::min(support.healGapSec, facts.gapSec) : facts.gapSec;
                 support.healerFacts += Acore::StringFormat(
-                    "{}{} {} {:.0f}/s every {:.1f} s, {:.2f} hp per mana (spell data; measured {:.2f}) x {:.0f} mana",
+                    "{}{} {} {:.0f}/s every {:.1f} s, {:.2f} hp per mana (spell data; measured {:.2f}) x {:.0f} mana, "
+                    "upkeep {:.3f} %/s ({}; measured {:.3f})",
                     support.healerFacts.empty() ? "" : "; ", member->GetName(), facts.spell, facts.hps, facts.gapSec,
-                    facts.healPerMana, facts.measuredHealPerMana, facts.maxMana);
+                    facts.healPerMana, facts.measuredHealPerMana, facts.maxMana, facts.upkeepPctPerSec,
+                    facts.upkeepWhy.empty() ? "none kept up" : facts.upkeepWhy, facts.measuredUpkeepPctPerSec);
             }
         }
         support.factsKnown = support.healers > 0;  // [lead1566] [lead1300]
