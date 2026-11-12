@@ -2340,7 +2340,16 @@ void GuildCoordinator::UpdateOrders()
                 !TransferHolds(h.itemGuidLow))  // [guild81] trade / mail moves it; [tasks] its own plan stays
                 bankHeld.push_back(h);
         // [guild16] no bank order while the guild or its bank tab does not exist: the bot just holds the items
-        if (!bankHeld.empty() && GuildBankRun::BankState(p, true).empty())
+        std::string const bankWhy = bankHeld.empty() ? std::string() : GuildBankRun::BankState(p, true);
+        if (bankWhy != st.bankBlocked)
+        {
+            // [bank408] e.g. a full bank: no vault visit, the bot quests on; full bags release the held items
+            if (!bankWhy.empty())
+                LOG_INFO("playerbots", "[bank408] {}: no BANK_DEPOSIT for {} items ({}), quests on", Who(row.low),
+                         bankHeld.size(), bankWhy);
+            st.bankBlocked = bankWhy;
+        }
+        if (!bankHeld.empty() && bankWhy.empty())
         {
             GuildOrder o;
             o.type = GuildOrderType::BANK_DEPOSIT;
@@ -7544,6 +7553,18 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                              order.type == GuildOrderType::BANK_DEPOSIT ? "BANK_DEPOSIT" : "BANK_WITHDRAW");
                     continue;
                 }
+                // [bank408] the bank changed since the plan (filled up, rights gone): the order is dropped until the
+                // next plan instead of a vault visit that moves nothing
+                if (std::string const why =
+                        GuildBankRun::BankState(bot, order.type == GuildOrderType::BANK_DEPOSIT);
+                    !why.empty())
+                {
+                    LOG_INFO("playerbots", "[bank408] {}: {} dropped ({}), quests on", bot->GetName(),
+                             OrderName(order.type), why);
+                    order.executable = false;
+                    order.status = why;
+                    continue;
+                }
                 WorldPosition pos;
                 float dist = 0;
                 // [guild14] a solo bot walks to the vault only on a safe walk (b303 Laaral L10 died twice on its bank
@@ -7965,10 +7986,22 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
                 moving.push_back(h);
             }
         uint32 const moved = GuildBankRun::Deposit(bot, guids);
+        // [bank408] a full bank keeps the order off (BankState); any other refusal releases the item, so the next
+        // plan sends the bot to no vault visit that moves nothing again
+        bool const bankUsable = GuildBankRun::BankState(bot, true).empty();
         for (HeldItem const& h : moving)
         {
             if (bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(h.itemGuidLow)))
-                continue;  // still in the bags: not deposited
+            {
+                if (!bankUsable)
+                    continue;  // still in the bags: not deposited, waits for room in the bank
+                LOG_INFO("playerbots", "[bank408] {}: the vault refused {} ({}), released from the bank order",
+                         bot->GetName(), ItemName(h.itemId), h.purpose);
+                st.held.erase(std::remove_if(st.held.begin(), st.held.end(),
+                                             [&](HeldItem const& x) { return x.itemGuidLow == h.itemGuidLow; }),
+                              st.held.end());
+                continue;
+            }
             if (h.forLow)
                 withdraw_[h.forLow].emplace_back(h.itemId, "from " + Who(low) + ": " + h.purpose);
             st.held.erase(std::remove_if(st.held.begin(), st.held.end(),

@@ -555,6 +555,7 @@ private:
         WorldPosition runPos{};
         bool runApproached{false};
         std::string vaultFail;
+        std::string bankBlocked;  // [bank408] why the bank takes no deposit now (logged on change)
         std::vector<HeldItem> held;
         std::vector<uint32> sell;        // item guid lows to sell at the next vendor
         std::vector<uint32> disenchant;  // item guid lows to disenchant itself

@@ -57,6 +57,21 @@ namespace
                 return tab;
         return -1;
     }
+
+    // [bank408] the first tab with deposit rights and an empty slot: a full tab takes nothing (b460: the only tab held
+    // 98/98 and members stood at the vault for 1400 s, "could not deposit" on every visit)
+    int32 DepositTab(Guild* guild, Player* bot)
+    {
+        for (uint8 tab = 0; tab < guild->GetPurchasedTabsSize(); ++tab)
+        {
+            if (!guild->MemberHasTabRights(bot->GetGUID(), tab, GUILD_BANK_RIGHT_DEPOSIT_ITEM))
+                continue;
+            for (uint8 slot = 0; slot < GUILD_BANK_MAX_SLOTS; ++slot)
+                if (!guild->GetBankItem(tab, slot))
+                    return tab;
+        }
+        return -1;
+    }
 }
 
 namespace GuildBankRun
@@ -96,7 +111,7 @@ namespace GuildBankRun
         if (TabWithRights(guild, bot, deposit ? GUILD_BANK_RIGHT_DEPOSIT_ITEM : GUILD_BANK_RIGHT_VIEW_TAB) < 0)
             return "no rights to the bank tab";
         if (deposit)
-            return "";
+            return DepositTab(guild, bot) < 0 ? "the guild bank is full" : "";  // [bank408]
         if (!bot->GetFreeInventorySpace())
             return "no free bag slot for a withdrawal";
         std::lock_guard<std::mutex> guard(refusedLock);
@@ -148,22 +163,26 @@ namespace GuildBankRun
         Guild* guild = BotGuild(bot);
         if (!guild)
             return 0;
-        int32 const tab = TabWithRights(guild, bot, GUILD_BANK_RIGHT_DEPOSIT_ITEM);
-        if (tab < 0)
-            return 0;
         uint32 moved = 0;
         for (uint32 low : itemGuidLows)
         {
             Item* item = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(low));
             if (!item || item->IsSoulBound())
                 continue;
+            int32 const tab = DepositTab(guild, bot);  // [bank408] each item into a tab that still has room
+            if (tab < 0)
+            {
+                LOG_INFO("playerbots", "[bank408] {} could not deposit item {}: the guild bank is full",
+                         bot->GetName(), item->GetEntry());
+                continue;
+            }
             uint32 const entry = item->GetEntry();
             uint32 const before = bot->GetItemCount(entry, false);
             guild->SwapItemsWithInventory(bot, false, uint8(tab), NULL_SLOT, item->GetBagSlot(), item->GetSlot(), 0);
             bool const ok = bot->GetItemCount(entry, false) < before;
             moved += ok ? 1 : 0;
             LOG_INFO("playerbots", "[bank405] {} {} item {} into tab {}", bot->GetName(),
-                     ok ? "deposits" : "could not deposit (tab full?)", entry, tab + 1);
+                     ok ? "deposits" : "could not deposit", entry, tab + 1);
         }
         return moved;
     }
