@@ -4624,12 +4624,16 @@ float NewRpgCoopMultiplier::GetValue(Action* action)
     if (!_member)
         return 1.0f;
     // the member's own plan and its own pulls wait while it goes with its leader
+    // [lag366] ... but not its flight: a flight is how it goes with its leader ([fly109] its party's flight, or
+    // [fly97] its own walk to its leader taken by air) and the co-op tick holds the follow while it flies. b449
+    // Rollothan L14 (healer of Januel's help party): its walk to Januel went by air ("flies Sentinel Hill ->
+    // Stormwind"), the flight action was held here and the follow there - TRAVEL_FLIGHT 230 yd from the flight
+    // master for 17 min, Januel in GROUP_WAIT 127 times
     static std::unordered_set<std::string> const ownPlan = {"new rpg go grind",
                                                             "new rpg go camp",
                                                             "new rpg wander random",
                                                             "new rpg move npcs",
                                                             "new rpg do quest",
-                                                            "new rpg travel flight",
                                                             "new rpg outdoor pvp",
                                                             "new rpg do gather",
                                                             "new rpg do profession",
