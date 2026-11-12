@@ -209,6 +209,10 @@ public:
     // not fight, ends in a dead end (`deadEnd`) or is longer than the search completes: its stages over the travel
     // nodes, another way round, a refused patrol's window, else the walk given up (RefusedWalk). true: handled
     bool WalkAround(WorldPosition const& dest, BotPath const& path, float disToDest, bool deadEnd);
+    // [nav181] a solo bot's far walk over the walk graph (WalkGraph): the fine route search only to the plan's first
+    // node beyond two sights (in a loaded grid), kept as the far route its legs walk; a failed stage bans that node
+    // ([nav182]). false: no graph walk (no graph yet, one region, no plan) - the whole walk is searched as before
+    bool GraphStage(WorldPosition const& dest, float disToDest);
     // [deaths] the walk to `dest` is refused (`why`): its quest is postponed (the co-op seek asks for a party), its
     // gather node skipped, its state ended; true: the tick is used
     void GiveUpWalkTargets(WorldPosition const& dest, std::string const& why);  // [grind25]
