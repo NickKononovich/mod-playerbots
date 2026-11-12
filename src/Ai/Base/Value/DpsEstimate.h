@@ -52,6 +52,10 @@ struct Result
 Result Estimate(Player* bot, Unit* target, BuffContext ctx, float fightSec = 0.0f);
 float EstimateDps(Player* bot, Unit* target, BuffContext ctx, float fightSec = 0.0f);
 float EstimateTps(Player* bot, Unit* target, BuffContext ctx);
+// [lead1309] the threat it builds on `target` within the next `horizonSec`: its rotation's tps, a rage user's spells
+// held to the rage it has now plus what its swings landing within the horizon bring (a warrior / bear opens at 0
+// rage: b191 rfc-h warrior tanks ~740 tps in a pull's first 2 s against ~1690 later). Mana and rune users: the tps
+float ThreatWithin(Player* bot, Unit* target, BuffContext ctx, float horizonSec);
 
 // [rot603] A cooldown nuke cast only where it pays (Fire Blast, Mind Blast while levelling): one cast's damage on
 // `target` (SpellPayoff::Read) at least the filler's in the cast's execute time (SpellPayoff::FillerDps). The bot's

@@ -443,6 +443,12 @@ namespace Leader::Dungeon
             return who && mob ? DpsEstimate::EstimateTps(who, mob, DpsEstimate::ContextOf(who)) : 0.0f;
         }
 
+        // [lead1309] the tank's threat on `mob` within `horizonSec` (DpsEstimate::ThreatWithin: its rage now)
+        float TankThreatWithin(Player* tank, Unit* mob, float horizonSec)
+        {
+            return tank && mob ? DpsEstimate::ThreatWithin(tank, mob, DpsEstimate::ContextOf(tank), horizonSec) : 0.0f;
+        }
+
         // [lead1308] the game's healing threat: half the healing (ThreatManager), times the healer's threat auras
         // for its heal school, spread over every enemy it is in combat with (`mobs`)
         constexpr float HEAL_THREAT_SHARE = 0.5f;
@@ -6149,7 +6155,9 @@ namespace Leader::Dungeon
                     continue;  // not yet: it would land before the tank's hit
                 }
                 float const mine = SpellCastThreat(bot, pullMob, info);
-                float const tankAt = tankOpen * (HEADROOM_GCD_SEC + std::max(0.0f, lands - eta));
+                // [lead1309] the tank's threat from its hit to then, held to its rage (TankThreatWithin)
+                float const tankAt =
+                    TankThreatWithin(tank, pullMob, HEADROOM_GCD_SEC + std::max(0.0f, lands - eta));
                 if (mine >= THREAT_OVERTAKE_RANGED * tankAt)
                 {
                     pre.skip = "its threat over the tank's at the landing";
@@ -9921,8 +9929,13 @@ namespace Leader::Dungeon
                 auto const tankOpensOn = [&](Unit* mob)
                 { return tank->GetVictim() == mob || (mob && tank->GetTarget() == mob->GetGUID()); };
                 // [lead1308] the tank's threat grows by its rotation's rate on the mob it attacks or has selected;
-                // on another one by nothing the formula knows (its area threat is not counted: the safe side)
-                auto const tankRateOn = [&](Unit* mob) { return tankOpensOn(mob) ? FormulaTps(tank, mob) : 0.0f; };
+                // on another one by nothing the formula knows (its area threat is not counted: the safe side).
+                // [lead1309] over a horizon, held to the rage it has and its swings bring (TankThreatWithin); a rate
+                // is that threat over a GCD, never above the steady rotation's
+                auto const tankThreatOn = [&](Unit* mob, float horizonSec)
+                { return tankOpensOn(mob) ? TankThreatWithin(tank, mob, horizonSec) : 0.0f; };
+                auto const tankRateOn = [&](Unit* mob)
+                { return tankThreatOn(mob, HEADROOM_GCD_SEC) / HEADROOM_GCD_SEC; };
                 struct Projection
                 {
                     float mine = 0.0f;
@@ -9981,7 +9994,7 @@ namespace Leader::Dungeon
                     // was read at its opening single-target rate on a mob it did not attack. The tank's opening rate
                     // projects onto the mob it attacks; on another its threat grows only by what it measured there
                     p.tankNext = held.threat > 0.0f
-                                     ? held.threat + tankRateOn(mob) * horizon
+                                     ? held.threat + tankThreatOn(mob, horizon)
                                      : 0.0f;
                     p.tankNext += p.redirected;
                     p.share = mob->GetVictim() != tank       ? 1.0f
@@ -10433,7 +10446,7 @@ namespace Leader::Dungeon
                         }
                         float const tankNext =
                             held.threat > 0.0f
-                                ? held.threat + tankRateOn(mob) * horizon
+                                ? held.threat + tankThreatOn(mob, horizon)
                                 : 0.0f;
                         float const share = mob->GetVictim() != tank       ? 1.0f
                                             : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE

@@ -1568,6 +1568,12 @@ struct Profile
     std::vector<std::pair<uint32, float>> parts;  // [dpscal] damage per second by rotation spell ([dpsparts] log)
     float replacedWhite = 0.0f;  // [rot611] the swings a next-swing strike replaces (in `white`, logged in its part)
     float whiteHitsPerSec = 0.0f;  // [dps238] its landed melee swings a second ([dpsparts] log only)
+    // [lead1309] the threat's rage terms (ThreatWithin): its white threat per second, the rage its swings bring and
+    // its rotation spends (core units per second), each swing's rage
+    float whiteTps = 0.0f;
+    float rageSpend = 0.0f;
+    float ragePerSwing = 0.0f;
+    float offRagePerSwing = 0.0f;
 };
 
 // [rot606] PetAI::_canMeleeAttack: an imp or a water elemental with the mana for its bolt chases to the bolt's range
@@ -1867,6 +1873,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     // budgets per second (core power units)
     float time = 1.0f;
     float rage = caster || hunter ? 0.0f : mh.rage * mh.perSec + oh.rage * oh.perSec;
+    float const rageIncome = rage;  // [lead1309]
     float energy =
         (ENERGY_BASE_REGEN + bot->GetFloatValue(uint16(UNIT_FIELD_POWER_REGEN_FLAT_MODIFIER) + uint16(POWER_ENERGY))) *
         sWorld->getRate(RATE_POWER_ENERGY);
@@ -2264,6 +2271,10 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     p.burst = damage + p.pet;
     p.white += p.pet;
     p.tps = threat;
+    p.whiteTps = whiteTps;  // [lead1309]
+    p.rageSpend = std::max(rageIncome - rage, 0.0f);
+    p.ragePerSwing = mh.rage;
+    p.offRagePerSwing = oh.rage;
     p.manaSpend = mana;
     // Player::Regenerate (POWER_MANA) while casting: the interrupted regeneration, boosted below level 15
     float rate = sWorld->getRate(RATE_POWER_MANA);
@@ -2453,6 +2464,32 @@ float EstimateDps(Player* bot, Unit* target, BuffContext ctx, float fightSec)
 }
 
 float EstimateTps(Player* bot, Unit* target, BuffContext ctx) { return Estimate(bot, target, ctx).tps; }
+
+float ThreatWithin(Player* bot, Unit* target, BuffContext ctx, float horizonSec)
+{
+    if (!bot || horizonSec <= 0.0f || !bot->IsInWorld() || (target && !target->IsInWorld()))
+        return 0.0f;
+    Profile const p = ProfileOf(bot, target, ctx);
+    float const steady = p.tps * horizonSec;
+    if (!bot->HasActivePowerType(POWER_RAGE) || p.rageSpend <= 0.0f)
+        return steady;  // mana (a paladin's pool), runes (full at a pull): its rotation from the first GCD
+    // the rage it can spend within the horizon: its rage now and what its swings landing within it bring (the next
+    // one at its attack timer, then one per attack time); rage from damage taken is left out (the safe side)
+    float const horizonMs = horizonSec * float(IN_MILLISECONDS);
+    auto const swingsWithin = [bot, horizonMs](WeaponAttackType att) -> float
+    {
+        uint32 const attackMs = bot->GetAttackTime(att);
+        if (!attackMs || (att == OFF_ATTACK && !bot->HasOffhandWeaponForAttack()))
+            return 0.0f;
+        float const nextMs = bot->isAttackReady(att) ? 0.0f : float(bot->getAttackTimer(att));
+        return horizonMs < nextMs ? 0.0f : 1.0f + std::floor((horizonMs - nextMs) / float(attackMs));
+    };
+    float const rage = float(bot->GetPower(POWER_RAGE)) + swingsWithin(BASE_ATTACK) * p.ragePerSwing +
+                       swingsWithin(OFF_ATTACK) * p.offRagePerSwing;
+    float const spellTps = std::max(p.tps - p.whiteTps, 0.0f);
+    float const spell = std::min(spellTps * horizonSec, rage * spellTps / p.rageSpend);
+    return std::min(steady, p.whiteTps * horizonSec + spell);
+}
 
 namespace
 {
