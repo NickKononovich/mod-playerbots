@@ -8778,7 +8778,8 @@ namespace
         float const swing = std::max(float(t->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
         float const base = stats->GenerateBaseDamage(t);
         float const dps =
-            ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * t->DamageModifier / swing;
+            ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * t->DamageModifier *
+            SoloSafety::TemplateHands(t) / swing;  // [death434] its off-hand swings
         float const armor = float(bot->GetArmor());
         float const divisor =
             level < 60 ? 400.0f + 85.0f * level : 400.0f + 85.0f * level + 4.5f * 85.0f * (level - 59);

@@ -2160,7 +2160,8 @@ float TemplateMeleeDps(CreatureTemplate const* tmpl, uint8 level)
         return 0.0f;
     float const swing = std::max(float(tmpl->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
     float const base = stats->GenerateBaseDamage(tmpl);
-    return ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier / swing;
+    return ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier *
+           SoloSafety::TemplateHands(tmpl) / swing;  // [death434] its off-hand swings
 }
 
 // a human's camp from the static world data: the nearest source of the objective from where he stands (the pace

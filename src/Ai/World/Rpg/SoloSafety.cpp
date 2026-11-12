@@ -983,14 +983,40 @@ namespace
     // weapon skill point of the mob over the bot's level (none while the victim casts: a caster bot fights casting),
     // crit (the core's chance, double damage), crushing blow (a mob 4+ levels above whose skill is 15+ over the bot's
     // defense: 2 % a point less 15 %, 150 % damage), the rest plain hits; a block takes off its block value
+    float HandDps(Unit* unit, Player* bot, WeaponAttackType hand, float* variancePerSec);
+
+    // [death434] each hand's swings: a creature with a weapon in its off-hand slot swings it too, on its own timer
+    // (UnitAI::DoMeleeAttackIfReady, Creature::HasWeaponForAttack; UNIT_FIELD_MINOFFHANDDAMAGE carries the 50 % off-hand
+    // cut). b462 Zharet L19 engaged 3 Defias Highwaymen (sword + sword) "929 dmg over 47 s" at ~10 dps each; they hit
+    // for 16-19 each and killed it in 17 s
     float MeleeDps(Unit* unit, Player* bot, float* variancePerSec = nullptr)
     {
-        float const raw = std::max(
-            0.0f, (unit->GetFloatValue(UNIT_FIELD_MINDAMAGE) + unit->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f);
+        float mainVariance = 0.0f;
+        float dps = HandDps(unit, bot, BASE_ATTACK, variancePerSec ? &mainVariance : nullptr);
+        float offVariance = 0.0f;
+        if (unit->HasOffhandWeaponForAttack())
+            dps += HandDps(unit, bot, OFF_ATTACK, variancePerSec ? &offVariance : nullptr);
+        if (variancePerSec)
+            *variancePerSec = mainVariance + offVariance;
+        return dps;
+    }
+
+    float HandDps(Unit* unit, Player* bot, WeaponAttackType hand, float* variancePerSec)
+    {
+        bool const off = hand == OFF_ATTACK;
+        float const minDamage = unit->GetFloatValue(off ? UNIT_FIELD_MINOFFHANDDAMAGE : UNIT_FIELD_MINDAMAGE);
+        float const maxDamage = unit->GetFloatValue(off ? UNIT_FIELD_MAXOFFHANDDAMAGE : UNIT_FIELD_MAXDAMAGE);
+        float const raw = std::max(0.0f, (minDamage + maxDamage) / 2.0f);
+        if (raw <= 0.0f)
+        {
+            if (variancePerSec)
+                *variancePerSec = 0.0f;
+            return 0.0f;
+        }
         float const hit =
-            float(Unit::CalcArmorReducedDamage(unit, bot, uint32(raw), nullptr, unit->GetLevel(), BASE_ATTACK));
+            float(Unit::CalcArmorReducedDamage(unit, bot, uint32(raw), nullptr, unit->GetLevel(), hand));
         int32 const skillDiff =
-            int32(unit->GetWeaponSkillValue(BASE_ATTACK, bot)) - int32(bot->Unit::GetMaxSkillValueForLevel(unit));
+            int32(unit->GetWeaponSkillValue(hand, bot)) - int32(bot->Unit::GetMaxSkillValueForLevel(unit));
         float const skillBonus = 0.04f * float(skillDiff);
         float left = 100.0f;
         auto const take = [&left](float chance)
@@ -999,7 +1025,7 @@ namespace
             left -= chance;
             return chance;
         };
-        take(unit->MeleeSpellMissChance(bot, BASE_ATTACK, skillDiff, 0));
+        take(unit->MeleeSpellMissChance(bot, hand, skillDiff, 0));
         float block = 0.0f;
         if (!PlayerbotAI::IsCaster(bot))
         {
@@ -1007,7 +1033,7 @@ namespace
             take(bot->GetUnitParryChance() - skillBonus);
             block = take(bot->GetUnitBlockChance() - skillBonus);
         }
-        float const crit = take(unit->GetUnitCriticalChance(BASE_ATTACK, bot));
+        float const crit = take(unit->GetUnitCriticalChance(hand, bot));
         float crush = 0.0f;
         Creature* creature = unit->ToCreature();
         if (unit->getLevelForTarget(bot) >= bot->getLevelForTarget(unit) + 4 && !unit->IsControlledByPlayer() &&
@@ -1029,14 +1055,14 @@ namespace
         if (variancePerSec)
         {
             float const reduce = raw > 0.0f ? hit / raw : 0.0f;
-            float const low = unit->GetFloatValue(UNIT_FIELD_MINDAMAGE) * reduce;
-            float const high = unit->GetFloatValue(UNIT_FIELD_MAXDAMAGE) * reduce;
+            float const low = minDamage * reduce;
+            float const high = maxDamage * reduce;
             float const square = (low * low + low * high + high * high) / 3.0f;  // E[h^2] of the uniform roll
             float const second =
                 (square * (left + block) + 4.0f * square * crit + 2.25f * square * crush) / 100.0f;
-            *variancePerSec = std::max(second - perSwing * perSwing, 0.0f) / SwingSec(unit);
+            *variancePerSec = std::max(second - perSwing * perSwing, 0.0f) / SwingSec(unit, hand);
         }
-        return std::max(perSwing, 0.0f) / SwingSec(unit);
+        return std::max(perSwing, 0.0f) / SwingSec(unit, hand);
     }
 
     // [guild14] what a mob deals the bot per second: its melee (the core's attack table, [deaths3]) and its spells (the
@@ -3831,9 +3857,11 @@ namespace SoloSafety
             float const high = (base * 1.5f + power) * tmpl->DamageModifier;
             float const mean = (low + high) / 2.0f;
             float const square = (low * low + low * high + high * high) / 3.0f;  // E[h^2] of the uniform roll
+            // [death434] an off-hand swing deals half: its spread a quarter of the main hand's
+            float const offHand = TemplateHands(tmpl) - 1.0f;
             for (int32 i = 0; i < n; ++i)
-                foes.push_back({float(stats->GenerateHealth(tmpl)), mean / swing,
-                                std::max(square - mean * mean, 0.0f) / swing});
+                foes.push_back({float(stats->GenerateHealth(tmpl)), mean * (1.0f + offHand) / swing,
+                                std::max(square - mean * mean, 0.0f) * (1.0f + offHand * offHand) / swing});
             count += uint32(n);
             named = tmpl;
         }
@@ -3876,6 +3904,26 @@ namespace SoloSafety
         return highEnd >= ehp;
     }
 
+    float TemplateHands(CreatureTemplate const* tmpl)
+    {
+        if (!tmpl)
+            return 1.0f;
+        static std::mutex cacheLock;
+        static std::unordered_map<uint32, float> cache;  // entry -> its hands (the world data, read once)
+        {
+            std::lock_guard<std::mutex> guard(cacheLock);
+            if (auto const found = cache.find(tmpl->Entry); found != cache.end())
+                return found->second;
+        }
+        int8 id = 1;  // the default equipment (Creature::LoadEquipment of a spawn with equipment_id 1)
+        EquipmentInfo const* equipment = sObjectMgr->GetEquipmentInfo(tmpl->Entry, id);
+        ItemEntry const* offHand = equipment ? sItemStore.LookupEntry(equipment->ItemEntry[1]) : nullptr;
+        float const hands = offHand && offHand->ClassID == ITEM_CLASS_WEAPON ? 1.5f : 1.0f;
+        std::lock_guard<std::mutex> guard(cacheLock);
+        cache[tmpl->Entry] = hands;
+        return hands;
+    }
+
     RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl)
     {
         RunPast out;
@@ -3893,7 +3941,7 @@ namespace SoloSafety
         float const base = stats->GenerateBaseDamage(tmpl);
         float const hit =
             ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier;
-        float const melee = hit / swing;
+        float const melee = hit * TemplateHands(tmpl) / swing;  // [death434]
         // Creature::GetLeashTimer of a mob of this template (the core's own numbers)
         constexpr int32 LEASH_TIMER_OFFSET = 11;
         float const leashSec =

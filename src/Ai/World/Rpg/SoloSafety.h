@@ -236,6 +236,9 @@ namespace SoloSafety
     // [lag360] `withSpeed`: with the speed piece the run-past executor casts first (the price); false: without it
     RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed = true);
     RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl);
+    // [death434] a template's melee per main-hand swing: 1, or 1.5 when its default equipment holds an off-hand weapon
+    // (the core swings it too at half damage: Creature::HasWeapon, UNIT_MOD_DAMAGE_OFFHAND TOTAL_PCT 0.5)
+    float TemplateHands(CreatureTemplate const* tmpl);
     // [death407] using `go` (a quest object) fires its linked trap (GameObjectTemplate::GetLinkedGameObjectEntry): the
     // creatures its trap spell summons are that objective's fight - true when the bot loses it from its health now
     // with the heals its mana holds (`why`: the summons and the price)
