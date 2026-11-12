@@ -634,6 +634,37 @@ namespace
         return DpsEstimate::Estimate(bot, target, DpsEstimate::ContextOf(bot), fightSec);
     }
 
+    // [death382] an effect's points as a creature casts it, at the mean of the core's roll: SpellEffectInfo::CalcValue
+    // adds irand(1, DieSides) each call, and the casts' caches kept that one roll per entry for the server's life
+    // (Redridge Mystic's Lightning Bolt 74-98, Deepmoss Venomspitter's Toxic Spit 38-62). The midrange of a few
+    // samples of the core's own value (level scaling and all): the roll is uniform, its midrange centred
+    float MeanCalcValue(SpellInfo const* info, SpellEffectInfo const& effect, Creature* creature)
+    {
+        if (effect.DieSides <= 1 && effect.DieSides >= -1)
+            return float(effect.CalcValue(creature));
+        constexpr int ROLL_SAMPLES = 16;  // a cached look per entry: the midrange's spread is the range over 17
+        int32 low = std::numeric_limits<int32>::max();
+        int32 high = std::numeric_limits<int32>::min();
+        for (int sample = 0; sample < ROLL_SAMPLES; ++sample)
+        {
+            int32 const value = effect.CalcValue(creature);
+            low = std::min(low, value);
+            high = std::max(high, value);
+        }
+        static std::mutex rollLogLock;  // a log cadence per spell and creature kind, no decision reads it
+        static std::unordered_set<uint64> rollLogged;
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> guard(rollLogLock);
+            fresh = rollLogged.insert(uint64(info->Id) * 1000003ull + creature->GetEntry()).second;
+        }
+        if (fresh)
+            LOG_INFO("playerbots", "[death382] {} L{} spell {} effect {}: priced at {:.1f}, the mean of its roll {}-{}",
+                     creature->GetName(), creature->GetLevel(), info->Id, uint32(effect.EffectIndex),
+                     (float(low) + float(high)) / 2.0f, low, high);
+        return (float(low) + float(high)) / 2.0f;
+    }
+
     // [guild14] a creature's spell damage per second from its SmartAI: every in-combat repeating cast (SMART_EVENT_
     // UPDATE_IC + SMART_ACTION_CAST) of a damaging spell - its direct school damage and its periodic damage over the
     // aura's duration - once per repeat interval (the mean of repeatMin / repeatMax), at least its cast time and the
@@ -649,10 +680,10 @@ namespace
         for (SpellEffectInfo const& effect : info->GetEffects())
         {
             if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
-                damage += float(std::max(effect.CalcValue(creature), 0));
+                damage += std::max(MeanCalcValue(info, effect, creature), 0.0f);
             else if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_DAMAGE &&
                      effect.Amplitude > 0)
-                damage += float(std::max(effect.CalcValue(creature), 0)) *
+                damage += std::max(MeanCalcValue(info, effect, creature), 0.0f) *
                           float(std::max(info->GetMaxDuration(), 0) / effect.Amplitude);
         }
         return damage;
@@ -782,10 +813,10 @@ namespace
                 for (SpellEffectInfo const& effect : info->GetEffects())
                 {
                     if (effect.Effect == SPELL_EFFECT_HEAL)
-                        heal.amount += float(std::max(effect.CalcValue(creature), 0));
+                        heal.amount += std::max(MeanCalcValue(info, effect, creature), 0.0f);
                     else if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
                              effect.ApplyAuraName == SPELL_AURA_PERIODIC_HEAL && effect.Amplitude > 0)
-                        heal.amount += float(std::max(effect.CalcValue(creature), 0)) *
+                        heal.amount += std::max(MeanCalcValue(info, effect, creature), 0.0f) *
                                        float(std::max(info->GetMaxDuration(), 0) / effect.Amplitude);
                 }
                 if (heal.amount <= 0.0f)
