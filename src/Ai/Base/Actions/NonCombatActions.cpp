@@ -238,6 +238,9 @@ bool StandUpAction::Execute(Event /*event*/)
              : patrol          ? "[b46_patrol] a patrol walks in: "
              : RestState::IsDrinking(bot) && bot->GetMaxPower(POWER_MANA) && bot->GetPowerPct(POWER_MANA) < 100.0f
                  ? "mana at its line"  // [lead221]
+             // [death404] a drink alone ends at full mana, its health as it is (b453 Lanbuzz "full" at hp 54 %)
+             : RestState::IsDrinking(bot) && !RestState::IsEating(bot) && bot->GetHealthPct() < 100.0f
+                 ? "[death404] its drink done, health not eaten"
                  : "full",
              patrol ? patrol->GetName() : std::string(), bot->GetHealthPct(),
              bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f);

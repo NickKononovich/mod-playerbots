@@ -4286,6 +4286,34 @@ namespace SoloSafety
                 }
                 return false;
             };
+            // [death405] ... and a stop inside the reach of any idle mob (not only a chaser's, [death393]): the bot
+            // stands there with the chase on it and that mob joins - a fight nobody judged. b453 Sycina L21 "RUN_PAST
+            // keeps walking past Thistlefur Shaman L24 (chase priced 22)" stopped at its objective in another
+            // Thistlefur Shaman's wander area (reach 37 yd): UNJUDGED, 3 Shamans, dead
+            G3D::Vector3 const anyStop = walkStopSet ? walkStop : to;
+            for (Creature* c : around)
+                if (c != mob && reachCovers(c, anyStop, 0.0f))
+                {
+                    static std::mutex anyStopLogLock;  // a log cadence per bot and mob kind, no decision reads it
+                    static std::unordered_set<uint64> anyStopLogged;
+                    bool fresh = false;
+                    {
+                        std::lock_guard<std::mutex> guard(anyStopLogLock);
+                        if (anyStopLogged.size() > 65536)
+                            anyStopLogged.clear();
+                        fresh = anyStopLogged.insert(uint64(c->GetEntry()) * 1000003ull +
+                                                     bot->GetGUID().GetCounter())
+                                    .second;
+                    }
+                    if (fresh)
+                        LOG_INFO("playerbots", "[death405] {} L{} no run past {} L{}: its walk stops at "
+                                 "({:.0f},{:.0f}) inside the reach of {} L{}",
+                                 bot->GetName(), bot->GetLevel(), mob->GetName(), mob->GetLevel(), anyStop.x, anyStop.y,
+                                 c->GetName(), c->GetLevel());
+                    price = std::numeric_limits<float>::max();
+                    hp = budget(with.seconds);
+                    return false;
+                }
             for (size_t i = 0; i < chasers.size(); ++i)
             {
                 Creature* chaser = chasers[i];
@@ -4362,6 +4390,44 @@ namespace SoloSafety
                                      "the walk's end until the leash lets the chaser go",
                                      bot->GetName(), bot->GetLevel(), chaser->GetName(), chaser->GetLevel(), walkOn,
                                      chase.seconds, chase.seconds * speed);
+                        // [death406] the run on from the walk's end is a run only where it is clear: an idle mob
+                        // whose reach covers it (sampled on along the leg, the chase's yards left) stops the run -
+                        // the bot stands and fights the chase there. b453 Geron L19 off Menethil: "RUN_PAST ...
+                        // (chase priced 227 / 259, hp 1144)", then "no way out clear of other mobs" by a Mottled
+                        // Raptor, fought 54 s, took 1722
+                        G3D::Vector3 const end = walkStopSet ? walkStop : to;
+                        float const left = chase.seconds * speed - walkOn;
+                        G3D::Vector3 const ahead =
+                            G3D::Vector3(leg.x, leg.y, 0.0f) / std::max(std::hypot(leg.x, leg.y), 0.01f);
+                        constexpr float RUN_STEP = 4.0f;  // the route search's sample spacing
+                        for (float d = RUN_STEP; d <= left; d += RUN_STEP)
+                        {
+                            G3D::Vector3 const p = end + ahead * d;
+                            for (Creature* c : around)
+                                if (std::find(chasers.begin(), chasers.end(), c) == chasers.end() &&
+                                    reachCovers(c, p, 0.0f))
+                                {
+                                    static std::mutex runOnLogLock;  // a log cadence, no decision reads it
+                                    static std::unordered_set<uint64> runOnLogged;
+                                    bool runOnFresh = false;
+                                    {
+                                        std::lock_guard<std::mutex> guard(runOnLogLock);
+                                        if (runOnLogged.size() > 65536)
+                                            runOnLogged.clear();
+                                        runOnFresh = runOnLogged.insert(uint64(c->GetEntry()) * 1000003ull +
+                                                                        bot->GetGUID().GetCounter())
+                                                         .second;
+                                    }
+                                    if (runOnFresh)
+                                        LOG_INFO("playerbots", "[death406] {} L{} no run past {} L{}: its run on "
+                                                 "from the walk's end meets the reach of {} L{} {:.0f} yd on",
+                                                 bot->GetName(), bot->GetLevel(), chaser->GetName(),
+                                                 chaser->GetLevel(), c->GetName(), c->GetLevel(), d);
+                                    price = std::numeric_limits<float>::max();
+                                    hp = budget(with.seconds);
+                                    return false;
+                                }
+                        }
                     }
                 }
                 with.Add(chase);
