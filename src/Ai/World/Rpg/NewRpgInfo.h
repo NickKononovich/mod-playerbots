@@ -146,6 +146,9 @@ struct NewRpgInfo
     // [guild15] perf: the last complete far route to moveFarPos; the next leg is planned only to a point on it
     // two sights ahead (the danger penalties are of the mobs in sight, so a local search sees the same mobs)
     std::vector<G3D::Vector3> farRoute;
+    // [nav182] the walk graph nodes whose stage walk failed for moveFarPos (a refused leg, no complete walk): the
+    // next graph plans leave them out; another destination clears them
+    std::vector<uint32> graphBans;
     // [nav165] where the walk to moveFarPos started (the area its partial legs must stay plannable back to)
     G3D::Vector3 moveFarFrom;
     bool moveFarFromSet{false};

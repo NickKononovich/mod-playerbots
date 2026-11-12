@@ -48,10 +48,12 @@
 #include "QuestPackets.h"  // [quest14] the grey abandon
 #include "World.h"  // [guild13]
 #include "RouteSearch.h"  // [guild13] PointOnPath
+#include "WalkGraph.h"     // [nav181]
 #include "SpellMgr.h"     // [guild13]
 #include "LeaderOrders.h"  // [guild14] Leader::Route
 #include "DetourNavMeshQuery.h"  // [guild14] the nearest polygon
 #include "MapDefines.h"         // [guild14] NAV_* flags
+#include <chrono>  // [nav183]
 #include <map>
 #include <memory>
 #include <optional>  // [runpast15]
@@ -875,6 +877,82 @@ static void CommitLeg(Player* bot, Movement::PointsArray const& points, G3D::Vec
         }
     }
     SoloSafety::CommitRunPast(bot, leg, std::vector<G3D::Vector3>(points.begin(), points.end()));  // [runpast15]
+}
+
+bool NewRpgBaseAction::GraphStage(WorldPosition const& dest, float disToDest)
+{
+    float const sight = sPlayerbotAIConfig.SightDistance;
+    float const ahead = 2.0f * sight;  // a far walk's leg is searched two sights ahead (the farRoute legs)
+    if (!SoloSafety::Applies(bot) || !UsesLeaderRoute(bot) || disToDest <= ahead || dest.GetMapId() != bot->GetMapId())
+        return false;
+    Map* map = bot->GetMap();
+    G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+    G3D::Vector3 const goal(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+    NewRpgInfo& info = botAI->rpgInfo;
+    Leader::Travel::WalkGraph::Plan const plan = Leader::Travel::WalkGraph::PlanWalk(map, here, goal, info.graphBans);
+    if (!plan.ready || plan.sameRegion)
+        return false;
+    Leader::Travel::WalkGraph::NoteSearch(Leader::Travel::WalkGraph::SearchKind::Graph, plan.us, bot->GetGUID());
+    if (!plan.found)
+    {
+        // one line per walker, destination and ban count (a log cadence, no decision reads it)
+        thread_local std::unordered_map<uint64, uint64> noPlanLogged;
+        uint64 const key = (uint64(uint32(int32(goal.x))) << 40) ^ (uint64(uint32(int32(goal.y))) << 16) ^
+                           uint64(info.graphBans.size());
+        uint64& last = noPlanLogged[bot->GetGUID().GetRawValue()];
+        if (last == key)
+            return false;
+        last = key;
+        LOG_INFO("playerbots", "[nav181] {} L{} graph walk to ({:.0f},{:.0f}) {:.0f} yd: no plan ({} node(s) banned, "
+                 "{} us), the whole walk searched",
+                 bot->GetName(), bot->GetLevel(), goal.x, goal.y, disToDest, info.graphBans.size(), plan.us);
+        return false;
+    }
+    // the stage: the plan's first node beyond two sights (the last one when all lie nearer), back to the last whose
+    // grid the live navmesh has loaded (the route search reaches no farther)
+    size_t pick = 0;
+    while (pick + 1 < plan.nodes.size() && plan.walked[pick] <= ahead)
+        ++pick;
+    while (pick > 0 && !Leader::Travel::WalkGraph::LiveTileLoaded(map, plan.points[pick]))
+        --pick;
+    G3D::Vector3 const target = plan.points[pick];
+    if ((target - here).length() <= MOVE_FAR_PROGRESS)
+        return false;
+    auto const searchStart = std::chrono::steady_clock::now();
+    BotPath const leg = FindBotPath(bot, target.x, target.y, target.z);
+    Leader::Travel::WalkGraph::NoteSearch(
+        Leader::Travel::WalkGraph::SearchKind::Stage,
+        uint64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - searchStart)
+                   .count()),
+        bot->GetGUID());
+    bool const walkable = leg.type == PATHFIND_NORMAL && !leg.throughRefused && leg.points.size() >= 2 &&
+                          (leg.actualEnd - target).length() < 5.0f;
+    LOG_INFO("playerbots", "[nav181] {} L{} graph walk to ({:.0f},{:.0f}) {:.0f} yd: {} hops, {:.0f} yd planned in {} "
+             "us; stage node {} ({}/{}) at ({:.0f},{:.0f}) {:.0f} graph yd: route {} ({:.0f} yd)",
+             bot->GetName(), bot->GetLevel(), goal.x, goal.y, disToDest, plan.nodes.size(), plan.yd, plan.us,
+             plan.nodes[pick], pick + 1, plan.nodes.size(), target.x, target.y, plan.walked[pick],
+             walkable ? "complete" : leg.refusedArea ? "refused (area)" : leg.throughRefused ? "refused (reach)"
+                                                                       : leg.type == PATHFIND_NORMAL ? "short"
+                                                                                                     : "partial",
+             leg.length);
+    if (!walkable)
+    {
+        // [nav182] the refusal is the leg's (the walker's own areas, reaches and spawns): the next plan goes round
+        // that node; this tick the whole walk is searched as before
+        info.graphBans.push_back(plan.nodes[pick]);
+        LOG_INFO("playerbots", "[nav182] {} L{} graph node {} banned for the walk to ({:.0f},{:.0f}) ({} banned)",
+                 bot->GetName(), bot->GetLevel(), plan.nodes[pick], goal.x, goal.y, info.graphBans.size());
+        return false;
+    }
+    info.farRoute.assign(leg.points.begin(), leg.points.end());  // [guild15] its legs two sights ahead on it
+    G3D::Vector3 const end = leg.length > sight ? Leader::Travel::PointOnPath(leg.points, sight) : leg.actualEnd;
+    if (!MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
+    {
+        info.farRoute.clear();
+        return false;
+    }
+    CommitLeg(bot, leg.points, end);  // [runpast11]
+    return true;
 }
 
 bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path, float disToDest, bool deadEnd)
@@ -3524,7 +3602,14 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             if (restLength > ahead)
             {
                 G3D::Vector3 const target = Leader::Travel::PointOnPath(rest, ahead);
+                auto const legStart = std::chrono::steady_clock::now();
                 BotPath const local = FindBotPath(bot, target.x, target.y, target.z);
+                Leader::Travel::WalkGraph::NoteSearch(  // [nav183]
+                    Leader::Travel::WalkGraph::SearchKind::Leg,
+                    uint64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                                 legStart)
+                               .count()),
+                    bot->GetGUID());
                 if (local.type == PATHFIND_NORMAL && !local.throughRefused &&
                     (local.actualEnd - target).length() < 5.0f && local.points.size() >= 2)
                 {
@@ -3541,9 +3626,19 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         }
         botAI->rpgInfo.farRoute.clear();  // off the route, at its end, or the local leg failed: the whole way again
     }
+    if (GraphStage(dest, disToDest))  // [nav181] the whole way on the walk graph, the fine search to its next node
+        return true;
     {
+        auto const fullStart = std::chrono::steady_clock::now();
         BotPath const path =  // [lead109]
             FindBotPath(bot, dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+        if (SoloSafety::Applies(bot) && disToDest > 2.0f * sPlayerbotAIConfig.SightDistance)  // [nav183] a far walk
+            Leader::Travel::WalkGraph::NoteSearch(
+                Leader::Travel::WalkGraph::SearchKind::Full,
+                uint64(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() -
+                                                                             fullStart)
+                           .count()),
+                bot->GetGUID());
         if (path.type == PATHFIND_NORMAL && path.leaderRoute && !path.throughRefused)  // [guild15] the next legs
             botAI->rpgInfo.farRoute.assign(path.points.begin(), path.points.end());
         // [deaths] user 2026-11-08: a solo walk never goes through a pack it does not fight (b338 Sylaenas L1:
