@@ -7,12 +7,15 @@
 #include "LeaderValues.h"
 
 #include "Creature.h"
+#include "DpsEstimate.h"  // [lead1300]
 #include "EstimatedLifetimeValue.h"
 #include "GameObject.h"
 #include "Group.h"
 #include "HealthTriggers.h"
 #include "LeaderOrders.h"  // [lead6] Leader::Readiness
 #include "InstanceScript.h"  // [b44_hos]
+#include "LeaderFightChecks.h"    // [lead1300] AttackerDps
+#include "LeaderPlannerShared.h"  // [lead1300] MobLandedDps
 #include "Log.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
@@ -42,24 +45,9 @@ namespace
     // Fight outlook (LeaderFightOutlookValue): absolute numbers only, never a boss health percent. The members die
     // one after another, so over the time the group lasts it deals about half its full damage.
     constexpr float ATTRITION_SHARE = 0.5f;
-    constexpr float OUTLOOK_EMA_ALPHA = 0.2f;  // per one-second sample: about five seconds of memory
     constexpr uint32 OUTLOOK_MIN_SAMPLE_MS = 700;
-    constexpr uint32 OUTLOOK_WARM_SAMPLES = 3;
-    constexpr float EFFICIENCY_FLOOR = 0.35f;  // dealt / expected damage, clamped against single bad seconds
-    constexpr float EFFICIENCY_CEILING = 3.0f;
-    constexpr float ENEMY_ABILITY_FACTOR = 1.3f;  // spells and abilities on top of the enemies' melee swings
-    constexpr float HEALED_DRAIN_SHARE = 0.5f;    // before the first samples: healers cover half the damage
-    constexpr float MANA_BURN_EPSILON = 0.5f;
     constexpr float MAX_SURVIVE_SEC = 600.0f;
-    constexpr float LOW_MANA_PCT = 10.0f;
-    constexpr float LOW_MANA_DPS_FACTOR = 0.3f;  // a caster without mana is down to its wand
     constexpr uint8 LOST_STREAK = 2;
-    // [b33_harn] hos-h 20261026-000434-hos-h-5B-37 (1909 s): the holy paladin died; 3 s later the outlook said
-    // "ttk 22 s vs survive 6 s" and the rogue Vanished (sat 16 s in "wipe escape") while the tank lived 48 s more and
-    // the group killed 10 mobs. The survive time came from the enemies' theoretical swing damage (no armor, block,
-    // Shield Wall, self-heals) and from the dead healer's whole health counted as one second of drain. Without a
-    // healer the fight is judged on the group's OWN observed unhealed drain, and only after this many samples of it.
-    constexpr uint32 UNHEALED_WARM_SAMPLES = 8;
     constexpr uint32 JUDGE_LOG_MS = 5 * IN_MILLISECONDS;
 
     // Wipe escape (WipeEscapeSpellValue, WipeEscapeHoldValue).
@@ -188,32 +176,6 @@ namespace
         return instance && instance->IsEncounterInProgress() && census.dead * 2 < census.total;
     }
 
-    float SwingDps(Unit* unit)
-    {
-        uint32 const attackMs = unit->GetAttackTime(BASE_ATTACK);
-        if (!attackMs)
-            return 0.0f;
-
-        float const swing =
-            (unit->GetFloatValue(UNIT_FIELD_MINDAMAGE) + unit->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
-        return swing * float(IN_MILLISECONDS) / float(attackMs);
-    }
-
-    // The damage the member should deal for its role, level and gear (the test harness' expectation table).
-    float ExpectedDps(Player* member, uint8 groupSize)
-    {
-        TestHarness::Role const role = PlayerbotAI::IsTank(member)   ? TestHarness::Role::Tank
-                                       : PlayerbotAI::IsHeal(member) ? TestHarness::Role::Healer
-                                                                     : TestHarness::Role::Melee;
-        float dps =
-            TestHarness::ExpectedMemberDps(role, member->GetLevel(), member->GetAverageItemLevel(), groupSize);
-        if (role != TestHarness::Role::Healer && member->getPowerType() == POWER_MANA &&
-            member->GetMaxPower(POWER_MANA) && member->GetPowerPct(POWER_MANA) < LOW_MANA_PCT)
-            dps *= LOW_MANA_DPS_FACTOR;
-
-        return dps;
-    }
-
     bool HasSoulstone(PlayerbotAI* botAI, Player* member)
     {
         return botAI->HasAura("soulstone resurrection", member);
@@ -286,17 +248,15 @@ Player* FindDivineInterventionTarget(PlayerbotAI* botAI, Player* bot)
 void LeaderFightOutlookValue::Clear()
 {
     _lastMs = 0;
-    _samples = 0;
     _lostStreak = 0;
-    _unhealedSamples = 0;  // [b33_harn]
-    _damageEma = 0.0f;
-    _capacityEma = 0.0f;
-    _drainEma = 0.0f;
-    _manaBurnEma = 0.0f;
-    _enemyHp.clear();
-    _members.clear();
 }
 
+// [lead1300] user rule 2026-11-08: a projection from the fight's state now - every enemy's health, who attacks whom,
+// the members' health and the healers' mana - at the formulas' rates: the members' damage (DpsEstimate on their
+// victims, on their mana now over the fight), each enemy's on its victim (the planner's MobLandedDps: its melee
+// through the victim's armor and attack table, its off-hand, its spells from its data), the healers' cast-limited
+// rate and health per mana (HealerThroughput, spell data). Nothing the fight dealt, drained or burnt is read; a drop
+// of health or mana is state and moves the projection at the next evaluation.
 FightOutlook LeaderFightOutlookValue::Calculate()
 {
     FightOutlook outlook;
@@ -308,132 +268,95 @@ FightOutlook LeaderFightOutlookValue::Calculate()
     }
 
     uint32 const now = getMSTime();
-    uint32 const elapsedMs = _lastMs ? getMSTimeDiff(_lastMs, now) : 0;
-    if (_lastMs && elapsedMs < OUTLOOK_MIN_SAMPLE_MS)
-        return value;  // asked again within the second (a reader's Reset): the last sample stands
+    if (_lastMs && getMSTimeDiff(_lastMs, now) < OUTLOOK_MIN_SAMPLE_MS)
+        return value;  // asked again within the second (a reader's Reset): the last evaluation stands
+    _lastMs = now ? now : 1;
 
-    // The enemies: their health, the health they lost since the last sample, and what they deal.
-    std::unordered_map<ObjectGuid, uint32> enemyHp;
-    float damage = 0.0f;
+    // The enemies: their health and what each lands on its victim.
     float enemyDps = 0.0f;
+    Player* tank = ObjectAccessor::FindPlayer(PlayerbotAI::GetMainTankGuid(group));
     for (ObjectGuid const guid : AI_VALUE(GuidVector, "attackers"))
     {
         Unit* unit = botAI->GetUnit(guid);
         if (!unit || !unit->IsAlive())
             continue;
 
-        uint32 const health = unit->GetHealth();
-        enemyHp[guid] = health;
         ++outlook.enemies;
-        outlook.enemyHp += float(health);
-
-        auto const previous = _enemyHp.find(guid);
-        if (previous != _enemyHp.end() && previous->second > health)
-            damage += float(previous->second - health);
-
-        if (unit->GetVictim())
-            enemyDps += SwingDps(unit);
+        outlook.enemyHp += float(unit->GetHealth());
+        Unit* victim = unit->GetVictim();
+        if (!victim)
+            continue;
+        if (Player* player = victim->ToPlayer())
+            enemyDps += PullPlanning::MobLandedDps(unit, player);
+        else
+        {
+            float spell = 0.0f;
+            enemyDps += Leader::Fight::AttackerDps(unit, victim, spell);  // a pet or a totem: its armor and avoidance
+        }
     }
 
-    for (auto const& [guid, health] : _enemyHp)
-        if (!enemyHp.count(guid))
-            if (Unit* unit = botAI->GetUnit(guid))
-                if (!unit->IsAlive())
-                    damage += float(health);  // died since: the rest of its health was dealt too
-
-    // The group: expected damage of the living, its health, what it lost net of heals, the healers' mana.
-    uint8 const groupSize = uint8(std::min<uint32>(group->GetMembersCount(), MAXRAIDSIZE));
-    std::unordered_map<ObjectGuid, MemberSample> members;
-    float capacity = 0.0f;
+    // The group: its health, the members' formula damage, the healers' rate and their mana.
     float healthPool = 0.0f;
-    float drain = 0.0f;
-    float manaSpent = 0.0f;
+    float healHps = 0.0f;
+    float manaPerSec = 0.0f;  // the healers' mana per second at their rate
     uint32 healerMana = 0;
-    bool healerWithMana = false;
+    std::vector<Player*> dealers;
     Map* map = bot->GetMap();
     for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
     {
         Player* member = ref->GetSource();
-        if (!member || !member->IsInWorld() || member->GetMap() != map)
+        if (!member || !member->IsInWorld() || member->GetMap() != map || !member->IsAlive())
             continue;
 
-        auto const previous = _members.find(member->GetGUID());
-        if (!member->IsAlive())
-            continue;  // [b33_harn] its last health is out of the pool, not a second's drain on the living
-
-        MemberSample sample;
-        sample.health = member->GetHealth();
-        healthPool += float(sample.health);
-        capacity += ExpectedDps(member, groupSize);
-        if (previous != _members.end())
-            drain += float(previous->second.health) - float(sample.health);
-
-        if (PlayerbotAI::IsHeal(member) && member->GetMaxPower(POWER_MANA))
+        healthPool += float(member->GetHealth());
+        if (!PlayerbotAI::IsHeal(member) || !member->GetMaxPower(POWER_MANA))
         {
-            sample.mana = member->GetPower(POWER_MANA);
-            healerMana += sample.mana;
-            healerWithMana = healerWithMana || member->GetPowerPct(POWER_MANA) >= HEALER_OOM_PCT;
-            if (previous != _members.end())
-                manaSpent += float(previous->second.mana) - float(sample.mana);
+            dealers.push_back(member);
+            continue;
         }
-
-        members[member->GetGUID()] = sample;
+        if (member->GetPowerPct(POWER_MANA) < HEALER_OOM_PCT)
+            continue;
+        RestState::HealerFacts const facts =
+            RestState::HealerThroughput(member, tank && tank->IsAlive() ? tank : member);
+        if (facts.hps <= 0.0f || facts.healPerMana <= 0.0f)
+            continue;
+        healHps += facts.hps;
+        manaPerSec += facts.hps / facts.healPerMana;
+        healerMana += member->GetPower(POWER_MANA);
     }
 
-    float const rawDps = enemyDps * ENEMY_ABILITY_FACTOR;
-    if (!_lastMs)
-    {
-        _damageEma = capacity;
-        _capacityEma = capacity;
-        _drainEma = healerWithMana ? rawDps * HEALED_DRAIN_SHARE : rawDps;
-        _manaBurnEma = 0.0f;
-    }
-    else
-    {
-        float const seconds = float(elapsedMs) / float(IN_MILLISECONDS);
-        auto blend = [](float& ema, float sample) { ema += OUTLOOK_EMA_ALPHA * (sample - ema); };
-        blend(_damageEma, damage / seconds);
-        blend(_capacityEma, capacity);
-        blend(_drainEma, drain / seconds);
-        blend(_manaBurnEma, manaSpent / seconds);
-        ++_samples;
-    }
-
-    _lastMs = now;
-    _enemyHp = std::move(enemyHp);
-    _members = std::move(members);
-
-    float efficiency = 1.0f;
-    if (_samples >= OUTLOOK_WARM_SAMPLES && _capacityEma > 0.0f)
-        efficiency = std::clamp(_damageEma / _capacityEma, EFFICIENCY_FLOOR, EFFICIENCY_CEILING);
-
-    outlook.groupDps = capacity * efficiency;
+    // the members' damage: the burst first, then on their mana now over the fight that burst gives
+    float burst = 0.0f;
+    for (Player* member : dealers)
+        burst += DpsEstimate::Estimate(member, member->GetVictim(), DpsEstimate::ContextOf(member)).burstDps;
+    float const burstSec = outlook.enemyHp / std::max(burst, 1.0f);
+    for (Player* member : dealers)
+        outlook.groupDps +=
+            DpsEstimate::Estimate(member, member->GetVictim(), DpsEstimate::ContextOf(member), burstSec).dps;
     outlook.killSec = outlook.enemyHp / std::max(outlook.groupDps, 1.0f);
 
-    // Healed while the healers have mana (the observed net drain), then the enemies' full damage.
-    // [b33_harn] With no healer left, the observed drain IS the unhealed drain: it is used once warm.
-    _unhealedSamples = healerWithMana ? 0 : _unhealedSamples + 1;
-    bool const unhealedWarm = !healerWithMana && _unhealedSamples >= UNHEALED_WARM_SAMPLES && _drainEma > 0.0f;
-    float const unhealedDrain = unhealedWarm ? std::max(_drainEma, 1.0f) : std::max({rawDps, _drainEma, 1.0f});
-    float manaSec = 0.0f;
-    if (healerWithMana)
-        manaSec = _manaBurnEma > MANA_BURN_EPSILON ? float(healerMana) / _manaBurnEma : MAX_SURVIVE_SEC;
+    // Healed at the healers' rate (no more than the enemies land) while their mana lasts, then the enemies' full
+    // damage. Their mana goes at the share of their rate the damage asks for.
+    float const healed = std::min(healHps, enemyDps);
+    float const healedDrain = enemyDps - healed;
+    float const unhealedDrain = std::max(enemyDps, 1.0f);
+    float const manaBurn = healHps > 0.0f ? manaPerSec * healed / healHps : 0.0f;
+    float const manaSec = manaBurn > 0.0f ? float(healerMana) / manaBurn : 0.0f;
 
     float surviveSec = 0.0f;
     if (manaSec <= 0.0f)
         surviveSec = healthPool / unhealedDrain;
-    else if (_drainEma <= 0.0f)
+    else if (healedDrain <= 0.0f)
         surviveSec = manaSec + healthPool / unhealedDrain;
-    else if (healthPool / _drainEma <= manaSec)
-        surviveSec = healthPool / _drainEma;
+    else if (healthPool / healedDrain <= manaSec)
+        surviveSec = healthPool / healedDrain;
     else
-        surviveSec = manaSec + (healthPool - _drainEma * manaSec) / unhealedDrain;
+        surviveSec = manaSec + (healthPool - healedDrain * manaSec) / unhealedDrain;
 
     outlook.surviveSec = std::min(surviveSec, MAX_SURVIVE_SEC);
 
-    // [b33_harn] no healer: not lost before the unhealed drain was observed (UNHEALED_WARM_SAMPLES)
-    bool const lostNow = outlook.enemies && (healerWithMana || unhealedWarm) &&
-                         outlook.killSec > outlook.surviveSec * ATTRITION_SHARE;
+    bool const lostNow =
+        outlook.enemies && enemyDps > 0.0f && outlook.killSec > outlook.surviveSec * ATTRITION_SHARE;
     _lostStreak = lostNow ? uint8(std::min<uint32>(_lostStreak + 1, LOST_STREAK)) : 0;
     outlook.lost = _lostStreak >= LOST_STREAK;
     return outlook;

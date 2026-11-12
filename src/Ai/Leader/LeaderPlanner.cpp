@@ -4524,8 +4524,19 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float const share = MeleeTakenShare(mob, tank, GetTankMitigation(tank), armoredHit, why ? &outcome : nullptr);
         // [lead1401] its weapon specials land through the same armor and attack table as its swings
         float const specials = spells.weaponDps * (1.0f - reduction) * share;
-        float const melee =
+        float melee =
             armoredHit * share * float(IN_MILLISECONDS) / float(attackTime) * (1.0f - spells.castShare) + specials;
+        // [lead1302] a dual-wielding mob's off-hand swings (the core's off-hand damage and attack time, as death434
+        // reads them solo): the formula's term the measured intake used to cover. Its swings through the main hand's
+        // armor and attack table (the dual-wield miss left out: the safe side)
+        if (uint32 const offTime = mob->GetAttackTime(OFF_ATTACK); offTime && mob->HasOffhandWeaponForAttack())
+        {
+            float const offHit =
+                (mob->GetFloatValue(UNIT_FIELD_MINOFFHANDDAMAGE) + mob->GetFloatValue(UNIT_FIELD_MAXOFFHANDDAMAGE)) /
+                2.0f;
+            melee += offHit * (1.0f - reduction) * share * float(IN_MILLISECONDS) / float(offTime) *
+                     (1.0f - spells.castShare);
+        }
         if (why)
             *why = Acore::StringFormat(
                 "swing {:.0f} / {:.1f} s, armor {:.2f}, {}, casting {:.2f}: melee {:.0f}/s ({:.0f}/s weapon specials) "

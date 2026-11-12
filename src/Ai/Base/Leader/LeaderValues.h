@@ -43,7 +43,7 @@ struct FightOutlook
 {
     uint32 enemies = 0;
     float enemyHp = 0.0f;     // current health of every enemy fighting the group (no shields or heals counted)
-    float groupDps = 0.0f;    // expected per-member damage of the living, scaled by what the group really dealt
+    float groupDps = 0.0f;    // the living members' damage by the formula (DpsEstimate on their victims)
     float killSec = 0.0f;     // enemyHp / groupDps
     float surviveSec = 0.0f;  // until the group's health is gone: healed while the healers have mana, then not
     bool lost = false;        // killSec beyond what the group survives, on two evaluations in a row
@@ -69,21 +69,7 @@ private:
     void Clear();
 
     uint32 _lastMs = 0;
-    uint32 _samples = 0;
     uint8 _lostStreak = 0;
-    uint32 _unhealedSamples = 0;  // [b33_harn] samples in a row with no healer that has mana
-    struct MemberSample
-    {
-        uint32 health = 0;
-        uint32 mana = 0;  // healers only
-    };
-
-    float _damageEma = 0.0f;    // health the enemies lost per second
-    float _capacityEma = 0.0f;  // the group's expected damage per second over the same samples
-    float _drainEma = 0.0f;     // health the group lost per second, net of its heals
-    float _manaBurnEma = 0.0f;  // healers' mana spent per second
-    std::unordered_map<ObjectGuid, uint32> _enemyHp;
-    std::unordered_map<ObjectGuid, MemberSample> _members;
 };
 
 struct TankAssignment
