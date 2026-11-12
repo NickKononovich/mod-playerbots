@@ -44,6 +44,7 @@
 #include "Timer.h"
 #include <algorithm>
 #include <limits>
+#include <unordered_map>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -1791,3 +1792,53 @@ void RegisterTriggers(TriggerCreatorMap& creators)
     add("set bonus ascendant bloom", HealProc({ SPELL_ASCENDANT_BLOOM }, HealGate::MEDIUM, "instant Regrowth"));
 }
 }  // namespace ai::setbonus
+
+namespace
+{
+    constexpr float SELF_RES_FIGHT_RADIUS = 40.0f;  // a mob still fighting this close kills the risen bot again
+    constexpr float SELF_RES_AGGRO_MARGIN = 5.0f;
+}
+
+// a living hostile still fighting near, evading home over the body, or at rest close enough to aggro on the bot
+// when it rises
+bool SelfResurrectTrigger::HostileNearCorpse()
+{
+    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest hostile npcs"))
+    {
+        Unit* unit = botAI->GetUnit(guid);
+        if (!unit || !unit->IsAlive())
+            continue;
+        Creature* creature = unit->ToCreature();
+        float const distance = bot->GetDistance(unit);
+        if (creature && creature->IsInEvadeMode())
+            return true;
+        if (unit->IsInCombat())
+        {
+            if (distance <= SELF_RES_FIGHT_RADIUS)
+                return true;
+            continue;
+        }
+        if (creature && distance <= creature->GetAggroRange(bot) + SELF_RES_AGGRO_MARGIN)
+            return true;
+    }
+    return false;
+}
+
+// [death414] b456 Febineysh L18 (warlock, solo): its Soulstone rose it at once on its corpse among the Redridge
+// Bashers and the Mystic that had killed it (idle, 5 yd off), dead again within seconds at full health
+bool SelfResurrectTrigger::IsActive()
+{
+    if (bot->IsAlive() || !bot->GetUInt32Value(PLAYER_SELF_RES_SPELL))
+        return false;
+    if (!HostileNearCorpse())
+        return true;
+    thread_local std::unordered_map<uint64, uint64> logged;  // bot -> the body spot its hold was logged for
+    uint64 const spot = (uint64(uint32(int32(bot->GetPositionX()))) << 32) | uint32(int32(bot->GetPositionY()));
+    if (uint64& last = logged[bot->GetGUID().GetRawValue()]; last != spot)
+    {
+        last = spot;
+        LOG_INFO("playerbots", "[death414] {} L{} holds its self resurrection: a mob would come at once at its body "
+                 "({:.0f},{:.0f})", bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY());
+    }
+    return false;
+}

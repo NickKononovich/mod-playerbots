@@ -1040,62 +1040,6 @@ bool TotemAssignmentTrigger::IsActive()
     return false;
 }
 
-namespace
-{
-    constexpr float REINCARNATION_FIGHT_RADIUS = 40.0f;  // a mob still fighting this close kills the shaman again
-    constexpr float REINCARNATION_AGGRO_MARGIN = 5.0f;
-}
-
-// True while a living hostile mob is still fighting, evading home over the bodies, or standing close enough to
-// aggro on the shaman when he rises. onlyIdle stays true when every such mob is out of combat and at rest.
-bool ShamanReincarnationTrigger::HostileNearCorpse(bool& onlyIdle)
-{
-    onlyIdle = true;
-    bool found = false;
-    for (ObjectGuid const& guid : AI_VALUE(GuidVector, "nearest hostile npcs"))
-    {
-        Unit* unit = botAI->GetUnit(guid);
-        if (!unit || !unit->IsAlive())
-            continue;
-
-        Creature* creature = unit->ToCreature();
-        float const distance = bot->GetDistance(unit);
-        if (creature && creature->IsInEvadeMode())
-        {
-            found = true;
-            onlyIdle = false;
-            continue;
-        }
-
-        if (unit->IsInCombat())
-        {
-            if (distance <= REINCARNATION_FIGHT_RADIUS)
-            {
-                found = true;
-                onlyIdle = false;
-            }
-            continue;
-        }
-
-        if (creature && distance <= creature->GetAggroRange(bot) + REINCARNATION_AGGRO_MARGIN)
-            found = true;
-    }
-
-    return found;
-}
-
-bool ShamanReincarnationTrigger::IsActive()
-{
-    if (bot->IsAlive() || !bot->GetUInt32Value(PLAYER_SELF_RES_SPELL))
-        return false;
-
-    // Any mob that would come at once holds the Ankh, a pack resting on the corpse too: Reincarnation rises on the
-    // corpse, it cannot pick a spot (Stratholme wave 18: given up after 90 s on an idle pack, the shaman rose among
-    // the Ravaged Cadavers and died again within 2 s). Kept too long, the release takes over (corpse run, safe spot).
-    bool onlyIdle = true;
-    return !HostileNearCorpse(onlyIdle);
-}
-
 bool TidalWavesHealingWaveTrigger::IsActive()
 {
     if (!bot->HasAura(SPELL_TIDAL_WAVES_BUFF))

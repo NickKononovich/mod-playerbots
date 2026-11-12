@@ -189,7 +189,6 @@ public:
         creators["maelstrom weapon 4 and medium aoe"] = &ShamanATriggerFactoryInternal::maelstrom_weapon_4_and_medium_aoe;
         creators["call of the elements"] = &ShamanATriggerFactoryInternal::call_of_the_elements;
         // Overrides the shared trigger: holds Reincarnation while the mobs are still on the corpse.
-        creators["can self resurrect"] = &ShamanATriggerFactoryInternal::can_self_resurrect;
         creators["totemic recall"] = &ShamanATriggerFactoryInternal::totemic_recall;
         creators["idle hostile totem"] = &ShamanATriggerFactoryInternal::idle_hostile_totem;  // [rot_b31_heal]
         creators["no earth totem"] = &ShamanATriggerFactoryInternal::no_earth_totem;
@@ -270,7 +269,6 @@ private:
     static Trigger* maelstrom_weapon_5_and_medium_aoe(PlayerbotAI* botAI) { return new MaelstromWeapon5AndMediumAoeTrigger(botAI); }
     static Trigger* maelstrom_weapon_4_and_medium_aoe(PlayerbotAI* botAI) { return new MaelstromWeapon4AndMediumAoeTrigger(botAI); }
     static Trigger* call_of_the_elements(PlayerbotAI* botAI) { return new CallOfTheElementsTrigger(botAI); }
-    static Trigger* can_self_resurrect(PlayerbotAI* botAI) { return new ShamanReincarnationTrigger(botAI); }
     static Trigger* battle_resurrected_member(PlayerbotAI* botAI) { return new BattleResurrectedMemberTrigger(botAI); }
     static Trigger* battle_resurrected_member_low_health(PlayerbotAI* botAI)
     {

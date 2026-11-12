@@ -1196,12 +1196,18 @@ public:
     virtual Value<Unit*>* GetTargetValue();
 };
 
+// [death414] Soulstone / Reincarnation rise on the corpse, they cannot pick a spot: held while a mob would come at once
+// (one fighting near, evading over the body, or resting within its aggro reach). Kept too long, the release takes over
+// (AutoReleaseSpiritAction after SELF_RESURRECT_WAIT_MS: the corpse run picks a safe spot)
 class SelfResurrectTrigger : public Trigger
 {
 public:
-    SelfResurrectTrigger(PlayerbotAI* botAI) : Trigger(botAI, "can self resurrect") {}
+    SelfResurrectTrigger(PlayerbotAI* botAI) : Trigger(botAI, "can self resurrect", 2) {}
 
-    bool IsActive() override { return !bot->IsAlive() && bot->GetUInt32Value(PLAYER_SELF_RES_SPELL); }
+    bool IsActive() override;
+
+private:
+    bool HostileNearCorpse();
 };
 
 // A pet summoned or resummoned (a new GUID): "set pet stance" gives it the config stance. [dps236] It fires on until

@@ -707,17 +707,4 @@ public:
         : SetTotemTrigger(botAI, "grounding totem", GROUNDING_TOTEM, TOTEM_BAR_SLOT_AIR) {}
 };
 
-// Reincarnation waits until the mobs that wiped the group have reset and walked off the corpse; a pack that stays
-// on it keeps the Ankh unused (AutoReleaseSpiritAction then releases after SELF_RESURRECT_WAIT_MS).
-class ShamanReincarnationTrigger : public Trigger
-{
-public:
-    ShamanReincarnationTrigger(PlayerbotAI* botAI) : Trigger(botAI, "can self resurrect", 2) {}
-
-    bool IsActive() override;
-
-private:
-    bool HostileNearCorpse(bool& onlyIdle);
-};
-
 #endif
