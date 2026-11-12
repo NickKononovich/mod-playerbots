@@ -3143,7 +3143,6 @@ namespace SoloSafety
         Projection out;
         if (!bot || !bot->IsAlive() || !bot->IsInCombat() || !Applies(bot))
             return out;
-        uint32 const now = getMSTime();
         std::unique_lock<std::mutex> guard(lock);
         auto const found = states.find(bot->GetGUID().GetCounter());
         if (found == states.end() || !found->second.open)
@@ -3152,20 +3151,16 @@ namespace SoloSafety
         out.open = true;
         out.fleeing = state.fleeing;
 
-        // the attackers still on it (a mob on its pet hits the pet), their damage: measured this fight (each from its
-        // first hit, a swing added), the model before their first hit - the higher
+        // [death441] user rule 2026-11-08 (reminded 2026-11-12): the attackers' damage and its own come from the
+        // formulas alone - the core's creature stats (MobDps) and DpsEstimate (its gear, spells, talents, buffs). What
+        // this fight measured goes to the [dps] / [mobdps] lines only. Before, the fight's own rates replaced them
+        // after two swings (death438: one rotation): b462 Septimon L17 ran on "198 s at its 2.2 dps" against its
+        // formula's 20.9 from a fight judged won
         for (Unit* attacker : bot->getAttackers())
         {
             if (!attacker || !attacker->IsAlive() || attacker->GetVictim() != bot)
                 continue;
-            float dps = MobDps(attacker, bot);
-            auto const track = state.attackers.find(attacker->GetGUID().GetRawValue());
-            // its measurement this fight once it has swung twice (a single hit, a crit, is no rate), else the model
-            if (track != state.attackers.end() && track->second.damage &&
-                getMSTimeDiff(track->second.firstMs, track->second.lastMs) >=
-                    uint32(track->second.swingSec * IN_MILLISECONDS))
-                dps = float(track->second.damage) /
-                      (float(getMSTimeDiff(track->second.firstMs, now)) / IN_MILLISECONDS + track->second.swingSec);
+            float const dps = MobDps(attacker, bot);
             Projection::Foe foe;
             foe.unit = attacker;
             foe.hp = float(attacker->GetHealth());
@@ -3181,32 +3176,8 @@ namespace SoloSafety
         if (out.foes.empty() || out.incoming <= 0.0f)
             return out;
 
-        // its damage: the higher of the formula (against its victim) and this fight's once it has swung (b304 run 1:
-        // this fight's first seconds alone - a caster's first bolt still in flight - sent 9 bots running in 10 min)
-        float const elapsed = float(getMSTimeDiff(state.firstMs, now)) / IN_MILLISECONDS;
         DpsEstimate::Result const own = OwnDamage(bot, bot->GetVictim());
-        float botDps = own.dps;  // [dps1] no fight history
-        if (state.dealt && elapsed >= SwingSec(bot))
-            botDps = std::max(botDps, float(state.dealt) / (elapsed + SwingSec(bot)));
-        // [guild80] ... and this fight's alone once it covers two of its swings: b319 Rumanatol L11 dealt 5.0 dps to a
-        // Blue Flutterer (10.2 measured at that gap), Rollothan L8 5.7 (8.5): the fight showed lost only at hp 43 / 4
-        // [guild15] once it has dealt damage: a bot hit on its walk before it turned on the mob had dealt 0 after two
-        // swings, the projection read 1.0 dps and it ran from L8 mobs it kills in 10 s (b321 Colian L11, Nightstalkers)
-        // [death438] ... a window that holds one pass of its rotation (DpsEstimate cycleSec, the calibration's own
-        // validity rule): b462 Septimon L17 (shadow) opened on a Pygmy Venom Web Spider with Shadow Word: Pain, its
-        // first tick in, the projection read "198 s at its 2.2 dps" against the formula's 20.9 and ran from a fight
-        // judged won into two wanderers
-        float const window = std::max(2.0f * SwingSec(bot), own.cycleSec);
-        if (elapsed >= window && state.dealt)
-            botDps = float(state.dealt) / (elapsed + SwingSec(bot));
-        // [deaths] ... and while its attackers stand in its melee reach, what it deals there once that part covers two
-        // of its swings: the mob is on it, the rest of the fight is fought there. b337: Rumanatol L11 at The Lost Fold
-        // stood "melee 38.1 s dealt 0" under a Bloodmyst Hatchling, the formula (18.9 dps) read the fight won until his
-        // health was gone; Eraelor L7 (hunter, no pet) dealt 10.2 dps at range for 6 s, then 2.4 dps in melee for
-        // 40 s - the whole fight's average read won until the run cost more than his health, and he died
-        if (float const meleeSec = float(state.meleeMs) / IN_MILLISECONDS;
-            state.sampleMelee && meleeSec >= window)
-            botDps = float(state.dealtMelee) / (meleeSec + SwingSec(bot));
+        float const botDps = own.dps;
         out.botDps = std::max(botDps, 1.0f);
         // [deaths] each attacker's health with the heals it still casts on itself over the time the bot needs for it
         for (Projection::Foe& foe : out.foes)
