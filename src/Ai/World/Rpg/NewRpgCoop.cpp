@@ -2255,8 +2255,10 @@ HelpVerdict JudgeHelp(HelpRequest const& r, std::vector<Player*> const& party)
     float const health = float(v.taker->GetMaxHealth()) + PetHealth(v.taker, true);
     float heals = 0.0f;
     for (Player* m : party)
-        if (m == v.taker || PlayerbotAI::IsHeal(m))
+        if (PlayerbotAI::IsHeal(m))
             heals += SurvivalKit::HealPoints(m, v.seconds, float(m->GetPower(POWER_MANA)), false);
+        else if (m == v.taker)
+            heals += SurvivalKit::ItemHealPoints(m);  // [death440] no kit in a party: its items alone
     v.ehp = health + heals;
     v.needsHeals = v.damage >= health;
     v.win = v.damage < v.ehp;
@@ -2739,7 +2741,10 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         if (m == v.taker || PlayerbotAI::IsHeal(m))
             party_.healRate[m->GetGUID().GetCounter()] =
                 v.seconds > 0.0f
-                    ? SurvivalKit::HealPoints(m, v.seconds, float(m->GetPower(POWER_MANA)), false) / v.seconds
+                    ? (PlayerbotAI::IsHeal(m)
+                           ? SurvivalKit::HealPoints(m, v.seconds, float(m->GetPower(POWER_MANA)), false)
+                           : SurvivalKit::ItemHealPoints(m)) /  // [death440]
+                          v.seconds
                     : 0.0f;
     r.party = id;
     r.lastRefusal.clear();
@@ -4261,6 +4266,17 @@ SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
             if (!m || !m->IsAlive() || (m != holder && !PlayerbotAI::IsHeal(m)) ||
                 leader->GetExactDist(m) > sPlayerbotAIConfig.SightDistance)
                 continue;
+            // [death440] a holder that is no healer heals itself in a party with its items alone: the survival kit runs
+            // for a solo bot only (SoloSafety::Applies), its class's party rotation casts no self heal. b462
+            // Mytaeleas L19 (balance) was priced "8 mobs, 1876 dmg on Mytaeleas, ehp 2503" - 523 health and ~1980 of
+            // self heals it never cast; it cast Wrath and died
+            if (m == holder && !PlayerbotAI::IsHeal(m))
+            {
+                float const items = SurvivalKit::ItemHealPoints(m) / std::max(p.seconds, 1.0f);
+                healNow += items;
+                healFull += items;
+                continue;
+            }
             if (openGroup)
             {
                 healNow += SurvivalKit::HealPoints(m, p.seconds, float(m->GetPower(POWER_MANA)), m == holder) /

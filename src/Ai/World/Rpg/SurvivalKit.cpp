@@ -1429,6 +1429,30 @@ namespace SurvivalKit
         return total;
     }
 
+    float ItemHealPoints(Player* bot)
+    {
+        if (!bot)
+            return 0.0f;
+        std::vector<Piece> pieces;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            ItemPieces(bot, pieces);
+        }
+        std::unordered_map<uint32, float> byCategory;
+        for (Piece const& piece : pieces)
+        {
+            if (piece.kind != Kind::Heal || !piece.item || piece.needsWindow || piece.amount <= 0.0f)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(piece.spell);
+            float& best = byCategory[info && info->GetCategory() ? info->GetCategory() : piece.spell];
+            best = std::max(best, piece.amount);
+        }
+        float total = 0.0f;
+        for (auto const& [category, amount] : byCategory)
+            total += amount;
+        return total;
+    }
+
     uint32 RunPastSpeed(Player* bot, float seconds, float& pct)
     {
         pct = 0.0f;

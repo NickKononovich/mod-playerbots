@@ -52,6 +52,9 @@ namespace SurvivalKit
     // the bot deals no damage, the fight runs that much longer: SurvivalKit::Gain's own rule)
     float HealPoints(Player* bot, float fightSec, float spareMana, bool items, bool onTheMove = false,
                      float incomingDps = 0.0f);
+    // [death440] its heal items alone (one per shared cooldown): what a grouped bot's combat casts on itself without
+    // the kit (the "potions" strategy at critical health)
+    float ItemHealPoints(Player* bot);
     // [lag360] the speed piece a run past casts as its chase starts: instant (cast on the move), castable now (its
     // cooldown, mana, form), its aura not on the bot yet, lasting `seconds`, and no daze of its own on being struck
     // (Aspect of the Cheetah); 0: none. `pct`: its speed share (0.7 for Sprint)
