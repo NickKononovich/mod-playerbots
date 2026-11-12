@@ -889,6 +889,25 @@ namespace
         return mob->GetHomePosition();
     }
 
+    // [death387] the run's way as its executor walks it (RunStep): the spot on the ground, a walk the guard takes, a
+    // complete navmesh path from the bot, no drop on it - checked before the run is chosen, not after
+    bool RunWalkable(PlayerbotAI* botAI, Player* bot, G3D::Vector3 const& end)
+    {
+        float x = end.x;
+        float y = end.y;
+        float z = end.z;
+        bot->UpdateAllowedPositionZ(x, y, z);
+        if (botAI->GuardRefusedWalkTo(x, y, z))
+            return false;
+        PathGenerator path(bot);
+        path.CalculatePath(x, y, z, false);
+        if (path.GetPathType() != PATHFIND_NORMAL)
+            return false;
+        Movement::PointsArray const& points = path.GetPath();
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        return WayKeepsGround(bot, here, std::vector<G3D::Vector3>(points.begin(), points.end()));
+    }
+
     FleePlan PlanFlee(PlayerbotAI* botAI, Player* bot, SoloSafety::Projection const& p, std::vector<Piece> const& kit,
                       KitState& state)
     {
@@ -1086,6 +1105,13 @@ namespace
                     trailNote = Acore::StringFormat(", spot {} back skipped: {} on it", spots + 1, BlockerName(*on));
                     break;
                 }
+                // [death387] the executor walks to the first spot by a navmesh path (b449 Orton L19 in Lake Everstill:
+                // "spot 1..16 back skipped: no navmesh path to it", the run planned "back the way it came")
+                if (!spots && !RunWalkable(botAI, bot, back[spots]))
+                {
+                    trailNote = ", spot 1 back: no walk to it";
+                    break;
+                }
                 walked += std::hypot(back[spots].x - from.x, back[spots].y - from.y);
                 from = back[spots];
             }
@@ -1101,6 +1127,8 @@ namespace
                     float const rest = botSpeed * priced.leashSec - walked;
                     if (rest > 0.0f &&
                         StretchBlocker(blockers, from, Ahead(from, angle, rest), walked / botSpeed, botSpeed))
+                        continue;
+                    if (rest > 0.0f && !RunWalkable(botAI, bot, Ahead(from, angle, rest)))  // [death387]
                         continue;
                     trail.damage = priced.damage;
                     trail.leashSec = priced.leashSec;
@@ -1132,7 +1160,8 @@ namespace
         for (float turn : {0.0f, float(M_PI) / 4.0f, -float(M_PI) / 4.0f, float(M_PI) / 2.0f, -float(M_PI) / 2.0f})
         {
             float const angle = Position::NormalizeOrientation(away + turn);
-            if (!StretchBlocker(blockers, here, Ahead(here, angle, straight.dist), 0.0f, botSpeed))
+            if (!StretchBlocker(blockers, here, Ahead(here, angle, straight.dist), 0.0f, botSpeed) &&
+                RunWalkable(botAI, bot, Ahead(here, angle, straight.dist)))  // [death387]
             {
                 straight.angle = angle;
                 straightClear = true;
@@ -1860,8 +1889,11 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
             std::lock_guard<std::mutex> guard(lock);
             KitState& state = states[bot->GetGUID().GetCounter()];
             state.fleeTrail = false;
-            if (Unit* from = ObjectAccessor::GetUnit(*bot, state.fleeFrom))
-                state.fleeAngle = angle = from->GetAbsoluteAngle(bot);
+            // [death387] on along the direction its plan checked clear from the trail's cut (FleePlan's trail angle,
+            // kept in fleeAngle), not a new one away from the attacker its plan never looked at. b449 Uraela,
+            // Aestymro, Kianey, Febineysh: "the way back cut (0 of 16 spots), on away from the attackers" -> "flee
+            // stops: no way on clear of other mobs", all died
+            angle = state.fleeAngle;
             LOG_INFO("playerbots",
                      "[solo] {} L{} survival flee: the way back {} ({} of {} spots), on away from the "
                      "attackers",
