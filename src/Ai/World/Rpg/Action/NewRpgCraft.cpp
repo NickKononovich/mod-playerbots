@@ -334,7 +334,6 @@ namespace
     // [ench157] the recipe makes a tool (Totem / TotemCategory) that a known recipe of its line needs ([craft408]: gray
     // or not) and the bot has none of
     bool MissingTool(Player* bot, CraftRecipe const& r)
-    bool MissingTool(Player* bot, CraftRecipe const& r, uint32 value)
     {
         if (!r.product || !index.tools.count(r.product) || bot->HasItemCount(r.product, 1, true))
             return false;
@@ -346,7 +345,7 @@ namespace
         {
             // [craft408] any known recipe of the line, gray or not: the members' enchants ([craft386]) cast gray ones
             // too. b461 Emdyl bought the Copper Rod, but its only rod recipes were gray: no Runed Copper Rod made
-            // b461 Emdyl bought the Copper Rod, but its only rod recipes were gray, so no Runed Copper Rod was made
+            CraftRecipe const& other = index.recipes.at(spell);
             if (other.spellId == r.spellId || !bot->HasSpell(spell) || ToolsOk(bot, other))
                 continue;
             if (std::find(other.totem.begin(), other.totem.end(), r.product) != other.totem.end() ||
