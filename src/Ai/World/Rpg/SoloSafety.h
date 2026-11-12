@@ -271,6 +271,9 @@ namespace SoloSafety
     // [death384] the target is a mob of the bot's run past under way: no hit or hostile cast at it (each one renews
     // its leash, Unit::DealDamage / Unit::AtTargetAttacked -> Creature::UpdateLeashExtensionTime); logs once per bot
     bool RunPastChaser(Player* bot, Unit* target);
+    // [death429] the bot holds a pull spot for `target` and the target is not in a fight yet: its pull is made from
+    // that spot (the judge priced the fight there), no gap closer takes it to the target
+    bool HoldsPullSpot(Player* bot, Unit* target);
     void SetRunPastWalking(Player* bot, bool walking);  // [death384] the executor's look
     bool RunPastStep(Player* bot, std::vector<G3D::Vector3>& rest, std::string& line);
 

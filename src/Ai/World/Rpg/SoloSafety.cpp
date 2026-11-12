@@ -4116,6 +4116,15 @@ namespace SoloSafety
         return found != states.end() && !found->second.pendingRunPast.empty();
     }
 
+    bool HoldsPullSpot(Player* bot, Unit* target)
+    {
+        if (!bot || !target || target->IsInCombat() || !target->IsAlive())
+            return false;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        return found != states.end() && found->second.pullSpot && found->second.pullTarget == target->GetGUID();
+    }
+
     bool RunPastChaser(Player* bot, Unit* target)
     {
         // only while it walks the leg on (the executor's last look said so and it moves): a bot that stopped to fight

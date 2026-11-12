@@ -626,6 +626,11 @@ std::string Busy(Player* p)
         return "no bot";
     if (!p->IsAlive())
         return "dead";
+    // [death430] a member in a fight of its own is not the forecast's partner (the plan's times and the party judge
+    // count it rested, at the party's spot): b460 Mytaeleas L19, 4 Greymist on it at 39 of 543 hp, was taken into
+    // Shalaeth's party "for a camp one cannot solo" and died 3 s later
+    if (p->IsInCombat())
+        return "in a fight";
     if (p->IsInFlight())
         return "in flight";
     if (p->GetGroup())

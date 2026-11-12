@@ -5233,6 +5233,24 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
     if (target != bot && !spellInfo->IsPositive() && SoloSafety::RunPastChaser(bot, target))
         return false;
 
+    // [death429] no gap closer at an idle target whose pull the judge priced at the bot's pull spot: b460 Thelengyl /
+    // Shalaeth (prot) - 17 of their 19 pulls more than 5 yd off the spot were a Charge from there into the camp (up
+    // to 38 yd off), the 21 made on the spot a Shoot
+    if (target != bot && (spellInfo->HasEffect(SPELL_EFFECT_CHARGE) || spellInfo->HasEffect(SPELL_EFFECT_CHARGE_DEST) ||
+                          spellInfo->HasEffect(SPELL_EFFECT_JUMP) || spellInfo->HasEffect(SPELL_EFFECT_JUMP_DEST)) &&
+        SoloSafety::HoldsPullSpot(bot, target))
+    {
+        thread_local std::unordered_map<uint64, uint64> logged;  // one line per bot and target: a log cadence
+        uint64& last = logged[bot->GetGUID().GetRawValue()];
+        if (last != target->GetGUID().GetRawValue())
+        {
+            last = target->GetGUID().GetRawValue();
+            LOG_INFO("playerbots", "[death429] {} L{} no {} at {} L{}: its pull is made from its pull spot",
+                     bot->GetName(), bot->GetLevel(), spellInfo->SpellName[0], target->GetName(), target->GetLevel());
+        }
+        return false;
+    }
+
     Pet* pet = bot->GetPet();
     if (pet && pet->HasSpell(spellId))
     {
