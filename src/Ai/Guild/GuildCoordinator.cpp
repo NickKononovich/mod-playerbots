@@ -6196,6 +6196,8 @@ void GuildCoordinator::UpdateGear()
     // the grey / white piece it wears), its quest log, its bags (new loot), the guild's crafting skills and bank (a
     // skill-up that opens recipes, a new piece in the bank) - not on a timer. One member per call, in plan order,
     // the first whose key changed; none changed: no work. Before, every member in turn, every 5 s
+    std::map<uint32, uint32> bank;
+    GuildBankRun::CountBank(guild, bank);
     // [craft402] the guild's signals (docs/GUILD_UPGRADE_SIGNALS.md): its members (joined, left, online), each
     // crafter's skills, known spells (a recipe learned) and bags (materials reaching it), the bank, the dungeon order
     // (the open dungeon, the guild's clears: a new drop table)
@@ -6213,16 +6215,26 @@ void GuildCoordinator::UpdateGear()
                 }
             if (!crafter)
                 continue;
-            skills = skills * 1000033ull + c->GetSpellMap().size();
+            size_t const spells = c->GetSpellMap().size();
+            skills = skills * 1000033ull + spells;
+            // [craft403] its holding of the reagents of the gear recipes it knows (GuildGear::Recipe), not every loot:
+            // the reagent set is kept per crafter while its known spells stay (world thread)
+            static std::unordered_map<uint32, std::pair<size_t, std::vector<uint32>>> gearReagents;
+            auto& known = gearReagents[c->GetGUID().GetCounter()];
+            if (known.first != spells)
+            {
+                std::set<uint32> items;
+                for (auto const& [spellId, spell] : c->GetSpellMap())
+                    if (GuildGear::CraftRecipe const* recipe = spell && spell->State != PLAYERSPELL_REMOVED
+                                                                   ? GuildGear::Recipe(spellId)
+                                                                   : nullptr)
+                        for (auto const& [item, n] : recipe->reagents)
+                            items.insert(item);
+                known = {spells, std::vector<uint32>(items.begin(), items.end())};
+            }
             uint64 mats = 0;
-            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
-                if (Item* item = c->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-                    mats += uint64(item->GetEntry()) * item->GetCount();
-            for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
-                if (Bag* bag = c->GetBagByPos(b))
-                    for (uint32 j = 0; j < bag->GetBagSize(); ++j)
-                        if (Item* item = bag->GetItemByPos(uint8(j)))
-                            mats += uint64(item->GetEntry()) * item->GetCount();
+            for (uint32 item : known.second)
+                mats = mats * 31ull + uint64(item) * c->GetItemCount(item, false);
             skills ^= mats * 0x2545F4914F6CDD1Dull;
         }
         uint64 banked = 0;
@@ -6293,8 +6305,6 @@ void GuildCoordinator::UpdateGear()
     if (!member)
         return;
 
-    std::map<uint32, uint32> bank;
-    GuildBankRun::CountBank(guild, bank);
     std::vector<WantedItem> wanted;
     {
         CoordLock guard(lock_, __func__);
