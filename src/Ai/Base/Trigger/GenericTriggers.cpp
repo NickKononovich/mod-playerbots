@@ -789,6 +789,11 @@ bool GenericBoostTrigger::IsActive()
     return AI_VALUE(uint8, "balance") <= balance;
 }
 
+bool SoloHealerShouldAttackTrigger::IsActive()
+{
+    return botAI->GetNearGroupMemberCount(sPlayerbotAIConfig.SightDistance) <= 1 || DpsEstimate::FightsAlone(bot);
+}
+
 bool HealerShouldAttackTrigger::IsActive()
 {
     if (botAI->GetNearGroupMemberCount(sPlayerbotAIConfig.SightDistance) <= 1)

@@ -169,6 +169,7 @@ public:
         creators["high aoe"] = &TriggerContext::HighAoe;
 
         creators["healer should attack"] = &TriggerContext::healer_should_attack;
+        creators["solo healer should attack"] = &TriggerContext::solo_healer_should_attack;  // [lag371]
         creators["medium aoe and healer should attack"] = &TriggerContext::medium_aoe_and_healer_should_attack;
 
         creators["has area debuff"] = &TriggerContext::HasAreaDebuff;
@@ -415,6 +416,7 @@ private:
     static Trigger* MediumAoe(PlayerbotAI* botAI) { return new MediumAoeTrigger(botAI); }
     static Trigger* HighAoe(PlayerbotAI* botAI) { return new HighAoeTrigger(botAI); }
     static Trigger* healer_should_attack(PlayerbotAI* botAI) { return new HealerShouldAttackTrigger(botAI); }
+    static Trigger* solo_healer_should_attack(PlayerbotAI* botAI) { return new SoloHealerShouldAttackTrigger(botAI); }
     static Trigger* medium_aoe_and_healer_should_attack(PlayerbotAI* botAI) { return new TwoTriggers(botAI, "medium aoe", "healer should attack"); }
     static Trigger* HasAreaDebuff(PlayerbotAI* botAI) { return new HasAreaDebuffTrigger(botAI); }
     static Trigger* combat_start(PlayerbotAI* botAI) { return new CombatStartTrigger(botAI); }

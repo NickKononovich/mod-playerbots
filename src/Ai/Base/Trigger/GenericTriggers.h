@@ -703,6 +703,16 @@ public:
     bool IsActive() override;
 };
 
+// [lag371] a healer that fights alone (no member near, or alone by SoloSafety's rule): a group's healer keeps its
+// ranged position, a lone one closes in when its damage is a melee one
+class SoloHealerShouldAttackTrigger : public Trigger
+{
+public:
+    SoloHealerShouldAttackTrigger(PlayerbotAI* botAI) : Trigger(botAI, "solo healer should attack", 1) {}
+
+    bool IsActive() override;
+};
+
 class RandomTrigger : public Trigger
 {
 public:

@@ -114,4 +114,11 @@ void PaladinHealerDpsStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
                             // MeleeAction swings for a ranged spec only at a mob in its melee reach.
                             NextAction("melee", ACTION_DEFAULT + 0.05f),
                             }));
+    // [lag371] coordinator 2026-11-12 (b450 Rollothan L14 holy, solo in Westfall: 312 "[stuck258] the combat engine
+    // out of combat with idle Harvest Watcher L14 (24-32 yd) ... no action that runs" in an hour, 780 xp/h): a holy
+    // paladin counts as ranged (its spec's strategy type), so no "reach melee" is among its actions and "melee" never
+    // walks - but its damage is a melee one (Judgement 10 yd, Crusader Strike, its swings; no ranged nuke until Holy
+    // Shock / Exorcism of an undead): an engaged mob at its pull's distance was never reached. Alone, it walks in
+    triggers.push_back(
+        new TriggerNode("solo healer should attack", {NextAction("reach melee", ACTION_DEFAULT + 0.04f)}));
 }
