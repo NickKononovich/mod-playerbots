@@ -4268,7 +4268,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // a blocked hit less the shield's block value, a crushing blow at 150 %, a crit at 200 % (melee crit damage).
     // `outcome` (optional): the table, logged.
     float MeleeTakenShare(Unit* mob, Player* tank, TankMitigation const& mitigation, float armoredHit,
-                          std::string* outcome = nullptr)
+                          std::string* outcome = nullptr, float* landedShare = nullptr)
     {
         Creature const* creature = mob->ToCreature();
         int32 const weaponSkill = int32(mob->GetWeaponSkillValue(BASE_ATTACK, tank));
@@ -4305,6 +4305,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         take(miss);
         take(dodge);
         take(parry);
+        if (landedShare)  // [lead1311] the swings that land (blocked, crushing and critical ones too)
+            *landedShare = left / 100.0f;
         float const blocked = take(block);
         float const crushing = take(crush);
         float const crits = take(crit);
@@ -4348,6 +4350,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float dps = 0.0f;
         float castShare = 0.0f;  // the share of the fight it spends casting: no swing meanwhile
         float weaponDps = 0.0f;  // [lead1401] its weapon specials (physical: armor and avoidance reduce them)
+        float castsPerSec = 0.0f;  // [lead1311] its damage casts a second (weapon specials too)
     };
 
     // [lead1362] b258 rfc-h 5E-5: Bazzalan's Deadly Poison (2818, 6 a tick at its level) landed 25615 on the tank
@@ -4397,7 +4400,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 float const everyMs =
                     std::max({intervalMs, float(info->CalcCastTime(caster)), float(info->StartRecoveryTime), 1.0f});
                 if (hit > 0.0f)
+                {
                     spells.weaponDps += hit * float(IN_MILLISECONDS) / everyMs * chance;
+                    spells.castsPerSec += float(IN_MILLISECONDS) / everyMs * chance;  // [lead1311]
+                }
                 return;
             }
 
@@ -4420,6 +4426,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             float const everyMs = std::max({intervalMs, castMs, float(info->StartRecoveryTime), 1.0f});
             spells.dps += damage * float(IN_MILLISECONDS) / everyMs * chance;
             spells.castShare += castMs / everyMs * chance;
+            spells.castsPerSec += float(IN_MILLISECONDS) / everyMs * chance;  // [lead1311]
         };
 
         if (aiName == "SmartAI")
@@ -4549,6 +4556,25 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     }
 
     float MobLandedDps(Unit* mob, Player* victim) { return mob && victim ? LandedMeleeDps(mob, victim) : 0.0f; }
+
+    float MobHitsPerSec(Unit* mob, Player* victim)
+    {
+        if (!mob || !victim)
+            return 0.0f;
+        Creature* creature = mob->ToCreature();
+        MobSpells const spells = creature ? GetMobSpells(creature) : MobSpells();
+        uint32 const attackTime = mob->GetAttackTime(BASE_ATTACK);
+        if ((MobRoles::IsCaster(mob) && spells.dps > 0.0f) || !attackTime)
+            return spells.castsPerSec;  // a caster at range (LandedMeleeDps)
+        float const hit = (mob->GetFloatValue(UNIT_FIELD_MINDAMAGE) + mob->GetFloatValue(UNIT_FIELD_MAXDAMAGE)) / 2.0f;
+        float landed = 1.0f;
+        MeleeTakenShare(mob, victim, GetTankMitigation(victim), hit * (1.0f - ArmorReduction(mob, victim)), nullptr,
+                        &landed);
+        float swings = float(IN_MILLISECONDS) / float(attackTime);
+        if (uint32 const offTime = mob->GetAttackTime(OFF_ATTACK); offTime && mob->HasOffhandWeaponForAttack())
+            swings += float(IN_MILLISECONDS) / float(offTime);
+        return landed * swings * (1.0f - spells.castShare) + spells.castsPerSec;
+    }
 
     float FormulaTakenDps(Player* victim)
     {

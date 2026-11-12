@@ -48,6 +48,9 @@ namespace PullPlanning
     // [dun180] the damage per second `mob` lands on `victim` as the planner reads it (LandedMeleeDps: its melee
     // through the game's attack table and armor, its spells from its spell data)
     float MobLandedDps(Unit* mob, Player* victim);
+    // [lead1311] the hits per second `mob` lands on `victim` by the formula: its swings that pass the victim's miss,
+    // dodge and parry (LandedMeleeDps' attack table, off-hand too, none while it casts) plus its damage casts
+    float MobHitsPerSec(Unit* mob, Player* victim);
     // [lead1303] the damage per second `victim` takes now by the formula: MobLandedDps of every living attacker whose
     // victim it is (who attacks whom is state; no measured intake)
     float FormulaTakenDps(Player* victim);

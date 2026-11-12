@@ -27,6 +27,8 @@
 #include "GenericSpellActions.h"
 #include "HealAssignmentValues.h"
 #include "LeaderOrders.h"  // [lead15] LEADER_ONE_REST_RULE
+#include "LeaderPlannerShared.h"  // [lead1311] MobHitsPerSec
+#include "TargetValue.h"          // [lead1311] IsCrowdControlled
 #include "MgTShared.h"        // [b47_patrol] MagistersTerrace::SelinRoom
 #include "MovementActions.h"  // [b46_patrol] MovementAction::IdleAggroReach
 #include "ObjectMgr.h"        // [lead264] CreatureBaseStats
@@ -615,13 +617,17 @@ namespace
 {
 // [lead1306] the spells a healer's rotation keeps up on the main tank (first ranks; the strategies' "<spell> on main
 // tank" triggers): Discipline's Power Word: Shield, Holy's Renew, a paladin's Sacred Shield, a druid's Lifebloom and
-// Rejuvenation. Shaman Earth Shield (charges spent per hit taken) is not priced yet
+// Rejuvenation; [lead1311] a restoration shaman's Earth Shield (its charges spent per hit the tank takes: priced live,
+// EarthShieldManaPerSec)
 constexpr uint32 SPELL_POWER_WORD_SHIELD_FIRST = 17;
 constexpr uint32 SPELL_RENEW_FIRST = 139;
 constexpr uint32 SPELL_SACRED_SHIELD_FIRST = 53601;
 constexpr uint32 SPELL_LIFEBLOOM_FIRST = 33763;
 constexpr uint32 SPELL_REJUVENATION_FIRST = 774;
 constexpr uint32 SPELL_WEAKENED_SOUL_DEBUFF = 6788;  // a shield's target takes no new one while it lasts
+constexpr uint32 SPELL_EARTH_SHIELD_FIRST = 974;     // [lead1311]
+constexpr uint32 SPELL_EARTH_SHIELD_HEAL = 379;      // [lead1311] its proc's heal (spell_sha_earth_shield)
+constexpr uint8 TAB_RESTORATION_SHAMAN = 2;          // [lead1311]
 constexpr uint8 TAB_DISCIPLINE = 0;
 constexpr uint8 TAB_HOLY_PRIEST = 1;
 
@@ -642,6 +648,10 @@ std::vector<uint32> KeptUpFirstRanks(Player* healer)
             return {SPELL_SACRED_SHIELD_FIRST};
         case CLASS_DRUID:
             return {SPELL_LIFEBLOOM_FIRST, SPELL_REJUVENATION_FIRST};
+        case CLASS_SHAMAN:  // [lead1311]
+            if (AiFactory::GetPlayerSpecTab(healer) == TAB_RESTORATION_SHAMAN)
+                return {SPELL_EARTH_SHIELD_FIRST};
+            return {};
         default:
             return {};
     }
@@ -650,7 +660,9 @@ std::vector<uint32> KeptUpFirstRanks(Player* healer)
 // [lead1306] the mana per second the kept-up spells cost beyond the healing they do: each one's highest known rank,
 // its cost once per its period (its duration, its cooldown, a shield's Weakened Soul: the longest), less the mana the
 // main heal would spend on the health a heal over time restores (`mainHealPerMana`; a shield heals nothing)
-float KeptUpManaPerSec(Player* healer, Unit* target, float mainHealPerMana, std::string* why)
+// [lead1311] `earthShield`: its highest known Earth Shield, priced live (EarthShieldManaPerSec), not here
+float KeptUpManaPerSec(Player* healer, Unit* target, float mainHealPerMana, std::string* why,
+                       SpellInfo const** earthShield)
 {
     std::vector<uint32> const firsts = KeptUpFirstRanks(healer);
     if (firsts.empty())
@@ -673,6 +685,12 @@ float KeptUpManaPerSec(Player* healer, Unit* target, float mainHealPerMana, std:
     float perSec = 0.0f;
     for (auto const& [first, info] : best)
     {
+        if (first == SPELL_EARTH_SHIELD_FIRST)
+        {
+            if (earthShield)
+                *earthShield = info;
+            continue;
+        }
         int32 const cost = info->CalcPowerCost(healer, info->GetSchoolMask());
         if (cost <= 0)
             continue;
@@ -710,6 +728,51 @@ float KeptUpManaPerSec(Player* healer, Unit* target, float mainHealPerMana, std:
     }
     return perSec;
 }
+
+// [lead1311] Earth Shield's upkeep on `tank`: one cast per period - its charges (spell_proc's, else the spell's,
+// with the healer's charge mods: Aura::CalcMaxCharges) over the procs a second, each hit the tank takes by the
+// formula (MobHitsPerSec of every living attacker on it) at most one per the proc's cooldown (spell_proc), the
+// aura's duration at most - less the mana the main heal would spend on what its procs heal in that period (each
+// the dummy effect with the healer's healing bonus, spell_sha_earth_shield, through the tank's healing taken; the
+// glyph and Improved Shields left out: the safe side)
+float EarthShieldManaPerSec(Player* healer, Player* tank, SpellInfo const* info, float mainHealPerMana,
+                            std::string* why)
+{
+    if (!healer || !tank || !info)
+        return 0.0f;
+    int32 const cost = info->CalcPowerCost(healer, info->GetSchoolMask());
+    float const durationMs = float(std::max(info->GetMaxDuration(), 0));
+    if (cost <= 0 || durationMs <= 0.0f)
+        return 0.0f;
+    SpellProcEntry const* proc = sSpellMgr->GetSpellProcEntry(info->Id);
+    uint32 charges = proc ? proc->Charges : info->ProcCharges;
+    healer->ApplySpellMod(info->Id, SPELLMOD_CHARGES, charges);
+    float hits = 0.0f;
+    for (Unit* attacker : tank->getAttackers())
+        if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank && !IsCrowdControlled(attacker))
+            hits += PullPlanning::MobHitsPerSec(attacker, tank);
+    float procs = hits;
+    if (proc && proc->Cooldown.count() > 0)
+        procs = std::min(procs, float(IN_MILLISECONDS) / float(proc->Cooldown.count()));
+    float const periodMs =
+        charges && procs > 0.0f ? std::min(durationMs, float(charges) * float(IN_MILLISECONDS) / procs) : durationMs;
+    float const procsWithin = std::min(procs * periodMs / float(IN_MILLISECONDS), float(charges ? charges : 1));
+    float perCharge = 0.0f;
+    if (int32 const base = info->GetEffect(EFFECT_0).CalcValue(healer); base > 0)
+    {
+        perCharge = float(healer->SpellHealingBonusDone(tank, info, uint32(base), HEAL, EFFECT_0));
+        if (SpellInfo const* heal = sSpellMgr->GetSpellInfo(SPELL_EARTH_SHIELD_HEAL))
+            perCharge = float(tank->SpellHealingBonusTaken(healer, heal, uint32(perCharge), HEAL));
+    }
+    float const saved = mainHealPerMana > 0.0f ? procsWithin * perCharge / mainHealPerMana : 0.0f;
+    float const net = std::max(float(cost) - saved, 0.0f);
+    if (why)
+        *why += Acore::StringFormat("{}{} {} mana / {:.0f} s ({} charges, {:.2f} hits/s on {}, {:.2f} procs/s) - "
+                                    "{:.0f} it heals",
+                                    why->empty() ? "" : ", ", info->SpellName[LOCALE_enUS], cost,
+                                    periodMs / float(IN_MILLISECONDS), charges, hits, tank->GetName(), procs, saved);
+    return net * float(IN_MILLISECONDS) / periodMs;
+}
 }  // namespace
 
 HealerFacts HealerThroughput(Player* healer, Unit* target)
@@ -726,6 +789,7 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
         int32 power = 0;
         uint32 mana = 0;
         HealerFacts facts;
+        SpellInfo const* earthShield = nullptr;  // [lead1311]
     };
     thread_local std::unordered_map<uint64, Cached> cache;
     Cached& cached = cache[healer->GetGUID().GetRawValue()];
@@ -791,14 +855,31 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
             }
         }
         // [lead1306] the upkeep its rotation's kept-up spells cost (the formula; the measured one is logged only)
+        SpellInfo const* earthShield = nullptr;
         if (game.maxMana > 0.0f)
         {
             float const mainHpm = game.mainHealPerMana > 0.0f ? game.mainHealPerMana : game.healPerMana;
-            game.upkeepPctPerSec = 100.0f * KeptUpManaPerSec(healer, target, mainHpm, &game.upkeepWhy) / game.maxMana;
+            game.upkeepPctPerSec =
+                100.0f * KeptUpManaPerSec(healer, target, mainHpm, &game.upkeepWhy, &earthShield) / game.maxMana;
         }
-        cached = {healer->GetSpellMap().size(), power, healer->GetMaxPower(POWER_MANA), game};
+        cached = {healer->GetSpellMap().size(), power, healer->GetMaxPower(POWER_MANA), game, earthShield};
     }
     facts = cached.facts;
+    // [lead1311] Earth Shield by the hits the main tank takes now (state: who attacks it), outside the cache
+    if (cached.earthShield && facts.maxMana > 0.0f)
+    {
+        Player* tank = target->ToPlayer();
+        if (!tank || tank == healer)
+            if (Group* group = healer->GetGroup())
+                tank = ObjectAccessor::FindPlayer(PlayerbotAI::GetMainTankGuid(group));
+        if (tank && tank != healer && tank->IsInWorld() && tank->GetMap() == healer->GetMap())
+        {
+            float const mainHpm = facts.mainHealPerMana > 0.0f ? facts.mainHealPerMana : facts.healPerMana;
+            facts.upkeepPctPerSec +=
+                100.0f * EarthShieldManaPerSec(healer, tank, cached.earthShield, mainHpm, &facts.upkeepWhy) /
+                facts.maxMana;
+        }
+    }
     if (facts.mainHealPerMana > 0.0f)  // [lead1434] the prior: the main heal's, not the most efficient one's
         facts.healPerMana = facts.mainHealPerMana;
     // [lead1435] its casting regen, the core's own rate (a field read, no scan)
