@@ -3636,13 +3636,46 @@ namespace SoloSafety
         SpellInfo const* spell = sSpellMgr->GetSpellInfo(trap->trap.spellId);
         if (!spell)
             return false;
-        // the trap's summons (SPELL_EFFECT_SUMMON: the creature in its misc value, its points the count), fought one
-        // after another at the bot's damage from where it stands: the template's health and melee (RunPastTemplate's
-        // numbers), against its health now and the heals its mana holds
-        DpsEstimate::Result const own = OwnDamage(bot, nullptr);
-        float const botDps = std::max(own.burstDps, 1.0f);
-        float seconds = 0.0f;
-        float damage = 0.0f;
+        struct Foe
+        {
+            float hp, dps, variance;  // variance: of its damage per second of the fight
+        };
+        std::vector<Foe> foes;
+        // [death410] the mobs already standing by the object (their aggro reach, wander area or patrol beat covers
+        // it) are in that fight too, killed first
+        G3D::Vector3 const at(go->GetPositionX(), go->GetPositionY(), go->GetPositionZ());
+        std::string standing;
+        {
+            float const look = sPlayerbotAIConfig.SightDistance;
+            std::list<Unit*> units;
+            Acore::AnyUnitInObjectRangeCheck check(go, look);
+            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(go, units, check);
+            Cell::VisitObjects(go, searcher, look);
+            for (Unit* unit : units)
+            {
+                Creature* mob = unit->ToCreature();
+                if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                    !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                    continue;
+                bool covers = InDisc(AggroDisc(mob, bot), at);
+                if (!covers && mob->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE)
+                {
+                    std::vector<G3D::Vector3> beat;
+                    float sampleSec = 0.0f;
+                    if (PullPlanning::PatrolForecast(mob, beat, sampleSec))
+                        for (G3D::Vector3 const& step : beat)
+                            covers = covers || std::hypot(step.x - at.x, step.y - at.y) <= AggroDisc(mob, bot).w;
+                }
+                if (!covers)
+                    continue;
+                foes.push_back({float(mob->GetHealth()), MobDps(mob, bot), DamageVariancePerSec(mob, bot)});
+                if (standing.size() < 120)
+                    standing += Acore::StringFormat("{}{} L{}", standing.empty() ? "" : ", ", mob->GetName(),
+                                                    mob->GetLevel());
+            }
+        }
+        // the trap's summons (SPELL_EFFECT_SUMMON: the creature in its misc value, its points the count): the
+        // template's health and melee (RunPastTemplate's numbers), its swing's roll uniform base .. 1.5 x base
         uint32 count = 0;
         CreatureTemplate const* named = nullptr;
         for (SpellEffectInfo const& effect : spell->GetEffects())
@@ -3657,26 +3690,53 @@ namespace SoloSafety
             int32 const n = std::max(1, effect.CalcValue());
             float const swing = std::max(float(tmpl->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
             float const base = stats->GenerateBaseDamage(tmpl);
-            float const melee =
-                ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier /
-                swing;
-            float const health = float(stats->GenerateHealth(tmpl));
+            float const power = float(stats->AttackPower) / 14.0f * swing;
+            float const low = (base + power) * tmpl->DamageModifier;
+            float const high = (base * 1.5f + power) * tmpl->DamageModifier;
+            float const mean = (low + high) / 2.0f;
+            float const square = (low * low + low * high + high * high) / 3.0f;  // E[h^2] of the uniform roll
             for (int32 i = 0; i < n; ++i)
-            {
-                seconds += health / botDps;
-                damage += melee * float(n - i) * health / botDps;  // the ones alive hit on while it kills each
-            }
+                foes.push_back({float(stats->GenerateHealth(tmpl)), mean / swing,
+                                std::max(square - mean * mean, 0.0f) / swing});
             count += uint32(n);
             named = tmpl;
         }
         if (!count)
             return false;
+        // fought one after another at the bot's damage, the ones alive hitting on meanwhile; priced at the judge's
+        // high end ([death386]: two standard deviations of the rolls) against its health now and the heals its mana
+        // holds
+        DpsEstimate::Result const own = OwnDamage(bot, nullptr);
+        float const botDps = std::max(own.burstDps, 1.0f);
+        float aliveDps = 0.0f;
+        float aliveVariance = 0.0f;
+        for (Foe const& foe : foes)
+        {
+            aliveDps += foe.dps;
+            aliveVariance += foe.variance;
+        }
+        float seconds = 0.0f;
+        float damage = 0.0f;
+        float variance = 0.0f;
+        for (Foe const& foe : foes)
+        {
+            float const kill = foe.hp / botDps;
+            seconds += kill;
+            damage += aliveDps * kill;
+            variance += aliveVariance * kill;
+            aliveDps -= foe.dps;
+            aliveVariance -= foe.variance;
+        }
+        constexpr float HIGH_END_DEVIATIONS = 2.0f;
+        float const highEnd = damage + HIGH_END_DEVIATIONS * std::sqrt(std::max(variance, 0.0f));
         float const mana = float(bot->GetPower(POWER_MANA));
         float const spare = own.manaPerSec > 0.0f ? std::max(0.0f, mana - own.manaPerSec * seconds) : mana;
         float const ehp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, spare, true);
-        why = Acore::StringFormat("its trap summons {} x {} L{}: {:.0f} dmg over {:.0f} s at ehp {:.0f}", count,
-                                  named->Name, named->maxlevel, damage, seconds, ehp);
-        return damage >= ehp;
+        why = Acore::StringFormat("its trap summons {} x {} L{}{}{}: {:.0f} dmg at the high end over {:.0f} s at ehp "
+                                  "{:.0f}",
+                                  count, named->Name, named->maxlevel, standing.empty() ? "" : " beside ", standing,
+                                  highEnd, seconds, ehp);
+        return highEnd >= ehp;
     }
 
     RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl)
