@@ -427,6 +427,20 @@ bool PetlessSoloHunter(Player* bot)
     return (!pet || !pet->IsAlive()) && (!group || group->GetMembersCount() <= 1);
 }
 
+// [death446] ... and a hunter whose target is on it inside its melee reach (a pet that holds nothing, a mob that came
+// past it) or that has no usable ranged weapon: Auto Shot goes off only past its minimum range, the hunter melees
+// ("hunter needs melee"; "hunter step out" finds no spot from a mob that follows it). The formula read Auto Shot
+// there: death441's projection reads the formula alone, b337 Eraelor L7 dealt 2.4 dps in melee against 10.2 at range
+bool HunterInMelee(Player* bot, Unit* target)
+{
+    if (bot->getClass() != CLASS_HUNTER)
+        return false;
+    if (PetlessSoloHunter(bot) || !bot->GetWeaponForAttack(RANGED_ATTACK, true))
+        return true;
+    return target && target != bot && target->IsAlive() && target->GetVictim() == bot &&
+           bot->IsWithinMeleeRange(target);
+}
+
 // ---- buffs -------------------------------------------------------------------------------------------------
 
 enum class Category : uint8
@@ -1514,11 +1528,11 @@ std::vector<SpecRotation> const& IdealRotations()
     return rotations;
 }
 
-SpecRotation const* RotationOf(Player* bot, bool ideal = false)
+SpecRotation const* RotationOf(Player* bot, bool ideal = false, Unit* target = nullptr)
 {
     uint8 const cls = bot->getClass();
     uint8 const tab = AiFactory::GetPlayerSpecTab(bot);
-    if (PetlessSoloHunter(bot))
+    if (HunterInMelee(bot, target))
         return &HunterMeleeRotation();  // [rot605] the ideal too: no pet takes the mob off it
     if (ideal)
         for (SpecRotation const& rotation : IdealRotations())
@@ -1789,7 +1803,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     m.spGain = m.bonus.sp + (bot->GetStat(STAT_SPIRIT) + stat[STAT_SPIRIT]) * m.bonus.spFromSpiritPct / 100.0f;
     m.armorFactor = std::max(0.0f, 1.0f - m.bonus.armorCut / 100.0f);
 
-    SpecRotation const* rotation = RotationOf(bot, ideal);
+    SpecRotation const* rotation = RotationOf(bot, ideal, target);
     std::unordered_map<std::string, uint32> known;
     if (rotation)
         known = KnownByName(bot, *rotation);
@@ -2327,6 +2341,7 @@ uint64 Signature(Player* bot, Unit* target, BuffContext ctx)
         mix(pet->GetLevel());
         mix(pet->IsAlive());
     }
+    mix(HunterInMelee(bot, target));  // [death446]
     if (target)
     {
         mix(target->GetEntry());
