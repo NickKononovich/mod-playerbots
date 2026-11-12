@@ -353,14 +353,17 @@ SpellInfo const* ConeSpell(Creature* creature, float& everySec)
 }
 
 // [lead820] the seconds between two of `caster`'s casts of `info`: its encounter timer (the SmartAI in-combat event
-// that casts it: the mean of its repeat), else the measured interval of its casts seen in this fight, else the
-// spell's cooldown; 0: not known (`source` says which)
+// that casts it: the mean of its repeat), else the spell's own interval (its cooldown, category cooldown, cast time
+// and global cooldown: the longest); 0: not known (`source` says which). [lead1307] coordinator 2026-11-13: from the
+// creature and spell data only - the interval of its casts seen in this fight is this fight's timing, no rate: it goes
+// to `source` (the log) only
 float CadenceSec(Facts const& facts, Unit* caster, SpellInfo const* info, std::string& source)
 {
+    float everySec = 0.0f;
     if (Creature* creature = caster ? caster->ToCreature() : nullptr; creature && creature->GetAIName() == "SmartAI")
         for (int32 const id : {-int32(creature->GetSpawnId()), int32(creature->GetEntry())})
         {
-            if (!id)
+            if (!id || everySec > 0.0f)
                 continue;
             for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(id, SMART_SCRIPT_TYPE_CREATURE))
                 if (holder.GetActionType() == SMART_ACTION_CAST && holder.action.cast.spell == info->Id &&
@@ -369,24 +372,31 @@ float CadenceSec(Facts const& facts, Unit* caster, SpellInfo const* info, std::s
                     source = Acore::StringFormat("its encounter timer {:.0f}-{:.0f} s",
                                                  holder.event.minMaxRepeat.repeatMin / 1000.0f,
                                                  holder.event.minMaxRepeat.repeatMax / 1000.0f);
-                    return float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f /
-                           1000.0f;
+                    everySec = float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) /
+                               2.0f / 1000.0f;
+                    break;
                 }
         }
+    if (everySec <= 0.0f)
+    {
+        // a spell with a cooldown of its own: the longest of its cooldowns, its cast and its global cooldown (a
+        // spell with no cooldown has no repeat its data knows)
+        uint32 const cooldownMs = std::max(info->RecoveryTime, info->CategoryRecoveryTime);
+        if (cooldownMs)
+        {
+            uint32 const castMs = caster ? uint32(info->CalcCastTime(caster)) : 0;
+            everySec = float(std::max({cooldownMs, castMs, uint32(info->StartRecoveryTime)})) / 1000.0f;
+            source = "its cooldown";
+        }
+    }
     if (facts.casts && caster)
         if (auto const seen = facts.casts->find({caster->GetGUID(), info->Id});
             seen != facts.casts->end() && seen->second.count >= 2)
-        {
-            source = Acore::StringFormat("measured over its {} casts", seen->second.count);
-            return getMSTimeDiff(seen->second.firstMs, seen->second.lastMs) / 1000.0f /
-                   float(seen->second.count - 1);
-        }
-    if (uint32 const cooldownMs = std::max(info->RecoveryTime, info->CategoryRecoveryTime))
-    {
-        source = "its cooldown";
-        return cooldownMs / 1000.0f;
-    }
-    return 0.0f;
+            source += Acore::StringFormat("{}seen every {:.1f} s over {} casts (log only)", source.empty() ? "" : "; ",
+                                          getMSTimeDiff(seen->second.firstMs, seen->second.lastMs) / 1000.0f /
+                                              float(seen->second.count - 1),
+                                          seen->second.count);
+    return everySec;
 }
 
 // [lead820] the damage of the zone's hits still to come in the fight after the one in front of the member: a cast's

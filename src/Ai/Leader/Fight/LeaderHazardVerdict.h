@@ -27,8 +27,9 @@
 // [lead820] User decision 2026-11-03 (hazard-stay-or-leave, healer mana): "the healer can heal it, but the leader must
 // also count that his mana lasts - on long bosses it means leaving more". The healer's mana is judged on every hit of
 // the hazard still to come in the fight, not on the one in front of the member: the hazard's cadence (the caster's
-// encounter timer - its SmartAI in-combat repeat -, else the measured interval of its previous casts in this fight,
-// else the spell's cooldown) over the fight's seconds left (the boss / pack estimate, lead80), plus the heal the other
+// encounter timer - its SmartAI in-combat repeat -, else [lead1307] the spell data's interval: cooldowns, cast,
+// global cooldown; the casts seen this fight are logged only) over the fight's seconds left (the boss / pack
+// estimate, lead80), plus the heal the other
 // members that stay in the same hazard already take from that healer, on top of the healer's mana line for the
 // fight. A healer that cannot afford the stay to the fight's end: the member leaves. The verdict is judged anew on
 // every hazard scan, so a late hit (fewer of them left) can be stayed in where an early one was not.
@@ -54,7 +55,7 @@ class LeaderGroup;
 namespace Leader::HazardVerdict
 {
 // [lead820] the casts of a hazard spell the leader saw in this fight, per caster and spell: the first and the last
-// start (getMSTime) and how many - the measured interval is (last - first) / (count - 1)
+// start (getMSTime) and how many - its interval is logged (lead1307: no decision reads it)
 struct CastSeen
 {
     uint32 firstMs = 0;
