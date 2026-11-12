@@ -1784,12 +1784,15 @@ namespace SoloSafety
                 std::max(0.0f, sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS)) + wander;
             float const range =
                 std::min(std::max(sight + wander, gap + around), bot->GetMap()->GetVisibilityRange());
-            if (range > sight)
+            // [death391] a patrol walks its beat into the fight from wherever it is now: looked for as far as the map
+            // shows (b449 Laaral L23: a Rabid Shadowhide Gnoll patrol, home 32 yd off the fight spot, came 47 s in)
+            float const look = bot->GetMap()->GetVisibilityRange();
+            if (look > sight)
             {
                 std::list<Unit*> units;
-                Acore::AnyUnitInObjectRangeCheck check(bot, range);
+                Acore::AnyUnitInObjectRangeCheck check(bot, look);
                 Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
-                Cell::VisitObjects(bot, searcher, range);
+                Cell::VisitObjects(bot, searcher, look);
                 for (Unit* unit : units)
                 {
                     Creature* mob = unit->ToCreature();
@@ -1798,6 +1801,38 @@ namespace SoloSafety
                         mob->GetCharmerOrOwnerGUID() ||
                         std::find(idle.begin(), idle.end(), mob) != idle.end())
                         continue;
+                    // [death391] a patrol by its forecast beat (PullPlanning::PatrolForecast, the leader's waypoint
+                    // forecast): it joins when a step of it comes within the bot's sight or the target's surroundings
+                    if (mob->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE)
+                    {
+                        std::vector<G3D::Vector3> beat;
+                        float sampleSec = 0.0f;
+                        if (PullPlanning::PatrolForecast(mob, beat, sampleSec) &&
+                            std::any_of(beat.begin(), beat.end(),
+                                        [&](G3D::Vector3 const& step)
+                                        {
+                                            return bot->GetExactDist2d(step.x, step.y) <= sight ||
+                                                   target->GetExactDist2d(step.x, step.y) <= around;
+                                        }))
+                        {
+                            idle.push_back(mob);
+                            static std::mutex patrolLogLock;  // a log cadence per patrol kind, no decision reads it
+                            static std::unordered_set<uint32> patrolLogged;
+                            bool fresh = false;
+                            if (bot->GetExactDist2d(mob) > range)
+                            {
+                                std::lock_guard<std::mutex> guard(patrolLogLock);
+                                fresh = patrolLogged.insert(mob->GetEntry()).second;
+                            }
+                            if (fresh)
+                                LOG_INFO("playerbots", "[death391] {} L{} judges {} L{} with patrol {} L{} ({:.0f} yd "
+                                         "off): its beat comes by", bot->GetName(), bot->GetLevel(), target->GetName(),
+                                         target->GetLevel(), mob->GetName(), mob->GetLevel(), bot->GetExactDist2d(mob));
+                            continue;
+                        }
+                    }
+                    if (bot->GetExactDist2d(mob) > range)
+                        continue;  // as far as the wanderers and the target's surroundings reach
                     bool const wanders = mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE;
                     Position const& home = wanders ? mob->GetHomePosition() : mob->GetPosition();
                     float const roam = wanders ? mob->GetWanderDistance() : 0.0f;
