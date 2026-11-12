@@ -2477,6 +2477,24 @@ void GuildCoordinator::UpdateOrders()
                 }
                 orders.push_back(o);
             }
+        // [craft393] ... but never a reagent of a recipe it knows (marked before that rule, or learned since)
+        st.sell.erase(std::remove_if(st.sell.begin(), st.sell.end(),
+                                     [&](uint32 guid)
+                                     {
+                                         Item* item = p->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(guid));
+                                         if (!item || (item->GetTemplate()->Class != ITEM_CLASS_TRADE_GOODS &&
+                                                       item->GetTemplate()->Class != ITEM_CLASS_REAGENT))
+                                             return false;
+                                         for (auto const& [line, recipes] : recipesBySkill_)
+                                             if (p->HasSkill(line))
+                                                 for (Recipe const& r : recipes)
+                                                     if (p->HasSpell(r.spellId))
+                                                         for (auto const& [reagent, n] : r.reagents)
+                                                             if (reagent == item->GetEntry())
+                                                                 return true;
+                                         return false;
+                                     }),
+                      st.sell.end());
         // [tasks] SELL: what the global leader gave up goes at the next vendor visit (SellMarked), never a trip
         if (!st.sell.empty())
         {
@@ -4425,7 +4443,7 @@ void GuildCoordinator::UpdateProfessions()
                             r.reqLevel > level || !called.insert(r.spellId).second)
                             continue;
                         train("recipe " + NewRpgCraft::RecipeName(r.spellId),
-                              "[craft392] its skill-up walk's next recipe at " + std::to_string(v), r.price, r.spellId);
+                              "its skill-up walk's next recipe at " + std::to_string(v), r.price, r.spellId);
                         if (std::string& logged = st.craftLogged["craft392:" + std::to_string(r.spellId)];
                             logged.empty())
                         {
@@ -6984,6 +7002,25 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
             return;
         }
 
+    // [craft393] a reagent of a recipe the looter knows is its own to craft with, kept: b454 Dekorhan's milling loot
+    // ("[insc142] ... takes the milling loot of Silverleaf: Alabaster Pigment") came here as loot, was in no wanted
+    // list (the walk wants the herb it is milled from) and was marked "sell: no upgrade and not in the wanted list" -
+    // "SELL 4 items: Alabaster Pigment x4", his Ivory Ink never made, Inscription stuck at 25
+    for (auto const& [line, recipes] : recipesBySkill_)
+    {
+        if (!looter->HasSkill(line))
+            continue;
+        for (Recipe const& r : recipes)
+            if (looter->HasSpell(r.spellId) &&
+                std::any_of(r.reagents.begin(), r.reagents.end(),
+                            [&](auto const& reagent) { return reagent.first == report.itemId; }))
+            {
+                release();
+                Decision(what + " → keeps: a reagent of its own " + NewRpgCraft::RecipeName(r.spellId) +
+                         " [craft393]");
+                return;
+            }
+    }
     // the looter uses it itself (its profession, a spell, a quest): no decision needed
     if (GET_PLAYERBOT_AI(looter))
     {

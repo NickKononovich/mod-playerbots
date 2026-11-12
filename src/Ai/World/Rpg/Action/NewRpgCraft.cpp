@@ -347,6 +347,32 @@ namespace
         return false;
     }
 
+    // [craft394] the units of the recipe's product that the known recipes of its line still giving skill take
+    // (their expected crafts to the green edge or the rank cap), less what the bot holds: an intermediate (an ink, a
+    // bar) is made for them though it gives no skill itself. b454 Dekorhan at Inscription 25: Ivory Ink (yellow 15,
+    // gray 30) green, so never made - the orange Scrolls of Stamina / Intellect / Spirit took it, and his milled
+    // pigments lay unused: "crafting done here: 3 crafts, nothing here still gives skill"
+    uint32 IntermediateNeed(Player* bot, CraftRecipe const& r, uint32 value, uint32 cap)
+    {
+        if (!r.product || value >= cap)
+            return 0;
+        auto const list = index.bySkill.find(r.skill);
+        if (list == index.bySkill.end())
+            return 0;
+        uint32 need = 0;
+        for (uint32 spell : list->second)
+        {
+            CraftRecipe const& other = index.recipes.at(spell);
+            if (other.spellId == r.spellId || !bot->HasSpell(spell) || !Tier(other, value))
+                continue;
+            for (auto const& [item, n] : other.reagents)
+                if (item == r.product)
+                    need = std::max(need, ExpectedCrafts(other, value, cap) * n);
+        }
+        uint32 const have = bot->GetItemCount(r.product, false);
+        return need > have ? need - have : 0;
+    }
+
     // where = 0: only what the bot can cast where it stands; 1: also vendor reagents and a forge in sight;
     // 2: also the guild bank
     bool Evaluate(Player* bot, CraftRecipe const& r, uint8 where, uint32 budget, std::map<uint32, uint32>& bank,
@@ -360,7 +386,9 @@ namespace
         // [ench157] a tool a skill-up recipe of this line lacks (Runed Copper Rod for Enchant Bracer - Minor Health):
         // made once, gray or not - without it that recipe gives no skill at all
         bool const tool = !supply && MissingTool(bot, r, value);
-        uint8 const tier = supply || tool ? std::max<uint8>(Tier(r, value), 1) : Tier(r, value);
+        uint32 const intermediate = !supply && !tool && !Tier(r, value) ? IntermediateNeed(bot, r, value, cap) : 0;
+        uint8 const tier =
+            supply || tool || intermediate ? std::max<uint8>(Tier(r, value), 1) : Tier(r, value);
         if (!tier || (value >= cap && !supply) || !ToolsOk(bot, r))
             return false;
         // [ench156] an enchant needs an item to go on (EnchantTarget: no other enchantment overwritten)
@@ -379,7 +407,7 @@ namespace
                 return false;
         }
         // the bags (and the bank) limit the crafts; vendor reagents are bought for them with the budget
-        uint32 crafts = supply ? supply : tool ? 1 : ExpectedCrafts(r, value, cap);
+        uint32 crafts = supply ? supply : tool ? 1 : intermediate ? intermediate : ExpectedCrafts(r, value, cap);
         double perCraft = 0;
         for (auto const& [item, n] : r.reagents)
         {
@@ -426,7 +454,7 @@ namespace
         o.crafts = std::max<uint32>(1, crafts);
         // [supply112] the guild's supply first; [ench157] a missing tool before the recipes it unlocks; [ench156] an
         // enchant on a worn piece without one is of use to the bot itself
-        o.useful = supply || tool ? 3 : r.enchant ? (emptySlot ? 2 : 0) : Useful(r.product);
+        o.useful = supply || tool || intermediate ? 3 : r.enchant ? (emptySlot ? 2 : 0) : Useful(r.product);
         o.perPoint = perCraft * 1000.0 / std::max(1, Chance(value, r.gray, r.yellow));
         if (!o.bank.empty() && where < 2)
             return false;
