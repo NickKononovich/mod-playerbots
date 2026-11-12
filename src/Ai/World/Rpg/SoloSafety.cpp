@@ -4340,14 +4340,21 @@ namespace SoloSafety
         }
         // every attacker one the leg priced; their chases still to come survived
         std::vector<Creature*> chasers;
+        std::vector<Creature*> unpriced;
         RunPast left;
         for (Unit* attacker : bot->getAttackers())
         {
             if (!attacker || !attacker->IsAlive())
                 continue;
             Creature* mob = attacker->ToCreature();
-            if (!mob || !set.count(mob->GetGUID().GetRawValue()))
-                return false;  // a mob it did not price: the fight as before
+            if (!mob)
+                return false;  // a player's: the fight as before
+            // [death439] a mob the leg did not price (a wanderer that walked into the walk, a reach beyond the leg's
+            // sight) joins the chase priced here, with the pack its fight brings below: the run past goes on when
+            // the bot lives through it all, else the fight / the kit's escape as before. Before, any such mob ended
+            // the run past where it stood: a walk priced as a run past turned into a fight nobody judged
+            if (!set.count(mob->GetGUID().GetRawValue()))
+                unpriced.push_back(mob);
             left.Add(RunPastChase(bot, mob));
             chasers.push_back(mob);
         }
@@ -4407,8 +4414,12 @@ namespace SoloSafety
         rest.insert(rest.end(), points.begin() + std::min(nearest + 1, points.size() - 1), points.end());
         float const mana = float(bot->GetPower(POWER_MANA));
         float const hp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, left.seconds, mana, true, true);
+        for (Creature* mob : unpriced)  // [death439] its chase priced here: on the leg's set from now on
+            set[mob->GetGUID().GetRawValue()] = RunPastChase(bot, mob).damage;
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        for (Creature* mob : unpriced)
+            state.legRunPast[mob->GetGUID().GetRawValue()] = set[mob->GetGUID().GetRawValue()];
         if (state.runPastPriced <= 0.0f)  // [runpast87] the chase's price at its start
         {
             state.runPastPriced = left.damage;
@@ -4418,9 +4429,11 @@ namespace SoloSafety
         }
         for (Creature* mob : chasers)
             if (state.legNamed.insert(mob->GetGUID().GetRawValue()).second)
-                line += Acore::StringFormat("{}{} keeps walking past {} L{} (chase priced {:.0f}, hp {:.0f})",
-                                            line.empty() ? "" : "; ", bot->GetName(), mob->GetName(), mob->GetLevel(),
-                                            set[mob->GetGUID().GetRawValue()], hp);
+                line += Acore::StringFormat(
+                    "{}{} keeps walking past {} L{} (chase priced {:.0f}{}, hp {:.0f})", line.empty() ? "" : "; ",
+                    bot->GetName(), mob->GetName(), mob->GetLevel(), set[mob->GetGUID().GetRawValue()],
+                    std::find(unpriced.begin(), unpriced.end(), mob) != unpriced.end() ? " [death439] on the run" : "",
+                    hp);
         return true;
     }
 
