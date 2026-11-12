@@ -1534,7 +1534,7 @@ namespace SurvivalKit
         SoloSafety::Projection const p = SoloSafety::Project(bot);
         // [death437] the heals it casts on the run (instant spells, item uses: the run-past price's), out of the lock
         // (HealPoints takes it)
-        float const runHeals = p.open && !p.foes.empty()
+        float const runHeals = p.open && p.lost && !p.foes.empty()
                                    ? HealPoints(bot, p.leashSec, float(bot->GetPower(POWER_MANA)), true, true)
                                    : 0.0f;
         std::lock_guard<std::mutex> guard(lock);
