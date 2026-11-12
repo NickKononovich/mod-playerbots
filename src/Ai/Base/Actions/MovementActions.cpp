@@ -2728,6 +2728,22 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         if (!(type & typeOk))
             return LosRestoreWalk(target, std::max(NOMINAL_MELEE_RANGE, combatDistance + 4.0f / 3.0f) - 0.5f);
 
+        // [death433] an idle target whose only walk from here passes a reach the bot's numbers refused (a pack it
+        // loses at full, a mob it must never fight: the priced route's verdict, SoloSafety::RouteCosts / GrowOnWalk)
+        // is no target: its walk is never made (death417), so it is dropped as a pull spot no walk reaches is
+        // ([lag370]) and the grind picker leaves it while it stays idle. b461r Maronic L21 kept a Blackrock
+        // Shadowcaster 40 yd off as target, every tick a refused walk to it. A co-op member walks its leader's fight
+        if (path.throughRefused && !target->IsInCombat() && target->IsCreature() && !NewRpgCoop::IsMember(bot))
+        {
+            LOG_INFO("playerbots", "[death433] {} L{} drops {} L{} ({:.0f} yd): its only walk there passes a reach it "
+                     "refused ({})",
+                     bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), bot->GetExactDist(target),
+                     SoloSafety::RouteWalls(bot));
+            botAI->ReleaseIdleTarget(target->GetGUID());
+            RefuseChase(target, "its only walk passes a reach it refused");
+            return false;
+        }
+
         // [hleft-chase-drop] No chase down to a level the navmesh does not join: a path that does not reach the
         // target's polygon (INCOMPLETE / SHORTCUT) to a target far below ends in a fall off the ledge, and from the
         // floor below nothing leads back. Stratholme heroic 2026-10-25 (20261025-062726-strat-h-5A-30): the tank's
@@ -4902,6 +4918,50 @@ namespace
     }
 }
 
+namespace
+{
+    // [death432] the walks a priced route refused from where the bot stands (death417): the same search from the same
+    // spot to the same destination gives the same answer, so it is asked again only once the bot stands elsewhere or
+    // the destination changes ([death424]'s rule for the far walk). b461r Maronic L21: "reach melee" asked its refused
+    // walk to a Blackrock Shadowcaster every tick, ~120 ms an update, 1833 slow-update lines
+    constexpr float REFUSED_WALK_SAME_YD = 3.0f;  // [death424]'s same spot / same destination
+    constexpr size_t REFUSED_WALKS_KEPT = 4;      // [death424] FAR_FAILURES_KEPT: the walks a bot switches between
+    constexpr size_t REFUSED_WALK_BOTS = 4096;    // the memo's bound per map thread
+    struct RefusedWalk
+    {
+        G3D::Vector3 dest;
+        G3D::Vector3 from;
+    };
+    thread_local std::unordered_map<uint64, std::vector<RefusedWalk>> refusedWalks;
+
+    bool WalkRefusedHere(Player* bot, float x, float y, float z)
+    {
+        auto const found = refusedWalks.find(bot->GetGUID().GetRawValue());
+        if (found == refusedWalks.end())
+            return false;
+        for (RefusedWalk const& walk : found->second)
+            if ((walk.dest - G3D::Vector3(x, y, z)).length() < REFUSED_WALK_SAME_YD &&
+                bot->GetExactDist(walk.from.x, walk.from.y, walk.from.z) < REFUSED_WALK_SAME_YD)
+                return true;
+        return false;
+    }
+
+    void NoteWalkRefused(Player* bot, float x, float y, float z)
+    {
+        if (refusedWalks.size() > REFUSED_WALK_BOTS)
+            refusedWalks.clear();
+        std::vector<RefusedWalk>& walks = refusedWalks[bot->GetGUID().GetRawValue()];
+        G3D::Vector3 const from(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        walks.erase(std::remove_if(walks.begin(), walks.end(),
+                                   [&](RefusedWalk const& walk)
+                                   { return (walk.from - from).length() >= REFUSED_WALK_SAME_YD; }),
+                    walks.end());  // the spots it left: their answers are old
+        if (walks.size() >= REFUSED_WALKS_KEPT)
+            walks.erase(walks.begin());
+        walks.push_back({G3D::Vector3(x, y, z), from});
+    }
+}
+
 const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, float z, float& modified_z,
                                                               int maxSearchCount, bool normal_only, float step)
 {
@@ -4941,6 +5001,11 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
                  "refused ({})", bot->GetName(), bot->GetLevel(), x, y, bot->GetExactDist2d(x, y),
                  SoloSafety::RouteWalls(bot));
     };
+    if (WalkRefusedHere(bot, x, y, z))  // [death432] refused from this spot already
+    {
+        modified_z = INVALID_HEIGHT;
+        return Movement::PointsArray{};
+    }
     float tempZ = bot->GetMapHeight(x, y, z);
     // Over deep water path to the water column, not to the bottom; on land (or if that fails) search as before.
     float const waterZ = WaterDestinationZ(bot, x, y, z, tempZ);
@@ -5017,7 +5082,10 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
     if (!found && (normal_only || refusedSeen))
     {
         if (refusedSeen)
+        {
             refusedLine();
+            NoteWalkRefused(bot, x, y, z);  // [death432]
+        }
         modified_z = INVALID_HEIGHT;
         return Movement::PointsArray{};
     }
