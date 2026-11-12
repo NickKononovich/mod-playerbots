@@ -3269,6 +3269,8 @@ uint32 GuildCoordinator::PlannedFor(uint32 itemId) const
 void GuildCoordinator::AddOwnDisenchants(BotState& st, Player* p)
 {
     uint32 const skill = p->GetPureSkillValue(SKILL_ENCHANTING);
+    std::map<uint32, double> demand;  // [craft409] built at the first candidate
+    bool demandReady = false;
     auto const look = [&](Item* item)
     {
         ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
@@ -3288,6 +3290,23 @@ void GuildCoordinator::AddOwnDisenchants(BotState& st, Player* p)
         GuildGear::Eval ev;
         if (GuildGear::Evaluate(p, calc, proto, ev) && ev.gain > 0.0f)
             return;  // it wears it (the bot's own equip takes it)
+        // [craft409] user rule 2026-11-12: disenchanted only for a needed result, else sold
+        if (!demandReady)
+        {
+            demand = DisenchantDemand();
+            demandReady = true;
+        }
+        std::string why;
+        if (!DisenchantWorth(proto, skill, demand, why))
+        {
+            if (std::find(st.sell.begin(), st.sell.end(), guid) == st.sell.end())
+            {
+                st.sell.push_back(guid);
+                LOG_INFO("playerbots", "[craft409] {} L{} sells its own {}: {}", p->GetName(), p->GetLevel(),
+                         proto->Name1, why);
+            }
+            return;
+        }
         st.disenchant.push_back(guid);
         LOG_INFO("playerbots", "[ench155] {} L{} will disenchant its own {} (soulbound, skill {}, needs {})",
                  p->GetName(), p->GetLevel(), proto->Name1, skill, proto->RequiredDisenchantSkill);
@@ -3335,6 +3354,86 @@ void GuildCoordinator::MarkBagsChanged(uint32 low)
 // [ench162] incremental: only the bags of members whose bags changed (MarkBagsChanged), who came online, or all of
 // them when what the routing depends on changed (an enchanter's skill, the gear plans' picks); the copies a plan
 // takes that other members keep stay counted from their last look (greensPlanned_)
+uint32 GuildCoordinator::EnchanterInbound(uint32 low, Player* enchanter) const
+{
+    uint32 n = 0;
+    for (Mail const* m : enchanter->GetMails())
+        if (m && m->state != MAIL_STATE_DELETED)
+            n += uint32(m->items.size());
+    for (auto const& [holder, hs] : bots_)
+        for (HeldItem const& h : hs.held)
+            n += h.forLow == low && holder != low ? 1 : 0;
+    if (auto const wd = withdraw_.find(low); wd != withdraw_.end())
+        n += uint32(wd->second.size());
+    return n;
+}
+
+std::map<uint32, double> GuildCoordinator::DisenchantDemand()
+{
+    std::map<uint32, double> demand;
+    for (WantedItem const& w : wanted_)
+        demand[w.itemId] += w.Short();
+    for (auto const& [low, needs] : crafterNeed_)
+        for (auto const& [item, n] : needs)
+            demand[item] += n;
+    // [craft407] a rodless enchanter's Runed Copper Rod: its reagents beyond what it holds
+    constexpr uint32 SPELL_RUNED_COPPER_ROD = 7421;
+    SpellInfo const* rod = sSpellMgr->GetSpellInfo(SPELL_RUNED_COPPER_ROD);
+    std::vector<uint32> yieldsQueued;  // DisenchantIDs on their way to a Disenchant
+    for (auto const& [low, st] : bots_)
+    {
+        Player* e = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+        if (rod && e && e->HasSkill(SKILL_ENCHANTING) && !HasProfessionTool(e, SKILL_ENCHANTING))
+            for (uint8 k = 0; k < MAX_SPELL_REAGENTS; ++k)
+                if (rod->Reagent[k] > 0 && rod->ReagentCount[k] > 0)
+                {
+                    uint32 const item = uint32(rod->Reagent[k]);
+                    uint32 const have = e->GetItemCount(item, false);
+                    if (have < rod->ReagentCount[k])
+                        demand[item] += rod->ReagentCount[k] - have;
+                }
+        if (e)
+            for (uint32 guid : st.disenchant)
+                if (Item* item = e->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(guid)))
+                    yieldsQueued.push_back(item->GetTemplate()->DisenchantID);
+        for (HeldItem const& h : st.held)
+            if (h.purpose.rfind("disenchant", 0) == 0)
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(h.itemId))
+                    yieldsQueued.push_back(proto->DisenchantID);
+    }
+    for (auto const& [low, list] : withdraw_)
+        for (auto const& [item, why] : list)
+            if (why.find(": disenchant") != std::string::npos)
+                if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item))
+                    yieldsQueued.push_back(proto->DisenchantID);
+    for (uint32 id : yieldsQueued)
+        if (id)
+            for (auto const& [item, units] : DisenchantYield(id))
+                if (auto it = demand.find(item); it != demand.end())
+                    it->second -= units;
+    return demand;
+}
+
+bool GuildCoordinator::DisenchantWorth(ItemTemplate const* proto, uint32 skill, std::map<uint32, double>& demand,
+                                       std::string& why)
+{
+    if (proto && proto->DisenchantID)
+        for (auto const& [item, units] : DisenchantYield(proto->DisenchantID))
+            if (auto it = demand.find(item); it != demand.end() && it->second > 0.0)
+            {
+                it->second -= units;
+                why = "to disenchant: needs " + ItemName(item);
+                return true;
+            }
+    if (int32 const chance = DisenchantSkillUpChance(skill); chance > 0)
+    {
+        why = "to disenchant: skill-up chance " + std::to_string((chance + 5) / 10) + " %";
+        return true;
+    }
+    why = "sell: no demand for its disenchant";
+    return false;
+}
+
 // [bank409] b460: the only tab held 98/98, 72 of them greens for #22 Idunk's Disenchant, and none came out: the
 // claims (withdraw_) live in memory only, a restart lost them, and every deposit since failed. Each plan the claims
 // are rebuilt from the bank's items as the global leader's loot decision would make them (lock_ held)
@@ -3362,7 +3461,7 @@ void GuildCoordinator::ClaimBankItems()
                 claims.insert({row.low, g.itemId});
         WorldPosition pos;
         float dist = 0;
-        uint32 const queued = uint32(withdraw_[row.low].size());
+        uint32 const queued = EnchanterInbound(row.low, p);  // [craft409] letters, held items, claims: bag slots
         uint32 const free = FreeBagSlots(p);
         if (!GuildBankRun::BankState(p, false).empty() || free <= queued || !GuildBankRun::NearestVault(p, pos, dist))
             continue;  // no rights / bag room / withdraw slots, or in an instance
@@ -3375,6 +3474,8 @@ void GuildCoordinator::ClaimBankItems()
         for (auto const& [item, why] : list)
             claims.insert({low, item});
     std::map<uint32, uint32> claimed;  // item -> copies claimed
+    std::map<uint32, double> demand;   // [bank412] built at the first green
+    bool demandReady = false;
     for (auto const& [low, item] : claims)
         ++claimed[item];
     for (uint8 tab = 0; tab < guild->GetPurchasedTabsSize(); ++tab)
@@ -3406,7 +3507,20 @@ void GuildCoordinator::ClaimBankItems()
                          (DisenchantSkillUpChance(t.skill) == DisenchantSkillUpChance(to->skill) &&
                           t.room > to->room)))
                         to = &t;
-            bool const disenchant = to != nullptr;
+            // [bank412] user rule 2026-11-12: to an enchanter only when its Disenchant's result is needed
+            std::string worth = "sell: no enchanter's skill or bag room";
+            bool disenchant = false;
+            if (to)
+            {
+                if (!demandReady)
+                {
+                    demand = DisenchantDemand();
+                    demandReady = true;
+                }
+                disenchant = DisenchantWorth(proto, to->skill, demand, worth);
+                if (!disenchant)
+                    to = nullptr;
+            }
             if (!to)
                 for (Taker& t : takers)
                     if (t.room && (!to || t.vault < to->vault))
@@ -3417,9 +3531,10 @@ void GuildCoordinator::ClaimBankItems()
             withdraw_[to->low].emplace_back(entry,
                                             std::string(UNCLAIMED_BANK) + (disenchant ? ": disenchant" : ": sell"));
             LOG_INFO("playerbots",
-                     "[bank409] {} ×{} in the guild bank (tab {} slot {}): nobody claims it → {} takes it {}",
+                     "[bank409] {} ×{} in the guild bank (tab {} slot {}): nobody claims it → {} takes it: {} "
+                     "[bank412]",
                      ItemName(entry), item->GetCount(), uint32(tab) + 1, uint32(slot), Who(to->low),
-                     disenchant ? "to disenchant" : "to sell (the loot decision then)");
+                     disenchant ? worth : worth + " (the loot decision then)");
         }
 }
 
@@ -3460,6 +3575,8 @@ void GuildCoordinator::RouteSpareGreens()
         uint32 skill{0};
         uint32 queued{0};
         int32 chance{0};  // [ench165] its Disenchant's skill-up chance (per mille)
+        uint32 inbound{0};  // [craft409] letters, items held for it, bank claims: each needs a free bag slot
+        uint32 room{0};     // [craft409] its free bag slots
     };
     auto const mix = [](uint64 a, uint64 b)
     {
@@ -3482,7 +3599,9 @@ void GuildCoordinator::RouteSpareGreens()
             {
                 uint32 const skill = m->GetPureSkillValue(SKILL_ENCHANTING);
                 enchanters.push_back(
-                    {row.low, skill, uint32(bots_[row.low].disenchant.size()), DisenchantSkillUpChance(skill)});
+                    {row.low, skill, uint32(bots_[row.low].disenchant.size()), DisenchantSkillUpChance(skill),
+                     EnchanterInbound(row.low, m), FreeBagSlots(m)});
+                enchanters.back().queued += enchanters.back().inbound;  // [craft409] its whole queue
                 signature += mix(row.low, enchanters.back().skill);
             }
         }
@@ -3528,12 +3647,7 @@ void GuildCoordinator::RouteSpareGreens()
         for (HeldItem const& h : st.held)
         {
             if (h.purpose.rfind("disenchant", 0) == 0)
-            {
-                for (Enchanter& e : enchanters)
-                    if (e.low == h.forLow)
-                        ++e.queued;
-                continue;
-            }
+                continue;  // in its enchanter's inbound [craft409]
             if (auto const p = planned.find(h.itemId); p != planned.end() && p->second)
                 --p->second;
         }
@@ -3544,6 +3658,8 @@ void GuildCoordinator::RouteSpareGreens()
                     --p->second;
 
     std::vector<uint32> again;  // a green still waiting for its loot decision: looked at once it is decided
+    std::map<uint32, double> demand;  // [craft409] built at the first routed green of the sweep
+    bool demandReady = false;
     for (PlanRow const& row : plan_)
     {
         if (!dirty.count(row.low))
@@ -3596,6 +3712,10 @@ void GuildCoordinator::RouteSpareGreens()
                         to = &e;
                         break;
                     }
+                    // [craft409] b461 #6 Emdyl: 21 letters waiting, full bags, 1 Disenchant in the log while the
+                    // router counted only its held items. Its whole queue counts now, and one more needs a bag slot
+                    if (e.room <= e.inbound)
+                        continue;
                     if (!to || e.chance > to->chance ||
                         (e.chance == to->chance &&
                          (e.queued < to->queued || (e.queued == to->queued && e.skill < to->skill))))
@@ -3612,8 +3732,26 @@ void GuildCoordinator::RouteSpareGreens()
             GuildGear::Eval ev;
             if (GuildGear::Evaluate(p, *calc, proto, ev) && ev.gain > 0.0f)
                 return;  // the holder wears it (its own equip takes it; the equip marks its bags changed)
+            // [craft409] user rule 2026-11-12: disenchanted only for a needed result, else sold by its holder
+            if (!demandReady)
+            {
+                demand = DisenchantDemand();
+                demandReady = true;
+            }
+            std::string why;
+            if (!DisenchantWorth(proto, to->skill, demand, why))
+            {
+                if (std::find(st.sell.begin(), st.sell.end(), guid) == st.sell.end())
+                {
+                    st.sell.push_back(guid);
+                    LOG_INFO("playerbots", "[craft409] spare {} (at {}): {} (Enchanting {})", proto->Name1,
+                             Who(row.low), why, to->skill);
+                }
+                return;
+            }
             st.sell.erase(std::remove(st.sell.begin(), st.sell.end(), guid), st.sell.end());
             ++to->queued;
+            to->inbound += to->low == row.low ? 0 : 1;
             ++routed;
             if (to->low == row.low)
                 st.disenchant.push_back(guid);
@@ -3621,9 +3759,9 @@ void GuildCoordinator::RouteSpareGreens()
                 st.held.push_back({guid, proto->ItemId, item->GetCount(), to->low, "disenchant " + Who(to->low)});
             LOG_INFO("playerbots",
                      "[ench161] spare {} (at {}) -> {} (Enchanting {}, needs {}): no member's gear plan takes this "
-                     "copy, disenchanted not sold",
+                     "copy, {} [craft409]",
                      proto->Name1, Who(row.low), to->low == row.low ? std::string("its own Disenchant") : Who(to->low),
-                     to->skill, req);
+                     to->skill, req, why);
         };
         for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
             look(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
@@ -7468,13 +7606,22 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
     if (equipment && proto->DisenchantID && proto->Quality >= ITEM_QUALITY_UNCOMMON)
     {
         uint32 const req = proto->RequiredDisenchantSkill;
+        // [craft409] user rule 2026-11-12: disenchanted only for a needed result, else sold
+        std::map<uint32, double> demand = DisenchantDemand();
+        std::string worth;
         if (looter->HasSkill(SKILL_ENCHANTING) && looter->GetPureSkillValue(SKILL_ENCHANTING) >= req &&
             looter->HasSpell(SPELL_DISENCHANT))
         {
             release();
+            if (!DisenchantWorth(proto, looter->GetPureSkillValue(SKILL_ENCHANTING), demand, worth))
+            {
+                st.sell.push_back(report.itemGuidLow);
+                Decision(what + " → " + worth + " [craft409]");
+                return;
+            }
             st.disenchant.push_back(report.itemGuidLow);
             Decision(what + " → disenchants itself (enchanter, skill " +
-                     std::to_string(looter->GetPureSkillValue(SKILL_ENCHANTING)) + ")");
+                     std::to_string(looter->GetPureSkillValue(SKILL_ENCHANTING)) + "): " + worth + " [craft409]");
             return;
         }
         // [ench153] to the guild's enchanter by the transfer flow (trade / mail / bank, GuildTransfer: whichever costs
@@ -7493,11 +7640,11 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
                 {
                     uint32 const skill = m->GetPureSkillValue(SKILL_ENCHANTING);
                     int32 const chance = DisenchantSkillUpChance(skill);
-                    size_t queued = bots_[row.low].disenchant.size();
-                    for (auto const& [holder, hs] : bots_)
-                        for (HeldItem const& h : hs.held)
-                            if (h.forLow == row.low && h.purpose.rfind("disenchant", 0) == 0)
-                                ++queued;
+                    // [craft409] its whole queue (letters, held items, bank claims); one more needs a bag slot
+                    uint32 const inbound = EnchanterInbound(row.low, m);
+                    if (FreeBagSlots(m) <= inbound)
+                        continue;
+                    size_t const queued = bots_[row.low].disenchant.size() + inbound;
                     if (enchanter &&
                         (chance < enchanterChance ||
                          (chance == enchanterChance &&
@@ -7508,7 +7655,7 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
                     enchanterChance = chance;
                     enchanterQueued = queued;
                 }
-        if (enchanter)
+        if (enchanter && DisenchantWorth(proto, enchanterSkill, demand, worth))
         {
             if (held == st.held.end())
             {
@@ -7518,13 +7665,14 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
             held->forLow = enchanter;
             held->purpose = "disenchant " + Who(enchanter);
             Decision(what + " → to the enchanter " + Who(enchanter) + " (skill " + std::to_string(enchanterSkill) +
-                     ") to disenchant [ench153]");
+                     ") " + worth + " [ench153][craft409]");
             return;
         }
         release();
         st.sell.push_back(report.itemGuidLow);
-        Decision(what + " → sell: an upgrade for nobody, no enchanter of skill " + std::to_string(req) +
-                 " [ench153]");
+        Decision(what + (enchanter ? " → " + worth + " [craft409]"
+                                   : " → sell: an upgrade for nobody, no enchanter of skill " + std::to_string(req) +
+                                         " with bag room [ench153][craft409]"));
         return;
     }
     release();

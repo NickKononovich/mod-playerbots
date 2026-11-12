@@ -929,6 +929,13 @@ private:
     // [bank409] a bank item no member claims (no upgrade, wanted list, cook, gear plan, withdraw): an enchanter takes
     // a green it disenchants, else the member nearest a vault takes it to sell - the loot decision runs on it then
     void ClaimBankItems();
+    // [craft409] user rule 2026-11-12: a green nobody wears is disenchanted only when its result is needed (the
+    // guild's demand for its dust / essence, after what the queued disenchants yield) or the enchanter's Disenchant
+    // still gives skill; else it is sold (lock_ held)
+    std::map<uint32, double> DisenchantDemand();
+    bool DisenchantWorth(ItemTemplate const* proto, uint32 skill, std::map<uint32, double>& demand, std::string& why);
+    // [craft409] the items on their way to an enchanter: letters in its mailbox, items held for it, bank claims
+    uint32 EnchanterInbound(uint32 low, Player* enchanter) const;
     // [ench160] the expected items of one Disenchant of an item of this DisenchantID (disenchant_loot_template)
     std::map<uint32, float> const& DisenchantYield(uint32 disenchantId);
     static bool TownReady(Player* bot, GuildOrder const& o);
