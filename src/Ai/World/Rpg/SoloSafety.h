@@ -109,6 +109,9 @@ namespace SoloSafety
     // and the judge did not count (Creature::Update's periodic CallAssistance from where each one fights): true with
     // the two named in `why`
     bool AttackerWakes(Player* bot, Unit* target, std::string& why);
+    // [death399] a solo bot's loot at `at` lies in an idle hostile's reach (its wander area, a patrol's forecast beat)
+    // the bot does not stand in now: the walk there is a pull nobody judged (`who`: the nearest such mob)
+    bool LootInReach(Player* bot, G3D::Vector3 const& at, std::string& who);
     // [deaths18] a party judge's engaged pull (the leader's grind target, NewRpgCoop::JudgePull): the death line of a
     // member names a party fight only when this target hit it
     void NotePartyPull(Player* leader, Unit* target);
@@ -229,6 +232,10 @@ namespace SoloSafety
     RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl);
     // the bot lives through `damage` over `seconds` from its health now with its heal kit (the flee's test)
     bool SurvivesRunPast(Player* bot, float damage, float seconds);
+    // [death400] the walk `points` (from the bot on) out of reaches it stands in: every idle mob whose reach (wander
+    // area, patrol beat) it crosses chases it with the ones their engage calls bring - true when it lives through
+    // their chases at the high end (`why`: the chasers and the price)
+    bool RunOutSurvives(Player* bot, std::vector<G3D::Vector3> const& points, std::string& why);
     // [runpast11] the run-past executor. The route search of a walk from where the bot stands keeps the mobs it priced
     // as run past (their chase each); CommitRunPast makes that set the walked leg's (`points`: from the bot on).
     // RunPastStep, in a fight: every attacker is one of the leg's set, the bot is still on the leg, the kit does not

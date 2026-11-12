@@ -6463,9 +6463,22 @@ bool NewRpgBaseAction::RestEscape()
     std::vector<G3D::Vector3> spots;
     if (!SoloSafety::StandsInReach(bot, who, spots))
         return false;
+    // [death400] a spot whose only walk crosses refused reaches is taken when the chases of every reach it crosses
+    // are survived at the high end (SoloSafety::RunOutSurvives): standing on in the reaches is a fight that comes.
+    // b453 Thyllyn L20 stood among 3 overlapping Wrathtail reaches at the Zoram Strand ("no deeper" left no walk out),
+    // every spot refused, until the patrol Ruuzel L22 walked in
+    G3D::Vector3 runOut;
+    std::string runOutWhy;
+    bool runOutFound = false;
     for (G3D::Vector3 const& at : spots)
     {
         Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
+        if (route.found && route.complete && route.throughRefused && !runOutFound &&
+            SoloSafety::RunOutSurvives(bot, route.points, runOutWhy))
+        {
+            runOutFound = true;
+            runOut = at;
+        }
         if (!route.found || !route.complete || route.throughRefused)
             continue;
         if (bot->IsSitState())
@@ -6476,6 +6489,18 @@ bool NewRpgBaseAction::RestEscape()
                  "rests at ({:.0f},{:.0f}), {:.0f} yd walk",
                  bot->GetName(), bot->GetLevel(), bot->GetHealthPct(), who, at.x, at.y, route.length);
         return true;
+    }
+    if (runOutFound)
+    {
+        if (bot->IsSitState())
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+        if (MoveTo(bot->GetMapId(), runOut.x, runOut.y, runOut.z, false, false, false, true))
+        {
+            LOG_INFO("playerbots", "[death400] {} L{} REST_ESCAPE through the reaches of {}: rests at ({:.0f},{:.0f}), "
+                     "its run out priced {}",
+                     bot->GetName(), bot->GetLevel(), who, runOut.x, runOut.y, runOutWhy);
+            return true;
+        }
     }
     return false;
 }

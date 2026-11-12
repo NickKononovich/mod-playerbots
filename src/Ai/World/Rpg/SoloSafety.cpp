@@ -2520,7 +2520,18 @@ namespace SoloSafety
                     std::find(counted.begin(), counted.end(), mob->GetGUID()) != counted.end())
                     continue;
                 G3D::Vector4 const disc = AggroDisc(mob, bot);
-                float const gap = std::hypot(disc.x - at.x, disc.y - at.y) - disc.w;
+                float gap = std::hypot(disc.x - at.x, disc.y - at.y) - disc.w;
+                // [death399] a patrol reaches the area from anywhere on its forecast beat ([death391]), not only where
+                // it walks now. b453 Thyllyn L20 won its pulls at the Zoram Strand "safe 6 yd" by where Ruuzel L22
+                // stood, ended the fight on Ruuzel's beat, stood there and died to him and two Wrathtails
+                if (mob->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE)
+                {
+                    std::vector<G3D::Vector3> beat;
+                    float sampleSec = 0.0f;
+                    if (PullPlanning::PatrolForecast(mob, beat, sampleSec))
+                        for (G3D::Vector3 const& step : beat)
+                            gap = std::min(gap, std::hypot(step.x - at.x, step.y - at.y) - disc.w);
+                }
                 if (gap < margin)
                 {
                     margin = gap;
@@ -2529,6 +2540,17 @@ namespace SoloSafety
             }
             return margin;
         }
+    }
+
+    bool LootInReach(Player* bot, G3D::Vector3 const& at, std::string& who)
+    {
+        if (!bot || bot->IsInCombat() || !Applies(bot))
+            return false;
+        std::vector<ObjectGuid> const none;
+        std::string here;
+        G3D::Vector3 const stands(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        // a reach it stands in already is no step deeper: only one the walk to the loot enters
+        return SafeMargin(bot, nullptr, at, who, none) < 0.0f && SafeMargin(bot, nullptr, stands, here, none) >= 0.0f;
     }
 
     bool AttackerWakes(Player* bot, Unit* target, std::string& why)
@@ -3564,7 +3586,11 @@ namespace SoloSafety
         float variance = 0.0f;
         float const melee = MeleeDps(mob, bot, &variance);
         float exposure = 0.0f;
-        ChaseTimes(bot, mob->GetSpeed(MOVE_RUN), float(mob->GetLeashTimer()), melee, mob->GetMeleeRange(bot),
+        // [death401] a chase in the water is at both swim speeds (MoveSplineInit::SelectSpeedType: MOVE_SWIM for a
+        // swimming unit): b453 Mytaeleas / Enyssia / Salleas died to Greymist chases off Mist's Edge priced at run
+        // speed
+        float const chaseSpeed = mob->GetSpeed(bot->IsInWater() ? MOVE_SWIM : MOVE_RUN);
+        ChaseTimes(bot, chaseSpeed, float(mob->GetLeashTimer()), melee, mob->GetMeleeRange(bot),
                    out.seconds, exposure, withSpeed);
         float const casts = ChaseSpellDamage(mob, out.seconds);
         out.damage = melee * BehindFactor(bot) * exposure + (casts > 0.0f ? casts : SpellDpsOf(mob) * out.seconds);
@@ -3595,7 +3621,9 @@ namespace SoloSafety
         float const leashSec =
             float(std::max<int32>(LEASH_TIMER_OFFSET, LEASH_TIMER_OFFSET + int32(tmpl->minlevel / 10) - 2));
         float exposure = 0.0f;
-        ChaseTimes(bot, tmpl->speed_run * baseMoveSpeed[MOVE_RUN], leashSec, melee, NOMINAL_MELEE_RANGE, out.seconds,
+        float const chaseSpeed = bot->IsInWater() ? tmpl->speed_swim * baseMoveSpeed[MOVE_SWIM]  // [death401]
+                                                  : tmpl->speed_run * baseMoveSpeed[MOVE_RUN];
+        ChaseTimes(bot, chaseSpeed, leashSec, melee, NOMINAL_MELEE_RANGE, out.seconds,
                    exposure);
         out.damage = melee * BehindFactor(bot) * exposure;
         return out;
@@ -3607,6 +3635,75 @@ namespace SoloSafety
             return false;
         float const mana = float(bot->GetPower(POWER_MANA));
         return damage < float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, mana, true, true);
+    }
+
+    bool RunOutSurvives(Player* bot, std::vector<G3D::Vector3> const& points, std::string& why)
+    {
+        why.clear();
+        if (!bot || points.empty())
+            return false;
+        float const sight = sPlayerbotAIConfig.SightDistance;
+        float const range = std::min(sight + MaxWanderDistance(bot->GetMapId()) + MAX_AGGRO_RADIUS,
+                                     std::max(bot->GetMap()->GetVisibilityRange(), sight));
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(bot, range);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitObjects(bot, searcher, range);
+        std::vector<Creature*> idle;
+        for (Unit* unit : units)
+            if (Creature* mob = unit->ToCreature())
+                if (mob->IsAlive() && !mob->IsInCombat() && mob->IsHostileTo(bot) &&
+                    mob->HasReactState(REACT_AGGRESSIVE) && !mob->GetCharmerOrOwnerGUID() && !mob->IsCivilian())
+                    idle.push_back(mob);
+        // the walk sampled at the route search's step from the bot on
+        constexpr float STEP = 4.0f;
+        std::vector<G3D::Vector3> samples{
+            G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ())};
+        for (G3D::Vector3 const& p : points)
+        {
+            G3D::Vector3 const last = samples.back();
+            float const gap = (p - last).length();
+            for (float d = STEP; d < gap; d += STEP)
+                samples.push_back(last + (p - last) * (d / gap));
+            samples.push_back(p);
+        }
+        float const assist = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
+        std::vector<Creature*> chasers;
+        for (Creature* mob : idle)
+        {
+            G3D::Vector4 const disc = AggroDisc(mob, bot);
+            std::vector<G3D::Vector3> beat;
+            float sampleSec = 0.0f;
+            if (mob->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE)
+                PullPlanning::PatrolForecast(mob, beat, sampleSec);
+            bool reaches = false;
+            for (size_t i = 0; !reaches && i < samples.size(); ++i)
+            {
+                reaches = InDisc(disc, samples[i]);
+                for (size_t k = 0; !reaches && k < beat.size(); ++k)
+                    reaches = InDisc(G3D::Vector4(beat[k].x, beat[k].y, beat[k].z, disc.w), samples[i]);
+            }
+            if (reaches)
+                chasers.push_back(mob);
+        }
+        // their engage calls bring the idle mobs within the assistance radius of each (Creature::CallAssistance)
+        for (size_t i = 0; assist > 0.0f && i < chasers.size(); ++i)
+            for (Creature* c : idle)
+                if (std::find(chasers.begin(), chasers.end(), c) == chasers.end() &&
+                    chasers[i]->IsWithinDistInMap(c, assist) && c->CanAssistTo(chasers[i], bot))
+                    chasers.push_back(c);
+        RunPast total;
+        for (Creature* mob : chasers)
+        {
+            total.Add(RunPastChase(bot, mob));
+            if (why.size() < 160)
+                why += Acore::StringFormat("{}{} L{}", why.empty() ? "" : ", ", mob->GetName(), mob->GetLevel());
+        }
+        bool const lives = SurvivesRunPast(bot, total.High(), total.seconds);
+        why = Acore::StringFormat("{} chaser(s) ({}): {:.0f} dmg at the high end over {:.0f} s, hp {}", chasers.size(),
+                                  why.empty() ? "-" : why, chasers.empty() ? 0.0f : total.High(), total.seconds,
+                                  bot->GetHealth());
+        return lives;
     }
 
     void CommitRunPast(Player* bot, std::vector<G3D::Vector3> const& points,

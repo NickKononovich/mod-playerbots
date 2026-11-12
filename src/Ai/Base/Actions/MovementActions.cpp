@@ -7396,6 +7396,24 @@ bool MoveToLootAction::Execute(Event /*event*/)
         return false;
     }
 
+    // [death399] a solo bot's loot inside an idle mob's reach it does not stand in (a patrol's beat too): no walk
+    // there - it is a pull the judge never saw (b453 Thyllyn L20 at the Zoram Strand, on Ruuzel L22's beat)
+    if (distance > sPlayerbotAIConfig.ContactDistance + reachedMargin)
+    {
+        std::string who;
+        G3D::Vector3 const at(target->GetPositionX(), target->GetPositionY(), target->GetPositionZ());
+        if (SoloSafety::LootInReach(bot, at, who))
+        {
+            LOG_INFO("playerbots", "[death399] {} L{} leaves its loot at ({:.0f},{:.0f}): inside the reach of {}",
+                     bot->GetName(), bot->GetLevel(), at.x, at.y, who);
+            availableLoot->DeferLoot(loot.guid);
+            if (AI_VALUE(LootObject, "loot target").guid == loot.guid)
+                context->GetValue<LootObject>("loot target")->Set(LootObject());
+            lootWatchGuid.Clear();
+            return false;
+        }
+    }
+
     return MoveNear(target, sPlayerbotAIConfig.ContactDistance);
 }
 
