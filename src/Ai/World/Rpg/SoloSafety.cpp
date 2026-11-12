@@ -1934,7 +1934,6 @@ namespace SoloSafety
             }
         }
 
-
         // [pullplan] user 2026-11-08: a player pulls the target away from its camp - from range (its spells, Throw /
         // Shoot) or with its body at the edge of the target's aggro reach - and fights where it stands. The fight
         // spot: outside every other idle mob's aggro reach (wander area, patrol beat), and where the fewest of them
@@ -2591,12 +2590,19 @@ namespace SoloSafety
     // [death418] a mob of the judged fight: its engaged target, a mob its judge counted, or one on the bot now. The
     // judged area held only for the engaged target: b456 Maronic L21 (holy) judged 4 Shadowhide Gnolls at
     // (-9287,-3183); its target dead, it chased the other three 23-41 yd off the spot into the camp, 10 came, dead
+    // [death420] ... the counted mobs and the ones on it only once that engage's fight is open (OpenIfNeeded drops a
+    // stale engage, [death398]): b458 Rollothan L15, a Black Dragon Whelp on it while its engage of a Redridge Poacher
+    // was stale, "steps back to (-9721,-2271)" 71 yd to that old spot, met a second whelp on the way and died
     static bool OfEngage(Player* bot, SoloBotState const& state, Unit* target)
     {
         ObjectGuid const guid = target->GetGUID();
-        return state.engaged && (state.engage.target == guid || target->GetVictim() == bot ||
-                                 std::find(state.engage.counted.begin(), state.engage.counted.end(), guid) !=
-                                     state.engage.counted.end());
+        if (!state.engaged)
+            return false;
+        if (state.engage.target == guid)
+            return true;
+        return state.open && (target->GetVictim() == bot ||
+                              std::find(state.engage.counted.begin(), state.engage.counted.end(), guid) !=
+                                  state.engage.counted.end());
     }
 
     bool AttackerWakes(Player* bot, Unit* target, std::string& why)

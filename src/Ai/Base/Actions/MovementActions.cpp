@@ -25,6 +25,7 @@
 #include "LastMovementValue.h"
 #include "LeaderFightChecks.h"  // [lead1050] LeaderAggroAt
 #include "LeaderOrders.h"  // [lead9] LEADER_SAFE_ZONE
+#include "NewRpgCoop.h"        // [death419]
 #include "SoloSafety.h"        // [guild14]
 #include "World.h"             // [guild14] CONFIG_CREATURE_LEASH_RADIUS
 #include "DungeonTactics.h"   // [lead231] IsKnownCleaver
@@ -4874,13 +4875,21 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
     // refused is no walk: MoveFarTo's maze search goes round, the run past or the refusal is the caller's. Every other
     // MoveTo took it: b456 Febineysh L18 walked to its engaged Redridge Basher "complete, through a refused reach"
     // past a Basher and a Mystic it had refused, the fight opened at 3 yd of them and it died there
+    // [death419] ... not a co-op party member's: its leader judges the party's pulls and its walks follow the leader's
+    // fight (b458 Rollothan L15, healer of Aestymro's party in the Lake Everstill murlocs: 82 refused 11-24 yd walks
+    // to its party's fight, "Murloc Scout L20 ... refused" - the pack the leader had judged and was fighting)
+    int8 member = -1;  // NewRpgCoop::IsMember, asked only for a refused route
     bool refusedSeen = false;
-    auto const walkable = [&refusedSeen](BotPath const& path, int ok)
+    auto const walkable = [&](BotPath const& path, int ok)
     {
         if (!(path.type & ok))
             return false;
-        refusedSeen = refusedSeen || path.throughRefused;
-        return !path.throughRefused;
+        if (!path.throughRefused)
+            return true;
+        if (member < 0)
+            member = NewRpgCoop::IsMember(bot) ? 1 : 0;
+        refusedSeen = refusedSeen || !member;
+        return member == 1;
     };
     auto const refusedLine = [&]()
     {
