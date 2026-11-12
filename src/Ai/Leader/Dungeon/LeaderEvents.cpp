@@ -24,6 +24,7 @@
 #include "DBCStores.h"
 #include "Engine.h"
 #include "EscortProtect.h"  // [b36_ohb] EscortGossipHeld
+#include "DpsEstimate.h"  // [lead1308] the threat headroom's rates
 #include "EstimatedLifetimeValue.h"
 #include "GameObject.h"
 #include "GenericSpellActions.h"  // [lead1101] CastSpellAction
@@ -430,6 +431,29 @@ namespace Leader::Dungeon
         float ThreatSeenRate(Leader::DungeonLeaderState::ThreatSeen const& seen)
         {
             return std::max(0.0f, seen.threat - seen.base) / ThreatSeenSec(seen);
+        }
+
+        // [lead1308] coordinator 2026-11-13 (user rule 2026-11-08): the threat rates the headroom projects with are
+        // the formula's - a member's or the tank's rotation threat per second on the mob (DpsEstimate tps: its
+        // spells' damage and threat data, stance / presence / form, talents, buffs). Its threat now (the threat list)
+        // is the state the rate builds on; the rates seen this fight or this run (ThreatSeenRate, openTps) go to the
+        // log only
+        float FormulaTps(Player* who, Unit* mob)
+        {
+            return who && mob ? DpsEstimate::EstimateTps(who, mob, DpsEstimate::ContextOf(who)) : 0.0f;
+        }
+
+        // [lead1308] the game's healing threat: half the healing (ThreatManager), times the healer's threat auras
+        // for its heal school, spread over every enemy it is in combat with (`mobs`)
+        constexpr float HEAL_THREAT_SHARE = 0.5f;
+        float HealerTps(Player* healer, Player* tank, size_t mobs)
+        {
+            if (!healer)
+                return 0.0f;
+            RestState::HealerFacts const facts = RestState::HealerThroughput(healer, tank ? tank : healer);
+            uint32 const healSchools = SPELL_SCHOOL_MASK_HOLY | SPELL_SCHOOL_MASK_NATURE;
+            float const aura = healer->GetTotalAuraMultiplierByMiscMask(SPELL_AURA_MOD_THREAT, healSchools);
+            return facts.hps * HEAL_THREAT_SHARE * aura / float(std::max<size_t>(mobs, 1));
         }
 
         // [lead900] a spell's threat for the member by the game's rules: the spell threat data's multiplier
@@ -5992,10 +6016,7 @@ namespace Leader::Dungeon
                     (!mob->IsInCombat() || mob->GetVictim() == tank))
                     pullMob = mob;
             float const pullEta = pullMob ? TankHitEtaSec(tank, pullMob) : -1.0f;
-            float tankOpen = 0.0f;
-            if (auto const measured = lead.openTps.find(tank->GetGUID());
-                measured != lead.openTps.end() && measured->second.second)
-                tankOpen = measured->second.first / float(measured->second.second);
+            float const tankOpen = pullMob ? FormulaTps(tank, pullMob) : 0.0f;  // [lead1308] the formula's
             float const tick = LEADER_FIGHT_TICK_MS / 1000.0f;
             for (Player* bot : seats)
             {
@@ -9891,22 +9912,6 @@ namespace Leader::Dungeon
                     }
                     return seen;
                 };
-                float freshRate = 0.0f;
-                if (auto const measured = lead.openTps.find(guid);
-                    measured != lead.openTps.end() && measured->second.second)
-                    freshRate = measured->second.first / float(measured->second.second);
-                for (ObjectGuid const& other : killOrder)
-                    if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
-                        if (auto const& seen = seenOn(fought, bot); seen.threat > 0.0f)
-                            freshRate = std::max(freshRate, ThreatSeenRate(seen));
-                // [lead246] b191 rfc-h: the warrior tanks' threat rate 0-2 s into a pull was 740 / 987 per s
-                // against 1691 / 1652 at 2-5 s (rage), so the tank's next GCD read from its first hit stopped
-                // the damage dealers early (5B 129, 5F 118 stops, 31-38 of 46 per member in the first 2 s). Both
-                // sides read a rate measured over less than a GCD the same way: at least the run's opening rate
-                float tankOpen = 0.0f;
-                if (auto const measured = lead.openTps.find(tank->GetGUID());
-                    measured != lead.openTps.end() && measured->second.second)
-                    tankOpen = measured->second.first / float(measured->second.second);
                 // [lead683] b218 rfc-h (8 runs): 149 of the 590 "threat: no mob with headroom" Stops read the tank's
                 // threat flat at its pull (5A 51 / 116 / 148.5 / 173.3 / 303.6 s: tank 41.2 -> tankNext 41.2 on the
                 // mob it had just pulled, every damage dealer stopped) - the tank's opening rate projected only onto
@@ -9915,14 +9920,9 @@ namespace Leader::Dungeon
                 // rate builds on
                 auto const tankOpensOn = [&](Unit* mob)
                 { return tank->GetVictim() == mob || (mob && tank->GetTarget() == mob->GetGUID()); };
-                auto const rateOf = [](Leader::DungeonLeaderState::ThreatSeen const& seen, float opening)
-                {
-                    float const onMob = seen.threat > 0.0f ? ThreatSeenRate(seen) : 0.0f;
-                    bool const measuredHere =
-                        seen.threat > 0.0f &&
-                        getMSTimeDiff(seen.firstMs, seen.lastMs) / 1000.0f >= HEADROOM_GCD_SEC;
-                    return measuredHere ? onMob : std::max(onMob, opening);
-                };
+                // [lead1308] the tank's threat grows by its rotation's rate on the mob it attacks or has selected;
+                // on another one by nothing the formula knows (its area threat is not counted: the safe side)
+                auto const tankRateOn = [&](Unit* mob) { return tankOpensOn(mob) ? FormulaTps(tank, mob) : 0.0f; };
                 struct Projection
                 {
                     float mine = 0.0f;
@@ -9937,7 +9937,7 @@ namespace Leader::Dungeon
                     Projection p;
                     auto const& mine = seenOn(mob, bot);
                     p.mine = mine.threat;
-                    p.mineNext = mine.threat + rateOf(mine, freshRate) * HEADROOM_GCD_SEC;
+                    p.mineNext = mine.threat + FormulaTps(bot, mob) * HEADROOM_GCD_SEC;  // [lead1308]
                     // [lead900] user 2026-11-03: before its first hit on the mob, its first cast's threat by the
                     // spell threat data (Icy Touch x7) counts when it is more than its rate over the GCD (b187 lead229:
                     // the unholy DK's opening Icy Touch from range took the bear's mobs)
@@ -9981,7 +9981,7 @@ namespace Leader::Dungeon
                     // was read at its opening single-target rate on a mob it did not attack. The tank's opening rate
                     // projects onto the mob it attacks; on another its threat grows only by what it measured there
                     p.tankNext = held.threat > 0.0f
-                                     ? held.threat + rateOf(held, tankOpensOn(mob) ? tankOpen : 0.0f) * horizon
+                                     ? held.threat + tankRateOn(mob) * horizon
                                      : 0.0f;
                     p.tankNext += p.redirected;
                     p.share = mob->GetVictim() != tank       ? 1.0f
@@ -10077,7 +10077,7 @@ namespace Leader::Dungeon
                         Projection const p = project(mob);
                         if (p.tank <= 0.0f || mob->GetThreatMgr().GetThreat(tank) <= 0.0f)
                             return false;
-                        float const tankRate = rateOf(seenOn(mob, tank), tankOpensOn(mob) ? tankOpen : 0.0f);
+                        float const tankRate = tankRateOn(mob);
                         float const catchUp =
                             tankRate > 0.0f ? std::max(HEADROOM_GCD_SEC,
                                                        (THREAT_OVERTAKE_MELEE * p.mineNext - p.tankNext) / tankRate)
@@ -10328,8 +10328,7 @@ namespace Leader::Dungeon
                                     }
                                 if (back < 0.0f)
                                 {
-                                    float const rate =
-                                        rateOf(seenOn(attacker, tank), tankOpensOn(attacker) ? tankOpen : 0.0f);
+                                    float const rate = tankRateOn(attacker);
                                     float const need = THREAT_OVERTAKE_MELEE *
                                                            attacker->GetThreatMgr().GetThreat(member) -
                                                        attacker->GetThreatMgr().GetThreat(tank);
@@ -10409,34 +10408,20 @@ namespace Leader::Dungeon
                     // last threat rise: the projection changes only when a heal lands or the tank's threat grows
                     // (the other flips - 181 "not on the tank", 69 "a fight mob attacks a member" - are the game's
                     // victim / threat facts; their reason now names the mob's victim and the tank's threat)
-                    auto const riseRate = [](Leader::DungeonLeaderState::ThreatSeen const& seen)
+                    // [lead1308] its heal threat by the formula (HealerTps): its rate does not move while it waits
+                    // (lead574's flip came from a measured rate over a growing window); the enemies it is in combat
+                    // with share it, a mob not yet on its list among them
+                    size_t const healMobs = bot->GetThreatMgr().GetThreatenedByMeList().size();
+                    auto const healRateOn = [&](Unit* mob)
                     {
-                        if (seen.threat <= 0.0f || !seen.riseMs)
-                            return 0.0f;
-                        float const sec =
-                            std::max(getMSTimeDiff(seen.firstMs, seen.riseMs) / 1000.0f, HEADROOM_GCD_SEC);
-                        return std::max(0.0f, seen.threat - seen.base) / sec;
+                        bool const listed = mob->GetThreatMgr().GetThreat(bot) > 0.0f;
+                        return HealerTps(bot, tank, healMobs + (listed ? 0 : 1));
                     };
-                    float healFresh = 0.0f;
-                    if (auto const measured = lead.openTps.find(guid);
-                        measured != lead.openTps.end() && measured->second.second)
-                        healFresh = measured->second.first / float(measured->second.second);
-                    for (ObjectGuid const& other : killOrder)
-                        if (Unit* fought = ObjectAccessor::GetUnit(*tank, other); fought && fought->IsAlive())
-                            healFresh = std::max(healFresh, riseRate(seenOn(fought, bot)));
                     auto const healHeadroomOn = [&](Unit* mob)
                     {
                         auto const& mine = seenOn(mob, bot);
                         auto const& held = seenOn(mob, tank);
-                        auto const rateHere = [&](Leader::DungeonLeaderState::ThreatSeen const& seen, float opening)
-                        {
-                            float const onMob = riseRate(seen);
-                            bool const measuredHere =
-                                seen.threat > 0.0f &&
-                                getMSTimeDiff(seen.firstMs, seen.riseMs) / 1000.0f >= HEADROOM_GCD_SEC;
-                            return measuredHere ? onMob : std::max(onMob, opening);
-                        };
-                        float mineNext = mine.threat + rateHere(mine, healFresh) * HEADROOM_GCD_SEC;
+                        float mineNext = mine.threat + healRateOn(mob) * HEADROOM_GCD_SEC;
                         // [lead901] its running heals / damage over time still add threat after the heals stop
                         float horizon = HEADROOM_GCD_SEC;
                         if (PeriodicLeft const periodic = PeriodicThreatLeft(bot, mob); periodic.threat > 0.0f)
@@ -10448,7 +10433,7 @@ namespace Leader::Dungeon
                         }
                         float const tankNext =
                             held.threat > 0.0f
-                                ? held.threat + rateHere(held, tankOpensOn(mob) ? tankOpen : 0.0f) * horizon
+                                ? held.threat + tankRateOn(mob) * horizon
                                 : 0.0f;
                         float const share = mob->GetVictim() != tank       ? 1.0f
                                             : mob->IsWithinMeleeRange(bot) ? THREAT_OVERTAKE_MELEE
@@ -10464,11 +10449,7 @@ namespace Leader::Dungeon
                     auto const healNextOn = [&](Unit* mob)
                     {
                         auto const& mine = seenOn(mob, bot);
-                        float const fresh = mine.threat > 0.0f && getMSTimeDiff(mine.firstMs, mine.riseMs) / 1000.0f >=
-                                                                      HEADROOM_GCD_SEC
-                                                ? riseRate(mine)
-                                                : std::max(riseRate(mine), healFresh);
-                        float mineNext = mine.threat + fresh * HEADROOM_GCD_SEC;
+                        float mineNext = mine.threat + healRateOn(mob) * HEADROOM_GCD_SEC;  // [lead1308]
                         if (PeriodicLeft const periodic = PeriodicThreatLeft(bot, mob); periodic.threat > 0.0f)
                             mineNext = mine.threat + std::max(mineNext - mine.threat, periodic.within) +
                                        (periodic.threat - periodic.within);
