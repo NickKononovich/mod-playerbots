@@ -888,6 +888,9 @@ namespace
     {
         float callRadius = 0.0f;
         bool flees = false;
+        // [lag369] the health share its flee waits for (SMART_EVENT_HEALTH_PCT's HPMax of the flee's event; a flee on
+        // another event: at any health, 1)
+        float fleePct = 0.0f;
         // [deaths14] a caster that stands to cast (SMART_ACTION_CAST on its victim with SMARTCAST_COMBAT_MOVE: "prevents
         // combat movement if cast successful"): it stops at that spell's range from the bot, not at the fight spot -
         // its periodic assistance calls (Creature::Update -> CallAssistance) are made from there
@@ -911,7 +914,13 @@ namespace
                 if (holder.action.type == SMART_ACTION_CALL_FOR_HELP)
                     help.callRadius = std::max(help.callRadius, float(holder.action.callHelp.range));
                 else if (holder.action.type == SMART_ACTION_FLEE_FOR_ASSIST)
+                {
                     help.flees = true;
+                    help.fleePct = std::max(help.fleePct,
+                                            holder.event.type == SMART_EVENT_HEALTH_PCT
+                                                ? std::min(float(holder.event.minMaxRepeat.max), 100.0f) / 100.0f
+                                                : 1.0f);
+                }
                 else if (holder.action.type == SMART_ACTION_CAST && holder.target.type == SMART_TARGET_VICTIM &&
                          (holder.action.cast.castFlags & SMARTCAST_COMBAT_MOVE))
                     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell))
@@ -1261,8 +1270,35 @@ namespace
                                 best = gap;
                                 nearest = c;
                             }
+                    // [lag369] coordinator 2026-11-12 (b449 Gilduck L14 mage in Westfall: every Defias pull "flees for
+                    // help to Defias Trapper 33 yd from the fight", 0 xp from 07:18): the runner flees when its health
+                    // falls to its script's share (SMART_EVENT_HEALTH_PCT) and the help comes only when it reaches its
+                    // helper (MoveSeekAssistance at its run speed, the call at its arrival) - a bot whose damage takes
+                    // the rest of its health before that kills it on the way and nobody comes
                     if (nearest)
                     {
+                        ScriptHelp const help = ScriptHelpOf(pack[i].mob);
+                        float const left = help.fleePct * float(pack[i].mob->GetMaxHealth());
+                        float const dps = DpsEstimate::EstimateDps(bot, pack[i].mob, DpsEstimate::BuffContext::Solo);
+                        float const run = best / std::max(pack[i].mob->GetSpeed(MOVE_RUN), 0.1f);
+                        if (dps > 0.0f && left / dps < run)
+                        {
+                            static std::mutex killLogLock;  // one line per bot and runner kind: a log cadence
+                            static std::unordered_set<uint64> killLogged;
+                            bool fresh = false;
+                            {
+                                std::lock_guard<std::mutex> guard(killLogLock);
+                                fresh = killLogged.insert(uint64(pack[i].mob->GetEntry()) * 1000003ull +
+                                                          bot->GetGUID().GetCounter())
+                                            .second;
+                            }
+                            if (fresh)
+                                LOG_INFO("playerbots", "[lag369] {} L{} judge: {} would flee at {:.0f} % ({:.0f} hp) "
+                                         "to {} {:.0f} yd off ({:.1f} s run): killed first in {:.1f} s at {:.1f} dps",
+                                         bot->GetName(), bot->GetLevel(), pack[i].mob->GetName(),
+                                         help.fleePct * 100.0f, left, nearest->GetName(), best, run, left / dps, dps);
+                            continue;
+                        }
                         pack.push_back({nearest, true});
                         changed = true;
                         // one line per runner and helper beyond the radius round the fight spot alone
