@@ -3192,7 +3192,12 @@ namespace SoloSafety
         // Blue Flutterer (10.2 measured at that gap), Rollothan L8 5.7 (8.5): the fight showed lost only at hp 43 / 4
         // [guild15] once it has dealt damage: a bot hit on its walk before it turned on the mob had dealt 0 after two
         // swings, the projection read 1.0 dps and it ran from L8 mobs it kills in 10 s (b321 Colian L11, Nightstalkers)
-        if (elapsed >= 2.0f * SwingSec(bot) && state.dealt)
+        // [death438] ... a window that holds one pass of its rotation (DpsEstimate cycleSec, the calibration's own
+        // validity rule): b462 Septimon L17 (shadow) opened on a Pygmy Venom Web Spider with Shadow Word: Pain, its
+        // first tick in, the projection read "198 s at its 2.2 dps" against the formula's 20.9 and ran from a fight
+        // judged won into two wanderers
+        float const window = std::max(2.0f * SwingSec(bot), own.cycleSec);
+        if (elapsed >= window && state.dealt)
             botDps = float(state.dealt) / (elapsed + SwingSec(bot));
         // [deaths] ... and while its attackers stand in its melee reach, what it deals there once that part covers two
         // of its swings: the mob is on it, the rest of the fight is fought there. b337: Rumanatol L11 at The Lost Fold
@@ -3200,7 +3205,7 @@ namespace SoloSafety
         // health was gone; Eraelor L7 (hunter, no pet) dealt 10.2 dps at range for 6 s, then 2.4 dps in melee for
         // 40 s - the whole fight's average read won until the run cost more than his health, and he died
         if (float const meleeSec = float(state.meleeMs) / IN_MILLISECONDS;
-            state.sampleMelee && meleeSec >= 2.0f * SwingSec(bot))
+            state.sampleMelee && meleeSec >= window)
             botDps = float(state.dealtMelee) / (meleeSec + SwingSec(bot));
         out.botDps = std::max(botDps, 1.0f);
         // [deaths] each attacker's health with the heals it still casts on itself over the time the bot needs for it
