@@ -1535,6 +1535,17 @@ namespace
                         }
                         pack.push_back({nearest, true});
                         changed = true;
+                        // [death443] the runner's call at its helper (AssistanceMovementGenerator::Finalize ->
+                        // Creature::CallAssistance): every idle mob within the assistance radius of where it arrives
+                        // that assists it comes too, not the nearest alone. b462 Bami L22 at Stonewatch Tower: the
+                        // Blackrock Scouts / Sentries flee at 15 %, 8 came to a camp walk priced as single pulls
+                        G3D::Vector3 const arrival(nearest->GetPositionX(), nearest->GetPositionY(),
+                                                   nearest->GetPositionZ());
+                        if (assist > 0.0f)
+                            for (Creature* c : idle)
+                                if (!Has(c) && c->GetExactDist(arrival.x, arrival.y, arrival.z) <= assist &&
+                                    c->CanAssistTo(pack[i].mob, bot) && Sees(arrival, c))
+                                    pack.push_back({c, true});
                         // one line per runner and helper beyond the radius round the fight spot alone
                         if (best > sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS))
                         {
