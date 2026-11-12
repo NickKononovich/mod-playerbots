@@ -67,6 +67,7 @@
 #include <limits>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 #include <deque>
@@ -4666,7 +4667,42 @@ bool MovementAction::MoveAway(Unit* target, float distance, bool backwards)
         float dy = botY + sin(angle) * distance;
         float dz = botZ;
 
-        BotPath const path = FindBotPath(bot, dx, dy, botZ);  // [lead109]
+        // [nav171] b458 Sylaenas (Darkshore, Stormscale camp hill): the flee spots 8 yd away at its own height lay
+        // off the navmesh (no polygon within 4.5 yd), each a full route search ending "0 found a walk". A spot is
+        // moved to the navmesh polygon nearest it (within half the step across, the floor rule's height up or down)
+        // or the direction is dropped; with no navmesh the collision spot below is kept
+        dtNavMeshQuery const* navQuery = bot->GetMap()->GetMapCollisionData().GetMMapData().GetNavMeshQuery();
+        if (navQuery && !bot->IsInWater() && !bot->IsFlying())
+        {
+            dtQueryFilter filter;
+            filter.setIncludeFlags(uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP));
+            filter.setExcludeFlags(uint16(NAV_MAGMA | NAV_SLIME));
+            float const across = std::max(1.0f, distance * 0.5f);
+            float const point[3] = {dy, botZ, dx};  // Detour works in (y, z, x)
+            float const extents[3] = {across, MOVE_AWAY_MAX_DZ + 1.0f, across};
+            float nearest[3] = {0.0f, 0.0f, 0.0f};
+            dtPolyRef ref = 0;
+            if (dtStatusFailed(navQuery->findNearestPoly(point, extents, &filter, &ref, nearest)) || !ref)
+            {
+                static std::atomic<bool> dropLogged{false};
+                if (!dropLogged.exchange(true))
+                    LOG_INFO("playerbots", "[nav171] {} drops its move-away spot ({:.1f},{:.1f},{:.1f}): no navmesh "
+                             "polygon within {:.1f} yd",
+                             bot->GetName(), dx, dy, botZ, across);
+                return false;
+            }
+            float const snapped = std::hypot(nearest[2] - dx, nearest[0] - dy);
+            static std::atomic<bool> snapLogged{false};
+            if (snapped > 1.0f && !snapLogged.exchange(true))
+                LOG_INFO("playerbots", "[nav171] {} moves its move-away spot ({:.1f},{:.1f},{:.1f}) {:.1f} yd onto the "
+                         "navmesh at ({:.1f},{:.1f},{:.1f})",
+                         bot->GetName(), dx, dy, botZ, snapped, nearest[2], nearest[0], nearest[1]);
+            dx = nearest[2];
+            dy = nearest[0];
+            dz = nearest[1];
+        }
+
+        BotPath const path = FindBotPath(bot, dx, dy, dz);  // [lead109]
         uint32 const type = path.type;
         Movement::PointsArray const& points = path.points;
         if (!(type & PATHFIND_NOT_USING_PATH))
