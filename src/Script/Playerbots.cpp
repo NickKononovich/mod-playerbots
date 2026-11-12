@@ -47,7 +47,6 @@
 #include "SessionScript.h"
 #include "WorldScript.h"
 #include "SlowUpdate.h"  // [perf212]
-#include "WalkGraph.h"  // [nav180]
 #include "cmath"
 
 class PlayerbotsDatabaseScript : public DatabaseScript
@@ -788,7 +787,6 @@ public:
         uint32 const started = getMSTime();
         NewRpgBaseAction::BuildQuestIndexes();
         LOG_INFO("server.loading", ">> New RPG quest indexes built in {} ms", GetMSTimeDiffToNow(started));
-        Leader::Travel::WalkGraph::StartBuild();  // [nav180] in the background: the walks plan without it until ready
     }
 
     void OnUpdate(uint32 diff) override
@@ -806,7 +804,6 @@ public:
         LOG_INFO("playerbots", "Logging out all bots...");
         sRandomPlayerbotMgr.LogoutAllBots();
         PlayerbotHolder::ClearPendingLogins();
-        Leader::Travel::WalkGraph::StopBuild();  // [nav180]
     }
 };
 

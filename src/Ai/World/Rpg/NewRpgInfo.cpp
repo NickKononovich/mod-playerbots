@@ -108,7 +108,6 @@ void NewRpgInfo::SetMoveFarTo(WorldPosition pos)
     dalaranPortalFailedMage.Clear();  // [timers] another destination: every mage is asked again
     moveFarFailed = false;
     farRoute.clear();
-    graphBans.clear();  // [nav182]
     moveFarFromSet = false;  // [nav165] the caller notes the new walk's start
 }
 
