@@ -330,6 +330,9 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
 
     // [fear_counter] Tremor Totem / Fear Ward / Berserker Rage / PvP trinket against fear, charm and sleep.
     engine->addStrategy("fear counter", false);
+    // [death381] up for air before the breath runs out (Player::HandleDrowning), every bot: b449 Sylaenas, Pherua
+    // drowned at Mist Veil's Lockbox (q982, 42 yd under Darkshore's sea) without it
+    engine->addStrategy("breathe", false);
 
     if (!player->InBattleground() && sPlayerbotAIConfig.RaidLeader)
         engine->addStrategy("raid leader", false);
@@ -583,6 +586,8 @@ Engine* AiFactory::createCombatEngine(Player* player, PlayerbotAI* const facade,
 void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const facade, Engine* nonCombatEngine)
 {
     uint8 tab = GetPlayerSpecTab(player);
+
+    nonCombatEngine->addStrategy("breathe", false);  // [death381] as the combat engine's
 
     switch (player->getClass())
     {
