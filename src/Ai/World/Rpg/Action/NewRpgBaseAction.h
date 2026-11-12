@@ -184,6 +184,13 @@ public:
         botAI->rpgInfo.failedFromX = bot->GetPositionX();
         botAI->rpgInfo.failedFromY = bot->GetPositionY();
         botAI->rpgInfo.failedFromZ = bot->GetPositionZ();
+        constexpr size_t FAR_FAILURES_KEPT = 4;  // [death424] the walks a status switches between
+        std::vector<NewRpgInfo::FarFailure>& failures = botAI->rpgInfo.farFailures;
+        if (failures.size() >= FAR_FAILURES_KEPT)
+            failures.erase(failures.begin());
+        WorldPosition const& dest = botAI->rpgInfo.moveFarPos;
+        failures.push_back({G3D::Vector3(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ()),
+                            G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ())});
     }
     // [guild14] no way out from where the bot stands: the core path, the reverse route, the nearest polygon in sight
     bool WalkOffIsland(WorldPosition const& dest, float disToDest);

@@ -3412,8 +3412,14 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     // [guild15] perf (b317 pmon: "new rpg do profession" 31 ms per call, max 1.4 s; "new rpg do quest" max 1.1 s):
     // the route search that found no walk from this spot is not asked again from the same spot - only after the bot
     // stands elsewhere (its random step, a fight, a fall) or the destination changes
-    if (botAI->rpgInfo.moveFarFailed &&
-        bot->GetExactDist(botAI->rpgInfo.failedFromX, botAI->rpgInfo.failedFromY, botAI->rpgInfo.failedFromZ) < 3.0f)
+    bool failedHere = botAI->rpgInfo.moveFarFailed &&
+                      bot->GetExactDist(botAI->rpgInfo.failedFromX, botAI->rpgInfo.failedFromY,
+                                        botAI->rpgInfo.failedFromZ) < 3.0f;
+    for (NewRpgInfo::FarFailure const& failure : botAI->rpgInfo.farFailures)  // [death424]
+        failedHere = failedHere ||
+                     (dest.GetExactDist(failure.dest.x, failure.dest.y, failure.dest.z) < 3.0f &&
+                      bot->GetExactDist(failure.from.x, failure.from.y, failure.from.z) < 3.0f);
+    if (failedHere)
     {
         s_moveRefusal = "the route search found no walk from this spot";  // [holds9]
         return false;
@@ -3604,7 +3610,11 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 // walk ends, with the chase on it, inside the camp it ran past. b458 Sylaenas L15 ran past the
                 // Stormscale Wave Riders and Sirens ("run-past priced 354 hp vs hp 428") toward (6861,-769), every
                 // walk there dropping over open air ([nav163]), stood at (6836,-724) in the camp and died there
-                if (SoloSafety::Applies(bot) && type != PATHFIND_NORMAL && SoloSafety::PendingRunPast(bot))
+                // [death423] ... a walk whose end lies within two sights: a farther one comes back partial at the
+                // search's budget (b459 Rollothan L15's 2894 yd hand-in walk to Stormwind, "ends 1980 yd short"),
+                // walks its leg in sight and plans again there - refused, it searched again every tick (117 ms)
+                if (SoloSafety::Applies(bot) && type != PATHFIND_NORMAL &&
+                    disToDest <= 2.0f * sPlayerbotAIConfig.SightDistance && SoloSafety::PendingRunPast(bot))
                 {
                     LOG_INFO("playerbots", "[death422] {} L{} no run past on a partial walk to ({:.0f},{:.0f}): it "
                              "ends {:.0f} yd short at ({:.0f},{:.0f})",

@@ -135,6 +135,14 @@ struct NewRpgInfo
     float failedFromX{0.0f};
     float failedFromY{0.0f};
     float failedFromZ{0.0f};
+    // [death424] ... kept per destination (the latest few): two walks the bot switches between each found no walk
+    // from this spot - b459 Rollothan L15 alternated its hand-in walk and another quest's, both searched every tick
+    struct FarFailure
+    {
+        G3D::Vector3 dest;
+        G3D::Vector3 from;
+    };
+    std::vector<FarFailure> farFailures;
     // [guild15] perf: the last complete far route to moveFarPos; the next leg is planned only to a point on it
     // two sights ahead (the danger penalties are of the mobs in sight, so a local search sees the same mobs)
     std::vector<G3D::Vector3> farRoute;
