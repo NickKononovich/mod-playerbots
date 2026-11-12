@@ -1276,7 +1276,7 @@ namespace
 
 namespace SurvivalKit
 {
-    float HealPoints(Player* bot, float fightSec, float spareMana, bool items, bool onTheMove)
+    float HealPoints(Player* bot, float fightSec, float spareMana, bool items, bool onTheMove, float incomingDps)
     {
         if (!bot)
             return 0.0f;
@@ -1348,6 +1348,10 @@ namespace SurvivalKit
             }
             else
                 casts = std::min(casts, std::max(1.0f, std::floor(span / std::max(manaHeal->castSec, 0.1f))));
+            // [death411] each cast's time the bot deals nothing: the fight runs that much longer under its attackers.
+            // b455 Aestymro L19 (holy, 19 dps) engaged 3 Redridge gnolls "2377 dmg over 65 s at ehp 2908" - 2331 of
+            // Holy Light counted whole; its survival plan, netting each cast (Gain), found 1794 short and it died
+            amount = std::max(0.0f, amount - std::max(incomingDps, 0.0f) * manaHeal->castSec);
             total += amount * casts;
         }
         return total;

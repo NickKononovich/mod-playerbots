@@ -48,7 +48,10 @@ namespace SurvivalKit
     // and are not counted
     // [deaths12] ... as many casts as the fight's seconds hold (cast time / global cooldown, a heal over time once per
     // its duration); `onTheMove`: only the instant ones (a run past, a chase: a cast time breaks on the move)
-    float HealPoints(Player* bot, float fightSec, float spareMana, bool items, bool onTheMove = false);
+    // [death411] `incomingDps`: the damage the fight deals it meanwhile - a heal cast is that much less (its cast time
+    // the bot deals no damage, the fight runs that much longer: SurvivalKit::Gain's own rule)
+    float HealPoints(Player* bot, float fightSec, float spareMana, bool items, bool onTheMove = false,
+                     float incomingDps = 0.0f);
     // [lag360] the speed piece a run past casts as its chase starts: instant (cast on the move), castable now (its
     // cooldown, mana, form), its aura not on the bot yet, lasting `seconds`, and no daze of its own on being struck
     // (Aspect of the Cheetah); 0: none. `pct`: its speed share (0.7 for Sprint)

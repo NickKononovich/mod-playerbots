@@ -1183,7 +1183,8 @@ namespace
         if (high < health)
             return false;  // no heal needed (the heal kit is read only for a close call)
         float const spare = spends ? std::max(0.0f, maxMana - own.manaPerSec * seconds) : maxMana;
-        float const heals = SurvivalKit::HealPoints(bot, seconds, spare, true);
+        float const heals = SurvivalKit::HealPoints(bot, seconds, spare, true, false,
+                                                    damage / std::max(seconds, 1.0f));  // [death411]
         float const ehp = health + std::min(petHealth, targetDamage) + heals;
         if (damage < ehp && high >= ehp && !foes.empty())
         {
@@ -1480,7 +1481,14 @@ namespace
                     {
                         ScriptHelp const help = ScriptHelpOf(pack[i].mob);
                         float const left = help.fleePct * float(pack[i].mob->GetMaxHealth());
-                        float const dps = DpsEstimate::EstimateDps(bot, pack[i].mob, DpsEstimate::BuffContext::Solo);
+                        // [death412] ... a melee bot hits it on its run only while it is faster than the runner (the
+                        // runner leaves its melee reach at once at the same speed): b455 Ginde / Aestymro / Emdyl at
+                        // the Redridge Canyons gnolls - "Redridge Mystic would flee at 15 % ...: killed first in 2.7 s
+                        // at 20.0 dps", the Bashers and Mystics of the next camp joined 17-24 s in, 3 deaths
+                        bool const keepsUp = PlayerbotAI::IsRanged(bot) ||
+                                             bot->GetSpeed(MOVE_RUN) > pack[i].mob->GetSpeed(MOVE_RUN);
+                        float const dps =
+                            keepsUp ? DpsEstimate::EstimateDps(bot, pack[i].mob, DpsEstimate::BuffContext::Solo) : 0.0f;
                         float const run = best / std::max(pack[i].mob->GetSpeed(MOVE_RUN), 0.1f);
                         if (dps > 0.0f && left / dps < run)
                         {
@@ -2369,7 +2377,8 @@ namespace SoloSafety
             float spare = mana;
             if (bot->GetMaxPower(POWER_MANA) && manaPerSec > 0.0f)
                 spare = std::max(0.0f, mana - manaPerSec * fight.seconds);
-            float const heals = SurvivalKit::HealPoints(bot, fight.seconds, spare, true);
+            float const heals = SurvivalKit::HealPoints(bot, fight.seconds, spare, true, false,
+                                                        fight.damage / std::max(fight.seconds, 1.0f));  // [death411]
             float const ehp = health + std::min(petHealth, fight.targetDamage) + heals;
             // [death386] user 2026-11-12 "survives with a margin": the high end of its rolls, not their mean - two
             // standard deviations of the mobs' swings (weapon roll, miss / dodge / parry, crit, crush) over the fight
@@ -3731,7 +3740,8 @@ namespace SoloSafety
         float const highEnd = damage + HIGH_END_DEVIATIONS * std::sqrt(std::max(variance, 0.0f));
         float const mana = float(bot->GetPower(POWER_MANA));
         float const spare = own.manaPerSec > 0.0f ? std::max(0.0f, mana - own.manaPerSec * seconds) : mana;
-        float const ehp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, spare, true);
+        float const ehp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, spare, true, false,
+                                                                            damage / std::max(seconds, 1.0f));
         why = Acore::StringFormat("its trap summons {} x {} L{}{}{}: {:.0f} dmg at the high end over {:.0f} s at ehp "
                                   "{:.0f}",
                                   count, named->Name, named->maxlevel, standing.empty() ? "" : " beside ", standing,
