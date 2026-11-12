@@ -104,6 +104,14 @@
 
 namespace
 {
+    // [death380] dark water at a spot: the core's fatigue there (Player::UpdateUnderwaterState, the liquid's
+    // MAP_LIQUID_TYPE_DARK_WATER flag)
+    bool FatigueAt(Map* map, Player* bot, float x, float y, float z)
+    {
+        LiquidData const liquid = map->GetLiquidData(bot->GetPhaseMask(), x, y, z, bot->GetCollisionHeight(), {});
+        return liquid.Status != LIQUID_MAP_NO_WATER && (liquid.Flags & MAP_LIQUID_TYPE_DARK_WATER);
+    }
+
     constexpr float DECK_STEP = 1.5f;              // yards between deck probes on the way from the pier
     constexpr float DECK_RAY_ABOVE = 8.0f;          // probes start this far over the pier...
     constexpr float DECK_RAY_LENGTH = 20.0f;        // ...and look this far down for the deck
@@ -2704,6 +2712,23 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
                     // move over open air" at (6660,667), 141 MAZE / 148 give-ups, 1176 s STUCK. Off its heading then
                     if (!PlayerbotAI::StraightLineSupported(bot, here.x, here.y, here.z, tx, ty, tz))
                         continue;
+                    // [death380] no swim into dark water: its fatigue (Player::UpdateUnderwaterState sets
+                    // UNDERWATER_INDARKWATER) kills in a minute. b449 Colian / Feette L23 swam off Azuremyst towards
+                    // a goal 8 km over the Veiled Sea, both died there "cause=environment"
+                    if (FatigueAt(map, bot, tx, ty, tz - 1.0f))  // a yard under the surface: in the liquid
+                    {
+                        static std::mutex fatigueLogLock;  // a log cadence per bot, no decision reads it
+                        static std::unordered_set<uint32> fatigueLogged;
+                        bool fresh = false;
+                        {
+                            std::lock_guard<std::mutex> guard(fatigueLogLock);
+                            fresh = fatigueLogged.insert(bot->GetGUID().GetCounter()).second;
+                        }
+                        if (fresh)
+                            LOG_INFO("playerbots", "[death380] {} L{} swims not to ({:.0f},{:.0f}): dark water there "
+                                     "(fatigue)", bot->GetName(), bot->GetLevel(), tx, ty);
+                        continue;
+                    }
                     bot->GetMotionMaster()->MovePoint(0, tx, ty, tz, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false, true);
                     float const delay = std::clamp(float(IN_MILLISECONDS) * MoveDelay(step), 0.0f,
                                                    float(sPlayerbotAIConfig.MaxWaitForMove));
