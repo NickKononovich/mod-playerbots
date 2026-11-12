@@ -194,6 +194,11 @@ namespace SoloSafety
     // Leader::Route for a solo bot: the idle mobs round the walk, refused (`refuse`: x, y, z, radius) or priced
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,
                     std::vector<Leader::Travel::RoutePenalty>& penalties);
+    // [death431] the walk the search found for the last RouteCosts on this thread (same walker, from, to): each mob it
+    // priced by its linked pack alone (the straight leg missed its reach) whose reach the walk enters is grown where
+    // the walk meets it (deaths141's pack); the reaches of those it loses at full go to `lost`
+    void GrowOnWalk(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to,
+                    std::vector<G3D::Vector3> const& walk, std::vector<G3D::Vector4>& lost);
     // [pull9] the mobs its last route search refused, nearest first, and why (for the refused-walk lines)
     std::string RouteWalls(Player* bot);
     // [wall17] the orange / red and elite mobs among its last route search's walls (empty: none) - [guild12] never

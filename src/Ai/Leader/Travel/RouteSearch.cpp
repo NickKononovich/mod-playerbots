@@ -1560,6 +1560,38 @@ namespace Leader
             surface = pricedSurface;
             roundRefused = true;
         }
+        // [death431] b460 Mytaeleas L19 at Mist's Edge: RouteCosts grows a mob's pack where the straight leg meets its
+        // reach (deaths141); a mob the straight leg misses is priced by its linked pack alone, and the walk found went
+        // into a Greymist Coastrunner's wander area - the pack joined, she died. Each such reach the walk enters is
+        // grown where it enters; a pack lost at full there is refused and the walk searched once more
+        if (result.found)
+        {
+            std::vector<G3D::Vector4> lost;
+            SoloSafety::GrowOnWalk(walker, from, to, surface.empty() ? corners : surface, lost);
+            if (!lost.empty())
+            {
+                costRefuse.insert(costRefuse.end(), lost.begin(), lost.end());  // a [static39] search keeps them
+                refuse.insert(refuse.end(), lost.begin(), lost.end());
+                RouteResult const before = result;
+                Movement::PointsArray const beforeCorners = corners;
+                Movement::PointsArray const beforeSurface = surface;
+                result.found = result.complete = false;
+                search(&refuse, &penalties);
+                if (result.found && result.complete)
+                {
+                    std::vector<G3D::Vector4> again;  // the new walk's own lost packs, not searched again
+                    SoloSafety::GrowOnWalk(walker, from, to, surface.empty() ? corners : surface, again);
+                    roundRefused = again.empty();
+                }
+                else  // no complete walk round them: the walk found goes through a refused reach
+                {
+                    result = before;
+                    corners = beforeCorners;
+                    surface = beforeSurface;
+                    roundRefused = false;
+                }
+            }
+        }
         SoloSafety::NoteRoute(walker, result.complete, result.found && !roundRefused);
         if (!result.found)
         {

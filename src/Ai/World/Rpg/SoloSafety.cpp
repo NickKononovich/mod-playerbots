@@ -4371,12 +4371,85 @@ namespace SoloSafety
         return true;
     }
 
+    namespace
+    {
+        // [deaths141] the pack the judge sees when a walk meets `mob`'s reach at `meet` (PullModel::Grow from that
+        // spot), priced at full: lost or not, and its size. Cached per walker and level, spawn, the side the walk
+        // meets it from (an eighth round its reach: a look's resolution) and the idle mobs that can take part (a
+        // death or a respawn there is another pack); its cost measured
+        std::pair<bool, uint32> GrownLoses(Player* bot, Creature* mob, PullModel& model,
+                                           std::vector<Creature*> const& around, G3D::Vector4 const& reach,
+                                           G3D::Vector3 const& meet, DpsEstimate::Result const& own, float petHealth)
+        {
+            float const side = std::atan2(meet.y - reach.y, meet.x - reach.x);
+            uint64 const octant = uint64(int32(std::floor((side + float(M_PI)) / (float(M_PI) / 4.0f))) & 7);
+            uint64 campKey = 0;  // the mobs that can take part
+            for (Creature* c : around)
+            {
+                G3D::Vector4 const cd = AggroDisc(c, bot);
+                if (std::hypot(cd.x - reach.x, cd.y - reach.y) <= reach.w + cd.w + model.assist)
+                    campKey += uint64(c->GetSpawnId()) * 2654435761ull;  // order-free
+            }
+            uint64 const key = ((uint64(bot->GetGUID().GetCounter()) * 1000003ull + bot->GetLevel()) * 1000003ull +
+                                mob->GetSpawnId()) * 1000003ull + octant * 4099ull + campKey;
+            thread_local std::unordered_map<uint64, std::pair<bool, uint32>> grownCache;
+            static std::atomic<uint64> growCalls{0}, growCached{0}, growUs{0};
+            if (auto const found = grownCache.find(key); found != grownCache.end())
+            {
+                ++growCached;
+                return found->second;
+            }
+            auto const start = std::chrono::steady_clock::now();
+            model.Grow(&meet, nullptr);
+            std::vector<RouteFoe> grown;
+            for (PullModel::Member const& m : model.pack)
+                grown.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});
+            std::sort(grown.begin() + 1, grown.end(), [](RouteFoe const& x, RouteFoe const& y)
+                      { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
+            // [lag353] two above its level at once are priced by the fight's numbers too
+            std::pair<bool, uint32> const verdict{LosesAtFull(bot, own, grown, petHealth), uint32(grown.size())};
+            if (grownCache.size() > 65536)
+                grownCache.clear();
+            grownCache[key] = verdict;
+            growUs += uint64(
+                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start)
+                    .count());
+            if (uint64 const n = ++growCalls; n % 200 == 0)
+                LOG_INFO("playerbots", "[deaths141] route packs: {} grown, {} answered from the cache, {:.1f} us each "
+                         "grown",
+                         n, growCached.load(), double(growUs.load()) / double(n));
+            return verdict;
+        }
+
+        // [death431] the mobs the last RouteCosts on this thread priced by their linked pack alone (the straight leg
+        // missed their reach, the real walk may enter it) with what their Grow needs: read by GrowOnWalk once the walk
+        // is found, in the same search (written at the call's end: a judge's search inside it does not clobber it)
+        struct UngrownMob
+        {
+            ObjectGuid mob;
+            G3D::Vector4 reach;
+        };
+        struct UngrownCosts
+        {
+            uint64 walker = 0;
+            G3D::Vector3 from, to;
+            std::vector<UngrownMob> mobs;
+            std::vector<ObjectGuid> around;
+            DpsEstimate::Result own;
+            float petHealth = 0.0f;
+        };
+        thread_local UngrownCosts ungrownCosts;
+    }
+
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,
                     std::vector<Leader::Travel::RoutePenalty>& penalties)
     {
         SlowScope slow("route costs");  // [perf26]
         PMON_SCOPE(costScope, PERF_MON_VALUE, "solo route costs");  // [guild15]
         Player* bot = walker ? walker->ToPlayer() : nullptr;
+        ungrownCosts.mobs.clear();  // [death431] this call's, written at its end
+        ungrownCosts.around.clear();
+        std::vector<UngrownMob> ungrown;
         if (!bot || bot->IsInCombat() || !bot->IsAlive())
             return;
         // [deaths3] a co-op party's walk keeps the con rule too (b341 Ryarii L1 and Salleas L1: their walk to the boar
@@ -4856,58 +4929,15 @@ namespace SoloSafety
                     if (meetAt >= 0.0f)
                     {
                         G3D::Vector3 const meet = from + ab * meetAt;
-                        // the verdict per walker and level, spawn, the side the walk meets it from (an eighth round
-                        // its reach: a look's resolution) and the idle mobs whose reach or assistance radius can take
-                        // part (a death or a respawn there is another pack): the Grow runs once for them, its cost
-                        // measured
-                        float const side = std::atan2(meet.y - centre.GetPositionY(), meet.x - centre.GetPositionX());
-                        uint64 const octant =
-                            uint64(int32(std::floor((side + float(M_PI)) / (float(M_PI) / 4.0f))) & 7);
-                        uint64 campKey = 0;  // the mobs that can take part
-                        for (Creature* c : around)
-                        {
-                            G3D::Vector4 const cd = AggroDisc(c, bot);
-                            if (std::hypot(cd.x - centre.GetPositionX(), cd.y - centre.GetPositionY()) <=
-                                radius + cd.w + model.assist)
-                                campKey += uint64(c->GetSpawnId()) * 2654435761ull;  // order-free
-                        }
-                        uint64 const key =
-                            ((uint64(bot->GetGUID().GetCounter()) * 1000003ull + level) * 1000003ull +
-                             mob->GetSpawnId()) * 1000003ull + octant * 4099ull + campKey;
-                        thread_local std::unordered_map<uint64, std::pair<RouteWall::Why, uint32>> grownCache;
-                        static std::atomic<uint64> growCalls{0}, growCached{0}, growUs{0};
-                        if (auto const found = grownCache.find(key); found != grownCache.end())
-                        {
-                            why = found->second.first;
-                            wallPack = found->second.second;
-                            priced = true;
-                            ++growCached;
-                        }
-                        else
-                        {
-                            auto const start = std::chrono::steady_clock::now();
-                            model.Grow(&meet, nullptr);
-                            std::vector<RouteFoe> grown;
-                            for (PullModel::Member const& m : model.pack)
-                                grown.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});
-                            std::sort(grown.begin() + 1, grown.end(), [](RouteFoe const& x, RouteFoe const& y)
-                                      { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
-                            // [lag353] two above its level at once are priced by the fight's numbers too
-                            if (LosesAtFull(bot, own, grown, petHealth))
-                                why = RouteWall::Why::Loses;
-                            wallPack = uint32(grown.size());
-                            if (grownCache.size() > 65536)
-                                grownCache.clear();
-                            grownCache[key] = {why, wallPack};
-                            priced = true;
-                            growUs += uint64(std::chrono::duration_cast<std::chrono::microseconds>(
-                                                 std::chrono::steady_clock::now() - start)
-                                                 .count());
-                            if (uint64 const n = ++growCalls; n % 200 == 0)
-                                LOG_INFO("playerbots", "[deaths141] route packs: {} grown, {} answered from the cache, "
-                                         "{:.1f} us each grown",
-                                         n, growCached.load(), double(growUs.load()) / double(n));
-                        }
+                        auto const [loses, size] =
+                            GrownLoses(bot, mob, model, around,
+                                       G3D::Vector4(centre.GetPositionX(), centre.GetPositionY(),
+                                                    centre.GetPositionZ(), radius),
+                                       meet, own, petHealth);
+                        if (loses)
+                            why = RouteWall::Why::Loses;
+                        wallPack = size;
+                        priced = true;
                     }
                 }
                 if (!priced)  // a mob off the leg: its linked pack, as before
@@ -4922,6 +4952,11 @@ namespace SoloSafety
                     if (LosesAtFull(bot, own, foes, petHealth))
                         why = RouteWall::Why::Loses;
                     wallPack = uint32(foes.size());
+                    // [death431] the walk the search finds may enter its reach off the straight leg: grown there
+                    // once the walk is known (GrowOnWalk)
+                    if (why == RouteWall::Why::None)
+                        ungrown.push_back({mob->GetGUID(), G3D::Vector4(centre.GetPositionX(), centre.GetPositionY(),
+                                                                       centre.GetPositionZ(), radius)});
                 }
                 // [wall17] coordinator 2026-11-09: the linked pack priced where the mob stands is not the pull a
                 // player makes - the pull judge draws it out from a pull spot (SoloSafety::Judge). A mob at the bot's
@@ -5107,6 +5142,18 @@ namespace SoloSafety
         // run past or judged as any mob on the way (the zone keeps its quest spots and pulls out, InDangerZone); only
         // where it died stays refused
         NewRpgBaseAction::DangerDiscs(bot, bot->GetPositionX(), bot->GetPositionY(), range, refuse, false);
+        if (!ungrown.empty())  // [death431] what GrowOnWalk needs (`around` was built for them)
+        {
+            ungrownCosts.walker = bot->GetGUID().GetRawValue();
+            ungrownCosts.from = from;
+            ungrownCosts.to = to;
+            ungrownCosts.mobs = std::move(ungrown);
+            ungrownCosts.around.clear();
+            for (Creature* c : around)
+                ungrownCosts.around.push_back(c->GetGUID());
+            ungrownCosts.own = own;
+            ungrownCosts.petHealth = petHealth;
+        }
         // [runpast11] the packs this leg runs past, one line per change of them
         std::string runPastLine;
         if (!ranPastNames.empty())
@@ -5132,6 +5179,75 @@ namespace SoloSafety
         state.routeWalls = std::move(walls);
         state.routeComplete = false;
         state.routeThroughRefused = false;
+    }
+
+    void GrowOnWalk(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to,
+                    std::vector<G3D::Vector3> const& walk, std::vector<G3D::Vector4>& lost)
+    {
+        UngrownCosts const& costs = ungrownCosts;
+        Player* bot = walker ? walker->ToPlayer() : nullptr;
+        if (!bot || costs.mobs.empty() || walk.size() < 2 || costs.walker != bot->GetGUID().GetRawValue() ||
+            costs.from != from || costs.to != to)
+            return;
+        constexpr float PENALTY_Z = 10.0f;  // the route search's penalty disc height (LongRoute)
+        std::vector<Creature*> around;
+        bool aroundBuilt = false;
+        for (UngrownMob const& entry : costs.mobs)
+        {
+            G3D::Vector4 const& reach = entry.reach;
+            size_t enter = 0;
+            while (enter < walk.size() &&
+                   !(InDisc(reach, walk[enter]) && std::fabs(walk[enter].z - reach.z) <= PENALTY_Z))
+                ++enter;
+            if (enter == walk.size())
+                continue;  // the walk keeps out of its reach
+            // the walk's first point in the reach: on the segment into it, where it crosses the reach's edge
+            G3D::Vector3 meet = walk[enter];
+            if (enter > 0)
+            {
+                G3D::Vector3 const a = walk[enter - 1];
+                G3D::Vector3 const ab = walk[enter] - a;
+                float const ox = a.x - reach.x;
+                float const oy = a.y - reach.y;
+                float const qa = ab.x * ab.x + ab.y * ab.y;
+                float const qb = ox * ab.x + oy * ab.y;
+                float const qc = ox * ox + oy * oy - reach.w * reach.w;
+                float const disc = qb * qb - qa * qc;
+                if (qa > 0.0f && disc >= 0.0f)
+                    meet = a + ab * std::clamp((-qb - std::sqrt(disc)) / qa, 0.0f, 1.0f);
+            }
+            Creature* mob = ObjectAccessor::GetCreature(*bot, entry.mob);
+            if (!mob || !mob->IsAlive() || mob->IsInCombat())
+                continue;
+            if (!aroundBuilt)
+            {
+                aroundBuilt = true;
+                for (ObjectGuid const& guid : costs.around)
+                    if (Creature* c = ObjectAccessor::GetCreature(*bot, guid))
+                        if (c->IsAlive() && !c->IsInCombat())
+                            around.push_back(c);
+            }
+            PullModel model(bot, mob, around);
+            model.Links();
+            auto const [loses, size] = GrownLoses(bot, mob, model, around, reach, meet, costs.own, costs.petHealth);
+            if (!loses)
+                continue;
+            lost.push_back(reach);
+            static std::mutex lostLogLock;  // one line per walker and mob: a log cadence, no decision reads it
+            static std::unordered_set<uint64> lostLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(lostLogLock);
+                if (lostLogged.size() > 65536)
+                    lostLogged.clear();
+                fresh = lostLogged.insert(mob->GetSpawnId() * 1000003ull + bot->GetGUID().GetCounter()).second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[death431] {} L{} walk to ({:.0f},{:.0f}) enters the reach of {} L{} off its "
+                         "straight leg at ({:.1f},{:.1f},{:.1f}): the pack met there ({}) loses at full, refused",
+                         bot->GetName(), bot->GetLevel(), to.x, to.y, mob->GetName(), mob->GetLevel(), meet.x, meet.y,
+                         meet.z, size);
+        }
     }
 
     std::string ConWalls(Player* bot)
