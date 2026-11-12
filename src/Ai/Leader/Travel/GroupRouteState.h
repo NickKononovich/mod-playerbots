@@ -297,6 +297,12 @@ namespace Leader
         // [ohb-escort-follow] where an escort last ended "idle" (its creature stood there): not adopted again there
         ObjectGuid escortIdleEndGuid;
         Position escortIdleEndPos;
+        // [dun250] an escort NPC that died and comes back by its respawn (a rearmed starter): its spawn and where it
+        // stands up; while it is dead the group waits there instead of the full-clear fallback
+        uint32 escortRespawnSpawnId = 0;
+        Position escortRespawnAt;
+        std::string escortRespawnNote;
+        bool escortRespawnLogged = false;
         // Kills per creature entry this run (EventStarterDef::afterDead, EventSpotDef conditions, event drops).
         std::map<uint32, uint32> deadEntries;
         std::map<uint32, uint32> eventItemsGiven;  // item id -> how many the harness put into the bags

@@ -2447,7 +2447,8 @@ namespace Leader::Travel
                     return;
                 }
             }
-            if (idle && (StayWithEscort(group, leader) || WalkToEventGather(group, leader) ||
+            if (idle && (StayWithEscort(group, leader) || WaitForEscortRespawn(group, leader) ||
+                         WalkToEventGather(group, leader) ||
                          WalkToEventSpot(group, leader) || WalkToLink(group, leader)))
                 return;
             // A starter step-out the leader walks on its own (UseStarterItem) keeps its waypoint.

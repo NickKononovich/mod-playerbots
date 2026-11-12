@@ -343,6 +343,10 @@ namespace Leader::Travel
     bool EntriesDead(LeaderGroup& group, std::vector<uint32> const& entries);
 
     Creature* ActiveEscort(LeaderGroup& group, Map* map);
+    // [dun250] a dead escort NPC that respawns (a rearmed starter): true while it is dead; the wait walks the leader
+    // to its spawn and holds there
+    bool EscortRespawnPending(LeaderGroup& group, Map* map);
+    bool WaitForEscortRespawn(LeaderGroup& group, Player* leader);
 
     bool StayWithEscort(LeaderGroup& group, Player* leader);
 

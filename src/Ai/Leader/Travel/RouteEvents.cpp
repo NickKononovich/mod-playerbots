@@ -747,6 +747,19 @@ namespace Leader::Travel
                 group.LogEvent("escort_rearm_after_death", JsonObject().Str("note", def->note)
                                                                 .Num("uses", starter.uses)
                                                                 .Num("rearms", starter.escortDeathRearms));
+                // [dun250] the escort NPC stands up again at its spawn (Wailing Caverns: the Disciple of Naralex,
+                // spawntimesecs 300): the group waits there for it (WaitForEscortRespawn)
+                if (npc && npc->GetSpawnId())
+                {
+                    float x = 0.0f;
+                    float y = 0.0f;
+                    float z = 0.0f;
+                    npc->GetRespawnPosition(x, y, z);
+                    routeState.escortRespawnSpawnId = npc->GetSpawnId();
+                    routeState.escortRespawnAt.Relocate(x, y, z);
+                    routeState.escortRespawnNote = def->note;
+                    routeState.escortRespawnLogged = false;
+                }
                 break;
             }
         routeState.escort.Clear();
@@ -754,6 +767,63 @@ namespace Leader::Travel
         routeState.escortStillSinceMs = 0;  // [event_boss_tbcwotlk]
         routeState.escortStallLogMs = 0;
         return nullptr;
+    }
+
+    bool EscortRespawnPending(LeaderGroup& group, Map* map)
+    {
+        GroupRouteState& routeState = group.Route();
+        if (!routeState.escortRespawnSpawnId || !map || !routeState.escort.IsEmpty())
+            return false;
+        auto const spawned = map->GetCreatureBySpawnIdStore().equal_range(routeState.escortRespawnSpawnId);
+        for (auto it = spawned.first; it != spawned.second; ++it)
+            if (it->second && it->second->IsInWorld() && it->second->IsAlive())
+            {
+                group.LogEvent("escort_respawned", JsonObject().Str("note", routeState.escortRespawnNote)
+                                                        .Str("name", it->second->GetName())
+                                                        .Str("tag", "[dun250]"));
+                routeState.escortRespawnSpawnId = 0;
+                return false;
+            }
+        return true;
+    }
+
+    bool WaitForEscortRespawn(LeaderGroup& group, Player* leader)
+    {
+        GroupRouteState& routeState = group.Route();
+        Map* map = leader->GetMap();
+        if (!map || map->GetInstanceId() != group.InstanceId() || !leader->IsAlive() ||
+            !EscortRespawnPending(group, map))
+            return false;
+        if (!routeState.escortRespawnLogged)
+        {
+            routeState.escortRespawnLogged = true;
+            LOG_INFO("playerbots", "[dun250] {}: the escort NPC died and respawns at ({:.1f},{:.1f},{:.1f}): the group "
+                     "waits there ({:.0f} yd), no full clear meanwhile ({})", group.Run().runId,
+                     routeState.escortRespawnAt.GetPositionX(), routeState.escortRespawnAt.GetPositionY(),
+                     routeState.escortRespawnAt.GetPositionZ(), leader->GetExactDist(routeState.escortRespawnAt),
+                     routeState.escortRespawnNote);
+            group.LogEvent("escort_respawn_wait",
+                           JsonObject().Str("note", routeState.escortRespawnNote)
+                               .Real("distance", leader->GetExactDist(routeState.escortRespawnAt))
+                               .Str("tag", "[dun250]"));
+        }
+        routeState.lastEvent = "escort respawn wait " + routeState.escortRespawnNote;
+        group.NoteProgress(getMSTime());  // the respawn is the event's next step, no stall
+        if (leader->GetExactDist(routeState.escortRespawnAt) <= ESCORT_FOLLOW_RANGE)
+        {
+            group.ClearWaypoint(group.LeaderGuid());
+            return true;
+        }
+        PathResult leg;
+        G3D::Vector3 const goal(routeState.escortRespawnAt.GetPositionX(), routeState.escortRespawnAt.GetPositionY(),
+                                routeState.escortRespawnAt.GetPositionZ());
+        SteerLeg(leader, goal, leg);
+        if (leg.type & PATHFIND_NOPATH)
+            return false;
+        G3D::Vector3 const waypoint =
+            FloorWaypoint(leader, leg, RouteWaypoint(leg, goal, leg.steep ? STEEP_WAYPOINT_STEP : WAYPOINT_STEP));
+        group.SetLeaderWaypoint(leader, waypoint.x, waypoint.y, waypoint.z);
+        return true;
     }
 
     bool StayWithEscort(LeaderGroup& group, Player* leader)
@@ -1633,6 +1703,7 @@ namespace Leader::Travel
                     routeState.escortIdleSinceMs = now;
                     routeState.escortLastPos = escorted->GetPosition();
                     routeState.escortNote = starter.def->note;
+                    routeState.escortRespawnSpawnId = 0;  // [dun250]
                     group.LogEvent("escort_start", JsonObject().Str("note", starter.def->note)
                                                         .Str("name", escorted->GetName())
                                                         .Num("entry", escorted->GetEntry()));

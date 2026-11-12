@@ -105,6 +105,7 @@ namespace Leader::Travel
 
     // Escorts (StarterKind::Escort): what attacks the escorted creature is fought, the leader keeps up with it.
     constexpr float ESCORT_FIGHT_RADIUS = 40.0f;
+    constexpr float ESCORT_IDLE_REACH_MARGIN = 2.0f;  // [dun249] an idle mob this far past its reach of the NPC
 
     constexpr float HOLD_TARGET_RADIUS = 90.0f;  // around an event's waiting place (Violet Hold's portals ~90 yd)
 

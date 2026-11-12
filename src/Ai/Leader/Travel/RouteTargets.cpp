@@ -3656,6 +3656,23 @@ namespace Leader::Travel
 
             if (escortNpc && (creature == escortNpc || creature->GetExactDist(escortNpc) > ESCORT_FIGHT_RADIUS))
                 continue;
+            // [dun249] ... and of those, an idle mob only once the escorted NPC is in its reach (it fights it then):
+            // the escort is the NPC's walk with its waves as they come. b458 wc-n five6-4: during the Naralex escort
+            // the leader pulled the idle Deviate Guardians ahead ("full clear", 3286 / 3323 s), the waypoint-12 wave
+            // joined pull 80 (planned 1-2 mobs, 10 killed in 136 s), the tank died at 3388 s, the Disciple at 3554
+            if (escortNpc && !creature->IsInCombat() &&
+                escortNpc->GetExactDist(creature) > creature->GetAggroRange(escortNpc) + ESCORT_IDLE_REACH_MARGIN)
+            {
+                thread_local std::set<std::pair<uint32, ObjectGuid>> escortIdleLogged;  // (instance, mob) once
+                if (escortIdleLogged.size() > 4096)
+                    escortIdleLogged.clear();
+                if (escortIdleLogged.insert({group.InstanceId(), creature->GetGUID()}).second)
+                    group.LogEvent("escort_idle_left",
+                                   JsonObject().Str("name", creature->GetName()).Num("entry", creature->GetEntry())
+                                       .Real("toNpc", escortNpc->GetExactDist(creature))
+                                       .Real("reach", creature->GetAggroRange(escortNpc)).Str("tag", "[dun249]"));
+                continue;
+            }
 
             if (bossRush && creature != nextBoss)
                 continue;
@@ -3767,7 +3784,11 @@ namespace Leader::Travel
         // Nothing on the route and no boss to walk to (not targetable yet, held back): the old full clear. Not while
         // the next boss lies over a link: with nothing chosen the group walks to it (WalkToLink), as before.
         bool const routeFallback = hostiles.empty() && !viaLink && !viaStarterLink;
-        if (routeFallback)
+        // [dun250] b458 wc-n five6-4: the Disciple of Naralex died at 3554 s (escort_end "died", rearmed); the
+        // fallback cleared trash across the caverns until 3965 s, he respawned at 300 s at his spawn and the run hit
+        // the 25-min no-boss limit before a second escort. While he is dead the group waits at his spawn
+        bool const respawnWait = routeFallback && EscortRespawnPending(group, map);
+        if (routeFallback && !respawnWait)
         {
             hostiles.swap(offRouteHostiles);
             // [lead41] nothing on the route and no boss to walk to: the route's own full-clear fallback is the path
