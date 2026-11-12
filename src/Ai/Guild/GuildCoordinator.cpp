@@ -6189,14 +6189,60 @@ void GuildCoordinator::UpdateGear()
         if (!HumanControls(p))
             bots.push_back(p);
     }
-    // one member per call, in plan order: the score work of 50 members spread over minutes, not one tick
-    Player* member = nullptr;
-    for (size_t n = 0; n < plan_.size() && !member; ++n)
+    // [craft401] user standing rule 2026-11-12 «the guild always checks the upgrade potential»: a member's upgrade
+    // check (the slot groups by its stat weights over the crafts its members know or can learn, the vendors, the
+    // quest rewards and the drops) runs when what it depends on changes - its level, its worn pieces (a gear change,
+    // the grey / white piece it wears), its quest log, its bags (new loot), the guild's crafting skills and bank (a
+    // skill-up that opens recipes, a new piece in the bank) - not on a timer. One member per call, in plan order,
+    // the first whose key changed; none changed: no work. Before, every member in turn, every 5 s
+    uint64 guildKey = 0;
     {
-        gearCursor_ = (gearCursor_ + 1) % plan_.size();
-        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(plan_[gearCursor_].low));
-        if (p && p->IsInWorld() && !HumanControls(p))
+        uint64 skills = 0;
+        for (Player* c : bots)
+            for (uint32 line : CRAFT_LINES)
+                if (c->HasSkill(line))
+                    skills = skills * 1000003ull + c->GetPureSkillValue(line);
+        uint64 banked = 0;
+        for (auto const& [item, n] : bank)
+            banked = banked * 31ull + item * 7ull + n;
+        guildKey = skills ^ (banked * 0x9E3779B97F4A7C15ull);
+    }
+    auto const memberKey = [&](Player* p)
+    {
+        // its level, and its zone (the vendors and the quest givers it reaches)
+        uint64 key = guildKey ^ (uint64(p->GetLevel()) << 56) ^ (uint64(p->GetZoneId()) << 40);
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (Item* item = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                key = key * 131ull + item->GetEntry() * 17ull + slot;
+        for (uint16 q = 0; q < MAX_QUEST_LOG_SIZE; ++q)
+            key = key * 37ull + p->GetQuestSlotQuestId(q);
+        uint64 bags = 0;
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (Item* item = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                bags += item->GetEntry();
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+            if (Bag* bag = p->GetBagByPos(b))
+                for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                    if (Item* item = bag->GetItemByPos(uint8(j)))
+                        bags += item->GetEntry();
+        return key ^ (bags * 0xC2B2AE3D27D4EB4Full);
+    };
+    Player* member = nullptr;
+    uint64 memberKeyNow = 0;
+    {
+        CoordLock guard(lock_, __func__);
+        for (size_t n = 0; n < plan_.size() && !member; ++n)
+        {
+            gearCursor_ = (gearCursor_ + 1) % plan_.size();
+            Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(plan_[gearCursor_].low));
+            if (!p || !p->IsInWorld() || HumanControls(p))
+                continue;
+            uint64 const key = memberKey(p);
+            if (bots_[plan_[gearCursor_].low].gearKey == key)
+                continue;
             member = p;
+            memberKeyNow = key;
+        }
     }
     if (!member)
         return;
@@ -6237,6 +6283,51 @@ void GuildCoordinator::UpdateGear()
     }
     st.rewards = std::move(rewards);
     st.gearAt = Now();
+    st.gearKey = memberKeyNow;
+    // [craft401] its upgrades (now and planned), logged on a change, and the guild's line on a change
+    std::set<std::pair<uint8, uint32>> upgrades;
+    std::string upgradeText;
+    for (auto const* list : {&st.gearNow, &st.gearPlan})
+        for (GearPick const& g : *list)
+            if (upgrades.emplace(g.group, g.itemId).second && upgradeText.size() < 400)
+                upgradeText += std::string(upgradeText.empty() ? "" : "; ") + GuildGear::GroupName(g.group) + " " +
+                               ItemName(g.itemId) + " " + GainText(g) + " (" + g.text + ")";
+    if (upgrades != st.upgrades)
+    {
+        st.upgrades = upgrades;
+        LOG_INFO("playerbots", "[craft401] {} L{} upgrades: {}", Who(low), member->GetLevel(),
+                 upgradeText.empty() ? "none found" : upgradeText);
+    }
+    uint32 members = 0, slots = 0, orders = 0;
+    for (auto const& [botLow, state] : bots_)
+    {
+        members += state.upgrades.empty() ? 0 : 1;
+        slots += uint32(state.upgrades.size());
+        for (auto const* list : {&state.gearNow, &state.gearPlan})
+            for (GearPick const& g : *list)
+                orders += g.kind == GuildGear::SRC_CRAFT || (g.kind == GuildGear::SRC_VENDOR && list == &state.gearNow)
+                              ? 1
+                              : 0;
+    }
+    // the grey / white pieces the members wear (the [health] line)
+    wornLow_ = wornGrey_ = 0;
+    for (Player* p : bots)
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (Item* item = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                item && slot != EQUIPMENT_SLOT_BODY && slot != EQUIPMENT_SLOT_TABARD &&
+                item->GetTemplate()->Quality <= ITEM_QUALITY_NORMAL)
+            {
+                ++wornLow_;
+                wornGrey_ += item->GetTemplate()->Quality == ITEM_QUALITY_POOR ? 1 : 0;
+            }
+    std::string const summary = Acore::StringFormat("guild upgrades: {} members, {} slots, {} orders (crafts and "
+                                                    "vendor buys); worn grey {} / white {}",
+                                                    members, slots, orders, wornGrey_, wornLow_ - wornGrey_);
+    if (summary != upgradeSummary_)
+    {
+        upgradeSummary_ = summary;
+        LOG_INFO("playerbots", "[craft401] {}", summary);
+    }
 }
 
 void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vector<GearPick>& plan,
@@ -8402,6 +8493,8 @@ void GuildCoordinator::UpdateHealth()
              waitingTown, townStarted_, townStarted_ ? uint32(townWaitSum_ / townStarted_ / MINUTE) : 0,
              townVisits_ ? float(townStarted_) / townVisits_ : 0.0f);
     healthRow_ += tasks;
+    // [craft401] the grey / white pieces the members wear (the upgrade check's count)
+    healthRow_ += Acore::StringFormat("; worn grey {}, white {}", wornGrey_, wornLow_ - wornGrey_);
     if (now - lastHealthLog_ >= MINUTE)
     {
         lastHealthLog_ = now;

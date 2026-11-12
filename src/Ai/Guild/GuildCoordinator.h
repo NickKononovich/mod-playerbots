@@ -614,6 +614,10 @@ private:
         std::map<uint32, RewardPick> rewards;  // quest -> the choice to take
         std::vector<Expect> expect;      // items about to appear in its bags that belong to another member
         uint32 gearAt{0};
+        // [craft401] what its last upgrade check saw (level, worn pieces, quest log, bags, the guild's crafting) and
+        // its upgrades then, (slot group, item) - a new check only when that changes; the log on a change
+        uint64 gearKey{0};
+        std::set<std::pair<uint8, uint32>> upgrades;
         // [tasks] the task list's log and metrics
         std::set<std::string> ranTasks;  // keys of tasks the bot started (an ended one is "done", else "dropped")
         uint32 visitTown{0};             // the town of the town tasks it runs on this visit
@@ -1254,6 +1258,9 @@ private:
     };
     std::deque<CraftDone> craftsDone_;
     size_t gearCursor_{0};
+    std::string upgradeSummary_;  // [craft401] the guild line last logged (world thread)
+    uint32 wornLow_{0};           // [craft401] grey / white pieces worn by the members (the [health] line)
+    uint32 wornGrey_{0};
 
     // [tasks] professions (lock_ except the read-only trainer ranks)
     std::unordered_map<uint32, std::vector<TrainerRank>> trainerRanks_;    // skill line -> ranks; read-only after Load
