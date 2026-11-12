@@ -702,19 +702,13 @@ HealerFacts HealerThroughput(Player* healer, Unit* target)
     if (auto const found = measuredHealing.find(healer->GetGUID().GetRawValue());
         found != measuredHealing.end() && found->second.instanceId == healer->GetInstanceId())
     {
-        // [lead1434] coordinator 2026-11-05: until the measured effective healing covers one full health of the
-        // member it heals (the tank: its max health, game data), the main heal's average over its cost stands (b263
-        // 5B-10: one overhealed Holy Light read 0.24 hp per mana and lead1372 asked 100 % for 0.22 tank health)
+        // [lead1300] user rule 2026-11-08: the heal per mana and the upkeep come from the spell data (the main heal's
+        // average over its cost, lead1434); this dungeon's measured healing per mana and upkeep are logged only
         facts.measuredHealed = found->second.healed;
-        if (found->second.mana > 0.0f && found->second.healed >= float(target->GetMaxHealth()))
-        {
-            facts.healPerMana = found->second.healed / found->second.mana;
-            facts.measured = true;
-        }
-        // [dun215] the rate is the spells' cast-limited one; a fight's best measured rate is a peak (crits, a burst
-        // of casts on a full bar), not what the healer holds over a fight (b442: "heals 116/s" at L19-20)
+        if (found->second.mana > 0.0f)
+            facts.measuredHealPerMana = found->second.healed / found->second.mana;
         if (found->second.upkeepSec > 0.0f && facts.maxMana > 0.0f)  // [lead1431]
-            facts.upkeepPctPerSec = 100.0f * found->second.upkeep / found->second.upkeepSec / facts.maxMana;
+            facts.measuredUpkeepPctPerSec = 100.0f * found->second.upkeep / found->second.upkeepSec / facts.maxMana;
     }
     return facts;
 }
