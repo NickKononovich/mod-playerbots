@@ -617,7 +617,7 @@ bool StoreLootAction::Execute(Event event)
             // 4182 of 4188 bobbers "items=0/1", 271 Lesser Sagefish School loots 0/1 (Shalaeth, bags 97 % full; a
             // raw fish's usage is AH) - not one fish reached the guild in 6.4 h of fishing
             bool const isUsefulItem =
-                itemQuest || proto->StartQuest ||
+                itemQuest || proto->StartQuest || guid.IsItem() ||  // [craft406] its own item's loot
                 (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH) ||
                 (sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) &&
                  (sGuildCoordinator.IsWanted(itemid) || sGuildCoordinator.NeedsForOwnCalls(bot, itemid)));
