@@ -4427,33 +4427,33 @@ void GuildCoordinator::UpdateProfessions()
                     for (auto const& [row, m] : members)
                         if (m->HasSpell(spell))
                             known = std::max<uint32>(known, proto->ContainerSlots);
-        GuildGear::CraftRecipe const* next = nullptr;
-        uint32 nextSlots = 0;
+        // [craft423] the smallest bag size above it that a member still lacks: b462 every bag slot held an 8-slot
+        // vendor bag, the next size (Linen Bag, 6) was needed by nobody, so no tailor ever worked toward a 10-slot one
+        std::map<uint32, GuildGear::CraftRecipe const*> bySize;  // container slots -> the recipe of the lowest skill
         for (uint32 spell : GuildGear::BagRecipes())
         {
             GuildGear::CraftRecipe const* r = GuildGear::Recipe(spell);
             ItemTemplate const* proto = r ? sObjectMgr->GetItemTemplate(r->itemId) : nullptr;
             if (!proto || proto->ContainerSlots <= known || !learnable(r->skillLine, r->spellId))
                 continue;
-            if (!next || proto->ContainerSlots < nextSlots ||
-                (proto->ContainerSlots == nextSlots && r->reqSkill < next->reqSkill))
-            {
-                next = r;
-                nextSlots = proto->ContainerSlots;
-            }
+            auto& best = bySize[proto->ContainerSlots];
+            if (!best || r->reqSkill < best->reqSkill)
+                best = r;
         }
-        if (next)
+        for (auto const& [nextSlots, next] : bySize)
         {
             uint32 count = 0;
             for (auto const& [row, m] : members)
                 for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
                 {
                     Bag* bag = m->GetBagByPos(b);
-                    count += (!bag || bag->GetBagSize() < nextSlots) ? 1 : 0;
+                    count += (!bag || (GenericBagProto(bag->GetTemplate()) && bag->GetBagSize() < nextSlots)) ? 1 : 0;
                 }
-            if (count)
-                needs.push_back({next->skillLine, next->reqSkill, next->spellId, next->itemId, count, 0, false,
-                                 "bag " + std::to_string(nextSlots) + " slots ×" + std::to_string(count)});
+            if (!count)
+                continue;
+            needs.push_back({next->skillLine, next->reqSkill, next->spellId, next->itemId, count, 0, false,
+                             "bag " + std::to_string(nextSlots) + " slots ×" + std::to_string(count)});
+            break;
         }
     }
     // [insc143] glyphs: b426-b429 the 7 scribes stayed at Inscription 1/75 all run - the line unlocked nothing (the
@@ -6619,17 +6619,22 @@ void GuildCoordinator::UpdateGear()
         LOG_INFO("playerbots", "[craft401] {} L{} upgrades: {}", Who(low), member->GetLevel(),
                  upgradeText.empty() ? "none found" : upgradeText);
     }
-    uint32 members = 0, slots = 0, orders = 0;
+    // [craft422] the orders the guild can carry out (a craft with its crafter, a vendor buy it pays now) apart from
+    // the crafts no member knows yet (the crafters' skill-up targets): b462 "165 orders" counted both, 6 crafts ran
+    uint32 members = 0, slots = 0, orders = 0, crafts = 0, buys = 0, unmade = 0;
     for (auto const& [botLow, state] : bots_)
     {
         members += state.upgrades.empty() ? 0 : 1;
         slots += uint32(state.upgrades.size());
         for (auto const* list : {&state.gearNow, &state.gearPlan})
             for (GearPick const& g : *list)
-                orders += g.kind == GuildGear::SRC_CRAFT || (g.kind == GuildGear::SRC_VENDOR && list == &state.gearNow)
-                              ? 1
-                              : 0;
+            {
+                crafts += g.kind == GuildGear::SRC_CRAFT && g.crafterLow ? 1 : 0;
+                unmade += g.kind == GuildGear::SRC_CRAFT && !g.crafterLow ? 1 : 0;
+                buys += g.kind == GuildGear::SRC_VENDOR && list == &state.gearNow ? 1 : 0;
+            }
     }
+    orders = crafts + buys;
     // the grey / white pieces the members wear (the [health] line)
     wornLow_ = wornGrey_ = 0;
     for (Player* p : bots)
@@ -6641,9 +6646,10 @@ void GuildCoordinator::UpdateGear()
                 ++wornLow_;
                 wornGrey_ += item->GetTemplate()->Quality == ITEM_QUALITY_POOR ? 1 : 0;
             }
-    std::string const summary = Acore::StringFormat("guild upgrades: {} members, {} slots, {} orders (crafts and "
-                                                    "vendor buys); worn grey {} / white {}",
-                                                    members, slots, orders, wornGrey_, wornLow_ - wornGrey_);
+    std::string const summary =
+        Acore::StringFormat("guild upgrades: {} members, {} slots, {} orders ({} crafts with a crafter, {} vendor "
+                            "buys), {} crafts no member knows yet [craft422]; worn grey {} / white {}",
+                            members, slots, orders, crafts, buys, unmade, wornGrey_, wornLow_ - wornGrey_);
     if (summary != upgradeSummary_)
     {
         upgradeSummary_ = summary;
