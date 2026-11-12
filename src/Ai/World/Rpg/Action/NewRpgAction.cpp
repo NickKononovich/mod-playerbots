@@ -2001,6 +2001,12 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     if (NewRpgFishing::PutPoleAway(bot))
         return true;
 
+    // [craft410] an enchanter's disenchant queue between fights, as it loots (not out of a flight, rest or pvp)
+    if ((status == RPG_IDLE || status == RPG_GO_GRIND || status == RPG_WANDER_RANDOM || status == RPG_DO_QUEST ||
+         status == RPG_DO_GATHER || status == RPG_GO_CAMP || status == RPG_WANDER_NPC) &&
+        sGuildCoordinator.DisenchantNow(bot, botAI))
+        return true;
+
     // [build147] the steps above can change the state without returning (b438 crash: std::get<GoCamp> on another
     // state, bad_variant_access): the switch dispatches on the state the bot is in now
     status = info.GetStatus();

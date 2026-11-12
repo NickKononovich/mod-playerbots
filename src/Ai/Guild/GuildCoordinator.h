@@ -335,6 +335,8 @@ public:
     void RequestWithdraw(Player* bot, uint32 itemId, std::string const& why);
     void OnCrafted(Player* bot, uint32 spellId, uint32 before, uint32 after);  // [guild70] the «План» tab's done
     GuildRunStep NextStep(Player* bot, PlayerbotAI* botAI);
+    // [craft410] an enchanter casts its disenchant queue between fights (out of combat, no attacker, not in a five)
+    bool DisenchantNow(Player* bot, PlayerbotAI* botAI);
     uint8 OnCampReached(Player* bot);  // 0 = not a guild run, 1 = done (-> IDLE), 2 = still at it
     bool IsHeld(Player* bot, Item* item);
     void SellMarked(PlayerbotAI* botAI);
@@ -929,6 +931,8 @@ private:
     // [bank409] a bank item no member claims (no upgrade, wanted list, cook, gear plan, withdraw): an enchanter takes
     // a green it disenchants, else the member nearest a vault takes it to sell - the loot decision runs on it then
     void ClaimBankItems();
+    // [ench151] the next Disenchant of its queue: stops a walking / mounted bot first (lock_ held)
+    bool DisenchantStep(Player* bot, PlayerbotAI* botAI, BotState& st, GuildRunStep& step);
     // [craft409] user rule 2026-11-12: a green nobody wears is disenchanted only when its result is needed (the
     // guild's demand for its dust / essence, after what the queued disenchants yield) or the enchanter's Disenchant
     // still gives skill; else it is sold (lock_ held)

@@ -6680,6 +6680,7 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
     // L9 bot's plan listed L74-78 pieces (the DB has RequiredLevel 0 on 834 WotLK pieces of item level 150+) and they
     // hid the reachable ones of the same slot group
     std::map<uint8, GearPick> bestNow, bestPlan, bestFuture;
+    std::map<uint8, GearPick> bestCraft;  // [craft421]
     bool aheadItem = false;  // the member still lacks the level / reputation to wear it: a plan, not an order
     std::string lockText;
     auto const consider = [&](GearPick const& pick, bool isNow)
@@ -6692,6 +6693,12 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
         if (aheadItem)
             use.text += " — " + lockText;
         auto& best = isNow ? bestNow : (pick.needLevel > ahead ? bestFuture : bestPlan);
+        // [craft421] the best guild craft of each group is kept beside the group's best pick: b462 the plans named a
+        // 0.0 % drop (Sparkleshell Mantle, Gnomeregan) over every shoulder craft, so no crafter was asked for one while
+        // 17 members wore grey shoulders
+        if (!isNow && use.kind == GuildGear::SRC_CRAFT && pick.needLevel <= ahead)
+            if (auto const craft = bestCraft.find(use.group); craft == bestCraft.end() || use.gain > craft->second.gain)
+                bestCraft[use.group] = use;
         auto const itr = best.find(use.group);
         if (itr == best.end() || use.gain > itr->second.gain + 1e-6f ||
             (std::fabs(use.gain - itr->second.gain) <= 1e-6f && KindRank(use.kind) < KindRank(itr->second.kind)))
@@ -7015,7 +7022,7 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
     }
     // one main hand: the better of the one-hander and the two-hander
     uint8 const oneHand = GuildGear::EquipGroup(INVTYPE_WEAPON), twoHand = GuildGear::EquipGroup(INVTYPE_2HWEAPON);
-    for (auto* best : {&bestNow, &bestPlan, &bestFuture})
+    for (auto* best : {&bestNow, &bestPlan, &bestFuture, &bestCraft})
     {
         auto const a = best->find(oneHand), b = best->find(twoHand);
         if (a != best->end() && b != best->end())
@@ -7026,6 +7033,14 @@ void GuildCoordinator::PlanGear(Player* m, std::vector<GearPick>& now, std::vect
         now.push_back(pick);
     for (auto const& [group, pick] : bestPlan)
         plan.push_back(pick);
+    for (auto const& [group, pick] : bestCraft)  // [craft421] unless the group's pick or what it gets now is as good
+    {
+        auto const planned = bestPlan.find(group);
+        auto const ready = bestNow.find(group);
+        if ((planned == bestPlan.end() || planned->second.itemId != pick.itemId) &&
+            (ready == bestNow.end() || ready->second.gain < pick.gain))
+            plan.push_back(pick);
+    }
     for (auto const& [group, pick] : bestFuture)  // [ui11] by level: the nearest future first
         future.push_back(pick);
     std::sort(now.begin(), now.end(), byGain);
@@ -7683,6 +7698,81 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
 // ---------------------------------------------------------------------------------------------------------------------
 // map thread: New RPG runs the order
 // ---------------------------------------------------------------------------------------------------------------------
+bool GuildCoordinator::DisenchantStep(Player* bot, PlayerbotAI* botAI, BotState& st, GuildRunStep& step)
+{
+    // [ench151] Disenchant has a cast time and breaks on movement: a walking or fighting bot keeps its list
+    // (CastSpell refused the cast while it moved and the item was dropped from the list: b428 Emdyl's
+    // Warrior's Tunic "dropped DISENCHANT ... ended before its start", never disenchanted)
+    // (a sitting bot eats or drinks: it disenchants once it stands up)
+    if (!st.disenchant.empty() && (bot->IsInCombat() || bot->IsNonMeleeSpellCast(false) ||
+                                   bot->HasUnitState(UNIT_STATE_IN_FLIGHT) || bot->IsFlying() ||
+                                   !bot->IsStandState()))
+        return false;
+    if (!st.disenchant.empty() && (bot->isMoving() || bot->IsMounted()))
+    {
+        bot->StopMoving();
+        if (bot->IsMounted())
+            bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
+        step.kind = GuildRunStep::BUSY;
+        step.reason = "stops to disenchant";
+        LOG_INFO("playerbots", "[ench151] {} L{} stops to disenchant {} items", bot->GetName(),
+                 bot->GetLevel(), st.disenchant.size());
+        return true;
+    }
+    while (!st.disenchant.empty())
+    {
+        Item* item = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(st.disenchant.back()));
+        st.disenchant.pop_back();
+        // [tasks] only what no member needs: a gear plan that took it since the decision keeps it
+        if (uint32 const planned = item ? PlannedFor(item->GetEntry()) : 0)
+        {
+            st.held.push_back({item->GetGUID().GetCounter(), item->GetEntry(), item->GetCount(), planned,
+                               "upgrade by plan of " + Who(planned)});
+            LOG_INFO("playerbots", "[tasks] {} keeps {} for {}: in its gear plan, not disenchanted",
+                     bot->GetName(), item->GetTemplate()->Name1, Who(planned));
+            continue;
+        }
+        if (!item)
+            continue;
+        uint32 const skill = bot->GetPureSkillValue(SKILL_ENCHANTING);
+        if (botAI->CastSpell(SPELL_DISENCHANT, bot, item))
+        {
+            LOG_INFO("playerbots", "[ench151] {} L{} disenchants {} (skill {}/{})", bot->GetName(),
+                     bot->GetLevel(), item->GetTemplate()->Name1, skill,
+                     bot->GetPureMaxSkillValue(SKILL_ENCHANTING));
+            step.kind = GuildRunStep::BUSY;
+            step.reason = "disenchant " + item->GetTemplate()->Name1;
+            return true;
+        }
+        LOG_INFO("playerbots", "[ench151] {} L{} could not disenchant {} (skill {}, needs {}): dropped",
+                 bot->GetName(), bot->GetLevel(), item->GetTemplate()->Name1, skill,
+                 item->GetTemplate()->RequiredDisenchantSkill);
+    }
+    return false;
+}
+
+// [craft410] user decision 2026-11-12: a Disenchant needs no travel and takes a few seconds, so an enchanter with a
+// queue casts it between fights, as it loots. b461 #6 Emdyl's DISENCHANT (6 items) waited 6,400 s in one DO_QUEST:
+// the guild's steps run only when the status changes
+bool GuildCoordinator::DisenchantNow(Player* bot, PlayerbotAI* botAI)
+{
+    if (!bot || !botAI || !IsPlanned(bot->GetGUID().GetCounter()) || bot->IsInCombat() ||
+        !bot->getAttackers().empty() || !bot->GetMap() || bot->GetMap()->Instanceable() ||
+        !bot->HasSpell(SPELL_DISENCHANT))  // only the enchanters reach the global leader's lock
+        return false;  // a five's run keeps its pace: its enchanter casts at the next town or field stop
+    CoordLock guard(lock_, __func__);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end() || itr->second.disenchant.empty())
+        return false;
+    uint32 const queued = uint32(itr->second.disenchant.size());
+    GuildRunStep step;
+    if (!DisenchantStep(bot, botAI, itr->second, step))
+        return false;
+    LOG_INFO("playerbots", "[craft410] {} L{} {} between fights ({} queued)", bot->GetName(), bot->GetLevel(),
+             step.reason, queued);
+    return true;
+}
+
 GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
 {
     GuildRunStep step;
@@ -7748,54 +7838,11 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
         {
             case GuildOrderType::DISENCHANT:
             {
-                // [ench151] Disenchant has a cast time and breaks on movement: a walking or fighting bot keeps its list
-                // (CastSpell refused the cast while it moved and the item was dropped from the list: b428 Emdyl's
-                // Warrior's Tunic "dropped DISENCHANT ... ended before its start", never disenchanted)
-                // (a sitting bot eats or drinks: it disenchants once it stands up)
-                if (!st.disenchant.empty() && (bot->IsInCombat() || bot->IsNonMeleeSpellCast(false) ||
-                                               bot->HasUnitState(UNIT_STATE_IN_FLIGHT) || bot->IsFlying() ||
-                                               !bot->IsStandState()))
-                    continue;
-                if (!st.disenchant.empty() && (bot->isMoving() || bot->IsMounted()))
+                if (DisenchantStep(bot, botAI, st, step))
                 {
-                    bot->StopMoving();
-                    if (bot->IsMounted())
-                        bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
-                    step.kind = GuildRunStep::BUSY;
-                    step.reason = "stops to disenchant";
-                    LOG_INFO("playerbots", "[ench151] {} L{} stops to disenchant {} items", bot->GetName(),
-                             bot->GetLevel(), st.disenchant.size());
-                    return step;
-                }
-                while (!st.disenchant.empty())
-                {
-                    Item* item = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(st.disenchant.back()));
-                    st.disenchant.pop_back();
-                    // [tasks] only what no member needs: a gear plan that took it since the decision keeps it
-                    if (uint32 const planned = item ? PlannedFor(item->GetEntry()) : 0)
-                    {
-                        st.held.push_back({item->GetGUID().GetCounter(), item->GetEntry(), item->GetCount(), planned,
-                                           "upgrade by plan of " + Who(planned)});
-                        LOG_INFO("playerbots", "[tasks] {} keeps {} for {}: in its gear plan, not disenchanted",
-                                 bot->GetName(), item->GetTemplate()->Name1, Who(planned));
-                        continue;
-                    }
-                    if (!item)
-                        continue;
-                    uint32 const skill = bot->GetPureSkillValue(SKILL_ENCHANTING);
-                    if (botAI->CastSpell(SPELL_DISENCHANT, bot, item))
-                    {
-                        LOG_INFO("playerbots", "[ench151] {} L{} disenchants {} (skill {}/{})", bot->GetName(),
-                                 bot->GetLevel(), item->GetTemplate()->Name1, skill,
-                                 bot->GetPureMaxSkillValue(SKILL_ENCHANTING));
-                        step.kind = GuildRunStep::BUSY;
-                        step.reason = "disenchant " + item->GetTemplate()->Name1;
+                    if (step.reason.rfind("disenchant ", 0) == 0)
                         started(order);
-                        return step;
-                    }
-                    LOG_INFO("playerbots", "[ench151] {} L{} could not disenchant {} (skill {}, needs {}): dropped",
-                             bot->GetName(), bot->GetLevel(), item->GetTemplate()->Name1, skill,
-                             item->GetTemplate()->RequiredDisenchantSkill);
+                    return step;
                 }
                 continue;
             }
