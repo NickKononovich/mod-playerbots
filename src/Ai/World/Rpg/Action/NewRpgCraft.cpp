@@ -580,7 +580,9 @@ namespace
             return false;
         Item* item = bot->GetItemByGuid(guid);
         ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
-        if (!proto || !(proto->Flags & (ITEM_FLAG_IS_PROSPECTABLE | ITEM_FLAG_IS_MILLABLE)))
+        // [craft396] ... and a Disenchant's (LOOT_DISENCHANTING: the item is destroyed at the release too)
+        bool const disenchant = item && item->loot.loot_type == LOOT_DISENCHANTING;
+        if (!proto || (!disenchant && !(proto->Flags & (ITEM_FLAG_IS_PROSPECTABLE | ITEM_FLAG_IS_MILLABLE))))
             return false;
         std::string got;
         for (uint8 slot = 0; slot < item->loot.items.size(); ++slot)
@@ -596,7 +598,10 @@ namespace
                    (stored ? "" : " (no room: left)");
         }
         LOG_INFO("playerbots", "[insc142] {} L{} takes the {} loot of {}: {}", bot->GetName(), bot->GetLevel(),
-                 proto->HasFlag(ITEM_FLAG_IS_MILLABLE) ? "milling" : "prospecting", proto->Name1,
+                 disenchant                            ? "disenchant"
+                 : proto->HasFlag(ITEM_FLAG_IS_MILLABLE) ? "milling"
+                                                         : "prospecting",
+                 proto->Name1,
                  got.empty() ? "nothing" : got);
         bot->GetSession()->DoLootRelease(guid);
         return true;
@@ -705,6 +710,8 @@ namespace NewRpgCraft
         LOG_INFO("playerbots",
                  "[guild70] craft index: {} recipes in {} skill lines, {} vendor reagents, {} focus spawns", index.recipes.size(), index.bySkill.size(), index.vendors.size(), focusSpawns);
     }
+
+    bool TakeItemLoot(Player* bot) { return TakeConversionLoot(bot); }
 
     std::string RecipeName(uint32 spellId)
     {

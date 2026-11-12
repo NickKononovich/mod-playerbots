@@ -7159,6 +7159,17 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
     GuildRunStep step;
     if (!bot || !botAI || !IsPlanned(bot->GetGUID().GetCounter()))
         return step;
+    // [craft396] the loot window of its last Disenchant first (before lock_: the loot hook takes it): b456 the
+    // enchanters' disenchants ([ench151] 9x) opened their loot and nothing ever took it - no Strange Dust or Lesser
+    // Magic Essence anywhere in the guild, every enchanter's walk "Strange Dust x1: neither held nor gathered",
+    // [craft386] 0 plans, and the disenchanted green stayed in the bags ("spare Sturdy Quarterstaff (at #22 Idunk)
+    // -> its own Disenchant" again)
+    if (!bot->IsNonMeleeSpellCast(false) && NewRpgCraft::TakeItemLoot(bot))
+    {
+        step.kind = GuildRunStep::BUSY;
+        step.reason = "takes its disenchant loot";
+        return step;
+    }
     CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
     if (itr == bots_.end())

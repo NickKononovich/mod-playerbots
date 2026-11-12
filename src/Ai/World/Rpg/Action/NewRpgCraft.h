@@ -54,6 +54,9 @@ namespace NewRpgCraft
     // map thread, Spell::DoCreateItem: a skill-up product goes the coordinator's way
     void OnCreateItem(Player* player, Item* item, uint32 count);
     std::string RecipeName(uint32 spellId);
+    // [craft396] map thread, outside the coordinator's lock: the loot window of the bot's own Disenchant / Milling /
+    // Prospecting cast taken and released (the release destroys the item); true when one was open
+    bool TakeItemLoot(Player* bot);
     uint32 RecipeSkill(uint32 spellId);
     uint32 RecipeFocus(uint32 spellId);
     // [ench156] the item an enchanting recipe goes on (a worn piece without an enchantment, ...), nullptr = none
