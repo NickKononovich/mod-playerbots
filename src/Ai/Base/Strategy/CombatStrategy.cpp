@@ -79,6 +79,8 @@ void CombatStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [death389] out of its judged fight area while standing in the fight: back to the judged spot, below the run
+    triggers.push_back(new TriggerNode("solo fight drift", {NextAction("solo fight drift", ACTION_EMERGENCY + 1)}));
     // The pet-attack trigger is commented out because it was forcing the bot's pet to attack, overriding stay and follow commands.
     // Pets will automatically attack the bot's enemy if they are in "defensive" or "aggressive"
     // stance, or if the master issues an attack command.

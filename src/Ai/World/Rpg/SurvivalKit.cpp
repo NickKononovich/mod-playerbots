@@ -14,6 +14,7 @@
 #include "GridNotifiersImpl.h"
 #include "Bag.h"
 #include "Item.h"
+#include "LeaderOrders.h"  // [death389] Leader::Route
 #include "LeaderPlannerShared.h"
 #include "Log.h"
 #include "MovementGenerator.h"
@@ -2051,6 +2052,39 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
         }
     }
     return cast;
+}
+
+bool SoloFightDriftTrigger::IsActive()
+{
+    if (!bot->IsInCombat() || bot->isMoving() || !SoloSafety::Applies(bot) || SoloSafety::HasRunPastLeg(bot) ||
+        SoloSafety::Disengaging(bot))
+        return false;
+    Unit* target = context->GetValue<Unit*>("current target")->Get();
+    G3D::Vector3 spot;
+    if (!target || !target->IsAlive() || !SoloSafety::JudgedFightSpot(bot, target, spot))
+        return false;
+    std::string why;
+    return SoloSafety::FightPastJudged(bot, target,
+                                       G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()),
+                                       why);
+}
+
+bool SoloFightDriftAction::Execute(Event /*event*/)
+{
+    Unit* target = context->GetValue<Unit*>("current target")->Get();
+    G3D::Vector3 back;
+    std::string why;
+    if (!target || !SoloSafety::JudgedFightSpot(bot, target, back) ||
+        !SoloSafety::FightPastJudged(bot, target,
+                                     G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()), why))
+        return false;
+    Leader::RouteResult const route = Leader::Route(bot, Position(back.x, back.y, back.z));
+    if (!route.found || !route.complete || route.throughRefused ||
+        !MoveTo(bot->GetMapId(), back.x, back.y, back.z, false, false, false, true))
+        return false;
+    LOG_INFO("playerbots", "[death389] {} L{} stands out of its judged fight area ({}): steps back to ({:.0f},{:.0f})",
+             bot->GetName(), bot->GetLevel(), why, back.x, back.y);
+    return true;
 }
 
 bool SoloRunPastTrigger::IsActive() { return bot->IsInCombat() && SoloSafety::HasRunPastLeg(bot); }

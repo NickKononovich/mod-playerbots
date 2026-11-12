@@ -87,6 +87,25 @@ public:
     bool IsActive() override;
 };
 
+// [death389] a solo bot standing in its judged fight out of the judged area (no chase took it there: a ranged or a
+// healer bot never runs ReachCombatTo's [fight50] look): judged again where it stands (SoloSafety::FightPastJudged),
+// it steps back to the judged spot by a complete route clear of refused reaches
+class SoloFightDriftTrigger : public Trigger
+{
+public:
+    SoloFightDriftTrigger(PlayerbotAI* botAI) : Trigger(botAI, "solo fight drift", 2) {}
+
+    bool IsActive() override;
+};
+
+class SoloFightDriftAction : public MovementAction
+{
+public:
+    SoloFightDriftAction(PlayerbotAI* botAI) : MovementAction(botAI, "solo fight drift") {}
+
+    bool Execute(Event event) override;
+};
+
 class SoloRunPastAction : public MovementAction
 {
 public:

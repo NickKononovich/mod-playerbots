@@ -65,6 +65,7 @@ public:
         creators["solo fight lost"] = &TriggerContext::SoloFightLost;  // [guild14]
         creators["solo survival"] = &TriggerContext::SoloSurvival;     // [guild80]
         creators["solo run past"] = &TriggerContext::SoloRunPast;      // [runpast11]
+        creators["solo fight drift"] = &TriggerContext::SoloFightDrift;  // [death389]
         creators["low health"] = &TriggerContext::LowHealth;
         creators["medium health"] = &TriggerContext::MediumHealth;
         creators["almost full health"] = &TriggerContext::AlmostFullHealth;
@@ -472,6 +473,7 @@ private:
     static Trigger* SoloFightLost(PlayerbotAI* botAI) { return new SoloFightLostTrigger(botAI); }
     static Trigger* SoloSurvival(PlayerbotAI* botAI) { return new SoloSurvivalTrigger(botAI); }  // [guild80]
     static Trigger* SoloRunPast(PlayerbotAI* botAI) { return new SoloRunPastTrigger(botAI); }  // [runpast11]
+    static Trigger* SoloFightDrift(PlayerbotAI* botAI) { return new SoloFightDriftTrigger(botAI); }  // [death389]
     static Trigger* TargetCriticalHealth(PlayerbotAI* botAI) { return new TargetCriticalHealthTrigger(botAI); }
     static Trigger* LowMana(PlayerbotAI* botAI) { return new LowManaTrigger(botAI); }
     static Trigger* MediumMana(PlayerbotAI* botAI) { return new MediumManaTrigger(botAI); }
