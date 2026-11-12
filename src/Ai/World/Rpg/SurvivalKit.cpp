@@ -1434,7 +1434,7 @@ namespace SurvivalKit
     }
 
     float FightHeals(Player* bot, float fightSec, float health, float mana, float manaPerSec, float incomingDps,
-                     bool items)
+                     bool items, std::vector<Interrupter> const* interrupters)
     {
         if (!bot || fightSec <= 0.0f || incomingDps <= 0.0f)
             return 0.0f;
@@ -1502,6 +1502,10 @@ namespace SurvivalKit
         float endSec = fightSec;
         float castSum = 0.0f;  // the fight runs this much longer: no rotation while the bot casts its kit
         float gained = 0.0f;
+        float castHealed = 0.0f;  // [death444] what the heals with a cast time gave, and their casts and cast time
+        float castHeals = 0.0f;
+        float castHealSec = 0.0f;
+        bool landFromCast = false;
         float busyUntil = 0.0f;
         float landAt = -1.0f;
         float landAmount = 0.0f;
@@ -1548,6 +1552,12 @@ namespace SurvivalKit
                     {
                         landAt = t + (piece.instant ? 0.0f : piece.castSec);
                         landAmount = piece.amount;
+                        landFromCast = !piece.instant && !piece.item;
+                        if (landFromCast)
+                        {
+                            castHeals += 1.0f;
+                            castHealSec += piece.castSec;
+                        }
                     }
                 }
                 else if (shield && t >= shieldReadySec && mana >= shield->cost)
@@ -1577,6 +1587,8 @@ namespace SurvivalKit
                 float const healed = std::min(landAmount, maxHealth - hp);
                 hp += healed;
                 gained += healed;
+                if (landFromCast)
+                    castHealed += healed;
                 landAt = -1.0f;
             }
             for (auto const& [rate, until] : hots)
@@ -1587,7 +1599,25 @@ namespace SurvivalKit
                     gained += healed;
                 }
         }
-        return std::max(0.0f, gained - incomingDps * castSum);
+        // [death444] a check finds the bot casting by its cast share of the fight (Spell::EffectInterruptCast: the
+        // cast is lost, its school locked); each catch takes one heal's worth
+        float lost = 0.0f;
+        float const spanSec = std::min(endSec, lastSec);
+        if (interrupters && castHeals > 0.0f && spanSec > 0.0f)
+        {
+            float const share = std::min(1.0f, castHealSec / spanSec);
+            float const perHeal = castHealed / castHeals;
+            for (Interrupter const& in : *interrupters)
+            {
+                if (in.firstSec > spanSec)
+                    continue;
+                float const checks =
+                    in.repeatSec > 0.0f ? 1.0f + std::floor((spanSec - in.firstSec) / in.repeatSec) : 1.0f;
+                lost += checks * share * perHeal;
+            }
+            lost = std::min(lost, castHealed);
+        }
+        return std::max(0.0f, gained - lost - incomingDps * castSum);
     }
 
     float ItemHealPoints(Player* bot)

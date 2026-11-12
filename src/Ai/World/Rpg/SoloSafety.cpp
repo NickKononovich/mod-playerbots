@@ -855,6 +855,50 @@ namespace
         return casts;
     }
 
+    // [death444] a creature's SmartAI interrupt of a casting victim: a cast of a spell with SPELL_EFFECT_INTERRUPT_CAST
+    // on SMART_EVENT_VICTIM_CASTING (repeat min / max) or SMART_EVENT_AREA_CASTING (first min / max, repeat min / max):
+    // the means of its rolls, a not repeatable event once (b462 Defias Pathstalker: Shield Bash 1.5-13.6 s, then 25-39 s)
+    std::vector<SurvivalKit::Interrupter> InterruptsOf(Creature* creature)
+    {
+        static std::mutex cacheLock;
+        static std::unordered_map<uint32, std::vector<SurvivalKit::Interrupter>> cache;
+        uint32 const entry = creature->GetEntry();
+        {
+            std::lock_guard<std::mutex> guard(cacheLock);
+            auto const found = cache.find(entry);
+            if (found != cache.end())
+                return found->second;
+        }
+        std::vector<SurvivalKit::Interrupter> out;
+        if (creature->GetAIName() == "SmartAI")
+            for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+            {
+                if (holder.action.type != SMART_ACTION_CAST || (holder.event.type != SMART_EVENT_VICTIM_CASTING &&
+                                                                holder.event.type != SMART_EVENT_AREA_CASTING))
+                    continue;
+                SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell);
+                if (!info || !info->HasEffect(SPELL_EFFECT_INTERRUPT_CAST))
+                    continue;
+                SurvivalKit::Interrupter in;
+                float repeatMs = 0.0f;
+                if (holder.event.type == SMART_EVENT_VICTIM_CASTING)
+                    repeatMs = float(holder.event.targetCasting.repeatMin + holder.event.targetCasting.repeatMax) / 2.0f;
+                else
+                {
+                    in.firstSec = float(holder.event.minMaxRepeat.min + holder.event.minMaxRepeat.max) / 2.0f /
+                                  float(IN_MILLISECONDS);
+                    repeatMs = float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2.0f;
+                }
+                if (!(holder.event.event_flags & SMART_EVENT_FLAG_NOT_REPEATABLE))
+                    in.repeatSec = std::max(repeatMs / float(IN_MILLISECONDS),
+                                            float(info->RecoveryTime) / float(IN_MILLISECONDS));
+                out.push_back(in);
+            }
+        std::lock_guard<std::mutex> guard(cacheLock);
+        cache[entry] = out;
+        return out;
+    }
+
     // [deaths] b338 Thokhen L9: a Bristlelimb Windcaller judged at its health healed itself (Rejuvenation at 0-50 %)
     // and outlasted the bot's potion. A creature's SmartAI heals on itself (SMART_TARGET_SELF casts of a healing
     // spell: its direct heal and its periodic heal over the aura's duration), in combat (SMART_EVENT_UPDATE_IC) or in
@@ -2449,6 +2493,11 @@ namespace SoloSafety
         // item once, its spell heals as far as the mana its rotation leaves pays for them (SurvivalKit::HealPoints),
         // not the heals measured over its past fights (b341 Ravelandy L9: past potions read as 1.4 hp/s)
         constexpr float HIGH_END_DEVIATIONS = 2.0f;  // a one-sided 97.7 % bound of a sum of independent swings
+        std::vector<SurvivalKit::Interrupter> interrupters;  // [death444]
+        for (Mob const& mob : mobs)
+            if (Creature* creature = mob.unit->ToCreature())
+                for (SurvivalKit::Interrupter const& in : InterruptsOf(creature))
+                    interrupters.push_back(in);
         auto const effective = [&](Projection const& fight, float health, float mana, bool& wins) -> float
         {
             // [death442] its heals as its play pays them: the rotation's mana first, the kit's heals as they fall due
@@ -2456,7 +2505,7 @@ namespace SoloSafety
             float const high = fight.damage + HIGH_END_DEVIATIONS * std::sqrt(fight.variance);
             float const heals = SurvivalKit::FightHeals(bot, fight.seconds, health, mana,
                                                         bot->GetMaxPower(POWER_MANA) ? manaPerSec : 0.0f,
-                                                        high / std::max(fight.seconds, 1.0f), true);
+                                                        high / std::max(fight.seconds, 1.0f), true, &interrupters);
             float const ehp = health + std::min(petHealth, fight.targetDamage) + heals;
             // [death386] user 2026-11-12 "survives with a margin": the high end of its rolls, not their mean - two
             // standard deviations of the mobs' swings (weapon roll, miss / dodge / parry, crit, crush) over the fight
@@ -3216,8 +3265,14 @@ namespace SoloSafety
         out.health = float(bot->GetHealth());
         guard.unlock();
         float const mana = float(bot->GetPower(POWER_MANA));
+        std::vector<SurvivalKit::Interrupter> interrupters;  // [death444]
+        for (Projection::Foe const& foe : out.foes)
+            if (Creature* creature = foe.unit->ToCreature())
+                for (SurvivalKit::Interrupter const& in : InterruptsOf(creature))
+                    interrupters.push_back(in);
         out.heals = SurvivalKit::FightHeals(bot, out.seconds, out.health, mana, own.manaPerSec,
-                                            out.damage / std::max(out.seconds, 1.0f), true);  // [death442]
+                                            out.damage / std::max(out.seconds, 1.0f), true,
+                                            &interrupters);  // [death442]
         out.lost = out.damage >= out.health + out.heals;
         return out;
     }

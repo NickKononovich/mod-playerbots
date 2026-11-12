@@ -58,8 +58,17 @@ namespace SurvivalKit
     // the solo priest's Power Word: Shield whenever Weakened Soul is off; net of the fight's longer run under the
     // attackers while it casts. b462 Septimon L17 judged "ehp 1245 at hp 256" on four Heals into a 312 hp body paid
     // from the mana the rotation spent first
+    // [death444] an attacker's interrupt of the bot's casts (its SmartAI's Shield Bash / Kick on a casting victim):
+    // its first check and repeat (the means of the script's rolls; 0: once a fight)
+    struct Interrupter
+    {
+        float firstSec = 0.0f;
+        float repeatSec = 0.0f;
+    };
+    // [death444] ... each interrupter's check catches a heal with a cast time by the share of the fight the bot casts
+    // them: that heal is lost (b462 Rollothan L15, holy: two Defias Pathstalkers' Shield Bash on its Holy Lights)
     float FightHeals(Player* bot, float fightSec, float health, float mana, float manaPerSec, float incomingDps,
-                     bool items);
+                     bool items, std::vector<Interrupter> const* interrupters = nullptr);
     // [death440] its heal items alone (one per shared cooldown): what a grouped bot's combat casts on itself without
     // the kit (the "potions" strategy at critical health)
     float ItemHealPoints(Player* bot);
