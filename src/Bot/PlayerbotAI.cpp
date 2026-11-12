@@ -17,6 +17,7 @@
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
 #include "ChooseTargetActions.h"  // [healer_audit_b30] DpsAssistAction::HealerGroupUnderAttack
+#include "SoloSafety.h"  // [death384] RunPastChaser
 #include "ReachTargetActions.h"  // [lead960] StopPullWalkInFight
 #include "Common.h"
 #include "CreatureData.h"
@@ -5211,6 +5212,10 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
     SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
     if (!spellInfo)
+        return false;
+
+    // [death384] no hostile cast at a mob it runs past: the cast renews the chaser's leash (Unit::AtTargetAttacked)
+    if (target != bot && !spellInfo->IsPositive() && SoloSafety::RunPastChaser(bot, target))
         return false;
 
     Pet* pet = bot->GetPet();

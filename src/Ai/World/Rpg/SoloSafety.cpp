@@ -187,6 +187,8 @@ namespace
         // the committed leg's: its set, its points, the mobs its RUN_PAST lines named
         std::unordered_map<uint64, float> pendingRunPast;
         std::unordered_map<uint64, float> legRunPast;
+        bool runPastHitLogged = false;  // [death384] its held-hit line logged
+        bool runPastWalking = false;    // [death384] the run-past executor's last look: it walks the leg on
         // [runpast87] the keep-walking chase it took last: priced damage and seconds, its health and the fight's taken
         // damage then - the death line sets the measured beside the priced (a log for the chase model, no decision)
         float runPastPriced = 0.0f;
@@ -3340,6 +3342,40 @@ namespace SoloSafety
         std::lock_guard<std::mutex> guard(lock);
         auto const found = states.find(bot->GetGUID().GetCounter());
         return found != states.end() && !found->second.legRunPast.empty();
+    }
+
+    bool RunPastChaser(Player* bot, Unit* target)
+    {
+        // only while it walks the leg on (the executor's last look said so and it moves): a bot that stopped to fight
+        // (the run past given up, a survival "flee stops ... it fights") hits as before
+        if (!bot || !target || target == bot || !target->IsCreature() || !bot->IsInCombat() || !bot->isMoving())
+            return false;
+        bool chaser = false;
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end() || !found->second.runPastWalking ||
+                !found->second.legRunPast.count(target->GetGUID().GetRawValue()))
+                return false;
+            chaser = true;
+            fresh = !found->second.runPastHitLogged;
+            found->second.runPastHitLogged = true;
+        }
+        if (fresh)
+            LOG_INFO("playerbots", "[death384] {} L{} holds its hit at {} L{}: a chaser of its run past (a hit renews "
+                     "the leash)", bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel());
+        return chaser;
+    }
+
+    void SetRunPastWalking(Player* bot, bool walking)
+    {
+        if (!bot)
+            return;
+        std::lock_guard<std::mutex> guard(lock);
+        auto found = states.find(bot->GetGUID().GetCounter());
+        if (found != states.end())
+            found->second.runPastWalking = walking;
     }
 
     bool RunPastStep(Player* bot, std::vector<G3D::Vector3>& rest, std::string& line)

@@ -1982,7 +1982,12 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
 
 bool SoloRunPastTrigger::IsActive() { return bot->IsInCombat() && SoloSafety::HasRunPastLeg(bot); }
 
-bool SoloRunPastAction::isUseful() { return SoloSafety::RunPastStep(bot, rest, line); }
+bool SoloRunPastAction::isUseful()
+{
+    bool const walking = SoloSafety::RunPastStep(bot, rest, line);
+    SoloSafety::SetRunPastWalking(bot, walking);  // [death384] its hits held while it walks on
+    return walking;
+}
 
 bool SoloRunPastAction::Execute(Event /*event*/)
 {

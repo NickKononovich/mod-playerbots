@@ -5,6 +5,7 @@
  */
 
 #include "AttackAction.h"
+#include "SoloSafety.h"  // [death384]
 #include "AttackerCountValues.h"
 #include "AttackersValue.h"
 #include "BotMoveEvents.h"
@@ -90,6 +91,11 @@ bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
 
         return false;
     }
+
+    // [death384] no swing at a mob it runs past: a hit renews the chaser's leash (b449 Jurdogs L16: Daggers 70 -> 75
+    // under "RUN_PAST keeps walking past Black Bear Patriarch (chase priced 139)", chased 37 s, died)
+    if (SoloSafety::RunPastChaser(bot, target))
+        return false;
 
     if (bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == FLIGHT_MOTION_TYPE ||
         bot->HasUnitState(UNIT_STATE_IN_FLIGHT))

@@ -241,6 +241,10 @@ namespace SoloSafety
     };
     // O(1): a committed leg with a run-past set (the trigger's check; RunPastStep is the action's)
     bool HasRunPastLeg(Player* bot);
+    // [death384] the target is a mob of the bot's run past under way: no hit or hostile cast at it (each one renews
+    // its leash, Unit::DealDamage / Unit::AtTargetAttacked -> Creature::UpdateLeashExtensionTime); logs once per bot
+    bool RunPastChaser(Player* bot, Unit* target);
+    void SetRunPastWalking(Player* bot, bool walking);  // [death384] the executor's look
     bool RunPastStep(Player* bot, std::vector<G3D::Vector3>& rest, std::string& line);
 
     // [dps1] the bot's damage per second: DpsEstimate's formula over its state now (its buff context: solo / party /
