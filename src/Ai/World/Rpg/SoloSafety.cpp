@@ -676,9 +676,21 @@ namespace
     // damage over the aura's duration (0: none, a positive spell)
     float CastDamage(SpellInfo const* info, Creature* creature)
     {
-        if (!info || info->IsPositive())
+        if (!info)
             return 0.0f;
-        float damage = 0.0f;
+        // [death388] a self buff that pulses damage round its caster (SPELL_AURA_PERIODIC_TRIGGER_SPELL of a hostile
+        // spell: a Blackrock Summoner's Fire Shield II triggers 3053 every 3 s) - its pulses over the aura's duration
+        float pulses = 0.0f;
+        for (SpellEffectInfo const& effect : info->GetEffects())
+            if (effect.Effect == SPELL_EFFECT_APPLY_AURA && effect.ApplyAuraName == SPELL_AURA_PERIODIC_TRIGGER_SPELL &&
+                effect.TriggerSpell && effect.TriggerSpell != info->Id && effect.Amplitude > 0)
+                if (SpellInfo const* pulse = sSpellMgr->GetSpellInfo(effect.TriggerSpell);
+                    pulse && !pulse->IsPositive())
+                    pulses += CastDamage(pulse, creature) *
+                              float(std::max(info->GetMaxDuration(), 0) / effect.Amplitude);
+        if (info->IsPositive())
+            return pulses;
+        float damage = pulses;
         for (SpellEffectInfo const& effect : info->GetEffects())
         {
             if (effect.Effect == SPELL_EFFECT_SCHOOL_DAMAGE)
@@ -835,6 +847,55 @@ namespace
         std::lock_guard<std::mutex> guard(cacheLock);
         cache[entry] = heals;
         return heals;
+    }
+
+    // [death388] the heals a creature's SmartAI casts on its hurt friends (SMART_EVENT_FRIENDLY_HEALTH + a heal cast)
+    // over `fightSec`: its direct heal once per repeat (its cast time and the global cooldown at least)
+    float FriendHealToCome(Creature* creature, float fightSec)
+    {
+        static std::mutex cacheLock;
+        static std::unordered_map<uint32, std::pair<float, float>> cache;  // entry -> amount, every seconds
+        uint32 const entry = creature->GetEntry();
+        std::pair<float, float> heal{0.0f, 0.0f};
+        bool cached = false;
+        {
+            std::lock_guard<std::mutex> guard(cacheLock);
+            auto const found = cache.find(entry);
+            if (found != cache.end())
+            {
+                heal = found->second;
+                cached = true;
+            }
+        }
+        if (!cached)
+        {
+            if (creature->GetAIName() == "SmartAI")
+                for (SmartScriptHolder const& holder :
+                     sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+                {
+                    if (holder.event.type != SMART_EVENT_FRIENDLY_HEALTH || holder.action.type != SMART_ACTION_CAST)
+                        continue;
+                    SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell);
+                    if (!info || !info->IsPositive())
+                        continue;
+                    float amount = 0.0f;
+                    for (SpellEffectInfo const& effect : info->GetEffects())
+                        if (effect.Effect == SPELL_EFFECT_HEAL)
+                            amount += std::max(MeanCalcValue(info, effect, creature), 0.0f);
+                    if (amount <= 0.0f)
+                        continue;
+                    float const repeatSec = float(holder.event.friendlyHealth.repeatMin +
+                                                  holder.event.friendlyHealth.repeatMax) /
+                                            2.0f / float(IN_MILLISECONDS);
+                    heal.first += amount;
+                    heal.second = std::max(repeatSec, CastEverySec(info, creature));
+                }
+            std::lock_guard<std::mutex> guard(cacheLock);
+            cache[entry] = heal;
+        }
+        if (heal.first <= 0.0f)
+            return 0.0f;
+        return heal.first * (1.0f + std::floor(std::max(fightSec, 0.0f) / std::max(heal.second, 0.1f)));
     }
 
     // the health a creature heals itself over the `fightSec` its fight lasts (a band heal only while its health has
@@ -1952,6 +2013,26 @@ namespace SoloSafety
         for (Unit* attacker : bot->getAttackers())
             if (attacker && attacker->IsAlive() && std::find(pack.begin(), pack.end(), attacker) == pack.end())
                 pack.push_back(attacker);
+        // [death388] each one's summons fight with it (Unit::m_Controlled: a Blackrock Summoner's Imp Minion from its
+        // out-of-combat Summon Imp) - b449 Laaral L23 died to an Imp Minion it had not counted
+        for (size_t i = 0, owners = pack.size(); i < owners; ++i)
+            for (Unit* summon : pack[i]->m_Controlled)
+                if (summon && summon->IsAlive() && summon->IsHostileTo(bot) &&
+                    std::find(pack.begin(), pack.end(), summon) == pack.end())
+                {
+                    pack.push_back(summon);
+                    static std::mutex summonLogLock;  // a log cadence per owner kind, no decision reads it
+                    static std::unordered_set<uint32> summonLogged;
+                    bool fresh = false;
+                    {
+                        std::lock_guard<std::mutex> guard(summonLogLock);
+                        fresh = summonLogged.insert(pack[i]->GetEntry()).second;
+                    }
+                    if (fresh)
+                        LOG_INFO("playerbots", "[death388] {} L{}: {} L{} counts its summon {} L{} in the fight",
+                                 bot->GetName(), bot->GetLevel(), pack[i]->GetName(), pack[i]->GetLevel(),
+                                 summon->GetName(), summon->GetLevel());
+                }
 
         struct Mob
         {
@@ -2004,6 +2085,17 @@ namespace SoloSafety
         for (Mob& mob : mobs)
             if (Creature* creature = mob.unit->ToCreature())
                 mob.hp += HealToCome(creature, mob.hp / botDps);
+        // [death388] ... and the heals its friends cast on it (SMART_EVENT_FRIENDLY_HEALTH: a Greymist Oracle's Healing
+        // Wave on a hurt friend), on the one the bot fights first, over the time the bot needs for the pack
+        if (!mobs.empty())
+        {
+            float packHp = 0.0f;
+            for (Mob const& mob : mobs)
+                packHp += mob.hp;
+            for (Mob const& mob : mobs)
+                if (Creature* creature = mob.unit->ToCreature())
+                    mobs.front().hp += FriendHealToCome(creature, packHp / botDps);
+        }
 
         // the kill order: the target first, then the most damage per health
         std::sort(mobs.begin() + 1, mobs.end(),
