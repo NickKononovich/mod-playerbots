@@ -1078,8 +1078,10 @@ bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32
         return ITEM_SUBCLASS_ARMOR_CLOTH; // mage/warlock/priest
     }();
 
-    // skip armor of wrong subclass (cloaks are exempt)
-    if (proto->InventoryType != INVTYPE_CLOAK && proto->SubClass != requiredSubClass)
+    // skip armor of wrong subclass (cloaks are exempt, and so are rings, necks, trinkets and held off-hands: their
+    // subclass is Miscellaneous, which every class wears)
+    if (proto->InventoryType != INVTYPE_CLOAK && proto->SubClass != ITEM_SUBCLASS_ARMOR_MISC &&
+        proto->SubClass != requiredSubClass)
         return false;
 
     // skip stats calculation for poor/normal quality items (grey/white)
