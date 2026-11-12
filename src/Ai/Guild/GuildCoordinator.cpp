@@ -7665,9 +7665,11 @@ uint8 GuildCoordinator::OnCampReached(Player* bot)
         if (!list.empty())
         {
             uint32 const itemId = list.front().first;
-            bool const ok = GuildBankRun::Withdraw(bot, itemId);
+            // [bank401] a refusal is the game's answer: BankState(withdraw) keeps the order off until it changes
+            std::string const why = GuildBankRun::Withdraw(bot, itemId);
             list.erase(list.begin());
-            Decision(Who(low) + (ok ? " took from the bank " : " could not take from the bank ") + ItemName(itemId));
+            Decision(Who(low) + (why.empty() ? " took from the bank " : " could not take from the bank ") +
+                     ItemName(itemId) + (why.empty() ? "" : " (" + why + ")"));
         }
     }
     return 1;

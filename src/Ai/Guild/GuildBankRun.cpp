@@ -16,6 +16,9 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 
+#include <mutex>
+#include <unordered_map>
+
 namespace
 {
     struct Vault
@@ -32,6 +35,18 @@ namespace
         if (vault.zoneTeam == AREATEAM_HORDE)
             return bot->GetTeamId() == TEAM_HORDE;
         return true;  // neutral city (Booty Bay, Shattrath, Dalaran ...)
+    }
+
+    // [bank401] a withdrawal the bank refused (rights present, item there, bags free: the rank's daily withdraw slots
+    // are used up): member -> (tab, its withdraw count then). Lifted by the game itself: the guild's daily reset drops
+    // the member's withdraw count below that value. Bot threads and the coordinator read it.
+    std::mutex refusedLock;
+    std::unordered_map<uint32, std::pair<uint8, int32>> refused;
+
+    int32 WithdrawnToday(Guild* guild, Player* bot, uint8 tab)
+    {
+        Guild::Member const* member = guild->GetMember(bot->GetGUID());
+        return member ? member->GetBankWithdrawValue(tab) : 0;
     }
 
     // the first purchased tab where the bot's rank has these rights
@@ -80,7 +95,24 @@ namespace GuildBankRun
             return "no guild bank tab";
         if (TabWithRights(guild, bot, deposit ? GUILD_BANK_RIGHT_DEPOSIT_ITEM : GUILD_BANK_RIGHT_VIEW_TAB) < 0)
             return "no rights to the bank tab";
-        return "";
+        if (deposit)
+            return "";
+        if (!bot->GetFreeInventorySpace())
+            return "no free bag slot for a withdrawal";
+        std::lock_guard<std::mutex> guard(refusedLock);
+        auto const itr = refused.find(bot->GetGUID().GetCounter());
+        if (itr == refused.end())
+            return "";
+        if (WithdrawnToday(guild, bot, itr->second.first) < itr->second.second)
+        {
+            // [bank402] the guild's daily reset gave the rank's withdraw slots back
+            LOG_INFO("playerbots", "[bank402] {}: the bank withdraw slots of tab {} are back (daily reset)",
+                     bot->GetName(), uint32(itr->second.first) + 1);
+            refused.erase(itr);
+            return "";
+        }
+        return "the bank refused a withdrawal: no withdraw slots left today on tab " +
+               std::to_string(uint32(itr->second.first) + 1);
     }
 
     bool NearestVault(Player* bot, WorldPosition& pos, float& dist)
@@ -128,17 +160,19 @@ namespace GuildBankRun
             uint32 const entry = item->GetEntry();
             uint32 const before = bot->GetItemCount(entry, false);
             guild->SwapItemsWithInventory(bot, false, uint8(tab), NULL_SLOT, item->GetBagSlot(), item->GetSlot(), 0);
-            if (bot->GetItemCount(entry, false) < before)
-                ++moved;
+            bool const ok = bot->GetItemCount(entry, false) < before;
+            moved += ok ? 1 : 0;
+            LOG_INFO("playerbots", "[bank405] {} {} item {} into tab {}", bot->GetName(),
+                     ok ? "deposits" : "could not deposit (tab full?)", entry, tab + 1);
         }
         return moved;
     }
 
-    bool Withdraw(Player* bot, uint32 itemId)
+    std::string Withdraw(Player* bot, uint32 itemId)
     {
         Guild* guild = BotGuild(bot);
         if (!guild)
-            return false;
+            return "no guild";
         for (uint8 tab = 0; tab < guild->GetPurchasedTabsSize(); ++tab)
         {
             if (!guild->MemberHasTabRights(bot->GetGUID(), tab, GUILD_BANK_RIGHT_VIEW_TAB))
@@ -148,12 +182,37 @@ namespace GuildBankRun
                 Item* item = guild->GetBankItem(tab, slot);
                 if (!item || item->GetEntry() != itemId)
                     continue;
+                ItemPosCountVec dest;
+                if (bot->CanStoreItem(NULL_BAG, NULL_SLOT, dest, item, false) != EQUIP_ERR_OK)
+                {
+                    LOG_INFO("playerbots", "[bank403] {} cannot take item {} from tab {}: no bag room", bot->GetName(),
+                             itemId, uint32(tab) + 1);
+                    return "no bag room";
+                }
                 uint32 const before = bot->GetItemCount(itemId, false);
+                int32 const withdrawn = WithdrawnToday(guild, bot, tab);
                 guild->SwapItemsWithInventory(bot, true, tab, slot, NULL_BAG, NULL_SLOT, 0);
-                return bot->GetItemCount(itemId, false) > before;
+                if (bot->GetItemCount(itemId, false) > before)
+                {
+                    LOG_INFO("playerbots", "[bank400] {} took item {} from tab {} slot {} (withdrawals today {})",
+                             bot->GetName(), itemId, uint32(tab) + 1, uint32(slot), withdrawn + 1);
+                    return "";
+                }
+                // the core moves nothing without a word when the rank has no withdraw slots left on the tab
+                // (Guild::BankMoveItemData::HasWithdrawRights)
+                {
+                    std::lock_guard<std::mutex> guard(refusedLock);
+                    refused[bot->GetGUID().GetCounter()] = {tab, withdrawn};
+                }
+                LOG_INFO("playerbots",
+                         "[bank401] {} refused item {} by the bank on tab {}: no withdraw slots left today for its "
+                         "rank (withdrawals today {}), no bank withdraw until the daily reset",
+                         bot->GetName(), itemId, uint32(tab) + 1, withdrawn);
+                return "the bank refused: no withdraw slots left today on tab " + std::to_string(uint32(tab) + 1);
             }
         }
-        return false;
+        LOG_INFO("playerbots", "[bank404] {} finds item {} in no bank tab it may view", bot->GetName(), itemId);
+        return "not in the bank";
     }
 
     void CountBank(Guild* guild, std::map<uint32, uint32>& counts)

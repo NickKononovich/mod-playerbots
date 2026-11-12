@@ -30,7 +30,9 @@ namespace GuildBankRun
     bool NearestVault(Player* bot, WorldPosition& pos, float& dist);
     bool AtVault(Player* bot, WorldPosition const& pos);  // in interaction range of a vault there
     uint32 Deposit(Player* bot, std::vector<uint32> const& itemGuidLows);  // items moved
-    bool Withdraw(Player* bot, uint32 itemId);
+    // "" = taken, else the game's answer: not in the bank, no bag room, the bank refused ([bank401]: the rank's daily
+    // withdraw slots are used up; BankState(withdraw) then says so until the guild's daily reset)
+    std::string Withdraw(Player* bot, uint32 itemId);
     void CountBank(Guild* guild, std::map<uint32, uint32>& counts);
     uint32 VaultCount();
 }

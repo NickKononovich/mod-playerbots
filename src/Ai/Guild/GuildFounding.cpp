@@ -24,6 +24,7 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <set>
 
 #include "AiObjectContext.h"
 #include "BudgetValues.h"
@@ -97,6 +98,31 @@ namespace
         Signatures const* sig = sPetitionMgr->GetSignature(charter);
         return sig && sig->signatureMap.count(player);
     }
+
+    // [bank406] the guild master's rank edit (CMSG_GUILD_RANK) for every member rank on every purchased tab: view +
+    // deposit, and a full tab (GUILD_BANK_MAX_SLOTS) of withdrawals per day. Never GUILD_WITHDRAW_SLOT_UNLIMITED for
+    // a member rank: the core keeps it only for the guild master, Guild::_GetMemberRemainingSlots reads the stored
+    // 0xFFFFFFFF as int32 -1, so a member rank has 0 withdrawals and every withdraw is refused without a word
+    // (b452/b453: 2615 "could not take from the bank", 0 taken, members stood at the vault)
+    void SetMemberBankRights(Guild* guild, Player* gm)
+    {
+        static uint32 const rankNames[] = {LANG_GUILD_MASTER, LANG_GUILD_OFFICER, LANG_GUILD_VETERAN,
+                                           LANG_GUILD_MEMBER, LANG_GUILD_INITIATE};
+        std::array<GuildBankRightsAndSlots, GUILD_BANK_MAX_TABS> rights;
+        for (uint8 tab = 0; tab < guild->GetPurchasedTabsSize() && tab < GUILD_BANK_MAX_TABS; ++tab)
+            rights[tab] =
+                GuildBankRightsAndSlots(tab, uint8(GUILD_BANK_RIGHT_DEPOSIT_ITEM), uint32(GUILD_BANK_MAX_SLOTS));
+        for (uint8 rank = 1; rank < std::size(rankNames); ++rank)
+            guild->HandleSetRankInfo(gm->GetSession(), rank, sObjectMgr->GetAcoreString(rankNames[rank], LOCALE_enUS),
+                                     guild->GetRankRights(rank), 0, rights);
+        LOG_INFO("playerbots",
+                 "[bank406] {} sets the bank rights of «{}»: member ranks view + deposit, {} withdrawals a day on {} "
+                 "tab(s)",
+                 gm->GetName(), guild->GetName(), uint32(GUILD_BANK_MAX_SLOTS), uint32(guild->GetPurchasedTabsSize()));
+    }
+
+    // guilds whose member bank rights the bot guild master set this server run (UpdateFounding: coordinator update)
+    std::set<uint32> bankRightsSet;
 }
 
 void GuildCoordinator::LoadGuildMasters()
@@ -301,17 +327,8 @@ void GuildCoordinator::UpdateFounding()
                         guild->HandleBuyBankTab(gm->GetSession(), 0);  // CMSG_GUILD_BANK_BUY_TAB
                         if (guild->GetPurchasedTabsSize())
                         {
-                            // CMSG_GUILD_RANK per member rank: view + deposit, withdraw (core: unlimited slots)
-                            static uint32 const rankNames[] = {LANG_GUILD_MASTER, LANG_GUILD_OFFICER,
-                                                               LANG_GUILD_VETERAN, LANG_GUILD_MEMBER,
-                                                               LANG_GUILD_INITIATE};
-                            std::array<GuildBankRightsAndSlots, GUILD_BANK_MAX_TABS> rights;
-                            rights[0] = GuildBankRightsAndSlots(0, uint8(GUILD_BANK_RIGHT_DEPOSIT_ITEM),
-                                                                uint32(GUILD_WITHDRAW_SLOT_UNLIMITED));
-                            for (uint8 rank = 1; rank < std::size(rankNames); ++rank)
-                                guild->HandleSetRankInfo(gm->GetSession(), rank,
-                                                         sObjectMgr->GetAcoreString(rankNames[rank], LOCALE_enUS),
-                                                         guild->GetRankRights(rank), 0, rights);
+                            SetMemberBankRights(guild, gm);  // [bank406] CMSG_GUILD_RANK per member rank
+                            bankRightsSet.insert(guild->GetId());
                             logs.push_back(gm->GetName() + " buys bank tab 1 of «" + guild->GetName() + "» for " +
                                            Gold(tabCost) + " of its own gold; member ranks may deposit / withdraw");
                             decisions.push_back("«" + guild->GetName() + "»: guild master " + gm->GetName() +
@@ -332,6 +349,17 @@ void GuildCoordinator::UpdateFounding()
                                        ") — the global leader decides donations"
                                  : ", all members have free " + Gold(pool) + " — the guild master saves himself") +
                             "; the bank sleeps, items are held by their holders";
+            }
+        }
+        else if (guild->GetPurchasedTabsSize() && !bankRightsSet.count(guild->GetId()))
+        {
+            // [bank406] a guild whose tab is already bought (a restart, or rights stored by an older build): the bot
+            // guild master edits the member ranks' bank rights once this run; a human guild master sets his own
+            Player* gm = ObjectAccessor::FindPlayer(guild->GetLeaderGUID());
+            if (gm && gm->IsInWorld() && gm->GetSession() && GET_PLAYERBOT_AI(gm) && !HumanControls(gm))
+            {
+                SetMemberBankRights(guild, gm);
+                bankRightsSet.insert(guild->GetId());
             }
         }
 
