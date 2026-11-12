@@ -65,6 +65,7 @@
 #include "QuestDef.h"
 #include "QuestPackets.h"  // [questvalue] the abandon
 #include "QuestStats.h"    // [questvalue] t= stamps
+#include "ReputationMgr.h"  // [craft402] the reputation ranks of the upgrade check
 #include "ScriptMgr.h"
 #include "SelfBotControl.h"
 #include "SlowScope.h"  // [perf211]
@@ -6195,17 +6196,44 @@ void GuildCoordinator::UpdateGear()
     // the grey / white piece it wears), its quest log, its bags (new loot), the guild's crafting skills and bank (a
     // skill-up that opens recipes, a new piece in the bank) - not on a timer. One member per call, in plan order,
     // the first whose key changed; none changed: no work. Before, every member in turn, every 5 s
+    // [craft402] the guild's signals (docs/GUILD_UPGRADE_SIGNALS.md): its members (joined, left, online), each
+    // crafter's skills, known spells (a recipe learned) and bags (materials reaching it), the bank, the dungeon order
+    // (the open dungeon, the guild's clears: a new drop table)
     uint64 guildKey = 0;
     {
-        uint64 skills = 0;
+        uint64 skills = uint64(bots.size()) * 0x100000001B3ull;
         for (Player* c : bots)
+        {
+            bool crafter = false;
             for (uint32 line : CRAFT_LINES)
                 if (c->HasSkill(line))
+                {
                     skills = skills * 1000003ull + c->GetPureSkillValue(line);
+                    crafter = crafter || (line != SKILL_COOKING && line != SKILL_FIRST_AID);
+                }
+            if (!crafter)
+                continue;
+            skills = skills * 1000033ull + c->GetSpellMap().size();
+            uint64 mats = 0;
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                if (Item* item = c->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                    mats += uint64(item->GetEntry()) * item->GetCount();
+            for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+                if (Bag* bag = c->GetBagByPos(b))
+                    for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                        if (Item* item = bag->GetItemByPos(uint8(j)))
+                            mats += uint64(item->GetEntry()) * item->GetCount();
+            skills ^= mats * 0x2545F4914F6CDD1Dull;
+        }
         uint64 banked = 0;
         for (auto const& [item, n] : bank)
             banked = banked * 31ull + item * 7ull + n;
-        guildKey = skills ^ (banked * 0x9E3779B97F4A7C15ull);
+        uint64 order = 0;
+        {
+            CoordLock guard(lock_, __func__);
+            order = std::hash<std::string>{}(orderOpenKey_) ^ (uint64(guildDone_.size()) << 32) ^ plan_.size();
+        }
+        guildKey = skills ^ (banked * 0x9E3779B97F4A7C15ull) ^ (order * 0xFF51AFD7ED558CCDull);
     }
     auto const memberKey = [&](Player* p)
     {
@@ -6225,6 +6253,24 @@ void GuildCoordinator::UpdateGear()
                 for (uint32 j = 0; j < bag->GetBagSize(); ++j)
                     if (Item* item = bag->GetItemByPos(uint8(j)))
                         bags += item->GetEntry();
+        // [craft402] ... its stat weights (spec, talents spent, known spells), broken pieces, guild, letters,
+        // reputation ranks (the reputation vendors) and the vendor picks its gold now pays for
+        key = key * 131ull + p->GetActiveSpec() * 7ull + p->GetFreeTalentPoints() + (p->GetSpellMap().size() << 8);
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (Item* item = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                item && item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) && !item->GetUInt32Value(ITEM_FIELD_DURABILITY))
+                key = key * 13ull + slot + 1;
+        key = key * 131ull + p->GetGuildId();
+        key = key * 131ull + p->GetMails().size();
+        for (auto const& [listId, state] : p->GetReputationMgr().GetStateList())
+            if (FactionEntry const* faction = sFactionStore.LookupEntry(state.ID))
+                key = key * 7ull + uint64(p->GetReputationMgr().GetRank(faction));
+        uint32 affordable = 0;  // lock_ held by the caller
+        if (auto const st = bots_.find(p->GetGUID().GetCounter()); st != bots_.end())
+            for (auto const* list : {&st->second.gearNow, &st->second.gearPlan})
+                for (GearPick const& g : *list)
+                    affordable += g.kind == GuildGear::SRC_VENDOR && g.aux <= p->GetMoney() ? 1 : 0;
+        key = key * 131ull + affordable;
         return key ^ (bags * 0xC2B2AE3D27D4EB4Full);
     };
     Player* member = nullptr;
