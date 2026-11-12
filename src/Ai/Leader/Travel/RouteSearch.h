@@ -76,6 +76,11 @@ namespace Leader::Travel
                    Movement::PointsArray* samples = nullptr, std::vector<RoutePenalty> const* penalties = nullptr,
                    LongRouteInfo* info = nullptr);
 
+    // [nav185] a polygon a corridor found from the far end back (the reverse search) may be walked forward: any
+    // ground polygon, and an off-mesh link only when it is two-way (DT_OFFMESH_CON_BIDIR) - a one-way drop is not
+    // walked up. Before, every off-mesh link was refused there: b461 Feette's ghost at Wailing Caverns
+    bool WalkableBack(dtNavMesh const* navMesh, dtPolyRef ref);
+
     // [lead107] the point `walk` yd along `points` (its last point when the path is shorter)
     G3D::Vector3 PointOnPath(Movement::PointsArray const& points, float walk);
 

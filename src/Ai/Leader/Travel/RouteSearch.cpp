@@ -579,12 +579,7 @@ namespace Leader::Travel
                     info->nodes += uint64(pool->getNodeCount());
             }
             for (int index = 0; usable && index < backCount; ++index)
-            {
-                dtMeshTile const* tile = nullptr;
-                dtPoly const* poly = nullptr;
-                usable = dtStatusSucceed(navMesh->getTileAndPolyByRef(back[size_t(index)], &tile, &poly)) && poly &&
-                         poly->getType() != DT_POLYTYPE_OFFMESH_CONNECTION;
-            }
+                usable = WalkableBack(navMesh, back[size_t(index)]);  // [nav185]
             if (usable)
             {
                 std::reverse(back.begin(), back.begin() + backCount);
@@ -985,6 +980,19 @@ namespace Leader::Travel
         slot->used = ++memoClock;
         keptPoints += pointsOf(*slot);
         return found;
+    }
+
+    bool WalkableBack(dtNavMesh const* navMesh, dtPolyRef ref)
+    {
+        dtMeshTile const* tile = nullptr;
+        dtPoly const* poly = nullptr;
+        if (!navMesh || dtStatusFailed(navMesh->getTileAndPolyByRef(ref, &tile, &poly)) || !poly || !tile)
+            return false;
+        if (poly->getType() != DT_POLYTYPE_OFFMESH_CONNECTION)
+            return true;
+        int const index = int(poly - tile->polys) - tile->header->offMeshBase;
+        return index >= 0 && index < tile->header->offMeshConCount &&
+               (tile->offMeshCons[index].flags & DT_OFFMESH_CON_BIDIR);
     }
 
     G3D::Vector3 PointOnPath(Movement::PointsArray const& points, float walk)

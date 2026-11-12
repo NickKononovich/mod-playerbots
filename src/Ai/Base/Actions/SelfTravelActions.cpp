@@ -16,6 +16,7 @@
 #include "PathGenerator.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "RouteSearch.h"  // [nav185] Leader::Travel::WalkableBack
 #include "Playerbots.h"
 #include "SpellInfo.h"
 #include "SoloSafety.h"  // [deaths146]
@@ -385,7 +386,11 @@ namespace SelfTravel
             // the cliff top floods the Barrens plateau towards the portal below and spends the whole node pool
             // (~80000 nodes needed), its partial result is the rim right above the portal, where the ghosts stood.
             // From the portal the search leaves the basin by the ravine at once (~9000 nodes). Only a complete
-            // corridor back to the bot's own polygon counts, and none through an off-mesh link (they can be one-way).
+            // corridor back to the bot's own polygon counts, and no one-way off-mesh link (a drop is not walked up).
+            // [nav185] ... a two-way one is walked (Leader::Travel::WalkableBack): the Wailing Caverns portal stands in
+            // a pocket that only the two seam links of mmaps-config.yaml join - the forward search from the hill
+            // spends the pool (STEEP / water cost 20), so every ghost there stood "no walk to the portal" (2026-11-11
+            // five4-4, five3-1, five4-3; b461 five 5 Feette)
             int backCount = 0;
             if (dtStatusFailed(query->findPath(endRef, startRef, endNearest, startNearest, &filter, polys.data(),
                                                &backCount, LONG_ROUTE_MAX_POLYS)) ||
@@ -393,13 +398,8 @@ namespace SelfTravel
                 return false;
             std::reverse(polys.begin(), polys.begin() + backCount);
             for (int index = 0; index < backCount; ++index)
-            {
-                dtMeshTile const* tile = nullptr;
-                dtPoly const* poly = nullptr;
-                if (dtStatusFailed(navMesh->getTileAndPolyByRef(polys[size_t(index)], &tile, &poly)) || !poly ||
-                    poly->getType() == DT_POLYTYPE_OFFMESH_CONNECTION)
+                if (!Leader::Travel::WalkableBack(navMesh, polys[size_t(index)]))
                     return false;
-            }
             polyCount = backCount;
         }
 
