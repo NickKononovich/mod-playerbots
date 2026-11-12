@@ -86,6 +86,7 @@ namespace
         uint32 mobs = 0;
         G3D::Vector3 fightAt;     // [fight49] where the judge put the fight
         float safeRadius = -1.0f;  // [fight49] the yards round it out of every reach it left out (-1: not set)
+        std::vector<ObjectGuid> counted;  // [death392] the mobs its judge counted: no reach "left out"
     };
 
     // the self heal the bot casts best (most healing per mana), from spell data
@@ -2149,6 +2150,8 @@ namespace SoloSafety
             }
         }
         verdict.mobs = mobs.size();
+        for (Mob const& mob : mobs)
+            verdict.counted.push_back(mob.unit->GetGUID());  // [death392]
 
         SoloBotState snapshot;
         {
@@ -2434,12 +2437,17 @@ namespace SoloSafety
                                                 : G3D::Vector3(target->GetPositionX(), target->GetPositionY(),
                                                                target->GetPositionZ());
         state.engage.safeRadius = -1.0f;
+        state.engage.counted = verdict.counted;  // [death392]
     }
 
     namespace
     {
         // the margin round `at` to the nearest idle hostile reach of a mob other than the fight's (in sight)
-        float SafeMargin(Player* bot, Unit* target, G3D::Vector3 const& at, std::string& nearest)
+        // [death392] `counted`: the mobs the judge counted - their reaches are the fight's own, no reach it left out.
+        // Before, only the target was: b449 Laaral L23's judged fight of 5 had "safe 0 yd: the reach of Shadowhide
+        // Gnoll L22", one of the 5 - every step was "past the judged fight spot"
+        float SafeMargin(Player* bot, Unit* target, G3D::Vector3 const& at, std::string& nearest,
+                         std::vector<ObjectGuid> const& counted)
         {
             float const look = sPlayerbotAIConfig.SightDistance;
             std::list<Unit*> units;
@@ -2451,7 +2459,8 @@ namespace SoloSafety
             {
                 Creature* mob = unit->ToCreature();
                 if (!mob || mob == target || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
-                    !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                    !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() ||
+                    std::find(counted.begin(), counted.end(), mob->GetGUID()) != counted.end())
                     continue;
                 G3D::Vector4 const disc = AggroDisc(mob, bot);
                 float const gap = std::hypot(disc.x - at.x, disc.y - at.y) - disc.w;
@@ -2483,6 +2492,7 @@ namespace SoloSafety
             return false;
         G3D::Vector3 at;
         float radius = -1.0f;
+        std::vector<ObjectGuid> counted;
         {
             std::lock_guard<std::mutex> guard(lock);
             auto const found = states.find(bot->GetGUID().GetCounter());
@@ -2490,11 +2500,17 @@ namespace SoloSafety
                 return false;
             at = found->second.engage.fightAt;
             radius = found->second.engage.safeRadius;
+            counted = found->second.engage.counted;
         }
         std::string nearest;
         if (radius < 0.0f)
         {
-            radius = std::max(0.0f, SafeMargin(bot, target, at, nearest));
+            float const raw = SafeMargin(bot, target, at, nearest, counted);
+            if (raw < 0.0f)  // [death392] a reach over the spot the judge did not count: a pull model gap, logged
+                LOG_INFO("playerbots", "[death392] {} L{} fights {} L{} at ({:.0f},{:.0f}) inside the reach of {}, "
+                         "not among its {} counted mobs", bot->GetName(), bot->GetLevel(), target->GetName(),
+                         target->GetLevel(), at.x, at.y, nearest, counted.size());
+            radius = std::max(0.0f, raw);
             std::lock_guard<std::mutex> guard(lock);
             states[bot->GetGUID().GetCounter()].engage.safeRadius = radius;
         }
@@ -2503,7 +2519,7 @@ namespace SoloSafety
             return false;
         // past the judged area: judged again at `to` - a reach it would enter there is its answer
         std::string entered;
-        float const there = SafeMargin(bot, target, to, entered);
+        float const there = SafeMargin(bot, target, to, entered, counted);
         if (there >= 0.0f)
         {
             // no reach there either: the area grows to it (the fight goes on there)

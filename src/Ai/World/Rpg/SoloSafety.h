@@ -89,6 +89,7 @@ namespace SoloSafety
         bool pullSpot = false;
         G3D::Vector3 pull;
         std::vector<G3D::Vector4> pullAvoid;
+        std::vector<ObjectGuid> counted;  // [death392] the mobs the projection counted (its kill order)
     };
     // the bot's pull of `target` now
     Verdict Judge(Player* bot, Unit* target);
