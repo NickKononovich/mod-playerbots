@@ -4065,6 +4065,15 @@ namespace SoloSafety
         return found != states.end() && !found->second.legRunPast.empty();
     }
 
+    bool PendingRunPast(Player* bot)
+    {
+        if (!bot)
+            return false;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        return found != states.end() && !found->second.pendingRunPast.empty();
+    }
+
     bool RunPastChaser(Player* bot, Unit* target)
     {
         // only while it walks the leg on (the executor's last look said so and it moves): a bot that stopped to fight

@@ -266,6 +266,8 @@ namespace SoloSafety
     };
     // O(1): a committed leg with a run-past set (the trigger's check; RunPastStep is the action's)
     bool HasRunPastLeg(Player* bot);
+    // [death422] the last route search from where the bot stands priced run pasts (its set waits for the leg's commit)
+    bool PendingRunPast(Player* bot);
     // [death384] the target is a mob of the bot's run past under way: no hit or hostile cast at it (each one renews
     // its leash, Unit::DealDamage / Unit::AtTargetAttacked -> Creature::UpdateLeashExtensionTime); logs once per bot
     bool RunPastChaser(Player* bot, Unit* target);

@@ -3600,6 +3600,22 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                     NoteFarSearchFailed();
                     return false;
                 }
+                // [death422] a run past only on a walk that reaches its end: a partial one stops where its navmesh
+                // walk ends, with the chase on it, inside the camp it ran past. b458 Sylaenas L15 ran past the
+                // Stormscale Wave Riders and Sirens ("run-past priced 354 hp vs hp 428") toward (6861,-769), every
+                // walk there dropping over open air ([nav163]), stood at (6836,-724) in the camp and died there
+                if (SoloSafety::Applies(bot) && type != PATHFIND_NORMAL && SoloSafety::PendingRunPast(bot))
+                {
+                    LOG_INFO("playerbots", "[death422] {} L{} no run past on a partial walk to ({:.0f},{:.0f}): it "
+                             "ends {:.0f} yd short at ({:.0f},{:.0f})",
+                             bot->GetName(), bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY(), endDistToDest,
+                             endPos.x, endPos.y);
+                    NoteWalkFailure(dest, Acore::StringFormat("route partial ({:.0f} yd, ends {:.0f} yd short): no "
+                                                              "run past on a walk that does not reach its end",
+                                                              path.length, endDistToDest));
+                    NoteFarSearchFailed();
+                    return false;
+                }
                 if (MoveTo(bot->GetMapId(), leg.x, leg.y, leg.z, false, false, false, true))
                 {
                     CommitLeg(bot, path.points, leg);  // [runpast11]

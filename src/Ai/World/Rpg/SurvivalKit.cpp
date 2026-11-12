@@ -165,6 +165,8 @@ namespace
         uint32 routeStep = 0;
         // [deaths] where a maze search found no walk out this fight (searched again once the bot stands elsewhere)
         bool mazeFailed = false;
+        G3D::Vector3 trackAt;  // [death421] where its last flee line put it
+        bool trackSet = false;
         std::string exclusiveLogged;  // [deaths13] the pieces left out for an exclusion group, last logged
         G3D::Vector3 mazeFailedAt;
         // [deaths] the fight was logged lost with nothing to use (once a fight: b337 deaths "without rescue" left no
@@ -175,6 +177,62 @@ namespace
     std::mutex lock;
     std::unordered_map<uint32, BotKit> kits;
     std::unordered_map<uint32, KitState> states;
+
+    // [death421] the flee's observation lines (no decision reads them): its planned corners, each leg it takes and
+    // where the bot runs between, against its attackers - where a run leaves its plan (b458: 7 of 17 joiners met the
+    // bot itself 14-87 yd off its fight spot, inside a wanderer area the flee planner refuses)
+    std::string FleeAttackers(Player* bot)
+    {
+        Unit* nearest = nullptr;
+        for (Unit* attacker : bot->getAttackers())
+            if (attacker && attacker->IsAlive() &&
+                (!nearest || bot->GetExactDist(attacker) < bot->GetExactDist(nearest)))
+                nearest = attacker;
+        if (!nearest)
+            return "no attacker";
+        return Acore::StringFormat("{} attacker(s), nearest {} at ({:.0f},{:.0f}) {:.0f} yd",
+                                   bot->getAttackers().size(), nearest->GetName(), nearest->GetPositionX(),
+                                   nearest->GetPositionY(), bot->GetExactDist(nearest));
+    }
+
+    void FleeCornersLine(Player* bot, char const* what, std::vector<G3D::Vector3> const& corners)
+    {
+        std::string text;
+        for (G3D::Vector3 const& corner : corners)
+            text += Acore::StringFormat("{}({:.0f},{:.0f})", text.empty() ? "" : " ", corner.x, corner.y);
+        LOG_INFO("playerbots", "[death421] {} L{} flee plan {} from ({:.0f},{:.0f}): {} corner(s) {}; {}",
+                 bot->GetName(), bot->GetLevel(), what, bot->GetPositionX(), bot->GetPositionY(), corners.size(), text,
+                 FleeAttackers(bot));
+    }
+
+    // the caller does not hold `lock`
+    void FleeTrack(Player* bot, std::string const& leg, G3D::Vector3 const& to)
+    {
+        LOG_INFO("playerbots", "[death421] {} L{} flee leg {}: ({:.0f},{:.0f}) -> ({:.0f},{:.0f}) {:.0f} yd; {}",
+                 bot->GetName(), bot->GetLevel(), leg, bot->GetPositionX(), bot->GetPositionY(), to.x, to.y,
+                 bot->GetExactDist2d(to.x, to.y), FleeAttackers(bot));
+        std::lock_guard<std::mutex> guard(lock);
+        KitState& state = states[bot->GetGUID().GetCounter()];
+        state.trackAt = G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        state.trackSet = true;
+    }
+
+    // the caller does not hold `lock`: one line every FLEE_TRACK_STEP yards of its run
+    void FleeSample(Player* bot)
+    {
+        constexpr float FLEE_TRACK_STEP = 10.0f;
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            KitState& state = states[bot->GetGUID().GetCounter()];
+            if (state.trackSet && (here - state.trackAt).length() < FLEE_TRACK_STEP)
+                return;
+            state.trackAt = here;
+            state.trackSet = true;
+        }
+        LOG_INFO("playerbots", "[death421] {} L{} flee at ({:.0f},{:.0f}); {}", bot->GetName(), bot->GetLevel(),
+                 here.x, here.y, FleeAttackers(bot));
+    }
 
     float Sec(int32 ms) { return float(std::max(ms, 0)) / float(IN_MILLISECONDS); }
 
@@ -1715,6 +1773,8 @@ namespace SurvivalKit
             state.trailStep = 0;
             state.fleeRoute = flee.route;
             state.routeStep = 0;
+            if (!flee.route.empty())
+                FleeCornersLine(bot, "maze", flee.route);  // [death421]
             state.fleeFrom = p.foes.front().unit->GetGUID();
             state.why = Acore::StringFormat("leash={:.0f}s dist={:.0f} run costs {:.0f} at hp {:.0f}{}{}; {}",
                                             flee.leashSec, flee.dist, flee.damage, p.health,
@@ -1854,7 +1914,10 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                 botAI->PetFollow();
         }
         if (bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
+        {
+            FleeSample(bot);  // [death421]
             return true;
+        }
         if (bot->HasUnitState(UNIT_STATE_ROOT | UNIT_STATE_STUNNED | UNIT_STATE_CONTROLLED))
             return true;
         // the next stretch of the way out on the navmesh (straight, else a quarter to either side), each clear of idle
@@ -1888,6 +1951,7 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                 if (botAI->GuardRefusedWalkTo(at.x, at.y, at.z))  // [deaths145] its walk there was refused
                     continue;
                 bot->GetMotionMaster()->MovePoint(0, at.x, at.y, at.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
+                FleeTrack(bot, Acore::StringFormat("corner {} of {}", n + 1, route.size()), at);  // [death421]
                 std::lock_guard<std::mutex> guard(lock);
                 states[bot->GetGUID().GetCounter()].routeStep = n;
                 return true;
@@ -1940,6 +2004,7 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                     continue;
                 }
                 bot->GetMotionMaster()->MovePoint(0, at.x, at.y, at.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
+                FleeTrack(bot, Acore::StringFormat("spot {} back", n + 1), at);  // [death421]
                 std::lock_guard<std::mutex> guard(lock);
                 states[bot->GetGUID().GetCounter()].trailStep = n;
                 return true;
@@ -1985,6 +2050,8 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                     continue;  // [regress10] a drop on it
             }
             bot->GetMotionMaster()->MovePoint(0, x, y, z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, true, true);
+            FleeTrack(bot, Acore::StringFormat("direction {:.0f} deg", a * 180.0f / float(M_PI)),
+                      G3D::Vector3(x, y, z));  // [death421]
             {
                 std::lock_guard<std::mutex> guard(lock);
                 states[bot->GetGUID().GetCounter()].fleeAngle = a;
@@ -2022,6 +2089,8 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                 LOG_INFO("playerbots", "[solo] {} L{} survival flee: no stretch clear, on round the other mobs ({} "
                          "corners, {:.0f} yd)",
                          bot->GetName(), bot->GetLevel(), shortest->size(), shortestYd);
+                FleeCornersLine(bot, "re-plan round", *shortest);  // [death421]
+                FleeTrack(bot, "corner 1 of the re-plan", at);
                 std::lock_guard<std::mutex> guard(lock);
                 KitState& state = states[bot->GetGUID().GetCounter()];
                 state.fleeRoute = *shortest;
