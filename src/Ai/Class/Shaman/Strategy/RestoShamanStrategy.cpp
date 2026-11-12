@@ -139,4 +139,10 @@ void ShamanHealerDpsStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
                                                                  NextAction("lightning bolt", ACTION_DEFAULT) }));
 
     triggers.push_back( new TriggerNode("medium aoe and healer should attack", { NextAction("chain lightning", ACTION_DEFAULT + 0.3f) }));
+
+    // [death383] as [lag371]'s paladin: alone, a target past its bolt's range is walked to within it. b450 Nurlian
+    // L21 (resto) engaged an Enraged Ravager from its pull spot 21-23 yd off; "[stuck258] ... no action that runs"
+    // let it go, then the Ravager came and the bot dealt 0 damage
+    triggers.push_back(
+        new TriggerNode("solo healer should attack", {NextAction("reach spell", ACTION_DEFAULT - 0.1f)}));
 }
