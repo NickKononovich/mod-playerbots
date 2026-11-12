@@ -1851,11 +1851,36 @@ namespace SoloSafety
                 for (Unit* unit : units)
                 {
                     Creature* mob = unit->ToCreature();
-                    if (!mob || mob == target || bot->GetExactDist2d(mob) <= sight || !mob->IsAlive() ||
-                        mob->IsInCombat() || !mob->IsHostileTo(bot) || !mob->HasReactState(REACT_AGGRESSIVE) ||
-                        mob->GetCharmerOrOwnerGUID() ||
+                    if (!mob || mob == target || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                        !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() ||
+                        mob->HasUnitFlag(UNIT_FLAG_IMMUNE_TO_PC) ||
                         std::find(idle.begin(), idle.end(), mob) != idle.end())
                         continue;
+                    // [death403] a mob in sight that the cached "possible targets" left out (not selectable for the
+                    // bot then, not seen: its stealth) aggroes all the same: counted. Before, every mob within sight
+                    // was taken as read from that list - b453 Ginde L19 at Longshore: "[death392] fights Murloc
+                    // Warrior L15 inside the reach of Murloc Hunter L16, not among its 2 counted mobs", came 4
+                    if (bot->GetExactDist2d(mob) <= sight)
+                    {
+                        static std::mutex missLogLock;  // a log cadence per bot and mob kind, no decision reads it
+                        static std::unordered_set<uint64> missLogged;
+                        bool fresh = false;
+                        {
+                            std::lock_guard<std::mutex> guard(missLogLock);
+                            if (missLogged.size() > 65536)
+                                missLogged.clear();
+                            fresh = missLogged.insert(uint64(mob->GetEntry()) * 1000003ull +
+                                                      bot->GetGUID().GetCounter())
+                                        .second;
+                        }
+                        if (fresh)
+                            LOG_INFO("playerbots", "[death403] {} L{} judges {} L{} with {} L{} ({:.0f} yd off), "
+                                     "not among its possible targets",
+                                     bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(),
+                                     mob->GetName(), mob->GetLevel(), bot->GetExactDist2d(mob));
+                        idle.push_back(mob);
+                        continue;
+                    }
                     // [death391] a patrol by its forecast beat (PullPlanning::PatrolForecast, the leader's waypoint
                     // forecast): it joins when a step of it comes within the bot's sight or the target's surroundings
                     if (mob->GetDefaultMovementType() == WAYPOINT_MOTION_TYPE)

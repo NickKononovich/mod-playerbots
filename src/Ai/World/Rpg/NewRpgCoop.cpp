@@ -166,6 +166,7 @@ struct Posting
     float walkSec = 0.0f;  // the offer's eta of that walk at its run speed
     WorldPosition walkTo{};  // the leader's spot its far walk heads for
     bool arrived = false;
+    bool heldInFight = false;  // [death402] its exit waits for the party's fight to end (a log cadence)
     bool soloNever = false;   // the offer's forecast: alone it cannot close it (a camp it does not solo)
     float soloXph = 0.0f;     // the offer's solo forecast
     float groupXph = 0.0f;    // the offer's forecast together
@@ -1700,6 +1701,21 @@ NewRpgCoop::Order PartyTickLocked(PlayerbotAI* botAI, Player* bot, Posting& me, 
                                   : "its state left the quest (the global leader, a refused walk): ") +
                StatusName(botAI->rpgInfo.GetStatus()) + (quest ? " q" + std::to_string(quest->questId) : "");
     Player* lead = leader ? bot : SameMapPlayer(bot, party.leader);
+    // [death402] a fight the party judge priced for the party is fought by the party: a member whose counter closed
+    // or whose state moved on stays until the fight is over. b453 Kylantino L19 left Lanbuzz L19 at its "party
+    // engages Dragonmaw Scout L20: 2 mobs" ("its state left the quest"): Lanbuzz fought on alone and died
+    if (!exit.empty() && lead && (bot->IsInCombat() || lead->IsInCombat()) && bot->GetGroup() &&
+        bot->GetGroup()->GetGUID() == party.group && !bot->GetMap()->Instanceable())
+    {
+        if (!me.heldInFight)
+        {
+            me.heldInFight = true;
+            out.logs.push_back(Acore::StringFormat("[death402] {} stays in its party through the fight ({})", me.name,
+                                                   exit));
+        }
+        return order;
+    }
+    me.heldInFight = false;
     if (exit.empty() && !lead)
         exit = "its leader is gone";
     if (!exit.empty())
