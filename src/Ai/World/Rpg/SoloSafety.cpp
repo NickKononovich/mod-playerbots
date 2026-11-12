@@ -2332,7 +2332,10 @@ namespace SoloSafety
         // from full health and mana and won there (its heals, potions and bandages in the ehp); a death in such a fight
         // is a bug of the estimate, fixed there. b446 Rollothan L14 refused 2 Riverpaw Herbalists L15, "495 dmg
         // expected over 41 s ... ehp 1900", and stood walled in by them
-        else if (winNow && (!verdict.above || full))
+        // [death394] a win now is one at full too: the high end it fails at full health and mana fails now as well (b451
+        // Kianey L20: "[death386] ... not at the high end (631 dmg, +2 sd) at ehp 625 full", engaged at ehp 646 now -
+        // a heal count of its mana now - and died to 5 Redridge mobs)
+        else if (winNow && winFull && (!verdict.above || full))
             verdict.kind = Verdict::Kind::Win;
         else if (winFull)
         {
@@ -2342,7 +2345,7 @@ namespace SoloSafety
         else
         {
             verdict.kind = Verdict::Kind::Refuse;
-            verdict.why = "loses even at full";
+            verdict.why = winNow ? "loses at full at the high end of its rolls" : "loses even at full";
         }
         if (verdict.above >= 2 && verdict.kind != Verdict::Kind::Refuse)
         {
