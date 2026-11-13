@@ -227,28 +227,22 @@ namespace
         VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry);
         if (!items)
             return 0;
-        // [supply36] the food / drink spells' own auras: "Food" (433 and its ranks) is SPELL_AURA_MOD_REGEN,
-        // "Drink" (430 and its ranks) SPELL_AURA_MOD_POWER_REGEN; the OBS_MOD ones are the newer buff foods' few.
-        // Only the OBS_MOD pair was looked for: no vendor "sold" plain drink - b387: 296 "[supply34] no vendor of its
-        // faction sells it food / drink", 173 of them out of drink (Jurdogs L11 with 7289c never at a vendor)
-        AuraType const wanted =
-            spellCategory == RESTOCK_SPELL_CATEGORY_FOOD ? SPELL_AURA_OBS_MOD_HEALTH : SPELL_AURA_OBS_MOD_POWER;
-        AuraType const wantedRegen =
-            spellCategory == RESTOCK_SPELL_CATEGORY_FOOD ? SPELL_AURA_MOD_REGEN : SPELL_AURA_MOD_POWER_REGEN;
+        // [judge16] the walk's judge and the purchase's judge are one test now (IsRestockFood, the [supply41] rule:
+        // the real Food / Drink auras behind the spell, and the item's own subclass). This priced a vendor by its own
+        // copy of that test which had no subclass term at all, so any consumable carrying spell category 11 / 59 - a
+        // potion, an elixir, a scroll - made the vendor "sell food": the bot budgeted for it, walked there, and
+        // PickVendorFood (which does ask IsRestockFood) bought none. b475 logged 16 `[eco204] ... restock bought
+        // nothing: no vendor within 25 yd sells food of its level it can use`, bots carrying 5712-14785 c.
         uint32 best = 0;
         for (VendorItem const* item : items->m_items)
         {
             ItemTemplate const* proto = item ? sObjectMgr->GetItemTemplate(item->item) : nullptr;
             // [eco201] ... and one it can use (RestockFoodAction::PickVendorFood's own check)
-            if (!proto || item->ExtendedCost || proto->Class != ITEM_CLASS_CONSUMABLE ||
-                proto->Spells[0].SpellCategory != spellCategory || proto->RequiredLevel > bot->GetLevel() ||
-                !proto->BuyPrice || bot->CanUseItem(proto) != EQUIP_ERR_OK)
+            if (!proto || item->ExtendedCost || !IsRestockFood(proto, spellCategory) ||
+                proto->RequiredLevel > bot->GetLevel() || !proto->BuyPrice ||
+                bot->CanUseItem(proto) != EQUIP_ERR_OK)
                 continue;
-            SpellInfo const* spell = sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId);
-            bool real = false;
-            for (uint8 i = 0; spell && i < MAX_SPELL_EFFECTS; ++i)
-                real = real || spell->Effects[i].ApplyAuraName == wanted || spell->Effects[i].ApplyAuraName == wantedRegen;
-            if (real && (!best || proto->BuyPrice < best))
+            if (!best || proto->BuyPrice < best)
                 best = proto->BuyPrice;
         }
         return best;

@@ -602,7 +602,12 @@ bool NeedFoodRestockTrigger::IsActive()
     if (!bot->IsAlive() || bot->IsInCombat() || bot->InBattleground() || bot->IsInFlight() || IsSelfBot(bot))
         return false;
 
-    if (CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD) < RESTOCK_FOOD_MIN)
+    // [judge15] the food need is the restock's own (BagFoodRests: full rests, the [craft399] rule), not a second
+    // count of items against the same line. This asked CountBagFood, so a member holding the very stacks [craft399]
+    // names - Herb Baked Egg (L1) x194, Longjaw Mud Snapper (L5) x367, each a share of a rest - read "194 >= 20" and
+    // the trigger never fired, so the action written for that case was never reached through it. The drink side of
+    // both is CountBagFood and is unchanged.
+    if (BagFoodRests(bot) < float(RESTOCK_FOOD_MIN))
         return true;
 
     return bot->GetMaxPower(POWER_MANA) > 0 && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < RESTOCK_FOOD_MIN;

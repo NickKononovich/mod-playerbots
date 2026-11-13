@@ -318,9 +318,9 @@ bool BuyAction::BuyItem(VendorItemData const* tItems, ObjectGuid vendorguid, Ite
     return false;
 }
 
-namespace
-{
 // Real food heals over time (aura 20), real drink restores mana (aura 21); this skips alcohol and novelty items.
+// [judge16] declared in BuyAction.h and no longer file-local: the walk to a vendor is priced by the same test the
+// purchase at it makes, so the planner cannot name a vendor whose "food" RestockFoodAction would refuse to buy.
 bool IsRestockFood(ItemTemplate const* proto, uint32 spellCategory)
 {
     if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
@@ -346,6 +346,8 @@ bool IsRestockFood(ItemTemplate const* proto, uint32 spellCategory)
     return false;
 }
 
+namespace
+{
 // [eco192] what one item restores (hp for food, mana for drink) and how fast, as the core restores it: MOD_REGEN /
 // MOD_POWER_REGEN give their amount per 5 s (Player::RegenerateHealth / UpdateManaRegen) over the aura's duration,
 // OBS_MOD_HEALTH / OBS_MOD_POWER their amount per amplitude; 0 when it restores none of it

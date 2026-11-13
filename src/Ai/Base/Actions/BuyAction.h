@@ -44,6 +44,10 @@ constexpr float RESTOCK_VENDOR_RANGE = 25.0f;
 constexpr uint32 RESTOCK_SPELL_CATEGORY_FOOD = 11;
 constexpr uint32 RESTOCK_SPELL_CATEGORY_DRINK = 59;
 
+// [supply41] the one test of "is this a restock food / drink": the item's class and subclass, its spell category and
+// the real Food / Drink aura behind it. Every judge of the kind - what the bags hold, what a vendor is walked to for,
+// what is bought there - asks this, so none of them can name an item the others would refuse.
+bool IsRestockFood(ItemTemplate const* proto, uint32 spellCategory);
 // Counts real food (category 11) or drink (category 59) the bot can use, in its bags. Bounded bag walk.
 uint32 CountBagFood(Player* bot, uint32 spellCategory);
 // [dun194] the most one usable item of that kind in the bags restores (RestoredPoints, at most the bot's max health /
