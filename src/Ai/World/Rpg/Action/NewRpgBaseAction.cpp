@@ -7051,6 +7051,32 @@ void NewRpgBaseAction::DangerDiscs(Player* bot, float x, float y, float range, s
     }
 }
 
+// [surv10] DangerDiscs with the killer's entry beside each disc: the route search prices the zone by the fight the
+// creature recorded there would cost it, instead of refusing the ground outright (SoloSafety::RouteCosts).
+void NewRpgBaseAction::DeathZoneCosts(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& discs,
+                                      std::vector<uint32>& entries)
+{
+    if (!bot)
+        return;
+    uint8 const level = bot->GetLevel();
+    std::lock_guard<std::mutex> guard(deathZonesLock);
+    auto const zones = deathZones.find(bot->GetGUID().GetCounter());
+    if (zones == deathZones.end())
+        return;
+    ClearRestedZones(bot, zones->second);  // [deaths143]
+    for (DeathZone const& zone : zones->second)
+    {
+        if (zone.mapId != bot->GetMapId() || level > zone.level || zone.refused)
+            continue;
+        for (auto const& [zx, zy] : {std::pair<float, float>{zone.killerX, zone.killerY}, {zone.deathX, zone.deathY}})
+            if (std::hypot(zx - x, zy - y) <= range + zone.radius)
+            {
+                discs.emplace_back(zx, zy, bot->GetPositionZ(), zone.radius);
+                entries.push_back(zone.entry);
+            }
+    }
+}
+
 std::string NewRpgBaseAction::DangerNames(Player* bot, float x, float y, float range)
 {
     std::string out;

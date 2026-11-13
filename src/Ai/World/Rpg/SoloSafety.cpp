@@ -255,6 +255,12 @@ namespace
         // judge's inputs for a fight it was never asked about; no decision reads it)
         bool unjudgedPending = false;
         std::string unjudgedWhy;
+        // [surv10] the mobs the core will bring to a fight no judge opened, as the pull judge's own model counts them
+        // (PackAt: the engage call, the formation, the periodic CallAssistance, a flee for help, and an idle mob whose
+        // reach covers the fight). Built once per fight, outside the lock, and resolved per tick from these guids -
+        // the projection counted only `bot->getAttackers()` and so priced 1 attacker in 17 of b484's 19 opens.
+        std::vector<uint64> joiners;
+        bool joinersBuilt = false;
     };
 
     struct EntryDamage
@@ -605,6 +611,8 @@ namespace
         state.leadMs = 0;  // [dps50]
         state.swam = false;
         state.looted = false;
+        state.joiners.clear();  // [surv10] the next fight grows its own pack
+        state.joinersBuilt = false;
         state.formula = DpsEstimate::Result();
         state.formulaEntry = 0;
         state.formulaLevel = 0;
@@ -3822,6 +3830,35 @@ namespace SoloSafety
             state.unjudgedPending = false;
             state.unjudgedWhy.clear();
         }
+        // [surv10] coordinator 2026-11-14: one judge of one question. The pull judge's model already counts what the
+        // core brings to a fight - the engage call, the formation, the periodic CallAssistance, a flee for help, and
+        // an idle mob whose reach covers the fight spot ([pullplan]) - while this projection counted only the mobs
+        // already swinging. That is why it priced 1 attacker in 17 of b484's 19 unjudged opens and called all three
+        // fatal ones won with 29, 263 and 333 hp of margin while 4, 5 and 2 mobs came. The pack is grown once per
+        // fight below (outside this lock) and resolved here, so the fight is priced on the mobs it will have and not
+        // on the mobs it has this instant. No threshold: the same model, read in one more place.
+        bool const growJoiners = !state.engaged && !state.joinersBuilt;
+        for (uint64 const guid : state.joiners)
+        {
+            Unit* const joiner = ObjectAccessor::GetCreature(*bot, ObjectGuid(guid));
+            if (!joiner || !joiner->IsAlive() || !joiner->IsHostileTo(bot))
+                continue;
+            if (std::any_of(out.foes.begin(), out.foes.end(),
+                            [joiner](Projection::Foe const& f) { return f.unit == joiner; }))
+                continue;  // already swinging: counted above, with what this fight measured of it
+            float const dps = MobDps(joiner, bot);
+            Projection::Foe foe;
+            foe.unit = joiner;
+            foe.hp = float(joiner->GetHealth());
+            foe.dps = dps;
+            if (Creature* creature = joiner->ToCreature())
+            {
+                foe.spellDps = SpellDpsOf(creature);
+                out.leashSec = std::max(out.leashSec, float(creature->GetLeashTimer()));
+            }
+            out.foes.push_back(foe);
+            out.incoming += dps;
+        }
 
         DpsEstimate::Result const own = OwnDamage(bot, bot->GetVictim());
         float const botDps = own.dps;
@@ -3876,6 +3913,43 @@ namespace SoloSafety
                                                     out.damage - out.health - out.heals)
                               : Acore::StringFormat("won with {:.0f} hp of margin",
                                                     out.health + out.heals - out.damage));
+        // [surv10] the pack of a fight no judge opened, grown once per fight with the judge's own model and kept as
+        // guids for the ticks after this one. Outside the lock: PackAt visits the cells round the fight, which is far
+        // too costly to repeat every tick for every bot in combat ([[performance-goal]]), and this is the one place in
+        // Project that already runs unlocked. The first tick of such a fight therefore still prices the attackers
+        // alone; from the next one it prices the pack. The mobs are named so the next window can read the joiners the
+        // old projection was blind to beside the ones that actually came.
+        if (growJoiners)
+        {
+            std::vector<uint64> grown;
+            std::string named;
+            if (Unit* const victim = bot->GetVictim())
+                if (Creature* const target = victim->ToCreature())
+                {
+                    G3D::Vector3 const at(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                    for (Creature* mob : PackAt(bot, target, at, {at}))
+                    {
+                        if (!mob || mob == target)
+                            continue;
+                        grown.push_back(mob->GetGUID().GetRawValue());
+                        if (named.size() < 160)
+                            named += Acore::StringFormat("{}{} L{}", named.empty() ? "" : ", ", mob->GetName(),
+                                                         mob->GetLevel());
+                    }
+                }
+            std::lock_guard<std::mutex> guard2(lock);
+            SoloBotState& again = states[bot->GetGUID().GetCounter()];
+            if (again.open && !again.joinersBuilt)
+            {
+                again.joinersBuilt = true;
+                again.joiners = std::move(grown);
+                if (!again.joiners.empty())
+                    LOG_INFO("playerbots",
+                             "[surv10] {} L{} the fight no judge opened brings {} mob(s) its projection was not "
+                             "counting: {} - priced with it from the next tick on",
+                             bot->GetName(), bot->GetLevel(), again.joiners.size(), named);
+            }
+        }
         return out;
     }
 
@@ -5706,11 +5780,12 @@ namespace SoloSafety
             // logged MAZE "no way" wall lists were single mobs of the bot's level walled for standing in a refused
             // camp's disc - Eraelor L8 by Timberling Tramplers L8 round Oakenscowl's camp, 71 MAZE lines, every walk
             // of its log refused; Pherua L6 by the Wrathscale camp, Enyssia L5 by a Gnarlpine Warrior L7)
-            if (why == RouteWall::Why::None &&
-                NewRpgBaseAction::InDeathZone(bot, mob->GetPositionX(), mob->GetPositionY()) &&
-                !NewRpgBaseAction::SameDangerZone(bot, bot->GetPositionX(), bot->GetPositionY(), mob->GetPositionX(),
-                                                  mob->GetPositionY()))
-                why = RouteWall::Why::Zone;
+            // [surv10] coordinator 2026-11-14: standing in a zone where the bot died is no longer a wall of its own.
+            // A mob of the bot's own con was walled for where it stood, so the ground round a past death became
+            // unreachable and the bot met MAZE / MOVE_FAR_LOOP instead of a route; the zone is now a cost on the
+            // search (DeathZoneCosts below) and this mob is priced one at a time like any other on the way - a wall
+            // only when the bot loses that single fight. [lag365] had already taken refused-pull zones out of the
+            // walls for the same reason; this is where it died, the half that was left.
             uint32 wallPack = 1;
             // [regress10] user 2026-11-08 "you can just run past": an orange / red or elite mob is no wall by itself -
             // walked past, it and its linked pack chase the bot until the core's leash lets them go; the leg takes
@@ -5719,8 +5794,11 @@ namespace SoloSafety
             bool ranPast = false;
             float runPastDamage = 0.0f;
             float runPastHp = 0.0f;
-            bool const mayRunPast =
-                alone && !NewRpgBaseAction::InDeathZone(bot, mob->GetPositionX(), mob->GetPositionY());
+            // [surv10] the run past is no longer vetoed by the zone either: the veto was the other half of the block,
+            // so an orange / red mob standing where the bot once died walled every walk past it with no way round
+            // priced at all. The chase is priced here as it is anywhere else, and the zone's own cost is added to the
+            // search below - a zone is never impassable at any value (coordinator 2026-11-14).
+            bool const mayRunPast = alone;
             if ((why == RouteWall::Why::Elite || why == RouteWall::Why::Con) && mayRunPast)
             {
                 buildAround();
@@ -6010,7 +6088,54 @@ namespace SoloSafety
         // a zone of a pull it refused is no wall of its own - its mobs are the ones this search prices above, each
         // run past or judged as any mob on the way (the zone keeps its quest spots and pulls out, InDangerZone); only
         // where it died stays refused
-        NewRpgBaseAction::DangerDiscs(bot, bot->GetPositionX(), bot->GetPositionY(), range, refuse, false);
+        // [surv10] coordinator 2026-11-14: a zone where it died costs, it does not forbid. Refusing the ground traded
+        // deaths for stuckness - Kylantino L22 logged "MAZE no way" and MOVE_FAR_LOOP in Arathi while every way out
+        // was walled - and the block did not even stop the deaths it was there for: b484 Rollothan L18 died 10 yd
+        // INSIDE a zone its own earlier death had recorded (Redridge Basher (-8955,-2081) r 20), so the zone was
+        // remembered and influenced nothing. As a cost the search finds a way round by itself when one is cheaper,
+        // and crosses the zone knowingly when none is, so no ground becomes unreachable at any value.
+        // The price is the zone's own recorded data and the same formula the live mob above is priced by (its health
+        // over the bot's damage at its run speed, yards of walk): the creature that killed the bot there, by its
+        // template. Game numbers, no multiplier of mine.
+        {
+            std::vector<G3D::Vector4> zoneDiscs;
+            std::vector<uint32> zoneEntries;
+            NewRpgBaseAction::DeathZoneCosts(bot, bot->GetPositionX(), bot->GetPositionY(), range, zoneDiscs,
+                                             zoneEntries);
+            std::string priced;
+            uint32 unpriceable = 0;
+            for (size_t i = 0; i < zoneDiscs.size() && i < zoneEntries.size(); ++i)
+            {
+                CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(zoneEntries[i]);
+                CreatureBaseStats const* stats =
+                    tmpl ? sObjectMgr->GetCreatureBaseStats(tmpl->maxlevel, tmpl->unit_class) : nullptr;
+                if (!tmpl || !stats)
+                {
+                    // no template for a recorded entry: priced by nothing, so it is left out rather than turned back
+                    // into a wall (the coordinator's condition - a zone is never impassable)
+                    ++unpriceable;
+                    continue;
+                }
+                Leader::Travel::RoutePenalty penalty;
+                penalty.x = zoneDiscs[i].x;
+                penalty.y = zoneDiscs[i].y;
+                penalty.z = zoneDiscs[i].z;
+                penalty.r = zoneDiscs[i].w;
+                penalty.cost = float(stats->GenerateHealth(tmpl)) / dps * speed;
+                penalties.push_back(penalty);
+                if (priced.size() < 200)
+                    priced += Acore::StringFormat("{}{} at ({:.0f},{:.0f}) r {:.0f} costs {:.0f} yd",
+                                                  priced.empty() ? "" : ", ", tmpl->Name, penalty.x, penalty.y,
+                                                  penalty.r, penalty.cost);
+            }
+            if (!priced.empty() || unpriceable)
+                LOG_INFO("playerbots",
+                         "[surv10] {} L{} prices its death zone(s) on this walk instead of refusing them: {}{}",
+                         bot->GetName(), bot->GetLevel(), priced.empty() ? std::string("-") : priced,
+                         unpriceable ? Acore::StringFormat("; {} zone(s) left unpriced (no creature template)",
+                                                           unpriceable)
+                                     : std::string());
+        }
         if (!ungrown.empty())  // [death431] what GrowOnWalk needs (`around` was built for them)
         {
             ungrownCosts.walker = bot->GetGUID().GetRawValue();

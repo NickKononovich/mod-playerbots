@@ -108,6 +108,11 @@ public:
     // [lag365] `refusedToo`: the zones of refused pulls too (else only where it died)
     static void DangerDiscs(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& out,
                             bool refusedToo = true);
+    // [surv10] the same death zones as DangerDiscs(refusedToo = false), each with the entry of the creature that
+    // killed the bot there, so the route search can price the zone instead of walling it off (SoloSafety::RouteCosts).
+    // `entries` is parallel to `discs`: one entry per disc, the same zone contributing a killer and a death spot.
+    static void DeathZoneCosts(Player* bot, float x, float y, float range, std::vector<G3D::Vector4>& discs,
+                               std::vector<uint32>& entries);
     // [lag365] its danger zones within `range` of (x, y), named: "<mob> L<n> (died|refused) at (x,y) r yd"
     static std::string DangerNames(Player* bot, float x, float y, float range);
     // [guild13] a class quest whose purpose is a spell (its reward or its chain's: AutoLearnQuestSpells grants it):
