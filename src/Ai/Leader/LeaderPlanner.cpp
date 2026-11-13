@@ -14393,6 +14393,49 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 _overlapMemo.clear();
                 if (cycledOut)
                     _overlapCycles = 0;  // [b36_sv] the merged plan's turn; a later hold counts anew
+                // [pull84] user 2026-11-13: "planned merged on the next look" never arrived. b475 Deadmines, 6 of
+                // 12 unfinished runs: the route target is a patrol (Defias Squallshaper), the walk to it wakes a
+                // pack ("[pull walk] ... wakes Goblin Shipbuilder: not this way" - 5767 refusals in one log, 783 of
+                // them this one pair), so [plan_route_blocker] makes that pack the pull, and that pack's plan is
+                // held right here because the same patrol crosses it. The next look starts at the walk again, so
+                // the merged plan this line promises is never the one that runs: five 2 fought nothing at all in
+                // its last 25 minutes. A walk that already wakes the other group is the proof the two cannot be
+                // separated - they are one fight - so the merged plan is made now, in this look, not promised to
+                // the next one. _overlapGiveUpMs is set above, so the re-entry collects the pack unsplit and this
+                // hold cannot run inside it; one level deep, and the whole planner runs there - the merged pack is
+                // priced by the same gate as any pull (the tank's and the healers' lines, TankCarries, the
+                // readiness check) and falls through to the same fallbacks when it is too big. A merged pack the
+                // gate refuses leaves the gate's own verdict behind ("the tank at N % mana (needs M %)", the
+                // overload terms), which is a reason the leader acts on - a rest, another target, a re-route -
+                // instead of this line's promise to think again later.
+                if (!_planMergedDepth)
+                {
+                    std::string const crossingName = binding.outside->GetName();
+                    ++_planMergedDepth;
+                    bool const planned = PlanCarefulPull(target, measured, rescaled);
+                    --_planMergedDepth;
+                    if (planned)
+                        _planReason = Acore::StringFormat("[pull84] {} crosses the pack and the walk cannot avoid "
+                                                          "it: planned merged; ", crossingName) + _planReason;
+                    else if (!_planVerdictWhy.empty())
+                        _planVerdictWhy = Acore::StringFormat("[pull84] merged with {}: ", crossingName) +
+                                          _planVerdictWhy;
+                    else if (!_planNotReadyWhy.empty())
+                        _planNotReadyWhy = Acore::StringFormat("[pull84] merged with {}: ", crossingName) +
+                                           _planNotReadyWhy;
+                    static thread_local uint32 mergedLogMs = 0;  // per map thread, a log cadence only
+                    if (!mergedLogMs || getMSTimeDiff(mergedLogMs, now) > 5 * IN_MILLISECONDS)
+                    {
+                        mergedLogMs = now ? now : 1;
+                        LOG_INFO("playerbots", "[pull84] {}: {} crosses the pack of {} and no walk avoids it: "
+                                 "planned merged now - {}", bot->GetName(), crossingName, target->GetName(),
+                                 planned ? "planned (" + _planReason + ")"
+                                 : _planVerdict == PlanVerdictState::Refused
+                                     ? "refused by the gate (" + _planVerdictWhy + ")"
+                                     : "held (" + _planNotReadyWhy + ")");
+                    }
+                    return planned;
+                }
                 _planNotReadyWhy = Acore::StringFormat("overlap wait: {} {}, planned merged on the next look",
                                                        binding.outside->GetName(), decision);
                 return false;

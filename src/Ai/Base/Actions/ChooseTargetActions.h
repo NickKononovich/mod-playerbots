@@ -604,6 +604,7 @@ private:
     bool _planChosenBoss = false;
     bool _planChosenRealBoss = false;
     uint8 _planBlockerDepth = 0;  // [plan_route_blocker] PlanCarefulPull runs for a route target's blocker
+    uint8 _planMergedDepth = 0;   // [pull84] PlanCarefulPull runs again for the same target, its pack unsplit
     bool _planPatrol = false;    // the last plan takes a patrol first, before it walks into the group or the fight
     ObjectGuid _planKillFor;     // a pull back of this mob is fought at _planKill (its call for help reaches nobody)
     Position _planKill;
