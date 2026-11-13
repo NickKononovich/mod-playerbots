@@ -129,6 +129,16 @@ namespace SoloSafety
     // [lag370] the engage's pull spot has a walk from where the bot stands (Leader::Route: found, through no refused
     // reach); none: the pull spot is dropped (logged) and the engage is judged again from here
     void CheckPullSpotWalk(Player* bot, Unit* target);
+
+    // [nav200] the open world's side of the dungeon leader's GroupRouteState::unreachableFrom: a target the route
+    // search found no walk to from where the bot stands. The memo is a fact of a place, never a clock - it is asked
+    // again only when something that could change the answer changed: the bot moved off the spot it searched from
+    // (Leader::Travel::UNREACHABLE_RECHECK_DISTANCE / _HEIGHT, the dungeon side's own rule) or the target itself
+    // moved (Leader::LEADER_COMMIT_MOVED_YD, the same rule's "the object moved"). It is no navmesh workaround: the
+    // failed search still writes its [nav163] line, so the triage's PIT alarm still names the place.
+    void NoteUnreachable(Player* bot, Unit* target, std::string const& why);
+    // true while that memo holds for `target`; prunes the memos of spots the bot has since walked away from
+    bool Unreachable(Player* bot, Unit* target);
     // [pullplan] the pull itself, in the bot's combat walk to `target` (MovementAction::ReachCombatTo): at its pull
     // spot a melee bot with Throw / Shoot casts it (Hold); once the target comes for it the bot waits for it at the
     // spot (Hold) or walks back there after a body pull's step in (ToSpot, `spot`); None: the walk goes on as before

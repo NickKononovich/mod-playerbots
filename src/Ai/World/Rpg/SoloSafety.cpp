@@ -40,6 +40,7 @@
 #include "PlayerbotAIConfig.h"
 #include "Playerbots.h"
 #include "RouteSearch.h"
+#include "RouteTargets.h"  // [nav200] UNREACHABLE_RECHECK_DISTANCE / _HEIGHT, the dungeon side's own rule
 #include "LeaderOrders.h"  // [lag370] Leader::Route
 #include "SpellInfo.h"
 #include "SurvivalKit.h"  // [deaths3] its heals now
@@ -248,6 +249,12 @@ namespace
     std::mutex lock;
     std::unordered_map<uint32, SoloBotState> states;
     std::unordered_map<uint32, EntryDamage> entryDamage;  // creature entry -> what it dealt to solo bots, per second
+
+    // [nav200] bot -> target -> (where the bot stood when the route found no walk, where the target stood then).
+    // The open world's unreachableFrom: the dungeon leader keeps the same memo per group (GroupRouteState), a solo
+    // bot keeps its own. No clock lives here - an entry ends on a fact, never on elapsed time.
+    std::mutex unreachableLock;
+    std::unordered_map<uint32, std::unordered_map<ObjectGuid, std::pair<Position, Position>>> unreachableFrom;
 
     bool PlaysOwnPlan(Player* member)
     {
@@ -3291,6 +3298,68 @@ namespace SoloSafety
             ai->ReleaseIdleTarget(target->GetGUID());  // the grind picker leaves it while it stays idle
         }
         bot->SetTarget(ObjectGuid::Empty);
+    }
+
+    void NoteUnreachable(Player* bot, Unit* target, std::string const& why)
+    {
+        if (!bot || !target)
+            return;
+        bool fresh = false;
+        {
+            std::lock_guard<std::mutex> guard(unreachableLock);
+            auto& mine = unreachableFrom[bot->GetGUID().GetCounter()];
+            fresh = mine.find(target->GetGUID()) == mine.end();
+            mine[target->GetGUID()] = {bot->GetPosition(), target->GetPosition()};
+        }
+        if (!fresh)  // one line per bot and target while the memo holds (the [regress10] hearthNote cadence)
+            return;
+        LOG_INFO("playerbots",
+                 "[nav200] {} L{} leaves {} L{} ({:.0f} yd) at ({:.1f},{:.1f},{:.1f}) map {}: {} from where it "
+                 "stands ({:.1f},{:.1f},{:.1f}) - asked again only once the bot moves {:.0f} yd ({:.0f} yd up or "
+                 "down) or the target moves {:.0f} yd",
+                 bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), bot->GetExactDist(target),
+                 target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), bot->GetMapId(), why,
+                 bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
+                 Leader::Travel::UNREACHABLE_RECHECK_DISTANCE, Leader::Travel::UNREACHABLE_RECHECK_HEIGHT,
+                 Leader::LEADER_COMMIT_MOVED_YD);
+    }
+
+    bool Unreachable(Player* bot, Unit* target)
+    {
+        if (!bot)
+            return false;
+        bool held = false;
+        std::lock_guard<std::mutex> guard(unreachableLock);
+        auto const mineAt = unreachableFrom.find(bot->GetGUID().GetCounter());
+        if (mineAt == unreachableFrom.end())
+            return false;
+        auto& mine = mineAt->second;
+        // the bot is no longer where it searched from: every memo made there is an open question again (the dungeon
+        // side's rule, and what keeps this map small - a bot that walks on drops all of them)
+        for (auto itr = mine.begin(); itr != mine.end();)
+        {
+            Position const& from = itr->second.first;
+            if (bot->GetExactDist2d(&from) > Leader::Travel::UNREACHABLE_RECHECK_DISTANCE ||
+                std::fabs(bot->GetPositionZ() - from.GetPositionZ()) > Leader::Travel::UNREACHABLE_RECHECK_HEIGHT)
+                itr = mine.erase(itr);
+            else
+                ++itr;
+        }
+        if (target)
+        {
+            auto const found = mine.find(target->GetGUID());
+            if (found != mine.end())
+            {
+                // the target moved off where it stood: its walk is another question (the dungeon side's skipFacts)
+                if (target->GetExactDist(&found->second.second) > Leader::LEADER_COMMIT_MOVED_YD)
+                    mine.erase(found);
+                else
+                    held = true;
+            }
+        }
+        if (mine.empty())
+            unreachableFrom.erase(mineAt);
+        return held;
     }
 
     PullMove PullStep(Player* bot, Unit* target, G3D::Vector3& spot)

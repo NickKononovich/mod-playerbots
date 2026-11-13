@@ -310,6 +310,9 @@ struct NewRpgInfo
     bool repairVisited{false};
     uint32 repairVisitMoney{0};
     std::string hearthNote;    // [regress10] the HEARTH line's last "not used" / cooldown note (logged on change)
+    // [nav200] the grind picker's last "every mob here has no walk from this spot" note (logged on change): the bot
+    // says a stand that nothing else names, so the next one needs no triage pass to find
+    std::string unreachNote;
     bool loginChecked{false};  // [regress10] its login spot looked at (LoginEscape)
     uint8 loggedStatus{255};  // [guild7] the status last written to the log ([rpg] line)
     // [stuck8] a group leader waits for a member that is not ready (NewRpgGroupNotReadyTrigger, its GROUP_WAIT line)

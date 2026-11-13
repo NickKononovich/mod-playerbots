@@ -2725,6 +2725,21 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         BotPath path = FindBotPath(bot, tx, ty, tz);  // [lead109]
         PathType type = path.type;
         int typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE | PATHFIND_SHORTCUT;
+        // [nav200] b475 Bloodmyst: Brelir L26 stood 99 min at (-1499,-10708) and wrote 19 311 of the log's 19 342
+        // [nav163] lines - two Enraged Ravagers, one of them spawned 71 yd inside a cliff, and no memory of either.
+        // Every tick asked the same two searches again: this one to the target, then LosRestoreWalk's to a spot
+        // that sees it. The route's own "no walk from here" is a fact of the place the bot stands in, so a solo bot
+        // in the open world remembers it (SoloSafety::NoteUnreachable, the dungeon leader's unreachableFrom rule)
+        // and lets the target go; its picker takes the next candidate instead. Not for a led bot or a party member
+        // (its leader decides what it chases) and not in an instance (the leader's own memo holds there)
+        if (path.leaderRoute && (type & PATHFIND_NOPATH) && target->IsCreature() && SoloSafety::Applies(bot) &&
+            !Leader::LedBot(bot) && !NewRpgCoop::IsMember(bot) && bot->GetMap() && !bot->GetMap()->Instanceable())
+        {
+            SoloSafety::NoteUnreachable(bot, target, "no walk reaches it");
+            botAI->ReleaseIdleTarget(target->GetGUID());
+            RefuseChase(target, "no walk reaches it from where the bot stands");
+            return false;
+        }
         if (!(type & typeOk))
             return LosRestoreWalk(target, std::max(NOMINAL_MELEE_RANGE, combatDistance + 4.0f / 3.0f) - 0.5f);
 

@@ -328,6 +328,7 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     // zone (its quest spots there are postponed) and the next candidate is judged
     std::sort(candidates.begin(), candidates.end(),
               [](auto const& a, auto const& b) { return a.first < b.first; });
+    size_t noWalkCandidates = 0;  // [nav200] candidates left where they stand: no walk reaches them from here
     for (auto const& [unitDistance, unit] : candidates)
     {
         // [coop] a danger mark is the bot's solo judgement; the party judges the pack itself
@@ -337,6 +338,15 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         // again it stood the same way (b428 Aestymro's party: "party engages" it, the walk walled by [party75])
         if (unit->GetGUID() == botAI->ReleasedIdleTarget() && !unit->IsInCombat())
             continue;
+        // [nav200] a candidate the route already found no walk to from where the bot stands: the next one instead
+        // of the same impossible search. ReleasedIdleTarget holds one guid only - with two such mobs round it the
+        // picker took turns between them for 99 min (b475 Brelir). The memo ends on a fact (SoloSafety::Unreachable:
+        // the bot or the mob moved), never on a clock
+        if (SoloSafety::Unreachable(bot, unit))
+        {
+            ++noWalkCandidates;
+            continue;
+        }
         if (!_reachability.IsReachable(bot, unit))
             continue;
         SoloSafety::Verdict const verdict = coop ? NewRpgCoop::JudgePull(bot, unit) : SoloSafety::Judge(bot, unit);
@@ -381,6 +391,24 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
         NewRpgBaseAction::RememberDanger(bot, verdict.at.GetPositionX(), verdict.at.GetPositionY(), verdict.radius,
                                          unit->GetEntry(), verdict.topLevel);
     }
+    // [nav200] the bot's own word for a stand the triage had to measure to find: it believes it is grinding and
+    // picks nothing, because every mob it can see has no walk from this spot. Logged once per situation (the
+    // [regress10] hearthNote cadence), so the next one is greppable without a triage pass
+    if (noWalkCandidates)
+    {
+        std::string const note =
+            Acore::StringFormat("{} of {} candidates have no walk from ({:.0f},{:.0f},{:.0f}) map {}",
+                                noWalkCandidates, candidates.size(), bot->GetPositionX(), bot->GetPositionY(),
+                                bot->GetPositionZ(), bot->GetMapId());
+        if (botAI->rpgInfo.unreachNote != note)
+        {
+            botAI->rpgInfo.unreachNote = note;
+            LOG_INFO("playerbots", "[nav200] {} L{} picks no grind target here: {} - its next option is taken "
+                     "instead of standing on them", bot->GetName(), bot->GetLevel(), note);
+        }
+    }
+    else if (!botAI->rpgInfo.unreachNote.empty())
+        botAI->rpgInfo.unreachNote.clear();
     return nullptr;
 }
 

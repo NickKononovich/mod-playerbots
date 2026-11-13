@@ -2699,8 +2699,10 @@ Creature* NewRpgWanderRandomAction::NextPlaceMob(std::vector<uint32> const& entr
             !(skin && tmpl->SkinLootId))
             continue;
         float const d = bot->GetExactDist(mob);
+        // [nav200] a mob of the place the route already found no walk to from this spot is not the next one either:
+        // the picker takes the one after it (SoloSafety::Unreachable: the memo ends when the bot or the mob moves)
         if (d >= bestDist || InDangerZone(bot, mob->GetPositionX(), mob->GetPositionY()) ||
-            WalkGivenUp(bot, mob->GetPositionX(), mob->GetPositionY()))
+            WalkGivenUp(bot, mob->GetPositionX(), mob->GetPositionY()) || SoloSafety::Unreachable(bot, mob))
             continue;
         bestDist = d;
         best = mob;
