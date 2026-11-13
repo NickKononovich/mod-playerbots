@@ -108,9 +108,11 @@ namespace
                     consider(container->GetItemByPos(uint8(slot)));
         if (!worst)
             return false;
-        LOG_INFO("playerbots", "[bag66] {} destroys {} x{} ({}, {} c) to loot quest item {} for q{} t={}",
-                 bot->GetName(), worst->GetTemplate()->Name1, worst->GetCount(),
-                 worstGrey ? "grey" : "its lowest vendor value", worstValue, itemId, questId, QuestStats::NowMs());
+        // [loot20] questId 0: an item on the always-loot list (a five's own event item), no quest behind it
+        LOG_INFO("playerbots", "[bag66] {} destroys {} x{} ({}, {} c) to loot {} item {}{} t={}", bot->GetName(),
+                 worst->GetTemplate()->Name1, worst->GetCount(), worstGrey ? "grey" : "its lowest vendor value",
+                 worstValue, questId ? "quest" : "[loot20] always-loot", itemId,
+                 questId ? Acore::StringFormat(" for q{}", questId) : std::string(), QuestStats::NowMs());
         bot->DestroyItem(worst->GetBagSlot(), worst->GetSlot(), true);
         return true;
     }
@@ -581,16 +583,24 @@ bool StoreLootAction::Execute(Event event)
             ++questOffered;
             lootQuest = itemQuest;
         }
-        auto const leave = [&](char const* why)
+        // [loot20] a loot the bot meant to take and did not says so, quest item or not. b475 dm-n: the Defias
+        // Gunpowder was left in its crate in 7 of 14 opens ("[loot] ... loots object 17155 Defias Gunpowder
+        // items=0/1"), the Iron Clad Door 16397 stayed shut behind it and four bosses with it - and not one line in
+        // the whole log said why, because `leave` wrote only for an item some member had a quest for and the
+        // gunpowder is a quest-class item nobody has a quest for. The loot strategy's own "no thanks" stays
+        // quest-only (it fires on every grey on every corpse); a slot the game would not let it take and a bag with
+        // no room are what this is for: the bot wanted the item.
+        auto const leave = [&](char const* why, bool always = false)
         {
-            if (itemQuest)
+            if (itemQuest || always)
                 questLeft += Acore::StringFormat("{}item {} {}", questLeft.empty() ? "" : ", ", itemid, why);
         };
         if (lootslot_type != LOOT_SLOT_TYPE_ALLOW_LOOT && lootslot_type != LOOT_SLOT_TYPE_OWNER)
         {
             leave(lootslot_type == LOOT_SLOT_TYPE_ROLL_ONGOING ? "under a group roll"
                   : lootslot_type == LOOT_SLOT_TYPE_MASTER     ? "for the master looter"
-                                                               : "look only");
+                                                               : "look only",
+                  true);
             continue;
         }
 
@@ -621,9 +631,10 @@ bool StoreLootAction::Execute(Event event)
             // [dm1] ... and an item on its always-loot list (the five's event items: the Defias Gunpowder 5397 its
             // run needs for the Defias Cannon). Its usage is ITEM_USAGE_NONE, so without this the full-bag branch
             // drops what IsLootAllowed just allowed
+            bool const alwaysLoot = AI_VALUE(std::set<uint32>&, "always loot list").count(itemid) != 0;
             bool const isUsefulItem =
                 itemQuest || proto->StartQuest || guid.IsItem() ||  // [craft406] its own item's loot
-                AI_VALUE(std::set<uint32>&, "always loot list").count(itemid) ||
+                alwaysLoot ||
                 (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH) ||
                 (sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) &&
                  (sGuildCoordinator.IsWanted(itemid) || sGuildCoordinator.NeedsForOwnCalls(bot, itemid)));
@@ -633,12 +644,20 @@ bool StoreLootAction::Execute(Event event)
                 ItemPosCountVec dest;
                 // [bag66] a quest item never stays on the corpse for want of room: the lowest-value item of its bags
                 // (a grey one first) makes way for it
+                // [loot20] ... and an item on the always-loot list makes room the same way a quest item does. For a
+                // guild five that list is the run's own event items (TestHarnessMgr::PrepareEventItemLoot, [dm1]):
+                // the Defias Gunpowder the Defias Cannon needs for its lock. It is a quest-class item no member has
+                // a quest for, so `itemQuest` is 0 and the full-bag branch dropped it where MakeRoomFor would have
+                // made way for it - and these bots carry near-full bags all run ("[econ20] full-bags material
+                // relief", "bags 97 % full"). MakeRoomFor never touches a quest item, a container, a quiver,
+                // ammunition, a consumable or a key, so the drink and food this rest is built on stay put: it gives
+                // up the lowest-value thing in the bags, a grey first.
                 if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount) != EQUIP_ERR_OK &&
-                    itemQuest && MakeRoomFor(bot, itemid, itemQuest))
+                    (itemQuest || alwaysLoot) && MakeRoomFor(bot, itemid, itemQuest))
                     dest.clear();
                 if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount) != EQUIP_ERR_OK)
                 {
-                    leave("no bag room");
+                    leave("no bag room", true);
                     continue;
                 }
             }
