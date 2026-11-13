@@ -44,6 +44,7 @@
 #include "MoveSpline.h"
 #include "AttackerCountValues.h"
 #include "MovementActions.h"
+#include "LeaderGround.h"   // [navz10] LeaderGroundZ: no grid-fallback height as a waypoint floor
 #include "LeaderOrders.h"  // [lead1] the tank's pull orders
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -2315,8 +2316,11 @@ namespace TestHarness
                     float const off = offsets[slot++ % 5];
                     float const x = trap.x + ax * TRAP_SPOT_AXIS - ay * off;
                     float const y = trap.y + ay * TRAP_SPOT_AXIS + ax * off;
+                    // [navz10] the leader's floor ([dun206]), not Map::GetHeight raw: a raw answer in a WMO-only
+                    // instance is the map grid's placeholder (SM 189, Azjol-Nerub 601, Gundrak 604 and 9 more maps
+                    // hold no height in any tile). Rejected keeps the old fallback, the bot's own z.
                     float const ground =
-                        map->GetHeight(bot->GetPhaseMask(), x, y, nearGate->GetPositionZ() + 3.0f, true, 10.0f);
+                        Leader::Travel::LeaderGroundZ(bot, x, y, nearGate->GetPositionZ() + 3.0f, 10.0f);
                     SetMemberWaypoint(party, member, bot, x, y, ground > INVALID_HEIGHT ? ground : bot->GetPositionZ());
                     TestRunner::Waypoint spot;
                     if (TestRunner::GetWaypoint(bot->GetGUID(), spot))
@@ -2633,8 +2637,8 @@ namespace TestHarness
             float const step = std::min(MEMBER_KEY_STEP, std::max(1.0f, len - 3.0f));
             float const x = door->GetPositionX() + dx / len * step;
             float const y = door->GetPositionY() + dy / len * step;
-            float const ground =
-                map->GetHeight(cutBot->GetPhaseMask(), x, y, door->GetPositionZ() + 3.0f, true, 10.0f);
+            // [navz10] the leader's floor ([dun206]), not Map::GetHeight raw
+            float const ground = Leader::Travel::LeaderGroundZ(cutBot, x, y, door->GetPositionZ() + 3.0f, 10.0f);
             SetMemberWaypoint(party, *cutMember, cutBot, x, y, ground > INVALID_HEIGHT ? ground : cutBot->GetPositionZ());
             MarkGateWaypoint(cutBot);
             party.memberKeyMs = now ? now : 1;
@@ -2750,7 +2754,8 @@ namespace TestHarness
             float const len = std::max(0.1f, std::hypot(dx, dy));
             float const x = door->GetPositionX() + dx / len * MEMBER_KEY_STEP;
             float const y = door->GetPositionY() + dy / len * MEMBER_KEY_STEP;
-            float const ground = map->GetHeight(bot->GetPhaseMask(), x, y, door->GetPositionZ() + 3.0f, true, 10.0f);
+            // [navz10] the leader's floor ([dun206]), not Map::GetHeight raw
+            float const ground = Leader::Travel::LeaderGroundZ(bot, x, y, door->GetPositionZ() + 3.0f, 10.0f);
             // [b39_strat] in a fight too, while nothing hits the member (canKey): strat-h 054314-5C-1, the healer shut
             // out at 12.6 yd in combat with no attacker logged member_key_step x9 (152-208 s) and never stepped in,
             // nobody keyed the gate, the tank died behind it.
