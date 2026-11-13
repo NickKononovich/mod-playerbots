@@ -1909,8 +1909,17 @@ namespace FiveGate
         out.worstMana = worst.manaShare;
         out.over = failed;
         out.judged = judged;
+        // [gate97] "of {} pulls" is every pull on the MAP, not the five's route: the gate takes the whole instance
+        // spawn by spawn, lightest pull first, until nothing stands. That is said here because it was read as the
+        // route and reported upwards that way, and the difference decides what a refusal means. It is also the right
+        // measure and not an over-strict one: the leader's own route has a full-clear fallback ("the route's
+        // full-clear fallback (nothing on the route)", 27 verdicts in one strat-n run), and its on-path verdict is
+        // live - 84 of 155 mobs changed sides DURING that one run, 99 of them because they blocked the route - so
+        // there is no set of pulls known before the run that the five is guaranteed to keep to
         out.why = Acore::StringFormat(
-            "{} of {} pulls over capacity ([dun170] as the leader splits them, {} patrols pulled apart, each from full "
+            "{} of {} pulls over capacity (every pull on the map, the whole instance cleared spawn by spawn, not the "
+            "route: [gate97] the leader's route has a full-clear fallback and its on-path verdict changes as it goes; "
+            "[dun170] as the leader splits them, {} patrols pulled apart, each from full "
             "after a rest; [dm4] {} peeled away from a boss they drag in; [split263] {} round a corner{}; [split254] "
             "{} with crowd control, {} with the tank's "
             "defensive, {} defensives not back for a boss); worst {:.2f}: {}; group burst dps {:.0f}, healer {} "
