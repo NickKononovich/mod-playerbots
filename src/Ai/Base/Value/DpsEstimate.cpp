@@ -2847,7 +2847,17 @@ void RecordFight(Player* bot, FightSample const& sample)
         {
             uint32 const takenBefore = getMSTimeDiff(f.firstTakenMs, f.firstDealtMs);
             if (takenBefore < getMSTimeDiff(f.firstDealtMs, f.firstTakenMs))
-                before = std::max(before, float(takenBefore) / float(IN_MILLISECONDS));
+            {
+                // [dps40] the hit it took first leads its own only while it falls inside the fight SoloSafety closed:
+                // `live` keeps the bot's entry until RecordFight, so a fight that never closed (a mob that despawned,
+                // a group it joined) leaves its firstTakenMs behind and the next fight read it as that fight's lead.
+                // [dps233] guards the hits it dealt, not the one it took, so the stale lead passed as a valid window:
+                // b479 10 of 488 fights measured over up to 537.1 s of a 19.0 s fight (Sycina L25 combat 1.4 dps
+                // against a formula of 40.4, Laaral L26 holy 4.4 of 43.3), and the ratio they carry is garbage
+                float const takenSec = float(takenBefore) / float(IN_MILLISECONDS);
+                if (takenSec <= sample.fightSec)
+                    before = std::max(before, takenSec);
+            }
         }
         // [dps233] its hits span more than the fight SoloSafety closes: the first ones came from a fight it never
         // closed (their formula and casts with them): b426-b429 273 fights measured over windows of up to 233 s for

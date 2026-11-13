@@ -379,6 +379,10 @@ namespace
             else if (acted < fought)
                 fought = acted;
         }
+        // [dps40] the part it fought is a part of the fight: a bot that ran after its last hit landed took `fleeMs`
+        // past the `lastMs` that ends `seconds`, and logged an active_s longer than the fight_s holding it (b479
+        // Bierya L21 feral 8.6 s of a 4.0 s fight). One judge of the fight's length, and this is its part.
+        fought = std::min(fought, seconds);
         if (invalid.empty() && !measured)
             invalid = "ran before two swings";
         if (invalid.empty() && state.swam)
