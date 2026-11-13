@@ -125,10 +125,20 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
           std::get<NewRpgInfo::WanderRandom>(botAI->rpgInfo.data).forSkin) ||
          (std::holds_alternative<NewRpgInfo::GoGrind>(botAI->rpgInfo.data) &&
           std::get<NewRpgInfo::GoGrind>(botAI->rpgInfo.data).forSkin));
+    // [craft434] the leader's gathering place (a drop place's meat, a skinning place): its mobs count, gray ones too
+    static std::vector<uint32> const noEntries;
+    std::vector<uint32> const& orderEntries =
+        std::holds_alternative<NewRpgInfo::WanderRandom>(botAI->rpgInfo.data)
+            ? std::get<NewRpgInfo::WanderRandom>(botAI->rpgInfo.data).orderEntries
+        : std::holds_alternative<NewRpgInfo::GoGrind>(botAI->rpgInfo.data)
+            ? std::get<NewRpgInfo::GoGrind>(botAI->rpgInfo.data).orderEntries
+            : noEntries;
     auto const skinTarget = [&](Unit* u)
     {
-        Creature* c = forSkin ? u->ToCreature() : nullptr;
-        return c && c->GetCreatureTemplate() && c->GetCreatureTemplate()->SkinLootId;
+        Creature* c = u->ToCreature();
+        if (c && std::find(orderEntries.begin(), orderEntries.end(), c->GetEntry()) != orderEntries.end())
+            return true;
+        return forSkin && c && c->GetCreatureTemplate() && c->GetCreatureTemplate()->SkinLootId;
     };
     // [guild12] a needed quest object in reach comes before mobs the quest does not need (the loot of objects)
     bool const questObjectNear =

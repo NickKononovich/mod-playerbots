@@ -2098,6 +2098,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     info.ChangeToGoGrind(step.pos);
                     // [skin12] the grind is for the skins: a gray mob of the place counts (GrindTargetValue)
                     std::get<NewRpgInfo::GoGrind>(info.data).forSkin = true;
+                    std::get<NewRpgInfo::GoGrind>(info.data).orderEntries = step.entries;  // [craft434]
                     return true;
                 }
                 if (step.kind == GuildRunStep::GATHER)
@@ -2291,9 +2292,11 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                          bot->GetLevel());
                 bool const forSkin = data.forSkin;
                 bool const forCamp = data.forCamp;
+                std::vector<uint32> orderEntries = std::move(data.orderEntries);
                 info.ChangeToWanderRandom();
                 std::get<NewRpgInfo::WanderRandom>(info.data).forSkin = forSkin;  // [skin12]
                 std::get<NewRpgInfo::WanderRandom>(info.data).forCamp = forCamp;  // [help13]
+                std::get<NewRpgInfo::WanderRandom>(info.data).orderEntries = std::move(orderEntries);  // [craft434]
                 return true;
             }
             break;
@@ -2544,9 +2547,10 @@ bool NewRpgGoCampAction::Execute(Event /*event*/)
     return false;
 }
 
-Creature* NewRpgWanderRandomAction::NextSkinMob()
+Creature* NewRpgWanderRandomAction::NextPlaceMob(std::vector<uint32> const& entries, bool forSkin)
 {
-    if (!bot->HasSkill(SKILL_SKINNING))
+    bool const skin = forSkin && bot->HasSkill(SKILL_SKINNING);
+    if (!skin && entries.empty())
         return nullptr;
     // the map's view of the bot (Map::GetVisibilityRange): the mobs the core shows it, a fact of where it stands
     float const range = bot->GetMap()->GetVisibilityRange();
@@ -2563,8 +2567,12 @@ Creature* NewRpgWanderRandomAction::NextSkinMob()
             mob->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE) || !bot->IsValidAttackTarget(mob))
             continue;
         CreatureTemplate const* tmpl = mob->GetCreatureTemplate();
-        if (!tmpl || !tmpl->SkinLootId || tmpl->rank > CREATURE_ELITE_NORMAL ||
+        if (!tmpl || tmpl->rank > CREATURE_ELITE_NORMAL ||
             Acore::XP::GetColorCode(bot->GetLevel(), mob->GetLevel()) <= XP_ORANGE)
+            continue;
+        // [craft434] a mob of the leader's gathering place (a drop place's gray coyotes too), or one that carries skins
+        if (std::find(entries.begin(), entries.end(), mob->GetEntry()) == entries.end() &&
+            !(skin && tmpl->SkinLootId))
             continue;
         float const d = bot->GetExactDist(mob);
         if (d >= bestDist || InDangerZone(bot, mob->GetPositionX(), mob->GetPositionY()) ||
@@ -2589,17 +2597,36 @@ bool NewRpgWanderRandomAction::Execute(Event /*event*/)
     // [skin12] a skinning place's mobs spread over more than its sight (b350 the Grizzled Den: 40 Wendigo spawns
     // over 290 yd, Keenonk / Ainne at the one spot: 47 STUCK + 56 LOOP alerts, "grind spot cleared" 130 times while
     // the den's far end stood alive): the nearest live skinnable mob it may fight within the map's view of it
-    if (auto const* wander = std::get_if<NewRpgInfo::WanderRandom>(&botAI->rpgInfo.data); wander && wander->forSkin)
-        if (Creature* next = NextSkinMob())
+    std::vector<uint32> orderEntries;
+    bool forSkin = false;
+    if (auto const* wander = std::get_if<NewRpgInfo::WanderRandom>(&botAI->rpgInfo.data))
+    {
+        orderEntries = wander->orderEntries;
+        forSkin = wander->forSkin;
+    }
+    if (forSkin || !orderEntries.empty())
+        if (Creature* next = NextPlaceMob(orderEntries, forSkin))
         {
-            LOG_INFO("playerbots", "[skin12] {} L{} skin grind: no mob in reach here, the nearest live {} L{} {:.0f} "
+            LOG_INFO("playerbots", "[skin12] {} L{} place grind: no mob in reach here, the nearest live {} L{} {:.0f} "
                      "yd off at ({:.0f},{:.0f})",
                      bot->GetName(), bot->GetLevel(), next->GetName(), next->GetLevel(), bot->GetExactDist(next),
                      next->GetPositionX(), next->GetPositionY());
             botAI->rpgInfo.ChangeToGoGrind(WorldPosition(next));
-            std::get<NewRpgInfo::GoGrind>(botAI->rpgInfo.data).forSkin = true;
+            std::get<NewRpgInfo::GoGrind>(botAI->rpgInfo.data).forSkin = forSkin;
+            std::get<NewRpgInfo::GoGrind>(botAI->rpgInfo.data).orderEntries = std::move(orderEntries);
             return true;
         }
+    // [craft434] b465 Sehdrurmund L22 (108 STUCK) / Maronic L22 (47): drop places of gray Coyotes / Crag Boars - the
+    // leader saw live mobs of the place and sent the grind again, the grind took no gray mob ("no mob of its level"):
+    // GO_GRIND / WANDER_RANDOM / IDLE for 330 s and more. At the place, with nothing of it the bot can take in its
+    // view (alive, out of combat, below orange, a walk not given up, out of danger), the place goes back to the plan
+    if (!orderEntries.empty())
+    {
+        LOG_INFO("playerbots", "[craft434] {} L{} at its gathering place: no mob of it it can take in its view - the "
+                 "place goes back to the plan",
+                 bot->GetName(), bot->GetLevel());
+        sGuildCoordinator.SetOrderStatus(bot, "no mob of the place it can take in its view");
+    }
     LOG_INFO("playerbots", "[rpg] {} L{} grind spot cleared: no mob of its level in reach", bot->GetName(),
              bot->GetLevel());
     botAI->rpgInfo.ChangeToIdle();

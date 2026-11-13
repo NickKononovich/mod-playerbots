@@ -135,7 +135,9 @@ public:
     bool Execute(Event event) override;
 
 private:
-    Creature* NextSkinMob();  // [skin12] the nearest live skinnable mob of a skinning grind beyond its reach
+    // [skin12] the nearest live mob of the leader's gathering place ([craft434] its entries; a skinning grind: any
+    // skinnable one) it may fight, beyond its reach
+    Creature* NextPlaceMob(std::vector<uint32> const& entries, bool forSkin);
 };
 
 class NewRpgWanderNpcAction : public NewRpgBaseAction

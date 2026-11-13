@@ -8757,7 +8757,7 @@ void GuildCoordinator::SetOrderStatus(Player* bot, std::string const& status)
                 (order.type == GuildOrderType::PROFESSION && order.profession == GuildProfessionKind::GATHER);
             if (gather && order.placeId &&
                 (status.rfind("no safe walk there", 0) == 0 || status.rfind("no nodes for its skill", 0) == 0 ||
-                 status.rfind("нет узлов", 0) == 0))
+                 status.rfind("нет узлов", 0) == 0 || status.rfind("no mob of the place", 0) == 0))  // [craft434]
             {
                 sGuildGatherPlan.Refuse(bot, order.placeId, status);
                 order.executable = false;
