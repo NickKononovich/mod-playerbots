@@ -5885,14 +5885,30 @@ void GuildCoordinator::UpdateProfessions()
                 {
                     uint32 reach{0};
                     double craftMin{0}, gatherMin{0}, vendorCost{0};
-                    std::map<uint32, double> buyNow, gatherNow;  // [ench171] what the calls buy / gather up to it
+                    // [craft461] what the calls buy / gather for the point the bot is about to gain (the whole walk's
+                    // minutes and costs below still weigh the climb itself)
+                    std::map<uint32, double> buyNow, gatherNow;
                 };
                 std::vector<Stop> stops;
                 std::set<uint32> rankCaps;
                 if (auto const ranks = trainerRanks_.find(line); ranks != trainerRanks_.end())
                     for (TrainerRank const& tr : ranks->second)
                         rankCaps.insert(tr.maxSkill);
-                for (uint32 v = std::max<uint32>(1, skill); v < top; ++v)
+                // [craft461] coordinator 2026-11-13: the materials the calls ask for are the next point's, not the
+                // whole remaining ladder's. b480 every tailor's walk read "to 225 in 19542.2 min (craft 41.8, gather
+                // 19500.4)" - 325 hours of gathering - and the Silk Cloth shortfall stood at 4586 and grew to 4696
+                // inside 22 minutes: almost half of the leader's whole 10123-unit request. The arithmetic per point
+                // is right (`1000.0 / chance` is the expected crafts for one point, chance being per mille, not a
+                // count), but it was summed over all 75 points from the held skill to the rank ceiling and published
+                // as one shortfall to fill now. That request cannot be filled, and its per-unit worth still beat
+                // questing, so 20-odd gatherers walked 454-670 s to Thousand Needles and Hillsbrad and the need grew
+                // again under them every update. The walk is recomputed every update from the skill the bot holds
+                // ([ench171]), so everything past the next point is re-derived anyway and only the next point's
+                // reagents are a real call. The whole walk still decides whether to climb at all: `gmin`, `cost` and
+                // the stops' minutes below are untouched, so no verdict about climbing changes - only the size of
+                // the material request
+                uint32 const firstV = std::max<uint32>(1, skill);
+                for (uint32 v = firstV; v < top; ++v)
                 {
                     if (list == recipesBySkill_.end() || skillPlan == skillPlan_.end() ||
                         v >= skillPlan->second.size() || skillPlan->second[v] < 0)
@@ -5957,7 +5973,7 @@ void GuildCoordinator::UpdateProfessions()
                                                                  std::max<uint32>(1, proto->BuyCount)
                                                            : 0.0);
                                     buyItem = rawItem;
-                                    if (v < maxSkill)
+                                    if (v == firstV && v < maxSkill)  // [craft461]
                                         buyNow[rawItem] += units;
                                     continue;
                                 }
@@ -5975,7 +5991,7 @@ void GuildCoordinator::UpdateProfessions()
                                             gatherItem = rawItem;
                                             gatherUnits = units;
                                         }
-                                        if (v < maxSkill)
+                                        if (v == firstV && v < maxSkill)  // [craft461]
                                             gatherNow[rawItem] += units;
                                         continue;
                                     }
@@ -6110,6 +6126,36 @@ void GuildCoordinator::UpdateProfessions()
                         break;
                     }
                     Recipe const& r = *chosen;
+                    // [craft461] the inputs of the request the calls carry: the point being gained of the points the
+                    // ceiling leaves, the recipe and its chance there, the crafts that one point expects, what each
+                    // craft takes, and the units the calls ended up asking for
+                    if (v == firstV)
+                    {
+                        std::string reagentText, askText;
+                        for (auto const& [item, n] : r.reagents)
+                            reagentText += (reagentText.empty() ? "" : " + ") + ItemName(item) + " ×" +
+                                           std::to_string(n);
+                        for (auto const& [item, n] : gatherNow)
+                            if (askText.size() < 120)
+                                askText += (askText.empty() ? "" : ", ") + ItemName(item) + " ×" +
+                                           std::to_string(uint32(std::ceil(n))) + " gathered";
+                        for (auto const& [item, n] : buyNow)
+                            if (askText.size() < 160)
+                                askText += (askText.empty() ? "" : ", ") + ItemName(item) + " ×" +
+                                           std::to_string(uint32(std::ceil(n))) + " bought";
+                        std::string const text = Acore::StringFormat(
+                            "{} {} {}/{}: point {} of the {} to the ceiling {}, {} at {:.1f}% needs ~{:.1f} craft(s) "
+                            "of {} - the calls ask {}",
+                            Who(row->low), SkillShort(line), skill, maxSkill, v, top > skill ? top - skill : 0u, top,
+                            NewRpgCraft::RecipeName(r.spellId), double(CraftChance(v, r.gray, r.yellow)) / 10.0,
+                            crafts, reagentText.empty() ? std::string("nothing") : reagentText,
+                            askText.empty() ? std::string("nothing (held or brought by the guild)") : askText);
+                        if (std::string& logged = st.craftLogged["craft461:" + std::to_string(line)]; logged != text)
+                        {
+                            logged = text;
+                            LOG_INFO("playerbots", "[craft461] {}", text);
+                        }
+                    }
                     if (chosen != &list->second[tries.front()])
                         st.walkRecipes[line].insert(r.spellId);  // [craft427] trained as the walk's own recipe
                     for (auto const& [item, n] : take)
