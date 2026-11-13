@@ -403,7 +403,19 @@ namespace Leader::Fight
     // swings that land (1 - the victim's dodge, parry and miss chance), minus the blocked share (block chance x
     // shield block value); plus the spell it is casting now (its school damage effects over its cast time, at
     // least the global cooldown). `spell`: that spell part
+    // The swings and the cast in flight only: correct for a pet or a totem. For a player victim every decision asks
+    // LandedOnDps below, which prices the mob by the planner's own formula - AttackerDps undercounts a caster or a
+    // dual-wielder on a player by about three times ([judge18]).
     float AttackerDps(Unit* attacker, Unit* victim, float& spell);
+    // [judge18] the one judge of the damage `attacker` lands on `victim`: the planner's formula for a player, the
+    // swing model for a pet or a totem. `spell`: the spell share of the figure.
+    float LandedOnDps(Unit* attacker, Unit* victim, float& spell);
+    // [judge19] the healer the leader counts on for `member`: alive, in heal reach and sight, above its mana line
+    bool HealerCovers(Player* member, Player* healer);
+    // [judge19] the [dun235] heals term of the leader's survivesSet, asked by the leader and by the member's own
+    // ThreatMultiplier so one survival is not priced two ways: the healer's spare rate over `seconds` after its
+    // first gap, capped by its mana past the tank's share; 0 when `incoming` kills `member` inside that gap.
+    float HealerCover(Player* member, Player* healer, Player* tank, float seconds, float incoming, float health);
 
     // [lead64] where a melee member waits at a pull: short of the meeting point on its own side by
     // LEADER_LOOSE_TANK_YD (next to the tank), never into the mob before the tank has hit it

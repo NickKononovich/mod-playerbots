@@ -47,7 +47,8 @@ namespace PullPlanning
     bool BearStatsSeen(Player* tank, float& health, float& armor, float& dodge, float& parry);
     // [dun180] the damage per second `mob` lands on `victim` as the planner reads it (LandedMeleeDps: its melee
     // through the game's attack table and armor, its spells from its spell data)
-    float MobLandedDps(Unit* mob, Player* victim);
+    // [judge18] `spellPart`: the spell share of that figure, for the callers that price the swings alone
+    float MobLandedDps(Unit* mob, Player* victim, float* spellPart = nullptr);
     // [lead1311] the hits per second `mob` lands on `victim` by the formula: its swings that pass the victim's miss,
     // dodge and parry (LandedMeleeDps' attack table, off-hand too, none while it casts) plus its damage casts
     float MobHitsPerSec(Unit* mob, Player* victim);

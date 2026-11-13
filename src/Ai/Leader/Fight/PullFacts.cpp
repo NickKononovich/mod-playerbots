@@ -316,11 +316,11 @@ namespace Leader::Fight
         for (Unit* attacker : tank->getAttackers())
             if (attacker && attacker->IsAlive())
             {
-                dps += AttackerDps(attacker, tank, spellPart);
+                dps += LandedOnDps(attacker, tank, spellPart);  // [judge18]
                 counted |= attacker == target;
             }
         if (!counted)
-            dps += AttackerDps(target, tank, spellPart);
+            dps += LandedOnDps(target, tank, spellPart);  // [judge18]
         float const health = float(tank->GetHealth());
         if (dps <= 0.0f || health > dps * nearestSec)
             return std::string();

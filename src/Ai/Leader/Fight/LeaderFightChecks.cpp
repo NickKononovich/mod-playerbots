@@ -1968,6 +1968,64 @@ namespace Leader::Fight
         return melee + spell;
     }
 
+    // [judge18] the one judge of "the damage this attacker lands on this unit", the split LeaderValues already made
+    // by hand ([lead1303]): a player victim is priced by the planner's own formula (MobLandedDps / LandedMeleeDps -
+    // the attack table, the off-hand swings, the weapon specials, the mob's SmartAI and template spell data at the
+    // instance's rescale, the tank mitigation), a pet or a totem by AttackerDps above, which knows only the swings
+    // and the cast in flight. Every leader decision asked AttackerDps for a player victim and so priced the mob at
+    // its swings alone: b276 ac-h 5F-14 read a Raging Soul at 340/s against ~1.1k/s landed, and one site patched
+    // that over with std::max(now, landed) while the aggro-loss gate, the tank-intake sums and the pull facts kept
+    // the undercount. User rule: a death is a calculation bug - the estimate is fixed, no cap is added.
+    float LandedOnDps(Unit* attacker, Unit* victim, float& spell)
+    {
+        spell = 0.0f;
+        if (!attacker || !victim)
+            return 0.0f;
+        if (Player* player = victim->ToPlayer())
+            return PullPlanning::MobLandedDps(attacker, player, &spell);
+        return AttackerDps(attacker, victim, spell);  // a pet or a totem: its armor and avoidance
+    }
+
+    // [judge19] the healer the leader counts on for `member`: alive, in heal reach and sight, above its own mana
+    // line. The bot's ThreatMultiplier wrote the same test out again with a literal 40 yd beside this constant.
+    bool HealerCovers(Player* member, Player* healer)
+    {
+        return member && healer && healer != member && healer->IsAlive() &&
+               healer->IsWithinCombatRange(member, Leader::LEADER_HEAL_REACH_YD) &&
+               healer->IsWithinLOSInMap(member) &&
+               (!healer->GetMaxPower(POWER_MANA) ||
+                healer->GetPowerPct(POWER_MANA) >= RestState::OwnManaLine(healer));
+    }
+
+    // [judge19] the heals that healer lands on `member` over `seconds` - the [dun235] term of the leader's
+    // survivesSet: its sustained rate after its first gap, less what the tank is taking now, capped by what its mana
+    // buys past the tank's share, and nothing at all when `incoming` kills the member inside that first gap.
+    // One judge: ThreatStrategy::SurvivesTaking priced the same survival as `damage < health` with no heals term at
+    // all while its own comment claimed "the same terms as the leader's lead985 / lead1010 survivesSet", so the
+    // leader called an area safe and the member refused to cast it - b475 logged 22 such clashes on 4 bots.
+    // No tank to take them back: no heals are counted, as before.
+    float HealerCover(Player* member, Player* healer, Player* tank, float seconds, float incoming, float health)
+    {
+        if (!tank || !HealerCovers(member, healer))
+            return 0.0f;
+        RestState::HealerFacts const facts = RestState::HealerThroughput(healer, member);
+        float tankIntake = 0.0f;
+        for (Unit* attacker : tank->getAttackers())
+            if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank)
+            {
+                float part = 0.0f;
+                tankIntake += LandedOnDps(attacker, tank, part);  // [judge18]
+            }
+        if (incoming * std::min(seconds, facts.gapSec) >= health)
+            return 0.0f;  // it dies inside the healer's first gap
+        float const spareRate = std::max(0.0f, facts.hps - tankIntake);
+        float heals = spareRate * std::max(0.0f, seconds - facts.gapSec);
+        if (healer->GetMaxPower(POWER_MANA) && facts.healPerMana > 0.0f)
+            heals = std::min(heals, std::max(0.0f, float(healer->GetPower(POWER_MANA)) * facts.healPerMana -
+                                                       tankIntake * seconds));
+        return heals;
+    }
+
     // [lead64] where a melee member waits at a pull: short of the meeting point on its own side by
     // LEADER_LOOSE_TANK_YD (next to the tank), never into the mob before the tank has hit it
     Position LeaderMeleeWait(Player* bot, Position const& meet)

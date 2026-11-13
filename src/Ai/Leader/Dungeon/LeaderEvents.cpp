@@ -2952,7 +2952,7 @@ namespace Leader::Dungeon
                 {
                     float part = 0.0f;
                     Unit* victim = mob->GetVictim() ? mob->GetVictim() : tank;
-                    float const hits = Leader::Fight::AttackerDps(mob, victim, part);
+                    float const hits = Leader::Fight::LandedOnDps(mob, victim, part);  // [judge18]
                     float const killSec = std::max(float(mob->GetHealth()) / dps, 0.1f);
                     ratio[mob] = hits / killSec;
                 }
@@ -2987,7 +2987,7 @@ namespace Leader::Dungeon
                     Unit* victim = mob->GetVictim() ? mob->GetVictim() : tank;
                     float part = 0.0f;
                     lifeRate[mob] =
-                        Leader::Fight::AttackerDps(mob, victim, part) / float(std::max<uint32>(mob->GetHealth(), 1));
+                        Leader::Fight::LandedOnDps(mob, victim, part) / float(std::max<uint32>(mob->GetHealth(), 1));  // [judge18]
                     Player* const onPlayer = mob->GetVictim() ? mob->GetVictim()->ToPlayer() : nullptr;
                     healerOnMember[mob] = MobRoles::IsHealer(mob) && onPlayer && onPlayer->IsInSameRaidWith(tank) &&
                                           !IsCrowdControlled(mob);
@@ -3944,7 +3944,7 @@ namespace Leader::Dungeon
                         if (attacker && attacker->IsAlive() && attacker->GetVictim() == victim)
                         {
                             float spellPart = 0.0f;
-                            incoming += AttackerDps(attacker, victim, spellPart);
+                            incoming += LandedOnDps(attacker, victim, spellPart);  // [judge18]
                         }
                     float const health = float(victim->GetHealth()) +
                                          float(victim->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
@@ -10176,6 +10176,11 @@ namespace Leader::Dungeon
                     float longest = 0.0f;
                     float incoming = 0.0f;
                     float spellPart = 0.0f;
+                    // [judge18] the figure this verdict used to be taken on - the mobs' swings and the cast in
+                    // flight (AttackerDps) - kept beside the one it is taken on now, so the next build's log shows
+                    // per verdict how much the corrected number moved it and whether it costs throughput
+                    float wasDamage = 0.0f;
+                    float wasIncoming = 0.0f;
                     std::string how;
                     for (size_t i = 0; i < taken.size(); ++i)
                     {
@@ -10183,10 +10188,14 @@ namespace Leader::Dungeon
                         if (back < 0.0f)
                             return false;
                         float part = 0.0f;
-                        float const dps = AttackerDps(taken[i].mob, bot, part);
+                        float const dps = LandedOnDps(taken[i].mob, bot, part);  // [judge18]
                         incoming += dps;
                         spellPart += part;
                         damage += dps * back;
+                        float wasPart = 0.0f;  // [judge18] the same mob by the old swing-only figure
+                        float const wasDps = AttackerDps(taken[i].mob, bot, wasPart);
+                        wasIncoming += wasDps;
+                        wasDamage += wasDps * back;
                         longest = std::max(longest, back);
                         if (how.empty())
                             how = int(i) == taunted
@@ -10198,44 +10207,26 @@ namespace Leader::Dungeon
                             std::find(mobs.begin(), mobs.end(), attacker) == mobs.end())
                         {
                             float part = 0.0f;
-                            float const dps = AttackerDps(attacker, bot, part);
+                            float const dps = LandedOnDps(attacker, bot, part);  // [judge18]
                             incoming += dps;
                             damage += dps * longest;
+                            float wasPart = 0.0f;  // [judge18] the same attacker by the old swing-only figure
+                            float const wasDps = AttackerDps(attacker, bot, wasPart);
+                            wasIncoming += wasDps;
+                            wasDamage += wasDps * longest;
                         }
                     float const health =
                         float(bot->GetHealth()) + float(bot->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
-                    bool const healed = healer && healer != bot && healer->IsAlive() &&
-                                        healer->IsWithinCombatRange(bot, Leader::LEADER_HEAL_REACH_YD) &&
-                                        healer->IsWithinLOSInMap(bot) &&
-                                        (!healer->GetMaxPower(POWER_MANA) ||
-                                         healer->GetPowerPct(POWER_MANA) >= RestState::OwnManaLine(healer));
+                    bool const healed = HealerCovers(bot, healer);  // [judge19]
                     // [dun235] user rule (aggro-loss-if-survives: "until retaken or healed"): the healer's heals on
                     // the member count - its sustained rate (HealerThroughput, dun215) after its first gap, less what
                     // the tank takes now, and no more than its mana buys past the tank's share; the member must also
                     // live through the first gap. Before, only its health counted: b444 rfc-n five11-11 held all three
                     // casters on secondary mobs the bear built 1 tps on ("1207 vs 442 health, healer reaches it: the
                     // Stop stands"), 5-6 dps each for 139 s while 7 mobs piled in - 2 kills, the five wiped
-                    float heals = 0.0f;
-                    if (healed)
-                    {
-                        RestState::HealerFacts const facts = RestState::HealerThroughput(healer, bot);
-                        float tankIntake = 0.0f;
-                        for (Unit* attacker : tank->getAttackers())
-                            if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank)
-                            {
-                                float part = 0.0f;
-                                tankIntake += AttackerDps(attacker, tank, part);
-                            }
-                        float const spareRate = std::max(0.0f, facts.hps - tankIntake);
-                        float const healSec = std::max(0.0f, longest - facts.gapSec);
-                        heals = spareRate * healSec;
-                        if (healer->GetMaxPower(POWER_MANA) && facts.healPerMana > 0.0f)
-                            heals = std::min(heals, std::max(0.0f, float(healer->GetPower(POWER_MANA)) *
-                                                                       facts.healPerMana -
-                                                                   tankIntake * longest));
-                        if (incoming * std::min(longest, facts.gapSec) >= health)
-                            heals = 0.0f;
-                    }
+                    // [judge19] the heals term lives in one place now (Leader::Fight::HealerCover), so the member's
+                    // own ThreatMultiplier prices this survival with the leader's terms instead of dropping it
+                    float const heals = HealerCover(bot, healer, tank, longest, incoming, health);
                     bool const survives = damage < health + heals && healed;
                     // logged on a change of the verdict per member, first mob and set size
                     // [dun236] once per member, first mob, set size and verdict: with dun235's heals the verdict
@@ -10254,19 +10245,23 @@ namespace Leader::Dungeon
                             LOG_INFO("playerbots",
                                      "[lead985] {}: no headroom on {} ({:.0f} -> {:.0f} vs tank {:.0f} -> {:.0f}); "
                                      "{} dps on it ({:.0f} cast) x {:.1f} s to take it back ({}) = {:.0f} vs {:.0f} "
-                                     "health + {:.0f} heals [dun235], healer {}: {}",
+                                     "health + {:.0f} heals [dun235], healer {}: {} "
+                                     "[judge18] was {:.0f} dps = {:.0f} damage (swings only, x{:.2f})",
                                      bot->GetName(), first->GetName(), p.mine, p.mineNext, p.tank, p.tankNext,
                                      incoming, spellPart, longest, how, damage, health, heals,
                                      healed ? "reaches it" : "does not",
-                                     survives ? "keeps its damage" : "the Stop stands");
+                                     survives ? "keeps its damage" : "the Stop stands", wasIncoming, wasDamage,
+                                     wasDamage > 0.0f ? damage / wasDamage : 0.0f);
                         else
                             LOG_INFO("playerbots",
                                      "[lead1010] {}: its area takes {} mobs without headroom ({} first); {:.0f} dps on "
                                      "it ({:.0f} cast), {:.0f} damage until the tank has them back (longest {:.1f} s, "
-                                     "{}) vs {:.0f} health + {:.0f} heals [dun235], healer {}: {}",
+                                     "{}) vs {:.0f} health + {:.0f} heals [dun235], healer {}: {} "
+                                     "[judge18] was {:.0f} dps = {:.0f} damage (swings only, x{:.2f})",
                                      bot->GetName(), taken.size(), first->GetName(), incoming, spellPart, damage,
                                      longest, how, health, heals, healed ? "reaches it" : "does not",
-                                     survives ? "the area may take them" : "they stay spared");
+                                     survives ? "the area may take them" : "they stay spared", wasIncoming, wasDamage,
+                                     wasDamage > 0.0f ? damage / wasDamage : 0.0f);
                     }
                     return survives;
                 };
@@ -10299,15 +10294,14 @@ namespace Leader::Dungeon
                         for (Unit* attacker : member->getAttackers())
                             if (attacker && attacker->IsAlive() && attacker->GetVictim() == member)
                             {
+                                // [judge18] this site took std::max of the two formulas, which was the admission that
+                                // one of them undercounts. It does, and now every site asks the one that does not.
                                 float spellPart = 0.0f;
-                                float const now = AttackerDps(attacker, member, spellPart);
-                                float const landed = PullPlanning::MobLandedDps(attacker, member);
-                                float const dps = std::max(now, landed);
+                                float const dps = LandedOnDps(attacker, member, spellPart);
                                 incoming += dps;
                                 byAttacker.emplace_back(dps, Acore::StringFormat("{} {:.0f}{}", attacker->GetName(),
-                                                                                  dps, landed > now   ? " (its data)"
-                                                                                       : spellPart > 0.0f ? " (cast)"
-                                                                                                          : ""));
+                                                                                  dps,
+                                                                                  spellPart > 0.0f ? " (spells)" : ""));
                             }
                         // [lead980] b228 rfc-h 5D-4 336.7 s: the mage at 18 % stood among Troggs whose victim was the
                         // healer on the level above (no path to it); with no attacker "on" it the mage was no
@@ -10324,7 +10318,7 @@ namespace Leader::Dungeon
                                 continue;
                             float spellPart = 0.0f;
                             // its swings only: the spell it casts now goes to its victim
-                            float const dps = AttackerDps(nearMob, member, spellPart) - spellPart;
+                            float const dps = LandedOnDps(nearMob, member, spellPart) - spellPart;  // [judge18]
                             incoming += dps;
                             byAttacker.emplace_back(dps, Acore::StringFormat("{} {:.0f} (in reach)", nearMob->GetName(),
                                                                               dps));
@@ -10820,7 +10814,7 @@ namespace Leader::Dungeon
                             {
                                 float part = 0.0f;
                                 addsSec += float(mob->GetHealth()) / groupDps;
-                                addsHits += AttackerDps(mob, tank, part);
+                                addsHits += LandedOnDps(mob, tank, part);  // [judge18]
                             }
                             float gain = 0.0f;
                             float executeSec = 0.0f;
@@ -10848,7 +10842,7 @@ namespace Leader::Dungeon
                                 if (attacker && attacker->IsAlive() && attacker->GetVictim() == tank)
                                 {
                                     float part = 0.0f;
-                                    onTank += AttackerDps(attacker, tank, part);
+                                    onTank += LandedOnDps(attacker, tank, part);  // [judge18]
                                 }
                             float const taken = std::max(Leader::Support::MemberTakenPerSec(group, tank), onTank);
                             float hps = 0.0f;
@@ -11696,7 +11690,7 @@ namespace Leader::Dungeon
                         !IsCrowdControlled(attacker) && attacker->IsWithinMeleeRange(bot))
                     {
                         float part = 0.0f;
-                        incoming += AttackerDps(attacker, bot, part);
+                        incoming += LandedOnDps(attacker, bot, part);  // [judge18]
                         on.push_back(attacker);
                     }
                 if (on.empty() || incoming <= 0.0f)
@@ -13340,7 +13334,7 @@ namespace Leader::Dungeon
                     if (Creature* packMob = map->GetCreature(guid); packMob && packMob->IsAlive())
                     {
                         float spell = 0.0f;
-                        hits += AttackerDps(packMob, bot, spell);
+                        hits += LandedOnDps(packMob, bot, spell);  // [judge18]
                     }
                 float const runSpeed = std::max(0.1f, bot->GetSpeed(MOVE_RUN));
                 float const takeBack = std::max(0.0f, bot->GetExactDist(tank) - LeaderTauntReach(tank)) / runSpeed +

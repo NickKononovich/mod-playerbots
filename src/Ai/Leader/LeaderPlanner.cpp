@@ -4366,7 +4366,12 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return melee + spells.dps;
     }
 
-    float MobLandedDps(Unit* mob, Player* victim) { return mob && victim ? LandedMeleeDps(mob, victim) : 0.0f; }
+    float MobLandedDps(Unit* mob, Player* victim, float* spellPart)
+    {
+        if (spellPart)
+            *spellPart = 0.0f;
+        return mob && victim ? LandedMeleeDps(mob, victim, false, spellPart) : 0.0f;
+    }
 
     float MobHitsPerSec(Unit* mob, Player* victim)
     {

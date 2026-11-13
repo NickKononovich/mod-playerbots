@@ -286,13 +286,9 @@ FightOutlook LeaderFightOutlookValue::Calculate()
         Unit* victim = unit->GetVictim();
         if (!victim)
             continue;
-        if (Player* player = victim->ToPlayer())
-            enemyDps += PullPlanning::MobLandedDps(unit, player);
-        else
-        {
-            float spell = 0.0f;
-            enemyDps += Leader::Fight::AttackerDps(unit, victim, spell);  // a pet or a totem: its armor and avoidance
-        }
+        // [judge18] the split this site made by hand is now the one judge every decision asks
+        float spell = 0.0f;
+        enemyDps += Leader::Fight::LandedOnDps(unit, victim, spell);
     }
 
     // The group: its health, the members' formula damage, the healers' rate and their mana.

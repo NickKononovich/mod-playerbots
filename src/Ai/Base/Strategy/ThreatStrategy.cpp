@@ -706,9 +706,8 @@ namespace
             Player* member = ref->GetSource();
             if (!member || member == bot || !member->IsAlive() || member->GetMap() != bot->GetMap())
                 continue;
-            if (!healer && PlayerbotAI::IsHeal(member) && member->IsWithinCombatRange(bot, 40.0f) &&
-                member->IsWithinLOSInMap(bot) &&
-                (!member->GetMaxPower(POWER_MANA) || member->GetPowerPct(POWER_MANA) >= RestState::OwnManaLine(member)))
+            // [judge19] the leader's own test (HealerCovers), which this wrote out again with a literal 40 yd
+            if (!healer && PlayerbotAI::IsHeal(member) && Leader::Fight::HealerCovers(bot, member))
                 healer = member;
             if (!PlayerbotAI::IsTank(member))
                 continue;
@@ -746,11 +745,12 @@ namespace
         for (Unit* mob : mobs)
         {
             float part = 0.0f;
-            hits.emplace_back(Leader::Fight::AttackerDps(mob, bot, part), mob);
+            hits.emplace_back(Leader::Fight::LandedOnDps(mob, bot, part), mob);  // [judge18]
         }
         std::sort(hits.begin(), hits.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
         float damage = 0.0f;
         float longest = 0.0f;
+        float incoming = 0.0f;  // [judge19] the rate the heals term is judged against, as the leader judges it
         size_t next = 0;
         for (size_t step = 0; step < hits.size(); ++step)
         {
@@ -762,6 +762,7 @@ namespace
                 float const life = ExpectedFightLifetime(botAI, hits[next].second);
                 float const until = back < 0.0f ? life : std::min(back, life);
                 damage += hits[next].first * until;
+                incoming += hits[next].first;  // [judge19]
                 longest = std::max(longest, until);
             }
             if (next >= hits.size())
@@ -772,12 +773,19 @@ namespace
                 std::none_of(mobs.begin(), mobs.end(), [attacker](Unit* m) { return m == attacker; }))
             {
                 float part = 0.0f;
-                damage += Leader::Fight::AttackerDps(attacker, bot, part) * longest;
+                float const dps = Leader::Fight::LandedOnDps(attacker, bot, part);  // [judge18]
+                damage += dps * longest;
+                incoming += dps;  // [judge19]
             }
         float const health = float(bot->GetHealth()) + float(bot->GetTotalAuraModifier(SPELL_AURA_SCHOOL_ABSORB));
-        bool const survives = damage < health;
-        why = Acore::StringFormat("{:.0f} damage until {} ({:.1f} s) vs {:.0f} health, healer {}",
-                                  damage, taker ? "a tank has them back" : "they die", longest, health,
+        // [judge19] the leader's own heals term (Leader::Fight::HealerCover, [dun235]). This read
+        // `damage < health` - no heals at all - while its comment above claimed the leader's terms, so the leader
+        // logged "the area may take them" and the member refused the cast (b475: 22 clashes on 4 bots)
+        float const heals = Leader::Fight::HealerCover(bot, healer, taker, longest, incoming, health);
+        bool const survives = damage < health + heals;
+        why = Acore::StringFormat("{:.0f} damage until {} ({:.1f} s) vs {:.0f} health + {:.0f} heals [dun235], "
+                                  "healer {}",
+                                  damage, taker ? "a tank has them back" : "they die", longest, health, heals,
                                   healer->GetName());
         return survives;
     }
