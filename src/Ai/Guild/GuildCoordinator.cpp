@@ -1483,6 +1483,7 @@ void GuildCoordinator::UpdateWanted()
     std::unordered_map<uint64, float> pointValue;
     std::unordered_map<uint32, float> copperPerXp;  // member -> the core's quest XP -> money rate (RecordPace)
     std::set<std::pair<uint32, uint32>> called;     // [econ2] (member, line) the leader calls to craft / gather / buy
+    std::unordered_map<uint64, uint32> walkTarget;  // [craft430] (low << 16 | line) -> its walk's judged skill
     {
         CoordLock guard(lock_, __func__);
         pointValue = pointValue_;
@@ -1491,7 +1492,11 @@ void GuildCoordinator::UpdateWanted()
                 if (pick.kind != GuildProfessionKind::NONE && pick.kind != GuildProfessionKind::TRAIN)
                     called.insert({low, pick.skillLine});
         for (auto const& [low, st] : bots_)
+        {
             copperPerXp[low] = st.copperPerXp;
+            for (auto const& [line, target] : st.walkTarget)
+                walkTarget[(uint64(low) << 16) | line] = target;
+        }
     }
     // a value shared over the raw materials by their units
     auto const shareWorth = [&](std::map<uint32, double> const& raw, double value)
@@ -1570,6 +1575,11 @@ void GuildCoordinator::UpdateWanted()
                 // The need runs to the cap of the rank it holds now (Player max skill); a planned line it has not
                 // learned wants nothing yet (its TRAIN call comes first)
                 cap = p->HasSkill(line) ? p->GetPureMaxSkillValue(line) : 0;
+                // [craft430] ... or on to the skill its called walk is judged at (the trainer ranks its level allows
+                // on the way): b463 Orenem Tailoring 25/75 was called to 150, Wool Cloth (from 75) stayed unwanted and
+                // 11 stacks of it were sold
+                if (auto const target = walkTarget.find(key); cap && target != walkTarget.end())
+                    cap = std::max(cap, std::min(target->second, TrainerCap(line, p->GetLevel())));
                 lastSkill_[key] = skill;
                 lastCap_[key] = cap;
             }
@@ -5319,6 +5329,7 @@ void GuildCoordinator::UpdateProfessions()
                     double const minutes = craftMin + gatherMin + supplyMin;
                     if (judged > skill && craftMin + gatherMin > 0.0)  // [craft426]
                         lineMinPerPoint_[line] = (craftMin + gatherMin) / double(judged - skill);
+                    st.walkTarget[line] = judged;  // [craft430] the wanted list runs to it on a called line
                     float questPace = 0.0f;
                     std::string questWhy;
                     char numbers[320];

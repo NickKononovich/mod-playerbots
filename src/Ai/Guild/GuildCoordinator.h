@@ -661,6 +661,7 @@ private:
         // [craft381] [craft383] tag -> the line last logged for this bot (a log once per change)
         std::map<std::string, std::string> craftLogged;
         std::map<uint32, std::set<uint32>> walkRecipes;  // [craft427] skill line -> recipes its walk took past a block
+        std::map<uint32, uint32> walkTarget;  // [craft430] skill line -> the skill its last walk was judged at
         std::string profGoldWhat;
         // [human] the suggestions sent to a human member: key -> text (sent again only when the text changes)
         std::map<std::string, std::string> suggested;
