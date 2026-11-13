@@ -281,7 +281,10 @@ bool LfgAcceptAction::Execute(Event event)
         _portAsked = false;
         LOG_INFO("playerbots", "[diag250] {} accepts the Dungeon Finder proposal {}{}", bot->GetName(), id,
                  blocked ? std::string(" (port later: ") + blocked + ")" : std::string());
-        if (!blocked)
+        // [death450] never on a taxi flight: the cleared flight state and the reset drop it mid-air (b467 Cassand L22
+        // on its flight over Dun Morogh, "falls from (-5349.3, -623.8, 496.8) ... (103.8 yd)"); the core's port
+        // takes it off the taxi itself (Player::TeleportTo)
+        if (!blocked && !bot->IsInFlight())
         {
             bot->ClearUnitState(UNIT_STATE_ALL_STATE);
             if (RandomPlayerbotMgr::instance().IsRandomBot(bot) && !bot->GetGroup())
