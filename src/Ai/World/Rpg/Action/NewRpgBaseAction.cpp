@@ -8474,6 +8474,10 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
     in.measure = [walker, dps, budget](QuestRoute::Point const& from, QuestRoute::Point const& to, float& walkYd,
                                        float& fightSec)
     { return MeasureLeg(walker, from, to, dps, walkYd, fightSec, budget.get()); };
+    // [quest132] the ground term, reported only: nothing in this pass reads plan.groundXp for a decision
+    in.ground = [walker](QuestRoute::Point const& from, QuestRoute::Point const& to,
+                         std::map<uint32, uint32>& npcLeft, uint32& count)
+    { return GroundXpOfLeg(walker, from, to, npcLeft, count); };
     auto const onLandmass = [&](float x, float y, float z)
     {
         return TravelRouteMgr::Landmass(
@@ -8757,6 +8761,10 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         objective.work = workOf(quest, &objWork);
         objective.killXp = objWork.killXp;  // [quest131] what the kills this objective needs are worth themselves
         objective.killCount = objWork.killCount;
+        // [quest132] those kills are promised already: the ground sweep must not count the same creatures again
+        for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            if (quest->RequiredNpcOrGo[i] > 0 && quest->RequiredNpcOrGoCount[i])
+                in.objectiveNpcLeft[uint32(quest->RequiredNpcOrGo[i])] += quest->RequiredNpcOrGoCount[i];
         in.stops.push_back(objective);
         if (hasEnder && onLandmass(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ()))
             addToHub(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ(), questId, xp, false);
@@ -8985,6 +8993,76 @@ namespace
             leg->nearMobs.push_back({spawn, gap});
         return leg;
     }
+}
+
+// [quest132] what the ground one leg crosses is worth in experience. A creature counts when its spawn lies within
+// its OWN aggro radius of the segment - the core's radius (Creature::GetAttackDistance: 20 yd at equal level, a yard
+// per level of difference, the realm's Rate.Creature.Aggro, capped by SightDistance), so there is no corridor width
+// chosen here and a creature too far below the bot sweeps nothing. Its experience is the core's own BaseGain over
+// its level, which is 0 below the grey line, so grey ground is worth nothing without a filter of ours. Spawns come
+// from the startup-loaded cell lists (no query on a map thread). Reported only in this pass: nothing decides on it.
+float NewRpgBaseAction::GroundXpOfLeg(Player* bot, QuestRoute::Point const& from, QuestRoute::Point const& to,
+                                      std::map<uint32, uint32>& npcLeft, uint32& count)
+{
+    if (!bot)
+        return 0.0f;
+    float const aggroRate = sWorld->getRate(RATE_CREATURE_AGGRO);
+    if (aggroRate <= 0.0f)
+        return 0.0f;
+    uint16 const mapId = uint16(bot->GetMapId());
+    uint8 const level = bot->GetLevel();
+    float const sight = sWorld->getFloatConfig(CONFIG_SIGHT_MONSTER);
+    ContentLevels const content = GetContentLevelsForMapAndZone(mapId, 0);
+    CellObjectGuidsMap const& cells = sObjectMgr->GetMapObjectGuids(mapId, bot->GetMap()->GetSpawnMode());
+    float const dx = to.x - from.x, dy = to.y - from.y;
+    float const len2 = dx * dx + dy * dy;
+    // the segment's own cells, plus one ring: the widest aggro radius is under one cell, so a ring covers the edge
+    CellCoord const a = Acore::ComputeCellCoord(from.x, from.y);
+    CellCoord const b = Acore::ComputeCellCoord(to.x, to.y);
+    uint32 const x0 = std::min(a.x_coord, b.x_coord), x1 = std::max(a.x_coord, b.x_coord);
+    uint32 const y0 = std::min(a.y_coord, b.y_coord), y1 = std::max(a.y_coord, b.y_coord);
+    float xp = 0.0f;
+    std::set<ObjectGuid::LowType> seen;
+    for (uint32 cx = (x0 ? x0 - 1 : 0); cx <= x1 + 1 && cx < TOTAL_NUMBER_OF_CELLS_PER_MAP; ++cx)
+        for (uint32 cy = (y0 ? y0 - 1 : 0); cy <= y1 + 1 && cy < TOTAL_NUMBER_OF_CELLS_PER_MAP; ++cy)
+        {
+            auto const cell = cells.find(cy * TOTAL_NUMBER_OF_CELLS_PER_MAP + cx);
+            if (cell == cells.end())
+                continue;
+            for (ObjectGuid::LowType spawnId : cell->second.creatures)
+            {
+                if (!seen.insert(spawnId).second)
+                    continue;
+                CreatureData const* data = sObjectMgr->GetCreatureData(spawnId);
+                CreatureTemplate const* npc = data ? sObjectMgr->GetCreatureTemplate(data->id) : nullptr;
+                if (!npc || npc->rank != CREATURE_ELITE_NORMAL)
+                    continue;  // the judge does not take elites or bosses alone: they are no yield of a walk
+                uint8 const npcLevel = uint8(std::max<uint32>(1, (npc->minlevel + npc->maxlevel) / 2));
+                uint32 const gain = Acore::XP::BaseGain(level, npcLevel, content);
+                if (!gain)
+                    continue;  // grey for the bot by the core's own line
+                int32 levelDiff = std::max<int32>(int32(level) - int32(npcLevel), -25);
+                float radius = std::min((20.0f - float(levelDiff)) * aggroRate, sight);
+                if (radius <= 0.0f)
+                    continue;
+                // the spawn's distance to the segment, not to its ends
+                float t = len2 > 0.0f ? ((data->posX - from.x) * dx + (data->posY - from.y) * dy) / len2 : 0.0f;
+                t = std::clamp(t, 0.0f, 1.0f);
+                float const nx = from.x + t * dx - data->posX, ny = from.y + t * dy - data->posY;
+                if (nx * nx + ny * ny > radius * radius)
+                    continue;
+                // [quest131] already promised this kill: spend it instead of counting it again
+                auto owed = npcLeft.find(data->id);
+                if (owed != npcLeft.end() && owed->second)
+                {
+                    --owed->second;
+                    continue;
+                }
+                xp += float(gain);
+                ++count;
+            }
+        }
+    return xp;
 }
 
 bool NewRpgBaseAction::MeasureLeg(Player* bot, QuestRoute::Point const& from, QuestRoute::Point const& to,

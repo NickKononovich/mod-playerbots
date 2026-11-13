@@ -98,6 +98,8 @@ namespace QuestRoute
         float WalkRatio() const { return straightYd_ > 0.0f ? walkYd_ / straightYd_ : 1.0f; }
         float FightPerYd() const { return straightYd_ > 0.0f ? fightSec_ / straightYd_ : 0.0f; }
         float Speed() const { return speed_; }
+        Point const& At(uint32 node) const { return points_[node]; }  // [quest132] the ground term's leg ends
+        bool Searched(uint32 a, uint32 b) const { return a != b && known_.count(Key(a, b)) != 0; }
         size_t MeasuredCount() const { return known_.size(); }
         size_t EstimatedCount() const { return estimated_; }  // [quest131] legs with no corridor: straight line
 
@@ -135,6 +137,15 @@ namespace QuestRoute
         // counts): a stop at place k is worth p^k of its experience, so the plan stops growing where the bot would
         // not arrive and a hand-in left late costs what it probably loses. 1.0f: nothing measured yet, no weighting
         float reach{1.0f};
+        // [quest132] the experience the ground a leg crosses is worth: the creatures whose spawn lies within their
+        // own aggro radius of the leg, that the bot's judge would take on, by the core's own experience formula.
+        // Reported only - nothing reads it for a decision in this pass. Empty: the term is not computed
+        using GroundFn =
+            std::function<float(Point const& from, Point const& to, std::map<uint32, uint32>& npcLeft, uint32& count)>;
+        GroundFn ground;
+        // creature entry -> kills [quest131] already promised for a quest objective: the ground term skips that
+        // many crossings of the entry so the same kill is not counted twice
+        std::map<uint32, uint32> objectiveNpcLeft;
         // [quest14] the enders of complete grey quests nobody needs: handed in only where the solved route passes
         // them at near-zero detour (PlaceGreyHandIns), else abandoned
         std::vector<Stop> greyHandIns;
@@ -151,6 +162,11 @@ namespace QuestRoute
         uint32 killCount{0};
         uint32 estimatedLegs{0};  // [quest131] legs with no corridor searched: straight line, no fight time
         uint32 totalLegs{0};
+        // [quest132] the experience the plan's own ground is worth, kept apart from `xp` on purpose: a term this
+        // large inside another number is how a 30x hid for months
+        float groundXp{0.0f};
+        uint32 groundCount{0};         // creatures the plan crosses
+        uint32 groundStraightLegs{0};  // of those legs, the ones swept as a straight line (the walk is under-stated)
         uint32 takes{0};          // quests it plans to take on the way
         uint32 earlierHandIns{0};  // [quest15] enders moved sooner by the hand-in weighting (HandInsEarlier)
         // [help21] the experience of the open quests' hand-ins only (no ready hub: a complete quest's hand-in comes

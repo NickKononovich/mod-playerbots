@@ -368,6 +368,9 @@ protected:
                         std::vector<std::pair<WorldPosition, std::string>> const& towns);
     uint64 RouteKey();
     uint64 RoutePlaceKey();  // [quest123] the map and landmass a plan belongs to, without the level
+    // [quest132] the experience the ground one leg crosses is worth (reported only; see the definition in the .cpp)
+    static float GroundXpOfLeg(Player* bot, QuestRoute::Point const& from, QuestRoute::Point const& to,
+                               std::map<uint32, uint32>& npcLeft, uint32& count);
     // [navgap] user 2026-11-09: a bot off the navmesh or on an island is a navmesh / travel defect to repair, not a
     // state to hearth out of: one alarm per bot and spot with the map, the position and the facts of how it got there
     // (a transport it rides or was left by, a trip phase, standing in the air, falling, a steep polygon, a hole)

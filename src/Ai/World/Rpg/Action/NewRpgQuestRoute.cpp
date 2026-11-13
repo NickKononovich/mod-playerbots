@@ -785,6 +785,8 @@ QuestRoute::Plan QuestRoute::Solve(Input const& in)
     plan.earlierHandIns = HandInsEarlier(legs, Pool{all, nullptr}, order, pinnedFirst, double(in.reach));
 
     uint32 prev = 0;
+    // [quest132] the kills [quest131] already promised, spent as the ground sweep meets them
+    std::map<uint32, uint32> groundNpcLeft = in.objectiveNpcLeft;
     for (size_t i : order)
     {
         Stop s = all[i];
@@ -799,6 +801,14 @@ QuestRoute::Plan QuestRoute::Solve(Input const& in)
         plan.killXp += s.killXp;  // [quest131] the kills its objectives need, worth their own experience
         plan.killCount += s.killCount;
         ++plan.totalLegs;
+        // [quest132] what the ground of this leg is worth. A leg no corridor search answered is swept as its
+        // straight line and counted, so the plan line can say how much of the term under-states the walk
+        if (in.ground && prev != s.node)
+        {
+            plan.groundXp += in.ground(legs.At(prev), legs.At(s.node), groundNpcLeft, plan.groundCount);
+            if (!legs.Searched(prev, s.node))
+                ++plan.groundStraightLegs;
+        }
         plan.stops.push_back(std::move(s));
     }
     plan.questXp = xp;
@@ -1293,14 +1303,16 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
         LOG_INFO("playerbots",
                  "{} stops={} eta={} walk={} xp={} open={} takes={} left_out={} offers={} legs={} walk_ratio={:.2f} "
                  "fight_s_per_100yd={:.1f} handins_sooner={} would_reach={:.2f} exp_xp={} plans={} reached={} "
-                 "lost={} xp_quest={} xp_kill={} kills={} legs_straight={}/{} why={} |{}",
+                 "lost={} xp_quest={} xp_kill={} kills={} xp_ground={} ground_mobs={} legs_ground_straight={}/{} "
+                 "legs_straight={}/{} why={} |{}",
                  // [quest15] handins_sooner, [quest122] [quest130] would_reach / exp_xp, [quest131] the two terms
                  // of the promise apart (a 20x must not hide inside one number) and the legs it under-states
                  RouteHead(bot, "plan"), r.plan.stops.size(), uint32(r.plan.eta), uint32(r.plan.walkYd),
                  uint32(r.plan.xp), logQuests, r.plan.takes, in.leftOut, in.offers.size(), r.plan.measured,
                  r.plan.walkRatio, r.plan.fightPerYd * 100.0f, r.plan.earlierHandIns, reach, uint32(expectedXp),
                  r.builds, r.stopsDone, r.stopsLeft, uint32(r.plan.questXp), uint32(r.plan.killXp),
-                 r.plan.killCount, r.plan.estimatedLegs, r.plan.totalLegs, why, stops);
+                 r.plan.killCount, uint32(r.plan.groundXp), r.plan.groundCount, r.plan.groundStraightLegs,
+                 r.plan.totalLegs, r.plan.estimatedLegs, r.plan.totalLegs, why, stops);
         // [walk68] the plan's next stop is a walk priced before it is walked (TripRefused: an orange / red or elite
         // roamer's round at the stop, a walk through a reach it must never fight - the route search with the static
         // spawns beyond sight; its answer kept per stop and level): a refused one is postponed now and the route built
