@@ -2164,8 +2164,28 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
                         haveBuilder = true;
                     }
                     break;
-                case Kind::Finisher:
                 case Kind::ComboDot:
+                    // [dps43] a bleed the target will not live to take is not damage. A ComboDot was the one kind
+                    // that reached the combo cycle whole: priced once per its duration with every tick of that
+                    // duration counted, however long the mob had left. Its own caster refuses it on the same
+                    // ground - RupturePays (RogueActions.cpp, [rot561]) prices Rupture over
+                    // min(lifetime, duration) and holds it when Eviscerate beats it - so the formula promised a
+                    // finisher the bot was right not to cast: b479 4/combat measured 73 % of its ideal with
+                    // Rupture 27 % of that plan and 0 casts in 21 fights (0 of 23 over both rogue specs).
+                    // DotRateOver is the judge the Dot kind already uses, and it is the same rule: the last
+                    // application keeps the ticks that land before the death and is dropped where the filler it
+                    // replaced pays more. No second rule and no threshold of its own - the rate it returns
+                    // carries the clamp, and a ComboDot that pays nothing is not priced at all.
+                    if (lifeSec > 0.0f)
+                    {
+                        float const rate = DotRateOver(bot, target, cast, fillerId, lifeSec);
+                        if (rate <= 0.0f)
+                            break;
+                        cast.periodSec = 1.0f / rate;  // the combo cycle's own limit for a ComboDot
+                    }
+                    finishers.push_back(cast);
+                    break;
+                case Kind::Finisher:
                     finishers.push_back(cast);
                     break;
                 case Kind::Swing:
