@@ -367,6 +367,7 @@ protected:
     bool CloseRouteStop(QuestRoute::BotRoute& route,
                         std::vector<std::pair<WorldPosition, std::string>> const& towns);
     uint64 RouteKey();
+    uint64 RoutePlaceKey();  // [quest123] the map and landmass a plan belongs to, without the level
     // [navgap] user 2026-11-09: a bot off the navmesh or on an island is a navmesh / travel defect to repair, not a
     // state to hearth out of: one alarm per bot and spot with the map, the position and the facts of how it got there
     // (a transport it rides or was left by, a trip phase, standing in the air, falling, a steep polygon, a hole)

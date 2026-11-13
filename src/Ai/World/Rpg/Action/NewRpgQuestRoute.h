@@ -123,6 +123,10 @@ namespace QuestRoute
         std::map<uint32, uint8> leftOutQuests;  // [routeplan] those quests and their status at the build
         std::set<uint64> townsSeen;             // [routeplan] the town task spots of the build, routed or not
         LegTable::MeasureFn measure;            // [routeplan] the real leg (NewRpgBaseAction::MeasureLeg); empty: none
+        // [quest124] the chance this bot reaches one more place of a plan, measured from its own plans (BotRoute's
+        // counts): a stop at place k is worth p^k of its experience, so the plan stops growing where the bot would
+        // not arrive and a hand-in left late costs what it probably loses. 1.0f: nothing measured yet, no weighting
+        float reach{1.0f};
         // [quest14] the enders of complete grey quests nobody needs: handed in only where the solved route passes
         // them at near-zero detour (PlaceGreyHandIns), else abandoned
         std::vector<Stop> greyHandIns;
@@ -194,6 +198,20 @@ namespace QuestRoute
         uint32 stopsDone{0};
         uint32 stopsLeft{0};
         uint32 builds{0};
+        // [quest123] the plan built for one place (map + landmass), kept while the bot is away from it: a dungeon
+        // trip threw the open-world plan away and the return built it again (b475: 18 "the level or map changed"
+        // rebuilds, 5 open hand-in stops lost with them). Resumed only at the level it was built at, since a
+        // level-up re-prices every stop
+        struct Parked
+        {
+            Plan plan;
+            uint64 builtKey{0};  // the full route key (level, map, landmass) of the build
+            uint32 respawnDue{0};
+            std::map<uint32, uint8> leftOutQuests;
+            std::set<uint64> townsSeen;
+        };
+        std::map<uint64, Parked> parked;  // place key -> the plan left there
+        uint64 placeKey{0};               // the place the current plan was built for
         // [lag340] a town stop on another landmass (its route there by boat / portal) worth its trip: walked before
         // the landmass's own stops
         WorldPosition crossTown{};

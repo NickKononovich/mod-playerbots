@@ -223,18 +223,24 @@ namespace
     // its own leg) times the experience handed in there. The run's measure is the hand-ins it makes: a route that
     // walks the same stops but hands in sooner gets its experience sooner (the bot builds its route again at each
     // level, a town task, a new quest - stops at the end of a long route are reached late or never)
-    double HandInSeconds(QuestRoute::LegTable const& legs, Pool const& at, std::vector<size_t> const& order)
+    // [quest124] `reach`: the chance the bot gets one place further into a plan (Input::reach, measured). A hand-in
+    // at place k is reached with p^k, so its lateness counts against that chance - one placed where the bot probably
+    // never arrives costs what it probably loses, not merely its own seconds. reach 1.0 is the old measure exactly
+    double HandInSeconds(QuestRoute::LegTable const& legs, Pool const& at, std::vector<size_t> const& order,
+                         double reach)
     {
         double weighted = 0.0;
         float seconds = 0.0f;
         uint32 prev = 0;
+        double share = 1.0;
         for (size_t i : order)
         {
             Stop const& s = at(i);
             seconds += legs.Seconds(prev, s.node);
+            share *= reach;
             // an ender, or a town stop where its party members hand in ([quest16])
             if (s.kind == StopKind::Ender || s.kind == StopKind::Town)
-                weighted += double(s.xp) * double(seconds);
+                weighted += double(s.xp) * double(seconds) / std::max(share, std::numeric_limits<double>::min());
             seconds += s.work;
             prev = s.node;
         }
@@ -247,11 +253,11 @@ namespace
     // (HandInSeconds) - the order stays feasible (a giver and an objective before their ender), the first stop stays
     // when pinned. The rest of the order is the shortest one found (Improve)
     uint32 HandInsEarlier(QuestRoute::LegTable const& legs, Pool const& at, std::vector<size_t>& order,
-                          bool pinnedFirst)
+                          bool pinnedFirst, double reach)
     {
         size_t const from = pinnedFirst ? 1 : 0;
         uint32 moved = 0;
-        double best = HandInSeconds(legs, at, order);
+        double best = HandInSeconds(legs, at, order, reach);
         for (size_t pass = 0; pass < order.size(); ++pass)  // each pass moves an ender sooner or ends the search
         {
             bool improved = false;
@@ -267,7 +273,7 @@ namespace
                     size_t const stop = trial[i];
                     trial.erase(trial.begin() + i);
                     trial.insert(trial.begin() + j, stop);
-                    double const cost = HandInSeconds(legs, at, trial);
+                    double const cost = HandInSeconds(legs, at, trial, reach);
                     if (cost + SECONDS_EPSILON < best && Feasible(at, trial))
                     {
                         best = cost;
@@ -728,8 +734,17 @@ QuestRoute::Plan QuestRoute::Solve(Input const& in)
             if (!trial.takes || trial.xp <= 0.0f)
                 continue;
             float const added = OrderSeconds(legs, Pool{all, &trial.added}, trial.order) - seconds;
-            float const ratio = trial.xp / std::max(added, SECONDS_EPSILON);
-            if (added <= trial.alone + SECONDS_EPSILON && ratio > bestRatio)
+            // [quest124] the offer is worth what the bot will reach of it. Its experience arrives at its last new
+            // place in the order (a quest pays at its ender), so it carries p^place of itself: an offer that would
+            // sit late in an already long order is worth almost nothing and is not taken. The plan shortens itself
+            // this way - no stop limit chosen by hand
+            size_t place = 0;
+            for (size_t k = 0; k < trial.order.size(); ++k)
+                if (trial.order[k] >= all.size())
+                    place = k + 1;
+            float const worth = trial.xp * float(std::pow(double(in.reach), double(place)));
+            float const ratio = worth / std::max(added, SECONDS_EPSILON);
+            if (added <= trial.alone + SECONDS_EPSILON && worth > 0.0f && ratio > bestRatio)
             {
                 bestRatio = ratio;
                 bestOffer = o;
@@ -759,7 +774,7 @@ QuestRoute::Plan QuestRoute::Solve(Input const& in)
             Improve(legs, Pool{all, nullptr}, order, pinnedFirst);
     }
 
-    plan.earlierHandIns = HandInsEarlier(legs, Pool{all, nullptr}, order, pinnedFirst);  // [quest15]
+    plan.earlierHandIns = HandInsEarlier(legs, Pool{all, nullptr}, order, pinnedFirst, double(in.reach));
 
     uint32 prev = 0;
     for (size_t i : order)
@@ -793,6 +808,13 @@ uint64 NewRpgBaseAction::RouteKey()
     // quests completed there were never routed to their enders (b372 Bierya: q1001 complete by Auberdine, its walk
     // went on 2000 yd south to q952's ender, "not in its 0 stops")
     return Mix(Mix(Mix(0, bot->GetLevel()), bot->GetMapId()), TravelRouteMgr::Landmass(WorldPosition(bot)));
+}
+
+// [quest123] the place a route belongs to, without the level: the map and the landmass. A plan is parked under it
+// while the bot is away (a dungeon trip) and resumed on its return, so a crossing costs no rebuild
+uint64 NewRpgBaseAction::RoutePlaceKey()
+{
+    return Mix(Mix(0, bot->GetMapId()), TravelRouteMgr::Landmass(WorldPosition(bot)));
 }
 
 void NewRpgBaseAction::InvalidateRoute(Player* bot, uint32 questId, std::string const& why)
@@ -1125,7 +1147,30 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
     else if (r.invalid)
         why = r.invalidWhy;
     else if (r.key != RouteKey())
-        why = "the level or map changed";
+    {
+        // [quest123] the plan it had here is parked under its place, and a plan parked for the place it now stands
+        // in is resumed instead of built again (then trimmed like any other, so stops done or gone since are cut)
+        if (r.placeKey)
+            r.parked[r.placeKey] = {r.plan, r.key, r.respawnDue, r.leftOutQuests, r.townsSeen};
+        auto const back = r.parked.find(RoutePlaceKey());
+        if (back != r.parked.end() && back->second.builtKey == RouteKey())
+        {
+            r.plan = back->second.plan;
+            r.respawnDue = back->second.respawnDue;
+            r.leftOutQuests = back->second.leftOutQuests;
+            r.townsSeen = back->second.townsSeen;
+            r.key = RouteKey();
+            r.placeKey = RoutePlaceKey();
+            r.parked.erase(back);
+            LOG_INFO("playerbots", "[quest123] {} L{} resumes the {} stop plan it left on map {}: no rebuild",
+                     bot->GetName(), bot->GetLevel(), r.plan.stops.size(), bot->GetMapId());
+            why = TrimRoute(r, towns);
+            if (why.empty())
+                why = RouteMissingStop(r, towns);
+        }
+        else
+            why = "the level or map changed";
+    }
     else if (r.respawnDue && now >= r.respawnDue)
         why = "a left-out quest's camp respawned";
     else
@@ -1191,22 +1236,26 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
         CloseRouteStop(r, towns);
         QuestRoute::Input in;
         CollectRouteStops(in, towns, r.visitedTown);
+        // [quest122] [quest124] the chance this bot reaches one more place of a plan, from its own plans: the mean
+        // stops a plan of its reaches gives the geometric rate p = mean / (1 + mean). It is recomputed at every
+        // build from counts that keep growing, so it rises as the plans start being walked - nothing is frozen.
+        // With nothing measured yet it is 1.0 and the solver weighs exactly as it did before
+        float const meanReached = float(r.stopsDone) / float(std::max<uint32>(r.builds, 1));
+        float const reach = r.builds && r.stopsDone ? meanReached / (1.0f + meanReached) : 1.0f;
+        in.reach = reach;
         r.plan = QuestRoute::Solve(in);
         PlaceGreyHandIns(r.plan, in);  // [quest14]
         r.key = RouteKey();
+        r.placeKey = RoutePlaceKey();
         r.built = true;
         r.invalid = false;
         r.respawnDue = in.respawnDue;
         r.leftOutQuests = std::move(in.leftOutQuests);
         r.townsSeen = std::move(in.townsSeen);
         ++r.builds;
-        // [quest122] b475: 209 plans built against 72 stops reached, and 11 of 25 hand-in stops left with nothing
-        // collected. A plan is only worth the stops the bot gets through, so the plan's experience is weighed by the
-        // chance of reaching each place in it: the mean stops a plan of this bot reaches gives the geometric rate
-        // (p = mean / (1 + mean)), measured from its own plans, and stop k is worth p^(k+1) of its experience. A
-        // 17-stop hour-long plan then scores near its first stops alone, a short one it finishes scores near its all
-        float const meanReached = float(r.stopsDone) / float(std::max<uint32>(r.builds, 1));
-        float const reach = meanReached / (1.0f + meanReached);
+        // [quest122] what the plan is worth once that chance is priced in: stop k carries p^(k+1) of its experience,
+        // so a 17-stop hour-long plan scores near its first stops alone and a short one the bot finishes scores
+        // near all of it
         float expectedXp = 0.0f;
         float share = reach;
         for (Stop const& s : r.plan.stops)
