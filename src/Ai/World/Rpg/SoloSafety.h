@@ -95,6 +95,9 @@ namespace SoloSafety
         G3D::Vector3 pull;
         std::vector<G3D::Vector4> pullAvoid;
         std::vector<ObjectGuid> counted;  // [death392] the mobs the projection counted (its kill order)
+        G3D::Vector3 fightAt;             // [death462] the spot the pack was grown from (the fight it priced)
+        bool fightAtSet = false;
+        uint32 respawns = 0;              // [death463] spawns respawning into the fight, counted
     };
     // the bot's pull of `target` now
     Verdict Judge(Player* bot, Unit* target);

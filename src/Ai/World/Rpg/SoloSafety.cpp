@@ -50,6 +50,7 @@
 #include "StringFormat.h"
 #include <sstream>
 #include "Timer.h"
+#include "GameTime.h"  // [death463] the map's respawn times against the game clock
 
 #include <algorithm>
 #include <cmath>
@@ -490,6 +491,17 @@ namespace
                         cheapest = std::min(cheapest, uint32(cost));
                 }
                 outOfMana = cheapest != std::numeric_limits<uint32>::max() && mana < cheapest;
+                // [death465] ... only a loss of the fight its judge counted: more attackers than judged (or none
+                // judged) ran its mana dry on mobs the estimate left out, and the rest does not change them. b470
+                // Rollothan L17 died twice at the Longshore murloc camp (5 attackers, "no judged pull"): the first
+                // zone was "out of mana", cleared by its rest, and its grind walk went back in
+                if (outOfMana && (!state.engaged || state.attackers.size() > state.engage.mobs))
+                {
+                    LOG_INFO("playerbots", "[death465] {} L{} lost out of mana to {} attackers ({} judged): the zone "
+                             "stays past its rest", bot->GetName(), bot->GetLevel(), state.attackers.size(),
+                             state.engaged ? state.engage.mobs : 0);
+                    outOfMana = false;
+                }
             }
             if ((died || state.fleeing) && !bot->GetMap()->Instanceable())
                 for (auto const& [guid, track] : state.attackers)
@@ -2392,6 +2404,8 @@ namespace SoloSafety
             model.Grow(&fight, early ? &firstCall : nullptr);
             for (PullModel::Member const& m : model.pack)
                 pack.push_back(m.mob);
+            verdict.fightAt = fight;  // [death462]
+            verdict.fightAtSet = true;
         }
         else
             pack.push_back(target);
@@ -2534,6 +2548,105 @@ namespace SoloSafety
                                  "{:.1f} dps): counted",
                                  bot->GetName(), bot->GetLevel(), summoner->GetName(), summoner->GetLevel(),
                                  tmpl->Name, tmpl->maxlevel, health, summon.dps);
+                }
+            }
+        }
+
+        // [death463] a spawn killed earlier respawns at its home (Creature::Update at the map's respawn time of its DB
+        // guid, Map::GetCreatureRespawnTime) - one whose home reach covers the fight spot and whose respawn falls
+        // within the walk there and the fight joins it. Its template's health and melee as a [death449] summon's, scaled
+        // by the target's. The respawn time is the map's state, no timer of the bot's
+        if (verdict.fightAtSet && !mobs.empty() && target->ToCreature())
+        {
+            Creature* targetMob = target->ToCreature();
+            Map* map = bot->GetMap();
+            FactionTemplateEntry const* botFaction = bot->GetFactionTemplateEntry();
+            CreatureBaseStats const* targetStats = sObjectMgr->GetCreatureBaseStats(
+                targetMob->GetCreatureTemplate()->maxlevel, targetMob->GetCreatureTemplate()->unit_class);
+            auto const templateMelee = [](CreatureTemplate const* tmpl, CreatureBaseStats const* stats) -> float
+            {
+                if (!stats)
+                    return 0.0f;
+                float const swing = std::max(float(tmpl->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
+                float const base = stats->GenerateBaseDamage(tmpl);
+                return ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) *
+                       tmpl->DamageModifier / swing;
+            };
+            float const ownMelee = templateMelee(targetMob->GetCreatureTemplate(), targetStats);
+            float packHp = 0.0f;
+            for (Mob const& mob : mobs)
+                packHp += mob.hp;
+            G3D::Vector3 const& at = verdict.fightAt;
+            float const walk = std::hypot(bot->GetPositionX() - at.x, bot->GetPositionY() - at.y) /
+                               std::max(bot->GetSpeed(MOVE_RUN), 0.1f);
+            float const window = walk + packHp / botDps;
+            time_t const now = GameTime::GetGameTime().count();
+            float const reachMax = MAX_AGGRO_RADIUS + MaxWanderDistance(bot->GetMapId());
+            std::set<uint32> grids;
+            for (float ox : {-reachMax, reachMax})
+                for (float oy : {-reachMax, reachMax})
+                    grids.insert(Acore::ComputeGridCoord(at.x + ox, at.y + oy).GetId());
+            for (uint32 const gridId : grids)
+            {
+                CellObjectGuids const& cell =
+                    sObjectMgr->GetGridObjectGuids(bot->GetMapId(), map->GetSpawnMode(), gridId);
+                for (ObjectGuid::LowType const spawnId : cell.creatures)
+                {
+                    CreatureData const* data = sObjectMgr->GetCreatureData(spawnId);
+                    if (!data || (data->phaseMask && !(data->phaseMask & bot->GetPhaseMask())))
+                        continue;
+                    float const gap = std::hypot(data->posX - at.x, data->posY - at.y);
+                    if (gap > reachMax)
+                        continue;
+                    time_t const respawn = map->GetCreatureRespawnTime(spawnId);
+                    if (respawn <= now || float(respawn - now) > window)
+                        continue;
+                    CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(data->id);
+                    if (!tmpl || tmpl->detection_range < 1.0f || (tmpl->unit_flags & UNIT_FLAG_IMMUNE_TO_PC) ||
+                        (data->unit_flags & UNIT_FLAG_IMMUNE_TO_PC))
+                        continue;
+                    FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(tmpl->faction);
+                    if (!botFaction || !faction || !faction->IsHostileTo(*botFaction))
+                        continue;
+                    // Creature::GetAggroRange from its template: the detection range a yard per level above the bot
+                    float const reach = std::clamp(tmpl->detection_range + float(int32(tmpl->maxlevel) -
+                                                                                 int32(bot->GetLevel())),
+                                                   1.0f, MAX_AGGRO_RADIUS) +
+                                        bot->GetCombatReach() +
+                                        (data->movementType == RANDOM_MOTION_TYPE ? data->wander_distance : 0.0f);
+                    if (gap > reach)
+                        continue;
+                    CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(tmpl->maxlevel, tmpl->unit_class);
+                    if (!stats)
+                        continue;
+                    float const health = float(stats->GenerateHealth(tmpl));
+                    float const melee = templateMelee(tmpl, stats);
+                    Mob spawned{target, health,
+                                ownMelee > 0.0f ? mobs.front().dps * melee / ownMelee : mobs.front().dps,
+                                mobs.front().variance, true};
+                    mobs.push_back(spawned);
+                    ++verdict.mobs;
+                    ++verdict.respawns;
+                    if (tmpl->maxlevel > bot->GetLevel())
+                        ++verdict.above;
+                    elite = elite || tmpl->rank == CREATURE_ELITE_ELITE || tmpl->rank == CREATURE_ELITE_RAREELITE ||
+                            tmpl->rank == CREATURE_ELITE_WORLDBOSS;
+                    static std::mutex respawnLogLock;  // a log cadence per bot and spawn, no decision reads it
+                    static std::unordered_set<uint64> respawnLogged;
+                    bool fresh = false;
+                    {
+                        std::lock_guard<std::mutex> guard(respawnLogLock);
+                        if (respawnLogged.size() > 65536)
+                            respawnLogged.clear();
+                        fresh = respawnLogged.insert(uint64(spawnId) * 1000003ull + bot->GetGUID().GetCounter())
+                                    .second;
+                    }
+                    if (fresh)
+                        LOG_INFO("playerbots", "[death463] {} L{} on {} L{}: {} L{} (spawn {}) respawns {} s from now "
+                                 "{:.0f} yd from the fight spot (reach {:.0f}), within its walk and fight ({:.0f} s): "
+                                 "counted",
+                                 bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), tmpl->Name,
+                                 tmpl->maxlevel, spawnId, int64(respawn - now), gap, reach, window);
                 }
             }
         }
@@ -2783,10 +2896,67 @@ namespace SoloSafety
         return verdict;
     }
 
+    // [death462] the mobs whose reach covers the judged fight spot that the judge's pack left out, each with why it was
+    // not an idle mob then (in a fight, not aggressive, ...). A log, no decision: b470 had 13 adds "covers it" with no
+    // word of what they were doing at the judge
+    static std::string LeftOutAt(Player* bot, Unit* target, G3D::Vector3 const& at, std::vector<ObjectGuid> const& counted)
+    {
+        float const look = bot->GetMap()->GetVisibilityRange();
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(bot, look);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitObjects(bot, searcher, look);
+        std::string out;
+        uint32 listed = 0;
+        for (Unit* unit : units)
+        {
+            Creature* mob = unit->ToCreature();
+            if (!mob || mob == target || !mob->IsHostileTo(bot) ||
+                std::find(counted.begin(), counted.end(), mob->GetGUID()) != counted.end())
+                continue;
+            if (!InDisc(AggroDisc(mob, bot), at))
+                continue;
+            std::string why = "idle (a pull model gap)";
+            if (mob->IsInEvadeMode())
+                why = "evading home";
+            else if (mob->IsInCombat())
+                why = Acore::StringFormat("in a fight (victim {})",
+                                          mob->GetVictim() ? mob->GetVictim()->GetName() : std::string("none"));
+            else if (!mob->HasReactState(REACT_AGGRESSIVE))
+                why = "not aggressive";
+            else if (mob->GetCharmerOrOwnerGUID())
+                why = "owned";
+            else if (mob->HasUnitFlag(UNIT_FLAG_IMMUNE_TO_PC))
+                why = "immune to players";
+            if (++listed > 4)
+                break;
+            out += Acore::StringFormat("{}{} L{} {:.0f} yd ({})", out.empty() ? "" : ", ", mob->GetName(),
+                                       mob->GetLevel(), std::hypot(mob->GetPositionX() - at.x, mob->GetPositionY() - at.y),
+                                       why);
+        }
+        return out;
+    }
+
     void NoteEngage(Player* bot, Unit* target, Verdict const& verdict)
     {
         if (!bot || !target)
             return;
+        // [death462] the fight spot the judge priced: its pull spot, else the spot its pack was grown from (a ranged
+        // bot's reach on its side), else the target's. Before, a ranged engage with no pull spot was recorded at the
+        // target: b470 Geron L20's fight-area step back ([death389]) took it to the Minor Tidecaller's own spot inside
+        // the Murloc Flesheater's reach the judge had never priced - 4 of 13 "covers it" adds were such engages
+        G3D::Vector3 const fightAt = verdict.pullSpot     ? verdict.pull
+                                     : verdict.fightAtSet ? verdict.fightAt
+                                                          : G3D::Vector3(target->GetPositionX(), target->GetPositionY(),
+                                                                         target->GetPositionZ());
+        bool const fresh = [&]()
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            return found == states.end() || !found->second.engaged ||
+                   found->second.engage.target != target->GetGUID();
+        }();
+        std::string const leftOut = fresh ? LeftOutAt(bot, target, fightAt, verdict.counted) : std::string();
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
         // [deaths] the pull spot of this engage (none: the walk goes to the target as before)
@@ -2803,13 +2973,14 @@ namespace SoloSafety
         // Forager, came 3" and Kylantino / Lanbuzz (Frostmane Seer) had no line saying where the judge put the fight
         // or what it counted - the triage could not tell a wrong fight spot from an uncounted wanderer
         LOG_INFO("playerbots", "[deaths14] {} L{} engages {} L{}: judged {} mobs ({} above), {:.0f} dmg over {:.0f} s at "
-                 "ehp {:.0f}, fought {} ({:.0f},{:.0f}), {:.0f} yd from the target",
+                 "ehp {:.0f}, fought {} ({:.0f},{:.0f}), {:.0f} yd from the target{}{}",
                  bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), verdict.mobs, verdict.above,
                  verdict.damage, verdict.fightSec, verdict.ehpNow,
                  verdict.pullSpot ? "at its pull spot" : (PlayerbotAI::IsRanged(bot) ? "at its reach" : "at the target"),
-                 verdict.pullSpot ? verdict.pull.x : target->GetPositionX(),
-                 verdict.pullSpot ? verdict.pull.y : target->GetPositionY(),
-                 verdict.pullSpot ? target->GetExactDist2d(verdict.pull.x, verdict.pull.y) : 0.0f);
+                 fightAt.x, fightAt.y, target->GetExactDist2d(fightAt.x, fightAt.y),
+                 verdict.respawns ? Acore::StringFormat("; [death463] {} respawn(s) counted", verdict.respawns)
+                                  : std::string(),
+                 leftOut.empty() ? std::string() : "; [death462] reaches over the spot left out: " + leftOut);
         state.engaged = true;
         state.engage.target = target->GetGUID();
         state.engage.targetName = target->GetName();
@@ -2820,9 +2991,7 @@ namespace SoloSafety
         state.engage.mobs = verdict.mobs;
         // [fight49] the safe area: the fight spot and its margin to the nearest idle mob's reach that is not the
         // target's own (the judge counted those joining it)
-        state.engage.fightAt = verdict.pullSpot ? verdict.pull
-                                                : G3D::Vector3(target->GetPositionX(), target->GetPositionY(),
-                                                               target->GetPositionZ());
+        state.engage.fightAt = fightAt;  // [death462]
         state.engage.safeRadius = -1.0f;
         state.engage.counted = verdict.counted;  // [death392]
     }
@@ -4546,9 +4715,13 @@ namespace SoloSafety
             // Siren): "PULL ... brings 1", then "RUN_PAST keeps walking past" the very mob it pulled (it was priced on
             // the leg), the walk dragged the fight into the next camp - judged 1, came 3 / 2, both died
             // [death453] ... any pull of its own this fight: the leg was committed before the bot chose this fight
+            // [death466] ... an attacker of that engage (its target, or a mob its judge counted once its fight is open:
+            // OfEngage), not any attacker while an engage is recorded. b470 Gilduck L18: its engage of a Redridge
+            // Mystic was stale, the run past's chaser Redridge Brute was taken for "its own pull", the run past ended
+            // in the gnoll camp with 2 on it, unjudged ([death398]) - dead
             if (found->second.engaged)
                 for (Unit* attacker : bot->getAttackers())
-                    if (attacker && attacker->IsAlive())
+                    if (attacker && attacker->IsAlive() && OfEngage(bot, found->second, attacker))
                     {
                         LOG_INFO("playerbots", "[deaths13] {} L{} ends its run past: it fights its own pull of {} L{} "
                                  "(the leg's chase set holds {} mobs)",
@@ -5374,8 +5547,30 @@ namespace SoloSafety
                         // health now. b359: of 28 "pulls instead of walling", Manue's were wins only at full (ehp 113 of
                         // 243) and Gnetlibozz's a 2-mob pack at 213 of 225 in Silver Stream Mine - it engaged the next
                         // pack there, 4 came, it died
-                        if (pull.kind == Verdict::Kind::Win && pull.mobs == 1 && pull.pullSpot)
-
+                        // [death464] ... and only when the walk's own meeting with the reach brings no more than that
+                        // pull: the walk aggroes the mob where its leg enters the reach, not at the pull spot. b470
+                        // Jurdogs L19 "pulls Murloc Flesheater instead of walling ... fought at its pull spot
+                        // (-9378,-2522)", met it 19 yd off at (-9376,-2541) inside a Lake Thresher L25 elite's reach,
+                        // which came
+                        bool const meetsMore = priced && wallPack > pull.mobs;
+                        if (meetsMore && pull.kind == Verdict::Kind::Win && pull.mobs == 1 && pull.pullSpot)
+                        {
+                            static std::mutex meetLogLock;  // a log cadence per bot and mob, no decision reads it
+                            static std::unordered_set<uint64> meetLogged;
+                            bool fresh = false;
+                            {
+                                std::lock_guard<std::mutex> guard(meetLogLock);
+                                if (meetLogged.size() > 65536)
+                                    meetLogged.clear();
+                                fresh = meetLogged.insert(mob->GetGUID().GetCounter() * 1000003ull +
+                                                          bot->GetGUID().GetCounter()).second;
+                            }
+                            if (fresh)
+                                LOG_INFO("playerbots", "[death464] {} walls its walk at {} L{}: its pull spot wins "
+                                         "1 mob, the walk meets its reach with {} - fought there",
+                                         bot->GetName(), mob->GetName(), mob->GetLevel(), wallPack);
+                        }
+                        if (!meetsMore && pull.kind == Verdict::Kind::Win && pull.mobs == 1 && pull.pullSpot)
                         {
                             static std::mutex pullLogLock;
                             static std::unordered_set<uint64> pullLogged;
