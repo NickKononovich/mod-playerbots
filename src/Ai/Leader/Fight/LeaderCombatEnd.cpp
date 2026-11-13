@@ -249,7 +249,11 @@ namespace Leader::Fight
                     RefFight const fight = JudgeRef(leader, other, distance, note, owner);
                     if (fight == RefFight::Attacks)
                         attacks = true;
-                    else if (fight == RefFight::Reachable && other->IsCreature() && (!hunt || distance < huntDistance))
+                    // [dun255] b463 wc-n five6-6 4029-4321 s: a Snake (critter 2914) held the escort 240 s - no
+                    // member ever targets a critter (AggressiveTargetValue "possible targets: critter"), so its
+                    // hunt order stood Issued; a critter's ref is ended like an unreachable one
+                    else if (fight == RefFight::Reachable && other->IsCreature() && !other->IsCritter() &&
+                             (!hunt || distance < huntDistance))
                     {
                         hunt = other->ToCreature();
                         huntDistance = distance;
