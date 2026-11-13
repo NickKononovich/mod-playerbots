@@ -131,6 +131,12 @@ namespace
                 creature->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
                 margin = std::min(margin, creature->GetHomePosition().GetExactDist(x, y, z) - reach -
                                               creature->GetWanderDistance());
+            // [death448] ... and an idle patrol from anywhere on its path (b467 Rollothan L16 rose "safe" at its
+            // corpse in Galardell Valley, 21 yd off a Rabid Shadowhide Gnoll's patrol, and died to it in its rest)
+            if (!fighting && moves == WAYPOINT_MOTION_TYPE)
+                if (WaypointPath const* path = sWaypointMgr->GetPath(creature->GetWaypointPath()))
+                    for (WaypointNode const& node : path->Nodes)
+                        margin = std::min(margin, std::hypot(node.X - x, node.Y - y) - reach);
         }
         return margin;
     }
