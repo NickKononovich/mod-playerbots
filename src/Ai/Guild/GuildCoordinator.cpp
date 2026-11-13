@@ -6416,6 +6416,19 @@ void GuildCoordinator::UpdateProfessions()
                     uint32 judged = reach;
                     {
                         double bestRate = 0.0;
+                        // [craft466] coordinator 2026-11-14: when no stop has positive value the rule does not stop
+                        // applying - it picks the least bad by its OWN measure. [ench170] decided the walk is judged
+                        // "at its stopping point of the best value per minute"; the old fallback was `judged = reach`,
+                        // the FARTHEST point, which is a different measure substituted for the written one. b485: that
+                        // fallback fired on 215 of 232 readings across all ten lines, and priced cooking's walk over
+                        // its whole 135-point ladder - "to 185 in 147358.5 min" and so "profession -0 c/min", a sane
+                        // value divided by 2456 bot-hours. Only the value and minutes of one and the same stop are
+                        // ever paired here (stopValue and stopMinutes both carry the whole supply job plus that
+                        // stop's own ladder terms), and the fallback assigns the same six fields as the positive
+                        // branch, so the pair stays matched
+                        double fallbackRate = -std::numeric_limits<double>::infinity();
+                        Stop const* fallback = nullptr;
+                        double fallbackUnlocked = 0.0;
                         for (Stop const& stop : stops)
                         {
                             // [craft463] the same measure as above, so the stop the walk is judged at and the value
@@ -6423,6 +6436,13 @@ void GuildCoordinator::UpdateProfessions()
                             double const stopUnlocked = unlockedTo(stop.reach);
                             double const stopValue = stopUnlocked + supplyValue - stop.vendorCost;
                             double const stopMinutes = stop.craftMin + stop.gatherMin + supplyMin;
+                            if (stopMinutes > 0.0)  // [craft466] the least bad by the same value per minute
+                                if (double const rate = stopValue / stopMinutes; rate > fallbackRate)
+                                {
+                                    fallbackRate = rate;
+                                    fallback = &stop;
+                                    fallbackUnlocked = stopUnlocked;
+                                }
                             if (stopValue <= 0 || stopMinutes <= 0)
                                 continue;
                             if (double const rate = stopValue / stopMinutes; rate >= bestRate)
@@ -6438,6 +6458,17 @@ void GuildCoordinator::UpdateProfessions()
                                 buyNow = stop.buyNow;
                                 gatherNow = stop.gatherNow;
                             }
+                        }
+                        // [craft466] no stop paid: take the least bad one, the same six fields together
+                        if (bestRate <= 0.0 && fallback)
+                        {
+                            judged = fallback->reach;
+                            craftMin = fallback->craftMin;
+                            gatherMin = fallback->gatherMin;
+                            vendorCost = fallback->vendorCost;
+                            unlocked = fallbackUnlocked;
+                            buyNow = fallback->buyNow;
+                            gatherNow = fallback->gatherNow;
                         }
                         if (judged != reach)  // the needs the judged point unlocks
                         {
