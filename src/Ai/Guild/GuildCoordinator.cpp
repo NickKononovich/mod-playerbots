@@ -4291,6 +4291,7 @@ void GuildCoordinator::LogQuestLog(BotState& st, Player* p)
     uint8 const level = p->GetLevel();
     uint64 const now = QuestStats::NowMs();
     uint32 held = 0, grey = 0, green = 0, high = 0, complete = 0, offMap = 0, idle = 0, wasted = 0;
+    uint32 earnedAway = 0;  // [quest121] complete, its ender on another map: earned XP only a crossing collects
     uint64 oldest = 0;
     uint32 oldestQuest = 0;
     std::string quests;
@@ -4340,6 +4341,11 @@ void GuildCoordinator::LogQuestLog(BotState& st, Player* p)
         }();
         if (away)
             ++offMap;
+        // [quest121] complete and off its map: XP already earned that only this bot's crossing can collect. The
+        // [quest120] guard keeps the slot on purpose, so this count must fall when the bot reaches that map - one
+        // that never falls is a hand-in the route never places
+        if (away && status == QUEST_STATUS_COMPLETE)
+            ++earnedAway;
         // nothing done on it since it was taken, and it is one no route of this map works: a slot held for nothing
         bool const untouched = status != QUEST_STATUS_COMPLETE && done == 0;
         if (untouched)
@@ -4361,10 +4367,10 @@ void GuildCoordinator::LogQuestLog(BotState& st, Player* p)
     for (auto itr = st.questSeen.begin(); itr != st.questSeen.end();)
         itr = inLog.count(itr->first) ? std::next(itr) : st.questSeen.erase(itr);
     std::string const line = Acore::StringFormat(
-        "[qlog] {} L{} held={}/{} grey={} green={} yellow+={} complete={} off-map={} no-progress={} wasted={} "
-        "free={} longest-idle={}s q{}{}",
-        p->GetName(), level, held, uint32(MAX_QUEST_LOG_SIZE), grey, green, high, complete, offMap, idle, wasted,
-        uint32(MAX_QUEST_LOG_SIZE) - held, oldest / 1000, oldestQuest, quests);
+        "[qlog] {} L{} held={}/{} grey={} green={} yellow+={} complete={} earned-off-map={} off-map={} "
+        "no-progress={} wasted={} free={} longest-idle={}s q{}{}",
+        p->GetName(), level, held, uint32(MAX_QUEST_LOG_SIZE), grey, green, high, complete, earnedAway, offMap,
+        idle, wasted, uint32(MAX_QUEST_LOG_SIZE) - held, oldest / 1000, oldestQuest, quests);
     if (line == st.qlogLine)
         return;
     st.qlogLine = line;
@@ -4438,6 +4444,8 @@ bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute
     // its log
     double logCopper = 0.0, logSeconds = 0.0, logXp = 0.0;
     uint32 logQuests = 0, inLog = 0;
+    uint32 handIns = 0;  // [quest121] the complete quests of the log: earned XP that only a trip to the ender costs
+    double handInXp = 0.0, handInSeconds = 0.0;
     for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
         uint32 const questId = p->GetQuestSlotQuestId(slot);
@@ -4447,9 +4455,15 @@ bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute
         ++inLog;
         QuestStatus const status = p->GetQuestStatus(questId);
         auto const q = questStatic_.find(questId);
-        // [econ1] a complete quest is handed in on the way whatever the bot does: no measure of its time's worth
-        // (b350 Rumanatol: one next to its ender made the pace 21527 c/min)
-        if (q == questStatic_.end() || q->second.map != map || !q->second.ender || status != QUEST_STATUS_INCOMPLETE)
+        // [quest121] b475: 323 of the 897 quests the guild held were complete and never handed in, 103 of them with
+        // their ender on the bot's own map, waiting 37.8 h on average. The old rule here dropped a complete quest
+        // ("it is handed in on the way whatever the bot does", b350 Rumanatol's 21527 c/min), so the earned XP sat
+        // in no rate and the trip to collect it never competed with a gathering run, a craft or a dungeon order.
+        // It is priced like any other stop instead: its XP over the travel seconds to its ender, one term of the
+        // same average (the money unit that blew up in b350 is gone - the pace is XP now, and the quest's own
+        // seconds go into the denominator with it)
+        if (q == questStatic_.end() || q->second.map != map || !q->second.ender ||
+            (status != QUEST_STATUS_INCOMPLETE && status != QUEST_STATUS_COMPLETE))
             continue;
         // [quest14] a grey quest counts toward no rate
         if (IsGreyQuest(p, quest))
@@ -4476,6 +4490,12 @@ bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute
         logXp += xpOf(quest);
         logSeconds += walk / speed + kills;
         ++logQuests;
+        if (status == QUEST_STATUS_COMPLETE)  // [quest121] XP already earned, the trip to its ender is all it costs
+        {
+            ++handIns;
+            handInXp += xpOf(quest);
+            handInSeconds += walk / speed;
+        }
     }
     if (logQuests)
     {
@@ -4484,8 +4504,15 @@ bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute
         if (xpPerMinute)
             *xpPerMinute = float(logXp * MINUTE / seconds);
         if (why)
+        {
             *why = Acore::StringFormat("formula: {} log quests, {:.0f} XP in {:.0f} s ({:.0f} XP/min)", logQuests,
                                        logXp, logSeconds, logXp * MINUTE / seconds);
+            if (handIns)  // [quest121] the earned part of that rate: what a hand-in trip alone would collect
+                *why += Acore::StringFormat("; {} of them complete, {:.0f} XP earned for {:.0f} s of travel ({:.0f} "
+                                            "XP/min)",
+                                            handIns, handInXp, handInSeconds,
+                                            handInXp * MINUTE / std::max(handInSeconds, 1.0));
+        }
         return true;
     }
 
