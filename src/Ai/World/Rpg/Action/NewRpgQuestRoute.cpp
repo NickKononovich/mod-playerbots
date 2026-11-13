@@ -1242,7 +1242,16 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
         // With nothing measured yet it is 1.0 and the solver weighs exactly as it did before
         float const meanReached = float(r.stopsDone) / float(std::max<uint32>(r.builds, 1));
         float const reach = r.builds && r.stopsDone ? meanReached / (1.0f + meanReached) : 1.0f;
-        in.reach = reach;
+        // [quest130] b478 measured: of 131 plans, 104 carried reach=1.00 (nothing measured yet, no weighting) and
+        // the 27 that were weighed came from samples like plans=3 reached=1, where a plan's expected experience fell
+        // from ~16000 to 22. The denominator is rebuilds, which [quest123] deliberately prevents, and the counts die
+        // with the session - so the measure cannot converge, and the guild split into 79 % planning as before and
+        // 21 % with their plans priced at nothing. It is also a rate measured from history deciding a bot's route,
+        // which the user's rule reserves for formulas. So it does not price anything: it is logged (would_reach) and
+        // the weighting runs at 1.0, which is the pricing the solver had before [quest124], until an honest plan
+        // estimate can drive it. The weighting itself stays - the fiction it was meant to discount is plan.xp / eta,
+        // 201 XP/min promised in b478 against 27 XP/min the bots actually earned
+        in.reach = 1.0f;
         r.plan = QuestRoute::Solve(in);
         PlaceGreyHandIns(r.plan, in);  // [quest14]
         r.key = RouteKey();
@@ -1270,8 +1279,8 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
                                                [](Stop const& s) { return s.kind == StopKind::Objective; });
         LOG_INFO("playerbots",
                  "{} stops={} eta={} walk={} xp={} open={} takes={} left_out={} offers={} legs={} walk_ratio={:.2f} "
-                 "fight_s_per_100yd={:.1f} handins_sooner={} reach={:.2f} exp_xp={} plans={} reached={} lost={} "
-                 "why={} |{}",  // [quest15] handins_sooner, [quest122] reach / exp_xp
+                 "fight_s_per_100yd={:.1f} handins_sooner={} would_reach={:.2f} exp_xp={} plans={} reached={} "
+                 "lost={} why={} |{}",  // [quest15] handins_sooner, [quest122] [quest130] would_reach / exp_xp
                  RouteHead(bot, "plan"), r.plan.stops.size(), uint32(r.plan.eta), uint32(r.plan.walkYd),
                  uint32(r.plan.xp), logQuests, r.plan.takes, in.leftOut, in.offers.size(), r.plan.measured,
                  r.plan.walkRatio, r.plan.fightPerYd * 100.0f, r.plan.earlierHandIns, reach, uint32(expectedXp),
