@@ -7717,36 +7717,22 @@ void GuildCoordinator::DecideLoot(Player* looter, Item* item, LootReport const& 
     std::string bestUsage;
     if (equipment)
     {
-        std::string const qualifier =
-            std::to_string(report.itemId) +
-            (item->GetItemRandomPropertyId() ? "," + std::to_string(item->GetItemRandomPropertyId()) : "");
         for (PlanRow const& row : plan_)
         {
             Player* m = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
             if (!m || !m->IsInWorld() || m->CanUseItem(proto) != EQUIP_ERR_OK)
                 continue;
-            PlayerbotAI* ai = GET_PLAYERBOT_AI(m);
-            if (!ai)
+            if (!GET_PLAYERBOT_AI(m))
                 continue;  // a human picks his own gear
-            ItemUsage const usage = ai->GetAiObjectContext()->GetValue<ItemUsage>("item upgrade", qualifier)->Get();
-            if (usage != ITEM_USAGE_EQUIP && usage != ITEM_USAGE_REPLACE)
+            // [loot12] the guild's one gear judge (the plan's, the five roll's and the equip's): no copy owned
+            GuildGear::Eval ev;
+            if (!GuildGear::EvaluateDrop(m, proto, item->GetItemRandomPropertyId(), ev))
                 continue;
-            StatsWeightCalculator calc(m);
-            float const score = calc.CalculateItem(report.itemId, item->GetItemRandomPropertyId());
-            float current = 0.0f;
-            uint8 const slot = m->FindEquipSlot(proto, NULL_SLOT, true);
-            if (slot != NULL_SLOT)
-                if (Item* worn = m->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-                {
-                    calc.Reset();
-                    current = calc.CalculateItem(worn->GetEntry(), worn->GetItemRandomPropertyId());
-                }
-            float const gain = current > 0.0f ? (score - current) / current : 1.0f;
-            if (gain > bestGain)
+            if (ev.gain > bestGain)
             {
-                bestGain = gain;
+                bestGain = ev.gain;
                 bestLow = row.low;
-                bestUsage = usage == ITEM_USAGE_EQUIP ? "new slot" : "replacement";
+                bestUsage = ev.worn ? "replacement" : "new slot";
             }
         }
     }
