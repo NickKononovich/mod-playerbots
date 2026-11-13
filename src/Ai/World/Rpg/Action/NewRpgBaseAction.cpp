@@ -2180,6 +2180,48 @@ bool NewRpgBaseAction::FlyTowards(uint32 toNode)
 // run speed (no walk is shorter) - and it holds the fare (each hop's TaxiPath price). Decided once per destination.
 // b367: the q6391 / q6388 / q6392 chain (meant to be flown) was walked; Keenonk and Namwe stood STUCK at Gryth
 // Thurden in Ironforge, Namwe walked 2100+ yd back to Thelsamar
+// [mount8] the danger of a solo bot's walk `from` -> `to`, in the route judge's terms: its route has no way round a
+// reach it must not fight or every way passes a refused area (RouteResult throughRefused / refusedArea), the solo
+// judge refuses the trip (TripRefused, a walk from where the bot stands), or the route passes an area red for it (the
+// area's level; a town of its faction is none). "" = none found (or no route to judge)
+static std::string WalkDanger(Player* bot, WorldPosition const& from, WorldPosition const& to, char const* what)
+{
+    if (!SoloSafety::Applies(bot))
+        return "";
+    bool const fromBot = from.GetExactDist(bot->GetPosition()) < 1.0f;
+    if (fromBot && NewRpgBaseAction::TripRefused(bot, to.GetPositionX(), to.GetPositionY(), to.GetPositionZ(), what))
+        return "the solo judge refuses it";
+    Leader::RouteResult const route =
+        Leader::Route(bot, G3D::Vector3(from.GetPositionX(), from.GetPositionY(), from.GetPositionZ()),
+                      G3D::Vector3(to.GetPositionX(), to.GetPositionY(), to.GetPositionZ()));
+    if (!route.found)
+        return "";
+    if (route.throughRefused || route.refusedArea)
+        return "no way round the mobs / areas it must not walk through";
+    Map* map = bot->GetMap();
+    uint32 const phase = bot->GetPhaseMask();
+    uint32 const ownTeam = bot->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
+    uint32 const fromArea = map->GetAreaId(phase, from.GetPositionX(), from.GetPositionY(), from.GetPositionZ());
+    uint32 const toArea = map->GetAreaId(phase, to.GetPositionX(), to.GetPositionY(), to.GetPositionZ());
+    constexpr size_t AREA_SAMPLE_EVERY = 25;  // as [zone38]: a look's cost, no rule
+    for (size_t i = 0; i < route.points.size(); i += AREA_SAMPLE_EVERY)
+    {
+        G3D::Vector3 const& p = route.points[i];
+        uint32 const areaId = map->GetAreaId(phase, p.x, p.y, p.z);
+        if (!areaId || areaId == fromArea || areaId == toArea)
+            continue;
+        AreaTableEntry const* area = sAreaTableStore.LookupEntry(areaId);
+        if (!area || ((area->flags & AREA_FLAG_TOWN) && (!area->team || area->team == ownTeam)))
+            continue;
+        AreaTableEntry const* zone = area->zone ? sAreaTableStore.LookupEntry(area->zone) : nullptr;
+        for (AreaTableEntry const* a : {area, zone})
+            if (a && a->area_level > 0 &&
+                Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(a->area_level, 255))) == XP_RED)
+                return Acore::StringFormat("passes {} (level {}, red for it)", a->area_name[0], a->area_level);
+    }
+    return "";
+}
+
 bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
 {
     // [fly109] a co-op / help party's leader flies too (its party with it: MazeWalk's [fly97])
@@ -2286,7 +2328,7 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
     float const offLanding = std::max(toGap, Leader::WalkYd(bot, landing, dest));
     float const fly = toMaster / run + flightYd / taxi + hopDelay + offLanding / run;
     float const walk = Leader::WalkYd(bot, bot->GetPosition(), dest) / run;
-    if ((fly >= walk && !walkRefused) || bot->GetMoney() < fare)
+    if (bot->GetMoney() < fare)
         return false;
     // [taxi1] user 2026-11-13: the fare is priced like the time it saves - the seconds saved at its quest pace
     // (QuestCopperPerMinute) against the fare; no pace measured yet: the faster way. b467: 182 flights, 2.5 g of fares
@@ -2294,19 +2336,46 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
     float const saved = walk - fly;
     float const perMinute = sGuildCoordinator.QuestCopperPerMinute(bot);
     float const worth = perMinute > 0.0f ? saved / 60.0f * perMinute : -1.0f;
-    if (!walkRefused && worth >= 0.0f && worth <= float(fare))
+    bool const byTime = walkRefused || (fly < walk && (worth < 0.0f || worth > float(fare)));
+    // [mount8] coordinator 2026-11-13: ... and the walk carries its danger. b470 Febineysh L19 [taxi2] skipped the
+    // Darkshire -> Sentinel Hill flight (49 s for 1 s 10 c) and walked through Duskwood, red for it: she and Galiver
+    // died there. A walk the route judge would refuse or one through a red area loses to a safe flight whatever the
+    // seconds and the fare
+    std::string walkDanger;
+    if (!byTime)
     {
-        LOG_INFO("playerbots", "[taxi2] {} walks to ({:.0f},{:.0f}): the flight {} -> {} saves {:.0f} s, worth {:.0f}c "
-                 "at its quest pace {:.1f}c/min, against the fare {}",
-                 bot->GetName(), dest.GetPositionX(), dest.GetPositionY(), from->name[0], to->name[0], saved, worth,
-                 perMinute, GuildRiding::Money(fare));
+        walkDanger = WalkDanger(bot, WorldPosition(bot), dest, "walk instead of a flight");
+        if (walkDanger.empty())
+        {
+            if (fly < walk)
+                LOG_INFO("playerbots", "[taxi2] {} walks to ({:.0f},{:.0f}): the flight {} -> {} saves {:.0f} s, worth "
+                         "{:.0f}c at its quest pace {:.1f}c/min, against the fare {}; its walk is safe",
+                         bot->GetName(), dest.GetPositionX(), dest.GetPositionY(), from->name[0], to->name[0], saved,
+                         worth, perMinute, GuildRiding::Money(fare));
+            return false;
+        }
+    }
+    // [mount8] the flight's own walks are walks too (b470 Jurdogs L19 died in TRAVEL_FLIGHT on the Lake Everstill
+    // shore, walking to the Lakeshire flight master): a flight whose walk to its master or off its landing is
+    // dangerous is not taken
+    std::string legDanger = WalkDanger(bot, WorldPosition(bot), master->pos, "flight master");
+    if (!legDanger.empty())
+        legDanger = "its walk to the flight master " + legDanger;
+    else if (std::string const off = WalkDanger(bot, landing, dest, "landing"); !off.empty())
+        legDanger = "its walk off the landing " + off;
+    if (!legDanger.empty())
+    {
+        LOG_INFO("playerbots", "[mount8] {} L{} takes no flight {} -> {} to ({:.0f},{:.0f}): {}{}", bot->GetName(),
+                 bot->GetLevel(), from->name[0], to->name[0], dest.GetPositionX(), dest.GetPositionY(), legDanger,
+                 walkDanger.empty() ? "" : "; its walk there " + walkDanger + " too");
         return false;
     }
     LOG_INFO("playerbots", "[taxi1] {} flies {} -> {}: {:.0f} s, fare {}, saves {:.0f} s ({})", bot->GetName(),
              from->name[0], to->name[0], fly, GuildRiding::Money(fare), saved,
-             walkRefused  ? std::string("no walk there")
-             : worth < 0.0f ? std::string("no quest pace measured yet")
-                         : Acore::StringFormat("worth {:.0f}c at {:.1f}c/min", worth, perMinute));
+             walkRefused      ? std::string("no walk there")
+             : !walkDanger.empty() ? "[mount8] the walk " + walkDanger
+             : worth < 0.0f   ? std::string("no quest pace measured yet")
+                              : Acore::StringFormat("worth {:.0f}c at {:.1f}c/min", worth, perMinute));
     GuildRiding::NoteFlight(walkRefused ? 0.0f : saved, fare);
     LOG_INFO("playerbots", "[taxi20] {} L{} flies {} -> {} ({} nodes, {} c): {:.0f} s by air against {:.0f} s on "
              "foot to ({:.0f},{:.0f}) [taxi22: walks by their navmesh routes, the flight by its path points]",
