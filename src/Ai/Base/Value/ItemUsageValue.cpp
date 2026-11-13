@@ -570,9 +570,15 @@ uint32 ItemUsageValue::AmmoHeldRounds(Player* bot, uint32 subClass)
 //   * one round per ranged swing - the core spends exactly one (Spell::TakeAmmo), so the shots an activity costs are
 //     its seconds divided by the weapon's own swing time, bot->GetAttackTime(RANGED_ATTACK), the same interval
 //     DpsEstimate uses as a hunter's lead;
-//   * the activity it must cover without reaching a vendor is one run - the project's own run length, 20 minutes
-//     (USER RULE "test run length": a verification run is <= 20 min, and a five runs on until the dungeon has a
-//     result, which is the same order); the bot restocks at a vendor between runs (VENDOR_LOW_AMMO);
+//   * the horizon is 20 minutes of CONTINUOUS fire, which is a proxy for one dungeon run at partial ranged uptime.
+//     The three clean Wailing Caverns runs of 2026-11-13 measured 43, 53 and 61 minutes, and this formula assumes
+//     the weapon swings without a break for the whole horizon - which no hunter does: most of a run is walking,
+//     drinking, and other members' damage, so ranged uptime is a fraction of it. 20 continuous minutes therefore
+//     covers a 43-61 minute run comfortably, and the reserve below is on top of that. (This is a PROXY, not a
+//     measurement: a measured ranged-uptime fraction supersedes it, and the horizon then becomes the measured
+//     clear time times that fraction. It is not the project's 20-minute verification-run rule, which is about how
+//     long a run may last before it is judged and says nothing about how long a dungeon takes.)
+//     The bot restocks at a vendor between runs (VENDOR_LOW_AMMO), so one run is what it must carry for.
 //   * the reserve the user approved, x3 of that.
 // Rounded up to a full stack, because a vendor sells and a bag holds whole stacks. For a 2.8 s bow that is
 // 1200 / 2.8 = 429 shots, x3 = 1286, one stack up = 2000 rounds; for a 1.5 s gun 2400 shots, x3 = 7200 -> 8000.
@@ -582,8 +588,9 @@ uint32 ItemUsageValue::AmmoCapRounds(Player* bot, ItemTemplate const* ammoProto)
     uint32 const subClass = AmmoSubClassFor(bot);
     if (!subClass || !ammoProto || ammoProto->SubClass != subClass)
         return 0;
-    constexpr float RUN_SECONDS = 20.0f * MINUTE;  // the project's own run length, see above
-    constexpr float RESERVE = 3.0f;                // the reserve the user approved ("запас x2 или x3")
+    // minutes of continuous fire, a proxy for one run at partial ranged uptime (measured clears 43 / 53 / 61 min)
+    constexpr float RUN_SECONDS = 20.0f * MINUTE;
+    constexpr float RESERVE = 3.0f;  // the reserve the user approved ("запас x2 или x3")
     float const swingSec = std::max(float(bot->GetAttackTime(RANGED_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
     uint32 const rounds = uint32(std::ceil(RUN_SECONDS / swingSec * RESERVE));
     uint32 const stack = std::max<uint32>(ammoProto->GetMaxStackSize(), 1);
