@@ -1484,9 +1484,11 @@ void GuildCoordinator::UpdateWanted()
     std::unordered_map<uint32, float> copperPerXp;  // member -> the core's quest XP -> money rate (RecordPace)
     std::set<std::pair<uint32, uint32>> called;     // [econ2] (member, line) the leader calls to craft / gather / buy
     std::unordered_map<uint64, uint32> walkTarget;  // [craft430] (low << 16 | line) -> its walk's judged skill
+    std::vector<LinePriority> priorities;           // [craft436]
     {
         CoordLock guard(lock_, __func__);
         pointValue = pointValue_;
+        priorities = linePriorities_;
         for (auto const& [low, picks] : professions_)
             for (ProfessionPick const& pick : picks)
                 if (pick.kind != GuildProfessionKind::NONE && pick.kind != GuildProfessionKind::TRAIN)
@@ -1709,6 +1711,30 @@ void GuildCoordinator::UpdateWanted()
                 addPart(id, amount, part.label, WHY_UPGRADE, part.cook, 0);
                 crafterNeed[part.cook][id] += amount;
             }
+        }
+    }
+
+    // [craft436] a guild priority line ([craft435]: its gap pays more per bot-minute than questing): the raw materials
+    // of its whole chain are wanted, each unit worth the gap's value over the chain's gathered units - the worth the
+    // gathering plan weighs a gatherer's pace by. Its orders' and skill-ups' own worth above stays when higher (the
+    // larger of the two, never their sum: one gap valued once)
+    for (LinePriority const& r : priorities)
+    {
+        double units = 0.0;
+        for (auto const& [item, amount] : r.raw)
+            if (!VendorSource(item, ANY_MAP))
+                units += amount;
+        if (units <= 0.0)
+            continue;
+        double const perUnit = r.value / units;
+        for (auto const& [item, amount] : r.raw)
+        {
+            if (VendorSource(item, ANY_MAP))
+                continue;
+            if (need[item] < amount)
+                addPart(item, amount - need[item], std::string("guild priority ") + SkillShort(r.line) + " [craft436]",
+                        WHY_UPGRADE, 0, 0);
+            worth[item] = std::max(worth[item], perUnit * need[item]);
         }
     }
 
@@ -4348,6 +4374,25 @@ uint32 GuildCoordinator::TrainerCap(uint32 skillLine, uint8 level) const
     return cap;
 }
 
+// [craft435] the slots a craft fills for a member: both empty slots of a ring / trinket pair when the piece is not
+// unique, else one. b469 one ring pick per member (the group's best) counted 75 of the guild's 150 finger slots
+static uint32 PairSlotsFilled(Player* m, ItemTemplate const* proto, uint8 group)
+{
+    uint8 first = 0;
+    if (group == GuildGear::EquipGroup(INVTYPE_FINGER))
+        first = EQUIPMENT_SLOT_FINGER1;
+    else if (group == GuildGear::EquipGroup(INVTYPE_TRINKET))
+        first = EQUIPMENT_SLOT_TRINKET1;
+    else
+        return 1;
+    if (proto->MaxCount == 1)
+        return 1;
+    uint32 empty = 0;
+    for (uint8 slot = first; slot <= first + 1; ++slot)
+        empty += m->GetItemByPos(INVENTORY_SLOT_BAG_0, slot) ? 0 : 1;
+    return std::max<uint32>(1, empty);
+}
+
 void GuildCoordinator::UpdateProfessions()
 {
     if (plan_.empty())
@@ -4528,12 +4573,14 @@ void GuildCoordinator::UpdateProfessions()
                 ItemTemplate const* proto = sObjectMgr->GetItemTemplate(g.itemId);
                 if (!recipe || !proto || !learnable(recipe->skillLine, recipe->spellId))
                     continue;  // a recipe found elsewhere: the skill alone does not unlock it
-                needs.push_back({recipe->skillLine, recipe->reqSkill, recipe->spellId, g.itemId, 1, row->low,
+                uint32 const slots = PairSlotsFilled(m, proto, g.group);  // [craft435]
+                needs.push_back({recipe->skillLine, recipe->reqSkill, recipe->spellId, g.itemId, slots, row->low,
                                  proto->Bonding == BIND_WHEN_PICKED_UP,
                                  std::string("upgrade ") + GuildGear::GroupName(g.group) + " for " + Who(row->low),
-                                 copperPerWeight > 0.0 && g.score > g.current
-                                     ? double(g.score - g.current) * copperPerWeight
-                                     : priceOf(g.itemId)});
+                                 (copperPerWeight > 0.0 && g.score > g.current
+                                      ? double(g.score - g.current) * copperPerWeight
+                                      : priceOf(g.itemId)) *
+                                     slots});
             }
     }
     // bags: the next bag size above the biggest one a guild crafter knows, for every smaller bag slot
@@ -5677,7 +5724,20 @@ void GuildCoordinator::UpdateProfessions()
                 {
                     std::vector<std::pair<uint32, uint32>> ores;
                     uint32 bar = 0;
-                    if (uint32 const smelt = NextSmelt(p, &ores, &bar))
+                    uint32 smelt = NextSmelt(p, &ores, &bar);
+                    bool forGuild = false;
+                    {
+                        bool held = smelt && !ores.empty();
+                        for (auto const& [ore, n] : ores)
+                            held = held && p->GetItemCount(ore, false) >= n;
+                        if (!held)  // [craft437] else a bar the guild's non-smelting crafters lack
+                            if (uint32 const guildSmelt = GuildSmelt(p, &ores, &bar))
+                            {
+                                smelt = guildSmelt;
+                                forGuild = true;
+                            }
+                    }
+                    if (smelt)
                     {
                         bool enough = !ores.empty();
                         for (auto const& [ore, n] : ores)
@@ -5690,8 +5750,11 @@ void GuildCoordinator::UpdateProfessions()
                             pick.itemId = bar;
                             pick.details = "smelt: " + ItemName(ores.front().first) + " → " + ItemName(bar) +
                                            " (mining " + std::to_string(skill) + "/" + std::to_string(maxSkill) + ")";
-                            pick.reason = "ore in bags; smelting (spell " + std::to_string(smelt) +
-                                          ") gives Mining skill, bars go to blacksmiths / engineers";
+                            pick.reason = forGuild
+                                              ? "ore in bags; the guild's crafters lack " + ItemName(bar) +
+                                                    " and cannot smelt it [craft437]"
+                                              : "ore in bags; smelting (spell " + std::to_string(smelt) +
+                                                    ") gives Mining skill, bars go to blacksmiths / engineers";
                             // [econ1] the nearest town forge of its side on its map (its walk there not refused):
                             // smelted on its next visit to that town
                             float bestDist = FLT_MAX;
@@ -5857,6 +5920,267 @@ void GuildCoordinator::UpdateProfessions()
             else
                 ++itr;
         professions_[row->low] = std::move(picks);
+    }
+    RankGuildCrafts(members, needs.size(), [&](size_t i) -> GuildNeedView
+                    {
+                        Need const& n = needs[i];
+                        return {n.line, n.reqSkill, n.spellId, n.itemId, n.count, n.forLow, n.value};
+                    },
+                    [&](uint32 low, uint32 line) { return assigned.count({low, line}) != 0; },
+                    gatherPace, copperPerWeight, bank);
+}
+
+// [craft435] user 2026-11-13 (b469: 5 rings worn of 150 finger slots, 0 necks of 75, the only jeweler at JC 14
+// questing): "where we lag, there we craft". Each crafter's call was judged alone against its own questing and its
+// chain ran as town tasks of the same weight as a turn-in (Colian's JC call read 32985 c/min > quests 324 c/min and
+// still "waits town Blood Watch"). The guild's own ranking: each crafting line's gap - the members' needs its crafts
+// fill that no crafter knows yet ([craft428] values, both slots of a ring / trinket pair) and the orders its crafters
+// hold ([craft431]) - by its total worth, the biggest first; the bot-minutes of the whole chain (the crafter's
+// skill-ups to the highest recipe, the crafts, the gathering of what the members do not hold, at the guild's pace)
+// against the members' median questing. Logged on a change of the ranking
+void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Player*>> const& members, size_t needCount,
+                                       std::function<GuildNeedView(size_t)> const& needAt,
+                                       std::function<bool(uint32, uint32)> const& crafterOf,
+                                       std::function<float(uint32, uint32, uint32, Player*)> const& gatherPace,
+                                       double copperPerWeight, std::map<uint32, uint32> const& bank)
+{
+    struct Gap
+    {
+        LinePriority out;
+        std::set<uint32> members;
+        std::set<uint32> crafters;
+        std::map<std::string, uint32> kinds;  // what it fills -> slots
+        uint32 maxReq{0};
+        double craftMin{0.0};
+    };
+    std::map<uint32, Gap> gaps;
+    auto const castMinutes = [](uint32 spellId, double crafts)
+    {
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(spellId);
+        return info ? crafts * info->CalcCastTime() / double(MINUTE * IN_MILLISECONDS) : 0.0;
+    };
+    auto const kindOf = [](uint32 itemId)
+    {
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        if (!proto)
+            return std::string("?");
+        if (proto->Class == ITEM_CLASS_CONTAINER)
+            return std::string("bags");
+        if (proto->Class == ITEM_CLASS_GLYPH)
+            return std::string("glyphs");
+        uint8 const group = GuildGear::EquipGroup(proto->InventoryType);
+        return group < GuildGear::GROUP_COUNT ? std::string(GuildGear::GroupName(group)) + "s" : std::string("items");
+    };
+    auto const addCrafts = [&](Gap& gap, uint32 spellId, double crafts)
+    {
+        if (GuildGear::CraftRecipe const* r = GuildGear::Recipe(spellId))
+            for (auto const& [item, n] : r->reagents)
+                ExpandReagent(item, crafts * n, gap.out.raw, nullptr, 1.0f, 0, 0, ANY_MAP);
+        gap.craftMin += castMinutes(spellId, crafts);
+    };
+    for (size_t i = 0; i < needCount; ++i)
+    {
+        GuildNeedView const n = needAt(i);
+        if (n.value <= 0.0)
+            continue;
+        Gap& gap = gaps[n.line];
+        gap.out.value += n.value;
+        gap.out.slots += n.count;
+        gap.kinds[kindOf(n.itemId)] += n.count;
+        if (n.forLow)
+            gap.members.insert(n.forLow);
+        gap.maxReq = std::max(gap.maxReq, n.reqSkill);
+        addCrafts(gap, n.spellId, double(n.count));
+    }
+    for (CraftJob const& job : crafts_)
+    {
+        GuildGear::CraftRecipe const* r = GuildGear::Recipe(job.spellId);
+        if (!r)
+            continue;
+        Gap& gap = gaps[r->skillLine];
+        ItemTemplate const* product = sObjectMgr->GetItemTemplate(job.itemId);
+        gap.out.value += job.weight > 0.0 && copperPerWeight > 0.0 ? job.weight * copperPerWeight
+                         : product                                ? double(product->BuyPrice)
+                                                                  : 0.0;
+        ++gap.out.slots;
+        gap.kinds[kindOf(job.itemId)] += 1;
+        gap.members.insert(job.forLow);
+        gap.crafters.insert(job.crafterLow);
+        if (!job.ready)
+            addCrafts(gap, job.spellId, 1.0);
+    }
+    // the members' questing: the median copper per minute of the bots (the unit every call is weighed in)
+    double questPerMinute = 0.0;
+    {
+        std::vector<float> paces;
+        for (auto const& [row, m] : members)
+            if (float copper = 0.0f; !HumanCharacter(m) && QuestPace(bots_[row->low], m, copper) && copper > 0.0f)
+                paces.push_back(copper);
+        if (!paces.empty())
+        {
+            std::nth_element(paces.begin(), paces.begin() + paces.size() / 2, paces.end());
+            questPerMinute = paces[paces.size() / 2];
+        }
+    }
+    std::map<uint32, double> held;  // what the members and the bank hold of a raw material
+    auto const heldOf = [&](uint32 item)
+    {
+        auto it = held.find(item);
+        if (it == held.end())
+        {
+            double n = 0.0;
+            if (auto const b = bank.find(item); b != bank.end())
+                n += b->second;
+            for (auto const& [row, m] : members)
+                n += m->GetItemCount(item, false);
+            it = held.emplace(item, n).first;
+        }
+        return it->second;
+    };
+    std::vector<LinePriority> ranked;
+    std::map<uint32, std::string> texts;
+    for (auto& [line, gap] : gaps)
+    {
+        gap.out.line = line;
+        gap.out.members = uint32(gap.members.size());
+        // its crafter: the one the needs went to ([craft426]), else the highest skill of the line
+        Player* crafter = nullptr;
+        uint32 crafterSkill = 0;
+        bool crafterChosen = false;
+        for (auto const& [row, m] : members)
+        {
+            if (HumanCharacter(m) || !m->HasSkill(line))
+                continue;
+            uint32 const skill = m->GetPureSkillValue(line);
+            bool const chosen = crafterOf(row->low, line) || gap.crafters.count(row->low);
+            if (chosen)
+                gap.crafters.insert(row->low);
+            if (crafter && (crafterChosen != chosen ? crafterChosen : skill <= crafterSkill))
+                continue;
+            crafter = m;
+            crafterSkill = skill;
+            crafterChosen = chosen;
+        }
+        // its skill-ups to the highest recipe of the gap, from the skill it holds
+        double skillMin = 0.0;
+        if (crafter && gap.maxReq > crafterSkill)
+        {
+            std::map<size_t, double> crafts;
+            SkillUpCrafts(crafter, line, crafterSkill, gap.maxReq, crafts);
+            if (auto const list = recipesBySkill_.find(line); list != recipesBySkill_.end())
+                for (auto const& [index, n] : crafts)
+                {
+                    Recipe const& r = list->second[index];
+                    for (auto const& [item, count] : r.reagents)
+                        ExpandReagent(item, std::ceil(n) * count, gap.out.raw, nullptr, 1.0f, 0, 0, ANY_MAP);
+                    skillMin += castMinutes(r.spellId, std::ceil(n));
+                }
+        }
+        // the gathering of what the members do not hold, at the guild's pace; the gatherers who reach it
+        double gatherMin = 0.0;
+        std::set<uint32> gatherers;
+        std::string unreached;
+        for (auto const& [item, units] : gap.out.raw)
+        {
+            if (VendorSource(item, crafter ? crafter->GetMapId() : ANY_MAP))
+                continue;
+            double const left = units - std::min(units, heldOf(item));
+            uint32 skill = 0, req = 0;
+            if (auto const src = gatherSource_.find(item); src != gatherSource_.end())
+            {
+                skill = src->second.first;
+                req = src->second.second;
+            }
+            else if (int32 planReq = 0; sGuildGatherPlan.Gatherable(item, &skill, &planReq))
+                req = uint32(std::max<int32>(0, planReq));
+            for (auto const& [row, m] : members)
+                if (skill && !HumanCharacter(m) && m->HasSkill(skill) && m->GetPureSkillValue(skill) >= req)
+                    gatherers.insert(row->low);
+            if (left <= 0.0)
+                continue;
+            float const pace = gatherPace(item, skill, req, nullptr);
+            if (pace > 0.0f)
+                gatherMin += left / pace;
+            else if (unreached.size() < 60)
+                unreached += (unreached.empty() ? "" : ", ") + ItemName(item) + " ×" +
+                             std::to_string(uint32(std::ceil(left)));
+        }
+        gap.out.botMinutes = gap.craftMin + skillMin + gatherMin;
+        double const perHour = gap.out.botMinutes > 0.0 ? gap.out.value / gap.out.botMinutes * 60.0 : 0.0;
+        std::string kinds;
+        for (auto const& [kind, slots] : gap.kinds)
+            kinds += (kinds.empty() ? "" : "/") + kind;
+        std::string crafters;
+        for (uint32 low : gap.crafters)
+            if (crafters.size() < 60)
+                crafters += (crafters.empty() ? "" : ", ") + Who(low);
+        texts[line] = Acore::StringFormat(
+            "{} {}: {} slots of {} members, value {} ({:.0f} min of bot work: skill-ups {:.0f}, crafts {:.0f}, "
+            "gathering {:.0f}) = {}/h vs quests {}/h ({} + {} gatherers){}",
+            SkillShort(line), kinds, gap.out.slots, gap.out.members, Gsc(uint64(gap.out.value)), gap.out.botMinutes,
+            skillMin, gap.craftMin, gatherMin, Gsc(uint64(perHour)), Gsc(uint64(questPerMinute * 60.0)),
+            crafters.empty() ? std::string("no crafter") : crafters, gatherers.size(),
+            unreached.empty() ? std::string() : "; no gatherer reaches " + unreached);
+        ranked.push_back(gap.out);
+    }
+    std::stable_sort(ranked.begin(), ranked.end(),
+                     [](LinePriority const& a, LinePriority const& b) { return a.value > b.value; });
+    std::string text, key;
+    for (size_t i = 0; i < ranked.size(); ++i)
+    {
+        LinePriority const& r = ranked[i];
+        bool const beats = r.botMinutes > 0.0 && r.value / r.botMinutes > questPerMinute;
+        text += Acore::StringFormat("{}{}. {}{}", i ? "; " : "", i + 1, texts[r.line],
+                                    beats ? " - beats questing" : " - quests pay more");
+        key += Acore::StringFormat("{}:{}:{}:{};", r.line, r.slots, r.members, beats ? 1 : 0);
+    }
+    // [craft436] the ranking runs the chain: a line whose gap pays more per bot-minute than the members' questing
+    // weighs its crafters' town stops (the craft, the tool / recipe / rank, the reagent buy: TownStopCopper) by its
+    // whole gap, so the route takes the biggest gap's stops first; its raw materials are wanted at the gap's worth per
+    // unit (UpdateWanted), which sends the gatherers who reach them
+    linePriorities_.clear();
+    for (LinePriority const& r : ranked)
+    {
+        if (r.botMinutes <= 0.0 || r.value / r.botMinutes <= questPerMinute)
+            continue;
+        linePriorities_.push_back(r);
+        uint32 const worth = uint32(std::min(r.value, double(UINT32_MAX)));
+        for (auto& [low, picks] : professions_)
+            for (ProfessionPick& pick : picks)
+                if (pick.skillLine == r.line)
+                {
+                    if (pick.kind == GuildProfessionKind::CRAFT)
+                        pick.cost = std::max(pick.cost, worth);
+                    else if (pick.kind == GuildProfessionKind::TRAIN || pick.kind == GuildProfessionKind::BUY)
+                        pick.worth = std::max(pick.worth, worth);
+                }
+    }
+    // [craft437] the bars the called crafters that cannot smelt lack (their walk's raw ore, UpdateWanted's lack),
+    // less the bars other members hold: the miners who hold the ore smelt them for the guild (GuildSmelt)
+    guildBars_.clear();
+    for (auto const& [low, items] : crafterLack_)
+    {
+        Player* c = nullptr;
+        for (auto const& [row, m] : members)
+            if (row->low == low)
+                c = m;
+        if (!c || c->HasSkill(SKILL_MINING))
+            continue;
+        for (auto const& [ore, units] : items)
+            for (auto const& [bar, parts] : smeltFrom_)
+                for (auto const& [from, per] : parts)
+                    if (from == ore && per > 0.0f)
+                        guildBars_[bar] += double(units) / per;
+    }
+    for (auto itr = guildBars_.begin(); itr != guildBars_.end();)
+    {
+        itr->second -= heldOf(itr->first);
+        itr = itr->second > 0.0 ? std::next(itr) : guildBars_.erase(itr);
+    }
+    if (key != linePrioritiesLogged_)
+    {
+        linePrioritiesLogged_ = key;
+        LOG_INFO("playerbots", "[craft435] guild priorities: {}", text.empty() ? "no crafting gap" : text);
     }
 }
 
@@ -6683,6 +7007,47 @@ uint32 GuildCoordinator::NextSmelt(Player* p, std::vector<std::pair<uint32, uint
                     *product = info->Effects[e].ItemType;
     }
     return best;
+}
+
+// [craft437] b469: the jeweler Colian (no Mining) was mailed Copper Ore for his Copper Bars by 20+ members - he
+// cannot smelt it - while no miner smelted copper: NextSmelt smelts only while it gives skill (Smelt Copper grey at
+// 75 for the 105 miners). A smelt of a bar the guild's non-smelting crafters lack is the miner's work for the guild
+uint32 GuildCoordinator::GuildSmelt(Player* p, std::vector<std::pair<uint32, uint32>>* reagents,
+                                    uint32* product) const
+{
+    if (!p || !p->HasSkill(SKILL_MINING) || guildBars_.empty())
+        return 0;
+    for (uint32 i = 0; i < sSkillLineAbilityStore.GetNumRows(); ++i)
+    {
+        SkillLineAbilityEntry const* a = sSkillLineAbilityStore.LookupEntry(i);
+        if (!a || a->SkillLine != SKILL_MINING || !p->HasSpell(a->Spell))
+            continue;
+        SpellInfo const* info = sSpellMgr->GetSpellInfo(a->Spell);
+        if (!info || info->Reagent[0] <= 0)
+            continue;
+        uint32 bar = 0;
+        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+            if (info->Effects[e].Effect == SPELL_EFFECT_CREATE_ITEM && info->Effects[e].ItemType)
+                bar = info->Effects[e].ItemType;
+        if (!bar || !guildBars_.count(bar))
+            continue;
+        std::vector<std::pair<uint32, uint32>> ores;
+        bool enough = true;
+        for (uint8 r = 0; r < MAX_SPELL_REAGENTS; ++r)
+            if (info->Reagent[r] > 0 && info->ReagentCount[r] > 0)
+            {
+                ores.emplace_back(uint32(info->Reagent[r]), info->ReagentCount[r]);
+                enough = enough && p->GetItemCount(uint32(info->Reagent[r]), false) >= info->ReagentCount[r];
+            }
+        if (!enough)
+            continue;
+        if (reagents)
+            *reagents = std::move(ores);
+        if (product)
+            *product = bar;
+        return a->Spell;
+    }
+    return 0;
 }
 
 void GuildCoordinator::Suggest(uint32 low, std::string const& key, std::string const& text)
@@ -8207,8 +8572,13 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                     if (bot->IsInCombat() || bot->IsNonMeleeSpellCast(false))
                         continue;
                     std::vector<std::pair<uint32, uint32>> ores;
-                    uint32 const smelt = NextSmelt(bot, &ores);
+                    uint32 smelt = NextSmelt(bot, &ores);
                     bool enough = smelt && !ores.empty();
+                    for (auto const& [ore, n] : ores)
+                        enough = enough && bot->GetItemCount(ore, false) >= n;
+                    if (!enough)  // [craft437] the bars the guild's crafters lack
+                        smelt = GuildSmelt(bot, &ores);
+                    enough = smelt && !ores.empty();
                     for (auto const& [ore, n] : ores)
                         enough = enough && bot->GetItemCount(ore, false) >= n;
                     if (!enough)

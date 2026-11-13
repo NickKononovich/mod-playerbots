@@ -10,6 +10,7 @@
 #include <array>
 #include <atomic>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -279,6 +280,10 @@ public:
     // the cheapest first; 0: none. Its reagents and product (the bar)
     static uint32 NextSmelt(Player* p, std::vector<std::pair<uint32, uint32>>* reagents = nullptr,
                             uint32* product = nullptr);
+    // [craft437] a smelt the miner knows of a bar a called crafter that cannot smelt lacks (guildBars_), its ore in
+    // the miner's bags: smelted for the guild whatever its skill-up; 0: none (lock_ held)
+    uint32 GuildSmelt(Player* p, std::vector<std::pair<uint32, uint32>>* reagents = nullptr,
+                      uint32* product = nullptr) const;
 
     // [guild60] fives: the global leader forms them (UpdateFives) or the command does; world thread.
     // FormFive: members incl. the leader, `dungeon` = the content key ("wc-n"); 0 with `error` when it cannot.
@@ -989,6 +994,23 @@ private:
     std::string TasksText(BotState const& st) const;
     // [tasks] profession vs questing, decided by the global leader only (world thread)
     void UpdateProfessions();
+    // [craft435] one member need of UpdateProfessions, as the guild's ranking reads it
+    struct GuildNeedView
+    {
+        uint32 line{0};
+        uint32 reqSkill{0};
+        uint32 spellId{0};
+        uint32 itemId{0};
+        uint32 count{0};
+        uint32 forLow{0};
+        double value{0.0};
+    };
+    // [craft435] the guild's craft priorities from UpdateProfessions' needs (lock_ held)
+    void RankGuildCrafts(std::vector<std::pair<PlanRow const*, Player*>> const& members, size_t needCount,
+                         std::function<GuildNeedView(size_t)> const& needAt,
+                         std::function<bool(uint32, uint32)> const& crafterOf,
+                         std::function<float(uint32, uint32, uint32, Player*)> const& gatherPace,
+                         double copperPerWeight, std::map<uint32, uint32> const& bank);
     // [craft386] the enchanters enchant the members' gear: a worn piece without a permanent enchantment, the enchant
     // the member's stat weights value most (StatsWeightCalculator::CalculateEnchant) of the recipes the enchanter
     // knows and holds the reagents for, for the members it meets (its group, or in its sight). Applied as players
@@ -1266,6 +1288,20 @@ private:
         std::string forWhat;
     };
     std::map<std::pair<uint32, uint32>, ClimbNeed> climbNeeds_;
+    // [craft435] the guild's craft priorities (UpdateProfessions): each crafting line's gap - the members' empty or
+    // weaker slots its crafts fill, the orders its crafters hold - by its total worth, the biggest first
+    struct LinePriority
+    {
+        uint32 line{0};
+        double value{0.0};       // copper: every member's stat-weight gain of the line's best pieces (craft428)
+        uint32 slots{0};         // the slots it fills (a ring / trinket pair counts both)
+        uint32 members{0};
+        double botMinutes{0.0};  // the bot-minutes of its whole chain: the crafter's skill-ups, crafts, gathering
+        std::map<uint32, double> raw;  // raw material -> units of the whole chain
+    };
+    std::vector<LinePriority> linePriorities_;
+    std::string linePrioritiesLogged_;
+    std::map<uint32, double> guildBars_;  // [craft437] bar -> units the called crafters that cannot smelt lack
     std::map<uint32, uint32> glyphNeeds_;  // [insc143] glyph item -> members who need one (the log line on change)
     std::map<uint32, std::vector<uint32>> glyphFor_;  // [insc145] glyph item -> the members who need one
     std::unordered_map<uint32, std::vector<std::pair<uint32, std::string>>> withdraw_;  // member -> bank items for it

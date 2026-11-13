@@ -982,6 +982,32 @@ void GuildCoordinator::UpdateTransfers()
                     {
                         if (rawItem == item)
                             continue;
+                        // [craft437] an ore goes only to a crafter that smelts it: one without Mining lacks the bar
+                        // (a miner holding the ore smelts it for the guild, GuildSmelt). b469 20+ letters of Copper
+                        // Ore to the jeweler Colian (no Mining), none of it ever a bar
+                        if (!c->HasSkill(SKILL_MINING))
+                        {
+                            uint32 bar = 0;
+                            float per = 0.0f;
+                            for (auto const& [smelted, parts] : smeltFrom_)
+                                for (auto const& [ore, n] : parts)
+                                    if (ore == rawItem && n > 0.0f && !bar)
+                                    {
+                                        bar = smelted;
+                                        per = n;
+                                    }
+                            if (bar)
+                            {
+                                uint32 const bars = uint32(std::ceil(units / per));
+                                uint32 const have = c->GetItemCount(bar, false);
+                                if (bar != item && bars > have)
+                                    lack.try_emplace({row.low, bar}, bars - have,
+                                                     "skill-up " + std::to_string(value) + ": " +
+                                                         ItemText(r.product, 1) + " via " + ItemText(item, 1) +
+                                                         " [craft437]");
+                                continue;
+                            }
+                        }
                         uint32 const own = c->GetItemCount(rawItem, false);
                         uint32 want = double(own) < units ? uint32(std::ceil(units - double(own))) : 0;
                         // [craft382] the walk's whole lack to its held rank cap (UpdateWanted's crafterLack_), not
