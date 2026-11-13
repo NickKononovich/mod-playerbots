@@ -380,7 +380,6 @@ namespace TestHarness
         using Leader::Travel::BOSS_WALK_RATIO;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_WALK_EXTRA;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_ROOM_CACHE_CELL;  // [lead107] RouteTargets.h
-        using Leader::Travel::PATROL_EYE_HEIGHT;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_ROOM_CACHE_MAX;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_SKIP_DETOUR;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_DETOUR_FALLBACK;  // [lead107] RouteTargets.h
