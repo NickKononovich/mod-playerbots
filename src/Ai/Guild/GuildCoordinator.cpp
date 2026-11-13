@@ -2047,11 +2047,57 @@ void GuildCoordinator::UpdateOrders()
         std::map<uint32, float> unitValue;  // item -> copper a unit is worth to the guild (UpdateWanted)
         // [questrate] gatherer -> the questing formula's numbers (the plan's log line)
         std::map<uint32, std::string> questWhy;
+        std::string reachText;  // [gather40] the needs no member can ever gather (logged on change)
+        std::string reachKey;   // [gather40] the same without the unit counts: what the log line is deduped on, so a
+                                // shortfall drifting by a unit every update does not reprint it
+        uint32 reachDropped = 0, reachUnits = 0;
+        std::unordered_map<uint32, uint32> reach;  // [gather40] source skill -> the highest rank the guild can hold
+        // [gather40] the ceiling of one skill, read once and remembered: the best of what a trainer will sell a
+        // planned member at its level and what a member already holds. lock_ is held by both callers below
+        auto const ceilingOf = [&](uint32 skill) -> uint32
+        {
+            if (auto const known = reach.find(skill); known != reach.end())
+                return known->second;
+            uint32 cap = 0;
+            for (PlanRow const& row : plan_)
+                if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                    p && p->IsInWorld() && !HumanCharacter(p))
+                    cap = std::max({cap, TrainerCap(skill, p->GetLevel()), uint32(p->GetPureMaxSkillValue(skill))});
+            reach[skill] = cap;
+            return cap;
+        };
         {
             CoordLock guard(lock_, __func__);
+            // [gather40] coordinator 2026-11-13: a material whose node asks a gathering skill no member of the guild
+            // can hold is not a need, it is work that can never be done. b480 asked its L18-26 members for 10123
+            // units over 79 items, among them Cobalt Ore ×284 (Mining 350), Saronite Ore ×198 (400), Titanium Ore
+            // ×84 (450), Adamantite Ore ×72 (325) and Goldclover / Tiger Lily / Icethorn (Herbalism 345) - and
+            // 76 % of all gathering time went to walking (3.39 h of 4.47 h) for 28 items. The ceiling is the game's
+            // own: the highest rank a trainer will sell a member at its level (TrainerCap, trainer_spell's ReqLevel
+            // and the rank's own step), taken over the planned members - no expansion cut-off and no item list. A
+            // line whose ranks the data does not carry reads ceiling 0 and keeps its needs, so missing data never
+            // drops one. The skill is whichever one the source itself names (GuildGatherPlan::Gatherable), so a
+            // reagent behind a crafting skill - Handful of Cobalt Bolts at Engineering 350 - is judged by the same
+            // ceiling as an ore behind Mining, with no list of lines to keep in step
             for (WantedItem const& w : wanted_)
                 if (!w.optional && w.Short() && sGuildGatherPlan.Gatherable(w.itemId))
                 {
+                    uint32 skill = 0;
+                    int32 req = 0;
+                    sGuildGatherPlan.Gatherable(w.itemId, &skill, &req);
+                    uint32 const ceiling = skill ? ceilingOf(skill) : 0;
+                    if (ceiling && req > int32(ceiling))
+                    {
+                        ++reachDropped;
+                        reachUnits += w.Short();
+                        reachKey += std::to_string(w.itemId) + ",";
+                        if (reachText.size() < 260)
+                            reachText += (reachText.empty() ? "" : ", ") + ItemName(w.itemId) + " ×" +
+                                         std::to_string(w.Short()) + " (" + SkillShort(skill) + " " +
+                                         std::to_string(req) + " over the guild's " + std::to_string(ceiling) + ")";
+                        stock[w.itemId] = {w.need, w.have};  // the stock line still shows it
+                        continue;
+                    }
                     shortfall[w.itemId] = w.Short();
                     stock[w.itemId] = {w.need, w.have};
                     unitValue[w.itemId] = w.unitValue;
@@ -2124,9 +2170,33 @@ void GuildCoordinator::UpdateOrders()
                         reached = true;
                         break;
                     }
+                // [gather40] a climb toward a tier above the guild's own rank ceiling can never finish: the bot
+                // practises to its cap and stops there, so the climb is a walk with no end and no climber takes it
+                if (uint32 const ceiling = ceilingOf(tier.first); ceiling && tier.second > ceiling)
+                {
+                    ++reachDropped;
+                    reachKey += "c" + std::to_string(tier.first) + ":" + std::to_string(tier.second) + ",";
+                    if (reachText.size() < 320)
+                        reachText += (reachText.empty() ? "" : ", ") + std::string(SkillShort(tier.first)) + " " +
+                                     std::to_string(tier.second) + " climb for " + ItemName(need.itemId) +
+                                     " (over the guild's " + std::to_string(ceiling) + ") [craft432]";
+                    continue;
+                }
                 if (!reached)
                     climbs.push_back({tier.first, int32(tier.second), need.itemId, float(need.value), need.forWhat});
             }
+        }
+        if (reachKey != gatherReachLogged_)  // [gather40] the inputs of the verdict, on change
+        {
+            gatherReachLogged_ = reachKey;
+            std::string caps;
+            for (auto const& [line, cap] : reach)
+                caps += (caps.empty() ? "" : ", ") + std::string(SkillShort(line)) + " " + std::to_string(cap);
+            LOG_INFO("playerbots",
+                     "[gather40] the guild's gathering rank ceilings at its members' levels ({}): {} need(s) of "
+                     "{} unit(s) left out, nobody can ever reach them: {}",
+                     caps.empty() ? "none read" : caps, reachDropped, reachUnits,
+                     reachText.empty() ? "none" : reachText);
         }
         sGuildGatherPlan.Assign(shortfall, gatherers, questPace, unitValue, questWhy, fishers, climbs);
         if (gatherStockCalls_++ % GATHER_STOCK_LOG_EVERY == 0)  // a log cadence, no decision
@@ -5043,7 +5113,9 @@ void GuildCoordinator::UpdateProfessions()
             Recipe const* r{nullptr};
             float points{0.0f};
             uint8 kind{0};
-            uint32 reqLevel{0};
+            // [craft460] the product itself: the member's own usability check runs on it, and it replaced the
+            // RequiredLevel this struct used to carry (that field decided nothing and was wrong for item 43569)
+            ItemTemplate const* proto{nullptr};
             bool known{false};  // a guild maker of the kind's line knows it
         };
         std::vector<PotionRecipe> brews;
@@ -5062,7 +5134,7 @@ void GuildCoordinator::UpdateProfessions()
                     KIND_LINES[pr.kind] != kindLine)
                     continue;
                 pr.r = &r;
-                pr.reqLevel = proto->RequiredLevel;
+                pr.proto = proto;  // [craft460]
                 for (auto const& [row, m] : members)
                     if (!HumanCharacter(m) && m->HasSpell(r.spellId))
                     {
@@ -5074,6 +5146,10 @@ void GuildCoordinator::UpdateProfessions()
         }
         std::map<uint32, std::pair<uint32, double>> potionNeeds;  // recipe spell -> (units, value)
         std::map<uint32, uint32> potionMembers;                   // recipe spell -> members it is for
+        // [craft460] the inputs of the usability verdict: the products no member of the guild may drink (so they are
+        // no need of its ranks), and those at least one may
+        std::map<uint32, uint32> potionUnusable;  // product -> the rank its recipe asks
+        std::set<uint32> potionUsable;
         for (auto const& [row, m] : members)
         {
             auto const book = potions_.find(row->low);
@@ -5085,11 +5161,27 @@ void GuildCoordinator::UpdateProfessions()
                 if (!owed)
                     continue;
                 float covered = 0.0f;         // the best of the kind the guild can make for it today
-                PotionRecipe const* open = nullptr;  // the best its level can use that nobody knows yet
+                PotionRecipe const* open = nullptr;  // the best it can use that nobody knows yet
                 for (PotionRecipe const& pr : brews)
                 {
-                    if (pr.kind != kind || pr.reqLevel > m->GetLevel())
+                    // [craft460] coordinator 2026-11-13: the member's own usability decides, by the core's check -
+                    // RequiredLevel alone is not the item's gate. b480: every alchemist read "unlocks 0c + supplies
+                    // 0c - costs 86s" and quested, because this need published Endless Healing Potion ×6 / Endless
+                    // Mana Potion ×1 at "Alch 410" as the best potion a L18-26 member can use. Item 43569 carries
+                    // RequiredLevel 0 (its gates are ItemLevel 80, RequiredSkill 171 at rank 400), so the old test
+                    // passed it for a L18 bot - and a need at rank 410 lies past every point of every walk, so
+                    // [craft450]'s term could never enter `unlocked` on any line. Player::CanUseItem reads
+                    // RequiredSkill / RequiredSkillRank, RequiredSpell, class, race and RequiredLevel together, so
+                    // a potion only an alchemist of 400 may drink stops being this guild's need and the need lands
+                    // on the rank the members' own potions really ask for
+                    if (pr.kind != kind)
                         continue;
+                    if (m->CanUseItem(pr.proto) != EQUIP_ERR_OK)
+                    {
+                        potionUnusable[pr.r->product] = pr.r->reqSkill;  // [craft460]
+                        continue;
+                    }
+                    potionUsable.insert(pr.r->product);
                     if (pr.known)
                         covered = std::max(covered, pr.points);
                     else if (learnable(KIND_LINES[kind], pr.r->spellId) && (!open || pr.points > open->points))
@@ -5123,14 +5215,28 @@ void GuildCoordinator::UpdateProfessions()
                         std::to_string(entry.first) + " (" + SkillShort(recipe->skillLine) + " " +
                         std::to_string(recipe->reqSkill) + ", " + Gsc(uint64(entry.second)) + ")";
         }
-        if (text != potionNeedsLogged_)
+        // [craft460] the verdict's inputs: what no member may drink, and the rank each such product asked for
+        std::string skipText;
+        uint32 skipped = 0;
+        for (auto const& [product, reqSkill] : potionUnusable)
+            if (!potionUsable.count(product))
+            {
+                ++skipped;
+                if (skipText.size() < 200)
+                    skipText += (skipText.empty() ? "" : ", ") + ItemName(product) + " (rank " +
+                                std::to_string(reqSkill) + ")";
+            }
+        if (text != potionNeedsLogged_ || skipText != potionSkipLogged_)
         {
             potionNeedsLogged_ = text;
+            potionSkipLogged_ = skipText;
             LOG_INFO("playerbots",
                      "[craft450] the consumables the members used need these ranks: {} (vendor {:.3f} c a healing "
-                     "point, {:.3f} c a mana point, {:.3f} c a bandaged point [craft454])",
+                     "point, {:.3f} c a mana point, {:.3f} c a bandaged point [craft454]); no member may drink {} of "
+                     "the kinds' products, so they are no need of any rank: {} [craft460]",
                      text.empty() ? "none: the makers already make the best ones the members can use" : text,
-                     prices.per[POTION_HEAL], prices.per[POTION_MANA], prices.per[POTION_BANDAGE]);
+                     prices.per[POTION_HEAL], prices.per[POTION_MANA], prices.per[POTION_BANDAGE], skipped,
+                     skipText.empty() ? "none" : skipText);
         }
     }
     // [craft452] coordinator 2026-11-13 (approved): a scope IS a permanent enchantment on a ranged weapon, and the
@@ -12377,7 +12483,10 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
                 for (Recipe const* r : maker.recipes[kind])
                 {
                     ItemTemplate const* proto = sObjectMgr->GetItemTemplate(r->product);
-                    if (!proto || proto->RequiredLevel > m->GetLevel() || (pick && proto->RequiredLevel < pickLevel))
+                    // [craft460] the same usability check as the need above: the item's gate is not RequiredLevel
+                    // alone (item 43569 Endless Healing Potion: RequiredLevel 0, RequiredSkill 171 at rank 400)
+                    if (!proto || m->CanUseItem(proto) != EQUIP_ERR_OK ||
+                        (pick && proto->RequiredLevel < pickLevel))
                         continue;
                     pick = r;
                     pickLevel = proto->RequiredLevel;

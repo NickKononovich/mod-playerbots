@@ -1288,6 +1288,8 @@ private:
     std::unordered_map<uint32, std::vector<SupplyCraft>> potionCrafts_;  // alchemist -> its potion jobs (lock_)
     std::string potionJudged_;                                           // the last [eco194] line
     std::string potionNeedsLogged_;  // [craft450] the last line of the ranks the members' drinks need
+    std::string potionSkipLogged_;   // [craft460] the last line of the products no member may drink
+    std::string gatherReachLogged_;  // [gather40] the last dropped set (item ids / climb tiers) above the ceilings
     std::string scopeNeedsLogged_;   // [craft452] the last line of the scopes the members' ranged weapons lack
     std::string blockedNeedsLogged_;  // [craft451] the last line of the crafted reagents nobody can gather
     // the potion kind of an item (a healing / mana potion), POTION_KINDS = none; its points (the effect's amount)
