@@ -4998,6 +4998,52 @@ void GuildCoordinator::AutoFive()
         std::map<DungeonOption const*, std::vector<FiveCandidate>> openUncleared;
         {
             CoordLock guard(lock_, __func__);
+            // [five60] the roster's own occupancy first, so every dungeon line below can be read against it: how many
+            // members a five could take at all and, of the rest, the one judge's own reason (FreeForFive). This is
+            // the figure the per-dungeon counts start from - each of them then takes away its own band, its route,
+            // [lfg69] and the guild's open dungeon - and the two were impossible to compare while both lines called
+            // their own number "free": b482 read "54 free" here and "0 free" there in the same second
+            uint32 rosterFree = 0;
+            if (guardCount == 0)
+            {
+                uint32 planned = 0, freeTanks = 0, freeHealers = 0;
+                std::map<std::string, uint32> held;
+                for (PlanRow const& row : plan_)
+                {
+                    if (row.grp < 'A' || row.grp > 'C')
+                        continue;
+                    ++planned;
+                    Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                    if (!p || IsHuman(p))
+                    {
+                        ++held[p ? "a human's character" : "offline"];
+                        continue;
+                    }
+                    std::string why;
+                    if (!FreeForFive(row.low, p, &why))
+                    {
+                        ++held[why];
+                        continue;
+                    }
+                    ++rosterFree;
+                    std::string const role = PlanRole(row.low, p);
+                    freeTanks += role == "tank" ? 1 : 0;
+                    freeHealers += role == "healer" ? 1 : 0;
+                }
+                std::string reasons;
+                for (auto const& [why, n] : held)
+                    reasons += Acore::StringFormat("{}{} {}", reasons.empty() ? "" : ", ", why, n);
+                std::string const line = Acore::StringFormat(
+                    "roster: {} planned, {} free for a five (t{} h{} d{}); held: {}. Every dungeon line below starts "
+                    "from these {} and takes away its own band, its route, [lfg69] and the guild's open dungeon",
+                    planned, rosterFree, freeTanks, freeHealers, rosterFree - freeTanks - freeHealers,
+                    reasons.empty() ? "nobody" : reasons, rosterFree);
+                if (line != five60Logged_)
+                {
+                    five60Logged_ = line;
+                    LOG_INFO("playerbots", "[five60] {}", line);
+                }
+            }
             for (DungeonOption const& d : dungeons_)
             {
                 uint32 heldByOrder = 0;  // [order360]
@@ -5041,9 +5087,15 @@ void GuildCoordinator::AutoFive()
                             tanks += c.role == "tank" ? 1 : 0, healers += c.role == "healer" ? 1 : 0;
                         std::string const aboveText =
                             overBand ? Acore::StringFormat(" + {} above it", overBand) : std::string();
-                        std::string text = Acore::StringFormat("{} in band{}, {} free (t{} h{} d{})", inBand,
-                                                               aboveText, pool.size(), tanks, healers,
-                                                               pool.size() - tanks - healers);
+                        // [five60] "free" on its own is what made this line and the roster's read as a contradiction
+                        // (b482: "54 free" and "0 free" in the same second, both of them right). The count here is
+                        // narrower than the roster's by construction - this dungeon's own band, route, [lfg69] and
+                        // the guild's open dungeon are all taken off it - so the line says which figure it is and
+                        // what it started from. One judge of "free" (FreeForFive), two subjects, both named
+                        std::string text = Acore::StringFormat(
+                            "{} in band{}, {} of the roster's {} free members this dungeon can take (t{} h{} d{})",
+                            inBand, aboveText, pool.size(), rosterFree, tanks, healers,
+                            pool.size() - tanks - healers);
                         if (heldByOrder)
                             text += Acore::StringFormat(", held by order: {}", heldByOrder);
                         if (!busy.empty())
@@ -5146,48 +5198,6 @@ void GuildCoordinator::AutoFive()
                     }
                 if (pool.size() >= 5)
                     pools.emplace_back(&d, std::move(pool));
-            }
-            // [five60] the roster's own occupancy, once a look and independent of any dungeon's band: how many
-            // members a five could take right now and, of the rest, the one judge's own reason (FreeForFive). The
-            // per-dungeon lines above mix this with the bands and the dungeon order, so a run with 0 fives could not
-            // be told apart from a run whose roster was simply busy. b480: 0 formed in 27.6 bot-hours
-            if (guardCount == 0)
-            {
-                uint32 planned = 0, free = 0, freeTanks = 0, freeHealers = 0;
-                std::map<std::string, uint32> held;
-                for (PlanRow const& row : plan_)
-                {
-                    if (row.grp < 'A' || row.grp > 'C')
-                        continue;
-                    ++planned;
-                    Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
-                    if (!p || IsHuman(p))
-                    {
-                        ++held[p ? "a human's character" : "offline"];
-                        continue;
-                    }
-                    std::string why;
-                    if (!FreeForFive(row.low, p, &why))
-                    {
-                        ++held[why];
-                        continue;
-                    }
-                    ++free;
-                    std::string const role = PlanRole(row.low, p);
-                    freeTanks += role == "tank" ? 1 : 0;
-                    freeHealers += role == "healer" ? 1 : 0;
-                }
-                std::string reasons;
-                for (auto const& [why, n] : held)
-                    reasons += Acore::StringFormat("{}{} {}", reasons.empty() ? "" : ", ", why, n);
-                std::string const line = Acore::StringFormat(
-                    "roster: {} planned, {} free for a five (t{} h{} d{}); held: {}", planned, free, freeTanks,
-                    freeHealers, free - freeTanks - freeHealers, reasons.empty() ? "nobody" : reasons);
-                if (line != five60Logged_)
-                {
-                    five60Logged_ = line;
-                    LOG_INFO("playerbots", "[five60] {}", line);
-                }
             }
         }
         DungeonOption const* best = nullptr;
