@@ -7033,8 +7033,10 @@ void GuildCoordinator::AddDeadWeight(BotState& st, uint32 low, Player* p)
         uint32 const guid = item->GetGUID().GetCounter();
         if (proto->Quality != ITEM_QUALITY_POOR || !proto->SellPrice || TransferHolds(guid))
             return;
-        // what the guild still does with it: the wanted list, this member's own called skill-ups, a guild cook
+        // what the guild still does with it: the wanted list, this member's own called skill-ups, a guild cook, a
+        // member's gear plan (a grey weapon or piece of armor can still stand in one)
         if (CookNeeds(proto->ItemId) || (own != crafterNeed_.end() && own->second.count(proto->ItemId)) ||
+            PlannedFor(proto->ItemId) ||
             std::any_of(wanted_.begin(), wanted_.end(),
                         [&](WantedItem const& w) { return w.itemId == proto->ItemId && (w.need || w.optional); }))
             return;
