@@ -786,8 +786,13 @@ namespace Leader::Travel
         {
             WaypointNode const& from = nodes[index];
             WaypointNode const& to = nodes[(index + 1) % nodes.size()];
+            // [judge12] the harness's one sight judge (SeesFromPoint: the walker's eye line to the boss's hit
+            // sphere). This line kept the retired formula - mob->IsWithinLOS(point + 2 yd), which adds the MOB's
+            // collision height on top of a fixed lift - that RoutePatrol.cpp records as the SM Armory / Arcatraz
+            // stall: it clears crates and railings a player's eye line hits, so the two judges answer one question
+            // differently on the same point.
             if (boss && boss->GetExactDist(from.X, from.Y, from.Z) <= reach &&
-                boss->IsWithinLOS(from.X, from.Y, from.Z + PATROL_EYE_HEIGHT) &&
+                SeesFromPoint(walker, boss, G3D::Vector3(from.X, from.Y, from.Z)) &&
                 WalkableToBoss(walker, boss, G3D::Vector3(from.X, from.Y, from.Z)))
                 return true;
             G3D::Vector2 const patrolFrom(from.X, from.Y);

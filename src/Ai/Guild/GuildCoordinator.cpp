@@ -3484,11 +3484,16 @@ void GuildCoordinator::AddOwnDisenchants(BotState& st, Player* p)
             std::any_of(st.held.begin(), st.held.end(), [&](HeldItem const& h) { return h.itemGuidLow == guid; }) ||
             PlannedFor(proto->ItemId))
             return;
-        StatsWeightCalculator calc(p);
-        calc.SetItemSetBonus(false);
-        calc.SetOverflowPenalty(false);
-        GuildGear::Eval ev;
-        if (GuildGear::Evaluate(p, calc, proto, ev) && ev.gain > 0.0f)
+        // [judge11] the equip's own judge decides whether it wears it. This asked GuildGear::Evaluate, the overload
+        // for an item the member does NOT own, which returns false for anything already in its bags
+        // (GuildGear.cpp: `if (member->GetItemCount(proto->ItemId, true)) return false;`) - and this look walks the
+        // enchanter's own bags, so the guard never once fired and the disenchant/sell lists took pieces
+        // GuildGear::ShouldEquip would have worn. ShouldEquip is the judge the equip itself uses, with the item's
+        // random suffix (Evaluate was passing 0, so "of the Bear" pieces scored bare).
+        uint8 equipSlot = 0;
+        float gain = 0.0f;
+        std::string decision;
+        if (GuildGear::ShouldEquip(p, item, equipSlot, gain, decision))
             return;  // it wears it (the bot's own equip takes it)
         // [craft409] user rule 2026-11-12: disenchanted only for a needed result, else sold
         if (!demandReady)

@@ -25,6 +25,7 @@
 #include "Engine.h"
 #include "EscortProtect.h"  // [b36_ohb] EscortGossipHeld
 #include "DpsEstimate.h"  // [lead1308] the threat headroom's rates
+#include "ThreatValues.h"  // [judge13] ThreatLead: the pull-over points the member's own multiplier holds to
 #include "EstimatedLifetimeValue.h"
 #include "GameObject.h"
 #include "GenericSpellActions.h"  // [lead1101] CastSpellAction
@@ -382,9 +383,11 @@ namespace Leader::Dungeon
         constexpr char const* WAITS_AT_WALK_END = "to the tank's walk's end: waits, its target stops in its reach";
         constexpr char const* WAITS_AT_STOP_POINT = "to the tank's stop point: waits, its target stops in its reach";
         // [lead243] a mob on its victim moves to another at 110 % of the victim's threat in its melee reach, else at
-        // 130 % (ThreatManager::ReselectVictim)
-        constexpr float THREAT_OVERTAKE_MELEE = 1.1f;
-        constexpr float THREAT_OVERTAKE_RANGED = 1.3f;
+        // 130 % (ThreatManager::ReselectVictim). [judge13] one declaration of the game's rule: the leader issues the
+        // order and the member's own multiplier (ThreatLead::PullOverPoint) holds to the same point, so the two
+        // halves of that handshake read the same constants - they were written out twice and could drift apart.
+        constexpr float THREAT_OVERTAKE_MELEE = ThreatLead::MELEE_PULL_OVER;
+        constexpr float THREAT_OVERTAKE_RANGED = ThreatLead::RANGED_PULL_OVER;
 
         // [lead137] a left combat spot keeps the member off the ground this near it
         constexpr float COMBAT_SPOT_LEFT_YD = 2.0f;

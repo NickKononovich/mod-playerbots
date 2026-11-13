@@ -705,6 +705,20 @@ namespace GuildGear
         return text;
     }
 
+    // [judge10] the core's own weapon proficiency, the one the equip itself will meet: Player::CanUseItem(Item*)
+    // refuses a weapon whose ItemTemplate::GetSkill() the member has not learned, and nothing else. The leader used
+    // RandomItemMgr::CanEquipWeapon here - a second table, built per class from SkillRaceClassInfo ("what this class
+    // could ever train"), not per member ("what it has trained"), and empty for every subclass GetWeaponSkillId does
+    // not name. A Fishing Pole (subclass 20 -> SKILL_NONE in that table, SKILL_FISHING to the core) could therefore
+    // never be judged by the leader at all: b475 Shalaeth L21 equipped one from the fishing path and the equip logged
+    // `[alert] DOUBLE_DECISION ... item 6256 (Fishing Pole) source other`. [loot11] already handed the armor type to
+    // the core the same way.
+    bool CoreAllowsWeapon(Player* member, ItemTemplate const* proto)
+    {
+        uint32 const skill = proto->GetSkill();
+        return !skill || member->GetSkillValue(skill) != 0;
+    }
+
     std::vector<uint8> SlotsFor(Player* member, ItemTemplate const* proto)
     {
         Item* mainHand = member->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_MAINHAND);
@@ -728,7 +742,15 @@ namespace GuildGear
                 if (proto->InventoryType == INVTYPE_WEAPON && member->CanDualWield() && !twoHand)
                     return {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND};
                 return {EQUIPMENT_SLOT_MAINHAND};
-            case G_TWOHAND: return {EQUIPMENT_SLOT_MAINHAND};
+            case G_TWOHAND:
+                // [judge10] Titan Grip, as the core reads it (Player::FindEquipSlot / CanEquipItem: a two-hander goes
+                // into the off-hand too when the member may dual wield and titan grip it, a polearm and a staff never
+                // do). The leader offered the main hand alone, so a fury warrior's second two-hander lost to the worn
+                // one and its off-hand stayed empty for good - the core and ItemUsageValue both allowed the swap.
+                if (member->CanTitanGrip() && member->CanDualWield() &&
+                    proto->SubClass != ITEM_SUBCLASS_WEAPON_POLEARM && proto->SubClass != ITEM_SUBCLASS_WEAPON_STAFF)
+                    return {EQUIPMENT_SLOT_MAINHAND, EQUIPMENT_SLOT_OFFHAND};
+                return {EQUIPMENT_SLOT_MAINHAND};
             case G_OFFHAND:
                 // an off-hand beside a two-hander cannot be worn; an off-hand weapon needs dual wield
                 if (twoHand || (proto->InventoryType == INVTYPE_WEAPONOFFHAND && !member->CanDualWield()))
@@ -765,7 +787,7 @@ namespace GuildGear
             else
                 return false;
         }
-        if (proto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(proto, member->getClass()))
+        if (proto->Class == ITEM_CLASS_WEAPON && !CoreAllowsWeapon(member, proto))
             return false;
         if (proto->Class == ITEM_CLASS_ARMOR &&
             !sRandomItemMgr.CanEquipArmor(proto, member->getClass(),
@@ -838,7 +860,7 @@ namespace GuildGear
         // as ItemUsageValue: a worn piece the class should not wear (module armor / weapon rules) is replaced by any
         // better one, the threshold only guards a swap between two fitting pieces; a broken worn piece by a whole one
         bool const oldFits =
-            (old->Class != ITEM_CLASS_WEAPON || sRandomItemMgr.CanEquipWeapon(old, member->getClass())) &&
+            (old->Class != ITEM_CLASS_WEAPON || CoreAllowsWeapon(member, old)) &&  // [judge10]
             (old->Class != ITEM_CLASS_ARMOR ||
              sRandomItemMgr.CanEquipArmor(old, member->getClass(), member->GetLevel(), true));
         bool const oldBroken = weakest->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 &&

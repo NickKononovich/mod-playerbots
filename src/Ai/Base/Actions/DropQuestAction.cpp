@@ -7,6 +7,7 @@
 #include "DropQuestAction.h"
 #include "ChatHelper.h"
 #include "Event.h"
+#include "GuildCoordinator.h"  // [judge14] the one grey judge (IsGreyQuest + the user's GreyQuestNeed rule)
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 
@@ -80,8 +81,6 @@ bool CleanQuestLogAction::Execute(Event event)
             "Clean Quest Log command received, removing grey/trivial quests...",
             {}));
 
-    uint8 botLevel = bot->GetLevel();  // Get bot's level
-
     for (uint8 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
     {
         uint32 questId = bot->GetQuestSlotQuestId(slot);
@@ -92,23 +91,13 @@ bool CleanQuestLogAction::Execute(Event event)
         if (!quest)
             continue;
 
-        // Determine if quest is trivial by comparing levels
-        int32 questLevel = quest->GetQuestLevel();
-        if (questLevel == -1) // For scaling quests, default to bot level
-            questLevel = botLevel;
-
-        // Set the level difference for when a quest becomes trivial
-        // This was determined by using the Lua code the client uses
-        int32 trivialLevel = 5;
-        if (botLevel >= 40)
-            trivialLevel = 8;
-        else if (botLevel >= 30)
-            trivialLevel = 7;
-        else if (botLevel >= 20)
-            trivialLevel = 6;
-
-        // Check if the quest is trivial (grey) for the bot
-        if ((botLevel - questLevel) > trivialLevel)
+        // [judge14] one grey judge: the core's own (Player::GetQuestLevel, which falls back to the bot's level for a
+        // quest of level 0 or -1, and Acore::XP::GetGrayLevel) behind GuildCoordinator::IsGreyQuest, plus the user's
+        // grey rule (GreyQuestNeed: a chain prerequisite, a key, a real upgrade is kept). This read
+        // Quest::GetQuestLevel raw and remapped only -1, so a level-0 quest was "botLevel - 0" trivial and hard
+        // deleted; and its hand table capped the difference at 8 where GetZeroDifference runs to 17, so quests the
+        // rest of the module calls grey were not grey here. The same file already asks the core 80 lines below.
+        if (sGuildCoordinator.IsGreyQuest(bot, quest) && sGuildCoordinator.GreyQuestNeed(bot, quest).empty())
         {
             // Output only if "debug rpg" strategy is enabled
             if (botAI->HasStrategy("debug rpg", BotState::BOT_STATE_COMBAT))

@@ -325,8 +325,8 @@ namespace Leader::Travel
     // fills a few cells more. Cleared when it holds BOSS_ROOM_CACHE_MAX.
     constexpr float BOSS_ROOM_CACHE_CELL = 2.0f;
 
-    // A patrol node's line of sight to the boss is tested from this height above the node.
-    constexpr float PATROL_EYE_HEIGHT = 2.0f;
+    // [judge12] the fixed eye lift of the retired sight formula is gone with its last caller: every sight test of the
+    // harness is SeesFromPoint (RoutePatrol.h), which takes the walker's own collision height.
 
     constexpr size_t BOSS_ROOM_CACHE_MAX = 20000;
 
