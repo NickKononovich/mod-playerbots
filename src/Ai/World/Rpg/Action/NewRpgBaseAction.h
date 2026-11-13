@@ -133,6 +133,8 @@ public:
     // [guild13] before any far walk: the revived bot's way to its hub, the regeneration sit of a bot that must rest
     // with nothing to eat, a hunter's tame of its first pet; true: the tick is taken
     bool SoloSafetyStep();
+    // [death455] a solo bot in a fight takes no RPG walk: every walk's judge is an out-of-combat one; true: held
+    bool FightHoldsWalk(float x, float y);
     // [guild13] objective spots of a quest the bot stood at with nothing to do (no mob it pulls, no object): skipped
     // by the next POI pick until the quest is postponed
     static void NoteSpentSpot(Player* bot, uint32 questId, WorldPosition const& pos);

@@ -40,6 +40,7 @@
 #include "NewRpgInfo.h"
 #include "QuestLevelRules.h"
 #include "NewRpgStrategy.h"
+#include "Pet.h"         // [death455]
 #include "SoloSafety.h"  // [guild13]
 #include "SurvivalKit.h"  // [lag356] the run past's heal kit
 #include "NewRpgCoop.h"  // [coop]
@@ -135,6 +136,32 @@ namespace
     // [deaths18] bot -> the hub its recovery after a death walks to; set when that walk is given up
     std::mutex recoveryLock;
     std::unordered_map<uint32, std::pair<WorldPosition, bool>> recoveryHub;
+}
+
+bool NewRpgBaseAction::FightHoldsWalk(float x, float y)
+{
+    // [death455] the route search, the run-past pricing, RestBeforeWalk and DestinationRefused all skip a bot in
+    // combat, so a walk then is priced by nobody; the fight is the combat engine's and the survival kit's. b467
+    // Bhogagnuth L21 killed its judged pull, still in combat walked its DO_QUEST walk 35 yd on into the Lake Everstill
+    // murloc camp its route search had refused, 6 adds, dead
+    if (!bot->IsInCombat() || !SoloSafety::Applies(bot))
+        return false;
+    uint32 attackers = 0;
+    for (Unit* attacker : bot->getAttackers())
+        attackers += attacker && attacker->IsAlive() ? 1 : 0;
+    if (Pet* pet = bot->GetPet())
+        for (Unit* attacker : pet->getAttackers())
+            attackers += attacker && attacker->IsAlive() ? 1 : 0;
+    thread_local std::unordered_map<uint32, std::pair<int32, int32>> logged;  // a log cadence only
+    std::pair<int32, int32> const key{int32(x), int32(y)};
+    if (auto& last = logged[bot->GetGUID().GetCounter()]; last != key)
+    {
+        last = key;
+        LOG_INFO("playerbots", "[death455] {} L{} holds its walk to ({:.0f},{:.0f}): in a fight ({} attackers on it "
+                 "or its pet), no RPG walk until it is over",
+                 bot->GetName(), bot->GetLevel(), x, y, attackers);
+    }
+    return true;
 }
 
 bool NewRpgBaseAction::SoloSafetyStep()
@@ -520,6 +547,8 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         return false;
     }
 
+    if (FightHoldsWalk(dest.GetPositionX(), dest.GetPositionY()))  // [death455]
+        return true;
     if (SoloSafetyStep())  // [guild13]
         return true;
     if (TramTrackStep())  // [tram25]
@@ -3879,6 +3908,8 @@ bool NewRpgBaseAction::MoveWorldObjectTo(ObjectGuid guid, float distance)
     WorldObject* object = botAI->GetWorldObject(guid);
     if (!object)
         return false;
+    if (FightHoldsWalk(object->GetPositionX(), object->GetPositionY()))  // [death455]
+        return true;
     float x = object->GetPositionX();
     float y = object->GetPositionY();
     float z = object->GetPositionZ();
@@ -3912,6 +3943,8 @@ bool NewRpgBaseAction::MoveRandomNear(float moveStep, MovementPriority priority,
 
     if (IsWaitingForLastMove(priority))
         return false;
+    if (FightHoldsWalk(bot->GetPositionX(), bot->GetPositionY()))  // [death455] no hop round a spot in a fight
+        return true;
 
     Map* map = bot->GetMap();
     const float x = bot->GetPositionX();
