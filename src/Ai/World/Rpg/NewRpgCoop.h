@@ -91,6 +91,8 @@ bool HelpCampOf(Player* bot, WorldPosition& pos);
 // [help14] the bot has a help request the global leader has not refused yet (open, not judged) or has served with a
 // party: its way out of the camp is that party, not its Hearthstone
 bool HelpAsked(Player* bot);
+// [assist17] the bot leads a help party it asked for: the camp it holds its help at
+bool HelpRequesterCamp(Player* bot, WorldPosition& camp);
 // [help12] the requester of a formed quest help party: the quest, its objective and the camp it asked help for
 bool HelpQuestOf(Player* bot, uint32& questId, int32& objectiveIdx, WorldPosition& pos);
 

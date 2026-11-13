@@ -88,8 +88,11 @@ void GuildCoordinator::NoteGatherBlocked(Player* bot, uint32 placeId, std::strin
     if (!sGuildGatherPlan.Assigned(low, a) || a.placeId != placeId || a.ratePerHour <= 0.0f || a.share == 0)
         return;
     // the gather's worth: its copper per minute at the place over the minutes its share takes there
+    // [assist13] ... less the gatherer's own questing over those minutes (the plan's own comparison, questPerMin): the
+    // escort unlocks the gain over what the gatherer does anyway, not the gather's gross worth. b470: Thokhen's
+    // Thousand Needles drop place priced 128571 c gross (225 units, 73667 xp) - helpers sent 7684-7826 yd
     float const minutes = float(a.share) / (a.ratePerHour / 60.0f);
-    float const copper = std::max(0.0f, a.valuePerMin) * minutes;
+    float const copper = (a.valuePerMin - std::max(0.0f, a.questPerMin)) * minutes;
     if (copper <= 0.0f)
         return;
     std::lock_guard<std::mutex> guard(assistLock_);

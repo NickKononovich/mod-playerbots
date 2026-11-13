@@ -2476,6 +2476,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     Player* req = ObjectAccessor::FindPlayer(r.requester);
     if (!req || !req->IsInWorld())
         return false;
+    if (!r.human && (req->IsInFlight() || req->GetTransport()))
+        return false;  // [assist16] priced once it has landed: where it stands then is where its helpers walk to
     Quest const* quest = sObjectMgr->GetQuestTemplate(r.obj.questId);
     std::string const title = r.campOnly ? std::string("camp")  // [help12]
                               : quest ? quest->GetTitle() : "q" + std::to_string(r.obj.questId);
@@ -3074,7 +3076,13 @@ bool UnsafeAlone(Player* m, std::string& why, WorldPosition& to)
     if (!m || !m->IsInWorld() || !m->IsAlive() || m->GetMap()->Instanceable())
         return false;
     WorldPosition const bind(m->m_homebindMapId, m->m_homebindX, m->m_homebindY, m->m_homebindZ);
-    WorldPosition const home = bind.GetMapId() == m->GetMapId() ? bind : NewRpgBaseAction::NearestHub(m);
+    // [assist15] the nearer of its bind point and its nearest hub (a quest ender with no danger on the way): b470
+    // walk-outs led Ginde 5848 yd and Galiver 2868 yd to Lakeshire, Irorm died on the way (a Bluegill Raider L29)
+    WorldPosition const hub = NewRpgBaseAction::NearestHub(m);
+    WorldPosition home = bind.GetMapId() == m->GetMapId() ? bind : hub;
+    if (hub != WorldPosition() && hub.GetMapId() == m->GetMapId() &&
+        (home.GetMapId() != m->GetMapId() || m->GetExactDist(hub) < m->GetExactDist(home)))
+        home = hub;
     if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(m->GetAreaId());
         area && area->area_level > 0 &&
         Acore::XP::GetColorCode(m->GetLevel(), uint8(std::min(area->area_level, 255))) == XP_RED)
@@ -3218,9 +3226,12 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
                     to = WorldPosition(node->map_id, node->x, node->y, node->z);
             if (to == WorldPosition() && ai->rpgInfo.trip.dest != WorldPosition())
                 to = ai->rpgInfo.trip.dest;
-            bool const toward = to != WorldPosition() && to.GetMapId() == party.campAt.GetMapId() &&
-                                to.GetExactDist2d(party.campAt.GetPositionX(), party.campAt.GetPositionY()) <
-                                    bot->GetExactDist2d(party.campAt.GetPositionX(), party.campAt.GetPositionY());
+            // [assist16] a flight whose end is unknown here (taken before the party formed: its status is the help's
+            // now) lands where it lands - a pause. b470 Keenonk: in the air at the form, ended 3 s later
+            bool const toward = to == WorldPosition() ||
+                                (to.GetMapId() == party.campAt.GetMapId() &&
+                                 to.GetExactDist2d(party.campAt.GetPositionX(), party.campAt.GetPositionY()) <
+                                     bot->GetExactDist2d(party.campAt.GetPositionX(), party.campAt.GetPositionY()));
             if (!toward)
             {
                 exit = Acore::StringFormat("[assist8] preempted: a {} away from the camp", bot->GetTransport() ? "boat"
@@ -3368,7 +3379,11 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
 void HelpEndLocked(Party& party, uint32 who, std::string const& reason, bool done, uint32 now, Out& out)
 {
     uint32 const id = party.id;
-    bool const all = done || who == party.requester.GetCounter();
+    // [assist14] a member dead on the help: the party's judge lost there - the whole help ends and is not asked again
+    // at this level. b470: Ginde's escort (request 11) lost Irorm L24 to a Bluegill Raider L29 and was assigned again
+    // to Maronic L22 15 s later
+    bool const died = reason == "death";
+    bool const all = done || died || who == party.requester.GetCounter();
     float const seconds = float(getMSTimeDiff(party.assignedAt, now)) / IN_MILLISECONDS;
     uint32 unitsNow = party.haveAtAssign;
     if (Player* req = ObjectAccessor::FindPlayer(party.requester))
@@ -3468,7 +3483,17 @@ void HelpEndLocked(Party& party, uint32 who, std::string const& reason, bool don
     // a closed objective or a requester gone ends its request; else it stays open for the next look
     if (auto const request = helpRequests.find(party.requestId); request != helpRequests.end())
     {
-        if (done || who == party.requester.GetCounter())
+        if (died)  // [assist14]
+            if (Player* req = ObjectAccessor::FindPlayer(party.requester))
+            {
+                priceRefused[PriceRefusedKey(req, party.campOnly ? 0 : party.helpObj.questId, party.campAt)] =
+                    req->GetLevel();
+                out.logs.push_back(Acore::StringFormat("[assist14] drop {} request={} group={}{} reason=a member died on "
+                                                       "the help: not asked again at L{}",
+                                                       party.requesterName, party.requestId, id, HelpStamp(),
+                                                       req->GetLevel()));
+            }
+        if (done || died || who == party.requester.GetCounter())
             helpRequests.erase(request);
         else
             request->second.party = 0;
@@ -3945,6 +3970,22 @@ bool HelpQuestOf(Player* bot, uint32& questId, int32& objectiveIdx, WorldPositio
     questId = party->second.helpObj.questId;
     objectiveIdx = party->second.helpObj.index;
     pos = party->second.campAt;
+    return true;
+}
+
+bool HelpRequesterCamp(Player* bot, WorldPosition& camp)
+{
+    if (!bot)
+        return false;
+    std::lock_guard<std::recursive_mutex> guard(lock);
+    auto const post = postings.find(bot->GetGUID().GetCounter());
+    if (post == postings.end() || !post->second.party)
+        return false;
+    auto const party = parties.find(post->second.party);
+    if (party == parties.end() || !party->second.help || party->second.requester != bot->GetGUID() ||
+        party->second.campAt == WorldPosition())
+        return false;
+    camp = party->second.campAt;
     return true;
 }
 

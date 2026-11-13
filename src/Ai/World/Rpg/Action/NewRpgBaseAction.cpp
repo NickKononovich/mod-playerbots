@@ -2152,6 +2152,12 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
         dest.GetMapId() != bot->GetMapId() ||
         bot->GetMap()->Instanceable() || botAI->rpgInfo.GetStatus() == RPG_TRAVEL_FLIGHT)
         return false;
+    // [assist17] a help's requester flies only toward the camp it holds its help at (b470 Jurdogs q20: its flight
+    // elsewhere 224 s into the help ended it)
+    if (WorldPosition camp; NewRpgCoop::HelpRequesterCamp(bot, camp) && camp.GetMapId() == dest.GetMapId() &&
+                            camp.GetExactDist2d(dest.GetPositionX(), dest.GetPositionY()) >=
+                                bot->GetExactDist2d(camp.GetPositionX(), camp.GetPositionY()))
+        return false;
     static std::mutex flyLock;
     static std::unordered_map<uint32, std::tuple<uint32, int32, int32>> decided;
     std::tuple<uint32, int32, int32> const key{dest.GetMapId(), int32(dest.GetPositionX() / 10.0f),
