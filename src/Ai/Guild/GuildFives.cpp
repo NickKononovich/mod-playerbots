@@ -1202,6 +1202,8 @@ namespace FiveGate
                             continue;
                         for (uint32 j : rest)
                         {
+                            if (spawns[j].mob.boss)  // [dm4] the leader holds the trash round a boss, never the boss
+                                continue;
                             HoldKey const& key = holdFor(holder, spawns[j]);
                             if (!key.hold.spellId)
                                 continue;
@@ -1273,6 +1275,7 @@ namespace FiveGate
         size_t const losMinCasters = sPlayerbotAIConfig.LosPullMinCasters;
         bool const losOn = losMinCasters && tankAI && tankAtRange && tankAI->HasStrategy("pull back", BOT_STATE_COMBAT);
         uint32 cornerPulls = 0;
+        uint32 peeledPulls = 0;  // [dm4] pulls whose trash was peeled away from the boss they drag in
         constexpr uint32 OVER_LISTED = 8;  // log only
         uint32 overCount = 0;
         std::string overList;
@@ -1316,6 +1319,49 @@ namespace FiveGate
             if (!any)
                 break;
             ++judged;
+            // [dm4] [dm2] a pull that only drags a boss in (its own start is no boss) is judged on the trash it
+            // brings, as the leader judges it: the boss's own fight is his encounter's, the trash around him is a
+            // trash pull. Over what the group takes, the leader does not pull it - its split search peels the trash
+            // away from him first and drops every peel whose own pack brings a boss. The gate models that same plan
+            // here: the cheapest boss-free pull of this pack's own members that the group takes, the boss left
+            // standing for a later round with fewer mobs round him. No peel the group takes: the leader has none
+            // either, and the pull goes on to the options below as before.
+            if (best.boss && !spawns[bestMembers.front()].mob.boss)
+            {
+                std::vector<uint32> trash;
+                for (uint32 j : bestMembers)
+                    if (!spawns[j].mob.boss)
+                        trash.push_back(j);
+                PullLoad const trashLoad = trash.size() == bestMembers.size() ? best : loadOf(trash);
+                if (trashLoad.load > 1.0f)
+                {
+                    std::vector<uint32> const* peel = nullptr;
+                    PullLoad peelLoad;
+                    for (uint32 j : bestMembers)
+                    {
+                        if (spawns[j].mob.boss || loads[j].load > 1.0f ||
+                            std::any_of(pulls[j].begin(), pulls[j].end(),
+                                        [&](uint32 k) { return spawns[k].mob.boss; }))
+                            continue;
+                        if (!peel || loads[j].load < peelLoad.load)
+                        {
+                            peel = &pulls[j];
+                            peelLoad = loads[j];
+                        }
+                    }
+                    if (peel)
+                    {
+                        ++peeledPulls;
+                        if (optionsNote.find("[dm4] peeled off") == std::string::npos)
+                            optionsNote += Acore::StringFormat(
+                                "; [dm4] peeled off the boss: {} x{} (trash {:.2f} of it) -> {} x{} ({:.2f}), the "
+                                "boss left standing", best.name, best.mobs, trashLoad.load, peelLoad.name,
+                                peelLoad.mobs, peelLoad.load);
+                        bestMembers = *peel;
+                        best = peelLoad;
+                    }
+                }
+            }
             if (Patrols(spawns[bestMembers.front()]) && apartNow[bestMembers.front()])
                 ++apart;
             // [split254] the pull's start on the gate's clock (the walk to it after the fights before)
@@ -1330,8 +1376,14 @@ namespace FiveGate
             // engage calls (the core's 10 yd assistance) make two packs of three, joined only by the Druids' stand,
             // held 49 of 50 fives (worst 3.2-5.6); the planner pulled them 2-3 at a time
             size_t const start = bestMembers.front();
+            // [dm4] the leader's options turn on the mob it pulls, not on what the pull drags in: its crowd control
+            // stands down only for a boss pull target (HoldForPrePullCc's IsBossMob(pullTarget)) and it pulls a pack
+            // that brings a boss round a corner like any other (b474 dm-n five5: "plan los pull ... where it stands:
+            // 11 mobs, fight 70 s, a boss"). The gate exempted the whole pull instead, so a pull that only drags a
+            // boss in was priced with none of the options the leader really has for it.
+            bool const bossStart = spawns[start].mob.boss;
             bool cornered = false;
-            if (best.load > 1.0f && !best.boss && losOn && !Patrols(spawns[start]))
+            if (best.load > 1.0f && !bossStart && losOn && !Patrols(spawns[start]))
             {
                 size_t const casters = size_t(std::count_if(bestMembers.begin(), bestMembers.end(),
                                                             [&](uint32 j) { return spawns[j].keepsRange; }));
@@ -1356,7 +1408,7 @@ namespace FiveGate
                     }
                 }
             }
-            if (best.load > 1.0f && !best.boss)
+            if (best.load > 1.0f && !bossStart)  // [dm4] the pull's own target, as HoldForPrePullCc reads it
             {
                 // as the planner: the holds count only when they carry the rest (else the pull as it comes goes on
                 // to the tank's defensive)
@@ -1489,13 +1541,15 @@ namespace FiveGate
         out.judged = judged;
         out.why = Acore::StringFormat(
             "{} of {} pulls over capacity ([dun170] as the leader splits them, {} patrols pulled apart, each from full "
-            "after a rest; [split263] {} round a corner{}; [split254] {} with crowd control, {} with the tank's "
+            "after a rest; [dm4] {} peeled away from a boss they drag in; [split263] {} round a corner{}; [split254] "
+            "{} with crowd control, {} with the tank's "
             "defensive, {} defensives not back for a boss); worst {:.2f}: {}; group burst dps {:.0f}, healer {} "
             "{:.0f} hps (gap {:.1f} s, {:.1f} hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{}; [gate20] "
             "drop terms: armor keeps {:.2f}, {} [mob melee "
             "and [dun244] spells from templates, the healer's rate capped by its pool; [dun233] calls for help from "
             "the fight; [dm3] the scripts' summons over the fight; area damage not counted]{}{}",
-            failed, judged, apart, cornerPulls, losOn ? "" : " (no: the tank has no ranged pull and pull back)",
+            failed, judged, apart, peeledPulls, cornerPulls,
+            losOn ? "" : " (no: the tank has no ranged pull and pull back)",
             heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
             healer->GetName() + (healer2 ? " + " + healer2->GetName() : std::string()), heal.hps, gap,
             heal.healPerMana, tank->GetName(), tankHealth, armor, avoid, bear ? " (the bear seen in form)" : "",
