@@ -116,6 +116,48 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     // [guild13] a solo bot judges its pulls; [coop] a co-op party's leader judges them for its party
     bool const coop = NewRpgCoop::JudgesPulls(bot);
     bool const solo = SoloSafety::Applies(bot) || coop;
+    // [assist21] a co-op / help party's leader defends its members first: a mob already on a member in its sight is
+    // the party's fight, no pull to judge (the judge's verdict is logged, [assist19]). b470 Geron L20 healed itself
+    // against a Blackrock Scout until it died while its leader Kianey stood in GROUP_WAIT 200 yd off its camp
+    if (coop && bot->GetGroup())
+    {
+        Unit* defend = nullptr;
+        Player* defended = nullptr;
+        float nearest = sPlayerbotAIConfig.SightDistance;
+        for (GroupReference* ref = bot->GetGroup()->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsAlive() || member->GetMapId() != bot->GetMapId())
+                continue;
+            for (Unit* attacker : member->getAttackers())
+                if (attacker && attacker->IsAlive() && bot->IsValidAttackTarget(attacker) &&
+                    bot->GetExactDist(attacker) < nearest)
+                {
+                    nearest = bot->GetExactDist(attacker);
+                    defend = attacker;
+                    defended = member;
+                }
+        }
+        if (defend)
+        {
+            NewRpgCoop::JudgePull(bot, defend);  // [assist19] its verdict in the log
+            SoloSafety::NotePartyPull(bot, defend);
+            static std::mutex defendLogLock;
+            static std::unordered_map<uint32, ObjectGuid> defendLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(defendLogLock);
+                ObjectGuid& last = defendLogged[bot->GetGUID().GetCounter()];
+                fresh = last != defend->GetGUID();
+                last = defend->GetGUID();
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[assist21] {} L{} defends {} L{} ({:.0f}% hp) against {} L{} {:.0f} yd off",
+                         bot->GetName(), bot->GetLevel(), defended->GetName(), defended->GetLevel(),
+                         defended->GetHealthPct(), defend->GetName(), defend->GetLevel(), nearest);
+            return defend;
+        }
+    }
     std::vector<std::pair<float, Unit*>> candidates;
     std::unordered_map<uint32, bool> needForQuestMap;
     // [skin12] a skinning grind of the global leader (GO_GRIND / WANDER_RANDOM flagged so): a skinnable mob counts

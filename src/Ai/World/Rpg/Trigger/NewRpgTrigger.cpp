@@ -35,8 +35,18 @@ std::string NewRpgGroupNotReadyTrigger::MemberNotReady(Player* member)
     if (member->GetMapId() != bot->GetMapId())
         return "";
 
-    if (member->IsInCombat())
+    // [assist20] a fight is a mob on the member or the member on a mob: a combat flag with neither (a mob that cannot
+    // reach it keeps it on its threat list) holds no wait. b470: Kianey waited 350 s on "Geron in a fight" by
+    // Stonewatch Tower, 200 yd short of its camp, both standing until a Blackrock Scout killed Geron
+    if (member->IsInCombat() && (!member->getAttackers().empty() || member->GetVictim()))
+    {
+        // [assist21] a party's member under attack in the leader's sight is no wait: the leader defends it (its grind
+        // target is the member's attacker, GrindTargetValue) - the wait outranked every pull while Geron fought alone
+        if (!member->getAttackers().empty() && NewRpgCoop::JudgesPulls(bot) &&
+            bot->GetExactDist(member) <= sPlayerbotAIConfig.SightDistance)
+            return "";
         return "in a fight";
+    }
 
     // eating / drinking: its rest runs to full (a game mechanic)
     if (!member->IsStandState())

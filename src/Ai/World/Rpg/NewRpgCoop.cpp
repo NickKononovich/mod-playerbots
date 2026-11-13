@@ -289,6 +289,19 @@ void HelpEndLocked(Party& party, uint32 who, std::string const& reason, bool don
 // the global leader's side (NewRpgCoop::SetCoordinatorHooks), set once at its Load before any bot ticks
 NewRpgCoop::CoordinatorHooks hooks;
 
+// [assist19] the party judge's verdicts and the pull it engaged, per group, for the fight lines (OnPlayerEnterCombat):
+// a fight with a mob of that pull's pack is judged, any other is not. Its own lock, never held while waiting on another
+struct JudgedPull
+{
+    uint64 target = 0;
+    std::string name;
+    Position at;
+    float radius = 0.0f;
+};
+std::mutex judgedLock;
+std::unordered_map<uint32, JudgedPull> judgedPulls;                     // group low -> its last engaged pull
+std::unordered_map<uint32, std::pair<uint64, uint8>> judgedVerdictLogged;  // leader low -> (target, kind) logged
+
 // the co-op task enters the bot's task list (the global leader's list once its hook is set; a [tasks] line until then)
 void AddTask(std::string const& name, uint32 low, std::string const& partner, uint32 partnerLow, uint32 questId,
              bool leads, std::string const& why)
@@ -1982,7 +1995,8 @@ class NewRpgCoopPlayerScript : public PlayerScript
 public:
     NewRpgCoopPlayerScript()
         : PlayerScript("NewRpgCoopPlayerScript", {PLAYERHOOK_ON_CREATURE_KILL_CREDIT, PLAYERHOOK_ON_GIVE_EXP,
-                                                  PLAYERHOOK_ON_PLAYER_JUST_DIED, PLAYERHOOK_ON_LOGOUT})
+                                                  PLAYERHOOK_ON_PLAYER_JUST_DIED, PLAYERHOOK_ON_LOGOUT,
+                                                  PLAYERHOOK_ON_PLAYER_ENTER_COMBAT})
     {
     }
 
@@ -2033,6 +2047,32 @@ public:
     }
 
     void OnPlayerJustDied(Player* player) override { Leave(player, "death", false); }
+
+    // [assist19] a co-op / help party's member enters a fight: with its party's judged pull (that mob or its pack) or
+    // unjudged (a mob that came to it). b470 Geron L20 in Kianey's camp party: 400 s without a line, then dead
+    void OnPlayerEnterCombat(Player* player, Unit* enemy) override
+    {
+        if (!player || !enemy || !player->GetGroup() || !NewRpgCoop::InParty(player->GetGUID().GetCounter()))
+            return;
+        Group* group = player->GetGroup();
+        std::string judged;
+        {
+            std::lock_guard<std::mutex> guard(judgedLock);
+            auto const found = judgedPulls.find(group->GetGUID().GetCounter());
+            if (found != judgedPulls.end())
+            {
+                if (found->second.target == enemy->GetGUID().GetRawValue())
+                    judged = "judged: the party's pull";
+                else if (enemy->GetExactDist2d(&found->second.at) <= found->second.radius)
+                    judged = "judged: in the pack of the party's pull " + found->second.name;
+            }
+        }
+        LOG_INFO("playerbots", "[assist19] fight {} L{} group={} {} vs {} L{} at ({:.0f},{:.0f}) hp {:.0f}%: {}{}",
+                 player->GetName(), player->GetLevel(), group->GetGUID().GetCounter(),
+                 group->GetLeaderGUID() == player->GetGUID() ? "leader" : "member", enemy->GetName(),
+                 enemy->GetLevel(), player->GetPositionX(), player->GetPositionY(), player->GetHealthPct(),
+                 judged.empty() ? "UNJUDGED (it came to the member)" : judged, Stamp());
+    }
 
     void OnPlayerLogout(Player* player) override { Leave(player, "logout", true); }
 
@@ -4458,8 +4498,39 @@ bool LeaveStaleGroup(Player* bot, std::string const& why)
     return true;
 }
 
+SoloSafety::Verdict JudgePullUnlogged(Player* leader, Unit* target);
 
 SoloSafety::Verdict JudgePull(Player* leader, Unit* target)
+{
+    SoloSafety::Verdict const verdict = JudgePullUnlogged(leader, target);
+    Group* group = leader ? leader->GetGroup() : nullptr;
+    if (!group || !target || !InParty(leader->GetGUID().GetCounter()))
+        return verdict;
+    bool fresh = false;
+    {
+        std::lock_guard<std::mutex> guard(judgedLock);
+        auto& logged = judgedVerdictLogged[leader->GetGUID().GetCounter()];
+        std::pair<uint64, uint8> const now{target->GetGUID().GetRawValue(), uint8(verdict.kind)};
+        fresh = logged != now;
+        logged = now;
+        if (verdict.kind == SoloSafety::Verdict::Kind::Win)
+            judgedPulls[group->GetGUID().GetCounter()] = {target->GetGUID().GetRawValue(), target->GetName(),
+                                                          verdict.at, std::max(verdict.radius, 5.0f)};
+    }
+    if (fresh)
+        LOG_INFO("playerbots", "[assist19] judge {} L{} group={} {} L{} at ({:.0f},{:.0f}): {} - {} mobs ({} above), "
+                 "{:.0f} dmg over {:.0f} s, ehp {:.0f}{}{}",
+                 leader->GetName(), leader->GetLevel(), group->GetGUID().GetCounter(), target->GetName(),
+                 target->GetLevel(), target->GetPositionX(), target->GetPositionY(),
+                 verdict.kind == SoloSafety::Verdict::Kind::Win         ? "win"
+                 : verdict.kind == SoloSafety::Verdict::Kind::RestFirst ? "rest first"
+                                                                        : "refuse",
+                 verdict.mobs, verdict.above, verdict.damage, verdict.fightSec, verdict.ehpNow,
+                 verdict.why.empty() ? "" : " - " + verdict.why, Stamp());
+    return verdict;
+}
+
+SoloSafety::Verdict JudgePullUnlogged(Player* leader, Unit* target)
 {
     SlowScope slow("party judge", leader ? &leader->GetName() : nullptr);  // [perf26]
     SoloSafety::Verdict verdict;
