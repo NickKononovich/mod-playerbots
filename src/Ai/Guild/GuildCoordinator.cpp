@@ -4474,6 +4474,7 @@ void GuildCoordinator::UpdateProfessions()
                     }
         if (weight > 0.0)
             copperPerWeight = paid / weight;
+        copperPerWeight_ = copperPerWeight;  // [craft431] the craft queue's reagent values
         if (uint32(copperPerWeight) != copperPerWeightLogged_)
         {
             copperPerWeightLogged_ = uint32(copperPerWeight);
@@ -7384,7 +7385,8 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
             ++pending[{e.forLow, e.itemId}];
     }
 
-    auto const addJob = [&](uint32 crafterLow, uint32 spellId, uint32 forLow, bool bag, std::string why)
+    auto const addJob = [&](uint32 crafterLow, uint32 spellId, uint32 forLow, bool bag, std::string why,
+                            double weight = 0.0)
     {
         GuildGear::CraftRecipe const* recipe = GuildGear::Recipe(spellId);
         if (!recipe)
@@ -7396,6 +7398,7 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
         job.forLow = forLow;
         job.bag = bag;
         job.why = std::move(why);
+        job.weight = weight;
         crafts_.push_back(job);
     };
 
@@ -7414,7 +7417,8 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
                     m->GetItemCount(g.itemId, true) || pending.count({low, g.itemId}))
                     continue;
                 addJob(g.crafterLow, g.srcId, low, false,
-                       std::string("upgrade ") + GuildGear::GroupName(g.group) + " " + GainText(g));
+                       std::string("upgrade ") + GuildGear::GroupName(g.group) + " " + GainText(g),
+                       g.score > g.current ? double(g.score - g.current) : 0.0);
             }
     }
 
@@ -7496,7 +7500,12 @@ void GuildCoordinator::UpdateCrafts(uint32 /*now*/)
             uint32 units = 0;
             for (auto const& [reagent, count] : recipe->reagents)
                 units += count;
-            if (ItemTemplate const* product = sObjectMgr->GetItemTemplate(job.itemId); product && units)
+            // [craft431] an upgrade's worth is its stat-weight gain at the guild's vendor rate ([craft428]): b463
+            // Malachite for the Malachite Pendant was gathered at 3.2 c/unit (the pendant's vendor tag) - "gathering
+            // 0.1 c/min" lost to questing everywhere, while the copper for the same rings ran 26-523 c/unit
+            if (job.weight > 0.0 && copperPerWeight_ > 0.0 && units)
+                g.value += job.weight * copperPerWeight_ * n / units;
+            else if (ItemTemplate const* product = sObjectMgr->GetItemTemplate(job.itemId); product && units)
                 g.value += double(product->BuyPrice) * n / units;
         }
     }

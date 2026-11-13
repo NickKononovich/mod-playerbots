@@ -1120,6 +1120,7 @@ private:
     // [guild70] per skill line and skill value: the best trainer / auto-learned skill-up recipe (index, -1 none)
     std::unordered_map<uint32, std::vector<int32>> skillPlan_;
     std::map<uint32, double> lineMinPerPoint_;  // [craft426] skill line -> minutes per skill point of its last walk
+    double copperPerWeight_{0.0};               // [craft431] the last rate, for the craft queue
     uint32 copperPerWeightLogged_{0};           // [craft428] the guild's copper per stat-weight point, last logged
     std::unordered_map<uint32, std::vector<size_t>> extraRecipes_;  // per line: recipes learned elsewhere (drops)
     std::unordered_map<uint64, uint32> lastSkill_;  // (low << 16 | line) -> skill when last seen (offline members)
@@ -1266,6 +1267,7 @@ private:
         bool bag{false};
         bool ready{false};  // the crafter holds the reagents of one craft
         std::string why;
+        double weight{0.0};  // [craft431] an upgrade's stat-weight gain for the member (0: a bag)
     };
     std::vector<CraftJob> crafts_;
     // [guild70] reagent -> why ("улучшение: <item>", "сумка <item>") -> (count, members it is for)
