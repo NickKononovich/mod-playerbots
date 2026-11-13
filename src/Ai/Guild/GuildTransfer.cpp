@@ -84,6 +84,15 @@ namespace
 
     uint32 NowSec() { return uint32(GameTime::GetGameTime().count()); }
 
+    // [inv382] the skill line's own name, for the recipe verdicts
+    std::string LineName(uint32 skillLine)
+    {
+        if (SkillLineEntry const* entry = sSkillLineStore.LookupEntry(skillLine))
+            if (entry->name[LOCALE_enUS])
+                return entry->name[LOCALE_enUS];
+        return std::to_string(skillLine);
+    }
+
     // [dun194] a member's line inside the run: the drinks the run needs it to carry (priced at the five's forming),
     // else the restock line
     uint32 RunLine(GuildFive const& five, uint32 low, uint8 kind)
@@ -2462,6 +2471,7 @@ void GuildCoordinator::UpdateTransfers()
                     proto && proto->Class == ITEM_CLASS_RECIPE)
                     if (uint32 const spell = RecipeSpell(proto))
                         claimed.insert({t.toLow, spell});
+        std::set<uint32> liveRecipes;  // [inv382] the verdicts of recipes that left the bags are forgotten
         for (auto const& [holderRow, h] : members)
         {
             std::vector<Item*> recipes;
@@ -2469,8 +2479,10 @@ void GuildCoordinator::UpdateTransfers()
                            [&](Item* it)
                            {
                                ItemTemplate const* proto = it->GetTemplate();
-                               if (proto->Class == ITEM_CLASS_RECIPE && proto->RequiredSkill &&
-                                   !used.count(it->GetGUID().GetCounter()))
+                               if (proto->Class != ITEM_CLASS_RECIPE || !proto->RequiredSkill)
+                                   return;
+                               liveRecipes.insert(it->GetGUID().GetCounter());
+                               if (!used.count(it->GetGUID().GetCounter()))
                                    recipes.push_back(it);
                            });
             for (Item* it : recipes)
@@ -2498,29 +2510,59 @@ void GuildCoordinator::UpdateTransfers()
                         bestScore = score;
                     }
                 }
+                std::string const name = ItemText(proto->ItemId, 1);
+                uint32 const guidLow = it->GetGUID().GetCounter();
+                // [inv382] user 2026-11-13: a held recipe gets the same verdict as a fresh drop, and the verdict is
+                // logged. Before, a recipe nobody could learn yet left this loop silently and stayed where it fell -
+                // b475: Pattern: Red Linen Robe (Tailoring 40) with Bierya and Sycina, who are no tailors, Plans:
+                // Green Iron Gauntlets (Blacksmithing 150) with the tailor Manue, Schematic: EZ-Thro Dynamite
+                // (Engineering 100) with Brelir, Recipe: Murloc Fin Soup (Cooking 90) with Jurdogs
+                auto const verdict = [&](std::string const& text)
+                {
+                    if (auto const said = recipeVerdict_.find(guidLow);
+                        said != recipeVerdict_.end() && said->second == text)
+                        return;
+                    recipeVerdict_[guidLow] = text;
+                    LOG_INFO("playerbots", "[inv382] {} holds {}: {}", Who(holderRow->low), name, text);
+                };
                 if (!best)
+                {
+                    // no member has the profession or plans it: the recipe teaches nobody, a vendor pays for it
+                    if (std::find(bots_[holderRow->low].sell.begin(), bots_[holderRow->low].sell.end(), guidLow) ==
+                        bots_[holderRow->low].sell.end())
+                        bots_[holderRow->low].sell.push_back(guidLow);
+                    verdict("→ sell: no member has " + LineName(line) + " or plans it, so the recipe "
+                            "teaches nobody");
                     continue;
+                }
                 bool const now = std::get<0>(bestScore);
                 uint32 const bestLow = best->GetGUID().GetCounter();
-                std::string const name = ItemText(proto->ItemId, 1);
                 std::string const skillText =
                     std::to_string(std::get<1>(bestScore)) + "/" + std::to_string(proto->RequiredSkillRank);
                 if (best == h)
                 {
                     if (!now)
-                        continue;  // its own, learnable once its skill reaches the rank: kept
+                    {
+                        // its own line, above its skill: kept for it - of the guild it reaches the rank first
+                        verdict("keeps it: its own " + LineName(line) + " " + skillText +
+                                " reaches the rank first in the guild");
+                        continue;
+                    }
                     if (HumanCharacter(h))
                         Suggest(holderRow->low, "r:" + std::to_string(proto->ItemId),
                                 "learn " + name + " (skill " + skillText + ") — in the guild you are the best for it.");
                     else
-                        recipeLearn_.emplace_back(holderRow->low, it->GetGUID().GetCounter());
+                        recipeLearn_.emplace_back(holderRow->low, guidLow);
+                    verdict("learns it itself (skill " + skillText + ")");
                     continue;
                 }
-                // [econ2] mailed only to a member that learns it at once (its profession learned, its skill at the
-                // recipe's rank): b353 Pattern: Stylish Green Shirt went to Orenem at Tailoring 11/120 and lay in
-                // its bags; the best learner later is chosen again once someone can learn it
-                if (!now)
-                    continue;
+                // [inv382] it goes to the member it teaches: the one that learns it at once, else the one whose
+                // skill on that line reaches the rank first. [econ2]'s b353 case (Pattern: Stylish Green Shirt to
+                // Orenem at Tailoring 11/120) was a recipe lying with a member of the line; lying with a member of
+                // no line at all is strictly worse, and the holder wins the score at equal skill, so a copy only
+                // moves when the other side is closer to the rank
+                verdict((now ? "→ " : "→ (not learnable yet) ") + Who(bestLow) + ": " + LineName(line) +
+                        " " + skillText + (now ? ", learns at once" : ", reaches the rank first"));
                 if (taught)
                     claimed.insert({bestLow, taught});
                 Want w;
@@ -2541,6 +2583,8 @@ void GuildCoordinator::UpdateTransfers()
                 used.insert(w.guid);
             }
         }
+        for (auto itr = recipeVerdict_.begin(); itr != recipeVerdict_.end();)  // [inv382]
+            itr = liveRecipes.count(itr->first) ? std::next(itr) : recipeVerdict_.erase(itr);
     }
 
     if (donation != donationState_)

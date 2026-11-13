@@ -1035,6 +1035,9 @@ private:
     // [recipes] (member, recipe item guid): recipes their holder is the best placed to learn, used on the next
     // RunTransfers (lock_)
     std::vector<std::pair<uint32, uint32>> recipeLearn_;
+    // [inv382] the verdict last logged for a held recipe (item guid low -> text): one line per change, dropped when
+    // the recipe leaves the members' bags
+    std::map<uint32, std::string> recipeVerdict_;
     // receiver -> its delivered mails from members (count, the cheapest mailbox), what is still in transit (lock_)
     std::map<uint32, std::pair<uint32, WorldPosition>> mailPickup_;
     // [eco199] members whose mailbox holds the members' gold its repair / supplies / role spec waits for, and of them
