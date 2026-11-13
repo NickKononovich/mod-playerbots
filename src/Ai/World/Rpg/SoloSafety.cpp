@@ -1138,6 +1138,9 @@ namespace
         // combat movement if cast successful"): it stops at that spell's range from the bot, not at the fight spot -
         // its periodic assistance calls (Creature::Update -> CallAssistance) are made from there
         float standRange = 0.0f;
+        // [death449] the creatures its script summons in a fight (SMART_ACTION_SUMMON_CREATURE, or a cast of a
+        // SPELL_EFFECT_SUMMON spell, on an in-combat event): each comes once and fights the bot
+        std::vector<uint32> summons;
     };
     ScriptHelp ScriptHelpOf(Creature* creature)
     {
@@ -1168,6 +1171,23 @@ namespace
                          (holder.action.cast.castFlags & SMARTCAST_COMBAT_MOVE))
                     if (SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell))
                         help.standRange = std::max(help.standRange, info->GetMaxRange(false));
+                // [death449] b467 Salleas L20: Deepmoss Hatchling "At 30% HP - Summon Deepmoss Matriarch" (6536), two
+                // Matriarchs L22 joined a fight judged as 2 hatchlings, dead
+                uint32 const event = holder.event.type;
+                if (event == SMART_EVENT_UPDATE_OOC || event == SMART_EVENT_RESET || event == SMART_EVENT_RESPAWN ||
+                    event == SMART_EVENT_LINK || event == SMART_EVENT_JUST_SUMMONED ||
+                    event == SMART_EVENT_JUST_CREATED || event == SMART_EVENT_EVADE || event == SMART_EVENT_OOC_LOS)
+                    continue;
+                uint32 summoned = 0;
+                if (holder.action.type == SMART_ACTION_SUMMON_CREATURE)
+                    summoned = holder.action.summonCreature.creature;
+                else if (holder.action.type == SMART_ACTION_CAST)
+                    if (SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell))
+                        for (uint8 i = 0; i < MAX_SPELL_EFFECTS && !summoned; ++i)
+                            if (info->Effects[i].Effect == SPELL_EFFECT_SUMMON && info->Effects[i].MiscValue > 0)
+                                summoned = uint32(info->Effects[i].MiscValue);
+                if (summoned && sObjectMgr->GetCreatureTemplate(summoned))
+                    help.summons.push_back(summoned);
             }
         std::lock_guard<std::mutex> guard(cacheLock);
         cache[entry] = help;
@@ -2333,6 +2353,7 @@ namespace SoloSafety
             float hp;
             float dps;
             float variance = 0.0f;  // [death386] of its melee per second of the fight
+            bool summoned = false;  // [death449] a summon to come: `unit` is its summoner
         };
         std::vector<Mob> mobs;
         bool elite = false;
@@ -2392,6 +2413,57 @@ namespace SoloSafety
             for (Mob const& mob : mobs)
                 if (Creature* creature = mob.unit->ToCreature())
                     mobs.front().hp += FriendHealToCome(creature, packHp / botDps);
+        }
+
+        // [death449] the creatures the pack's scripts summon in the fight: each its template's health at its level,
+        // its melee against the bot as its summoner's scaled by the two templates' melee (CreatureBaseStats)
+        {
+            auto const templateMelee = [](CreatureTemplate const* tmpl, float& health) -> float
+            {
+                CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(tmpl->maxlevel, tmpl->unit_class);
+                if (!stats)
+                    return 0.0f;
+                health = float(stats->GenerateHealth(tmpl));
+                float const swing = std::max(float(tmpl->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
+                float const base = stats->GenerateBaseDamage(tmpl);
+                return ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) *
+                       tmpl->DamageModifier / swing;
+            };
+            size_t const owners = mobs.size();
+            for (size_t i = 0; i < owners; ++i)
+            {
+                Creature* summoner = mobs[i].unit->ToCreature();
+                if (!summoner || summoner->IsSummon())
+                    continue;
+                float ownHealth = 0.0f;
+                float const ownMelee = templateMelee(summoner->GetCreatureTemplate(), ownHealth);
+                for (uint32 entry : ScriptHelpOf(summoner).summons)
+                {
+                    CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+                    float health = 0.0f;
+                    float const melee = tmpl ? templateMelee(tmpl, health) : 0.0f;
+                    if (health <= 0.0f)
+                        continue;
+                    Mob summon{mobs[i].unit, health, ownMelee > 0.0f ? mobs[i].dps * melee / ownMelee : mobs[i].dps,
+                               mobs[i].variance, true};
+                    mobs.push_back(summon);
+                    ++verdict.mobs;
+                    if (tmpl->maxlevel > bot->GetLevel())
+                        ++verdict.above;
+                    static std::mutex summonedLogLock;  // a log cadence per summoner kind, no decision reads it
+                    static std::unordered_set<uint32> summonedLogged;
+                    bool fresh = false;
+                    {
+                        std::lock_guard<std::mutex> guard(summonedLogLock);
+                        fresh = summonedLogged.insert(summoner->GetEntry()).second;
+                    }
+                    if (fresh)
+                        LOG_INFO("playerbots", "[death449] {} L{}: {} L{} summons {} L{} in its fight ({:.0f} hp, "
+                                 "{:.1f} dps): counted",
+                                 bot->GetName(), bot->GetLevel(), summoner->GetName(), summoner->GetLevel(),
+                                 tmpl->Name, tmpl->maxlevel, health, summon.dps);
+                }
+            }
         }
 
         // the kill order: the target first, then the most damage per health
@@ -2495,7 +2567,7 @@ namespace SoloSafety
         constexpr float HIGH_END_DEVIATIONS = 2.0f;  // a one-sided 97.7 % bound of a sum of independent swings
         std::vector<SurvivalKit::Interrupter> interrupters;  // [death444]
         for (Mob const& mob : mobs)
-            if (Creature* creature = mob.unit->ToCreature())
+            if (Creature* creature = mob.summoned ? nullptr : mob.unit->ToCreature())
                 for (SurvivalKit::Interrupter const& in : InterruptsOf(creature))
                     interrupters.push_back(in);
         auto const effective = [&](Projection const& fight, float health, float mana, bool& wins) -> float
@@ -3693,7 +3765,11 @@ namespace SoloSafety
                 came += (came.empty() ? "" : ", ") + track.name + " L" + std::to_string(track.level);
             out += Acore::StringFormat("; hit by {} this fight: {}", found->second.attackers.size(), came);
         }
-        if (found != states.end() && found->second.engaged)
+        // [death451] in a dungeon the fight is the five leader's pull ([dun188] / "careful pull" lines), never the
+        // bot's last solo engage (b467 Shalaeth L21 in Wailing Caverns: "pulled Pridewing Consort judged 1 mobs",
+        // an open-world pull of before its five, named on a death to Lord Cobrahn's 11-mob pull)
+        bool const inDungeon = bot->GetMap() && bot->GetMap()->IsDungeon();
+        if (found != states.end() && found->second.engaged && !inDungeon)
         {
             EngageNote const& engage = found->second.engage;
             out += Acore::StringFormat("; pulled {} judged {} mobs {:.0f} dmg at hp {:.0f} % mana {:.0f} %",
