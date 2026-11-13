@@ -1344,6 +1344,10 @@ private:
     void LogQuestLog(BotState& st, Player* p);  // [quest120] the [qlog] census line of one bot's quest log
     float GatherPace(uint32 skill) const;                              // units per minute of gathering, < 0: no data
     uint32 TrainerCap(uint32 skillLine, uint8 level) const;            // the highest rank's max skill by level
+    // [craft462] the cap the member can hold NEXT: the lowest rank above the one it holds whose level and skill
+    // requirement it meets, else the cap it holds. The upper ranks carry reqLevel 0 in this data, so TrainerCap
+    // returns the line's final ceiling for everyone and a walk's target came from an end nobody can reach
+    uint32 NextRankCap(uint32 skillLine, uint8 level, uint32 heldMax) const;
     void RecordPace(BotState& st, Player* p) const;                    // UpdateHealth: its copper per quest XP
     void LoadQuestValue();  // [questrate] playerbots_quest_value_static + the objectives' kill cost, startup
     void UpdateGear();  // [guild50] one member's upgrade plan per call

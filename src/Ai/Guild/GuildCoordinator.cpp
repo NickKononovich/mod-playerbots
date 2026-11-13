@@ -4846,6 +4846,25 @@ uint32 GuildCoordinator::TrainerCap(uint32 skillLine, uint8 level) const
     return cap;
 }
 
+// [craft462] coordinator 2026-11-13: the cap the member can actually hold NEXT, not the line's final ceiling.
+// TrainerCap answers "the highest rank a trainer would sell at this level", and in this data the upper ranks carry
+// reqLevel 0 - Artisan, Master and Grand Master Cooking ask no level at all - so it returns the end of the ladder for
+// everyone: b484 "#26 Brelir: Cook 63/150, needs 450 (trainer rank at L26: 450), lag 387" with a walk of
+// "to 185 in 153233.1 min" (2554 hours). A rank's real gate is its own skill requirement, and that chains: a member
+// can practise only to the cap it holds, so the one rank it can take next is the lowest one above that cap whose
+// reqSkill its cap can reach. Brelir then aims at 225 (Expert, reqSkill 125 <= its 150), not 450 - the same error as
+// Alch 410 and the silk ladder, a scale taken from an end nobody can reach
+uint32 GuildCoordinator::NextRankCap(uint32 skillLine, uint8 level, uint32 heldMax) const
+{
+    uint32 next = heldMax;
+    if (auto const ranks = trainerRanks_.find(skillLine); ranks != trainerRanks_.end())
+        for (TrainerRank const& r : ranks->second)
+            if (r.reqLevel <= level && r.maxSkill > heldMax && r.reqSkill <= std::max(heldMax, 1u) &&
+                (next == heldMax || r.maxSkill < next))
+                next = r.maxSkill;
+    return next ? next : TrainerCap(skillLine, level);
+}
+
 // [craft435] the slots a craft fills for a member: both empty slots of a ring / trinket pair when the piece is not
 // unique, else one. b469 one ring pick per member (the group's best) counted 75 of the guild's 150 finger slots
 static uint32 PairSlotsFilled(Player* m, ItemTemplate const* proto, uint8 group)
@@ -5688,7 +5707,9 @@ void GuildCoordinator::UpdateProfessions()
             bool const has = p->HasSkill(line);
             uint32 const skill = has ? p->GetPureSkillValue(line) : 0;
             uint32 const maxSkill = has ? p->GetPureMaxSkillValue(line) : 0;
-            uint32 const cap = TrainerCap(line, level);
+            // [craft462] the walk's target is the rank the member can hold next, not the line's final ceiling
+            uint32 const cap = NextRankCap(line, level, maxSkill);
+            uint32 const ceiling = TrainerCap(line, level);  // the end of the ladder, for the line only
             static std::vector<Need const*> const none;
             auto const mine = assigned.find({row->low, line});
             std::vector<Need const*> const& lineNeeds = mine != assigned.end() ? mine->second : none;
@@ -5699,8 +5720,9 @@ void GuildCoordinator::UpdateProfessions()
             uint32 const need = std::max(cap, needPlan);
             std::string const head = Who(row->low) + ": " + SkillShort(line) + " " + std::to_string(skill) + "/" +
                                      std::to_string(maxSkill) + ", needs " + std::to_string(need) +
-                                     " (trainer rank at L" + std::to_string(level) + ": " + std::to_string(cap) +
-                                     (needPlan ? ", plan: " + std::to_string(needPlan) : "") + ")";
+                                     " (next rank it can hold at L" + std::to_string(level) + ": " +
+                                     std::to_string(cap) + " of the line's " + std::to_string(ceiling) +
+                                     " [craft462]" + (needPlan ? ", plan: " + std::to_string(needPlan) : "") + ")";
             // [gather] the value of one skill point of this crafter on this line, what its wanted materials are worth
             // (UpdateWanted): over the planned skill-up walk from its skill to what its level reaches, whatever the
             // reagents' availability (a crafter blocked on a material is worth what that material unblocks), the
@@ -6273,18 +6295,49 @@ void GuildCoordinator::UpdateProfessions()
                 }
                 else
                 {
-                    double unlocked = 0;
+                    // [craft463] user rule [[skill-up-has-own-value]] («прокачка навыка - это краеугольный этап
+                    // развития персонажей»): a rank carries its own worth, so a walk is not valued only by the needs
+                    // it finishes. Before this, a need past the walk's end counted zero and every line read
+                    // "unlocks 0c" - 207 readings on b484, every one of them nought, cooking included: "#26 Brelir:
+                    // Cook 63/150 ... value = unlocks 0c + supplies 0c - costs 10s 0c", so any line with a cost lost
+                    // to questing by definition and the user's rule was simply not executed. The share of the gap a
+                    // walk closes is the measure, and it is the rule the codebase already applies to a gathering
+                    // climb leg (GuildGatherPlan.cpp:1501, `c.value * points / (c.target - skill)`) - the same shape,
+                    // read for a rank instead of a tier, introducing no number of its own. A need the walk reaches
+                    // still counts whole
+                    auto const unlockedTo = [&](uint32 to)
+                    {
+                        double sum = 0.0;
+                        for (Need const* n : lineNeeds)
+                        {
+                            if (n->reqSkill <= skill || to <= skill)
+                                continue;
+                            if (n->reqSkill <= to)
+                                sum += n->value;  // [craft428] the walk finishes it
+                            else                  // [craft463] the share of the distance to it this walk covers
+                                sum += n->value * double(to - skill) / double(n->reqSkill - skill);
+                        }
+                        return sum;
+                    };
+                    double unlocked = unlockedTo(reach);
                     std::string unlockedText;
                     uint32 unlockedUnits = 0;  // [lag328]
                     for (Need const* n : lineNeeds)
                         if (n->reqSkill > skill && n->reqSkill <= reach)
                         {
                             unlockedUnits += n->count;
-                            unlocked += n->value;  // [craft428]
                             if (unlockedText.size() < 80)
                                 unlockedText +=
                                     (unlockedText.empty() ? "" : ", ") + ItemName(n->itemId) + " (" + n->label + ")";
                         }
+                    // [craft463] the needs past the end the walk only moves toward, named with the share they add
+                    for (Need const* n : lineNeeds)
+                        if (n->reqSkill > reach && reach > skill && unlockedText.size() < 160)
+                            unlockedText += (unlockedText.empty() ? "" : ", ") + ItemName(n->itemId) + " (" +
+                                            n->label + ": " +
+                                            std::to_string(uint32(100.0 * double(reach - skill) /
+                                                                  double(n->reqSkill - skill))) +
+                                            "% of the way to " + std::to_string(n->reqSkill) + " [craft463])";
                     // [econ2] user rule 2026-11-08 (econ1 applied it to gathering): a profession is worth the
                     // upgrades and skill-ups it unlocks for the guild, not the vendor price of its skill-up
                     // products. b353: First Aid 320 c/min "beat" questing from Linen Bandage sales alone (bandages
@@ -6301,10 +6354,9 @@ void GuildCoordinator::UpdateProfessions()
                         double bestRate = 0.0;
                         for (Stop const& stop : stops)
                         {
-                            double stopUnlocked = 0;
-                            for (Need const* n : lineNeeds)
-                                if (n->reqSkill > skill && n->reqSkill <= stop.reach)
-                                    stopUnlocked += n->value;  // [craft428]
+                            // [craft463] the same measure as above, so the stop the walk is judged at and the value
+                            // it is reported with cannot disagree
+                            double const stopUnlocked = unlockedTo(stop.reach);
                             double const stopValue = stopUnlocked + supplyValue - stop.vendorCost;
                             double const stopMinutes = stop.craftMin + stop.gatherMin + supplyMin;
                             if (stopValue <= 0 || stopMinutes <= 0)
@@ -6330,6 +6382,14 @@ void GuildCoordinator::UpdateProfessions()
                                 if (n->reqSkill > skill && n->reqSkill <= judged && unlockedText.size() < 80)
                                     unlockedText += (unlockedText.empty() ? "" : ", ") + ItemName(n->itemId) + " (" +
                                                     n->label + ")";
+                            // [craft463] and the ones it only moves toward, at the judged point's own share
+                            for (Need const* n : lineNeeds)
+                                if (n->reqSkill > judged && judged > skill && unlockedText.size() < 160)
+                                    unlockedText += (unlockedText.empty() ? "" : ", ") + ItemName(n->itemId) + " (" +
+                                                    n->label + ": " +
+                                                    std::to_string(uint32(100.0 * double(judged - skill) /
+                                                                          double(n->reqSkill - skill))) +
+                                                    "% of the way to " + std::to_string(n->reqSkill) + " [craft463])";
                         }
                     }
                     double const value = unlocked + supplyValue - vendorCost;
