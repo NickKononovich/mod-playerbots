@@ -1201,8 +1201,29 @@ void GuildCoordinator::UpdateTransfers()
     constexpr uint32 RELIEF_ROOM = 2;                        // the receiver keeps a slot for its own loot
     std::map<std::pair<uint32, uint32>, uint32> reliefLack;  // (crafter, item) -> still lacking after the plan
     for (auto const& [low, items] : crafterLack_)
+    {
+        // [craft440] a crafter without Mining takes no ore (the craft437 rule): its lack of an ore is the bars smelted
+        // of it, which a full holder's bars relieve
+        Player* c = Online(low);
+        bool const smelts = c && c->HasSkill(SKILL_MINING);
         for (auto const& [item, n] : items)
-            reliefLack[{low, item}] = n;
+        {
+            uint32 bar = 0;
+            float per = 0.0f;
+            if (!smelts)
+                for (auto const& [smelted, parts] : smeltFrom_)
+                    for (auto const& [ore, units] : parts)
+                        if (ore == item && units > 0.0f && !bar)
+                        {
+                            bar = smelted;
+                            per = units;
+                        }
+            if (bar)
+                reliefLack[{low, bar}] += uint32(std::ceil(double(n) / per));
+            else
+                reliefLack[{low, item}] = n;
+        }
+    }
     for (auto const& [low, st] : bots_)
     {
         Player* h = Online(low);

@@ -608,6 +608,9 @@ private:
         // [prof272] a runnable TRAIN call still standing when the bot left its trainer's town (TaskKey -> its level
         // then): the executor had its chance there; no town stop again until its next level
         std::map<std::string, uint8> trainDue;
+        // [craft439] the TRAIN calls (TaskKey) whose town it stood in alive, out of combat, its New RPG executor on:
+        // only such a visit was the executor's chance
+        std::set<std::string> trainChance;
         std::deque<uint32> deaths;  // game time
         bool deathOpen{false};      // dead since the last DEATH alert
         uint64 xpTotal{0};

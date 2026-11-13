@@ -2604,14 +2604,39 @@ void GuildCoordinator::UpdateOrders()
                     // executor had its chance there (the trainer / vendor did not do it at this money and level)
                     auto const before = std::find_if(st.orders.begin(), st.orders.end(), [&](GuildOrder const& x)
                                                      { return x.type == o.type && TaskKey(x) == taskKey; });
+                    // [craft439] b468 Colian logged in a ghost ("no New RPG strategy"), ran from the Blood Watch
+                    // graveyard to his corpse, and "left Blood Watch with its TRAIN call Jeweler's Kit still
+                    // standing": a ghost's pass through the town was counted as the executor's chance, his kit call
+                    // parked until L24. A visit counts only while the bot stood there alive, out of combat, its New
+                    // RPG executor on (the strategy that runs NewRpgProfession::StartTask)
+                    if (before != st.orders.end() && before->townArea && TownReady(p, *before) && p->IsAlive() &&
+                        !p->IsInCombat() && GET_PLAYERBOT_AI(p) &&
+                        GET_PLAYERBOT_AI(p)->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
+                        st.trainChance.insert(taskKey);
+                    // [craft438] the tool a guild priority line ([craft435]) needs never waits for a level: its stop
+                    // is priced by the gap (craft436) and taken again
+                    bool priorityTool = false;
+                    for (LinePriority const& r : linePriorities_)
+                        priorityTool |= r.line == pick.skillLine && pick.itemId &&
+                                        pick.itemId == ProfessionTool(pick.skillLine);
+                    if (priorityTool)
+                        st.trainDue.erase(taskKey);
                     if (before != st.orders.end() && before->executable && !before->waitsTown &&
-                        before->townArea && !TownReady(p, *before) && !st.trainDue.count(taskKey))
+                        before->townArea && !TownReady(p, *before))
                     {
-                        st.trainDue[taskKey] = p->GetLevel();
-                        LOG_INFO("playerbots",
-                                 "[prof272] {} L{} left {} with its TRAIN call {} still standing: no town stop for it "
-                                 "until its next level",
-                                 Who(row.low), p->GetLevel(), before->townName, o.details);
+                        if (st.trainChance.erase(taskKey) && !priorityTool && !st.trainDue.count(taskKey))
+                        {
+                            st.trainDue[taskKey] = p->GetLevel();
+                            LOG_INFO("playerbots",
+                                     "[prof272] {} L{} left {} with its TRAIN call {} still standing: no town stop for "
+                                     "it until its next level",
+                                     Who(row.low), p->GetLevel(), before->townName, o.details);
+                        }
+                        else if (priorityTool)
+                            LOG_INFO("playerbots",
+                                     "[craft438] {} L{} left {} with the guild priority tool {} unbought: its stop "
+                                     "stays on the route, weighed by the gap",
+                                     Who(row.low), p->GetLevel(), before->townName, o.details);
                     }
                     if (st.trainDue.count(taskKey))
                         o.status = "its trainer / vendor visit at this level did not do it: waits for its next level";
