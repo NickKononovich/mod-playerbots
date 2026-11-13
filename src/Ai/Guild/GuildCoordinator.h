@@ -639,6 +639,9 @@ private:
         // [craft439] the TRAIN calls (TaskKey) whose town it stood in alive, out of combat, its New RPG executor on:
         // only such a visit was the executor's chance
         std::set<std::string> trainChance;
+        // [prof81] the TRAIN calls whose town the bot was only carried through (a taxi, a transport): one log line
+        // each, and no chance counted
+        std::set<std::string> profCarried;
         std::deque<uint32> deaths;  // game time
         bool deathOpen{false};      // dead since the last DEATH alert
         uint64 xpTotal{0};

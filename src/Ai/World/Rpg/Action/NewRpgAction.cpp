@@ -2185,6 +2185,26 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // [guild10] a purposeful target only, never an aimless walk: a quest (hand in, objective, then a
             // starter of its level - ChooseBestQuest keeps that order), else mobs of its level, else stay put.
             {
+                // [prof80] the leader's profession call due where the bot stands runs before anything that would
+                // take it away - the route's next town stop first of all. A call is due only in its own town
+                // (ProfessionCall: TownReady for a TRAIN / BUY, the craft's town or a safe place for a CRAFT), and
+                // the moment the bot arrives there the call stops being a town stop (waitsTown false, TownStops
+                // drops it), so the route simply moved on to its next one and the executor below never looked.
+                // b475: Orenem L24 stood in Auberdine with "PROFESSION/train[C,R,runnable] rank to 150" - Tailoring
+                // 75/75 at the Apprentice cap, 22 passes waiting for that town - and the very next decision was
+                // "TOWN reason: route stop BUY Cragpool Lake (4825 yd)"; the call was then parked by [prof272] "its
+                // trainer / vendor visit at this level did not do it". Over the whole 11 h log: 5 runnable train
+                // calls, 1 learned, 0 recipes
+                bool const planned = sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter());
+                bool const callDue = planned && sGuildCoordinator.ProfessionCall(bot) != GuildProfessionKind::NONE;
+                if (callDue && NewRpgProfession::StartTask(botAI, bot))
+                {
+                    static thread_local std::set<std::pair<uint32, uint32>> here;  // (bot, zone): once per zone
+                    if (here.emplace(bot->GetGUID().GetCounter(), bot->GetZoneId()).second)
+                        LOG_INFO("playerbots", "[prof80] {} L{} works its due profession call here, before its "
+                                 "route's next stop", bot->GetName(), bot->GetLevel());
+                    return true;
+                }
                 // [questroute] a town task the route passes: walk there, the guild's NextStep runs it on arrival
                 WorldPosition townPos;
                 std::string townTask;
@@ -2213,17 +2233,12 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 // b452 Dekorhan reached the Darnassus and Dolanaar inns with the Virtuoso Inking Set, 85 Light
                 // Parchment and 40 Silverleaf, and each time "QUEST q9432 hand in (hand-in first)" - its ender 9655 yd
                 // off in Astranaar - took him away before the executor looked: Inscription stayed 1, no mill
-                bool const planned = sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter());
+                // [prof80] a planned member's due call had its look above, before the route's town stop and before
+                // this quest choice - [craft390]'s "the call runs before a hand-in elsewhere" now holds one step
+                // earlier; only a bot outside the guild plan reaches the executor here
                 bool const handIn = quest && bot->GetQuestStatus(questId) == QUEST_STATUS_COMPLETE;
-                bool const callDue = planned && sGuildCoordinator.ProfessionCall(bot) != GuildProfessionKind::NONE;
-                if ((planned ? callDue : !handIn) && NewRpgProfession::StartTask(botAI, bot))
-                {
-                    static thread_local std::set<std::pair<uint32, uint32>> logged;  // (bot, quest): once
-                    if (handIn && logged.emplace(bot->GetGUID().GetCounter(), questId).second)
-                        LOG_INFO("playerbots", "[craft390] {} L{} works its due profession call here before the hand-in"
-                                 " of q{}", bot->GetName(), bot->GetLevel(), questId);
+                if (!planned && !handIn && NewRpgProfession::StartTask(botAI, bot))
                     return true;
-                }
                 // [lag361] the route's next stop is a pickup or an objective, and the grind of its level nearby earns
                 // more over the route's time: it grinds there (a hand-in of a complete quest is taken as planned)
                 if (quest && bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE)

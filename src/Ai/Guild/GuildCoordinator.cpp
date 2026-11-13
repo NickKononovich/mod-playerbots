@@ -2640,10 +2640,24 @@ void GuildCoordinator::UpdateOrders()
                     // standing": a ghost's pass through the town was counted as the executor's chance, his kit call
                     // parked until L24. A visit counts only while the bot stood there alive, out of combat, its New
                     // RPG executor on (the strategy that runs NewRpgProfession::StartTask)
+                    // [prof81] ... and only while the bot was not being carried through that town: on a taxi, on a
+                    // transport (the boat, the tram) or walking its flight leg, the New RPG executor is in
+                    // TRAVEL_FLIGHT and never looks at a profession call, so the town below it is no chance at all.
+                    // b475: all 4 of Bami L23's runnable passes on "rank to 150", "rank to 225" and "recipe Goblin
+                    // Deviled Clams" read TRAVEL_FLIGHT, and the three calls were parked "until its next level" over
+                    // Ironforge and Elwynn Forest, which he flew across
+                    bool const carried = p->IsInFlight() || p->GetTransport() || st.rpgStatus == RPG_TRAVEL_FLIGHT;
                     if (before != st.orders.end() && before->townArea && TownReady(p, *before) && p->IsAlive() &&
                         !p->IsInCombat() && GET_PLAYERBOT_AI(p) &&
                         GET_PLAYERBOT_AI(p)->HasStrategy("new rpg", BOT_STATE_NON_COMBAT))
-                        st.trainChance.insert(taskKey);
+                    {
+                        if (!carried)
+                            st.trainChance.insert(taskKey);
+                        else if (st.profCarried.insert(taskKey).second)
+                            LOG_INFO("playerbots", "[prof81] {} L{} is carried through {} with its TRAIN call {} "
+                                     "runnable: no look at it on a taxi or a transport, so this is no visit",
+                                     Who(row.low), p->GetLevel(), before->townName, o.details);
+                    }
                     // [craft438] the tool a guild priority line ([craft435]) needs never waits for a level: its stop
                     // is priced by the gap (craft436) and taken again
                     bool priorityTool = false;
@@ -6447,20 +6461,58 @@ float GuildCoordinator::PlannedGain(uint32 low, uint8 group) const
 GuildCoordinator::NpcSpot const* GuildCoordinator::NearestSpot(Player* p, uint32 low,
                                                               std::vector<NpcSpot> const& list) const
 {
+    // [town40] a bot inside an instance stands on a map that holds no trainer, vendor or forge at all, so every
+    // call made for it came out placeless ("on its next town visit", no route stop, nothing to walk to): 1348 of
+    // the 11 h log's train lines carried no town, and with DUNGEON 43.1 % of the guild's time that is most of the
+    // guild most of the time. The bot does not stay in there - it comes out at the dungeon's entrance in the world
+    // (Map.dbc entrance_map / entrance_x / entrance_y, the core's own corpse and graveyard rule), so the spots are
+    // judged from that entrance: the right map, and the distance it will really walk when it steps out
+    uint32 fromMap = p->GetMapId();
+    float fromX = p->GetPositionX(), fromY = p->GetPositionY(), fromZ = p->GetPositionZ();
+    bool fromEntrance = false;
+    if (MapEntry const* map = sMapStore.LookupEntry(p->GetMapId()); map && map->Instanceable())
+    {
+        int32 entranceMap = 0;
+        float entranceX = 0.0f, entranceY = 0.0f;
+        // an instance with no entrance of its own in the DBC (and the zero spot it marks that with): nothing to
+        // judge from, the call stays placeless as before
+        if (map->GetEntrancePos(entranceMap, entranceX, entranceY) && (entranceX != 0.0f || entranceY != 0.0f))
+        {
+            fromMap = uint32(entranceMap);
+            fromX = entranceX;
+            fromY = entranceY;
+            fromEntrance = true;
+        }
+    }
     NpcSpot const* best = nullptr;
     float bestDist = 0.0f;
     for (NpcSpot const& n : list)
     {
         Mailbox const& s = n.spot;
-        if (s.pos.GetMapId() != p->GetMapId() || !FriendlyNpc(p, n.entry) ||
+        if (s.pos.GetMapId() != fromMap || !FriendlyNpc(p, n.entry) ||
             (s.areaTeam == AREATEAM_ALLY && p->GetTeamId() != TEAM_ALLIANCE) ||
             (s.areaTeam == AREATEAM_HORDE && p->GetTeamId() != TEAM_HORDE) || TownRefused(low, s.pos))
             continue;
-        float const d = p->GetExactDist(s.pos.GetPositionX(), s.pos.GetPositionY(), s.pos.GetPositionZ());
+        // from the entrance the height is unknown (the DBC carries x / y only): the walk is judged on the ground
+        float const dx = s.pos.GetPositionX() - fromX;
+        float const dy = s.pos.GetPositionY() - fromY;
+        float const dz = fromEntrance ? 0.0f : s.pos.GetPositionZ() - fromZ;
+        float const d = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (!best || d < bestDist)
         {
             best = &n;
             bestDist = d;
+        }
+    }
+    if (fromEntrance && best)
+    {
+        static std::map<std::pair<uint32, uint32>, uint32> logged;  // (member, instance map) -> the entrance map
+        if (uint32& was = logged[{low, p->GetMapId()}]; was != fromMap + 1)
+        {
+            was = fromMap + 1;
+            LOG_INFO("playerbots", "[town40] {} L{} is inside map {}: its profession spots are judged from the "
+                     "dungeon's entrance on map {} ({:.0f},{:.0f}) - nearest {:.0f} yd from it", p->GetName(),
+                     p->GetLevel(), p->GetMapId(), fromMap, fromX, fromY, bestDist);
         }
     }
     return best;
@@ -7254,14 +7306,35 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
         auto const itr = bots_.find(low);
         if (itr == bots_.end())
             return;
-        // [eco199] a five member's route takes no town stop - but while its five gathers (not in the dungeon), the
-        // pickup of the members' gold its planned need waits for
+        // [eco199] a five member's route took no town stop at all - only, while its five gathered, the pickup of the
+        // members' gold its planned need waited for
+        // [town40] b475: that denied every stop for the 54.6 bot-hours (43.1 % of the guild's time) the fives held,
+        // and the leader then counted the passes through those towns as the executor's chance and parked the calls
+        // ([prof272], 12 TRAIN calls "until its next level"). The five's own life says where a stop fits: in
+        // Stage::Run the member is in the dungeon and keeps none, but in Stage::Gather it is walking to the entrance
+        // or waiting for the finder's proposal - and [lfg89] already rules that such a member "quests (and restocks)
+        // on until the proposal comes". The five is not delayed by this: its DUNGEON order is URGENT, so NextStep
+        // returns FiveStep's walk to the entrance before any convenient town task, and the route's town stop is read
+        // only after NextStep yields nothing (NewRpgAction IDLE). The members' gold pickup keeps its own place: it
+        // is one of these stops now, not the single exception
         bool const inFive = itr->second.fiveId != 0;
         if (inFive)
         {
             auto const five = fives_.find(itr->second.fiveId);
             if (five == fives_.end() || five->second.stage != GuildFive::Stage::Gather)
                 return;
+            // [town40] one line per member and five: which stops its gathering five leaves it
+            static std::map<uint32, uint32> gatherLogged;  // member -> the five whose gather stage was logged
+            if (uint32& logged = gatherLogged[low]; logged != itr->second.fiveId)
+            {
+                logged = itr->second.fiveId;
+                uint32 waiting = 0;
+                for (GuildOrder const& o : itr->second.orders)
+                    waiting += o.executable && o.waitsTown ? 1 : 0;
+                LOG_INFO("playerbots", "[town40] {} L{} gathers for five {}: its {} waiting town task(s) stay on its "
+                         "route (the five's walk to the entrance still outranks them)", bot->GetName(),
+                         bot->GetLevel(), itr->second.fiveId, waiting);
+            }
         }
         // [econ2] world2 [town12]: the mail pickup (MAIL_TO without a transfer, GuildTransfer TransferOrders) is a
         // town stop until the bot stands in its mailbox's town - whatever its waitsTown flag says - so a party
@@ -7269,7 +7342,6 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
         for (GuildOrder const& o : itr->second.orders)
             if (o.executable && o.priority == GuildTaskPriority::CONVENIENT && o.pos != WorldPosition() &&
                 o.pos.GetMapId() == bot->GetMapId() &&
-                (!inFive || (o.type == GuildOrderType::MAIL_TO && o.needGold)) &&
                 (o.waitsTown || (o.type == GuildOrderType::MAIL_TO && !o.transferId &&
                                  (!o.townArea || !TownReady(bot, o)))))
                 stops.emplace_back(o.pos,
