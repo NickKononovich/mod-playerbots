@@ -1190,7 +1190,7 @@ void LeaderCommandMultiplier::Refresh()
                          bot->IsWithinLOSInMap(mob, VMAP::ModelIgnoreFlags::M2)));
             };
             if (stop)
-                why = "the leader's Stop";
+                why = StopWhy();  // [rot650]
             else if (_command.aoe == Leader::AoeRule::Forbidden)
                 why = "the leader forbids AoE";
             else if (Unit* spared = SparedInArea(
@@ -1244,7 +1244,7 @@ void LeaderCommandMultiplier::Refresh()
                 };
                 std::string why;
                 if (stop)
-                    why = "the leader's Stop";
+                    why = StopWhy();  // [rot650]
                 else if (_command.aoe == Leader::AoeRule::Forbidden)
                     why = "the leader forbids AoE";
                 else if (Unit* spared = SparedInArea(reaches))
@@ -1293,6 +1293,19 @@ void LeaderCommandMultiplier::Log(Action* action, char const* why)
     _loggedMs = now ? now : 1;
     _loggedAction = action->getName();
     LOG_INFO("playerbots", "[rot2] [leader command] {} holds {}: {}", bot->GetName(), action->getName(), why);
+}
+
+// [rot650] Two different leader states reached this wording as one, and the one word cost a night of reading: a
+// hunter's whole arsenal held "by the leader's Stop" was taken for a silent loss of its damage three times over.
+// Intensity::Stop is the threat Stop - its only producer (LeaderEvents, the per-member intensity) sets it on an
+// aggro loss or without threat headroom, and the leader re-reads it against survival. AttackEvent::StopDps has one
+// producer too, and its own reason there is "no target of the fight takes damage": the member is between orders,
+// not forbidden to deal damage. Reporting only; both states hold the same actions as before.
+char const* LeaderCommandMultiplier::StopWhy() const
+{
+    return _command.intensity == Leader::Intensity::Stop
+               ? "the leader's Stop (no threat headroom)"
+               : "no attack order right now (between the leader's orders)";
 }
 
 float LeaderCommandMultiplier::GetValue(Action* action)
@@ -1369,7 +1382,7 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     {
         if (stale)
             LeaderCommandState::LogStale(bot, "holds its burn cooldowns");
-        Log(action, stop ? "the leader's Stop" : "a long cooldown waits for the leader's Burn");
+        Log(action, stop ? StopWhy() : "a long cooldown waits for the leader's Burn");
         return 0.0f;
     }
 
@@ -1405,7 +1418,7 @@ float LeaderCommandMultiplier::GetValue(Action* action)
         (stale || stop || !LeaderCommand::AoeAllowed(bot, bot->GetPosition()) ||
          SparedInArea([this](Unit* spared) { return bot->IsWithinDistInMap(spared, NOMINAL_MELEE_RANGE); })))
     {
-        Log(action, stop ? "the leader's Stop" : "the leader forbids AoE");
+        Log(action, stop ? StopWhy() : "the leader forbids AoE");
         return 0.0f;
     }
     if (IsFriendlySpell(bot, info, target))
@@ -1429,7 +1442,7 @@ float LeaderCommandMultiplier::GetValue(Action* action)
 
     if (stop)
     {
-        Log(action, "the leader's Stop");
+        Log(action, StopWhy());
         return 0.0f;
     }
 
@@ -1440,6 +1453,16 @@ float LeaderCommandMultiplier::GetValue(Action* action)
     }
 
     if (!aoe)
+        return 1.0f;
+
+    // [rot650] From here on the rules are the leader's rules for an OFFENSIVE area, and a heal is not one. [rot4]
+    // above already says a heal is never held here, and IsFriendlySpell enforces it - but by the spell and its
+    // target, so a heal whose target value is still empty and whose spell id has not resolved yet reads as neither
+    // friendly nor hostile, and every heal action is Aoe-typed (CastHealingSpellAction::getThreatType). Those few
+    // fell through to the area rules and were held ("Laaral holds flash of light on party: AoE outside the leader's
+    // pack", 5 holds in ~25 000). The exception is the one the neighbouring gate already makes by the action's own
+    // type (FocusMultiplier::GetValue). A delayed heal is worth a line of code (safety over speed).
+    if (dynamic_cast<CastHealingSpellAction*>(action))
         return 1.0f;
 
     Position center;
