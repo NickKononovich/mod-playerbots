@@ -2760,6 +2760,51 @@ void GuildCoordinator::UpdateOrders()
                 LOG_INFO("playerbots", "[craft399] {} L{} sells outgrown food: {} - its better food covers its {} "
                          "rests", Who(row.low), p->GetLevel(), sold, RESTOCK_FOOD_MIN);
         }
+        // [econ62] coordinator 2026-11-13 on the user's «или продавать на всякий случай»: a crafted potion goes to a
+        // member who drinks it, and what nobody is owed any more is sold - never destroyed ([econ61]). The judge is
+        // [eco194]'s own Owed, which is already the single judge of how many of a kind the guild still needs, so no
+        // carry target and no threshold is invented here: a holder keeps stacks up to the guild's whole outstanding
+        // owed of the kind and only what is over that is surplus. Every holder measures against the same figure, so
+        // the rule can only ever keep too much - it never sells a potion somebody still needs. A five's member keeps
+        // everything for its run, and a potion no vendor buys is kept, not thrown away
+        if (!st.fiveId)
+        {
+            uint32 owedAll[POTION_KINDS]{};
+            for (auto const& [low, book] : potions_)
+                for (uint8 kind = 0; kind < POTION_KINDS; ++kind)
+                    owedAll[kind] += book.Owed(kind);
+            uint32 kept[POTION_KINDS]{};
+            std::string surplus;
+            auto const look = [&](Item* item)
+            {
+                ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+                uint8 const kind = PotionKindOf(proto);
+                if (kind >= POTION_KINDS || !proto->SellPrice)
+                    return;
+                if (kept[kind] < owedAll[kind])
+                {
+                    kept[kind] += item->GetCount();
+                    return;
+                }
+                uint32 const guid = item->GetGUID().GetCounter();
+                if (std::find(st.sell.begin(), st.sell.end(), guid) != st.sell.end())
+                    return;
+                st.sell.push_back(guid);
+                surplus += (surplus.empty() ? "" : ", ") + std::string(proto->Name1) + " ×" +
+                           std::to_string(item->GetCount());
+            };
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+                look(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+            for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+                if (Bag* bag = p->GetBagByPos(b))
+                    for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                        look(bag->GetItemByPos(uint8(j)));
+            if (!surplus.empty())
+                LOG_INFO("playerbots",
+                         "[econ62] {} L{} sells its surplus potions: {} - the guild is owed {} healing and {} mana, "
+                         "and it already holds that many",
+                         Who(row.low), p->GetLevel(), surplus, owedAll[POTION_HEAL], owedAll[POTION_MANA]);
+        }
         // [tasks] SELL: what the global leader gave up goes at the next vendor visit (SellMarked), never a trip
         if (!st.sell.empty())
         {
@@ -5025,6 +5070,207 @@ void GuildCoordinator::UpdateProfessions()
                      "point, {:.3f} c a mana point)",
                      text.empty() ? "none: the alchemists already make the best potions the members can use" : text,
                      prices.per[POTION_HEAL], prices.per[POTION_MANA]);
+        }
+    }
+    // [craft452] coordinator 2026-11-13 (approved): a scope IS a permanent enchantment on a ranged weapon, and the
+    // guild already prices an enchantment at the stat weight it adds times the copper a weight point costs its
+    // members ([craft386] casts them, [craft428] is the rate) - so an Engineering scope is valued by the rule that
+    // already fits its shape, with no new valuation and no constant. b477: all 6 engineers read "unlocks 0c +
+    // supplies 0c" at Eng 53, 51, 3, 1, 1, 1, because no member's gear plan names an Engineering item (its low
+    // ranks make no equipment upgrade) - the line could never climb at any skill. A member whose ranged weapon
+    // carries no permanent enchantment is a need of the Engineering recipe whose scope its own stat weights value
+    // most, at the rank that recipe asks for
+    if (copperPerWeight > 0.0)
+    {
+        // Spell::CheckItems (SPELL_EFFECT_ENCHANT_ITEM): the piece's required level, else its item level, reaches
+        // the spell's base level - the same rule [craft386] applies to an enchanter's cast
+        auto const levelOk = [](SpellInfo const* info, ItemTemplate const* proto)
+        {
+            if (info->HasAttribute(SPELL_ATTR2_ALLOW_LOW_LEVEL_BUFF))
+                return true;
+            return (proto->RequiredLevel ? proto->RequiredLevel : proto->ItemLevel) >= info->BaseLevel;
+        };
+        // the scopes an Engineering recipe makes: a product whose own spell enchants an item permanently
+        struct Scope
+        {
+            Recipe const* r{nullptr};
+            SpellInfo const* use{nullptr};
+            uint32 enchantId{0};
+        };
+        std::vector<Scope> scopes;
+        if (auto const list = recipesBySkill_.find(SKILL_ENGINEERING); list != recipesBySkill_.end())
+            for (Recipe const& r : list->second)
+            {
+                ItemTemplate const* proto = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr;
+                if (!proto || !learnable(SKILL_ENGINEERING, r.spellId))
+                    continue;
+                for (auto const& spell : proto->Spells)
+                {
+                    SpellInfo const* use = spell.SpellId > 0 ? sSpellMgr->GetSpellInfo(spell.SpellId) : nullptr;
+                    for (uint8 e = 0; use && e < MAX_SPELL_EFFECTS; ++e)
+                        if (use->Effects[e].Effect == SPELL_EFFECT_ENCHANT_ITEM && use->Effects[e].MiscValue > 0)
+                        {
+                            scopes.push_back({&r, use, uint32(use->Effects[e].MiscValue)});
+                            break;
+                        }
+                    if (!scopes.empty() && scopes.back().r == &r)
+                        break;
+                }
+            }
+        std::map<uint32, std::pair<uint32, double>> scopeNeeds;  // recipe spell -> (members, value)
+        std::string text;
+        for (auto const& [row, m] : members)
+        {
+            Item* ranged = m->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+            if (HumanCharacter(m) || !ranged || ranged->GetEnchantmentId(PERM_ENCHANTMENT_SLOT))
+                continue;
+            ItemTemplate const* proto = ranged->GetTemplate();
+            Scope const* best = nullptr;
+            float bestGain = 0.0f;
+            std::optional<StatsWeightCalculator> calc;
+            for (Scope const& s : scopes)
+            {
+                if (!ranged->IsFitToSpellRequirements(s.use) || !levelOk(s.use, proto))
+                    continue;
+                if (!calc)
+                    calc.emplace(m);
+                float const gain = calc->CalculateEnchant(s.enchantId, proto->Delay, true);
+                if (gain > bestGain)
+                {
+                    bestGain = gain;
+                    best = &s;
+                }
+            }
+            if (!best)
+                continue;
+            auto& entry = scopeNeeds[best->r->spellId];
+            ++entry.first;
+            entry.second += double(bestGain) * copperPerWeight;
+            if (text.size() < 220)
+                text += (text.empty() ? "" : ", ") + ItemName(best->r->product) + " on " + Who(row->low) + "'s " +
+                        proto->Name1 + Acore::StringFormat(" ({:.1f} weight)", bestGain);
+        }
+        for (auto const& [spellId, entry] : scopeNeeds)
+        {
+            Recipe const* r = nullptr;
+            for (Scope const& s : scopes)
+                if (s.r->spellId == spellId)
+                    r = s.r;
+            if (!r || entry.second <= 0.0)
+                continue;
+            needs.push_back({SKILL_ENGINEERING, r->reqSkill, spellId, r->product, entry.first, 0, false,
+                             "scope for " + std::to_string(entry.first) + " ranged weapon" +
+                                 (entry.first > 1 ? "s" : ""),
+                             entry.second});
+        }
+        if (text != scopeNeedsLogged_)
+        {
+            scopeNeedsLogged_ = text;
+            LOG_INFO("playerbots", "[craft452] the scopes the members' ranged weapons lack ({} recipes): {}",
+                     scopeNeeds.size(),
+                     text.empty() ? "none: every ranged weapon is enchanted, or no scope fits one" : text);
+        }
+    }
+    // [craft451] coordinator 2026-11-13 (approved): [craft432] already says that what the members' needs past a
+    // GATHERING block are worth is what unblocking it is worth to the guild. A block on a CRAFTED reagent fits that
+    // rule exactly, so it gets it: a reagent a planned craft needs that no guild gatherer reaches, no vendor sells
+    // and a crafting line's own recipe makes is a need of THAT line, worth what the crafts it blocks are worth.
+    // b477: the Leatherworking gap - 53g 48s 53c over 35 slots for 26 members - stood on "no gatherer reaches
+    // Elixir of Minor Agility ×1" (an Alchemy brew, item 2457, made by spell 3230 off a recipe item at Alchemy 50),
+    // and the Inscription gap on inks that are milled, not gathered. Nothing carried that value back to the line
+    // that could unblock it, so the blocker was never made and the gap never closed. ExpandReagent leaves such an
+    // item a leaf precisely because craftedFrom_ only holds trainer / auto-learned recipes
+    {
+        size_t const own = needs.size();
+        // the recipe of a crafting line that makes an item, at the lowest rank that makes it
+        std::map<uint32, Recipe const*> madeBy;
+        for (auto const& [line, list] : recipesBySkill_)
+            for (Recipe const& r : list)
+                if (r.product)
+                {
+                    auto const [itr, added] = madeBy.emplace(r.product, &r);
+                    if (!added && r.reqSkill < itr->second->reqSkill)
+                        itr->second = &r;
+                }
+        // a gatherer of the guild reaches it: the same rule the ranking's gathering pace uses
+        auto const reached = [&](uint32 item)
+        {
+            uint32 skill = 0, req = 0;
+            if (auto const src = gatherSource_.find(item); src != gatherSource_.end())
+            {
+                skill = src->second.first;
+                req = src->second.second;
+            }
+            else if (int32 planReq = 0; sGuildGatherPlan.Gatherable(item, &skill, &planReq))
+                req = uint32(std::max<int32>(0, planReq));
+            if (!skill)
+                return false;
+            for (auto const& [row, m] : members)
+                if (!HumanCharacter(m) && m->HasSkill(skill) && m->GetPureSkillValue(skill) >= req)
+                    return true;
+            return false;
+        };
+        std::map<uint32, std::pair<double, double>> blocked;  // item -> (units it is short, the value it blocks)
+        std::map<uint32, std::set<uint32>> blockedLines;      // item -> the lines whose crafts it blocks
+        for (size_t i = 0; i < own; ++i)
+        {
+            Need const& n = needs[i];
+            if (n.value <= 0.0 || !n.count)
+                continue;
+            std::vector<std::pair<uint32, uint32>> const* reagents = nullptr;
+            if (GuildGear::CraftRecipe const* gear = GuildGear::Recipe(n.spellId))
+                reagents = &gear->reagents;
+            else if (auto const made = madeBy.find(n.itemId);
+                     made != madeBy.end() && made->second->spellId == n.spellId)
+                reagents = &made->second->reagents;
+            if (!reagents)
+                continue;
+            std::map<uint32, double> raw;
+            for (auto const& [item, per] : *reagents)
+                ExpandReagent(item, double(per) * double(n.count), raw, nullptr, 1.0f, 0, 0, ANY_MAP);
+            for (auto const& [item, units] : raw)
+            {
+                if (VendorSource(item, ANY_MAP) || skinned_.count(item) || reached(item))
+                    continue;
+                auto const made = madeBy.find(item);
+                if (made == madeBy.end() || made->second->skillLine == n.line)
+                    continue;  // nothing in the guild's lines makes it, or its own line already carries the need
+                bool mine = false;  // a crafter already knows it: the material is ordered, not blocked by a rank
+                for (auto const& [row, m] : members)
+                    if (!HumanCharacter(m) && m->HasSpell(made->second->spellId))
+                        mine = true;
+                if (mine)
+                    continue;
+                blocked[item].first += units;
+                blocked[item].second += n.value;
+                blockedLines[item].insert(n.line);
+            }
+        }
+        std::string text;
+        for (auto const& [item, what] : blocked)
+        {
+            Recipe const* r = madeBy[item];
+            uint32 const units = std::max<uint32>(1, uint32(std::ceil(what.first)));
+            std::string blocks;
+            for (uint32 line : blockedLines[item])
+                blocks += (blocks.empty() ? "" : "/") + std::string(SkillShort(line));
+            needs.push_back({r->skillLine, r->reqSkill, r->spellId, item, units, 0, false,
+                             "unblocks " + blocks + " for " + std::to_string(blockedLines[item].size()) + " line" +
+                                 (blockedLines[item].size() > 1 ? "s" : ""),
+                             what.second});
+            if (text.size() < 300)
+                text += (text.empty() ? "" : ", ") + ItemName(item) + " ×" + std::to_string(units) + " blocks " +
+                        blocks + " worth " + Gsc(uint64(what.second)) + " -> " + SkillShort(r->skillLine) + " " +
+                        std::to_string(r->reqSkill) +
+                        (r->trainer ? " (at a trainer)"
+                         : r->autoLearned ? " (learned with the rank)"
+                                          : " (NEEDS THE RECIPE ITEM: the rank alone does not open it)");
+        }
+        if (text != blockedNeedsLogged_)
+        {
+            blockedNeedsLogged_ = text;
+            LOG_INFO("playerbots", "[craft451] crafted reagents nobody can gather, and the line that makes them: {}",
+                     text.empty() ? "none" : text);
         }
     }
     // [lag325] coordinator decision 2026-11-11 (the user's laggard focus): a member below the guild's median level

@@ -879,6 +879,10 @@ private:
     // lock_ held
     void CertFiveEnded(GuildFive const& five, std::string const& why);
     void CertSave(std::string const& contentKey);  // [cert10] the durable state (guild_project_cert)
+    // [cert13] the fact a five of a batch in flight is holding on, read off state that already exists (its stage,
+    // the run's own phase, a refused walk, its supply shortfall, the gold at its leader's mailbox). Reports, decides
+    // nothing. "" is never returned: a five nothing names says exactly that, and that sentence is the defect
+    std::string CertFlightHold(GuildFive const& five) const;
 
 public:
     // [lag368] the member holds the guild's open dungeon back: not cleared and below its band (the guild waits on its
@@ -1249,6 +1253,8 @@ private:
     std::unordered_map<uint32, std::vector<SupplyCraft>> potionCrafts_;  // alchemist -> its potion jobs (lock_)
     std::string potionJudged_;                                           // the last [eco194] line
     std::string potionNeedsLogged_;  // [craft450] the last line of the ranks the members' drinks need
+    std::string scopeNeedsLogged_;   // [craft452] the last line of the scopes the members' ranged weapons lack
+    std::string blockedNeedsLogged_;  // [craft451] the last line of the crafted reagents nobody can gather
     // the potion kind of an item (a healing / mana potion), POTION_KINDS = none; its points (the effect's amount)
     static uint8 PotionKindOf(ItemTemplate const* proto, float* points = nullptr);
     // [econ60] the vendors' own copper per effect point of each potion kind (the cheapest potion of the kind a
