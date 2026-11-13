@@ -3746,11 +3746,11 @@ void GuildCoordinator::AutoFive()
         {
             DungeonOption const* d;
             uint32 low;
-            Player* p;
+            Player* p;    // [order369] nullptr: the member is logged out - it still counts, its clear is on record
             bool cleared;
             bool inBand;
             bool healer;  // [roles108] (a tank too: [lag324])
-            bool over;    // [order362] above the band, uncleared
+            bool over;    // [order362] above the band: its clear is the walk in
         };
         std::vector<Probe> probes;
         {
@@ -3761,25 +3761,42 @@ void GuildCoordinator::AutoFive()
                     if (row.grp < 'A' || row.grp > 'C')
                         continue;
                     Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
-                    if (!p || IsHuman(p))
+                    if (p && IsHuman(p))
                         continue;
                     bool const cleared = Cleared(d.contentKey, row.low);
                     // [order362] guild-wide an outlevelled member keeps its open clear (all 75 members clear it)
-                    bool const over = p->GetLevel() > d.maxLevel;
-                    if (over && (cleared || sPlayerbotAIConfig.GuildDungeonOrderPerMember))
+                    // [order369] and it stays in the count with it: the guild's test is over every member, never over
+                    // the shrinking set still inside the band
+                    bool const over = p && p->GetLevel() > d.maxLevel;
+                    if (over && sPlayerbotAIConfig.GuildDungeonOrderPerMember)
                         continue;
-                    probes.push_back({&d, row.low, p, cleared, !over && p->GetLevel() >= d.walkMinLevel,
-                                      PlanRole(row.low, p) != "dps", over});
+                    probes.push_back({&d, row.low, p, cleared, p && !over && p->GetLevel() >= d.walkMinLevel,
+                                      p && PlanRole(row.low, p) != "dps", over});
                 }
         }
         // [need115] per dungeon option (a content key may have several, one per level band: b421 'sfk-n: band 78-82:
         // 126 in band' summed the options of one key): its band's members, cleared, their needs, the uncleared below
         auto const optionKey = [](DungeonOption const& d)
         { return d.contentKey + " " + std::to_string(d.minLevel) + "-" + std::to_string(d.maxLevel); };
-        std::unordered_map<std::string, std::pair<uint32, uint32>> band;  // option -> members in band, cleared
-        std::unordered_map<std::string, std::map<uint32, std::string>> bandNeeds;  // option -> in-band needs
-        std::unordered_map<std::string, uint32> below;  // option -> members below the band, uncleared
-        std::unordered_map<std::string, uint32> above;  // [order362] option -> members above the band, uncleared
+        // [order369] every member of the guild stands in one of the option's four places - in its band, above it
+        // (its clear is the walk in), below it (it levels into the band) or logged out - and the line counts them all
+        struct Bucket
+        {
+            uint32 total = 0;
+            uint32 cleared = 0;
+            uint32 Uncleared() const { return total - cleared; }
+        };
+        struct OptionCount
+        {
+            Bucket inBand;
+            Bucket above;
+            Bucket below;
+            Bucket out;
+            uint32 Total() const { return inBand.total + above.total + below.total + out.total; }
+            uint32 Cleared() const { return inBand.cleared + above.cleared + below.cleared + out.cleared; }
+        };
+        std::unordered_map<std::string, OptionCount> counts;  // option -> its members by where they stand
+        std::unordered_map<std::string, std::map<uint32, std::string>> namedNeeds;  // option -> needs named
         for (Probe const& probe : probes)
         {
             std::string need;
@@ -3795,17 +3812,20 @@ void GuildCoordinator::AutoFive()
             if (need.empty() && probe.healer && probe.inBand && GivesXp(*probe.d, probe.p))
                 need = "xp";
             std::string const option = optionKey(*probe.d);
-            if (probe.inBand)
-            {
-                ++band[option].first;
-                band[option].second += probe.cleared ? 1 : 0;
-                if (!need.empty())
-                    bandNeeds[option][probe.low] = need;
-            }
+            OptionCount& count = counts[option];
+            Bucket* bucket = &count.below;
+            if (!probe.p)
+                bucket = &count.out;
+            else if (probe.inBand)
+                bucket = &count.inBand;
             else if (probe.over)
-                ++above[option];
-            else if (!probe.cleared)
-                ++below[option];
+                bucket = &count.above;
+            ++bucket->total;
+            bucket->cleared += probe.cleared ? 1 : 0;
+            // [need115] the in-band members' needs by name, and [order369] the few above the band with them: those
+            // below it are only counted (b421: 1888 lines, every one naming all 75 members for every dungeon above)
+            if (!need.empty() && (probe.inBand || probe.over))
+                namedNeeds[option][probe.low] = probe.over ? need + " (above the band - it walks in)" : need;
             if (!need.empty())
                 needs[probe.d->contentKey][probe.low] = need;
         }
@@ -3814,13 +3834,18 @@ void GuildCoordinator::AutoFive()
         {
             auto const found = needs.find(d.contentKey);
             std::string const option = optionKey(d);
-            auto const counts = band[option];
-            std::string line = Acore::StringFormat("band {}-{}: {} in band, {} cleared, {} uncleared", d.minLevel,
-                                                   d.maxLevel, counts.first, counts.second,
-                                                   counts.first - counts.second);
-            // [need115] the in-band members' needs by name; those below the band only counted (b421: 1888 lines,
-            // every one naming all 75 members as 'clear' for every dungeon above them)
-            if (auto const mine = bandNeeds.find(option); mine == bandNeeds.end() || mine->second.empty())
+            OptionCount const& count = counts[option];
+            // [order369] the counted set is named in full, so that "every one cleared it" is read off the line
+            std::string where = Acore::StringFormat("{} in band", count.inBand.total);
+            if (count.above.total)
+                where += Acore::StringFormat(" + {} above it", count.above.total);
+            if (count.below.total)
+                where += Acore::StringFormat(" + {} below it", count.below.total);
+            if (count.out.total)
+                where += Acore::StringFormat(" + {} logged out", count.out.total);
+            std::string line = Acore::StringFormat("band {}-{}: {}, {} cleared, {} uncleared", d.minLevel, d.maxLevel,
+                                                   where, count.Cleared(), count.Total() - count.Cleared());
+            if (auto const mine = namedNeeds.find(option); mine == namedNeeds.end() || mine->second.empty())
                 line += "; needs: none";
             else
             {
@@ -3829,9 +3854,9 @@ void GuildCoordinator::AutoFive()
                     line += " " + Who(low) + " " + need + ",";
                 line.pop_back();
             }
-            line += Acore::StringFormat("; below the band uncleared: {}", below[option]);
-            if (uint32 const over = above[option])
+            if (uint32 const over = count.above.Uncleared())
                 line += Acore::StringFormat("; [order362] above the band uncleared (walk in): {}", over);
+            line += Acore::StringFormat("; below the band uncleared: {}", count.below.Uncleared());
             if (std::string& logged = needLogged_[option]; logged != line)
             {
                 logged = line;
@@ -3846,8 +3871,8 @@ void GuildCoordinator::AutoFive()
                         if (PlanRow const* row = Row(low); row && row->grp >= 'A' && row->grp <= 'C')
                             ++clearedBy;
                 LOG_INFO("playerbots", "[done106] {}: cleared by all {} members of band {}-{} (no member needs it: "
-                         "{} in band, every one cleared with no needed upgrade left; the rest out-levelled it)",
-                         d.contentKey, clearedBy, d.minLevel, d.maxLevel, counts.first);
+                         "{}, every one cleared with no needed upgrade left)",
+                         d.contentKey, clearedBy, d.minLevel, d.maxLevel, where);
                 Decision("[done106] " + d.name + " done for the guild: no member needs it");
             }
             else if (!done && guildDone_.erase(d.contentKey))
@@ -3886,32 +3911,45 @@ void GuildCoordinator::AutoFive()
                 if (guardCount == 0)
                 {
                     uint32 inBand = 0;
+                    uint32 overBand = 0;  // [order369] its uncleared members above the band: they walk in
                     std::map<std::string, uint32> busy;
                     for (PlanRow const& row : plan_)
                     {
                         if (row.grp < 'A' || row.grp > 'C')
                             continue;
                         Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
-                        if (!p || IsHuman(p) || p->GetLevel() < d.walkMinLevel || p->GetLevel() > d.maxLevel)
+                        if (!p || IsHuman(p) || p->GetLevel() < d.walkMinLevel)
                             continue;
-                        ++inBand;
+                        // [order362] above the band uncleared it is still one of the dungeon's own ([order362]
+                        // Candidates takes it by the walk in), so the look counts it and says what holds it
+                        bool const over = p->GetLevel() > d.maxLevel;
+                        if (over && (Cleared(d.contentKey, row.low) ||
+                                     sPlayerbotAIConfig.GuildDungeonOrderPerMember))
+                            continue;
+                        if (over)
+                            ++overBand;
+                        else
+                            ++inBand;
                         std::string why;
                         if (!FreeForFive(row.low, p, &why))
                             ++busy[why];
-                        else if (std::string const refusal = DungeonRefusal(d, p); !refusal.empty())
+                        else if (std::string const refusal = DungeonRefusal(d, p, over, over); !refusal.empty())
                             ++busy[refusal];
                         else if (auto const r = refusedFor_.find(d.contentKey);
                                  r != refusedFor_.end() && r->second.count(row.low) &&
                                  r->second.at(row.low) == p->GetLevel())
                             ++busy["[lfg69] refused at its level"];
                     }
-                    if (inBand)
+                    if (inBand || overBand)
                     {
                         uint32 tanks = 0, healers = 0;
                         for (FiveCandidate const& c : pool)
                             tanks += c.role == "tank" ? 1 : 0, healers += c.role == "healer" ? 1 : 0;
-                        std::string text = Acore::StringFormat("{} in band, {} free (t{} h{} d{})", inBand, pool.size(),
-                                                               tanks, healers, pool.size() - tanks - healers);
+                        std::string const aboveText =
+                            overBand ? Acore::StringFormat(" + {} above it", overBand) : std::string();
+                        std::string text = Acore::StringFormat("{} in band{}, {} free (t{} h{} d{})", inBand,
+                                                               aboveText, pool.size(), tanks, healers,
+                                                               pool.size() - tanks - healers);
                         if (heldByOrder)
                             text += Acore::StringFormat(", held by order: {}", heldByOrder);
                         if (!busy.empty())
