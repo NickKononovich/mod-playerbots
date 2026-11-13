@@ -2632,6 +2632,62 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return radius;
     }
 
+    // [dun258] a mob's in-combat casts that take a member other than its victim out of the fight: its SmartAI
+    // repeat timer casting a spell whose aura stuns, sleeps, fears, confuses or silences (the spell data) at a
+    // hostile picked off its threat list (random, random but the top, second, last); per cast the share of the
+    // threat list it may pick and the control's duration
+    struct ControlCast
+    {
+        float firstSec = 0.0f;  // the timer's mean initial delay
+        float everySec = 0.0f;  // its mean repeat
+        float durationSec = 0.0f;
+        bool notTop = false;  // the top of the threat list (the tank) is never picked
+    };
+
+    std::vector<ControlCast> const& GetControlCasts(Creature* creature)
+    {
+        static std::vector<ControlCast> const none;
+        if (creature->GetAIName() != "SmartAI")
+            return none;
+        thread_local std::unordered_map<uint32, std::vector<ControlCast>> cache;
+        auto const [found, fresh] = cache.try_emplace(creature->GetEntry());
+        if (!fresh)
+            return found->second;
+        for (SmartScriptHolder const& holder :
+             sSmartScriptMgr->GetScript(int32(creature->GetEntry()), SMART_SCRIPT_TYPE_CREATURE))
+        {
+            if (holder.GetEventType() != SMART_EVENT_UPDATE_IC || holder.GetActionType() != SMART_ACTION_CAST ||
+                !holder.event.minMaxRepeat.repeatMax)
+                continue;
+            uint32 const target = holder.GetTargetType();
+            if (target != SMART_TARGET_HOSTILE_SECOND_AGGRO && target != SMART_TARGET_HOSTILE_LAST_AGGRO &&
+                target != SMART_TARGET_HOSTILE_RANDOM && target != SMART_TARGET_HOSTILE_RANDOM_NOT_TOP)
+                continue;
+            SpellInfo const* info = sSpellMgr->GetSpellInfo(holder.action.cast.spell);
+            if (!info || info->GetMaxDuration() <= 0)
+                continue;
+            bool controls = false;
+            for (SpellEffectInfo const& effect : info->GetEffects())
+                if (effect.Effect == SPELL_EFFECT_APPLY_AURA &&
+                    (effect.ApplyAuraName == SPELL_AURA_MOD_STUN || effect.ApplyAuraName == SPELL_AURA_MOD_FEAR ||
+                     effect.ApplyAuraName == SPELL_AURA_MOD_CONFUSE || effect.ApplyAuraName == SPELL_AURA_MOD_SILENCE ||
+                     effect.ApplyAuraName == SPELL_AURA_MOD_PACIFY_SILENCE))
+                    controls = true;
+            if (!controls)
+                continue;
+            ControlCast cast;
+            cast.firstSec = float(holder.event.minMaxRepeat.min + holder.event.minMaxRepeat.max) / 2000.0f;
+            cast.everySec =
+                std::max(float(holder.event.minMaxRepeat.repeatMin + holder.event.minMaxRepeat.repeatMax) / 2000.0f,
+                         float(info->CalcCastTime(creature)) / 1000.0f);
+            cast.durationSec = float(info->GetMaxDuration()) / 1000.0f;
+            cast.notTop = target != SMART_TARGET_HOSTILE_RANDOM;
+            if (cast.everySec > 0.0f)
+                found->second.push_back(cast);
+        }
+        return found->second;
+    }
+
     ScriptedHelp const& GetScriptedHelp(Creature* creature)
     {
         static ScriptedHelp const none;
@@ -4613,6 +4669,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float drop = 0.0f;
         float maxDrop = 1.0f;
         float aoeDrop = 0.0f;
+        float healerControlSec = 0.0f;  // [dun258] the seconds a healer is expected out of the fight (the mobs' CC)
     };
 
     // [b44_packs] User 2026-10-26: «некоторые паки из 20 мобов - это мобы с одного удара, их надо просто АОЕшить».
@@ -4665,6 +4722,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         bool withBoss = false;      // [lead201] a boss's own health and damage are in the estimate (the boss judge)
         float healHps = 0.0f;       // [lead259] the healers' best rate together (GroupSupport::healHps)
         float healGapSec = 0.0f;    // [lead259] the time between two heals landing (GroupSupport::healGapSec)
+        uint32 healers = 0;         // [dun258] the healers whose heals healHps sums (GroupSupport::healers)
         float healPool = -1.0f;     // [dun215] health the healers' spendable mana heals (< 0: not given)
         float healUpkeep = 0.0f;    // [dun215] health per second their upkeep less their regen costs
         float dropScale = 1.0f;     // [lead259] a drop ratio ([lead1300] 1: the formula's drop, no measured one)
@@ -4775,6 +4833,37 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // The game's global cooldown: the tank's own reaction when no healer heals it.
     constexpr float GCD_SEC = 1.5f;
 
+    // [dun258] the seconds a healer is expected controlled: each control cast's expected casts within its caster's
+    // life (one at its initial delay, one more each repeat) times the chance it picks a given healer (one of the
+    // group's living members on the map, the tank left out when the cast never picks the top) times its duration
+    // (within the fight): one healer's seconds out of the fight, at most the fight
+    float HealerControlSec(std::vector<std::pair<size_t, ControlCast>> const& controls,
+                           std::vector<float> const& lifeSec, Player* tank, float fightSec)
+    {
+        if (controls.empty() || fightSec <= 0.0f)
+            return 0.0f;
+        uint32 members = 1;
+        if (Group* group = tank->GetGroup())
+        {
+            members = 0;
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource();
+                    member && member->IsAlive() && member->GetMap() == tank->GetMap())
+                    ++members;
+        }
+        float seconds = 0.0f;
+        for (auto const& [life, cast] : controls)
+        {
+            float const lives = life < lifeSec.size() ? lifeSec[life] : 0.0f;
+            if (lives <= cast.firstSec)
+                continue;
+            float const casts = 1.0f + (lives - cast.firstSec) / cast.everySec;
+            uint32 const picks = cast.notTop ? (members > 1 ? members - 1 : 1) : std::max(members, 1u);
+            seconds += casts / float(picks) * std::min(cast.durationSec, fightSec);
+        }
+        return std::min(seconds, fightSec);
+    }
+
     // `groupDps` > 0: the fight's cost and length are read from the mobs' health too. The group kills one mob after
     // another in no known order: a mob lives its own kill time plus, on average, half of the others', and lands its
     // melee on the tank all that time.
@@ -4792,6 +4881,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         float summonDamageSum = 0.0f;
         std::vector<bool> quick;  // [b36_scholo] a weak summon: lives its own kill time only
         std::vector<bool> apart;  // [lead261] the life keeps its range: out of the stack's AoE
+        std::vector<std::pair<size_t, ControlCast>> controls;  // [dun258] the life's index and its control cast
         for (Unit* mob : pack)
         {
             estimate.danger += MobDanger(mob, tank);
@@ -4838,6 +4928,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             quick.push_back(false);
             Creature* keeps = mob->ToCreature();
             apart.push_back(keeps && KeepsRange(keeps));
+            if (keeps)
+                for (ControlCast const& cast : GetControlCasts(keeps))
+                    controls.emplace_back(lives.size() - 1, cast);
         }
 
         // What the pack summons while it fights, each read as an average mob of the pack, [b36_scholo] scaled by the
@@ -4920,10 +5013,22 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             std::vector<std::pair<float, float>> profile;
             for (size_t i = 0; i < lives.size(); ++i)
                 profile.emplace_back(lives[i].first, lifeSec[i]);
-            float const gapSec = mode.healHps > 0.0f ? mode.healGapSec : estimate.fightSec;
-            estimate.dropRaw = std::min(
-                DropOver(profile, SustainedHealHps(mode, estimate.fightSec), gapSec) / tankHealth,  // [dun215]
-                estimate.cost);
+            // [dun258] b464 wc-n five8-8 1177-1220 s: three Druids of the Fang cast Druid's Slumber (2.5 s cast,
+            // 15 s sleep) at a random member but the tank every 10-20 s; the lone holy paladin slept through the
+            // last 13 s and the bear (549 health) died - the drop had the healer heal all fight at 206/s. Each
+            // control cast within its caster's life is expected on a healer by its share of the threat list it picks
+            // from; a lone healer's controlled seconds are a gap with no heal, several healers lose that share
+            float const controlSec = HealerControlSec(controls, lifeSec, tank, estimate.fightSec);
+            estimate.healerControlSec = controlSec;
+            float healHps = SustainedHealHps(mode, estimate.fightSec);
+            float healGapSec = mode.healGapSec;
+            if (mode.healers == 1)
+                healGapSec = std::max(healGapSec, controlSec);
+            else if (mode.healers > 1 && estimate.fightSec > 0.0f)
+                healHps *= 1.0f - std::min(controlSec / estimate.fightSec, 1.0f) / float(mode.healers);
+            float const gapSec = mode.healHps > 0.0f ? healGapSec : estimate.fightSec;
+            estimate.dropRaw = std::min(DropOver(profile, healHps, gapSec) / tankHealth,  // [dun215]
+                                        estimate.cost);
             estimate.drop = estimate.dropRaw * mode.dropScale;
             estimate.maxDrop =
                 std::clamp(1.0f - estimate.landedDps * std::max(mode.healGapSec, GCD_SEC) / tankHealth, 0.0f, 1.0f);
@@ -4960,10 +5065,17 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 }
                 estimate.aoeCost = damage / tankHealth;
                 estimate.aoeSpellCost = spellDamage / tankHealth;
-                float const gapSec = mode.healHps > 0.0f ? mode.healGapSec : estimate.aoeSec;
+                // [dun258] the mobs' control casts on a healer over the lives the AoE leaves them
+                float const controlSec = HealerControlSec(controls, died, tank, estimate.aoeSec);
+                float healHps = SustainedHealHps(mode, estimate.aoeSec);
+                float healGapSec = mode.healGapSec;
+                if (mode.healers == 1)
+                    healGapSec = std::max(healGapSec, controlSec);
+                else if (mode.healers > 1 && estimate.aoeSec > 0.0f)
+                    healHps *= 1.0f - std::min(controlSec / estimate.aoeSec, 1.0f) / float(mode.healers);
+                float const gapSec = mode.healHps > 0.0f ? healGapSec : estimate.aoeSec;
                 estimate.aoeDrop =
-                    std::min(DropOver(profile, SustainedHealHps(mode, estimate.aoeSec), gapSec) / tankHealth,
-                             estimate.aoeCost) *
+                    std::min(DropOver(profile, healHps, gapSec) / tankHealth, estimate.aoeCost) *
                     mode.dropScale;  // [dun215]
             }
         }
@@ -10327,6 +10439,7 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             : Acore::StringFormat("group damage {:.0f}/s by the formula, not measured yet", groupDps);
     estimateMode.healHps = support.healHps;  // [lead259]
     estimateMode.healGapSec = support.healGapSec;
+    estimateMode.healers = support.healers;  // [dun258]
     estimateMode.healPool = std::max(support.healMana - support.healReserve, 0.0f);  // [dun215]
     estimateMode.healUpkeep = support.healUpkeep;
     // [b44_packs] the group's AoE on a stack: a tank with AoE threat holds it, [lead261] and every member's area
@@ -14981,11 +15094,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                   support.healerFacts.empty() ? std::string("none") : support.healerFacts);
         LOG_DEBUG("playerbots",
                   "[lead259] {} estimate drop {:.2f} = {:.2f} (landed {:.0f}/s over {:.0f} s, heals {:.0f}/s after "
-                  "{:.1f} s), measured ratio {:.2f} (log only); most {:.2f}; group dps {:.0f} (measured {:.0f}, "
-                  "weapons {:.0f})",
+                  "{:.1f} s, [dun258] a healer controlled {:.1f} s), measured ratio {:.2f} (log only); most {:.2f}; "
+                  "group dps {:.0f} (measured {:.0f}, weapons {:.0f})",
                   bot->GetName(), chosen.drop, chosen.dropRaw, chosen.landedDps, chosen.fightSec, support.healHps,
-                  support.healGapSec, DropCalibration(bot), chosen.maxDrop, groupDps, MeasuredGroupDps(bot),
-                  GroupWeaponDps(bot));
+                  support.healGapSec, chosen.healerControlSec, DropCalibration(bot), chosen.maxDrop, groupDps,
+                  MeasuredGroupDps(bot), GroupWeaponDps(bot));
         std::vector<uint32> logged;
         for (Unit* mob : chosenPack)
         {
@@ -15508,6 +15621,7 @@ bool AggressiveTargetAction::JudgeMobs(std::vector<Unit*> const& mobs, float& ov
     mode.measured = true;
     mode.healHps = support.healHps;  // [lead259]
     mode.healGapSec = support.healGapSec;
+    mode.healers = support.healers;  // [dun258]
     mode.healPool = std::max(support.healMana - support.healReserve, 0.0f);  // [dun215]
     mode.healUpkeep = support.healUpkeep;
     PackEstimate estimate = EstimatePack(mobs, bot, groupDps, mode);
