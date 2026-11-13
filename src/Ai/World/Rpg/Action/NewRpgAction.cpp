@@ -671,10 +671,53 @@ bool NewRpgBaseAction::HearthOut(std::string const& why, WorldPosition const* ca
         bot->SetStandState(UNIT_STAND_STATE_SIT);
         return true;
     }
-    info.hearthNote.clear();
-    LOG_INFO("playerbots", "[rpg] {} L{} HEARTH reason: {}; to its bind point ({:.0f},{:.0f}) map {}, {:.0f} yd",
-             bot->GetName(), bot->GetLevel(), why, bind.GetPositionX(), bind.GetPositionY(), bind.GetMapId(),
-             bind.GetMapId() == bot->GetMapId() ? bot->GetExactDist(bind) : 0.0f);
+    // [hearth30] the Hearthstone's own cast takes 10 s: a second use re-issued over it cancels the running one and
+    // the cast never ends. While it runs nothing is issued and the decision is not logged again
+    if (bot->IsNonMeleeSpellCast(false))
+    {
+        note = "its Hearthstone's cast is under way";
+        if (info.hearthNote != note)
+        {
+            info.hearthNote = note;
+            LOG_INFO("playerbots", "[hearth30] {} L{} HEARTH reason: {}; its cast is under way: nothing re-issued",
+                     bot->GetName(), bot->GetLevel(), why);
+        }
+        return true;
+    }
+    // [hearth31] the Hearthstone (spell 8690, Attributes 0x08010000) carries SPELL_ATTR0_NOT_SHAPESHIFT:
+    // SpellInfo::CheckShapeshift answers SPELL_FAILED_NOT_SHAPESHIFT to a druid standing in an animal form, so the
+    // core refuses the use - no cast, no cooldown - while the bot's own check lets NOT_SHAPESHIFT pass and issues
+    // the use again every 10 s. b475 Lyleria L22, a bear tank ([b32_tank_aoe] holds its Dire Bear Form out of
+    // combat), stood in Orgrimmar's Cleft of Shadow over 26 server sessions on that loop. It leaves the form first,
+    // as a player's client does, and the same call casts ([dun221] does this for the leader's externals)
+    bool leftForm = false;
+    if (ShapeshiftForm const form = bot->GetShapeshiftForm(); form != FORM_NONE)
+        if (SpellInfo const* stoneSpell = sSpellMgr->GetSpellInfo(SPELL_HEARTHSTONE);
+            stoneSpell && stoneSpell->CheckShapeshift(form) != SPELL_CAST_OK)
+        {
+            bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
+            leftForm = true;
+        }
+    // [hearth32] the game's own answer for the use is named in the line, and one line stands for one decision: the
+    // same reason with the same answer is not logged again (the cooldown branch's hearthNote does the same)
+    // [cap70] a bind point on another map has no distance from here: the line said "0 yd" for it
+    PlayerbotAI::CastCheck const check =
+        botAI->CheckCastNow(SPELL_HEARTHSTONE, bot, bot->GetItemByEntry(ITEM_HEARTHSTONE));
+    note = std::string("use|") + (leftForm ? "form|" : "") + PlayerbotAI::CastResultName(check.result) + "|" + why;
+    if (info.hearthNote != note)
+    {
+        info.hearthNote = note;
+        if (leftForm)
+            LOG_INFO("playerbots", "[hearth31] {} L{} leaves its animal form for its Hearthstone (the form forbids "
+                     "its use): {}", bot->GetName(), bot->GetLevel(), why);
+        LOG_INFO("playerbots", "[rpg] {} L{} HEARTH reason: {}; to its bind point ({:.0f},{:.0f}) map {}, {}; "
+                 "[hearth32] the game answers {}",
+                 bot->GetName(), bot->GetLevel(), why, bind.GetPositionX(), bind.GetPositionY(), bind.GetMapId(),
+                 bind.GetMapId() == bot->GetMapId()
+                     ? Acore::StringFormat("{:.0f} yd", bot->GetExactDist(bind))
+                     : std::string("another map"),
+                 PlayerbotAI::CastResultName(check.result));
+    }
     return botAI->DoSpecificAction("hearthstone", Event("new rpg hearth"), true);
 }
 

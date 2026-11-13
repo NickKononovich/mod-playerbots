@@ -201,6 +201,12 @@ bool BearTankFormTrigger::IsActive()
     if (_inFormMs && getMSTimeDiff(_inFormMs, now) < LEFT_FORM_GRACE_MS)
         return false;
 
+    // [hearth33] a cast under way is not cut by the shift: a new generic cast replaces the running one
+    // (Unit::SetCurrentCastedSpell), and the longest of them, the Hearthstone's 10 s, never reached its end while the
+    // form came back after the grace (MoonkinFormUpkeepTrigger waits the same way)
+    if (bot->IsNonMeleeSpellCast(false, true, true))
+        return false;
+
     if (!PlayerbotAI::IsTank(bot) || !botAI->HasStrategy("bear", BOT_STATE_COMBAT))
         return false;
 
