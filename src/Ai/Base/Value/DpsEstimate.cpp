@@ -1585,6 +1585,10 @@ struct Profile
     std::vector<std::pair<uint32, float>> parts;  // [dpscal] damage per second by rotation spell ([dpsparts] log)
     float replacedWhite = 0.0f;  // [rot611] the swings a next-swing strike replaces (in `white`, logged in its part)
     float whiteHitsPerSec = 0.0f;  // [dps238] its landed melee swings a second ([dpsparts] log only)
+    // [dps50] the part of the fight `whiteHitsPerSec` has it in melee reach (1 for every rotation but the petless
+    // hunter's, who shoots until the mob arrives): the [meleeup] allowance prices only the able time, which already
+    // holds no out-of-reach second, so it reads the rate without this share or it discounts the arrival twice
+    float meleeShare = 1.0f;
     // [lead1309] the threat's rage terms (ThreatWithin): its white threat per second, the rage its swings bring and
     // its rotation spends (core units per second), each swing's rage
     float whiteTps = 0.0f;
@@ -1917,6 +1921,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     p.white = caster ? std::max(meleeWhite, rangedWhite) : rotationWhite;
     if (!caster && (!hunter || meleeHunter))
         p.whiteHitsPerSec = (mh.perSec * mh.landed + oh.perSec * oh.landed) * meleeShare;  // [dps238]
+    p.meleeShare = meleeShare;  // [dps50]
 
     // budgets per second (core power units)
     float time = 1.0f;
@@ -2955,20 +2960,44 @@ void RecordFight(Player* bot, FightSample const& sample)
     // rotation in reach for the whole fight (`meleeShare` is 1 for all but the petless hunter), so the gap between
     // the swings the able time allowed and the swings the formula counted is that assumption's cost, and the gap
     // below it is the bot's. No decision reads it.
-    if (f.formula.whiteHitsPerSec > 0.0f && active > 0.0f)
+    // [dps50] all three figures are landed white hits over one window, and the allowance is the formula's own landed
+    // rate over the able part of the window the buckets tile. It was main-hand swings attempted over the span of the
+    // fight's damage events, which is wrong four ways against what `whiteHits` counts and against Rawr 2.3.23's own
+    // white-hit denominator (Rawr.DPSWarr/Skills.Base.cs WhiteAttacks.LandedAtksOverDur = MhActivates *
+    // MHAtkTable.AnyLand + OhActivates * OHAtkTable.AnyLand, each hand's activates being FightDuration / its own
+    // effective speed over the whole fight; wowsims' sim/core/attack.go runs the same, one swing timer per hand from
+    // t = 0 with only a cast pausing it): it dropped the off hand, so a dual wielder landed about twice the
+    // allowance (b480 combat rogues read a median of 250 %, assassination 161 %); it counted a swing that missed, was
+    // dodged or parried as a landed hit; it took the base attack speed, without the haste the rate carries and
+    // without the swings a next-swing strike replaces; and its window was short by the lead swing [dps50] now
+    // charged. A bot able for the whole window reads allowed == counted, the check the line could not make before.
+    if (f.formula.whiteHitsPerSec > 0.0f && sample.windowSec > 0.0f)
     {
-        float const swingSec = std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
-        float const allowed = sample.ableSec / swingSec;
-        float const counted = f.formula.whiteHitsPerSec * active;
+        // the rate it lands while it is in melee: the able time holds no out-of-reach second already, so the petless
+        // hunter's arrival share belongs to `counted`'s whole-fight assumption and not to the allowance
+        float const inMelee = f.formula.meleeShare > 0.0f ? f.formula.whiteHitsPerSec / f.formula.meleeShare
+                                                          : f.formula.whiteHitsPerSec;
+        float const allowed = inMelee * sample.ableSec;
+        float const counted = f.formula.whiteHitsPerSec * sample.windowSec;
+        float const mhSec = std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
+        float const ohSec = bot->HasOffhandWeaponForAttack()
+                                ? std::max(float(bot->GetAttackTime(OFF_ATTACK)) / float(IN_MILLISECONDS), 0.1f)
+                                : 0.0f;
+        float const swung = 1.0f / mhSec + (ohSec > 0.0f ? 1.0f / ohSec : 0.0f);
         LOG_INFO("playerbots",
                  "[meleeup] {} L{} {}/{} swings {} of {:.1f} the able time allowed ({:.0f} %), formula counted "
-                 "{:.1f} ({:.0f} %) | able {:.1f} s of {:.1f} s: out of reach {:.1f}, not facing {:.1f}, no swing "
-                 "{:.1f}, controlled {:.1f}, swinging elsewhere {:.1f} | white dealt {} of {:.0f} the formula",
+                 "{:.1f} ({:.0f} %) | able {:.1f} s of {:.1f} s (events {:.1f} s + lead swing {:.1f} s; fight "
+                 "{:.1f} s, dps window {:.1f} s): out of reach {:.1f}, not facing {:.1f}, no swing {:.1f}, "
+                 "controlled {:.1f}, swinging elsewhere {:.1f} | rate {:.2f} landed in melee ({:.2f} over the "
+                 "fight, melee share {:.2f}) of {:.2f} swung a second (main {:.2f} s, off {:.2f} s) | white dealt "
+                 "{} of {:.0f} the formula",
                  bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), spec, f.whiteHits, allowed,
                  allowed > 0.0f ? float(f.whiteHits) / allowed * 100.0f : 0.0f, counted,
-                 counted > 0.0f ? float(f.whiteHits) / counted * 100.0f : 0.0f, sample.ableSec, sample.fightSec,
-                 sample.rangeSec, sample.facingSec, sample.noSwingSec, sample.controlSec, sample.switchSec, f.white,
-                 (f.formula.white - f.formula.pet - f.formula.replacedWhite) * active);
+                 counted > 0.0f ? float(f.whiteHits) / counted * 100.0f : 0.0f, sample.ableSec, sample.windowSec,
+                 sample.windowSec - sample.leadSec, sample.leadSec, sample.fightSec, active, sample.rangeSec,
+                 sample.facingSec, sample.noSwingSec, sample.controlSec, sample.switchSec, inMelee,
+                 f.formula.whiteHitsPerSec, f.formula.meleeShare, swung, mhSec, ohSec, f.white,
+                 (f.formula.white - f.formula.pet - f.formula.replacedWhite) * sample.windowSec);
     }
 
     // async (the module pool's own thread), never read by a decision; the last 1000 fights per bot are kept

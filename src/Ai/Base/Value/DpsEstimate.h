@@ -126,14 +126,24 @@ struct FightSample
     // the ideal, their rotation being 92 % of it), with nothing in the log saying where the swings went. The formula
     // has a melee bot in reach of its target for the whole fight (`meleeShare` is 1 for every melee rotation), so
     // every one of these is time it counted swings the bot could not take. Sampled where meleeMs and actMs already
-    // are - at the fight's damage events, the interval attributed to the state seen at the one before - and each
-    // bounded by the fight's own length, so they sum to no more than it.
+    // are - at the fight's damage events, the interval attributed to the state seen at the one before - and together
+    // they tile `windowSec` below, which is what the allowance divides.
     float ableSec = 0.0f;     // in reach, facing, swinging, free to act: the time the swing timer could run
     float rangeSec = 0.0f;    // out of melee reach of the mob it fought
     float facingSec = 0.0f;   // in reach, not facing it (Unit::isInFront: a swing is refused)
     float noSwingSec = 0.0f;  // in reach and facing, no melee attack under way (no victim / attack stopped)
     float controlSec = 0.0f;  // stunned, feared, confused, rooted or fleeing: not its own to spend
-    float switchSec = 0.0f;   // swinging at another unit than the mob the fight's formula priced
+    float switchSec = 0.0f;   // swinging at a unit that is no attacker of this fight
+    // [dps50] the window the six buckets above tile, and the lead swing inside it. The buckets are sampled at the
+    // fight's damage events, so they span the first event to the last one; the fight the allowance is compared
+    // against runs one swing longer, because the swing landing at the first event was swung for over the swing timer
+    // before it (CloseFight's `seconds`). That lead was in no bucket, and it is the whole of the undercount measured
+    // on b480: the unaccounted part of every [meleeup] line was the bot's own swing time to the centisecond, ratio
+    // 1.00 for all nine specs, 18.6 % of the log's fight time. It is charged to the reason the first sample reads,
+    // and `windowSec` is span + `leadSec` - the swing speed at the open, which a druid's shift changes, so the
+    // window is carried and not recomputed from the speed at the close.
+    float windowSec = 0.0f;
+    float leadSec = 0.0f;
 };
 void RecordFight(Player* bot, FightSample const& sample);
 

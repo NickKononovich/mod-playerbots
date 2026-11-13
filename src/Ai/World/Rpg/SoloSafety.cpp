@@ -155,6 +155,10 @@ namespace
         uint32 ableMs = 0;
         uint32 blockMs[5] = {0, 0, 0, 0, 0};
         uint8 swingBlock = 0;
+        // [dps50] the swing the bot was swinging for before the first damage event closed it: the buckets span the
+        // events, the fight they are compared against starts one swing earlier (`seconds` below), so the lead is
+        // charged at the fight's first sample and carried - the speed at the open, not at the close (a druid shifts)
+        uint32 leadMs = 0;
         // [dps1] what invalidates the fight as a formula check: it swam or looted at a damage event
         bool swam = false;
         bool looted = false;
@@ -437,11 +441,18 @@ namespace
             sample.invalidWhy = invalid;
             sample.ctx = state.formulaCtx;
             // [dps41] where its swings went, each bucket a part of this fight: the samples cover the span the
-            // damage events bound, so `seconds` bounds their sum as it bounds `fought`
+            // damage events bound, plus the lead swing [dps50] charged at the first of them
+            // [dps50] their own window, not `seconds`: both are span + one swing, but `seconds` takes the swing speed
+            // at the close and the lead took it at the open, so a druid that shifted into cat form between them had
+            // `fit` scale every bucket down by the difference. The window is what the allowance divides.
+            float const window = float(getMSTimeDiff(state.firstMs, state.lastMs) + state.leadMs) /
+                                 float(IN_MILLISECONDS);
             float const sampled = float(state.ableMs + state.blockMs[0] + state.blockMs[1] + state.blockMs[2] +
                                         state.blockMs[3] + state.blockMs[4]) /
                                   float(IN_MILLISECONDS);
-            float const fit = sampled > seconds && sampled > 0.0f ? seconds / sampled : 1.0f;
+            float const fit = sampled > window && sampled > 0.0f ? window / sampled : 1.0f;
+            sample.windowSec = window;
+            sample.leadSec = float(state.leadMs) / float(IN_MILLISECONDS);
             sample.ableSec = float(state.ableMs) / float(IN_MILLISECONDS) * fit;
             sample.rangeSec = float(state.blockMs[0]) / float(IN_MILLISECONDS) * fit;
             sample.facingSec = float(state.blockMs[1]) / float(IN_MILLISECONDS) * fit;
@@ -584,6 +595,7 @@ namespace
         for (uint32& blocked : state.blockMs)
             blocked = 0;
         state.swingBlock = 0;
+        state.leadMs = 0;  // [dps50]
         state.swam = false;
         state.looted = false;
         state.formula = DpsEstimate::Result();
@@ -592,13 +604,13 @@ namespace
         state.loggedNoAttack = false;
     }
 
-    // [dps41] why no white swing was landing on the mob the fight's formula priced, read off the core's own melee
-    // gate (Player::Update: UNIT_STATE_MELEE_ATTACKING, not casting and not charging, a victim, within melee reach,
-    // and facing it inside 120 degrees unless it stands in the boundary radius). The reasons are the core's, not a
+    // [dps41] why no white swing was landing on a mob of this fight, read off the core's own melee gate
+    // (Player::Update: UNIT_STATE_MELEE_ATTACKING, not casting and not charging, a victim, within melee reach, and
+    // facing it inside 120 degrees unless it stands in the boundary radius). The reasons are the core's, not a
     // model of them: a swing the core refuses is a swing the formula counted and the bot never took.
-    // 0: it could swing. 1 range, 2 facing, 3 no swing under way, 4 not its own to spend, 5 swinging elsewhere -
-    // the order of FightSample's buckets.
-    uint8 SwingBlock(Player* bot, Unit* mob)
+    // 0: it could swing. 1 range, 2 facing, 3 no swing under way, 4 not its own to spend, 5 swinging at a unit that
+    // is no attacker of this fight - the order of FightSample's buckets.
+    uint8 SwingBlock(Player* bot, SoloBotState const& state, Unit* mob)
     {
         if (!bot || !mob)
             return 0;
@@ -609,7 +621,10 @@ namespace
         Unit* victim = bot->GetVictim();
         if (!victim || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
             return 3;
-        if (victim != mob)
+        // [dps50] a swing at any mob of this fight is a swing the measurement counts: DpsEstimate::NoteDealt counts
+        // every melee hit the bot lands on a creature, not only the one the fight's formula priced, so the fight
+        // whose second mob the bot is killing was reading its able time as time lost (1.4 % of b480's fight time)
+        if (victim != mob && !state.attackers.count(victim->GetGUID().GetRawValue()))
             return 5;
         if (!bot->IsWithinMeleeRange(victim))
             return 1;
@@ -634,7 +649,19 @@ namespace
             else
                 state.blockMs[state.swingBlock - 1] += since;
         }
-        state.swingBlock = SwingBlock(bot, mob);
+        bool const open = !state.sampleMs;
+        state.swingBlock = SwingBlock(bot, state, mob);
+        // [dps50] the fight's first sample: the swing before it goes to the reason that sample reads, the same
+        // piecewise-constant reading every other interval gets. A bot still walking in when the mob's first hit
+        // opened the fight reads "out of reach" for it; one that opened the fight with its own swing reads "able".
+        if (open)
+        {
+            state.leadMs = uint32(SwingSec(bot) * float(IN_MILLISECONDS));
+            if (!state.swingBlock)
+                state.ableMs += state.leadMs;
+            else
+                state.blockMs[state.swingBlock - 1] += state.leadMs;
+        }
         state.sampleMs = now;
         state.sampleMelee = bot->IsWithinMeleeRange(mob);
         state.sampleAct = bot->GetVictim() || bot->IsNonMeleeSpellCast(false);
