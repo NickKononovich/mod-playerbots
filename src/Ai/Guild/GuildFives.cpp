@@ -913,11 +913,14 @@ namespace FiveGate
             // second), and JudgeMobs adds it for a lone boss on top. The gate had it on neither, so it was laxer
             // than the leader on trash - it admitted fives the leader then could not carry, which is how b474's
             // dm-n five4 came to stand in the Deadmines foundry at all.
+            // [dm7] ... and the drop term is a pack's too: CarefulOverload gates hold, peak, drain and comfort
+            // alike on `estimate.mobs > 1` ("a lone mob's drop too: it is no limit there, but its fight measures
+            // the drop ratio"), so the planner holds a single trash mob to the healers' mana alone. The gate held
+            // it to the drop as well, and refused fives on a pull the leader does not even weigh.
+            bool const pack = mobs.size() > 1;  // CarefulOverload's own gate, the summons counted in as it counts them
             result.landedPerSec = t > 0.0f ? intake / t : 0.0f;
-            result.peakShare =
-                heal.hps > 0.0f && (mobs.size() > 1 || boss) ? result.landedPerSec / heal.hps : 0.0f;
-            result.load = boss ? std::max(result.manaShare, result.peakShare)
-                               : std::max({result.dropShare, result.manaShare, result.peakShare});
+            result.peakShare = heal.hps > 0.0f && (pack || boss) ? result.landedPerSec / heal.hps : 0.0f;
+            result.load = std::max({pack && !boss ? result.dropShare : 0.0f, result.manaShare, result.peakShare});
             result.sec = t;
             result.deepest = deepest;
             result.mobs = mobs.size();
@@ -1550,8 +1553,11 @@ namespace FiveGate
                              "({:.0f} pool + regen) ({:.2f}){}{}",
                              worst.boss ? "boss pull " : "", worst.name, worst.mobs, worst.lo, worst.hi, worst.health,
                              worst.sec, worst.deepest, worst.gapDrop, tankHealth, worst.dropShare,
-                             // [dm5] a boss is not held to the trash pulls' drop model: the number stays in the log
-                             worst.boss ? ", [dm5] stands down: a boss" : "", worst.controlSec,
+                             // [dm5] [dm7] the drop binds a pack of trash only: the number stays in the log either way
+                             worst.boss          ? ", [dm5] stands down: a boss"
+                             : worst.mobs <= 1   ? ", [dm7] stands down: a lone mob"
+                                                 : "",
+                             worst.controlSec,
                              worst.manaNeeded, worst.fightMana, healMana, worst.manaShare,
                              // [dm5] [dm6] the rate term, every pack's: what it lands per second against the
                              // healers' rate together (a lone trash mob has none, as the planner has none for it)
@@ -1579,8 +1585,8 @@ namespace FiveGate
             "drop terms: armor keeps {:.2f}, {} [mob melee "
             "and [dun244] spells from templates, the healer's rate capped by its pool; [dun233] calls for help from "
             "the fight; [dm3] the scripts' summons over the fight; [dm6] every pack of more than one judged on the "
-            "healers' rate too, [dm5] a boss on that and their mana alone, not this drop; area damage not "
-            "counted]{}{}",
+            "healers' rate too, [dm5] a boss on that and their mana alone and [dm7] a lone mob on their mana alone, "
+            "neither on this drop; area damage not counted]{}{}",
             failed, judged, apart, peeledPulls, cornerPulls,
             losOn ? "" : " (no: the tank has no ranged pull and pull back)",
             heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
