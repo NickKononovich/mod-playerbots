@@ -295,7 +295,8 @@ namespace
         }
         if (SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Full) >= 0.0f)
             return true;
-        window = (!HealerLeft(bot) || HealerSickens(bot)) &&  // [ghost14] the healer's sickness: the window first
+        // [ghost14] the healer's sickness: the window first. [death459] in a dungeon the corpse is the only way back
+        window = (!HealerLeft(bot) || HealerSickens(bot) || bot->GetMap()->IsDungeon()) &&
                  SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Fixed) >= 0.0f &&
                  SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Now) >= 0.0f;
         if (window)
@@ -458,6 +459,55 @@ namespace
         auto const found = healerChoice.find(bot->GetGUID().GetCounter());
         return found != healerChoice.end() && corpse && found->second == corpse->GetGUID();
     }
+
+    // [death458] the core sends a ghost in dark water (the fatigue bar) back to a graveyard (Player::HandleDrowning ->
+    // RepopAtGraveyard): no rise spot lies there, and no walk to one goes through it
+    constexpr float DARK_WATER_STEP = 10.0f;
+    // a rise spot the walk ended this near is reached; a dropped spot drops the candidates this near it too
+    constexpr float SPOT_REACHED = 3.0f;
+    constexpr float SPOT_DROP_RANGE = 5.0f;
+
+    bool InDarkWater(Player* bot, float x, float y, float z)
+    {
+        LiquidData const liquid =
+            bot->GetMap()->GetLiquidData(bot->GetPhaseMask(), x, y, z, bot->GetCollisionHeight(), {});
+        return (liquid.Flags & MAP_LIQUID_TYPE_DARK_WATER) && liquid.Status != LIQUID_MAP_NO_WATER &&
+               liquid.Status != LIQUID_MAP_ABOVE_WATER;
+    }
+
+    // [death458] a walk on the navmesh that ends within the corpse's reclaim radius and crosses no dark water. b468
+    // Colian L23 had died at sea off Bloodmyst (-518,-10326): no walk reaches it ([nav163]), its ghost walked the
+    // coast's partial path into the dark water, the core put it back at Blood Watch, and round again - 58 min, 69
+    // "[rise33] no window here" on the way and never a healer
+    bool CorpseReachable(Player* bot, Corpse* corpse, float reach, std::string& why)
+    {
+        G3D::Vector3 const dest(corpse->GetPositionX(), corpse->GetPositionY(), corpse->GetPositionZ());
+        if (bot->GetExactDist(corpse) <= reach)
+            return true;
+        Movement::PointsArray corners;
+        if (!SelfTravel::LongRoute(bot, dest, corners, reach))
+        {
+            why = "no walk on the navmesh reaches its corpse's radius";
+            return false;
+        }
+        for (size_t i = 1; i < corners.size(); ++i)
+        {
+            G3D::Vector3 const leg = corners[i] - corners[i - 1];
+            uint32 const steps = std::max<uint32>(1, uint32(leg.length() / DARK_WATER_STEP));
+            for (uint32 s = 1; s <= steps; ++s)
+            {
+                G3D::Vector3 const p = corners[i - 1] + leg * (float(s) / steps);
+                if (InDarkWater(bot, p.x, p.y, p.z))
+                {
+                    why = Acore::StringFormat("its walk crosses dark water at ({:.0f},{:.0f}): the core sends a ghost "
+                                              "there back to a graveyard",
+                                              p.x, p.y);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
 }
 
 bool FindCorpseAction::Execute(Event /*event*/)
@@ -518,9 +568,40 @@ bool FindCorpseAction::Execute(Event /*event*/)
     bool moveToLeader = groupLeader && groupLeader != bot && groupLeader->IsAlive() &&
                         leaderPos.fDist(corpsePos) < reclaimDist;
 
+    // [death458] a new corpse: its reach not searched yet, no spot dropped, no walk on for it
+    if (_corpseGuid != corpse->GetGUID())
+    {
+        _corpseGuid = corpse->GetGUID();
+        _reachSearched = false;
+        _droppedSpots.clear();
+        _walk = Walk::None;
+        _spotMs = 0;
+    }
+    // [death458] a corpse no walk reaches: the spirit healer is the only way back, whatever its sickness costs
+    if (!inDungeon && !_reachSearched && !HealerChosen(bot, corpse))
+    {
+        _reachSearched = true;
+        std::string why;
+        if (!CorpseReachable(bot, corpse, reclaimDist, why))
+        {
+            std::string const price =
+                HealerSickens(bot)
+                    ? Acore::StringFormat("{} min of Resurrection Sickness", SicknessMinutes(bot))
+                    : std::string("no sickness at its level");
+            LogGhost(bot, Acore::StringFormat("[death458] its corpse {:.0f} yd off at ({:.0f},{:.0f}) is out of "
+                                              "reach ({}): to the spirit healer ({})",
+                                              corpseDist, corpse->GetPositionX(), corpse->GetPositionY(), why, price));
+            ChooseHealer(bot, corpse);
+            _walk = Walk::None;
+            return botAI->DoSpecificAction("spirit healer", Event(), true);
+        }
+    }
+
     GuidVector const hostiles = AI_VALUE(GuidVector, "nearest hostile npcs");
     bool window = false;
-    bool const safeHere = RisesHere(botAI, bot, hostiles, window);  // [deaths3] clear, or its window open
+    // [deaths3] clear, or its window open. [death458] judged in the corpse's react range only: no spot of its radius
+    // is chosen from farther (b468 Colian: 69 "[rise33] no window here" 300-1500 yd from its corpse)
+    bool const safeHere = corpseDist < sPlayerbotAIConfig.ReactDistance && RisesHere(botAI, bot, hostiles, window);
 
     // Should we ressurect? If so, return false.
     if (corpseDist < reclaimDist)
@@ -545,24 +626,71 @@ bool FindCorpseAction::Execute(Event /*event*/)
     }
 
     // The ghost always runs back: no teleport to the corpse, also for bots with throttled activity.
-    if (bot->isMoving())
+    // [death459] a walk to the corpse started from beyond its react range is decided again inside it: it walked on
+    // into the corpse's death zone and pack (b469 Kylanor L21 from the Raven Hill graveyard to its corpse among the
+    // Skeletal Horrors, round after round)
+    if (bot->isMoving() && !(_walk == Walk::CorpseFar && corpseDist < sPlayerbotAIConfig.ReactDistance))
         return true;
 
-    // [ghost13] the spirit healer chosen at this corpse: the ghost keeps to that walk (no walk back to the corpse)
-    if (!inDungeon && HealerChosen(bot, corpse) && HealerLeft(bot))
+    // [ghost13] the spirit healer chosen at this corpse: the ghost keeps to that walk (no walk back to the corpse).
+    // [death458] also with no healer clear of reaches left: that healer's own window is its way back then
+    if (!inDungeon && HealerChosen(bot, corpse))
     {
         LogGhost(bot, "[ghost13] keeps to the spirit healer it chose at its corpse");
         return botAI->DoSpecificAction("spirit healer", Event(), true);
     }
 
+    // [death459] the end of the walk to a rise spot: it rises there (above), waits there for a window that can open
+    // (no mob that stays, no roamer's round and no death zone reaches it: only a mover where it is now), else the
+    // spot is dropped for this corpse and the next one taken - none left: the spirit healer below. b469 Mytaeleas
+    // L21 at Windshear Mine: its walks to a rise spot ended 5 / 11 yd inside the zone where it died, back and forth
+    if (_walk == Walk::Spot)
+    {
+        float const x = bot->GetPositionX();
+        float const y = bot->GetPositionY();
+        float const z = bot->GetPositionZ();
+        float const off = bot->GetExactDist2d(_walkTo.x, _walkTo.y);
+        float const zone = ZoneMargin(bot, x, y);
+        float const fixed = SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Fixed);
+        float const paths = SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Paths);
+        std::string const refusal = LastMoveRefusal().empty() ? std::string("no reason") : LastMoveRefusal();
+        if (off > SPOT_REACHED)
+            DropSpot(Acore::StringFormat("its walk there ended {:.0f} yd short at ({:.0f},{:.0f}) ({})", off, x, y,
+                                         refusal));
+        else if (corpseDist >= reclaimDist)
+            DropSpot("it lies out of its corpse's reclaim radius");
+        else if (zone < 0.0f)
+            DropSpot(Acore::StringFormat("the zone where it died covers it ({:.0f} yd inside)", -zone));
+        else if (fixed < 0.0f)
+            DropSpot(Acore::StringFormat("a mob that stays reaches it ({:.0f} yd inside)", -fixed));
+        else if (paths < 0.0f)
+            DropSpot(Acore::StringFormat("a wanderer's area or a patrol's path reaches it ({:.0f} yd inside)", -paths));
+        else if (!HealerLeft(bot) || HealerSickens(bot) || inDungeon)
+        {
+            LogGhost(bot, Acore::StringFormat("[death459] waits at its rise spot ({:.0f},{:.0f}): only a wanderer / "
+                                              "patrol where it is now reaches it",
+                                              x, y));
+            return true;
+        }
+        else
+            DropSpot("a mover reaches it now and the spirit healer costs no sickness");
+    }
+
+    Walk walk = corpseDist < sPlayerbotAIConfig.ReactDistance ? Walk::Corpse : Walk::CorpseFar;
     // If we are getting close move to a save ressurrection spot instead of just the corpse.
     if (corpseDist < sPlayerbotAIConfig.ReactDistance)
     {
         G3D::Vector3 spot;
         if (moveToLeader && safeHere)  // [ghost12] as above
+        {
             moveToPos = leaderPos;
+            walk = Walk::None;
+        }
         else if (SafeSpot(corpse, hostiles, reclaimDist, spot))
+        {
             moveToPos = WorldPosition(corpsePos.GetMapId(), spot.x, spot.y, spot.z, 0.0f);
+            walk = Walk::Spot;
+        }
         // [deaths3] no spot of the corpse's radius out of every reach: the spirit healer, unless its spot was found in
         // reach for this death too (then the ghost keeps to the corpse and rises once a spot clears)
         // [ghost14] the healer would sicken it: a spot where nothing that stays reaches it, risen once the wanderers
@@ -575,6 +703,7 @@ bool FindCorpseAction::Execute(Event /*event*/)
                                               "to leave its reach",
                                               SicknessMinutes(bot), spot.x, spot.y));
             moveToPos = WorldPosition(corpsePos.GetMapId(), spot.x, spot.y, spot.z, 0.0f);
+            walk = Walk::Spot;
         }
         else if (!safeHere && !inDungeon && HealerLeft(bot))
         {
@@ -595,11 +724,24 @@ bool FindCorpseAction::Execute(Event /*event*/)
                                               "wanderers / patrols to leave its reach",
                                               spot.x, spot.y));
             moveToPos = WorldPosition(corpsePos.GetMapId(), spot.x, spot.y, spot.z, 0.0f);
+            walk = Walk::Spot;
+        }
+        // [death458] no spot of its radius whose window can open and no healer clear of reaches: the nearest healer
+        // and its own window - a wait at the corpse for a window that cannot open is no way back
+        else if (!safeHere && !inDungeon)
+        {
+            LogGhost(bot, Acore::StringFormat("[death458] no spot of its corpse's radius whose window can open, no "
+                                              "spirit healer clear of reaches: to the nearest healer and its window "
+                                              "({} min of Resurrection Sickness)",
+                                              SicknessMinutes(bot)));
+            ChooseHealer(bot, corpse);
+            return botAI->DoSpecificAction("spirit healer", Event(), true);
         }
         else if (!safeHere)
         {
             LogGhost(bot, "no healer left, every spot of its corpse's radius in reach of mobs that stay there");
             FleeManager manager(bot, reclaimDist, 0.0, urand(0, 1), moveToPos);
+            walk = Walk::None;
 
             if (manager.isUseful())
             {
@@ -613,18 +755,42 @@ bool FindCorpseAction::Execute(Event /*event*/)
     }
 
     // Actual mobing part.
-    bool moved = false;
     // [deaths3] the ghost walks to its corpse whenever it gets here (the healer choices went first): no time limit
+    bool const moved = MoveTo(moveToPos.GetMapId(), moveToPos.GetPositionX(), moveToPos.GetPositionY(),
+                              moveToPos.GetPositionZ(), false, false);
+    _walkTo = G3D::Vector3(moveToPos.GetPositionX(), moveToPos.GetPositionY(), moveToPos.GetPositionZ());
+    if (moved || WalkStillOn())
     {
-        moved = MoveTo(moveToPos.GetMapId(), moveToPos.GetPositionX(), moveToPos.GetPositionY(),
-                       moveToPos.GetPositionZ(), false, false);
+        _walk = walk;
+        return true;
     }
-
+    // [death459] a rise spot it cannot walk to is dropped: the next one, else the healer
+    if (walk == Walk::Spot)
+    {
+        DropSpot(Acore::StringFormat("its walk there is refused ({})",
+                                     LastMoveRefusal().empty() ? std::string("no reason") : LastMoveRefusal()));
+        return true;
+    }
     // No spirit healer inside a dungeon: the ghost waits at its spot for the mobs to leave.
-    if (!moved && !inDungeon && HealerLeft(bot))
-        moved = botAI->DoSpecificAction("spirit healer", Event(), true);
+    if (inDungeon)
+        return false;
+    // [death458] the walk back failed: the healer, chosen for this corpse - an unchosen walk to it was cut by the walk
+    // back to the corpse at its next stop (b469 Kylanor L21, three rounds corpse <-> graveyard 911)
+    LogGhost(bot, Acore::StringFormat("[death458] the walk to its corpse failed ({}): to the spirit healer",
+                                      LastMoveRefusal().empty() ? std::string("no reason") : LastMoveRefusal()));
+    ChooseHealer(bot, corpse);
+    _walk = Walk::None;
+    return botAI->DoSpecificAction("spirit healer", Event(), true);
+}
 
-    return moved;
+// [death459] a rise spot that did not hold for this corpse: not chosen again (nor the candidates near it)
+void FindCorpseAction::DropSpot(std::string const& why)
+{
+    LogGhost(bot, Acore::StringFormat("[death459] drops its rise spot ({:.0f},{:.0f}): {}", _walkTo.x, _walkTo.y,
+                                      why));
+    _droppedSpots.push_back(_walkTo);
+    _spotMs = 0;
+    _walk = Walk::None;
 }
 
 // The spot of the corpse's reclaim radius farthest from the reach of the hostiles around, with a complete walk to it:
@@ -662,6 +828,12 @@ bool FindCorpseAction::SafeSpot(Corpse* corpse, GuidVector const& hostiles, floa
             float const z = bot->GetMap()->GetHeight(bot->GetPhaseMask(), x, y, corpse->GetPositionZ() + SPOT_SNAP_UP,
                                                      true, SPOT_SNAP_RANGE);
             if (z <= INVALID_HEIGHT || std::fabs(z - corpse->GetPositionZ()) > SPOT_MAX_DZ)
+                continue;
+            // [death459] a spot that did not hold for this corpse, and [death458] dark water (the core sends the
+            // ghost back to a graveyard there)
+            if (std::any_of(_droppedSpots.begin(), _droppedSpots.end(), [x, y](G3D::Vector3 const& dropped)
+                            { return std::hypot(dropped.x - x, dropped.y - y) <= SPOT_DROP_RANGE; }) ||
+                InDarkWater(bot, x, y, z))
                 continue;
             // [ghost36] a window spot is one whose window can open: out of every roamer's round too ([rise33] refuses
             // the rise inside one) - else the ghost waited there for good (b387: 157 "[rise33] no window here",
@@ -836,6 +1008,9 @@ bool SpiritHealerAction::Execute(Event /*event*/)
 
     Corpse* corpse = bot->GetCorpse();
     uint32 dCount = AI_VALUE(uint32, "death count");
+    // [death458] its corpse is a way back unless the ghost chose the healer at it (no spot whose window can open there,
+    // or no walk reaches it): "find corpse" sends that ghost here again, the corpse run would hand it straight back
+    bool const corpseRun = corpse && !bot->GetMap()->IsDungeon() && !HealerChosen(bot, corpse);
 
     // [deaths3] no time rule (no-forcing-timers): the start-zone graveyard for a bot that keeps dying or whose gear is
     // near broken
@@ -847,13 +1022,13 @@ bool SpiritHealerAction::Execute(Event /*event*/)
         ClosestGrave = SafeGrave(bot);
         if (!ClosestGrave)
         {
-            if (corpse && !bot->GetMap()->IsDungeon())
+            if (corpseRun)
             {
                 LogGhost(bot, Acore::StringFormat("graveyard {} unsafe, no other on this map: its corpse run",
                                                   unsafeId));
                 return botAI->DoSpecificAction("find corpse", Event(), true);
             }
-            ClosestGrave = sGraveyard->GetGraveyard(unsafeId);  // no corpse here: that healer's window
+            ClosestGrave = sGraveyard->GetGraveyard(unsafeId);  // no corpse run: that healer's window
         }
         else
             LogGhost(bot, Acore::StringFormat("graveyard {} unsafe: to graveyard {} ({:.0f},{:.0f})", unsafeId,
@@ -912,22 +1087,40 @@ bool SpiritHealerAction::Execute(Event /*event*/)
                                                       ClosestGrave->ID, -margin, next->ID, next->x, next->y));
                     return true;
                 }
-                if (corpse && !bot->GetMap()->IsDungeon())
+                if (corpseRun)
                 {
                     LogGhost(bot, Acore::StringFormat("the spirit healer of graveyard {} stands {:.0f} yd inside a "
                                                       "hostile's reach, no other graveyard: its corpse run",
                                                       ClosestGrave->ID, -margin));
                     return botAI->DoSpecificAction("find corpse", Event(), true);
                 }
-                bool window = false;
-                if (!RisesHere(botAI, bot, hostiles, window))
+                // [death458] the last way back: this healer. It waits while a wanderer / patrol where it is now
+                // reaches the yard and nothing that stays does (the window opens as they walk on: their positions,
+                // no clock); a yard a mob that stays reaches has no window - it rises there all the same (a ghost
+                // for good is no way back). The window of RisesHere also wanted every roamer's whole round out of
+                // reach ([rise33]): at a healer with a patrol round it never opened
+                float const x = bot->GetPositionX();
+                float const y = bot->GetPositionY();
+                float const z = bot->GetPositionZ();
+                float const fixed = SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Fixed);
+                float const now = SpotMargin(botAI, bot, hostiles, x, y, z, Reach::Now);
+                if (fixed >= 0.0f && now < 0.0f)
                 {
-                    LogGhost(bot, Acore::StringFormat("waits at the spirit healer of graveyard {}: {:.0f} yd inside a "
-                                                      "hostile's reach, no corpse here, no other graveyard",
-                                                      ClosestGrave->ID, -margin));
+                    LogGhost(bot, Acore::StringFormat("[death458] waits at the spirit healer of graveyard {}, its last "
+                                                      "way back: a wanderer / patrol where it is now reaches the yard "
+                                                      "({:.0f} yd inside)",
+                                                      ClosestGrave->ID, -now));
                     return true;
                 }
-                LogGhost(bot, "rises at the spirit healer in a window: the wanderers / patrols out of its reach now");
+                LogGhost(bot, fixed >= 0.0f
+                                  ? Acore::StringFormat("[death458] rises at the spirit healer of graveyard {} in a "
+                                                        "window: the wanderers / patrols out of reach where they are "
+                                                        "now",
+                                                        ClosestGrave->ID)
+                                  : Acore::StringFormat("[death458] rises at the spirit healer of graveyard {}, its "
+                                                        "last way back: a mob that stays reaches the yard ({:.0f} yd "
+                                                        "inside), no window can open",
+                                                        ClosestGrave->ID, -fixed));
             }
 
             {

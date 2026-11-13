@@ -12,6 +12,8 @@
 
 #include <G3D/Vector3.h>
 
+#include <vector>
+
 class PlayerbotAI;
 class Corpse;
 
@@ -37,10 +39,26 @@ private:
     // window: a spot only the mobs that stay keep out of reach of (the wanderers / patrols leave it)
     bool SafeSpot(Corpse* corpse, GuidVector const& hostiles, float radius, G3D::Vector3& spot, bool window = false);
 
+    // [death458] what the last walk this action started was for: its end is judged as a rise spot's
+    enum class Walk : uint8
+    {
+        None,
+        CorpseFar,  // to the corpse from beyond ReactDistance: decided again once inside it
+        Corpse,
+        Spot
+    };
+    void DropSpot(std::string const& why);
+
     uint32 _spotMs = 0;
     bool _spotWindow = false;
     bool _spotFound = false;
     G3D::Vector3 _spot;
+    // [death458] per corpse: its reach searched once, the rise spots that did not hold, the walk on
+    ObjectGuid _corpseGuid;
+    bool _reachSearched = false;
+    std::vector<G3D::Vector3> _droppedSpots;
+    Walk _walk = Walk::None;
+    G3D::Vector3 _walkTo;
 };
 
 class SpiritHealerAction : public MovementAction
