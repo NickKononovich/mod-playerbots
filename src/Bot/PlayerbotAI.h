@@ -86,6 +86,9 @@ enum BotState
 
 bool IsRealPlayer(Player* player);
 bool IsSelfBot(Player* player);
+// [self10] A person's game client is attached to this character's session (an open socket). True for a real player
+// and for a SelfBot alike: leaving the world is that person's decision, never the bot manager's or the AI's.
+bool HasHumanClientSession(Player* player);
 bool IsAlliance(uint8 race);
 
 class PlayerbotChatHandler : protected ChatHandler

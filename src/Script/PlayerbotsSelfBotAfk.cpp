@@ -9,7 +9,6 @@
 
 #include "Bag.h"
 #include "CharacterCache.h"
-#include "CharacterPackets.h"
 #include "Config.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -499,17 +498,20 @@ public:
             return true;
 
         Player* player = session ? session->GetPlayer() : nullptr;
-        if (!player || !IsSelfBot(player) || !player->isAFK())
+        if (!player)
             return true;
 
-        LOG_DEBUG("playerbots", "SelfBot {} stays in world: refused the AFK logout", player->GetName());
+        // [self10] The logout belongs to the person at the client. A SelfBot is the owner's own character: while the
+        // AI plays it the client flags it AFK by itself, so the old "SelfBot + AFK -> refuse" rule refused every
+        // logout its owner ever asked for. The client re-sends the request for as long as it is refused, and each
+        // refusal printed "You can't log out now." on their screen - b475 Eraelor: 17,558 of them in one session.
+        // The core alone decides now (combat, falling, duel, AFK config), exactly as for any other player.
+        LOG_DEBUG("playerbots", "[self10] CMSG_LOGOUT_REQUEST from {}'s own client (selfbot={}, afk={}, combat={}): "
+                  "passed to the core, we neither refuse nor force it",
+                  player->GetName(), IsSelfBot(player) ? 1 : 0, player->isAFK() ? 1 : 0,
+                  player->IsInCombat() ? 1 : 0);
 
-        WorldPackets::Character::LogoutResponse logoutResponse;
-        logoutResponse.LogoutResult = 2;
-        logoutResponse.Instant = false;
-        session->SendPacket(logoutResponse.Write());
-
-        return false;
+        return true;
     }
 };
 

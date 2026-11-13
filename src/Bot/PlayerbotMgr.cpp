@@ -436,6 +436,19 @@ private:
 
 void PlayerbotHolder::LogoutPlayerBot(ObjectGuid guid)
 {
+    // [self10] A character a person is logged into on their own client (a SelfBot, or a character picked up by a
+    // player) is never logged out by us: that call would end their session from under them. The person logs out from
+    // their client, and OnPlayerBeforeLogout then cleans their own bots up. LogoutAllBots already skipped SelfBots -
+    // this is every other way in (the .playerbots remove/logout command, RandomPlayerbotMgr::Remove, the bot-count
+    // trim, the deferred world-thread operation), which had no such check at all.
+    if (Player* self = GetPlayerBot(guid); HasHumanClientSession(self))
+    {
+        LOG_INFO("playerbots", "[self10] {} stays in world: a logout was asked of a character its owner is logged "
+                 "into - only the person at the client ends that session",
+                 self->GetName());
+        return;
+    }
+
     if (!PlayerbotWorldThreadProcessor::IsWorldThread())
     {
         if (!GetPlayerBot(guid))
@@ -1702,7 +1715,17 @@ void PlayerbotMgr::HandleMasterIncomingPacket(WorldPacket const& packet)
                 bool preventAfkLogout = sWorld->getIntConfig(CONFIG_AFK_PREVENT_LOGOUT) == 2
                                         && master->isAFK();
 
-                if (preventAfkSanctuaryLogout || preventAfkLogout)
+                // [self10] The core refuses the same request on the master's own session when it is in combat,
+                // jumping/falling, duelling or GM-frozen (MiscHandler.cpp reasons 1, 3 and 2). The master stays in
+                // world, so its bots must stay too: the client re-sends the request for as long as it is refused, and
+                // one of those refused requests used to be enough to log every bot of that master out.
+                bool canLogoutInCombat = master->HasPlayerFlag(PLAYER_FLAGS_RESTING);
+                bool refusedByCore =
+                    (master->IsInCombat() && !canLogoutInCombat) ||
+                    master->m_movementInfo.HasMovementFlag(MOVEMENTFLAG_FALLING | MOVEMENTFLAG_FALLING_FAR) ||
+                    master->duel || master->HasAura(9454);
+
+                if (preventAfkSanctuaryLogout || preventAfkLogout || refusedByCore)
                 {
                     break;
                 }

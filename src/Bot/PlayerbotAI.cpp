@@ -1410,6 +1410,17 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (bot->GetSession()->IsLoggingOut())
     {
         WorldSession* botWorldSessionPtr = bot->GetSession();
+
+        // [self10] A person's client owns this session (SelfBot, or a character a player is on). The logout is theirs:
+        // the core's own WorldSession::Update finishes it when its timer is up, and the person cancels it by pressing
+        // cancel or moving. The AI neither forces it through nor logs the character out. Without this the "no master"
+        // test below read a SelfBot - which has no master by definition - as a dead session and completed the logout.
+        if (HasHumanClientSession(bot))
+        {
+            SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
+            return;
+        }
+
         bool logout = botWorldSessionPtr->ShouldLogOut(time(nullptr));
 
         if (!master || !master->IsInWorld() || !master->GetSession() || !master->GetSession()->GetPlayer())
@@ -1881,7 +1892,10 @@ void PlayerbotAI::Reset(bool full)
     bool logout = botWorldSessionPtr->ShouldLogOut(time(nullptr));
 
     // cancel logout
-    if (!logout && bot->GetSession()->IsLoggingOut())
+    // [self10] ...but never a logout a person started from their own client: that one runs its 20 s and ends, or the
+    // person cancels it themselves. A Reset() lands on every combat start/end, so cancelling here used to drag a
+    // SelfBot back into the world against its owner's press of the Logout button.
+    if (!logout && bot->GetSession()->IsLoggingOut() && !HasHumanClientSession(bot))
     {
         WorldPackets::Character::LogoutCancel data = WorldPacket(CMSG_LOGOUT_CANCEL);
         bot->GetSession()->HandleLogoutCancelOpcode(data);
@@ -6145,6 +6159,15 @@ bool IsSelfBot(Player* player)
     // SelfBot: "player" has PlayerbotAI attached, and it has a master who is itself (player).
     PlayerbotAI* botAI = GET_PLAYERBOT_AI(player);
     return botAI && botAI->GetMaster() == player;
+}
+
+// [self10] A person's game client is sitting on this session. Bot sessions are built with a nullptr socket
+// (PlayerbotMgr/RandomPlayerbotFactory/TravelMgr/TestHarnessMgr all pass nullptr), so an open socket is the fact that
+// tells a character somebody is actually playing from a client - a SelfBot as much as a plain player. Leaving the
+// world is that person's decision: we never request it, force it or refuse it for them.
+bool HasHumanClientSession(Player* player)
+{
+    return player && player->GetSession() && !player->GetSession()->IsSocketClosed();
 }
 
 // Same source as GetTeamId(true); TeamIdForRace() logs an error for non-playable races.
