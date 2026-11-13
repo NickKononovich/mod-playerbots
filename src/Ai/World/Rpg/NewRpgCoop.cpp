@@ -223,7 +223,22 @@ struct Party
     float campRadius = 0.0f;
     uint32 escortCheckedAt = 0;
     bool escortOpen = true;
+    // [assist12] its kind (quest / camp / escort) and the value its pricing promised (the ledger's delivered side)
+    std::string kind;
+    float promised = 0.0f;
 };
+
+// [assist12] per kind of help, this run: parties ended, ended with their goal, the value they promised and delivered,
+// and the helpers' time they cost (their trip so far and back at their guild-weighed rate). Behind the board's lock
+struct HelpLedger
+{
+    uint32 ended = 0;
+    uint32 done = 0;
+    float promised = 0.0f;
+    float delivered = 0.0f;
+    float cost = 0.0f;
+};
+std::map<std::string, HelpLedger> helpLedger;
 
 // [b372] recursive: AssignLocked (held) -> WalkYd -> SoloSafety::RouteCosts -> JudgesPulls took it again (b371 crash).
 // [lock23] JudgesPulls takes it no more (partyLows and the core group); the recursion stays as the guard of a path
@@ -2749,7 +2764,14 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     float const saved = aloneWins ? std::max(0.0f, aloneSeconds - v.seconds) : 0.0f;
     // [assist2] the requester's experience at what the guild waits on it, and [assist5] an escort's gather worth
     float const ownValue = questXp + QuestRoute::XpPerSecond(req->GetGUID().GetCounter()) * saved;
-    float const helpValue = ownValue * reqWeight + r.escortXp;
+    // [assist12] what this kind of help has delivered of its promises this run (the rule of succession over its ended
+    // parties: (done + 1) / (ended + 2) - no history gives one half): the value expected, not the value promised. A
+    // kind that keeps failing prices itself out
+    std::string const kind = r.escortPlace ? "escort" : r.campOnly ? "camp" : "quest";
+    HelpLedger const& ledger = helpLedger[kind];
+    float const delivery = float(ledger.done + 1) / float(ledger.ended + 2);
+    float const promised = ownValue * reqWeight + r.escortXp;
+    float const helpValue = promised * delivery;
     // [help22] the line names the rates its cost was priced with (a helper's route, else its grind rate)
     std::string rates;
     for (Candidate const& c : chosen)
@@ -2757,6 +2779,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                                      c.p->GetName(), TimeRate(c.p),
                                      QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) > 0.0f ? "" : " (grind)",
                                      GuildWeight(c.p), 2.0f * c.eta, v.seconds);  // [assist3]
+    rates += Acore::StringFormat("; [assist12] {} delivers {}/{} -> x{:.2f} of {:.0f} promised", kind, ledger.done,
+                                 ledger.ended, delivery, promised);
     if (reqWeight > 1.0f || r.escortXp > 0.0f)  // [assist2] / [assist5]
         rates += Acore::StringFormat("; [assist2] requester x{:.2f} ({}), escort {:.0f} xp", reqWeight,
                                      reqWeightWhy.empty() ? "its own" : reqWeightWhy, r.escortXp);
@@ -2824,6 +2848,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     party_.campMobs = r.campMobs;
     party_.retry = r.retry;
     party_.escortPlace = r.escortPlace;  // [assist5]
+    party_.kind = kind;  // [assist12]
+    party_.promised = promised;
     party_.campEntries = r.campEntries;
     party_.campRadius = r.campRadius;
     if (r.campOnly)
@@ -3007,6 +3033,9 @@ bool HelpFormOperation::Execute()
     out.Flush();
     if (!refuse.empty() || joined.empty())
         return false;
+    // [assist9] the solo give-up of the walk to the camp is what asked for the help: the party's own walk judge
+    // decides from now on (b468 Ravelandy q347: its walled walk still given up ended the party 14 s after it formed)
+    NewRpgBaseAction::ForgetWalkGivenUp(req, campAt);
     // [help12] a camp request: the requester leads the party to the camp and grinds it (its party's judge pulls)
     if (campOnly)
     {
@@ -3176,10 +3205,41 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
         // cleared; its quest plan does not end it. A quest party: a vendor run (full bags) or a rest is a pause, IDLE
         // takes the help quest up again (HelpQuestOf) - b350: 31 of 39 help parties ended "its own plan moved on",
         // Shalaeth's on her sell run 123 s after Relara arrived
-        else if (party.campOnly && party.campAt != WorldPosition() &&
-                 NewRpgBaseAction::WalkGivenUp(bot, party.campAt.GetPositionX(), party.campAt.GetPositionY()))
+        // [assist10] a flight / boat of the party's leader toward the camp is its way there (FlyIfFaster [fly109]
+        // flies a party's leader): a pause. b468: 4 of 11 "own plan moved on" were the requester's flight to the
+        // camp's zone (Lanbuzz Lakeshire -> Sentinel Hill for q104, Kylanor and Galiver twice for q167)
+        else if (ai && party.campAt != WorldPosition() &&
+                 (bot->IsInFlight() || bot->GetTransport() || ai->rpgInfo.GetStatus() == RPG_TRAVEL_FLIGHT))
         {
-            exit = "the requester's walk to the camp is given up";
+            WorldPosition to;
+            if (auto const* flight = std::get_if<NewRpgInfo::TravelFlight>(&ai->rpgInfo.data); flight &&
+                !flight->path.empty())
+                if (TaxiNodesEntry const* node = sTaxiNodesStore.LookupEntry(flight->path.back()))
+                    to = WorldPosition(node->map_id, node->x, node->y, node->z);
+            if (to == WorldPosition() && ai->rpgInfo.trip.dest != WorldPosition())
+                to = ai->rpgInfo.trip.dest;
+            bool const toward = to != WorldPosition() && to.GetMapId() == party.campAt.GetMapId() &&
+                                to.GetExactDist2d(party.campAt.GetPositionX(), party.campAt.GetPositionY()) <
+                                    bot->GetExactDist2d(party.campAt.GetPositionX(), party.campAt.GetPositionY());
+            if (!toward)
+            {
+                exit = Acore::StringFormat("[assist8] preempted: a {} away from the camp", bot->GetTransport() ? "boat"
+                                                                                                    : "flight");
+                held = true;
+            }
+            else
+                return order;  // its helpers follow it
+        }
+        // [assist11] the party's own walk judge gave the camp up (the solo give-up was forgotten at the party's form,
+        // [assist9]): the party cannot reach it at this level - the help ends and is not asked again at this level.
+        // b468: Enyssia q9669 and Baridrol q1054 postponed "every way there passes mobs it does not pull" in the party
+        else if (party.campAt != WorldPosition() &&
+                 (NewRpgBaseAction::WalkGivenUp(bot, party.campAt.GetPositionX(), party.campAt.GetPositionY()) ||
+                  (!party.campOnly && ai && ai->lowPriorityQuest.count(party.helpObj.questId))))
+        {
+            exit = "[assist11] preempted: the party's walk judge gives the camp up";
+            priceRefused[PriceRefusedKey(bot, party.campOnly ? 0 : party.helpObj.questId, party.campAt)] =
+                bot->GetLevel();
             held = true;
         }
         else if (!party.campOnly && (!quest || quest->questId != party.helpObj.questId) &&
@@ -3190,25 +3250,20 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
             // route's next stop (a town task, a member's hand-in, another quest) waits. b432: 32 help parties ended
             // "its own plan moved on" (50 of 52 with helpers abandoned), helpers walked 1000+ yd for nothing -
             // Rollothan L12 4 times (Kianey, Manue, Ainne: replans "town task HAND_IN q106 (for Rollothan)", others)
+            // [assist8] ... unless a task the global leader ranks above the help (URGENT: a five's call, a profession
+            // call that beats questing) or a fact ends it - each case named
             Quest const* help = sObjectMgr->GetQuestTemplate(party.helpObj.questId);
-            bool const resumable = ai && help && bot->IsAlive() && !bot->IsInFlight() && !bot->GetTransport() &&
-                                   ai->rpgInfo.GetStatus() != RPG_TRAVEL_FLIGHT &&
-                                   bot->GetQuestStatus(party.helpObj.questId) == QUEST_STATUS_INCOMPLETE &&
-                                   (party.campAt == WorldPosition() ||
-                                    !NewRpgBaseAction::WalkGivenUp(bot, party.campAt.GetPositionX(),
-                                                                   party.campAt.GetPositionY()));
-            if (!resumable)
+            std::string urgent;
+            std::string preempt = !ai || !help    ? "no help quest"
+                                  : !bot->IsAlive() ? "dead"
+                                  : bot->GetQuestStatus(party.helpObj.questId) != QUEST_STATUS_INCOMPLETE
+                                      ? "the help quest is no longer open"
+                                  : hooks.urgentTask && hooks.urgentTask(bot, &urgent)
+                                      ? "an urgent task of the global leader: " + urgent
+                                      : "";
+            if (!preempt.empty())
             {
-                // [assist6] which fact ended it (b-log 2026-11-13: 11 of 18 priced helps ended so, 4800 of 51875 xp
-                // of value delivered)
-                exit = std::string("its own plan moved on (") +
-                       (!ai || !help                 ? "no help quest"
-                        : !bot->IsAlive()            ? "dead"
-                        : bot->IsInFlight() || ai->rpgInfo.GetStatus() == RPG_TRAVEL_FLIGHT ? "on a flight"
-                        : bot->GetTransport()        ? "on a transport"
-                        : bot->GetQuestStatus(party.helpObj.questId) != QUEST_STATUS_INCOMPLETE ? "quest no longer open"
-                                                     : "its walk to the camp given up") +
-                       ")";
+                exit = "[assist8] preempted: " + preempt;
                 held = true;
             }
             else
@@ -3384,6 +3439,31 @@ void HelpEndLocked(Party& party, uint32 who, std::string const& reason, bool don
         MarkParty(low, false);
         out.after.push_back([name = party.requesterName, low, q = party.helpObj.questId, reason]()
                             { EndTask(name, low, q, reason); });
+    }
+    // [assist12] the ledger: the help's helpers' time spent (since the assign, plus the walk back) at their rate
+    if (!party.kind.empty())
+    {
+        float spent = 0.0f;
+        for (ObjectGuid const& guid : helpers)
+            if (Player* h = ObjectAccessor::FindPlayer(guid))
+            {
+                auto const post = postings.find(guid.GetCounter());
+                float const back = post != postings.end() ? post->second.walkSec : 0.0f;
+                spent += TimeRate(h) * GuildWeight(h) * (seconds + back);
+            }
+        HelpLedger& ledger = helpLedger[party.kind];
+        ++ledger.ended;
+        ledger.done += done ? 1 : 0;
+        ledger.promised += party.promised;
+        ledger.delivered += done ? party.promised : 0.0f;
+        ledger.cost += spent;
+        std::string all;
+        for (auto const& [kind, l] : helpLedger)
+            all += Acore::StringFormat("{}{} {}/{} delivered {:.0f} of {:.0f} xp, cost {:.0f} xp",
+                                       all.empty() ? "" : "; ", kind, l.done, l.ended, l.delivered, l.promised,
+                                       l.cost);
+        out.logs.push_back(Acore::StringFormat("[assist12] ledger group={} kind={} done={} spent={:.0f} xp{}: {}",
+                                               id, party.kind, done ? 1 : 0, spent, HelpStamp(), all));
     }
     // a closed objective or a requester gone ends its request; else it stays open for the next look
     if (auto const request = helpRequests.find(party.requestId); request != helpRequests.end())
