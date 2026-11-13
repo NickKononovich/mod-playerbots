@@ -304,6 +304,10 @@ namespace TestHarness
         // nothing killed for that long is a failure to investigate, not a slow run).
         uint32 lastBossProgressMs = 0;
         uint32 bossProgressCount = 0;
+        // [dun259] the escort as last counted for boss progress: the escorted NPC, the run's kills, where it stood
+        ObjectGuid escortProgressGuid;
+        uint32 escortProgressKills = 0;
+        Position escortProgressPos;
         bool friendlyOnlyLogged = false;  // [w24c-no-done-by-exclusion] logged once per run
         uint32 killsAtBossProgress = 0;
         std::map<uint32, uint32> killsSinceBoss;  // creature entry -> kills since the last boss progress

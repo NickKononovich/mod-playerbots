@@ -2050,6 +2050,7 @@ namespace TestHarness
         // wipe 21.4 (fos-h, the corpse run is not counted here); no raid "done" runs yet, raids get more room.
         constexpr uint32 NO_BOSS_PROGRESS_DUNGEON_MS = 25 * MINUTE * IN_MILLISECONDS;
         constexpr uint32 NO_BOSS_PROGRESS_RAID_MS = 45 * MINUTE * IN_MILLISECONDS;
+        constexpr float ESCORT_PROGRESS_YD = 5.0f;  // [dun259] the escorted NPC this far on is the escort advancing
         // [guard_kill_progress] The death of a guard of a door that opens once its own guards are dead (GuardedDoorDef
         // without guarded objects: Sunken Temple's six defenders before Jammal'an's forcefield, Uldaman's Stone
         // Keepers) is boss progress: the encounter's gate (instance data DATA_DEFENDER_KILLED). st-n build 23
@@ -4196,6 +4197,21 @@ namespace TestHarness
         // rule ended the run 43 s into the fight): the fight gets up to BOSS_ATTEMPT_GRACE_MS.
         bool const attemptRunning = activeBoss && activeBoss->attemptStartMs &&
                                     getMSTimeDiff(activeBoss->attemptStartMs, now) < BOSS_ATTEMPT_GRACE_MS;
+        // [dun259] a running escort is the event's progress: a kill while it runs (its waves) or the escorted NPC
+        // walking on (ESCORT_PROGRESS_YD from where it was last counted) restarts the window. b463 wc-n five8-8: the
+        // Disciple of Naralex's escort ran 161 s when "no boss progress for 25 min" ended the run
+        if (Creature* escort = map ? ActiveEscort(party, map) : nullptr)
+        {
+            if (party.escortProgressGuid != escort->GetGUID() || party.kills != party.escortProgressKills ||
+                escort->GetExactDist(&party.escortProgressPos) > ESCORT_PROGRESS_YD)
+            {
+                party.escortProgressGuid = escort->GetGUID();
+                party.escortProgressKills = party.kills;
+                party.escortProgressPos = escort->GetPosition();
+                party.lastBossProgressMs = now;
+                party.lastEvent = Acore::StringFormat("event: escort of {}", escort->GetName());
+            }
+        }
         // [progress-clock-future] event progress may stamp getMSTime() later in the same tick than this "now"
         // (bm-n build 27: rift 1 at 305 s, getMSTimeDiff wrapped and ended the run "no boss progress for 25 min").
         uint32 const sinceProgressMs =
