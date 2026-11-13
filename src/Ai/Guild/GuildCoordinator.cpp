@@ -7045,6 +7045,9 @@ void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Pla
         std::map<std::string, uint32> kinds;  // what it fills -> slots
         uint32 maxReq{0};
         double craftMin{0.0};
+        // [craft465] (rank a need asks, its value, its slots): the crafter is picked below, so which of these ranks
+        // it can actually hold is only known then
+        std::vector<std::tuple<uint32, double, uint32>> byRank;
     };
     std::map<uint32, Gap> gaps;
     auto const castMinutes = [](uint32 spellId, double crafts)
@@ -7085,6 +7088,7 @@ void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Pla
         if (n.forLow)
             gap.members.insert(n.forLow);
         gap.maxReq = std::max(gap.maxReq, n.reqSkill);
+        gap.byRank.emplace_back(n.reqSkill, n.value, n.count);  // [craft465]
         addCrafts(gap, n.spellId, double(n.count));
     }
     for (CraftJob const& job : crafts_)
@@ -7156,12 +7160,44 @@ void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Pla
             crafterSkill = skill;
             crafterChosen = chosen;
         }
-        // its skill-ups to the highest recipe of the gap, from the skill it holds
+        // [craft465] coordinator 2026-11-13: the ladder runs to the rank the crafter can actually hold, not to the
+        // highest rank any need asks. This is the second copy of the defect [craft461] closed in UpdateProfessions,
+        // and the fix is not that one: the sum here legitimately wants the FULL cost of closing the gap, so bounding
+        // it per point would be wrong - what was wrong is gap.maxReq, taken from a rank nobody can reach, exactly as
+        // [craft462] found for the walk's target. b484 read "gathering 696192 min" - 11603 bot-hours - and that sum
+        // decides whether the line beats questing at all ("6s 4c/h vs quests 45s 80c/h"), so the gap sank on a
+        // ladder to a rank its crafter could never train. The needs past that rank leave the gap's value with it, as
+        // [gather43] does for a chain the guild cannot bring: value and work cover the same thing
+        uint32 const reachableRank =
+            crafter ? std::max(NextRankCap(line, crafter->GetLevel(), crafter->GetPureMaxSkillValue(line)),
+                               crafterSkill)
+                    : gap.maxReq;
+        uint32 const ladderTo = std::min(gap.maxReq, reachableRank);
+        std::string pastRankText;  // [craft465] appended to the line's text once that text exists
+        if (crafter && ladderTo < gap.maxReq)
+        {
+            double pastValue = 0.0;
+            uint32 pastSlots = 0;
+            for (auto const& [reqSkill, value, slots] : gap.byRank)
+                if (reqSkill > reachableRank)
+                {
+                    pastValue += value;
+                    pastSlots += slots;
+                }
+            gap.out.value = std::max(0.0, gap.out.value - pastValue);
+            gap.out.slots = gap.out.slots > pastSlots ? gap.out.slots - pastSlots : 0;
+            pastRankText = Acore::StringFormat(
+                "; {} slot(s) worth {} ask a rank past {}, the most {} can hold at L{} - left out of the gap "
+                "[craft465]",
+                pastSlots, Gsc(uint64(pastValue)), reachableRank, Who(crafter->GetGUID().GetCounter()),
+                uint32(crafter->GetLevel()));
+        }
+        // its skill-ups to the rank it can hold, from the skill it holds
         double skillMin = 0.0;
-        if (crafter && gap.maxReq > crafterSkill)
+        if (crafter && ladderTo > crafterSkill)
         {
             std::map<size_t, double> crafts;
-            SkillUpCrafts(crafter, line, crafterSkill, gap.maxReq, crafts);
+            SkillUpCrafts(crafter, line, crafterSkill, ladderTo, crafts);
             if (auto const list = recipesBySkill_.find(line); list != recipesBySkill_.end())
                 for (auto const& [index, n] : crafts)
                 {
@@ -7269,6 +7305,7 @@ void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Pla
                 : Acore::StringFormat("; no gatherer reaches {} - {:.0f} of {:.0f} chain units blocked, so the gap "
                                       "keeps {:.0f}% of its value [gather43]",
                                       unreached, blockedUnits, blockedUnits + reachableUnits, deliverable * 100.0));
+        texts[line] += pastRankText;  // [craft465] the ranks the crafter cannot hold, and what left the gap with them
         // [gather44] which material the gathering minutes actually belong to: one near-zero pace decides the verdict
         if (slowestItem && gatherMin > 0.0)
             texts[line] += Acore::StringFormat("; slowest gathered: {} ×{:.0f} at {:.2f}/min = {:.0f} min of the "
