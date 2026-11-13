@@ -6,6 +6,7 @@
 
 #include "DestroyItemAction.h"
 #include "Event.h"
+#include "GuildCoordinator.h"  // [econ61] the guild's own routes for an item it would otherwise throw away
 #include "ItemCountValue.h"
 #include "Playerbots.h"
 #include <algorithm>
@@ -52,6 +53,13 @@ void DestroyItemAction::DestroyItem(FindItemVisitor* visitor)
         std::ostringstream out;
         out << chat->FormatItem(item->GetTemplate()) << " destroyed";
         botAI->TellMaster(out);
+
+        // [econ61] every destroy, named: the evidence that nothing a member could use or a vendor would buy is
+        // thrown away. A rare event, so the line costs nothing; world_triage.py reads it
+        ItemTemplate const* proto = item->GetTemplate();
+        LOG_INFO("playerbots", "[econ61] {} L{} destroys {} ×{} (class {}, a vendor pays {}, guild member {})",
+                 bot->GetName(), bot->GetLevel(), proto->Name1, item->GetCount(), uint32(proto->Class),
+                 proto->SellPrice, sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) ? "yes" : "no");
 
         bot->DestroyItem(item->GetBagSlot(), item->GetSlot(), true);
     }
@@ -105,11 +113,32 @@ bool SmartDestroyItemAction::Execute(Event /*event*/)
     return false;
 }
 
+// [econ61] user rule 2026-11-13 («Не выкидывать, а раздавать. Пусть их используют. Ну или продавать на всякий
+// случай»): a guild member throws away nothing a vendor would buy or the guild still wants. At 90 % bags smart
+// destroy walked ITEM_USAGE_NONE, then VENDOR and AH, then SKILL, then USE - a crafted potion a member is owed is a
+// USE item and the surplus held for another member a VENDOR one, so bag pressure ate the consumables the guild's
+// crafters had just made. Every one of those has its own guild route: the SELL task ([inv380]), the trade
+// ([guild81]), a five's provisioning ([dun208] / [dun230]) and the disenchant queue ([craft409]). What no vendor
+// buys and no call of the guild uses may still go, so a member with full bags is never stuck.
+bool SmartDestroyItemAction::GuildKeeps(uint32 itemId) const
+{
+    if (!sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()))
+        return false;
+    ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+    if (!proto)
+        return false;
+    if (proto->SellPrice)
+        return true;
+    return sGuildCoordinator.IsWanted(itemId) || sGuildCoordinator.NeedsForOwnCalls(bot, itemId);
+}
+
 bool SmartDestroyItemAction::DestroyUntilBagSpace(std::vector<uint32> const& itemIds)
 {
     // Ids, not Item*: one destroy frees every stack of an id, including later entries.
     for (uint32 const itemId : itemIds)
     {
+        if (GuildKeeps(itemId))  // [econ61] handed out or sold, never destroyed
+            continue;
         FindItemByIdVisitor visitor(itemId);
         DestroyItem(&visitor);
 

@@ -4924,6 +4924,109 @@ void GuildCoordinator::UpdateProfessions()
             glyphNeeds_ = std::move(glyphs);
         }
     }
+    // [craft450] user rule 2026-11-13 («прокачка навыка - это краеугольный этап развития персонажей. И потом они
+    // должны эти фласки раздавать»): a rank is worth the recipes it opens, so a line whose first products are cheap
+    // must still be able to climb. b477: 8 alchemists at Alchemy 14, 6, 5, 4, 3, 3, 1, 1 and every job "0.0 c saved
+    // a unit". The arithmetic was right and fatal - between them the 8 could make only Minor Healing Potion (80
+    // healing points, no vendor sells it at all), while the members drank Lesser Healing Potion (160 points, 1 s at
+    // a vendor) and 5 owed mana potions had "no alchemist makes". Alchemy was in no need of the list above
+    // ([craft428]: equipment, bags and glyphs only) and its supply term was clamped at zero, so its walk read
+    // "unlocks 0c + supplies 0c - costs 1g 34s" every update and lost to questing forever - the same trap [insc143]
+    // found on Inscription. The potions the members actually drank are a need of the recipe that would cover them:
+    // per member and kind, the best potion its level can use whose recipe no guild alchemist knows yet, worth the
+    // effect it adds over the best one they can already make, at the vendors' own copper per point ([econ60]). Game
+    // data throughout - npc_vendor's price, the potions' own spell effects, the drinks [eco194] counted; the owed
+    // count stays [eco194]'s single judge, and a kind the alchemists already cover best adds nothing
+    {
+        VendorPotionPrices const& prices = VendorPotions();
+        auto const alchemy = recipesBySkill_.find(SKILL_ALCHEMY);
+        struct PotionRecipe
+        {
+            Recipe const* r{nullptr};
+            float points{0.0f};
+            uint8 kind{0};
+            uint32 reqLevel{0};
+            bool known{false};  // a guild alchemist knows it
+        };
+        std::vector<PotionRecipe> brews;
+        if (alchemy != recipesBySkill_.end())
+            for (Recipe const& r : alchemy->second)
+            {
+                ItemTemplate const* proto = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr;
+                PotionRecipe pr;
+                pr.kind = PotionKindOf(proto, &pr.points);
+                if (pr.kind >= POTION_KINDS || pr.points <= 0.0f || prices.per[pr.kind] <= 0.0f)
+                    continue;
+                pr.r = &r;
+                pr.reqLevel = proto->RequiredLevel;
+                for (auto const& [row, m] : members)
+                    if (!HumanCharacter(m) && m->HasSpell(r.spellId))
+                    {
+                        pr.known = true;
+                        break;
+                    }
+                brews.push_back(pr);
+            }
+        std::map<uint32, std::pair<uint32, double>> potionNeeds;  // recipe spell -> (units, value)
+        std::map<uint32, uint32> potionMembers;                   // recipe spell -> members it is for
+        for (auto const& [row, m] : members)
+        {
+            auto const book = potions_.find(row->low);
+            if (book == potions_.end() || HumanCharacter(m))
+                continue;
+            for (uint8 kind = 0; kind < POTION_KINDS; ++kind)
+            {
+                uint32 const owed = book->second.Owed(kind);
+                if (!owed)
+                    continue;
+                float covered = 0.0f;         // the best of the kind the guild can make for it today
+                PotionRecipe const* open = nullptr;  // the best its level can use that nobody knows yet
+                for (PotionRecipe const& pr : brews)
+                {
+                    if (pr.kind != kind || pr.reqLevel > m->GetLevel())
+                        continue;
+                    if (pr.known)
+                        covered = std::max(covered, pr.points);
+                    else if (learnable(SKILL_ALCHEMY, pr.r->spellId) && (!open || pr.points > open->points))
+                        open = &pr;
+                }
+                if (!open || open->points <= covered)
+                    continue;
+                auto& entry = potionNeeds[open->r->spellId];
+                entry.first += owed;
+                entry.second += double(prices.per[kind]) * double(open->points - covered) * double(owed);
+                ++potionMembers[open->r->spellId];
+            }
+        }
+        std::string text;
+        for (auto const& [spellId, entry] : potionNeeds)
+        {
+            Recipe const* recipe = nullptr;
+            for (PotionRecipe const& pr : brews)
+                if (pr.r->spellId == spellId)
+                    recipe = pr.r;
+            if (!recipe || entry.second <= 0.0)
+                continue;
+            uint32 const forMembers = potionMembers[spellId];
+            needs.push_back({SKILL_ALCHEMY, recipe->reqSkill, spellId, recipe->product, entry.first, 0, false,
+                             "potion ×" + std::to_string(entry.first) + " for " + std::to_string(forMembers) +
+                                 " member" + (forMembers > 1 ? "s" : ""),
+                             entry.second});
+            if (text.size() < 300)
+                text += (text.empty() ? "" : ", ") + ItemName(recipe->product) + " ×" +
+                        std::to_string(entry.first) + " (Alch " + std::to_string(recipe->reqSkill) + ", " +
+                        Gsc(uint64(entry.second)) + ")";
+        }
+        if (text != potionNeedsLogged_)
+        {
+            potionNeedsLogged_ = text;
+            LOG_INFO("playerbots",
+                     "[craft450] the potions the members drank need these ranks: {} (vendor {:.3f} c a healing "
+                     "point, {:.3f} c a mana point)",
+                     text.empty() ? "none: the alchemists already make the best potions the members can use" : text,
+                     prices.per[POTION_HEAL], prices.per[POTION_MANA]);
+        }
+    }
     // [lag325] coordinator decision 2026-11-11 (the user's laggard focus): a member below the guild's median level
     // levels first - its profession calls (craft / buy / gather for a skill-up) wait until it reaches the median; the
     // [econ1] price of its quest XP (its own copper per XP, a few copper a minute at L13) never weighed its lag.
@@ -6234,6 +6337,8 @@ void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Pla
             return std::string("bags");
         if (proto->Class == ITEM_CLASS_GLYPH)
             return std::string("glyphs");
+        if (proto->Class == ITEM_CLASS_CONSUMABLE)  // [craft450] the potions the members drink
+            return proto->SubClass == ITEM_SUBCLASS_POTION ? std::string("potions") : std::string("consumables");
         uint8 const group = GuildGear::EquipGroup(proto->InventoryType);
         return group < GuildGear::GROUP_COUNT ? std::string(GuildGear::GroupName(group)) + "s" : std::string("items");
     };
@@ -11396,7 +11501,9 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
         job.band = key;
         job.lo = lo;
         job.hi = hi;
-        job.savedPerUnit = std::max(0.0f, vendorPer * (cookedHp + cookedMana) - jobUnitCost);
+        job.unitWorth = vendorPer * (cookedHp + cookedMana);  // [econ60] its two terms, logged apart
+        job.unitCost = jobUnitCost;
+        job.savedPerUnit = std::max(0.0f, job.unitWorth - job.unitCost);
         jobs[cookLow].push_back(job);
     }
     supplyCrafts_ = std::move(jobs);
@@ -11496,8 +11603,10 @@ void GuildCoordinator::SupplyWork(uint32 low, Player* p, double& value, double& 
             continue;
         value += double(owed) * job.made * job.savedPerUnit;
         minutes += double(owed) * job.castMin;
-        text += Acore::StringFormat("{}{} x{} for band {} ({:.1f} c saved a unit)", text.empty() ? "" : "; ",
-                                    ItemName(job.product), uint32(owed * job.made), job.band, job.savedPerUnit);
+        text += Acore::StringFormat("{}{} x{} for band {} ({:.1f} c saved a unit: {:.1f} c of vendor points less "
+                                    "{:.1f} c of reagents and cast [econ60])",
+                                    text.empty() ? "" : "; ", ItemName(job.product), uint32(owed * job.made), job.band,
+                                    job.savedPerUnit, job.unitWorth, job.unitCost);
     }
 }
 
@@ -11550,13 +11659,13 @@ void GuildCoordinator::NotePotionUse(Player* bot, uint32 itemId)
              bot->GetName(), bot->GetLevel(), proto->Name1, kind == POTION_HEAL ? "healing" : "mana", used, owed);
 }
 
-void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, Player*>> const& members)
+// [econ60] the potions a vendor sells for gold: the cheapest per point of each kind is the copper an effect point
+// costs the guild, the unit the alchemists' jobs ([eco194]) and the ranks their recipes need ([craft450]) are both
+// priced in. Read from npc_vendor and the items' own spells once
+GuildCoordinator::VendorPotionPrices const& GuildCoordinator::VendorPotions()
 {
-    // the potions a vendor sells for gold: the cheapest per point of each kind prices the alchemists' potions
+    static VendorPotionPrices prices;
     static std::once_flag once;
-    static float vendorPer[POTION_KINDS] = {-1.0f, -1.0f};
-    static std::string vendorName[POTION_KINDS];
-    static std::unordered_set<uint32> sold;
     std::call_once(once, []()
     {
         for (auto const& [entry, tmpl] : *sObjectMgr->GetCreatureTemplates())
@@ -11564,8 +11673,8 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
                 if (VendorItemData const* items = sObjectMgr->GetNpcVendorItemList(entry))
                     for (VendorItem const* item : items->m_items)
                         if (item && !item->ExtendedCost)
-                            sold.insert(item->item);
-        for (uint32 id : sold)
+                            prices.sold.insert(item->item);
+        for (uint32 id : prices.sold)
         {
             ItemTemplate const* proto = sObjectMgr->GetItemTemplate(id);
             float points = 0.0f;
@@ -11573,13 +11682,22 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
             if (kind >= POTION_KINDS || points <= 0.0f || !proto->BuyPrice)
                 continue;
             float const per = float(proto->BuyPrice) / float(std::max<uint32>(1, proto->BuyCount)) / points;
-            if (vendorPer[kind] < 0.0f || per < vendorPer[kind])
+            if (prices.per[kind] < 0.0f || per < prices.per[kind])
             {
-                vendorPer[kind] = per;
-                vendorName[kind] = proto->Name1;
+                prices.per[kind] = per;
+                prices.name[kind] = proto->Name1;
             }
         }
     });
+    return prices;
+}
+
+void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, Player*>> const& members)
+{
+    VendorPotionPrices const& prices = VendorPotions();
+    float const* vendorPer = prices.per;
+    std::string const* vendorName = prices.name;
+    std::unordered_set<uint32> const& sold = prices.sold;
     auto const kindName = [](uint8 kind) { return kind == POTION_HEAL ? "healing" : "mana"; };
 
     // the members' books: what their bags hold now against the last look, net of the potions drunk in between
@@ -11745,7 +11863,9 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
             job.castMin = castMin;
             job.reagents = bestRecipe->reagents;
             job.potionKind = kind + 1;
-            job.savedPerUnit = vendorPer[kind] > 0.0f ? std::max(0.0f, vendorPer[kind] * points - coin / made) : 0.0f;
+            job.unitWorth = vendorPer[kind] > 0.0f ? vendorPer[kind] * points : 0.0f;  // [econ60]
+            job.unitCost = coin / made;
+            job.savedPerUnit = std::max(0.0f, job.unitWorth - job.unitCost);
         }
     }
 
@@ -11753,8 +11873,12 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
     std::string jobText;
     for (auto const& [key, job] : jobs)
     {
-        jobText += Acore::StringFormat("{}{} {} x{} ({:.1f} c saved a unit)", jobText.empty() ? "" : ", ",
-                                       Who(key.first), ItemName(job.product), job.target, job.savedPerUnit);
+        // [econ60] the saving and its two terms: a clamped 0.0 alone hid that the reagents cost many times the
+        // vendor's price of the points the potion delivers (b477: every alchemy job read "0.0 c saved a unit")
+        jobText += Acore::StringFormat("{}{} {} x{} ({:.1f} c saved a unit: {:.1f} c of vendor points less {:.1f} c "
+                                       "of reagents and cast [econ60])",
+                                       jobText.empty() ? "" : ", ", Who(key.first), ItemName(job.product), job.target,
+                                       job.savedPerUnit, job.unitWorth, job.unitCost);
         crafts[key.first].push_back(job);
     }
     potionCrafts_ = std::move(crafts);
@@ -11787,9 +11911,10 @@ void GuildCoordinator::PotionWork(uint32 low, Player* p, double& value, double& 
             continue;
         value += double(owed) * job.made * job.savedPerUnit;
         minutes += double(owed) * job.castMin;
-        text += Acore::StringFormat("{}{} x{} for the members who drank theirs ({:.1f} c saved a unit) [eco194]",
+        text += Acore::StringFormat("{}{} x{} for the members who drank theirs ({:.1f} c saved a unit: {:.1f} c of "
+                                    "vendor points less {:.1f} c of reagents and cast [econ60]) [eco194]",
                                     text.empty() ? "" : "; ", ItemName(job.product), uint32(owed * job.made),
-                                    job.savedPerUnit);
+                                    job.savedPerUnit, job.unitWorth, job.unitCost);
     }
 }
 

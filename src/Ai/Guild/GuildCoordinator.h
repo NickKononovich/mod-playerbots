@@ -211,6 +211,7 @@ struct GuildRunRecord
     uint32 bossesKilled{0};
     uint32 bossesTotal{0};
     uint32 deaths{0};
+    uint32 wipes{0};  // [cert10] a clean run has none: the per-run success rate is read off these four figures
 };
 
 // [guild60] the dungeon leader's end of a five's run, as the global leader gets it
@@ -804,6 +805,40 @@ private:
         bool overMax{false};   // [order362] above the band, uncleared: it walks in for its first clear
     };
 
+    // [cert10] user rule 2026-11-13 («мне нужно, чтобы 20 последних прогонов проходили чисто, без затыков, без
+    // смертей… запускаешь все 25 человек, по 5 пятёрок, и они должны пройти без смертей, без застреваний… мы
+    // оказывается 59 раз вставали, но это не заметили»): a dungeon is done for the guild in TWO phases.
+    //   phase one, mastery:       all 75 members cleared it at least once ([order360]'s own count) - the old rule,
+    //                             and now only the first half of it;
+    //   phase two, certification: 25 members go in as 5 fives AT ONCE and every one of the five finishes completely
+    //                             clean - result "done", every boss killed, 0 deaths, 0 wipes. "stalled", "failed",
+    //                             "partial" and "stopped" are all failures, and nobody needing the loot any more is
+    //                             no reason to skip the batch.
+    // The next dungeon opens only when a batch passes; a failed batch is repeated. Why: Deadmines read "69 of 75
+    // cleared" off 26 successful runs while 59 runs failed, stalled or went partial (31 % per run) and the counter
+    // called that progress. At 31 % per run, five clean fives at once is 0.31^5 = 0.3 %, so the gate cannot pass by
+    // luck. No retry limit, no cooldown between batches, no time budget: the only two numbers are the user's own
+    // five fives and 25 bots.
+    struct CertState
+    {
+        enum class Phase : uint8
+        {
+            Mastery,  // some member has not cleared it yet
+            Certify,  // every member cleared it: the batch of 5 fives has still to pass
+            Done      // a batch passed completely clean - the next dungeon opens
+        };
+
+        Phase phase{Phase::Mastery};
+        uint32 batches{0};     // batches dispatched so far (a batch = 5 fives sent at once)
+        uint32 passedBatch{0}; // the batch that passed (0: none yet)
+        uint32 passedAt{0};    // unix time of that pass
+        std::vector<uint32> flight;  // the five ids of the batch in flight (empty: none in flight)
+        // the batch in flight / the last one judged: five id -> ("clean", or why that five failed)
+        std::vector<std::pair<uint32, std::string>> verdicts;
+        uint32 lastBatch{0};   // the batch `verdicts` belongs to
+        std::string dispatchLogged;  // world thread: the log cadence of "why no batch forms"
+    };
+
     void LoadPlan();
     void LoadRecipes();
     void LoadGatherSources();
@@ -826,11 +861,24 @@ private:
     bool FreeForFive(uint32 low, Player* p, std::string* why = nullptr) const;  // lock_ held
     std::string PlanRole(uint32 low, Player* p) const;
     bool Cleared(std::string const& contentKey, uint32 low) const;  // lock_ held
-    // lock_ held. [order360] heldByOrder: the free members the dungeon order keeps out (needCheck only)
-    std::vector<FiveCandidate> Candidates(DungeonOption const& d, bool needCheck, uint32* heldByOrder = nullptr);
+    // lock_ held. [order360] heldByOrder: the free members the dungeon order keeps out (needCheck only).
+    // [cert10] certify: the certification batch takes a member that cleared it already by the walk in too (every
+    // member has cleared it by then, so without this the pool is only those still inside the finder's band)
+    std::vector<FiveCandidate> Candidates(DungeonOption const& d, bool needCheck, uint32* heldByOrder = nullptr,
+                                          bool certify = false);
     // [order360] the dungeon order (Playerbots.Guild.DungeonOrderPerMember), lock_ held: the guild's one open dungeon
     // (guild-wide), and why a member may not go into a dungeon ("" = it may)
     void UpdateDungeonOrder();
+    // [cert10] the certification batch of the guild's open dungeon (lock_ held): 5 fives of 25 members formed in one
+    // pass, or nothing - all five are assembled before the first one is committed, so the 25 go in together
+    void CertifyBatch();
+    // [cert11] the verdict of one certification five, from the figures [guild70] printed and RecordRun wrote (the one
+    // judge of them): "" = clean, else why it failed. lock_ held
+    std::string CertVerdict(GuildFiveReport const& report) const;
+    // [cert11] a five of a batch in flight has reported (clean or not): the batch's own verdict when all five are in.
+    // lock_ held
+    void CertFiveEnded(GuildFive const& five, std::string const& why);
+    void CertSave(std::string const& contentKey);  // [cert10] the durable state (guild_project_cert)
 
 public:
     // [lag368] the member holds the guild's open dungeon back: not cleared and below its band (the guild waits on its
@@ -1164,6 +1212,10 @@ private:
         float made{1.0f};
         float castMin{0.0f};
         float savedPerUnit{0.0f};  // copper: the vendor's price of its points less its own cost
+        // [econ60] the two terms behind savedPerUnit, logged apart: a bare clamped "0.0 c saved a unit" never said
+        // whether the product is worth nothing or its reagents cost ten times what it covers
+        float unitWorth{0.0f};  // the vendor's price of the points one unit delivers
+        float unitCost{0.0f};   // its reagents and the cast, per unit
         uint32 recipeItem{0};
         uint32 recipePrice{0};
         std::vector<std::pair<uint32, uint32>> reagents;
@@ -1196,8 +1248,20 @@ private:
     std::unordered_map<uint32, PotionBook> potions_;                      // member -> its potions (lock_)
     std::unordered_map<uint32, std::vector<SupplyCraft>> potionCrafts_;  // alchemist -> its potion jobs (lock_)
     std::string potionJudged_;                                           // the last [eco194] line
+    std::string potionNeedsLogged_;  // [craft450] the last line of the ranks the members' drinks need
     // the potion kind of an item (a healing / mana potion), POTION_KINDS = none; its points (the effect's amount)
     static uint8 PotionKindOf(ItemTemplate const* proto, float* points = nullptr);
+    // [econ60] the vendors' own copper per effect point of each potion kind (the cheapest potion of the kind a
+    // vendor sells for gold: its price per unit over its spell's points) and every item such a vendor sells. The
+    // unit both the alchemists' jobs ([eco194]) and the ranks their recipes need ([craft450]) are priced in; read
+    // from npc_vendor and the item's spell once
+    struct VendorPotionPrices
+    {
+        float per[POTION_KINDS]{-1.0f, -1.0f};
+        std::string name[POTION_KINDS];
+        std::unordered_set<uint32> sold;
+    };
+    static VendorPotionPrices const& VendorPotions();
     // [eco194] lock_ held: the members' owed potions -> the alchemists' potion jobs (potionCrafts_)
     void JudgePotionSupply(std::vector<std::pair<PlanRow const*, Player*>> const& members);
     std::map<std::string, uint32> supplyCook_;                           // band -> its cook (kept while it can)
@@ -1358,6 +1422,11 @@ private:
     std::unordered_map<std::string, std::unordered_set<uint32>> missed_;
     // [done106] the dungeons no member at or below their band needs (cleared or a needed upgrade): no five forms
     std::unordered_set<std::string> guildDone_;
+    // [cert10] content -> its two-phase state (mastery / certification / done), durable in guild_project_cert
+    std::unordered_map<std::string, CertState> cert_;
+    // [cert10] a batch is 5 fives of 25 members, dispatched in one pass. The user's own two numbers, nothing else
+    static constexpr size_t CERT_FIVES = 5;
+    static constexpr size_t CERT_MEMBERS = CERT_FIVES * 5;
     std::unordered_map<std::string, std::string> needLogged_;  // [need106] the last needs line per dungeon
     // [order360] the dungeon order: dungeons_ indices by min level, max level, list order (orderIdx_) and each index's
     // place in it (orderPos_); the guild's open dungeon; per member (per-member order) its uncleared in-band dungeons'

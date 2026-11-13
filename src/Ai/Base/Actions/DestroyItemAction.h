@@ -28,6 +28,8 @@ class SmartDestroyItemAction : public DestroyItemAction
 {
 public:
     SmartDestroyItemAction(PlayerbotAI* botAI) : DestroyItemAction(botAI, "smart destroy") {}
+    // [econ61] a guild member never destroys what a vendor buys or the guild still wants: it is sold or handed out
+    bool GuildKeeps(uint32 itemId) const;
 
     bool Execute(Event event) override;
     bool isUseful() override;
