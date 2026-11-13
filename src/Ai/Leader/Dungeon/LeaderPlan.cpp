@@ -439,6 +439,7 @@ namespace Leader::Dungeon
             lead.spots.clear();
             lead.spotBest.clear();
             lead.spotStuck.clear();
+            lead.spotGroundEnd.clear();  // [dun257]
             lead.spotReassigns.clear();
             lead.spotRefused.clear();  // [lead930]
             lead.spotsFor = mob->GetGUID();
@@ -713,6 +714,16 @@ namespace Leader::Dungeon
                 continue;
             float const gap = bot->GetExactDist2d(spot->second.GetPositionX(), spot->second.GetPositionY());
             if (gap <= Leader::LEADER_SPOT_TOLERANCE)
+                continue;
+            // [dun257] b463 wc-n five4-4 2354-2647 s: Mutil's spot for the last pull before Lord Serpentis stood 7.6 yd
+            // past where the ground's route to it ends; the member stood at that end ("[lead1044] on the spot"), the
+            // gate waited "Mutil 8 yd" 290 s and the run stalled at 5/8. The member's ground fact is the arrival
+            if (auto const ground = lead.spotGroundEnd.find(member.guid);
+                ground != lead.spotGroundEnd.end() &&
+                ground->second.first.GetExactDist2d(spot->second.GetPositionX(), spot->second.GetPositionY()) <=
+                    Leader::LEADER_SPOT_TOLERANCE &&
+                bot->GetExactDist2d(ground->second.second.GetPositionX(), ground->second.second.GetPositionY()) <=
+                    Leader::LEADER_SPOT_TOLERANCE)
                 continue;
             auto& best = lead.spotBest[member.guid];
             if (!best.second || gap < best.first - 0.5f)

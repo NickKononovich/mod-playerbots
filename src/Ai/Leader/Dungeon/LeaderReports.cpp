@@ -229,6 +229,14 @@ namespace Leader::Dungeon
                                               JsonObject().Str("event", ack.what).Str("why", ack.why)
                                                   .Num("seq", ack.seq),
                                               ack.ms);
+                // [dun257] the member stands where the ground's route to its spot ends: the spot gate counts it there
+                if (ack.why.rfind("[lead1044]", 0) == 0)
+                {
+                    Leader::MemberEvents groundEvents;
+                    if (Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                        bot && Leader::Events::Get(member.guid, groundEvents))
+                        group.State().spotGroundEnd[member.guid] = {groundEvents.spot, bot->GetPosition()};
+                }
                 // [lead18] a refused leader walk: the leader issued an invalid move
                 // [lead29] member_refusal: the member's guard and the leader's model disagree (a blocker, goal 0)
                 if (ack.why.rfind("member_refusal", 0) == 0)

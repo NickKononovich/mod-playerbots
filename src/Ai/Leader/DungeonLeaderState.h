@@ -100,6 +100,9 @@ namespace Leader
         std::map<ObjectGuid, Position> spots;
         std::map<ObjectGuid, std::pair<float, uint32>> spotBest;
         std::set<ObjectGuid> spotStuck;
+        // [dun257] a member's walk to its spot ended on the ground short of it (its lead1044 ack): the spot, where
+        // it stands
+        std::map<ObjectGuid, std::pair<Position, Position>> spotGroundEnd;
         ObjectGuid spotsFor;
         Position spotsFight;
         uint32 spotsSinceMs = 0;
