@@ -3044,8 +3044,17 @@ void GuildCoordinator::UpdateOrders()
             // its quests goes to the bank list (the bag relief to a crafter with room, else the vendor, next pass),
             // gear no member's plan wants and it could wear now is sold. Food, potions, ammo, tools, quest and class
             // items stay
+            // [econ20] b475: the whole block was gated on noBank, and this guild has a bank tab - all 196 bag
+            // pressure lines of the run read "bank=yes", 18 of them "pressure=full", and not one "[econ2] full
+            // bags" line was ever logged. A material already in the bags (mailed, quested, looted before the leader
+            // judged it) was therefore never judged at all: 701 white trade-good stacks of the wanted list sat in
+            // members' bags while the guild's list read Silk Cloth 24/4588, Heavy Leather 0/464. At full bags the
+            // materials are taken over whatever the bank tab says - with a tab they go to the guild's list (the
+            // BANK_DEPOSIT order, URGENT while the bags are full, or the bag relief to a crafter that lacks them),
+            // with none they fall to the vendor sweep below exactly as before. The gear sale keeps its noBank gate:
+            // with a tab a spare piece belongs in the vault, not at a vendor
             std::set<uint32> adopted;
-            if (cls == 0 && noBank && !HumanCharacter(p))
+            if (cls == 0 && !HumanCharacter(p))
             {
                 std::map<uint32, uint32> keep;  // item -> units its own work still uses
                 if (auto const own = crafterNeed_.find(row.low); own != crafterNeed_.end())
@@ -3093,13 +3102,19 @@ void GuildCoordinator::UpdateOrders()
                             n += i->GetCount();
                             continue;  // its own called skill-ups / quest use it
                         }
+                        // [econ20] with a bank tab the guild's list means the vault: take over only what the vault
+                        // can hold now (DepositState: an empty slot or a partial stack of it), else the item would
+                        // be held with no BANK_DEPOSIT order ([bank408]) and the bags would stay full. With no tab
+                        // the old path runs: taken over here, released to the vendor by the sweep below
+                        if (!noBank && !GuildBankRun::DepositState(p, proto->ItemId, i->GetCount()).empty())
+                            continue;
                         st.held.push_back({guid, proto->ItemId, i->GetCount(), 0, "bag material"});
                         adopted.insert(guid);
-                        LOG_INFO("playerbots", "[econ2] {} full bags: {} ×{} goes to the guild's list (relief or "
+                        LOG_INFO("playerbots", "[econ20] {} full bags: {} ×{} goes to the guild's list (relief or "
                                  "sale): not for its own called skill-ups or quests", Who(row.low),
                                  ItemName(proto->ItemId), i->GetCount());
                     }
-                    else if (gear && proto->RequiredLevel <= p->GetLevel() && !PlannedFor(proto->ItemId))
+                    else if (noBank && gear && proto->RequiredLevel <= p->GetLevel() && !PlannedFor(proto->ItemId))
                     {
                         st.sell.push_back(guid);
                         LOG_INFO("playerbots", "[econ2] {} full bags: {} sold at the next vendor: not worn, no "
