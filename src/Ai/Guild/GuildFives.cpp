@@ -3483,6 +3483,46 @@ void GuildCoordinator::CertifyBatch()
                                  CERT_MEMBERS, CertPoolAudit(*d)));
         return;
     }
+    // [gate98] the pool's tanks in both orders, side by side: the one the batch used to take them in (level) and the
+    // one it takes them in now (the gate's own drop term). Both are printed so the change is visible and so neither
+    // can be read for the other - the whole defect was that one of these two stood in the code while the rule in the
+    // comment beside it named the other
+    {
+        std::vector<FiveCandidate const*> tanks;
+        for (FiveCandidate const& c : pool)
+            if (c.role == "tank")
+                tanks.push_back(&c);
+        if (!tanks.empty())
+        {
+            std::map<uint32, float> index;
+            for (FiveCandidate const* c : tanks)
+                index[c->low] = FiveGate::TankDropIndex(d->mapId, c->player);
+            auto const line = [&](bool byIndex)
+            {
+                std::vector<FiveCandidate const*> order = tanks;
+                std::stable_sort(order.begin(), order.end(),
+                                 [&](FiveCandidate const* a, FiveCandidate const* b)
+                                 {
+                                     return byIndex ? index[a->low] > index[b->low]
+                                                    : a->player->GetLevel() > b->player->GetLevel();
+                                 });
+                std::string text;
+                for (FiveCandidate const* c : order)
+                    text += Acore::StringFormat("{}{} L{} ({:.0f} ehp, {} hp)", text.empty() ? "" : ", ",
+                                                Who(c->low), c->player->GetLevel(), index[c->low],
+                                                c->player->GetMaxHealth());
+                return text;
+            };
+            std::string const both = Acore::StringFormat(
+                "batch {} tank order - by the gate's drop term ([gate20] TankDropIndex, used): {}; by level (what "
+                "it was, for comparison): {}", cs.batches + 1, line(true), line(false));
+            if (cs.tankOrderLogged != both)
+            {
+                cs.tankOrderLogged = both;
+                LOG_INFO("playerbots", "[gate98] {}: {}", d->contentKey, both);
+            }
+        }
+    }
     // one five out of what is left of the pool: the finder's band first, else a five that walks in (as the look
     // does), and the gate's own pairs ([gate93]: the four highest tanks x the four largest healer pools)
     auto const assemble = [this, d](std::vector<FiveCandidate> const& avail, std::vector<FiveCandidate>& out,
@@ -3527,8 +3567,22 @@ void GuildCoordinator::CertifyBatch()
             std::vector<FiveCandidate const*> tanks, healers, dps;
             for (FiveCandidate const& c : sub)
                 (c.role == "tank" ? tanks : c.role == "healer" ? healers : dps).push_back(&c);
-            std::stable_sort(tanks.begin(), tanks.end(), [](FiveCandidate const* a, FiveCandidate const* b)
-                             { return a->player->GetLevel() > b->player->GetLevel(); });
+            // [gate98] the batch takes its tanks by the term the gate prices, not by level. That is not a new rule:
+            // it is the user's own [order368] ("a first-clear five takes its carriers by the terms the gate prices,
+            // not by level - the tank by the gate's own drop term"), already applied to the ordinary five's carriers
+            // and to the healers' mana pool by [gate94] just below, and never applied here. The batch went on
+            // ordering tanks by level while the gate's tank term is dropShare = (drop + gapDrop) / tankHealth, which
+            // level only proxies: among the guild's L25 tanks the health spread is 869 to 1008 hp (+16 %), while the
+            // pull that held wc-n's batch 1 turned on 42 hp. With PAIRS_SIDE pairs tried, ordering by level put
+            // Ganna (869) in and left Nelaeleas (1008) out of the tries. Nothing here is a second judge of capacity:
+            // FiveGate::Judge still decides every five, this only ranks the candidates offered to it, and
+            // TankDropIndex is the gate's own term ([gate20]) read through the gate's own function
+            std::map<uint32, float> tankIndex;
+            for (FiveCandidate const* c : tanks)
+                tankIndex[c->low] = FiveGate::TankDropIndex(d->mapId, c->player);
+            std::stable_sort(tanks.begin(), tanks.end(),
+                             [&tankIndex](FiveCandidate const* a, FiveCandidate const* b)
+                             { return tankIndex[a->low] > tankIndex[b->low]; });
             // [gate94] healers by their mana pool (the gate's binding term), not by level
             std::stable_sort(healers.begin(), healers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
                              { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });

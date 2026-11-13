@@ -849,6 +849,8 @@ private:
         std::vector<std::pair<uint32, std::string>> verdicts;
         uint32 lastBatch{0};   // the batch `verdicts` belongs to
         std::string dispatchLogged;  // world thread: the log cadence of "why no batch forms"
+        // [gate98] world thread: the log cadence of the tank order (both orders, side by side)
+        std::string tankOrderLogged;
     };
 
     void LoadPlan();
