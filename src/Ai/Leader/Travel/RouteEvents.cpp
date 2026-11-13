@@ -1982,19 +1982,32 @@ namespace Leader::Travel
             // leader stood on Perelli's crate, 1.1 yd from its helper, for 4 minutes): one step out first, then the
             // use from STARTER_ITEM_STEP_OUT yd, as a player stands next to a crate.
             float const near2d = leader->GetExactDist2d(go);
+            // [cannon10] An expectDoor starter steps out to the distance its own cast gate asks for (EXPECT_DOOR_STEP),
+            // not to the generic STARTER_ITEM_STEP_OUT. The two numbers are both 3.5 and they are not the same
+            // measurement: the step out is placed in 2D from the object's centre, the gate below compares the 3D
+            // distance to EXPECT_DOOR_CAST_RANGE. An object whose origin is not at the leader's own z therefore lands
+            // the step out past the gate by construction, and the step out is taken once per object (steppedOut), so
+            // nothing walks back in. b477 dm-n 20261113-180138-dm-n-five2-2: the Defias Cannon's origin (z 7.2) lies
+            // 0.9 yd under the deck the leader stands on, "starter_step_out ... toX -109.1 toY -656.5 toZ 8.1" put it
+            // 3.53 yd out in 2D = 3.65 in 3D, and "expect_door_wait ... too far, 3.6, los true" then refused the cast
+            // 102 times from 1496 s to 2531 s with the Defias Gunpowder in its bags (starter_item_missing inBags true,
+            // canUse 0). The gate's own step in cannot save it: 2.5 yd from the centre is 1.0 yd from the step-out
+            // spot, inside the route walk's own 1.5 yd arrival tolerance (LeaderEvents' ROUTE_ARRIVED_YD), so the
+            // leader never moved and the run ended 3/7 with four bosses behind the Iron Clad Door.
+            float const stepOut = starter.def->expectDoor ? EXPECT_DOOR_STEP : STARTER_ITEM_STEP_OUT;
             // Once per object: the leader that did not get out of the model (Old Hillsbrad wave 13: five step outs at
             // 0.0 yd from a barrel, then nothing) uses it from where it stands.
             if (near2d < STARTER_ITEM_MIN_RANGE && starter.steppedOut.insert(go->GetGUID()).second)
             {
                 float const angle = near2d > 0.3f ? go->GetAngle(leader) : leader->GetOrientation() + float(M_PI);
-                G3D::Vector3 dest(go->GetPositionX() + std::cos(angle) * STARTER_ITEM_STEP_OUT,
-                                  go->GetPositionY() + std::sin(angle) * STARTER_ITEM_STEP_OUT, leader->GetPositionZ());
+                G3D::Vector3 dest(go->GetPositionX() + std::cos(angle) * stepOut,
+                                  go->GetPositionY() + std::sin(angle) * stepOut, leader->GetPositionZ());
                 float const ground = LeaderGroundZ(leader, dest.x, dest.y, dest.z + 3.0f, 10.0f);  // [dun206]
                 if (ground > INVALID_HEIGHT && DirectLineOverGround(leader, dest.x, dest.y, ground))
                 {
                     dest.z = ground;
-                    uint32 const walkMs = uint32(STARTER_ITEM_STEP_OUT /
-                                                 std::max(1.0f, leader->GetSpeed(MOVE_RUN)) * IN_MILLISECONDS);
+                    uint32 const walkMs =
+                        uint32(stepOut / std::max(1.0f, leader->GetSpeed(MOVE_RUN)) * IN_MILLISECONDS);
                     // The step out is the leader's waypoint (its own "test runner move"), kept for the walk.
                     group.SetLeaderWaypoint(leader, dest.x, dest.y, dest.z);
                     routeState.waypointHoldUntilMs = now + walkMs + 1500;
@@ -2002,7 +2015,12 @@ namespace Leader::Travel
                     group.LogEvent("starter_step_out", JsonObject().Str("note", starter.def->note)
                                                             .Num("entry", go->GetEntry()).Real("distance", near2d)
                                                             .Real("toX", dest.x).Real("toY", dest.y)
-                                                            .Real("toZ", dest.z));
+                                                            .Real("toZ", dest.z)
+                                                            // [cannon10] which step this starter asked for, and the
+                                                            // 3D distance the cast gate will read at that spot
+                                                            .Real("stepOut", stepOut)
+                                                            .Real("castDist",
+                                                                  go->GetExactDist(dest.x, dest.y, dest.z)));
                     return false;
                 }
             }
