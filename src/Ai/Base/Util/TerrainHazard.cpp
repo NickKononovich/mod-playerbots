@@ -933,6 +933,20 @@ bool HasSwimWater(Unit* mover, float x, float y, float z)
            liquid.Level > liquid.DepthLevel && liquid.Level - liquid.DepthLevel >= mover->GetMinHeightInWater();
 }
 
+// [nav221] The surface of the swimmable liquid a point lies in or under, INVALID_HEIGHT anywhere else: the same
+// water and ocean HasSwimWater asks about, never lava or slime. The air a swimmer breathes at, from game data.
+static float SwimSurfaceAt(Unit* mover, float x, float y, float z)
+{
+    Map* map = mover ? mover->GetMap() : nullptr;
+    if (!map)
+        return INVALID_HEIGHT;
+    LiquidData const liquid = map->GetLiquidData(mover->GetPhaseMask(), x, y, z, mover->GetCollisionHeight(),
+                                                 uint8(MAP_LIQUID_TYPE_WATER | MAP_LIQUID_TYPE_OCEAN));
+    if (!(liquid.Status & MAP_LIQUID_STATUS_SWIMMING) || liquid.Level <= INVALID_HEIGHT)
+        return INVALID_HEIGHT;
+    return liquid.Level;
+}
+
 bool InHarmfulLiquid(Unit* mover, float x, float y, float z)
 {
     Map* map = mover ? mover->GetMap() : nullptr;
@@ -1086,8 +1100,36 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
         // [nav24] user 2026-11-09: out in the world an island landing is never taken - there the drops are no
         // dungeon's one-way levels, and an island is where a bot stands stranded (b349-b372: the Darnassus terraces,
         // Frostmane Hold, the Elwynn river bank, the Westfall cove); a dungeon's harmless island drop stays
+        // [nav221] user 2026-11-13: a drop that drowns the mover is not a harmless one, so this reads [nav24]'s
+        // word rather than narrowing it. A water landing passes above because "the swim on is the navmesh's" - and
+        // under water that navmesh follows the floor. Where Recast left the floor and the liquid surface as
+        // separate parts (in the Deadmines canal 2.2-2.6 yd apart, over Detour's own 2 x walkableClimb), a bot that
+        // lands on the floor can swim nowhere: it stands under the surface and dies on the breath clock alone, with
+        // nothing in the log to show for it but the drop. Four deaths on one 13-polygon floor island, 14 landings
+        // in three days: Irorm twice 2026-11-11, Thamesh and Geefeelli 2026-11-13 ([nav220], staging/mmaps_dm2).
+        // The test is the mover's own reach to the air: the liquid's surface over the landing (game data) and a
+        // complete path from the landing to it. A landing already at the surface reaches it trivially, and where
+        // the surface carries no navmesh at all the end snaps back to the landing and the drop still passes - a
+        // refusal takes the proof, never the doubt. Only an island landing is asked: one joined to the rest swims
+        // out the way it came.
+        // Measured against every island water landing the harness has logged (253 of them) and every death on
+        // record (4669): bots have drowned on exactly two maps, and this test refuses the landing on both.
+        //   * the Deadmines canal floor, 7 deaths - the 13-polygon island above, surface 1.9-2.4 yd up;
+        //   * Azjol-Nerub (529-531, 546-550, z 275.9-280.3), 6 deaths in one wipe on 2026-10-24 - a 10-polygon
+        //     pocket whose surface is 8 yd up. Azjol-Nerub's INTENDED one-way levels are the dry drops at
+        //     (504-592, 535-569, z 296-733): no liquid, so this test never looks at them ([nav24] keeps them).
+        // It also refuses ~56 landings in the Slave Pens, Gundrak and Blackfathom Deeps whose own pool floor is a
+        // part of its own and where nothing has ever drowned - there the judge's landing is the bottom while the
+        // bot floats at the surface. Those drops become refusals that say so in the log, which is the trade the
+        // user's safety-over-speed ordering asks for; narrowing it further is his call, not this code's.
+        if (verdict.water && !verdict.connected)
+            if (float const surface = SwimSurfaceAt(mover, landing.x, landing.y, landing.z);
+                surface > INVALID_HEIGHT && surface > landing.z)
+                verdict.noSurface = !PathIsGround(FindBotPath(mover, landing.x, landing.y, landing.z, landing.x,
+                                                              landing.y, surface).type);  // [lead109]
         bool const openWorld = map && !map->Instanceable();
-        bool const harmless = verdict.onMesh && verdict.safe && (!openWorld || verdict.connected) &&
+        bool const harmless = verdict.onMesh && verdict.safe && !verdict.noSurface &&
+                              (!openWorld || verdict.connected) &&
                               (verdict.height <= LEDGE_FALL_SAFE ||
                                (verdict.water && verdict.height <= LEDGE_WATER_MAX_DROP));
         verdict.allowed = (verdict.connected && verdict.safe) || harmless;
@@ -1098,7 +1140,8 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
         // the group at -16.1; its walks to the containment sphere (14.2 yd down, 1.3% fall damage) were refused for
         // 250 s. Allowed onto navmesh floor joined to a living member near by a ground path, while the mover keeps
         // LEDGE_LISTED_HP_MARGIN of its health after the fall; the members up there are judged on their own.
-        if (!verdict.allowed && verdict.onMesh && !verdict.listed && !verdict.burns)
+        // [nav221] ... and a landing that drowns it is no way down either, however stranded it is on its perch
+        if (!verdict.allowed && verdict.onMesh && !verdict.listed && !verdict.burns && !verdict.noSurface)
         {
             G3D::Vector3 under;
             bool const stranded = !NavmeshLanding(mover, here, under) || here.z - under.z > LEDGE_DROP_DZ;
@@ -1156,7 +1199,12 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
                                                        FallDamageShare(unit, verdict.height) >=
                                                    LEDGE_LISTED_HP_MARGIN;
             };
-            bool fallback = !verdict.burns && memo.refusals >= LEDGE_REFUSALS_FALLBACK && verdict.onMesh &&
+            // [nav221] the general guard may not bring a drowning landing back: "the same move refused N times"
+            // is the walk insisting, not a new fact about the water. This is what the guard's an-n case costs and
+            // buys - its dry one-way drops still fall back (no liquid, no noSurface), its water pocket no longer
+            // does, and that pocket is where five bots drowned in 18 s on 2026-10-24
+            bool fallback = !verdict.burns && !verdict.noSurface && memo.refusals >= LEDGE_REFUSALS_FALLBACK &&
+                            verdict.onMesh &&
                             survives(mover) && (!openWorld || verdict.connected);  // [nav24] no island in the world
             if (fallback)
                 if (Player* player = mover->ToPlayer())
@@ -1197,9 +1245,10 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
                                                         : "dry";
             LOG_INFO("playerbots",
                      "[ledge drop] {}: {} {} to ({:.1f},{:.1f},{:.1f}): drop {:.1f} yd ({}), landing ({:.1f},{:.1f},"
-                     "{:.1f}) {}, fall {}",
+                     "{:.1f}) {}{}, fall {}",
                      mover->GetName(), verdict.allowed ? "shortcut_drop" : "refused", by, x, y, z, verdict.height,
                      kind, landing.x, landing.y, landing.z, verdict.connected ? "joined to the rest" : "an island",
+                     verdict.noSurface ? " under water it cannot surface from" : "",  // [nav221]
                      verdict.safe ? "safe" : "unsafe for the group");
             if (mover->IsPlayer())
             {
@@ -1209,6 +1258,9 @@ LedgeDropVerdict JudgeLedgeDrop(Unit* mover, float x, float y, float z, char con
                     .Str("kind", kind)
                     .Real("height", verdict.height)
                     .Num("connected", verdict.connected ? 1.0 : 0.0)
+                    // [nav221] the landing is under a liquid surface no complete path leads to: a drowning, not a
+                    // harmless island landing
+                    .Num("noSurface", verdict.noSurface ? 1.0 : 0.0)
                     .Num("safe", verdict.safe ? 1.0 : 0.0)
                     .Real("x", x)
                     .Real("y", y)

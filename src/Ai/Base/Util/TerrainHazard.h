@@ -196,6 +196,9 @@ struct LedgeDropVerdict
     float landZ = 0.0f;
     bool groundPath = false;
     bool burns = false;  // [lead223] the landing is in lava or slime: never a drop
+    // [nav221] the landing is under a liquid surface the mover cannot reach from it: the drop drowns it, so the
+    // dungeon island landing [nav24] allows as "harmless" is not harmless and is refused
+    bool noSurface = false;
 };
 
 // Judged per mover and destination (cached LEDGE_VERDICT_MS per map thread for a destination within 2 yd). A taken
