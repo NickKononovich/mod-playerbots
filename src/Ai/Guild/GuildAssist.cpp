@@ -19,7 +19,11 @@
 //   the gather's worth (its share of units at the guild's value, the gathering plan's), in its own experience.
 // Helpers are not picked here: the help pricing prices every free member's trip there and back at its own rate
 // times its own weight (a blocker helping costs the guild its blocking time), and refuses when no trip pays off.
-// Log: [assist1] blockers|assign lines, each on change.
+// - [assist22] Gate-held: the open dungeon's in-band uncleared member no five the gate passes carries (its own
+//   pairs refused, [order364]'s carriers none). Its levels are the unlock as in (a); its target is the level whose
+//   class base stat covers the best five's worst pull (UnlockLevel), else the next level. Its quest pace is priced at
+//   that weight (QuestCopperPerMinute) and it helps nobody else while it holds the unlock (HoldsGuildDungeon).
+// Log: [assist1] blockers|assign lines, each on change; [assist22] the critical gate-held member, on change.
 
 #include <algorithm>
 #include <cmath>
@@ -60,6 +64,40 @@ float XpToLevel(Player* p, uint32 level)
     return std::max(0.0f, xp - float(p->GetUInt32Value(PLAYER_XP)));
 }
 
+// [assist22] the level at which the gate's margin closes for the member: the worst pull's binding term is its own
+// (a healer's mana, a tank's drop) and the class base stat it scales with (player_classlevelstats' base mana / base
+// health) reaches the load times the one judged at; else the next level. At most the band's last level
+uint32 UnlockLevel(Player* p, GuildCoordinator::GateHold const& h, uint32 maxLevel, std::string& how)
+{
+    uint32 const next = p->GetLevel() + 1u;
+    bool const healerMana = h.role == "healer" && h.mana >= h.drop;
+    bool const tankDrop = h.role == "tank" && h.drop >= h.mana;
+    if ((!healerMana && !tankDrop) || h.load <= 1.0f || !h.level)
+    {
+        how = Acore::StringFormat("the next level: the worst pull's load {:.2f} (drop {:.2f}, mana {:.2f}) is no term "
+                                  "of its own as {}",
+                                  h.load, h.drop, h.mana, h.role);
+        return next;
+    }
+    auto const base = [&](uint32 level)
+    {
+        PlayerClassLevelInfo info;
+        sObjectMgr->GetPlayerClassLevelInfo(p->getClass(), uint8(level), &info);
+        return float(healerMana ? info.basemana : info.basehealth);
+    };
+    float const at = base(h.level);
+    for (uint32 level = next; at > 0.0f && level <= maxLevel; ++level)
+        if (float const now = base(level); now >= at * h.load)
+        {
+            how = Acore::StringFormat("its base {} x{:.2f} of L{}'s covers the worst pull's {:.2f}",
+                                      healerMana ? "mana" : "health", now / at, h.level, h.load);
+            return level;
+        }
+    how = Acore::StringFormat("its base {} covers no load {:.2f} within the band: its last level",
+                              healerMana ? "mana" : "health", h.load);
+    return std::max(maxLevel, next);
+}
+
 struct Blocker
 {
     uint32 low = 0;
@@ -90,6 +128,21 @@ void GuildCoordinator::SetFiveWanted(std::unordered_map<uint32, std::string>&& w
 {
     std::lock_guard<std::mutex> guard(assistLock_);
     fiveWanted_ = std::move(wanted);
+}
+
+void GuildCoordinator::SetGateHeld(std::unordered_map<uint32, GateHold>&& held, bool judged)
+{
+    if (!judged)
+        return;
+    std::lock_guard<std::mutex> guard(assistLock_);
+    gateHeld_ = std::move(held);
+}
+
+float GuildCoordinator::UnlockWeight(uint32 low) const
+{
+    std::lock_guard<std::mutex> guard(assistLock_);
+    auto const found = unlockWeight_.find(low);
+    return found == unlockWeight_.end() ? 1.0f : found->second;
 }
 
 void GuildCoordinator::NoteGatherBlocked(Player* bot, uint32 placeId, std::string const& why)
@@ -138,10 +191,23 @@ void GuildCoordinator::UpdateAssist()
     std::vector<Blocker> blockers;
     std::vector<std::tuple<uint32, uint32, WorldPosition, float, std::string>> escorts;  // low, place, spot, xp, why
     std::vector<EscortAsk> asks;
+    std::unordered_map<uint32, GateHold> gateHeld;  // [assist22]
     {
         std::lock_guard<std::mutex> guard(assistLock_);
         asks.swap(escortAsks_);
+        gateHeld = gateHeld_;
     }
+    std::unordered_map<uint32, float> unlock;  // [assist22]
+    struct GateCritical
+    {
+        uint32 low = 0;
+        uint8 level = 0;
+        uint32 target = 0;
+        float xp = 0.0f;
+        float weight = 1.0f;
+        uint32 waiting = 0;
+        std::string dungeon, how;
+    } gateCritical;
     {
         CoordLock guard(lock_, __func__);
         std::vector<std::pair<uint32, Player*>> online;
@@ -209,6 +275,40 @@ void GuildCoordinator::UpdateAssist()
                     }
             uint32 critical = 0;
             float criticalT = 0.0f, criticalRate = 0.0f, criticalXp = 0.0f;
+            uint32 criticalLevel = open->minLevel;
+            std::string criticalHow;  // [assist22] empty: below the band (a)
+            for (auto const& [low, p] : online)
+            {
+                // [assist22] in band, uncleared, held by the gate's verdict: its levels to the margin are the unlock
+                auto const held = gateHeld.find(low);
+                if (below.count(low) || held == gateHeld.end() || held->second.contentKey != open->contentKey ||
+                    Cleared(open->contentKey, low))
+                    continue;
+                std::string how;
+                uint32 const target = UnlockLevel(p, held->second, open->maxLevel, how);
+                float const xp = XpToLevel(p, target);
+                float const rate = QuestRoute::XpPerSecond(low);
+                float const t = rate > 0.0f ? xp / rate : std::numeric_limits<float>::max();
+                if (!critical || t > criticalT)
+                {
+                    critical = low;
+                    criticalT = t;
+                    criticalRate = rate;
+                    criticalXp = xp;
+                    criticalLevel = target;
+                    criticalHow = how;
+                }
+                Blocker b;
+                b.low = low;
+                b.key = "gate " + Who(low) + " " + std::to_string(target);
+                GateHold const& h = held->second;
+                b.text = Acore::StringFormat("[assist22] {} L{} in {}'s band, no five the gate passes carries its "
+                                             "first clear ({} at L{}: best {} of {} pulls over, worst {:.2f}): {:.0f} "
+                                             "xp to L{} ({}) at {:.2f} xp/s",
+                                             Who(low), p->GetLevel(), open->contentKey, h.role, h.level, h.over,
+                                             h.judged, h.load, xp, target, how, rate);
+                blockers.push_back(std::move(b));
+            }
             for (auto const& [low, p] : online)
             {
                 if (!below.count(low))
@@ -222,6 +322,8 @@ void GuildCoordinator::UpdateAssist()
                     criticalT = t;
                     criticalRate = rate;
                     criticalXp = xp;
+                    criticalLevel = open->minLevel;
+                    criticalHow.clear();
                 }
                 Blocker b;
                 b.low = low;
@@ -233,19 +335,38 @@ void GuildCoordinator::UpdateAssist()
             if (critical && criticalRate > 0.0f && waitRate > 0.0f && fiveShare > 0.0f)
             {
                 float const term = waitRate * fiveShare / criticalRate;
+                std::string const what =
+                    criticalHow.empty()
+                        ? "the last below " + open->contentKey + "'s band"
+                        : Acore::StringFormat("[assist22] the gate holds {} to L{}", open->contentKey, criticalLevel);
                 std::string const why = Acore::StringFormat(
-                    "the last below {}'s band ({:.0f} xp, {:.0f} min at its rate): {} members wait for {} at {:.2f} "
-                    "xp/s, {:.0f}% of the guild's time in fives",
-                    open->contentKey, criticalXp, criticalT / 60.0f, waiting, next ? next->contentKey : "-", waitRate,
+                    "{} ({:.0f} xp, {:.0f} min at its rate): {} members wait for {} at {:.2f} xp/s, {:.0f}% of the "
+                    "guild's time in fives",
+                    what, criticalXp, criticalT / 60.0f, waiting, next ? next->contentKey : "-", waitRate,
                     fiveShare * 100.0f);
                 weights[critical] = {1.0f + term, why};
+                unlock[critical] = 1.0f + term;
+                if (!criticalHow.empty())
+                    for (auto const& [low, p] : online)
+                        if (low == critical)
+                        {
+                            gateCritical.low = low;
+                            gateCritical.level = p->GetLevel();
+                            gateCritical.target = criticalLevel;
+                            gateCritical.xp = criticalXp;
+                            gateCritical.weight = 1.0f + term;
+                            gateCritical.waiting = waiting;
+                            gateCritical.dungeon = open->contentKey;
+                            gateCritical.how = criticalHow;
+                        }
                 for (Blocker& b : blockers)
                     if (b.low == critical)
                         b.text += Acore::StringFormat(" - the critical one, unlock x{:.2f} ({})", 1.0f + term, why);
             }
             // its in-band uncleared members wait for a five, not for a helper (the five planner's)
             for (auto const& [low, p] : online)
-                if (!Cleared(open->contentKey, low) && !below.count(low) && p->GetLevel() <= open->maxLevel)
+                if (!Cleared(open->contentKey, low) && !below.count(low) && p->GetLevel() <= open->maxLevel &&
+                    !gateHeld.count(low))
                     blockers.push_back({low,
                                         Acore::StringFormat("{} L{} {} first clear (in band: the fives')", Who(low),
                                                             p->GetLevel(), open->contentKey),
@@ -327,6 +448,7 @@ void GuildCoordinator::UpdateAssist()
     {
         std::lock_guard<std::mutex> guard(assistLock_);
         assistWeight_.swap(weights);
+        unlockWeight_.swap(unlock);
     }
     for (auto const& [low, place, spot, xp, why] : escorts)
         if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low)))
@@ -374,5 +496,40 @@ void GuildCoordinator::UpdateAssist()
     {
         assistAssignLogged_ = line;
         LOG_INFO("playerbots", "[assist1] {}", line);
+    }
+
+    // [assist22] the critical gate-held member: its weight, its experience to the gate's level, its help parties
+    std::string helpers;
+    for (NewRpgCoop::HelpView const& h : helps)
+    {
+        if (!gateCritical.low || h.requester != gateCritical.low)
+            continue;
+        std::string names;
+        for (uint32 helper : h.helpers)
+        {
+            Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(helper));
+            names += (names.empty() ? "" : ", ") + Who(helper) + (p ? " L" + std::to_string(p->GetLevel()) : "");
+        }
+        if (names.empty())
+            names = h.lastRefusal.empty() ? std::string("not priced yet") : "none: " + h.lastRefusal.substr(0, 120);
+        helpers += (helpers.empty() ? "" : "; ") + h.goal + " -> " + names;
+    }
+    if (helpers.empty())
+        helpers = "none (no help asked)";
+    std::string const criticalKey =
+        gateCritical.low ? Acore::StringFormat("{}|{}|{}|{:.1f}|{}", gateCritical.low, gateCritical.level,
+                                               gateCritical.target, gateCritical.weight, helpers)
+                         : std::string();
+    if (criticalKey != assist22Logged_)
+    {
+        assist22Logged_ = criticalKey;
+        if (!gateCritical.low)
+            LOG_INFO("playerbots", "[assist22] critical blocker: none (no gate-held member moves the unlock)");
+        else
+            LOG_INFO("playerbots", "[assist22] critical blocker: {} L{} holds {} for {} members: weight {:.2f}, XP to "
+                     "L{} {:.0f} ({}), helpers {}; its quest pace priced x{:.2f} (flights, town stops)",
+                     Who(gateCritical.low), gateCritical.level, gateCritical.dungeon, gateCritical.waiting,
+                     gateCritical.weight, gateCritical.target, gateCritical.xp, gateCritical.how, helpers,
+                     gateCritical.weight);
     }
 }

@@ -6685,12 +6685,16 @@ float GuildCoordinator::QuestCopperPerMinute(Player* bot)
 {
     if (!bot)
         return 0.0f;
-    CoordLock guard(lock_, __func__);
-    auto const itr = bots_.find(bot->GetGUID().GetCounter());
     float copper = 0.0f;
-    if (itr == bots_.end() || !QuestPace(itr->second, bot, copper))
-        return 0.0f;
-    return copper;
+    {
+        CoordLock guard(lock_, __func__);
+        auto const itr = bots_.find(bot->GetGUID().GetCounter());
+        if (itr == bots_.end() || !QuestPace(itr->second, bot, copper))
+            return 0.0f;
+    }
+    // [assist22] the unlock's critical member: its questing is worth its guild weight (the time it trades for a fare,
+    // a town stop on another landmass)
+    return copper * UnlockWeight(bot->GetGUID().GetCounter());
 }
 
 double GuildCoordinator::TownStopCopper(Player* bot, WorldPosition const& pos) const

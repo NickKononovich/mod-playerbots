@@ -805,6 +805,24 @@ public:
     // the five look's free members with a need of a dungeon whose pool holds a five's roles and passes the gate
     std::string FiveWanted(uint32 low) const;
     void SetFiveWanted(std::unordered_map<uint32, std::string>&& wanted);  // UpdateFives' look
+    // [assist22] the five look's gate verdict on the open dungeon: no five the gate passes carries the member's first
+    // clear ([order364]'s carriers, [gate93]'s pairs) - its role there, its level then and the best five's margin
+    struct GateHold
+    {
+        std::string contentKey;
+        std::string role;
+        uint8 level{0};
+        float load{0.0f};  // the worst pull's load of the best five tried, its tank-drop and healer-mana terms
+        float drop{0.0f};
+        float mana{0.0f};
+        uint32 over{0};
+        uint32 judged{0};
+    };
+    // UpdateFives' look; `judged`: the look judged a five for the open dungeon (else the last verdict stands)
+    void SetGateHeld(std::unordered_map<uint32, GateHold>&& held, bool judged);
+    // [assist22] any thread: the member's experience is the guild's unlock (case (a) or the gate-held critical one) -
+    // its weight, 1 when it is none
+    float UnlockWeight(uint32 low) const;
 
 private:
     mutable std::mutex assistLock_;  // [assist1] behind it: the weights and the escort asks (never waits on another)
@@ -820,6 +838,9 @@ private:
     };
     std::vector<EscortAsk> escortAsks_;
     std::unordered_map<uint32, std::string> fiveWanted_;  // [assist18]
+    std::unordered_map<uint32, GateHold> gateHeld_;       // [assist22]
+    std::unordered_map<uint32, float> unlockWeight_;      // [assist22] the unlock's critical member and its weight
+    std::string assist22Logged_;                          // world thread
     std::string assistBlockersLogged_;  // [assist1] world thread: the last blocker / assignment lines
     std::string assistAssignLogged_;
 

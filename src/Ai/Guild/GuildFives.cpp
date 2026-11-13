@@ -549,6 +549,13 @@ namespace FiveGate
         float healingMana = 0.0f;
         float fightRegen = 0.0f;
         std::map<ObjectGuid, float> walkRegen;
+        // [assist22] the margin: the worst pull's load and its terms (the tank's drop, the healer's mana), the pulls
+        // over capacity of those judged
+        float worstLoad = 0.0f;
+        float worstDrop = 0.0f;
+        float worstMana = 0.0f;
+        uint32 over = 0;
+        uint32 judged = 0;
     };
 
     // The five: the tank first, the healer second (PickFive's order). [dun170] The dungeon is pulled as its leader
@@ -1299,6 +1306,11 @@ namespace FiveGate
                              worst.manaNeeded, worst.fightMana, healMana, worst.manaShare)
                        : std::string("-");
         out.clears = failed == 0 && judged > 0;
+        out.worstLoad = worst.load;  // [assist22]
+        out.worstDrop = worst.dropShare;
+        out.worstMana = worst.manaShare;
+        out.over = failed;
+        out.judged = judged;
         out.why = Acore::StringFormat(
             "{} of {} pulls over capacity ([dun170] as the leader splits them, {} patrols pulled apart, each from full "
             "after a rest; [split263] {} round a corner{}; [split254] {} with crowd control, {} with the tank's "
@@ -2462,8 +2474,12 @@ void GuildCoordinator::UpdateDungeonOrder()
 
 bool GuildCoordinator::HoldsGuildDungeon(uint32 low) const
 {
-    std::lock_guard<std::mutex> guard(orderHeldLock_);
-    return orderHeldBelow_.count(low) > 0;
+    {
+        std::lock_guard<std::mutex> guard(orderHeldLock_);
+        if (orderHeldBelow_.count(low))
+            return true;
+    }
+    return UnlockWeight(low) > 1.0f;  // [assist22] the gate-held member whose levels are the unlock
 }
 
 std::string GuildCoordinator::OrderHold(DungeonOption const& d, uint32 low, Player* p)
@@ -3715,6 +3731,17 @@ void GuildCoordinator::AutoFive()
     std::map<std::string, std::string> lookWhy;
     std::unordered_map<uint32, std::string> fiveWanted;  // [assist18] this look's members a five would take
     std::set<std::string> gateNo;                        // [assist18] the dungeons whose five the gate refused
+    // [assist22] the open dungeon's uncleared members no five the gate passes carries, each with the best margin of the
+    // fives tried with it (the lowest worst-pull load)
+    std::unordered_map<uint32, GateHold> gateHeld;
+    bool gateJudged = false;
+    auto const noteHeld = [&gateHeld](std::string const& key, FiveCandidate const& c, FiveGate::Verdict const& v)
+    {
+        GateHold& h = gateHeld[c.low];
+        if (h.judged && h.load <= v.worstLoad)
+            return;
+        h = {key, c.role, uint8(c.player->GetLevel()), v.worstLoad, v.worstDrop, v.worstMana, v.over, v.judged};
+    };
     for (uint32 guardCount = 0; guardCount < 10; ++guardCount)  // one five per dungeon look, at most ten a look
     {
         // the free members of each dungeon's band (lock), their upgrades (no lock: the bots' own values)
@@ -3942,12 +3969,14 @@ void GuildCoordinator::AutoFive()
                                 healers.begin() + std::min(healers.size(), CARRIERS_SIDE));
                 std::vector<uint32> kept;
                 std::string keptWhy;
+                std::vector<std::pair<FiveCandidate const*, FiveGate::Verdict>> refused;  // [assist22]
                 for (FiveCandidate const* carrier : carriers)
                 {
                     Player* tank = carrier->role == "tank" ? carrier->player : nullptr;
                     Player* healer = carrier->role == "healer" ? carrier->player : nullptr;
                     std::vector<Player*> dpsSlots;
                     std::string clears;
+                    std::vector<FiveCandidate const*> carried;  // [assist22]
                     for (FiveCandidate const& c : u->second)
                     {
                         Player** slot = c.role == "tank" ? &tank : c.role == "healer" ? &healer : nullptr;
@@ -3958,6 +3987,7 @@ void GuildCoordinator::AutoFive()
                         else
                             dpsSlots.push_back(c.player);
                         clears += " " + c.player->GetName() + ",";
+                        carried.push_back(&c);
                     }
                     if (clears.empty())
                         continue;  // its slot is the uncleared members' only one: it carries none of them
@@ -3972,8 +4002,14 @@ void GuildCoordinator::AutoFive()
                         continue;
                     std::vector<Player*> trial{tank, healer};
                     trial.insert(trial.end(), dpsSlots.begin(), dpsSlots.end());
-                    if (!FiveGate::Judge(d->mapId, trial).clears)
+                    FiveGate::Verdict trialVerdict = FiveGate::Judge(d->mapId, trial);
+                    gateJudged |= guardCount == 0;  // [assist22]
+                    if (!trialVerdict.clears)
+                    {
+                        for (FiveCandidate const* c : carried)
+                            refused.emplace_back(c, trialVerdict);
                         continue;
+                    }
                     kept.push_back(carrier->low);
                     clears.pop_back();
                     keptWhy += Acore::StringFormat(" {} {} (first clear of{} passes the gate),", carrier->role,
@@ -3989,6 +4025,9 @@ void GuildCoordinator::AutoFive()
                     if (guardCount == 0)
                         lookWhy[d->contentKey] += " -> [order364] kept from repeats:" + keptWhy;
                 }
+                if (guardCount == 0 && kept.empty())  // [assist22]
+                    for (auto const& [c, v] : refused)
+                        noteHeld(d->contentKey, *c, v);
                 static std::map<std::string, std::string> order364Logged;  // world thread: a log cadence
                 if (std::string& logged = order364Logged[d->contentKey]; logged != keptWhy)
                 {
@@ -4062,6 +4101,15 @@ void GuildCoordinator::AutoFive()
             for (FiveCandidate const& c : five)
                 players.push_back(c.player);
             FiveGate::Verdict verdict = FiveGate::Judge(d->mapId, players);
+            // [assist22] the open dungeon's fives refused here: each uncleared member's best margin among them
+            bool const openFive = guardCount == 0 && d->contentKey == orderOpenKey_ &&
+                                  !sPlayerbotAIConfig.GuildDungeonOrderPerMember;
+            std::vector<std::pair<FiveCandidate const*, FiveGate::Verdict>> refusedFives;
+            gateJudged |= openFive;
+            if (openFive && !verdict.clears)
+                for (FiveCandidate const& c : five)
+                    if (c.needsClear)
+                        refusedFives.emplace_back(&c, verdict);
             // [gate93] the gate judges the five PickFive took (its tank and healer by level); another tank / healer of
             // the same pool may carry the dungeon (a healer's mana pool, a tank's armor): each pair is judged, the
             // first that clears is the five. b411: dm-n "13 of 167 pulls over capacity; worst 2.35: ... heal mana 993
@@ -4107,7 +4155,18 @@ void GuildCoordinator::AutoFive()
                         alt[1] = h->player;
                         FiveGate::Verdict const altVerdict = FiveGate::Judge(d->mapId, alt);
                         if (!altVerdict.clears)
+                        {
+                            if (openFive)  // [assist22] its uncleared members: the pair's and the dps slots'
+                            {
+                                for (FiveCandidate const* c : {t, h})
+                                    if (c->needsClear)
+                                        refusedFives.emplace_back(c, altVerdict);
+                                for (size_t i = 2; i < five.size(); ++i)
+                                    if (five[i].needsClear)
+                                        refusedFives.emplace_back(&five[i], altVerdict);
+                            }
                             continue;
+                        }
                         LOG_INFO("playerbots", "[gate93] five for {}: {} / {} did not clear ({}); {} tank, {} healer "
                                  "clear: {}",
                                  d->contentKey, five[0].player->GetName(), five[1].player->GetName(), verdict.why,
@@ -4129,6 +4188,12 @@ void GuildCoordinator::AutoFive()
                 {
                     lookWhy[d->contentKey] += " -> the gate says no: " + verdict.why;
                     gateNo.insert(d->contentKey);  // [assist18]
+                }
+                if (openFive)  // [assist22] no pair of the pool carries its uncleared members
+                {
+                    gateJudged = true;
+                    for (auto const& [c, v] : refusedFives)
+                        noteHeld(d->contentKey, *c, v);
                 }
                 if (std::string& logged = gateWhy[d->contentKey]; logged != verdict.why)
                 {
@@ -4187,6 +4252,7 @@ void GuildCoordinator::AutoFive()
             for (auto itr = fiveWanted.begin(); itr != fiveWanted.end();)  // [assist18] a five the gate passes
                 itr = gateNo.count(itr->second.substr(0, itr->second.find(' '))) ? fiveWanted.erase(itr) : ++itr;
             SetFiveWanted(std::move(fiveWanted));
+            SetGateHeld(std::move(gateHeld), gateJudged);  // [assist22]
         }
         if (!best)
             return;
