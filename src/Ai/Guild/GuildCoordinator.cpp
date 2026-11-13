@@ -2066,6 +2066,30 @@ void GuildCoordinator::UpdateOrders()
             reach[skill] = cap;
             return cap;
         };
+        // [gather45] coordinator 2026-11-13: [gather40] gated on the skill alone, so Fel Iron Ore ×424 stayed a need -
+        // Mining 275 is under the guild's ceiling of 300, and a L25 member really could train Artisan Mining and
+        // practise to it. What it can never do is stand at the node: Fel Iron is in Outland, whose areas are safe
+        // from level 58. A need no member can reach a PLACE for is no more a need than one no member can reach the
+        // skill for - the same rule, read on the other half of the source. BestRate is the guild plan's own answer
+        // (it walks the item's non-instance places and returns 0 when none has a spawn safe for that bot's level or
+        // its skill is short), so no distance, zone list or expansion appears here
+        std::unordered_map<uint32, bool> placeReach;
+        auto const placeReachable = [&](uint32 item) -> bool
+        {
+            if (auto const known = placeReach.find(item); known != placeReach.end())
+                return known->second;
+            bool any = false;
+            for (PlanRow const& row : plan_)
+            {
+                if (any)
+                    break;
+                if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                    p && p->IsInWorld() && !HumanCharacter(p))
+                    any = sGuildGatherPlan.BestRate(item, p) > 0.0f;
+            }
+            placeReach[item] = any;
+            return any;
+        };
         {
             CoordLock guard(lock_, __func__);
             // [gather40] coordinator 2026-11-13: a material whose node asks a gathering skill no member of the guild
@@ -2086,7 +2110,20 @@ void GuildCoordinator::UpdateOrders()
                     int32 req = 0;
                     sGuildGatherPlan.Gatherable(w.itemId, &skill, &req);
                     uint32 const ceiling = skill ? ceilingOf(skill) : 0;
-                    if (ceiling && req > int32(ceiling))
+                    bool const overSkill = ceiling && req > int32(ceiling);
+                    if (!overSkill && !placeReachable(w.itemId))  // [gather45]
+                    {
+                        ++reachDropped;
+                        reachUnits += w.Short();
+                        reachKey += "p" + std::to_string(w.itemId) + ",";
+                        if (reachText.size() < 260)
+                            reachText += (reachText.empty() ? "" : ", ") + ItemName(w.itemId) + " ×" +
+                                         std::to_string(w.Short()) + " (no member can stand at any of its places " +
+                                         "[gather45])";
+                        stock[w.itemId] = {w.need, w.have};  // the stock line still shows it
+                        continue;
+                    }
+                    if (overSkill)
                     {
                         ++reachDropped;
                         reachUnits += w.Short();
@@ -7014,6 +7051,17 @@ void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Pla
         double gatherMin = 0.0;
         std::set<uint32> gatherers;
         std::string unreached;
+        // [gather43] the chain's units the guild can bring and the ones it cannot: an unobtainable material used to
+        // keep its slots' value in the gap while its minutes dropped out of botMinutes below, so a material nobody
+        // can reach made the gap read BETTER - full value, less work. b483 the Tailoring gap went "474 slots, value
+        // 531g (694608 min) = 4s 59c/h" to "397 slots, value 428g (3848 min) = 6g 67s 57c/h" once those minutes left
+        // the sum: a 180x swing in the denominator that then flows into [craft436]'s worth per unit and makes every
+        // gatherer of the line URGENT. Value and work must cover the same chain
+        double reachableUnits = 0.0, blockedUnits = 0.0;
+        // [gather44] the material most of the gathering minutes belong to, and its own pace
+        double slowestMin = 0.0, slowestUnits = 0.0;
+        uint32 slowestItem = 0;
+        float slowestPace = 0.0f;
         for (auto const& [item, units] : gap.out.raw)
         {
             if (VendorSource(item, crafter ? crafter->GetMapId() : ANY_MAP))
@@ -7040,10 +7088,41 @@ void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Pla
             // reagents the guild cannot bring instead of booking minutes at a chest's 0.4 units an hour
             float const pace = supplied ? gatherPace(item, skill, req, nullptr) : 0.0f;
             if (pace > 0.0f)
-                gatherMin += left / pace;
-            else if (unreached.size() < 60)
-                unreached += (unreached.empty() ? "" : ", ") + ItemName(item) + " ×" +
-                             std::to_string(uint32(std::ceil(left)));
+            {
+                // [gather44] b483 this sum read "gathering 696192 min" - 11603 bot-hours - and it decides whether the
+                // line beats questing at all ("6s 4c/h vs quests 45s 80c/h"), so one material at a near-zero pace
+                // sinks a whole gap. The line names the item most of those minutes belong to, as [ench169] does for
+                // a crafter's walk, instead of leaving the next reader to guess which one it was
+                double const mins = left / pace;
+                gatherMin += mins;
+                reachableUnits += left;  // [gather43]
+                if (mins > slowestMin)
+                {
+                    slowestMin = mins;
+                    slowestItem = item;
+                    slowestUnits = left;
+                    slowestPace = pace;
+                }
+            }
+            else
+            {
+                blockedUnits += left;  // [gather43] counted, so the value it blocks leaves the gap with its minutes
+                if (unreached.size() < 60)
+                    unreached += (unreached.empty() ? "" : ", ") + ItemName(item) + " ×" +
+                                 std::to_string(uint32(std::ceil(left)));
+            }
+        }
+        // [gather43] the gap is worth the share of its chain the guild can actually bring. The proportion is the
+        // chain's own units - no threshold and no new number - and it is the rule [gather40] already applies to a
+        // single need ("a material nobody can reach is not a need"), read here for the gap that need belongs to.
+        // A fully blocked chain is worth nothing until something unblocks it, which is what [craft432]'s climb and
+        // [craft451]'s blocker exist to do
+        double const chainUnits = reachableUnits + blockedUnits;
+        double deliverable = 1.0;
+        if (chainUnits > 0.0 && blockedUnits > 0.0)
+        {
+            deliverable = reachableUnits / chainUnits;
+            gap.out.value *= deliverable;
         }
         gap.out.botMinutes = gap.craftMin + skillMin + gatherMin;
         double const perHour = gap.out.botMinutes > 0.0 ? gap.out.value / gap.out.botMinutes * 60.0 : 0.0;
@@ -7060,7 +7139,18 @@ void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Pla
             SkillShort(line), kinds, gap.out.slots, gap.out.members, Gsc(uint64(gap.out.value)), gap.out.botMinutes,
             skillMin, gap.craftMin, gatherMin, Gsc(uint64(perHour)), Gsc(uint64(questPerMinute * 60.0)),
             crafters.empty() ? std::string("no crafter") : crafters, gatherers.size(),
-            unreached.empty() ? std::string() : "; no gatherer reaches " + unreached);
+            unreached.empty()
+                ? std::string()
+                // [gather43] the inputs of the cut: which units of the chain are blocked, and what the gap keeps
+                : Acore::StringFormat("; no gatherer reaches {} - {:.0f} of {:.0f} chain units blocked, so the gap "
+                                      "keeps {:.0f}% of its value [gather43]",
+                                      unreached, blockedUnits, blockedUnits + reachableUnits, deliverable * 100.0));
+        // [gather44] which material the gathering minutes actually belong to: one near-zero pace decides the verdict
+        if (slowestItem && gatherMin > 0.0)
+            texts[line] += Acore::StringFormat("; slowest gathered: {} ×{:.0f} at {:.2f}/min = {:.0f} min of the "
+                                               "{:.0f} [gather44]",
+                                               ItemName(slowestItem), slowestUnits, slowestPace, slowestMin,
+                                               gatherMin);
         ranked.push_back(gap.out);
     }
     std::stable_sort(ranked.begin(), ranked.end(),

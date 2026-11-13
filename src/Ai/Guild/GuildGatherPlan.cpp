@@ -1441,6 +1441,7 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                 continue;
             a.need = uint32(std::ceil(left->second));
             a.ratePerHour = effective;
+            a.placeRatePerHour = rate;  // [gather44]
             a.travelSec = o->travel;
             a.valuePerMin = value;
             a.questPerMin = quest;
@@ -1658,6 +1659,7 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                         best.spot = place.spot;
                         best.need = uint32(std::ceil(left));
                         best.ratePerHour = effective;
+                        best.placeRatePerHour = rate;  // [gather44]
                         best.travelSec = o.travel;
                         best.valuePerMin = value;
                         best.questPerMin = quest;
@@ -1697,8 +1699,13 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                 : Acore::StringFormat("gathering {:.1f} c/min ({:.1f} c/unit) {} quests {:.1f} c/min ({})",
                                       a.valuePerMin, valueOf(a.itemId), a.worth ? ">" : "≤", a.questPerMin,
                                       qw == questWhy.end() ? std::string("formula") : qw->second);
-        a.why = Acore::StringFormat("short {}, here {:.1f}/h, walk {:.0f} s, bots at the spot {}; {}{}", a.need,
-                                    a.ratePerHour, a.travelSec, a.worth ? placeLoad[a.placeId - 1] : 0, pace,
+        // [gather44] `here` is the place's rate after the walk is amortised over the share, `place` its own rate: the
+        // verdict runs on the first, and the two coincide once the work outlasts the walk, so the shortfall's size
+        // does not enter the comparison at all
+        a.why = Acore::StringFormat("short {}, here {:.1f}/h (place {:.1f}/h [gather44]), walk {:.0f} s, bots at the "
+                                    "spot {}; {}{}",
+                                    a.need, a.ratePerHour, a.placeRatePerHour, a.travelSec,
+                                    a.worth ? placeLoad[a.placeId - 1] : 0, pace,
                                     a.kind == GatherKind::FISH && roleFishers.count(a.botLow)
                                         ? "; [fish110] a guild fisher: its role"
                                         : "");

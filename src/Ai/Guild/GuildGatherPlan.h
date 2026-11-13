@@ -72,6 +72,11 @@ struct GatherAssignment
     uint32 need{0};        // the guild shortfall of the item
     uint32 share{0};       // what this gatherer is expected to bring
     float ratePerHour{0.0f};  // units per hour at the place for this bot (shared supply, catch chance)
+    // [gather44] the place's own rate before the walk is amortised over the share. The urgency verdict below runs on
+    // ratePerHour, and these two coincide whenever the work outlasts the walk - which is why the size of the
+    // shortfall does NOT move the verdict (b483: the silk request fell ~40x and the holds rose). Logged so the next
+    // reader sees that from the line instead of deriving it
+    float placeRatePerHour{0.0f};
     float travelSec{0.0f};
     // [gather] the leader's value test: the gather's copper per minute (the item's wanted value x the rate, the walk
     // paid for over the share) against the bot's questing copper per minute by formula ([questrate]
