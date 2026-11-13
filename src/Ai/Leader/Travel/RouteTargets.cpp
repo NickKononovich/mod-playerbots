@@ -1426,6 +1426,27 @@ namespace Leader::Travel
     {
         using PlannedStop = GroupRouteState::PlannedStop;
 
+        // [dun256] the open pull order on a mob the route now skips as a detour ends, with the issued decision
+        void CloseDetourOrder(LeaderGroup& group, Player* leader, Creature* mob, std::string const& reason)
+        {
+            Leader::PullOrder open;
+            if (!Leader::Orders::GetOpen(group.LeaderGuid(), open) || open.target != mob->GetGUID())
+                return;
+            std::string const why = "[dun256] the walk to it is a " + reason;
+            if (!Leader::Orders::Close(group.LeaderGuid(), Leader::OrderState::Aborted, why, leader->GetPosition(),
+                                       nullptr))
+                return;
+            PullPlanner::Decision waiting;
+            if (PullPlanner::TakeIssued(group.LeaderGuid(), 0, waiting, false) &&
+                (waiting.planTarget == mob->GetGUID() || waiting.attack == mob->GetGUID() ||
+                 waiting.lookTarget == mob->GetGUID()))
+                PullPlanner::CancelIssued(group.LeaderGuid());
+            LOG_INFO("playerbots", "[dun256] {}: the open pull order {} on {} ends: {}", leader->GetName(), open.id,
+                     mob->GetName(), why);
+            group.LogEvent("detour_order_closed", JsonObject().Str("mob", mob->GetName()).Num("entry", mob->GetEntry())
+                                                      .Num("order", open.id).Str("why", why).Str("tag", "[dun256]"));
+        }
+
         // [lead204] a mob's planned spot: where it was spawned (a wanderer walks round it)
         Position PlanSpawnSpot(Creature* mob)
         {
@@ -4215,6 +4236,10 @@ namespace Leader::Travel
                     ++detours;
                     std::string const reason =
                         Acore::StringFormat("detour ({:.0f} yd for {:.0f} yd)", path.length, straight);
+                    // [dun256] b463 wc-n five8-8 3547-3598 s: the engage on a Druid of the Fang ordered on the
+                    // ledge stayed open after the drop to the Disciple; the tank walked its 1055 yd way round, met
+                    // the far halls' trash and the escort began 22 min late. A detour is no pull: its order ends
+                    CloseDetourOrder(group, leader, creature, reason);
                     uint32& loggedMs = detourLoggedMs[{group.Run().runSeq, creature->GetGUID()}];
                     if (!loggedMs || getMSTimeDiff(loggedMs, now) >= DETOUR_LOG_MS)
                     {
