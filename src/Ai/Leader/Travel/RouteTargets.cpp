@@ -5099,11 +5099,22 @@ namespace Leader::Travel
                 }
             }
 
-            // [dme-starter-blocked] a priority step whose order holds but that cannot be done says why (dme-h 012157:
+            // [dme-starter-blocked] a step whose order holds but that cannot be done says why (dme-h 012157:
             // Ironbark never chosen, not one starter line in 345 s of "next boss behind a closed door").
+            // [cert24] ...and that now holds for a NON-priority step too, which is where it was needed most. The one
+            // step between the guild and a certified Wailing Caverns is the Naralex ritual, and its starter is
+            // non-priority by design (the ritual is the end of the dungeon, not its gate), so the reason it did not
+            // run was computed here and thrown away: 8 of 34 historical wc-n stalls ended "Mutanus the Devourer -
+            // event not started" with no line saying why, and ten fives stood on that step at once with the plan
+            // printed ([dun231] "Disciple of Naralex 201 'Let the event begin!'") and nothing after it. The data is
+            // not the problem - menu 201 offers option 0 "Let the event begin!", npcflag 1, and the four Fanglords
+            // the step waits on were all dead in those runs - so the fact had to be the verdict here, and it was
+            // suppressed by the one condition that tells a priority step from an ordinary one.
+            // Reporting only: the reason is said, never acted on, and blockedLogged still keeps it to once per
+            // starter per reason
             auto const blocked = [&](std::string const& why)
             {
-                if ((starter.def->priority || nextBossDoorBlocked) && starter.blockedLogged != why)
+                if (starter.blockedLogged != why)
                 {
                     starter.blockedLogged = why;
                     group.LogEvent("starter_blocked", JsonObject().Str("note", starter.def->note).Str("why", why));
