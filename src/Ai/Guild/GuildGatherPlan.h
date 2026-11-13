@@ -80,8 +80,24 @@ struct GatherAssignment
     float valuePerMin{0.0f};
     float questPerMin{-1.0f};  // < 0: no quest it can price (the bot quests)
     bool worth{false};
+    // [craft432] a tier climb (GatherClimb): the skill it raises toward `climbTo` at this place; itemId is then what
+    // the place yields that the guild wants (else its main yield), `need` the points the leg gains
+    uint32 climbSkill{0};
+    int32 climbTo{0};
     std::string placeName;
     std::string why;
+};
+
+// [craft432] a crafter's skill-up walk stops on a gathering tier no member reaches (b463 "Iron Ore ×6: no member
+// gatherer reaches it (Mine 125)"): the guild's gatherer of that skill who gains the most per minute climbs toward it
+// at the places that still give it skill-ups, valued by what the tier unblocks
+struct GatherClimb
+{
+    uint32 skill{0};    // SKILL_MINING / SKILL_HERBALISM / SKILL_SKINNING
+    int32 target{0};    // the tier the walks need
+    uint32 itemId{0};   // the blocked material (the log)
+    float value{0.0f};  // copper: the members' needs past the blocked points of the walks it stops (craft428 values)
+    std::string forWhat;
 };
 
 // A crafter's conversion that turns a raw material into the reagent (milling, prospecting, disenchanting)
@@ -117,7 +133,9 @@ public:
                                          std::map<uint32, float> const& unitValue,
                                          std::map<uint32, std::string> const& questWhy,
                                          // [fish110] the guild's fishers: their fishing is their guild role
-                                         std::set<uint32> const& roleFishers = {});
+                                         std::set<uint32> const& roleFishers = {},
+                                         // [craft432] the gathering tiers the crafters' walks wait for
+                                         std::vector<GatherClimb> const& climbs = {});
     // map thread: the bot's walk to its place was refused by the solo judge (TripRefused) or ended no nearer than the
     // last one (the walk gave the place up): the place is off for this bot until its next level, Assign picks again
     void Refuse(Player* bot, uint32 placeId, std::string const& why);
@@ -151,6 +169,9 @@ public:
     void LogStock(std::map<uint32, std::pair<uint32, uint32>> const& needHave) const;
 
     static char const* KindName(GatherKind kind);
+    // [craft432] the core's chance of a gathering skill-up at skill `value` on a spawn of skill `req`
+    // (Player::UpdateGatherSkill: orange / yellow / green / grey by req + 25 / 50 / 100), 0..1
+    static float SkillUpChance(uint32 skill, int32 value, int32 req);
     static int32 SkinningReq(uint8 mobLevel);  // the core's Spell::CheckCast skinning requirement
     static uint8 MaxSafeMobLevel(uint8 botLevel);  // the highest level below orange con (Acore::XP::GetColorCode)
 
@@ -171,6 +192,12 @@ private:
     // units per hour this bot gets at the place (shared with `others` already sent there); 0 = cannot work there:
     // the supply (live spawns over their respawn) capped by its own work (walk, kill, cast) - a formula
     float Rate(GatherPlace const& place, uint32 itemId, Player* bot, uint32 others) const;
+    // the spawns (node, mob, chest) per hour this bot works at a non-fishing place (Rate is this times the yield)
+    float Visits(GatherPlace const& place, Player* bot, uint32 others) const;
+    // [craft432] the skill points a climb at the place gains toward `target` (its rank cap, the spawns' grey edge)
+    // and the hours they take there: false = no skill-up here
+    bool ClimbLeg(GatherPlace const& place, Player* bot, uint32 others, int32 target, float& points,
+                  float& hours) const;
     // the base-rank gather casts (OpenLootAction / LootAction use the same ids)
     static constexpr uint32 SPELL_HERB_GATHERING_BASE = 2366;
     static constexpr uint32 SPELL_MINING_BASE = 2575;
@@ -209,10 +236,12 @@ private:
         uint32 itemId{0};
         uint32 startMs{0};
         uint32 units{0};
+        uint32 startSkill{0};  // [craft432] a climb: the skill when it began
     };
     std::unordered_map<uint32, Session> sessions_;  // bot -> the units since its assignment began
     std::map<std::pair<uint32, uint32>, uint8> refused_;  // (bot, place) -> the bot level it was refused at
     std::unordered_map<uint32, std::string> idleWhy_;      // bot -> why it got no place (logged on change)
+    std::map<std::string, std::string> climbWhy_;  // [craft432] "skill:tier" -> why nobody climbs (Assign only)
     bool loaded_{false};
 };
 

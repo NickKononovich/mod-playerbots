@@ -120,6 +120,21 @@ namespace
         return std::to_string(itemId);
     }
 
+    char const* SkillName(uint32 skill)  // [craft432] the gathering skills of a climb (the decision lines' names)
+    {
+        switch (skill)
+        {
+            case SKILL_MINING:
+                return "Mine";
+            case SKILL_HERBALISM:
+                return "Herb";
+            case SKILL_SKINNING:
+                return "Skin";
+            default:
+                return "skill";
+        }
+    }
+
     // the lowest bot level for which a spot is safe: hostiles of normal rank below orange con, elites gray
     uint8 MinSafeBotLevel(uint8 normal, uint8 elite)
     {
@@ -1078,6 +1093,15 @@ float GuildGatherPlan::Rate(GatherPlace const& place, uint32 itemId, Player* bot
                                               float(others + 1);
     }
 
+    return Visits(place, bot, others) * perUnit;
+}
+
+float GuildGatherPlan::Visits(GatherPlace const& place, Player* bot, uint32 others) const
+{
+    if (place.kind == GatherKind::FISH || (place.skill && !bot->HasSkill(place.skill)))
+        return 0.0f;
+    int32 const skill = place.skill ? int32(bot->GetSkillValue(place.skill)) : 0;
+    uint8 const level = bot->GetLevel();
     // nodes, chests, skinnable mobs: what respawns at the spawns this bot may work (level safety, skill)
     float live = 0.0f;
     for (auto const& [minLevel, req, weight] : place.spawnReq)
@@ -1085,7 +1109,7 @@ float GuildGatherPlan::Rate(GatherPlace const& place, uint32 itemId, Player* bot
             live += weight;
     if (live <= 0.0f || place.respawnSec <= 0.0f)
         return 0.0f;
-    float const rate = live * 3600.0f / place.respawnSec * perUnit / float(others + 1);
+    float const rate = live * 3600.0f / place.respawnSec / float(others + 1);
     // [questrate] what the bot itself works per hour, by formula (b338: the supply alone - every live spawn of a whole
     // zone, capped only by a measured gathering pace - gave one L8 657 Light Leather / h at Elder Crag Boars): per
     // spawn the walk to the next live one of its share (spread over the spawns' box: the 2D mean nearest distance
@@ -1111,7 +1135,69 @@ float GuildGatherPlan::Rate(GatherPlace const& place, uint32 itemId, Player* bot
             return 0.0f;
         work += place.killHp / dps;
     }
-    return work > 0.0f ? std::min(rate, 3600.0f / work * perUnit) : rate;
+    return work > 0.0f ? std::min(rate, 3600.0f / work) : rate;
+}
+
+float GuildGatherPlan::SkillUpChance(uint32 skill, int32 value, int32 req)
+{
+    if (value < req)
+        return 0.0f;
+    // SkillGainChance(value, req + 100, req + 50, req + 25): per mille, rolled against irand(1, 1000)
+    ServerConfigs const band = value >= req + 100  ? CONFIG_SKILL_CHANCE_GREY
+                                 : value >= req + 50 ? CONFIG_SKILL_CHANCE_GREEN
+                                 : value >= req + 25 ? CONFIG_SKILL_CHANCE_YELLOW
+                                                     : CONFIG_SKILL_CHANCE_ORANGE;
+    uint32 chance = sWorld->getIntConfig(band) * 10;
+    // mining and skinning lose half the chance per step of skill when the steps are set
+    uint32 const steps = skill == SKILL_MINING     ? sWorld->getIntConfig(CONFIG_SKILL_CHANCE_MINING_STEPS)
+                         : skill == SKILL_SKINNING ? sWorld->getIntConfig(CONFIG_SKILL_CHANCE_SKINNING_STEPS)
+                                                   : 0;
+    if (steps)
+    {
+        uint32 const shift = uint32(value) / steps;
+        chance = shift >= 32 ? 0 : chance >> shift;
+    }
+    return float(std::min<uint32>(chance, 1000)) / 1000.0f;
+}
+
+bool GuildGatherPlan::ClimbLeg(GatherPlace const& place, Player* bot, uint32 others, int32 target, float& points,
+                               float& hours) const
+{
+    points = hours = 0.0f;
+    if (!place.skill || !bot->HasSkill(place.skill))
+        return false;
+    int32 const start = int32(bot->GetPureSkillValue(place.skill));
+    int32 const end = std::min(target, int32(bot->GetPureMaxSkillValue(place.skill)));
+    if (start >= end)
+        return false;
+    float const visits = Visits(place, bot, others);
+    if (visits <= 0.0f)
+        return false;
+    // the spawns it works now (Visits' set), each roll at the core's chance for the skill it holds by then
+    int32 const workSkill = int32(bot->GetSkillValue(place.skill));
+    uint8 const level = bot->GetLevel();
+    int32 const gain = int32(std::max<uint32>(1, sWorld->getIntConfig(CONFIG_SKILL_GAIN_GATHERING)));
+    std::map<int32, float> byReq;  // the worked spawns' weight per skill requirement (a place: one or a few)
+    float weights = 0.0f;
+    for (auto const& [minLevel, req, weight] : place.spawnReq)
+        if (minLevel <= level && req <= workSkill)
+        {
+            byReq[req] += weight;
+            weights += weight;
+        }
+    if (weights <= 0.0f)
+        return false;
+    for (int32 v = start; v < end; v += gain)
+    {
+        float chance = 0.0f;
+        for (auto const& [req, weight] : byReq)
+            chance += weight * SkillUpChance(place.skill, v, req);
+        if (chance <= 0.0f)
+            break;
+        hours += weights / (chance * visits);  // the visits one skill-up takes at this skill
+        points += float(std::min(gain, end - v));
+    }
+    return points > 0.0f;
 }
 
 float GuildGatherPlan::TravelSeconds(Player* bot, GatherPlace const& place) const
@@ -1157,15 +1243,18 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                                                       std::map<uint32, float> const& questPace,
                                                       std::map<uint32, float> const& unitValue,
                                                       std::map<uint32, std::string> const& questWhy,
-                                                      std::set<uint32> const& roleFishers)
+                                                      std::set<uint32> const& roleFishers,
+                                                      std::vector<GatherClimb> const& climbs)
 {
     std::vector<GatherAssignment> out;
     if (!loaded_)
         return out;
 
     std::map<std::pair<uint32, uint32>, uint8> refused;
+    std::unordered_map<uint32, GatherAssignment> previous;  // [craft432] last update's assignments (the keep pass)
     {
         std::lock_guard<std::mutex> guard(lock_);
+        previous = assigned_;
         // a level-up (or a logout) gives every refused place another try
         for (auto itr = refused_.begin(); itr != refused_.end();)
         {
@@ -1286,6 +1375,220 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
     std::map<uint32, uint32> itemBots;   // item -> bots already on it (worth only)
     std::vector<bool> taken(gatherers.size(), false);
     std::vector<GatherAssignment> picks;
+    auto const placeAllowed = [&](Player* bot, GatherPlace const& place)
+    {
+        return !place.instance && ContinentAllowed(bot, place.mapId, place.spot) &&
+               !TravelRouteMgr::IsEnemyZone(bot, place.zoneId) &&
+               (place.zoneId == bot->GetZoneId() || ZoneSafeLevel(place.zoneId) <= bot->GetLevel()) &&
+               !refused.count({bot->GetGUID().GetCounter(), place.id});
+    };
+
+    // [craft433] b465: every update (5 s) planned the URGENT gathers anew and 147 GATHER tasks were dropped before
+    // they started - Hobliir's Light Hide went Rabid Dire Wolf / Great Goretusk / Young Black Ravager and back 24
+    // times, Laaral's Copper Ore Redridge -> Wetlands -> Hillsbrad on walks of 600-1100 s: no assigned gatherer
+    // reached its place in 37 min. A bot keeps the place of its last URGENT gather while that still yields the item
+    // and still beats its questing; on a transit map (the Deeprun Tram: every place "another continent") as it was
+    std::vector<GatherAssignment> keep(gatherers.size());
+    std::vector<bool> keeps(gatherers.size(), false);
+    for (size_t b = 0; b < gatherers.size(); ++b)
+    {
+        Player* bot = gatherers[b];
+        auto const old = previous.find(bot->GetGUID().GetCounter());
+        if (old == previous.end() || !old->second.worth || old->second.climbSkill)  // climbs: judged below
+            continue;
+        GatherAssignment a = old->second;
+        auto const left = remaining.find(a.itemId);
+        if (left == remaining.end())
+            continue;
+        MapEntry const* map = sMapStore.LookupEntry(bot->GetMapId());
+        if (!map || map->IsContinent() || map->Instanceable())
+        {
+            auto const opts = options.find({b, a.itemId});
+            if (opts == options.end())
+                continue;
+            auto const o = std::find_if(opts->second.begin(), opts->second.end(),
+                                        [&](Option const& x) { return x.place + 1 == a.placeId; });
+            if (o == opts->second.end())
+                continue;
+            GatherPlace const& place = places_[o->place];
+            float const rate = Rate(place, a.itemId, bot, 0);
+            if (rate <= 0.0f)
+                continue;
+            float const quest = questOf(bot);
+            float const effective = left->second / (left->second / rate + o->travel / 3600.0f);
+            float const value = effective * valueOf(a.itemId) / 60.0f;
+            bool const fisher = place.kind == GatherKind::FISH && roleFishers.count(a.botLow);
+            if (!fisher && (quest < 0.0f || value <= quest))
+                continue;
+            a.need = uint32(std::ceil(left->second));
+            a.ratePerHour = effective;
+            a.travelSec = o->travel;
+            a.valuePerMin = value;
+            a.questPerMin = quest;
+        }
+        keep[b] = a;
+        keeps[b] = true;
+    }
+
+    // [craft432] the tiers the crafters' walks wait for: per tier the gatherer whose climb pays the most per minute
+    // (the tier's value is gained once, by the first to reach it - one climber), at a place of its level band whose
+    // spawns still give it skill-ups by the core's chance, plus what they yield of the guild's shortfall. A climb
+    // runs when it beats the bot's questing and the gather it holds; the climber of the last update keeps it while
+    // it still does
+    for (GatherClimb const& c : climbs)
+    {
+        if (c.value <= 0.0f || c.target <= 0)
+            continue;
+        struct ClimbPick
+        {
+            float perMin{-1.0f};
+            size_t bot{0}, place{0};
+            float points{0.0f}, hours{0.0f}, travel{0.0f}, units{0.0f}, worth{0.0f}, output{0.0f};
+            uint32 item{0};
+            bool wasClimber{false};
+        } pick;
+        std::string none = "no gatherer with the skill below the tier";
+        for (size_t b = 0; b < gatherers.size(); ++b)
+        {
+            Player* bot = gatherers[b];
+            if (taken[b] || !bot->HasSkill(c.skill))
+                continue;
+            int32 const skill = int32(bot->GetPureSkillValue(c.skill));
+            if (skill >= c.target)
+                continue;
+            float const quest = questOf(bot);
+            if (quest < 0.0f)  // [lag333] below the median level, or no quest pace: it levels first
+            {
+                none = "its gatherers level first (no quest pace to beat)";
+                continue;
+            }
+            if (int32(bot->GetPureMaxSkillValue(c.skill)) <= skill)
+            {
+                none = "its gatherers wait for the next rank at the trainer";
+                continue;
+            }
+            float const floor = std::max(quest, keeps[b] ? keep[b].valuePerMin : 0.0f);
+            auto const old = previous.find(bot->GetGUID().GetCounter());
+            bool const wasClimber = old != previous.end() && old->second.climbSkill == c.skill;
+            for (size_t i = 0; i < places_.size(); ++i)
+            {
+                GatherPlace const& place = places_[i];
+                if (place.skill != c.skill || (place.kind != GatherKind::NODE && place.kind != GatherKind::SKIN) ||
+                    !placeAllowed(bot, place))
+                    continue;
+                float points = 0.0f, hours = 0.0f;
+                if (!ClimbLeg(place, bot, placeLoad[i], c.target, points, hours))
+                    continue;
+                float travel = 0.0f;
+                if (place.mapId == bot->GetMapId())
+                    travel = TravelSeconds(bot, place);
+                else
+                {
+                    auto const key = std::make_pair(b, place.mapId);
+                    auto cached = routeCache.find(key);
+                    if (cached == routeCache.end())
+                        cached = routeCache.emplace(key, TravelSeconds(bot, place)).first;
+                    travel = cached->second;
+                }
+                if (travel == FLT_MAX)
+                    continue;
+                float const worth = c.value * points / float(c.target - skill);
+                float const visits = Visits(place, bot, placeLoad[i]);
+                float output = 0.0f, itemValue = -1.0f, itemUnits = 0.0f;
+                uint32 item = 0;
+                for (auto const& [yieldItem, perVisit] : place.yield)
+                {
+                    float const units = visits * perVisit * hours;
+                    auto const short_ = remaining.find(yieldItem);
+                    float const v =
+                        short_ == remaining.end() ? 0.0f : std::min(units, short_->second) * valueOf(yieldItem);
+                    output += v;
+                    if (v > itemValue || (v == itemValue && units > itemUnits))
+                    {
+                        itemValue = v;
+                        itemUnits = units;
+                        item = yieldItem;
+                    }
+                }
+                float const minutes = travel / 60.0f + hours * 60.0f;
+                float const perMin = minutes > 0.0f ? (worth + output) / minutes : 0.0f;
+                if (perMin <= floor)
+                {
+                    none = "no climb beats its gatherers' questing";
+                    continue;
+                }
+                bool const better = wasClimber != pick.wasClimber ? wasClimber : perMin > pick.perMin;
+                if (pick.perMin >= 0.0f && !better)
+                    continue;
+                pick = {perMin, b, i, points, hours, travel, itemUnits, worth, output, item, wasClimber};
+            }
+        }
+        std::string const climbKey = std::to_string(c.skill) + ":" + std::to_string(c.target);
+        if (pick.perMin < 0.0f)
+        {
+            if (climbWhy_[climbKey] != none)
+            {
+                climbWhy_[climbKey] = none;
+                LOG_INFO("playerbots", "[craft432] climb {} {} for {} ({}, worth {:.0f} c): nobody climbs - {}",
+                         SkillName(c.skill), c.target, ItemName(c.itemId), c.forWhat, c.value, none);
+            }
+            continue;
+        }
+        climbWhy_.erase(climbKey);
+        Player* bot = gatherers[pick.bot];
+        GatherPlace const& place = places_[pick.place];
+        uint32 const skill = bot->GetPureSkillValue(c.skill);
+        taken[pick.bot] = true;
+        ++placeLoad[pick.place];
+        GatherAssignment a;
+        a.botLow = bot->GetGUID().GetCounter();
+        a.itemId = pick.item;
+        a.placeId = place.id;
+        a.kind = place.kind;
+        a.spot = place.spot;
+        a.need = uint32(std::ceil(pick.points));
+        a.share = uint32(std::ceil(pick.units));
+        a.ratePerHour = pick.hours > 0.0f ? pick.points / pick.hours : 0.0f;
+        a.travelSec = pick.travel;
+        a.valuePerMin = pick.perMin;
+        a.questPerMin = questOf(bot);
+        a.worth = true;
+        a.climbSkill = c.skill;
+        a.climbTo = c.target;
+        a.placeName = PlaceName(place);
+        auto const qw = questWhy.find(a.botLow);
+        a.why = Acore::StringFormat(
+            "[craft432] climb {} {} -> {} for {} ({}): +{:.0f} points here at {:.1f}/h (skill-up {:.0f} % now), walk "
+            "{:.0f} s; the tier {:.0f} c x {:.0f}/{} points + its yield the guild lacks {:.0f} c = {:.1f} c/min > "
+            "quests {:.1f} c/min ({})",
+            SkillName(c.skill), skill, c.target, ItemName(c.itemId), c.forWhat, pick.points, a.ratePerHour,
+            [&]
+            {
+                float chance = 0.0f, weights = 0.0f;
+                int32 const work = int32(bot->GetSkillValue(c.skill));
+                for (auto const& [minLevel, req, weight] : place.spawnReq)
+                    if (minLevel <= bot->GetLevel() && req <= work)
+                    {
+                        chance += weight * SkillUpChance(c.skill, int32(skill), req);
+                        weights += weight;
+                    }
+                return weights > 0.0f ? 100.0f * chance / weights : 0.0f;
+            }(),
+            pick.travel, c.value, pick.points, c.target - int32(skill), pick.output, pick.perMin, a.questPerMin,
+            qw == questWhy.end() ? std::string("formula") : qw->second);
+        picks.push_back(a);
+    }
+    for (size_t b = 0; b < gatherers.size(); ++b)
+        if (keeps[b] && !taken[b])
+        {
+            size_t const place = keep[b].placeId - 1;
+            taken[b] = true;
+            ++placeLoad[place];
+            itemRate[keep[b].itemId] += keep[b].ratePerHour;
+            ++itemBots[keep[b].itemId];
+            picks.push_back(keep[b]);
+        }
+
     for (bool const worthPhase : {true, false})
         for (size_t round = 0; round < gatherers.size(); ++round)
         {
@@ -1359,6 +1662,8 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
     // keeps the shortfall (what it picks on its quests counts toward it)
     for (GatherAssignment& a : picks)
     {
+        if (a.climbSkill)  // [craft432] its leg's yield and its own reason
+            continue;
         GatherPlace const& place = places_[a.placeId - 1];
         uint32 const shortBy = shortfall.at(a.itemId);
         float const total = itemRate[a.itemId];
@@ -1386,7 +1691,7 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
     {
         auto const old = assigned_.find(a.botLow);
         if (old == assigned_.end() || old->second.itemId != a.itemId || old->second.placeId != a.placeId ||
-            old->second.worth != a.worth)
+            old->second.worth != a.worth || old->second.climbSkill != a.climbSkill)
         {
             Player* bot = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(a.botLow));
             LOG_INFO("playerbots",
@@ -1400,8 +1705,10 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                          bot->GetName(), uint32(bot->GetLevel()), bot->GetPureSkillValue(SKILL_FISHING),
                          bot->GetPureMaxSkillValue(SKILL_FISHING), ItemName(a.itemId), a.ratePerHour, a.placeName,
                          a.worth ? "URGENT" : "QUESTS_ON");
-            if (old == assigned_.end() || old->second.itemId != a.itemId)
-                sessions_[a.botLow] = {a.itemId, getMSTime(), 0};
+            if (old == assigned_.end() || old->second.itemId != a.itemId ||
+                old->second.climbSkill != a.climbSkill)
+                sessions_[a.botLow] = {a.itemId, getMSTime(), 0,
+                                       a.climbSkill && bot ? uint32(bot->GetPureSkillValue(a.climbSkill)) : 0u};
         }
         next[a.botLow] = a;
         out.push_back(a);
@@ -1445,10 +1752,30 @@ void GuildGatherPlan::OnGathered(Player* bot, uint32 itemId, uint32 count)
     // [gather] b337: chest loot made every drop "gathered" (Frayed Gloves, Worn Leather Boots: 339 of 376 got lines);
     // a got line is a node / skin / fish item, a converted reagent, or the item of the bot's assignment
     bool assignedItem = false;
+    uint32 climbSkill = 0, climbStart = 0, climbMs = 0;
+    int32 climbTo = 0;
     {
         std::lock_guard<std::mutex> guard(lock_);
         auto const a = assigned_.find(low);
         assignedItem = a != assigned_.end() && a->second.itemId == itemId;
+        if (a != assigned_.end() && a->second.climbSkill && harvest_.count(itemId))
+            if (auto const s = sessions_.find(low); s != sessions_.end())
+            {
+                climbSkill = a->second.climbSkill;
+                climbTo = a->second.climbTo;
+                climbStart = s->second.startSkill;
+                climbMs = s->second.startMs;
+            }
+    }
+    if (climbSkill)  // [craft432] the climb's progress at each harvest
+    {
+        uint32 const now = bot->GetPureSkillValue(climbSkill);
+        float const hours = float(GetMSTimeDiffToNow(climbMs)) / float(HOUR * IN_MILLISECONDS);
+        LOG_INFO("playerbots", "[craft432] climb {} {} {}/{} toward {}: +{} since it began ({:.1f}/h), harvest {} x{}",
+                 bot->GetName(), SkillName(climbSkill), now, bot->GetPureMaxSkillValue(climbSkill), climbTo,
+                 now > climbStart ? now - climbStart : 0,
+                 hours > 0.0f ? float(now > climbStart ? now - climbStart : 0) / hours : 0.0f, ItemName(itemId),
+                 count);
     }
     if (!assignedItem && !harvest_.count(itemId) && !disenchantMats_.count(itemId) && !conversions_.count(itemId))
         return;

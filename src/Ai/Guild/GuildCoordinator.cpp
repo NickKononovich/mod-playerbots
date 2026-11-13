@@ -2035,11 +2035,28 @@ void GuildCoordinator::UpdateOrders()
                     }
         }
         std::set<uint32> fishers;
+        std::vector<GatherClimb> climbs;
         {
             CoordLock guard(lock_, __func__);
             fishers = fishers_;
+            // [craft432] the tiers no member online reaches (one that does: its walk waits for a place or a safe
+            // level, not for a climb)
+            for (auto const& [tier, need] : climbNeeds_)
+            {
+                bool reached = false;
+                for (PlanRow const& row : plan_)
+                    if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                        p && p->IsInWorld() && p->HasSkill(tier.first) &&
+                        p->GetPureSkillValue(tier.first) >= tier.second)
+                    {
+                        reached = true;
+                        break;
+                    }
+                if (!reached)
+                    climbs.push_back({tier.first, int32(tier.second), need.itemId, float(need.value), need.forWhat});
+            }
         }
-        sGuildGatherPlan.Assign(shortfall, gatherers, questPace, unitValue, questWhy, fishers);
+        sGuildGatherPlan.Assign(shortfall, gatherers, questPace, unitValue, questWhy, fishers, climbs);
         if (gatherStockCalls_++ % GATHER_STOCK_LOG_EVERY == 0)  // a log cadence, no decision
             sGuildGatherPlan.LogStock(stock);
     }
@@ -2488,6 +2505,12 @@ void GuildCoordinator::UpdateOrders()
             o.placeId = a.placeId;
             o.pos = a.spot;
             o.details = ItemName(a.itemId) + " ×" + std::to_string(a.share) + " @ " + a.placeName;
+            if (a.climbSkill)  // [craft432] its own task key: a climb is not the gather of its item
+            {
+                o.skillLine = a.climbSkill;
+                o.details = std::string(SkillShort(a.climbSkill)) + " climb to " + std::to_string(a.climbTo) + ": " +
+                            o.details;
+            }
             o.reason = a.why;
             // [gather] b337: every GATHER was URGENT and took 11 bots off their quests for 0.0/h chests. The leader's
             // value test decides: a gather that pays more per minute than the bot's questing runs now (URGENT,
@@ -4358,6 +4381,7 @@ void GuildCoordinator::UpdateProfessions()
     };
 
     CoordLock guard(lock_, __func__);
+    climbNeeds_.clear();  // [craft432] filled again by the walks below
     // [fish110] user 2026-11-10: the guild needs two fishers. Before, every member with Fishing in its plan (50 of 75)
     // got the trainer and the pole calls, and none fished: the gathering plan fishes only for a wanted shortfall, and
     // no fish was ever wanted (cooking, the fish's only use, beat questing for nobody - it unlocks no guild need).
@@ -4950,6 +4974,7 @@ void GuildCoordinator::UpdateProfessions()
                 std::map<uint32, double> gatherItemMin;  // [ench169] the walk's gathering minutes per item
                 bool held = false;
                 std::string block;
+                uint32 blockSkill = 0, blockReq = 0, blockItem = 0;  // [craft432] a block on a gathering tier
                 uint32 reach = skill;
                 // [insc144] what other members hold of a material: theirs by the transfer once the line is called
                 std::map<uint32, double> others;
@@ -5028,6 +5053,7 @@ void GuildCoordinator::UpdateProfessions()
                     double crafts = 0, cost = 0, gmin = 0;
                     std::map<uint32, double> take, takeOthers;
                     std::string firstWhy;
+                    uint32 tierSkill = 0, tierReq = 0, tierItem = 0;  // [craft432] this value's first tier block
                     static std::vector<std::pair<uint32, uint32>> const noReagents;
                     for (size_t t = 0; t < tries.size() && !chosen; ++t)
                     {
@@ -5167,6 +5193,13 @@ void GuildCoordinator::UpdateProfessions()
                                               : std::string("neither held nor gathered in the guild");
                                 why = ItemName(rawItem) + " ×" + std::to_string(uint32(std::ceil(units))) + ": " +
                                       unreached;
+                                if (!tierItem && (src != gatherSource_.end() || (planned && planSkill)))
+                                {
+                                    tierItem = rawItem;
+                                    tierSkill = src != gatherSource_.end() ? src->second.first : planSkill;
+                                    tierReq = src != gatherSource_.end() ? src->second.second
+                                                                         : uint32(std::max<int32>(0, planReq));
+                                }
                                 if (yield != disenchanted.end())  // [ench160] what the greens on their way gave
                                     why += " (beyond the Disenchant of " + std::to_string(greens) +
                                            " guild greens [ench160])";
@@ -5214,6 +5247,9 @@ void GuildCoordinator::UpdateProfessions()
                     if (!chosen)
                     {
                         block = firstWhy;
+                        blockSkill = tierSkill;
+                        blockReq = tierReq;
+                        blockItem = tierItem;
                         break;
                     }
                     Recipe const& r = *chosen;
@@ -5249,6 +5285,25 @@ void GuildCoordinator::UpdateProfessions()
                                 if (stop.reach > tr.maxSkill - SKILL_STEP_MAX)
                                     stop.vendorCost += tr.price;
                         }
+                // [craft432] a walk stopped on a gathering tier: what the members' needs past the stop are worth is
+                // what that tier is worth to the guild (the gathering plan sends a gatherer to climb toward it)
+                if (blockItem && (blockSkill == SKILL_MINING || blockSkill == SKILL_HERBALISM ||
+                                  blockSkill == SKILL_SKINNING))
+                {
+                    double past = 0.0;
+                    for (Need const* n : lineNeeds)
+                        if (n->reqSkill > reach && n->reqSkill <= top)
+                            past += n->value;
+                    if (past > 0.0)
+                    {
+                        ClimbNeed& c = climbNeeds_[{blockSkill, blockReq}];
+                        c.itemId = blockItem;
+                        c.value += past;
+                        if (c.forWhat.size() < 80)
+                            c.forWhat += (c.forWhat.empty() ? "" : ", ") + std::string(SkillShort(line)) + " " +
+                                         std::to_string(reach) + " of " + Who(row->low);
+                    }
+                }
                 std::string const lag = ", lag " + std::to_string(need - skill);
                 // [supply112] what the line produces for the guild's needs: the cook's supply jobs
                 double supplyValue = 0.0, supplyMin = 0.0;

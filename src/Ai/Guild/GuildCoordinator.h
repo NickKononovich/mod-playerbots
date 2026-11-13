@@ -1222,6 +1222,15 @@ private:
     // [fish110] the guild's two fishers (user 2026-11-10) and the raw fish the fives' cooked supplies need
     std::set<uint32> fishers_;
     std::map<uint32, uint32> fishShort_;
+    // [craft432] (gathering skill, tier) -> the walks blocked on it: the material, what the members' needs past the
+    // blocks are worth (craft428), which walks (UpdateProfessions; the gathering plan's climbs, UpdateOrders)
+    struct ClimbNeed
+    {
+        uint32 itemId{0};
+        double value{0.0};
+        std::string forWhat;
+    };
+    std::map<std::pair<uint32, uint32>, ClimbNeed> climbNeeds_;
     std::map<uint32, uint32> glyphNeeds_;  // [insc143] glyph item -> members who need one (the log line on change)
     std::map<uint32, std::vector<uint32>> glyphFor_;  // [insc145] glyph item -> the members who need one
     std::unordered_map<uint32, std::vector<std::pair<uint32, std::string>>> withdraw_;  // member -> bank items for it
