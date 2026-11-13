@@ -108,8 +108,13 @@ uint8 StuckWatchdogValue::Calculate()
         RecordLeaderTrail(leader);
 
     // Doing something on purpose is not being stuck: the follow action stands down in the same cases.
+    // [nav192] b475 dm-n five 10: Eraelor and Feette (both hunters) stood 140 yd from their group in Deadmines and
+    // this watch never armed for either. Auto Shot is an autorepeat spell, so IsNonMeleeSpellCast(false) reads a
+    // cast under way on every tick a hunter has a shot queued ([lead523] fixed the same read in the leader's move
+    // order): the whole escalation was dead for every autorepeat shooter. The autorepeat shot is no cast this check
+    // keeps - a walk pauses it and the core resumes it.
     bool const busy = !leader || !botAI->CanMove() || bot->HasUnitState(UNIT_STATE_LOST_CONTROL) ||
-                      bot->IsRooted() || !bot->IsStandState() || bot->IsNonMeleeSpellCast(false) ||
+                      bot->IsRooted() || !bot->IsStandState() || bot->IsNonMeleeSpellCast(false, false, true) ||
                       botAI->HasStrategy("move from group", BOT_STATE_NON_COMBAT) ||
                       botAI->HasStrategy("master fishing", BOT_STATE_NON_COMBAT);
     if (busy)

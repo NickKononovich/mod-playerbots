@@ -37,6 +37,7 @@
 #include <cstdlib>
 #include <map>
 #include <set>
+#include <tuple>  // [nav190]
 
 using namespace RaidLeader;
 
@@ -629,8 +630,19 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         float x = 0.0f;
         float y = 0.0f;
         float z = 0.0f;
+        // [nav191] a Follow with no place to walk to is the dead end DryFollow already names ("no melee place in
+        // reach and sight of the target", [lead580]): the trigger stays active (the target out of reach or out of
+        // sight) and this returned false every tick, so the member stood for the rest of the run and the leader
+        // never heard. It is the member's refusal of a walk it cannot take: it stays and reports, the leader decides
+        // again ([lead372])
         if (!FollowPlace(target, events.followIndex, x, y, z))
+        {
+            ReportRefusal(events, bot->GetPosition(),
+                          bot->IsValidAttackTarget(target) ? "no melee place in reach and sight of the target"
+                                                           : "no follow place behind the target",
+                          ObjectGuid::Empty);
             return false;
+        }
         float const tolerance = std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE);
         LastMovement const& last = *context->GetValue<LastMovement&>("last movement");
         // [lead249] b191 rfc-h (8 runs): each melee damage dealer walked 37-65 s of its fights within 5 yd of the
@@ -670,7 +682,16 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         // its place (the follow's own tolerance) is no work
         if (!chase && !target->isMoving() &&
             bot->GetExactDist2d(x, y) <= std::max(events.tolerance, Leader::LEADER_SPOT_TOLERANCE))
+        {
+            // [nav190] the trigger walks a member out of its target's sight; this reads it as standing at its place.
+            // Both at once is a member that stands for good: the line names which of the two is wrong
+            if (!bot->IsWithinLOSInMap(target))
+                NoteDeadEnd(events, "at its follow place but out of sight of the target",
+                            Acore::StringFormat("{} is {:.1f} yd off, its place ({:.1f},{:.1f},{:.1f}) {:.1f} yd",
+                                                target->GetName(), bot->GetExactDist(target), x, y, z,
+                                                bot->GetExactDist2d(x, y)));
             return false;
+        }
         // [lead159] b176 20261101-163239: "leader move order" executed in 20 % of the shaman's fight samples and
         // pre-empted Stormstrike 60x, Earth Shock 54x, Lava Lash 40x - the chase (lead156) re-walked every tick. A walk
         // already heading for the place (within the follow's tolerance), or a chased mob already in melee reach, is no
@@ -743,10 +764,18 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         return true;
     }
     if (events.move != Leader::MoveEvent::MoveTo && events.move != Leader::MoveEvent::StandAt)
+    {
+        // [nav190] the trigger fired (WalksOffStand) and the kind is one this action does not walk: a mismatch that
+        // ends every tick standing
+        NoteDeadEnd(events, "the command's move kind is not one this action walks", "nothing to execute");
         return false;
+    }
     if (!std::isfinite(events.spot.GetPositionX()) || !std::isfinite(events.spot.GetPositionY()) ||
         !std::isfinite(events.spot.GetPositionZ()))  // [lead161]
+    {
+        NoteDeadEnd(events, "the commanded spot is no number", "[lead161]");
         return false;
+    }
     if (!bot->IsStandState())
         bot->SetStandState(UNIT_STAND_STATE_STAND);
     // [lead1070] a MoveTo whose purpose is a unit in reach (the tank's pick-up: its taunt's range, in sight) is reached
@@ -828,7 +857,11 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
         if (Unit* victim = AI_VALUE(Unit*, "current target");
             victim && victim->IsAlive() && bot->GetExactDist(victim) <= botAI->GetRange("spell") &&
             bot->IsWithinLOSInMap(victim))
+        {
+            // [nav190] a cast that never ends holds the member on every tick of the command
+            NoteDeadEnd(events, "a cast of its own runs", victim->GetName());
             return false;
+        }
     // [lead1044] b230 rfc-h 5B-10 1028-1036 s: Rtpriaa's combat spot (-321.2, 240.3, -5.6) stood 4.6 yd above the
     // ground its walk ended on, 2.7 yd off (tolerance 2); standing at that end, the walk was asked again every tick
     // (a 0 yd spline), executed, and its spells were "not evaluated: leader move order ran first" (about 25 s of
@@ -885,6 +918,16 @@ bool LeaderMoveOrderAction::Execute(Event /*event*/)
     {
         Leader::Events::Ack(bot->GetGUID(), events.seq, events.move == Leader::MoveEvent::MoveTo ? "move" : "stand",
                             "can not move now (lost control / rooted): " + events.moveWhy);
+        // [nav190] the ack is sent once per command, so a member the game never gives back stood silently: name the
+        // state that holds it (a controlled motion slot a jump or a fear never gave up is the one that lasts)
+        NoteDeadEnd(events, "the game does not let it move",
+                    Acore::StringFormat(
+                        "lost control {}, rooted {}, charmed {}, frozen {}, polymorphed {}, controlled motion slot "
+                        "{}, in flight {}, being teleported {}",
+                        bot->HasUnitState(UNIT_STATE_LOST_CONTROL), bot->IsRooted(), bot->IsCharmed(),
+                        bot->isFrozen(), bot->IsPolymorphed(),
+                        uint32(bot->GetMotionMaster()->GetMotionSlotType(MOTION_SLOT_CONTROLLED)), bot->IsInFlight(),
+                        bot->IsBeingTeleported()));
         return false;
     }
     bool const moved = MoveTo(bot->GetMapId(), events.spot.GetPositionX(), events.spot.GetPositionY(),
@@ -1082,6 +1125,30 @@ bool LeaderMoveOrderAction::ChaseDoneHere(Unit* target) const
            (target->GetVictim() == bot || !_placeBehind || !target->HasInArc(float(M_PI), bot));
 }
 
+void LeaderMoveOrderAction::NoteDeadEnd(Leader::MemberEvents const& events, char const* path,
+                                        std::string const& detail)
+{
+    // the key holds `path`'s address (always a string literal here), so a standing member costs no allocation
+    thread_local std::set<std::tuple<uint64, uint32, void const*>> logged;
+    if (logged.size() > 4096)
+        logged.clear();
+    if (!logged.insert({bot->GetGUID().GetRawValue(), events.seq, static_cast<void const*>(path)}).second)
+        return;
+    char const* const what = events.move == Leader::MoveEvent::Follow   ? "follow"
+                             : events.move == Leader::MoveEvent::MoveTo ? "move"
+                             : events.move == Leader::MoveEvent::StandAt ? "stand"
+                             : events.move == Leader::MoveEvent::Hold    ? "hold"
+                                                                         : "none";
+    LOG_INFO("playerbots",
+             "[nav190] {} stands on its {} order ({}, seq {}): {} - {}; at ({:.1f},{:.1f},{:.1f}) map {}, spot "
+             "({:.1f},{:.1f},{:.1f}) {:.1f} yd off (tolerance {:.1f}), moving {}, can move {}",
+             bot->GetName(), what, events.moveWhy, events.seq, path, detail, bot->GetPositionX(), bot->GetPositionY(),
+             bot->GetPositionZ(), bot->GetMapId(), events.spot.GetPositionX(), events.spot.GetPositionY(),
+             events.spot.GetPositionZ(),
+             bot->GetExactDist2d(events.spot.GetPositionX(), events.spot.GetPositionY()), events.tolerance,
+             bot->isMoving() ? "yes" : "no", botAI->CanMove() ? "yes" : "no");
+}
+
 void LeaderMoveOrderAction::ReportRefusal(Leader::MemberEvents const& events, Position const& spot,
                                           std::string const& reason, ObjectGuid mob)
 {
@@ -1103,6 +1170,9 @@ void LeaderMoveOrderAction::ReportRefusal(Leader::MemberEvents const& events, Po
                                                                         : "stand";
     Leader::Events::Ack(bot->GetGUID(), events.seq, what,
                         "member_refusal: " + events.moveWhy + " - " + reason + ", stays (reported)");
+    // [nav190] the ack reaches the leader's decisions file only while a harness run is open: a refused walk outside
+    // one left no trace at all (b475 dm-n five 10, 0 "member_refusal" lines in a 41 min stall)
+    NoteDeadEnd(events, "member_refusal", reason);
 }
 
 bool LeaderMoveOrderAction::SkipsIdleGuard()

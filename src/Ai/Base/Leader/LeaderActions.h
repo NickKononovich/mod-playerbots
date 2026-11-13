@@ -177,6 +177,12 @@ private:
     // [lead372] the walk to `spot` cannot reach it safely: the member stays, the leader reads the report
     void ReportRefusal(Leader::MemberEvents const& events, Position const& spot, std::string const& reason,
                        ObjectGuid mob);
+    // [nav190] b475 dm-n five 10: Eraelor stood 140 yd from its group in Deadmines' mine tunnel for the rest of a
+    // 41 min run with "leader move order - PREREQ / FAILED" every tick. Execute leaves false on a dozen paths and
+    // none of them writes a line: a member's ack reaches the leader's decisions file only while a harness run is
+    // open, so the live log holds nothing that tells the paths apart. Every path that ends the tick standing names
+    // itself here, once per (member, command, path).
+    void NoteDeadEnd(Leader::MemberEvents const& events, char const* path, std::string const& detail);
 
     uint32 _attackFirstSeq = 0;  // [lead281] the command (seq) whose unstarted Attack this walk let run first
     std::string const* _dryWhy = nullptr;  // [lead373] the move DryMoveTo judges
