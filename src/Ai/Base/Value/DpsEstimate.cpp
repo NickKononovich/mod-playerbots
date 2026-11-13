@@ -1011,8 +1011,23 @@ struct Cast
     float tickMs = 0.0f;      // between its ticks (0: no periodic part)
     float durationMs = 0.0f;  // its periodic part's duration
     float castMs = 0.0f;      // till it lands (its cast time with pushback; 0 for an instant)
+    // [death457] its cast time before pushback, the delay one landed hit adds (0: never pushed back) and its global
+    // cooldown: what PushStretch prices again at another rate of hits
+    float baseCastMs = 0.0f;
+    float pushDelayMs = 0.0f;
+    float gcdMs = 0.0f;
     float firstSec = 0.0f;    // [dps232] a fresh fight: the earliest it can go (a reactive strike's first avoid)
 };
+
+// [rot609] Spell::Delayed: the landed hits within a cast of `castMs` at `hitsPerSec`, the cast stretched by their
+// delays (at most PUSHBACK_MAX a cast)
+float PushedHits(float hitsPerSec, float castMs, float delayMs)
+{
+    if (hitsPerSec <= 0.0f || castMs <= 0.0f)
+        return 0.0f;
+    float hits = std::min(PUSHBACK_MAX, hitsPerSec * castMs / float(IN_MILLISECONDS));
+    return std::min(PUSHBACK_MAX, hitsPerSec * (castMs + hits * delayMs) / float(IN_MILLISECONDS));
+}
 
 float ThreatOf(Player* bot, SpellInfo const* info, float damage, float hits)
 {
@@ -1306,14 +1321,15 @@ bool ReadCast(Model const& m, Unit* caster, uint32 id, Ability const& ability, C
         if (reduce < 100)
         {
             float const delayMs = PUSHBACK_MS * float(100 - reduce) / 100.0f;
-            float hits = std::min(PUSHBACK_MAX, m.pushHitsPerSec * castMs / float(IN_MILLISECONDS));
-            hits = std::min(PUSHBACK_MAX, m.pushHitsPerSec * (castMs + hits * delayMs) / float(IN_MILLISECONDS));
-            castMs += hits * delayMs;
+            out.baseCastMs = castMs;
+            out.pushDelayMs = delayMs;
+            castMs += PushedHits(m.pushHitsPerSec, castMs, delayMs) * delayMs;
         }
     }
     out.castMs = castMs;
     float const channelMs = channel ? ChannelMs(modOwner, caster, info, spellHaste) : 0.0f;
     float const gcdMs = GlobalCooldownMs(modOwner, caster, info, spellHaste);
+    out.gcdMs = gcdMs;
     out.executeSec = std::max({castMs, channelMs, gcdMs}) / float(IN_MILLISECONDS);
     // [rot609] a filler cast back to back refreshes its own DoT (Fireball): one execute time of its ticks per cast
     if (ability.kind == Kind::Filler && periodic > 0.0f && durationMs > out.executeSec * float(IN_MILLISECONDS))
@@ -1574,6 +1590,18 @@ struct Profile
     float rageSpend = 0.0f;
     float ragePerSwing = 0.0f;
     float offRagePerSwing = 0.0f;
+    // [death457] the pushed-back casts of its rotation (casts per second, base cast, delay a hit, global cooldown), the
+    // hits a second it was computed at and its time-bound damage (the weapon's and the pet's are not its casts')
+    struct PushCast
+    {
+        float rate = 0.0f;
+        float baseCastMs = 0.0f;
+        float delayMs = 0.0f;
+        float gcdMs = 0.0f;
+    };
+    std::vector<PushCast> pushCasts;
+    float pushHitsPerSec = 0.0f;
+    float rotationWhite = 0.0f;
 };
 
 // [rot606] PetAI::_canMeleeAttack: an imp or a water elemental with the mana for its bolt chases to the bolt's range
@@ -1707,6 +1735,25 @@ float MeleeArrivalSec(Unit* mob, Unit* bot)
 {
     float const speed = mob->GetSpeed(MOVE_RUN);
     return speed > 0.0f ? std::max(0.0f, mob->GetExactDist(bot) - mob->GetMeleeRange(bot)) / speed : 0.0f;
+}
+
+// [death457] GenericDruidStrategy: a druid that is no bear tank casts Nature's Grasp (a global cooldown, its mana)
+// whenever it is attacked and the spell is ready - a cast of its fight the rotation pays in time. Its highest rank
+// when it is due now (known, off its cooldown, not worn; in caster or moonkin form, where it is cast)
+constexpr uint32 SPELL_NATURES_GRASP_RANK_1 = 16689;
+SpellInfo const* NaturesGraspDue(Player* bot)
+{
+    if (bot->getClass() != CLASS_DRUID || PlayerbotAI::IsTank(bot) ||
+        (bot->GetShapeshiftForm() != FORM_NONE && bot->GetShapeshiftForm() != FORM_MOONKIN))
+        return nullptr;
+    SpellInfo const* best = nullptr;
+    for (SpellInfo const* rank = sSpellMgr->GetSpellInfo(SPELL_NATURES_GRASP_RANK_1); rank;
+         rank = rank->GetNextRankSpell())
+        if (bot->HasSpell(rank->Id))
+            best = rank;
+    if (!best || bot->HasSpellCooldown(best->Id) || bot->HasAura(best->Id))
+        return nullptr;
+    return best;
 }
 
 float PushbackHitsPerSec(Player* bot, Unit* target, BuffContext ctx, float lifeSec)
@@ -1962,11 +2009,30 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
         if (cast.mainHand)
             strikes += rate * cast.landed;
         cycle += cast.executeSec;
+        if (cast.pushDelayMs > 0.0f)  // [death457]
+            p.pushCasts.push_back({rate, cast.baseCastMs, cast.pushDelayMs, cast.gcdMs});
         ++p.spells;
         if (cast.id)
             p.parts.emplace_back(cast.id, rate * cast.damage);
     };
 
+    // [death457] Nature's Grasp when the mob attacks it: once this fight (a fresh solo mob), else on its cooldown.
+    // b467 Sylaenas L17 balance: one in 4 of 5 fights, 1.5 s of a 16 s fight the formula gave to Wrath
+    if (rotation && !ideal && m.pushHitsPerSec > 0.0f)
+        if (SpellInfo const* grasp = NaturesGraspDue(bot))
+        {
+            Cast cast;
+            cast.kind = Kind::Opener;
+            cast.power = POWER_MANA;
+            cast.cost = float(std::max(0, grasp->CalcPowerCost(bot, grasp->GetSchoolMask())));
+            cast.executeSec = GlobalCooldownMs(bot, bot, grasp, m.bonus.spellHaste) / float(IN_MILLISECONDS);
+            int32 cooldownMs = int32(grasp->RecoveryTime);
+            bot->ApplySpellMod(grasp->Id, SPELLMOD_COOLDOWN, cooldownMs);
+            float const period =
+                lifeSec > 0.0f ? lifeSec : float(std::max(cooldownMs, 1)) / float(IN_MILLISECONDS);
+            if (cast.executeSec > 0.0f && period >= cast.executeSec)
+                spend(cast, affordable(cast, 1.0f / period));
+        }
     if (rotation)
     {
         std::vector<Cast> fillers;
@@ -2276,6 +2342,8 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
     p.ragePerSwing = mh.rage;
     p.offRagePerSwing = oh.rage;
     p.manaSpend = mana;
+    p.pushHitsPerSec = m.pushHitsPerSec;  // [death457]
+    p.rotationWhite = rotationWhite;
     // Player::Regenerate (POWER_MANA) while casting: the interrupted regeneration, boosted below level 15
     float rate = sWorld->getRate(RATE_POWER_MANA);
     if (sWorld->getBoolConfig(CONFIG_LOW_LEVEL_REGEN_BOOST) && bot->GetLevel() < 15)
@@ -2353,6 +2421,7 @@ uint64 Signature(Player* bot, Unit* target, BuffContext ctx)
         mix(pet->IsAlive());
     }
     mix(HunterInMelee(bot, target));  // [death446]
+    mix(NaturesGraspDue(bot) != nullptr);  // [death457]
     if (target)
     {
         mix(target->GetEntry());
@@ -2432,12 +2501,31 @@ std::string SpellName(uint32 id)
 
 namespace DpsEstimate
 {
-Result Estimate(Player* bot, Unit* target, BuffContext ctx, float fightSec)
+Result Estimate(Player* bot, Unit* target, BuffContext ctx, float fightSec, float pushHitsPerSec)
 {
     Result out;
     if (!bot || !bot->IsInWorld() || (target && !target->IsInWorld()))
         return out;
-    Profile const profile = ProfileOf(bot, target, ctx);
+    Profile profile = ProfileOf(bot, target, ctx);
+    out.pushHitsPerSec = profile.pushHitsPerSec;
+    // [death457] the hits of every mob on it (not its target's alone): each pushed-back cast's execute time again at
+    // that rate, the rotation's casts and their mana stretched over the longer time (the weapon's and pet's are not)
+    if (pushHitsPerSec >= 0.0f && !profile.pushCasts.empty())
+    {
+        float stretch = 0.0f;  // seconds a second of the rotation
+        for (Profile::PushCast const& c : profile.pushCasts)
+        {
+            auto const execute = [&c](float hits)
+            { return std::max(c.baseCastMs + PushedHits(hits, c.baseCastMs, c.delayMs) * c.delayMs, c.gcdMs); };
+            stretch += c.rate * (execute(pushHitsPerSec) - execute(profile.pushHitsPerSec)) / float(IN_MILLISECONDS);
+        }
+        float const factor = 1.0f / std::max(1.0f + stretch, 0.01f);
+        float const timed = profile.pet + profile.rotationWhite;
+        profile.burst = std::max(0.0f, profile.burst - timed) * factor + timed;
+        profile.tps = std::max(0.0f, profile.tps - profile.whiteTps) * factor + profile.whiteTps;
+        profile.manaSpend *= factor;
+        out.pushHitsPerSec = pushHitsPerSec;
+    }
 
     out.burstDps = profile.burst;
     out.whiteDps = profile.white;
@@ -2457,6 +2545,8 @@ Result Estimate(Player* bot, Unit* target, BuffContext ctx, float fightSec)
             (out.burstDps * out.oomSec + std::min(out.whiteDps, out.burstDps) * (fightSec - out.oomSec)) / fightSec;
     return out;
 }
+
+float MeleeHitsPerSec(Player* bot, Unit* mob) { return PushbackHitsPerSec(bot, mob, BuffContext::Solo, 0.0f); }
 
 float EstimateDps(Player* bot, Unit* target, BuffContext ctx, float fightSec)
 {

@@ -2589,32 +2589,56 @@ namespace SoloSafety
                 caster ? 1.5f : std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.5f);
             killVariancePerSec = std::max(second / (mean * mean) - 1.0f, 0.0f) * period;
         }
+        // [death457] the casts' pushback under every mob still alive (not the target's hits alone) and the mana the
+        // rotation spends at that pace: each kill of the order at its own rate. b467 Sylaenas L17 balance judged 2
+        // Axxarien mobs on the Hellcaller's hits alone ("321 dmg"), both hit her casts back, took 475, died
+        std::vector<std::pair<float, float>> phases(mobs.size(), {botDps, manaPerSec});  // (dps, mana a second)
+        if (mobs.size() > 1)
+        {
+            DpsEstimate::BuffContext const ctx = DpsEstimate::ContextOf(bot);
+            float later = 0.0f;  // the hits of the mobs after the target, summed from the order's end
+            for (size_t i = mobs.size(); i-- > 0;)
+            {
+                if (i > 0)
+                    later += DpsEstimate::MeleeHitsPerSec(bot, mobs[i].unit);
+                float const hits = (i == 0 ? own.pushHitsPerSec : 0.0f) + later;
+                DpsEstimate::Result const at = DpsEstimate::Estimate(bot, target, ctx, 0.0f, hits);
+                phases[i] = {std::max(at.burstDps, 1.0f), at.manaPerSec};
+            }
+            thread_local std::unordered_set<uint64> pushLogged;  // a log cadence per bot, target kind and pack size
+            if (pushLogged.size() > 65536)
+                pushLogged.clear();
+            if (pushLogged.insert((uint64(bot->GetGUID().GetCounter()) * 1000003ull + target->GetEntry()) * 31ull +
+                                  mobs.size())
+                    .second)
+                LOG_INFO("playerbots", "[death457] {} L{} on {} L{} ({} mobs): its casts pushed back by every mob on "
+                         "it - {:.1f} dps (mana {:.2f}/s) against {:.1f} on its target's hits alone",
+                         bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), mobs.size(),
+                         phases.front().first, phases.front().second, botDps);
+        }
         auto const project = [&](float mana) -> Projection
         {
-            float const spellSec = bot->GetMaxPower(POWER_MANA) && manaPerSec > 0.0f
-                                       ? mana / manaPerSec
-                                       : std::numeric_limits<float>::max();
+            bool const spends = bot->GetMaxPower(POWER_MANA) != 0;
             Projection out;
             float aliveDps = 0.0f;
             for (Mob const& mob : mobs)
                 aliveDps += mob.dps;
-            for (Mob const& mob : mobs)
+            for (size_t i = 0; i < mobs.size(); ++i)
             {
+                Mob const& mob = mobs[i];
                 float const started = out.seconds;
                 float hp = mob.hp;
-                if (out.seconds < spellSec)
+                auto const [phaseDps, phaseMana] = phases[i];
+                float const spellSec = spends && phaseMana > 0.0f ? mana / phaseMana
+                                                                  : std::numeric_limits<float>::max();
+                if (spellSec > 0.0f)
                 {
-                    float const spellPart = (spellSec - out.seconds) * botDps;
-                    if (hp <= spellPart)
-                    {
-                        out.seconds += hp / botDps;
-                        hp = 0.0f;
-                    }
-                    else
-                    {
-                        out.seconds = spellSec;
-                        hp -= spellPart;
-                    }
+                    float const spellPart = spellSec * phaseDps;
+                    float const spent = hp <= spellPart ? hp / phaseDps : spellSec;
+                    out.seconds += spent;
+                    hp = std::max(0.0f, hp - spellPart);
+                    if (spends && phaseMana > 0.0f)
+                        mana = std::max(0.0f, mana - spent * phaseMana);
                 }
                 out.seconds += hp / whiteDps;
                 out.damage += mob.dps * out.seconds;

@@ -45,11 +45,17 @@ struct Result
     float oomSec = std::numeric_limits<float>::max();  // seconds of rotation on its mana now
     float cycleSec = 0.0f;  // one pass of the rotation: every spell it uses once, at least one global cooldown
     uint8 spells = 0;       // rotation spells it knows and uses
+    float pushHitsPerSec = 0.0f;  // [death457] the landed hits on it a second its casts' pushback is priced at
 };
 
 // `target`: the unit it fights (its level, armor, avoidance and auras are read); null: a mob of its level
-// (creature_classlevelstats armor, the core's creature avoidance). fightSec 0: the burst
-Result Estimate(Player* bot, Unit* target, BuffContext ctx, float fightSec = 0.0f);
+// (creature_classlevelstats armor, the core's creature avoidance). fightSec 0: the burst. [death457] pushHitsPerSec >= 0:
+// the landed hits on the bot a second (every mob on it, MeleeHitsPerSec summed) its casts' pushback is priced at; < 0:
+// its target's alone
+Result Estimate(Player* bot, Unit* target, BuffContext ctx, float fightSec = 0.0f, float pushHitsPerSec = -1.0f);
+// [death457] a mob's landed melee hits on the bot a second when it attacks it (its swing time, its miss / dodge / parry
+// against the bot): the pushback rate it adds to the bot's casts
+float MeleeHitsPerSec(Player* bot, Unit* mob);
 float EstimateDps(Player* bot, Unit* target, BuffContext ctx, float fightSec = 0.0f);
 float EstimateTps(Player* bot, Unit* target, BuffContext ctx);
 // [lead1309] the threat it builds on `target` within the next `horizonSec`: its rotation's tps, a rage user's spells
