@@ -871,10 +871,14 @@ bool NewRpgBaseAction::CloseRouteStop(QuestRoute::BotRoute& r,
     }
     // a town stop: reached, or its task left the list (the guild's NextStep ran it there)
     if (s.kind == StopKind::Town && (!TownListed(towns, s.x, s.y) || bot->GetDistance2d(s.x, s.y) <= TOWN_STOP_REACHED))
+    {
         LogStopEnd(bot, r, "done", 0, "");
+        ++r.stopsDone;  // [quest122] reached: one more stop a plan of this bot gets through
+    }
     else if (done && done + postponed + gone == s.quests.size())  // [routeplan] a hub, a giver: with the last
     {
         LogStopEnd(bot, r, "done", s.kind == StopKind::Ender ? done : 0, "");
+        ++r.stopsDone;
         // [route23] a hand-in or a pickup done: its leg's planned seconds against the seconds to its quest event
         if ((s.kind == StopKind::Ender || s.kind == StopKind::Giver) && s.leg > 0.0f)
         {
@@ -886,9 +890,15 @@ bool NewRpgBaseAction::CloseRouteStop(QuestRoute::BotRoute& r,
         }
     }
     else if (!s.quests.empty() && postponed + gone == s.quests.size())
+    {
         LogStopEnd(bot, r, "left", 0, postponed ? "postponed" : "left the log");
+        ++r.stopsLeft;  // [quest122] lost: the plan paid for this stop and got nothing from it
+    }
     else if (r.invalid)
+    {
         LogStopEnd(bot, r, "left", 0, r.invalidWhy);
+        ++r.stopsLeft;
+    }
     else
         return false;
     r.hasCurrent = false;
@@ -1169,6 +1179,13 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
             r.crossWhat = bestWhat;
         }
     }
+    // [quest122] a new town task is no reason to throw a whole plan away while its stop is still open. b475: 89 of
+    // the 138 rebuilds that were not a first build came from a town task, and a plan replaced under an open stop
+    // lost it (11 of 25 hand-in stops collected nothing, 5 of them "replanned"). The task waits for a town visit
+    // either way and an urgent one comes as an order, so it joins the route at the next build - the stop closing,
+    // a quest opened or done, a level or map change, a trim or a camp respawn
+    if (r.hasCurrent && why.rfind("town task", 0) == 0)
+        why.clear();
     if (!why.empty())
     {
         CloseRouteStop(r, towns);
@@ -1182,6 +1199,21 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
         r.respawnDue = in.respawnDue;
         r.leftOutQuests = std::move(in.leftOutQuests);
         r.townsSeen = std::move(in.townsSeen);
+        ++r.builds;
+        // [quest122] b475: 209 plans built against 72 stops reached, and 11 of 25 hand-in stops left with nothing
+        // collected. A plan is only worth the stops the bot gets through, so the plan's experience is weighed by the
+        // chance of reaching each place in it: the mean stops a plan of this bot reaches gives the geometric rate
+        // (p = mean / (1 + mean)), measured from its own plans, and stop k is worth p^(k+1) of its experience. A
+        // 17-stop hour-long plan then scores near its first stops alone, a short one it finishes scores near its all
+        float const meanReached = float(r.stopsDone) / float(std::max<uint32>(r.builds, 1));
+        float const reach = meanReached / (1.0f + meanReached);
+        float expectedXp = 0.0f;
+        float share = reach;
+        for (Stop const& s : r.plan.stops)
+        {
+            expectedXp += s.xp * share;
+            share *= reach;
+        }
         std::string stops;
         for (Stop const& s : r.plan.stops)
             stops += " " + QuestRoute::Describe(s);
@@ -1189,10 +1221,12 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
                                                [](Stop const& s) { return s.kind == StopKind::Objective; });
         LOG_INFO("playerbots",
                  "{} stops={} eta={} walk={} xp={} open={} takes={} left_out={} offers={} legs={} walk_ratio={:.2f} "
-                 "fight_s_per_100yd={:.1f} handins_sooner={} why={} |{}",  // [quest15] handins_sooner
+                 "fight_s_per_100yd={:.1f} handins_sooner={} reach={:.2f} exp_xp={} plans={} reached={} lost={} "
+                 "why={} |{}",  // [quest15] handins_sooner, [quest122] reach / exp_xp
                  RouteHead(bot, "plan"), r.plan.stops.size(), uint32(r.plan.eta), uint32(r.plan.walkYd),
                  uint32(r.plan.xp), logQuests, r.plan.takes, in.leftOut, in.offers.size(), r.plan.measured,
-                 r.plan.walkRatio, r.plan.fightPerYd * 100.0f, r.plan.earlierHandIns, why, stops);
+                 r.plan.walkRatio, r.plan.fightPerYd * 100.0f, r.plan.earlierHandIns, reach, uint32(expectedXp),
+                 r.builds, r.stopsDone, r.stopsLeft, why, stops);
         // [walk68] the plan's next stop is a walk priced before it is walked (TripRefused: an orange / red or elite
         // roamer's round at the stop, a walk through a reach it must never fight - the route search with the static
         // spawns beyond sight; its answer kept per stop and level): a refused one is postponed now and the route built
@@ -1279,7 +1313,10 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
     if (r.hasCurrent && (r.currentSig == sig || sameStop()))
         return r;
     if (r.hasCurrent)  // still open, the new route goes elsewhere first
+    {
         LogStopEnd(bot, r, "left", 0, "replanned: " + (why.empty() ? std::string("the next stop changed") : why));
+        ++r.stopsLeft;  // [quest122] a plan replaced while its stop was still open: the stop is lost
+    }
     r.hasCurrent = true;
     r.current = next;
     r.currentSig = sig;

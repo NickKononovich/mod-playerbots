@@ -187,6 +187,13 @@ namespace QuestRoute
         float legPlannedSec{0.0f};
         float legActualSec{0.0f};
         uint32 legStops{0};
+        // [quest122] what a plan of this bot is actually worth: the stops it closes by reaching them against the
+        // ones its plans lose, and the plans built. The mean stops reached per plan gives the chance of reaching a
+        // stop at all (a geometric rate, measured - no number chosen by hand), so a stop's experience is worth that
+        // much of itself and a long tail of stops is worth almost nothing
+        uint32 stopsDone{0};
+        uint32 stopsLeft{0};
+        uint32 builds{0};
         // [lag340] a town stop on another landmass (its route there by boat / portal) worth its trip: walked before
         // the landmass's own stops
         WorldPosition crossTown{};
