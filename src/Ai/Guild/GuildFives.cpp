@@ -736,6 +736,10 @@ namespace FiveGate
             std::string name;
             bool boss = false;
             std::string summons;  // [dm3] the stream its scripts bring, for the why line
+            // [dm5] a boss pull's own terms (the planner's JudgeMobs): what the pack lands per second, and that
+            // against the healers' rate. `peakShare` is 0 on a trash pull, which the drop term holds instead
+            float landedPerSec = 0.0f;
+            float peakShare = 0.0f;
         };
         // [gate20] the attack table of a template against this tank, once per entry (the pulls read it again and again)
         std::map<uint32, std::pair<float, std::string>> shareOf;
@@ -894,7 +898,20 @@ namespace FiveGate
             result.fightMana = healMana + regenCasting * t + std::max(0.0f, regenFull - regenCasting) * idleSec;
             result.manaShare = result.fightMana > 0.0f ? result.manaNeeded / result.fightMana
                                                        : (healNeeded > 0.0f ? 99.0f : 0.0f);
-            result.load = std::max(result.dropShare, result.manaShare);
+            // [dm5] a boss is judged on his own facts, exactly as the planner's JudgeMobs judges him: the healers'
+            // mana for the fight and their rate against what the pack lands per second, with the trash pulls' drop
+            // model off ([lead207] b182 rfc-h 5G 507 s: Taragaman with two Cultists read "overload 1.18" by that
+            // drop term, while the b181 facts of 32 boss fights have the tank's lowest health 73-100 % - the
+            // healers heal a boss fight as it goes; and [lead1566] the mob count is no limit of its own once the
+            // facts are known, which is the only mode this gate has). His melee stays in the fight's damage and in
+            // the healers' mana all the same: only the drop term stands down. b474 dm-n: Gilnid is 2904 of the
+            // foundry pull's 9639 hp and its heaviest hitter, so that term alone made the gate refuse a pull the
+            // leader takes.
+            // `dropShare` is still computed and logged: for a boss pull it is what the trash model would have said
+            result.landedPerSec = t > 0.0f ? intake / t : 0.0f;
+            result.peakShare = boss && heal.hps > 0.0f ? result.landedPerSec / heal.hps : 0.0f;
+            result.load = boss ? std::max(result.manaShare, result.peakShare)
+                               : std::max(result.dropShare, result.manaShare);
             result.sec = t;
             result.deepest = deepest;
             result.mobs = mobs.size();
@@ -1523,11 +1540,18 @@ namespace FiveGate
         std::string const worstWhy =
             worst.mobs ? Acore::StringFormat(
                              "{}{} x{} (L{}-{}, {:.0f} hp): fight {:.0f} s, tank drop {:.0f} + one gap {:.0f} of "
-                             "{:.0f} hp ({:.2f}), [dun261] healer controlled {:.1f} s, heal mana {:.0f} of {:.0f} "
-                             "({:.0f} pool + regen) ({:.2f}){}",
+                             "{:.0f} hp ({:.2f}{}), [dun261] healer controlled {:.1f} s, heal mana {:.0f} of {:.0f} "
+                             "({:.0f} pool + regen) ({:.2f}){}{}",
                              worst.boss ? "boss pull " : "", worst.name, worst.mobs, worst.lo, worst.hi, worst.health,
-                             worst.sec, worst.deepest, worst.gapDrop, tankHealth, worst.dropShare, worst.controlSec,
+                             worst.sec, worst.deepest, worst.gapDrop, tankHealth, worst.dropShare,
+                             // [dm5] a boss is not held to the trash pulls' drop model: the number stays in the log
+                             worst.boss ? ", [dm5] stands down: a boss" : "", worst.controlSec,
                              worst.manaNeeded, worst.fightMana, healMana, worst.manaShare,
+                             // [dm5] his own terms instead: what the pack lands per second against the healers' rate
+                             worst.boss ? Acore::StringFormat(", [dm5] lands {:.0f}/s against the healers' {:.0f}/s "
+                                                              "({:.2f})", worst.landedPerSec, heal.hps,
+                                                              worst.peakShare)
+                                        : std::string(),
                              // [dm3] the stream in the count: which summoner, at what rate, how many over the fight
                              worst.summons.empty() ? std::string()
                                                    : "; [dm3] summons in the x" + std::to_string(worst.mobs) + ": " +
@@ -1547,7 +1571,8 @@ namespace FiveGate
             "{:.0f} hps (gap {:.1f} s, {:.1f} hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{}; [gate20] "
             "drop terms: armor keeps {:.2f}, {} [mob melee "
             "and [dun244] spells from templates, the healer's rate capped by its pool; [dun233] calls for help from "
-            "the fight; [dm3] the scripts' summons over the fight; area damage not counted]{}{}",
+            "the fight; [dm3] the scripts' summons over the fight; [dm5] a boss pull judged on the healers' mana and "
+            "rate, not this drop; area damage not counted]{}{}",
             failed, judged, apart, peeledPulls, cornerPulls,
             losOn ? "" : " (no: the tank has no ranged pull and pull back)",
             heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
