@@ -1832,8 +1832,16 @@ void GuildGatherPlan::LogStock(std::map<uint32, std::pair<uint32, uint32>> const
         uint32 skill = 0;
         int32 req = 0;
         std::string source = "craft/vendor/drop";
+        // [gather42] the line says only what it checked here: that a gather place exists and the skill it asks, plus
+        // whether that place is a supply line at all or only chests. Whether a vendor sells the item is NOT checked
+        // here, and the crafter's walk reads VendorSource BEFORE any gather source - so Empty Vial (20 c at several
+        // vendors, and genuinely 9 % in fishing reference table 11026 of an area whose zone asks Fishing 430) is
+        // bought, not fished, however this line reads. Naming a source this function never verified is the same
+        // silent assertion that cost us [ui11]'s chest case; pulling VendorSource into the gathering plan for a log
+        // line is not worth the coupling, so the line states its own evidence instead
         if (Gatherable(item, &skill, &req))
-            source = "gather skill " + std::to_string(skill) + " >= " + std::to_string(req);
+            source = "gather skill " + std::to_string(skill) + " >= " + std::to_string(req) +
+                     (Supplied(item) ? "" : ", chests only") + "; vendor not checked here, the walk buys first";
         else if (GatherConversion const* c = ConversionFor(item))
             source = c->raw ? "convert " + ItemName(c->raw) + " x" + std::to_string(c->rawPerUnit) : "disenchant";
         LOG_INFO("playerbots", "[gather] stock item {} {} need {} have {} short {} source {}", item, ItemName(item),
