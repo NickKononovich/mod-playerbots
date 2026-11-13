@@ -453,6 +453,10 @@ namespace Leader::Knowledge
     // 642 casts Eject Sneed 5141 on death, which summons Sneed 643): a required boss creature of the route, never the
     // encounter's credit. The credit entry, 0 for none.
     uint32 EncounterCarrierCredit(uint32 mapId, uint32 creatureEntry);
+    // [dm10] The other way round: the carrier whose death brings this credit creature, 0 for none. A run that did
+    // not kill the credit names the carrier in its reason, so "event not started" says whether the event failed or
+    // the group never reached the creature that starts it.
+    uint32 EncounterCarrierOf(uint32 mapId, uint32 creditEntry);
     // [strat_key_pass] An auto-closing key gate the group passes at once (KeyDoorPassDef), nullptr for none.
     KeyDoorPassDef const* KeyDoorPass(uint32 mapId, uint32 doorEntry);
     // Trash that cannot die while a boss lives (Nexus: a Crystalline Frayer turns into a Seed Pod and comes back

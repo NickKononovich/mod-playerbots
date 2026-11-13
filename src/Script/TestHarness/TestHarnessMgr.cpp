@@ -3117,6 +3117,30 @@ namespace TestHarness
                     if (!holders.empty())
                         reason = Acore::StringFormat("event not started (summon item {} in bags: {})", item, holders);
                 }
+                // [dm10] An event a carrier creature starts (Deadmines: Sneed 643 is ejected when Sneed's Shredder
+                // 642 dies): "event not started" alone reads as a broken event, and b475's Deadmines runs that
+                // stopped at 1/7 were read that way - the five had never reached the Mast Room, the Shredder was
+                // alive and untouched 47-80 yd away. The carrier's own state is the answer, so the reason carries it.
+                if (map && strcmp(need, "event not started") == 0)
+                {
+                    uint32 carrier = boss.entry ? EncounterCarrierOf(party.content->mapId, boss.entry) : 0;
+                    for (uint32 credit : boss.credits)
+                        if (!carrier)
+                            carrier = EncounterCarrierOf(party.content->mapId, credit);
+                    if (carrier)
+                    {
+                        Creature* alive = nullptr;
+                        for (auto const& [spawnId, mob] : map->GetCreatureBySpawnIdStore())
+                            if (mob && mob->GetEntry() == carrier && mob->IsAlive())
+                            {
+                                alive = mob;
+                                break;
+                            }
+                        reason = alive ? Acore::StringFormat("event not started ({} alive, never killed)",
+                                                            alive->GetName())
+                                       : "event not started (its carrier is dead: the credit never came)";
+                    }
+                }
             }
             else if (boss.dbc && boss.credits.empty())
                 reason = "credit not observed (spell credit)";

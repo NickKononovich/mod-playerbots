@@ -1372,6 +1372,14 @@ namespace Leader::Knowledge
         return 0;
     }
 
+    uint32 EncounterCarrierOf(uint32 mapId, uint32 creditEntry)
+    {
+        for (EncounterCarrierDef const& def : encounterCarriers)
+            if (def.mapId == mapId && def.creditEntry == creditEntry)
+                return def.carrierEntry;
+        return 0;
+    }
+
     KeyDoorPassDef const* KeyDoorPass(uint32 mapId, uint32 doorEntry)
     {
         for (KeyDoorPassDef const& def : keyDoorPasses)
