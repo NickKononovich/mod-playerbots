@@ -2344,35 +2344,42 @@ static char const* EnemyCapital(uint32 entranceZone, TeamId team)
 
 std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, bool walk, bool overMax) const
 {
-    // [five58] user 2026-11-09: the five gate proves a five's capacity, so the Dungeon Finder's minimum is no floor:
-    // from the instance's own entry level (RFC 8, WC / DM 10, SFK 14) a five that walks in goes (b400: the healers
-    // Guinudrond, Selalleas and Aevmae at L14 were outside every band of 15+)
-    if (p->GetLevel() < d.walkMinLevel || (!overMax && p->GetLevel() > d.maxLevel))
-        return "L" + std::to_string(p->GetLevel()) + " outside " + std::to_string(d.walkMinLevel) + "-" +
-               std::to_string(d.maxLevel);
+    bool const belowEntry = p->GetLevel() < d.walkMinLevel;
+    bool const aboveBand = p->GetLevel() > d.maxLevel;
     // [order362] above the finder's band only the walk in takes it, up to the instance's own entry ceiling (if any)
-    if (overMax && p->GetLevel() > d.maxLevel)
-    {
-        if (DungeonProgressionRequirements const* access =
-                sObjectMgr->GetAccessRequirement(d.mapId, DUNGEON_DIFFICULTY_NORMAL);
-            access && access->levelMax && p->GetLevel() > access->levelMax)
-            return "L" + std::to_string(p->GetLevel()) + " above the entry's max " +
-                   std::to_string(access->levelMax);
+    DungeonProgressionRequirements const* access =
+        overMax && aboveBand ? sObjectMgr->GetAccessRequirement(d.mapId, DUNGEON_DIFFICULTY_NORMAL) : nullptr;
+    if (overMax && aboveBand)
         walk = true;
-    }
-    bool const belowFinder = p->GetLevel() < d.minLevel;
-    if (belowFinder)
+    if (p->GetLevel() < d.minLevel)  // below the finder's band: the walk in takes it
         walk = true;
     // [next1] the Dungeon Finder ports the group in from anywhere (UpdateFives queues a five before it walks): the
     // entrance's continent and capital are only the walk's. 2026-11-09: 19 draenei on Azuremyst (map 530) and 19 night
     // elves on Kalimdor were no candidates for Deadmines / Wailing Caverns, and Ragefire Chasm (Orgrimmar) for none.
-    if (!walk && d.lfgId && sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER))
-        return "";
-    // a walk across continents has no solo safety check yet (TripRefused judges the bot's own map)
-    if (p->GetMapId() != d.entrance.GetMapId())
-        return REFUSAL_OTHER_CONTINENT + std::to_string(d.entrance.GetMapId()) + ")";
-    if (char const* capital = EnemyCapital(d.entranceZone, p->GetTeamId()))
-        return std::string("entrance in an enemy capital ") + capital;
+    bool const finderPorts = !walk && d.lfgId && sLFGMgr->isOptionEnabled(lfg::LFG_OPTION_ENABLE_DUNGEON_FINDER);
+    // [five61] the walk's route is answered BEFORE its level, because a level answer is the soft one every caller
+    // filters out by its "L" prefix ("a refusal that isn't just the level": FiveWalkRefusal, FormFiveCommand,
+    // UpdateDungeonOrder) - and a route bar hidden behind that prefix is how a five set off for Orgrimmar. Its
+    // members had outlevelled Ragefire Chasm's band (L15-21) while the five stood, so the finder would no longer take
+    // it (NextStep's finderTakes) and FiveWalkRefusal asked the walk - which answered "L24 outside 8-21", was
+    // filtered out as a mere level, and left the enemy capital unsaid. The route bar holds whoever asks and whatever
+    // the member's level is: Alliance members do not walk into Orgrimmar, and nobody walks across an ocean
+    if (!finderPorts)
+    {
+        // a walk across continents has no solo safety check yet (TripRefused judges the bot's own map)
+        if (p->GetMapId() != d.entrance.GetMapId())
+            return REFUSAL_OTHER_CONTINENT + std::to_string(d.entrance.GetMapId()) + ")";
+        if (char const* capital = EnemyCapital(d.entranceZone, p->GetTeamId()))
+            return std::string("entrance in an enemy capital ") + capital;
+    }
+    // [five58] user 2026-11-09: the five gate proves a five's capacity, so the Dungeon Finder's minimum is no floor:
+    // from the instance's own entry level (RFC 8, WC / DM 10, SFK 14) a five that walks in goes (b400: the healers
+    // Guinudrond, Selalleas and Aevmae at L14 were outside every band of 15+)
+    if (belowEntry || (!overMax && aboveBand))
+        return "L" + std::to_string(p->GetLevel()) + " outside " + std::to_string(d.walkMinLevel) + "-" +
+               std::to_string(d.maxLevel);
+    if (access && access->levelMax && p->GetLevel() > access->levelMax)
+        return "L" + std::to_string(p->GetLevel()) + " above the entry's max " + std::to_string(access->levelMax);
     return "";
 }
 
@@ -2489,7 +2496,7 @@ bool GuildCoordinator::GivesXp(DungeonOption const& d, Player* p) const
 
 bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) const
 {
-    auto refuse = [why](char const* text)
+    auto refuse = [why](std::string const& text)
     {
         if (why)
             *why = text;
@@ -2513,9 +2520,21 @@ bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) cons
             return refuse("already in a five");
         if (st->second.run)
             return refuse("walks to the vault");
-        if (!st->second.orders.empty() && st->second.orders.front().type != GuildOrderType::QUEST &&
-            st->second.orders.front().executable)
-            return refuse("busy with an order");
+        // [five60] the order it is on is priced against the five, and only the order it is actually working on can
+        // hold it ([five60] ActiveOrder, the guild's one judge of that - not orders.front(), which is the list's
+        // first entry whether the bot ever started it). b480: of 75 members 64 had a convenient errand at the head
+        // of the list that nobody had begun - 20 "delivered: collect at a mailbox", 15 "waits for the letter", 19
+        // "waits town X", 5 gathering that lost to questing, 2 "at the nearest vendor on the way" - and every one of
+        // them read "busy with an order". 684 [five58] readings, 681 of them "0 free (t0 h0 d0)", 0 fives formed and
+        // 0 dungeons entered in 27.6 bot-hours.
+        // The price: a five's own DUNGEON order is URGENT and takes the member over ([tasks] ClassifyTask, the
+        // URGENT interrupt in UpdateOrders), so forming the five IS the recall - questing, gathering that did not
+        // beat questing and every town errand waiting for its town are all given up for it. Only an URGENT order the
+        // member is working on now outranks the five (a repair with a broken weapon, bags full, the guild founding,
+        // the gold a five's member waits for, another five's call): that one the leader does not cut across
+        if (GuildOrder const* active = ActiveOrder(st->second.orders))
+            if (active->priority == GuildTaskPriority::URGENT)
+                return refuse(std::string("busy with an urgent order: ") + OrderName(active->type));
     }
     return true;
 }
@@ -3253,16 +3272,19 @@ void GuildCoordinator::CertifyBatch()
     }
     // the pool: every free member that can get into the dungeon now, cleared or not ([cert10] Candidates' walk in)
     std::vector<FiveCandidate> pool = Candidates(*d, true, nullptr, true);
-    uint32 tankCount = 0, healerCount = 0;
+    uint32 tankCount = 0, healerCount = 0, finderBand = 0;
     for (FiveCandidate const& c : pool)
+    {
         tankCount += c.role == "tank" ? 1 : 0, healerCount += c.role == "healer" ? 1 : 0;
+        finderBand += !c.overMax && c.player->GetLevel() >= d->minLevel ? 1 : 0;
+    }
     std::string const have =
-        Acore::StringFormat("{} free member(s) (t{} h{} d{})", pool.size(), tankCount, healerCount,
-                            pool.size() - tankCount - healerCount);
+        Acore::StringFormat("{} free member(s) (t{} h{} d{}, {} inside the finder's band)", pool.size(), tankCount,
+                            healerCount, pool.size() - tankCount - healerCount, finderBand);
     if (pool.size() < CERT_MEMBERS)
     {
-        note(Acore::StringFormat("batch {} does not form: {} - the batch needs {} at once", cs.batches + 1, have,
-                                 CERT_MEMBERS));
+        note(Acore::StringFormat("batch {} does not form: {} - the batch needs {} at once{}", cs.batches + 1, have,
+                                 CERT_MEMBERS, CertPoolAudit(*d)));
         return;
     }
     // one five out of what is left of the pool: the finder's band first, else a five that walks in (as the look
@@ -3275,7 +3297,12 @@ void GuildCoordinator::CertifyBatch()
         {
             if (c.player->GetLevel() >= d->minLevel && !c.overMax)
                 finderPool.push_back(c);
-            if (DungeonRefusal(*d, c.player, true, c.overMax).empty())
+            // [cert20] the batch dispatches the way an ordinary five does. [order362]'s walk in above the band was
+            // made for ONE thing - an uncleared member's first clear - and the batch borrowed it for members who have
+            // all cleared the dungeon by then ([cert10] Candidates' certify), which is how it came to send
+            // outlevelled members off on a walk no ordinary five would ever ask of them. Above the band with its
+            // clear done, a member goes in by the finder or not at all
+            if ((!c.overMax || c.needsClear) && DungeonRefusal(*d, c.player, true, c.overMax).empty())
                 walkPool.push_back(c);
         }
         float bestLoad = 99.0f;
@@ -3359,8 +3386,9 @@ void GuildCoordinator::CertifyBatch()
     }
     if (batch.size() < CERT_FIVES)
     {
-        note(Acore::StringFormat("batch {} does not form: {}, {} of {} fives assembled - the {}. one: {}",
-                                 cs.batches + 1, have, batch.size(), CERT_FIVES, batch.size() + 1, gateWhyLast));
+        note(Acore::StringFormat("batch {} does not form: {}, {} of {} fives assembled - the {}. one: {}{}",
+                                 cs.batches + 1, have, batch.size(), CERT_FIVES, batch.size() + 1, gateWhyLast,
+                                 CertPoolAudit(*d)));
         return;
     }
     // every five stands: now the 25 are committed together
@@ -3415,6 +3443,60 @@ void GuildCoordinator::CertifyBatch()
                                  CERT_FIVES, CERT_MEMBERS));
     cs.dispatchLogged.clear();
     CertSave(d->contentKey);
+}
+
+// [cert20] The inputs of the certification batch's own verdict (GuildCoordinator.h). Reports, decides nothing: every
+// figure is read off the same two judges the batch itself uses (FreeForFive, DungeonRefusal), so the line and the
+// decision can never disagree. Two of its numbers are the ones the leader cannot do anything about - the members the
+// instance's entry levels admit at all, and of those the ones the finder's band would queue - and they belong in the
+// log beside the pool, because a batch of CERT_MEMBERS that fails on them fails on the roster, not on the dispatch
+std::string GuildCoordinator::CertPoolAudit(DungeonOption const& d) const
+{
+    uint32 planned = 0, canEnter = 0, inFinderBand = 0;
+    // the reason a member is not in the pool -> how many, and the members an urgent order holds, by name and order
+    std::map<std::string, uint32> out;
+    std::string urgent;
+    for (PlanRow const& row : plan_)
+    {
+        if (row.grp < 'A' || row.grp > 'C')
+            continue;
+        ++planned;
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+        if (!p || IsHuman(p))
+        {
+            ++out[p ? "a human's character" : "offline"];
+            continue;
+        }
+        // can it get in at all - the same two steps the pool itself takes ([cert10] Candidates with certify): the
+        // finder's band, else (above it) the walk in up to the instance's own entry ceiling
+        std::string refusal = DungeonRefusal(d, p);
+        if (!refusal.empty() && p->GetLevel() > d.maxLevel)
+            refusal = DungeonRefusal(d, p, true, true);
+        canEnter += refusal.empty() ? 1 : 0;
+        inFinderBand += p->GetLevel() >= d.minLevel && p->GetLevel() <= d.maxLevel ? 1 : 0;
+        std::string why;
+        if (!FreeForFive(row.low, p, &why))
+        {
+            ++out[why];
+            if (why.rfind("busy with an urgent order", 0) == 0)
+                urgent += Acore::StringFormat("{}{} L{} ({})", urgent.empty() ? "" : ", ", Who(row.low),
+                                              p->GetLevel(), why.substr(std::strlen("busy with an urgent order: ")));
+            continue;
+        }
+        if (!refusal.empty())
+            ++out[refusal];
+        else if (auto const r = refusedFor_.find(d.contentKey); r != refusedFor_.end())
+            if (auto const m = r->second.find(row.low); m != r->second.end() && m->second == p->GetLevel())
+                ++out["[lfg69] refused at its level"];
+    }
+    std::string reasons;
+    for (auto const& [why, n] : out)
+        reasons += Acore::StringFormat("{}{} {}", reasons.empty() ? "" : ", ", why, n);
+    return Acore::StringFormat(
+        " [cert20] of {} planned members {} can enter it at all (L{}-{} by the instance's own entry) and {} are "
+        "inside the finder's band L{}-{}; not in the pool: {}{}", planned, canEnter, d.walkMinLevel, d.maxLevel,
+        inFinderBand, d.minLevel, d.maxLevel, reasons.empty() ? "nobody" : reasons,
+        urgent.empty() ? "" : "; held by an urgent order: " + urgent);
 }
 
 // [cert13] The fact one five of a batch in flight is holding on. Every term is state that already exists and is
@@ -5064,6 +5146,48 @@ void GuildCoordinator::AutoFive()
                     }
                 if (pool.size() >= 5)
                     pools.emplace_back(&d, std::move(pool));
+            }
+            // [five60] the roster's own occupancy, once a look and independent of any dungeon's band: how many
+            // members a five could take right now and, of the rest, the one judge's own reason (FreeForFive). The
+            // per-dungeon lines above mix this with the bands and the dungeon order, so a run with 0 fives could not
+            // be told apart from a run whose roster was simply busy. b480: 0 formed in 27.6 bot-hours
+            if (guardCount == 0)
+            {
+                uint32 planned = 0, free = 0, freeTanks = 0, freeHealers = 0;
+                std::map<std::string, uint32> held;
+                for (PlanRow const& row : plan_)
+                {
+                    if (row.grp < 'A' || row.grp > 'C')
+                        continue;
+                    ++planned;
+                    Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                    if (!p || IsHuman(p))
+                    {
+                        ++held[p ? "a human's character" : "offline"];
+                        continue;
+                    }
+                    std::string why;
+                    if (!FreeForFive(row.low, p, &why))
+                    {
+                        ++held[why];
+                        continue;
+                    }
+                    ++free;
+                    std::string const role = PlanRole(row.low, p);
+                    freeTanks += role == "tank" ? 1 : 0;
+                    freeHealers += role == "healer" ? 1 : 0;
+                }
+                std::string reasons;
+                for (auto const& [why, n] : held)
+                    reasons += Acore::StringFormat("{}{} {}", reasons.empty() ? "" : ", ", why, n);
+                std::string const line = Acore::StringFormat(
+                    "roster: {} planned, {} free for a five (t{} h{} d{}); held: {}", planned, free, freeTanks,
+                    freeHealers, free - freeTanks - freeHealers, reasons.empty() ? "nobody" : reasons);
+                if (line != five60Logged_)
+                {
+                    five60Logged_ = line;
+                    LOG_INFO("playerbots", "[five60] {}", line);
+                }
             }
         }
         DungeonOption const* best = nullptr;

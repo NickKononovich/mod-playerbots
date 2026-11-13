@@ -96,18 +96,6 @@ namespace
     constexpr size_t TASKS_SENT_MAX = 8;     // OT lines per bot (the addon line budget)
     uint32 const CRAFT_LINES[] = {164, 165, 171, 197, 202, 333, 755, 773, 185, 129};
 
-    char const* OrderName(GuildOrderType type)
-    {
-        static char const* const names[] = {
-            "QUEST",      "PROFESSION",   "BANK_DEPOSIT", "BANK_WITHDRAW", "CRAFT_FOR", "GATHER",   "BUY", "DUNGEON",
-            "DISENCHANT", "QUEST_REWARD", "FOUND_GUILD",  "SIGN_CHARTER",  "JOIN",      "BANK_TAB",  // [guild80]
-            "TRADE_TO",   "MAIL_TO",      "DONATE_GOLD",                                             // [guild81]
-            "SELL",                                                                                  // [tasks]
-            "COOP",                                                                                  // [coop]
-            "REPAIR"};                                                                               // [regress10]
-        return uint8(type) < std::size(names) ? names[uint8(type)] : "?";
-    }
-
     // [tasks] the task list's codes (logs, the addon's OT line) and Russian names
     char const* PriorityCode(GuildTaskPriority p)
     {
@@ -238,20 +226,15 @@ namespace
         return std::any_of(a.begin(), a.end(), [&](uint32 x) { return std::find(b.begin(), b.end(), x) != b.end(); });
     }
 
-    // [tasks] the task the bot runs now (the first executable one not waiting for its town) and how many it holds
+    // [tasks] the task the bot runs now ([five60] GuildCoordinator::ActiveOrder, the guild's one judge of it) and how
+    // many it holds
     std::string ActiveTask(std::vector<GuildOrder> const& tasks)
     {
-        GuildOrder const* active = nullptr;
+        GuildOrder const* active = GuildCoordinator::ActiveOrder(tasks);
         uint32 others = 0;
         for (GuildOrder const& o : tasks)
-        {
-            if (o.type == GuildOrderType::QUEST)
-                continue;
-            ++others;
-            if (!active && o.executable && !o.waitsTown)
-                active = &o;
-        }
-        std::string const name = active ? OrderName(active->type) : "QUEST";
+            others += o.type == GuildOrderType::QUEST ? 0 : 1;
+        std::string const name = active ? GuildCoordinator::OrderName(active->type) : "QUEST";
         return others ? name + " (tasks " + std::to_string(others) + ")" : name;
     }
 
@@ -3325,15 +3308,9 @@ void GuildCoordinator::UpdateOrders()
         // executable one (done, given back, or outranked) - no DO_GATHER duration
         if (st.rpgStatus == RPG_DO_GATHER)
         {
-            auto const firstExecutable = [](std::vector<GuildOrder> const& list) -> GuildOrder const*
-            {
-                for (GuildOrder const& o : list)
-                    if (o.executable && !o.waitsTown)
-                        return &o;
-                return nullptr;
-            };
-            GuildOrder const* before = firstExecutable(st.orders);
-            GuildOrder const* first = firstExecutable(orders);
+            // [five60] the guild's one judge of the order it works on now, not a second copy of it
+            GuildOrder const* before = ActiveOrder(st.orders);
+            GuildOrder const* first = ActiveOrder(orders);
             if (before && before->type == GuildOrderType::GATHER &&
                 (!first || first->type != GuildOrderType::GATHER || TaskKey(*first) != TaskKey(*before)))
                 if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p))
@@ -3381,6 +3358,30 @@ void GuildCoordinator::SetOrder(uint32 low, GuildOrder order, std::string const&
     if (order.type != GuildOrderType::QUEST)
         st.external.push_back(order);
     Decision(Who(low) + " → " + OrderName(order.type) + ": " + decision);
+}
+
+// [tasks] the order types' names (the logs, the task line, the addon's own lines): one table for the whole guild
+char const* GuildCoordinator::OrderName(GuildOrderType type)
+{
+    static char const* const names[] = {
+        "QUEST",      "PROFESSION",   "BANK_DEPOSIT", "BANK_WITHDRAW", "CRAFT_FOR", "GATHER",   "BUY", "DUNGEON",
+        "DISENCHANT", "QUEST_REWARD", "FOUND_GUILD",  "SIGN_CHARTER",  "JOIN",      "BANK_TAB",  // [guild80]
+        "TRADE_TO",   "MAIL_TO",      "DONATE_GOLD",                                             // [guild81]
+        "SELL",                                                                                  // [tasks]
+        "COOP",                                                                                  // [coop]
+        "REPAIR"};                                                                               // [regress10]
+    return uint8(type) < std::size(names) ? names[uint8(type)] : "?";
+}
+
+// [five60] the one judge of the order a member works on now (GuildCoordinator.h). A QUEST order is its own leader's
+// plan, never a task; an order that waits for a town the bot is not in is not being worked on either - the leader's
+// own rule leaves it questing until it is there ("a convenient town task waits for that town", UpdateOrders)
+GuildOrder const* GuildCoordinator::ActiveOrder(std::vector<GuildOrder> const& orders)
+{
+    for (GuildOrder const& o : orders)
+        if (o.type != GuildOrderType::QUEST && o.executable && !o.waitsTown)
+            return &o;
+    return nullptr;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -7751,12 +7752,18 @@ void GuildCoordinator::AddAmmoSurplus(BotState& st, uint32 low, Player* p)
         h.purpose = fires ? "ammo above its load" : "ammo it cannot fire";
         st.held.push_back(h);
         known.insert(h.itemGuidLow);
-        LOG_INFO("playerbots", "[econ71] {} L{} {} ×{} → {}: {} (its ranged weapon fires {}, its load {} rounds)",
+        // [econ71] the inputs of the load, in the line that acts on it: the weapon's own swing time, the horizon
+        // (20 min of CONTINUOUS fire, a proxy for one run at partial ranged uptime - the clean Wailing Caverns
+        // clears of 2026-11-13 measured 43 / 53 / 61 min), the reserve the user approved, and the result
+        LOG_INFO("playerbots",
+                 "[econ71] {} L{} {} ×{} → {}: {} (its ranged weapon fires {} every {:.1f} s, so its load is "
+                 "{} rounds = 20 min of continuous fire ×3 reserve, one stack up)",
                  p->GetName(), p->GetLevel(), proto->Name1, count,
                  to ? Who(to) : std::string("the guild bank"), h.purpose,
                  sub == ITEM_SUBCLASS_ARROW   ? "arrows"
                  : sub == ITEM_SUBCLASS_BULLET ? "bullets"
                                                : "nothing",
+                 float(p->GetAttackTime(RANGED_ATTACK)) / float(IN_MILLISECONDS),
                  sub ? ItemUsageValue::AmmoCapRounds(p, proto) : 0);
     };
     if (sub)

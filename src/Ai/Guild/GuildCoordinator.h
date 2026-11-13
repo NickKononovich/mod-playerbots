@@ -888,8 +888,21 @@ private:
     // the run's own phase, a refused walk, its supply shortfall, the gold at its leader's mailbox). Reports, decides
     // nothing. "" is never returned: a five nothing names says exactly that, and that sentence is the defect
     std::string CertFlightHold(GuildFive const& five) const;
+    // [cert20] lock_ held. The inputs of "the batch does not form", so the next triage audits the verdict instead of
+    // guessing at it: how many members the dungeon's own entry levels allow at all (the ceiling the leader cannot
+    // move), how many of them the Dungeon Finder's band would queue, and - for every member outside the pool - the
+    // one judge's own reason (FreeForFive, DungeonRefusal), counted, with the members an urgent order holds named
+    std::string CertPoolAudit(DungeonOption const& d) const;
 
 public:
+    static char const* OrderName(GuildOrderType type);  // [tasks] one name table for the whole guild
+    // [five60] the guild's one judge of the order a member is working on NOW: the first executable order it is not
+    // waiting for its town for (GuildOrder::waitsTown - a convenient town errand the bot is not in the town of, which
+    // the leader's own rule leaves questing). nullptr = it works on none of its orders. ActiveTask (the task line and
+    // the addon), the gather run's end and FreeForFive all read this one definition: b480 had three of them, and
+    // FreeForFive's copy (orders.front().executable) refused a five to 64 of 75 members whose head order was a
+    // convenient errand nobody had started - 684 [five58] readings, 681 of them "0 free (t0 h0 d0)"
+    static GuildOrder const* ActiveOrder(std::vector<GuildOrder> const& orders);
     // [lag368] the member holds the guild's open dungeon back: not cleared and below its band (the guild waits on its
     // level). Its own lock: read from the help pricing (NewRpgCoop) without lock_
     bool HoldsGuildDungeon(uint32 low) const;
@@ -1483,6 +1496,7 @@ private:
     mutable std::mutex orderHeldLock_;            // [lag368]
     std::unordered_set<uint32> orderHeldBelow_;   // [lag368] the open dungeon's uncleared members below its band
     std::string orderLogged_;
+    std::string five60Logged_;  // [five60] the roster occupancy line's own cadence: logged when it changes
     uint32 orderGen_{0};
     // [loot14] this build's five BoP outcomes: need worn, need held, need not worn (false need), greed, disenchant
     std::array<uint32, 5> lootBuild_{};
