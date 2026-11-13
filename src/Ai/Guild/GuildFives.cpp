@@ -618,6 +618,7 @@ namespace FiveGate
             float manaNeeded = 0.0f;
             float fightMana = 0.0f;
             float manaShare = 0.0f;
+            float controlSec = 0.0f;  // [dun261] the healer's seconds under the mobs' control casts
             uint8 lo = 255;
             uint8 hi = 0;
             size_t mobs = 0;
@@ -652,23 +653,34 @@ namespace FiveGate
                                       ? std::min(heal.hps, healMana * heal.healPerMana / fightGuess)
                                       : heal.hps;
             float const startRate = rate;
-            float t = 0.0f, drop = 0.0f, deepest = 0.0f, intake = 0.0f;
+            // [dun261] the planner's drop (EstimatePack): the kill order is not known - each mob lives its own kill
+            // time plus half of the others' and lands its rate all that time (DropOver), and a lone healer's seconds
+            // under the mobs' control casts (dun258 HealerControlSec, by their templates) are a gap with no heal.
+            // b467 wc-n: the gate read "0 of 124 pulls over capacity" while the planner priced the Druid of the Fang
+            // pack at drop 2.27 against its limit 0.82 (their Druid's Slumber on the lone healer)
+            float t = 0.0f, intake = 0.0f;
+            std::vector<std::pair<float, float>> profile;
+            std::vector<uint32> entries;
+            std::vector<float> lifeSec;
             for (Mob const& m : mobs)
             {
                 float killDps = 0.0f;
                 for (Damage const& d : dps)
                     killDps += d.Over(fightGuess) * HitFactor(int32(m.level) - int32(d.level));
                 float const seg = killDps > 0.0f ? m.health / killDps : 3600.0f;
-                // before the healer's first heal lands, then after it
-                float const before = std::clamp(gap - t, 0.0f, seg);
-                drop += rate * before;
-                deepest = std::max(deepest, drop);
-                drop = std::max(0.0f, drop + (rate - healHps) * (seg - before));
-                deepest = std::max(deepest, drop);
-                intake += rate * seg;
+                float const life =
+                    killDps > 0.0f ? (m.health + (result.health - m.health) / 2.0f) / killDps : 3600.0f;
+                profile.emplace_back(landed(m), life);
+                entries.push_back(m.entry);
+                lifeSec.push_back(life);
+                intake += landed(m) * life;
                 t += seg;
-                rate -= landed(m);
             }
+            result.controlSec =
+                PullPlanning::TemplateHealerControlSec(entries, lifeSec, uint32(five.size()), t);
+            float const gapSec = std::max(gap, result.controlSec);  // the five's one healer
+            float const deepest = PullPlanning::DropOver(profile, healHps, gapSec);
+            float const drop = std::max(0.0f, intake - healHps * std::max(t - gapSec, 0.0f));
             float const healNeeded = std::max(0.0f, intake - drop);
             result.manaNeeded = heal.healPerMana > 0.0f ? healNeeded / heal.healPerMana : 0.0f;
             result.gapDrop = startRate * gap;
@@ -1164,10 +1176,11 @@ namespace FiveGate
         std::string const worstWhy =
             worst.mobs ? Acore::StringFormat(
                              "{}{} x{} (L{}-{}, {:.0f} hp): fight {:.0f} s, tank drop {:.0f} + one gap {:.0f} of "
-                             "{:.0f} hp ({:.2f}), heal mana {:.0f} of {:.0f} ({:.0f} pool + regen) ({:.2f})",
+                             "{:.0f} hp ({:.2f}), [dun261] healer controlled {:.1f} s, heal mana {:.0f} of {:.0f} "
+                             "({:.0f} pool + regen) ({:.2f})",
                              worst.boss ? "boss pull " : "", worst.name, worst.mobs, worst.lo, worst.hi, worst.health,
-                             worst.sec, worst.deepest, worst.gapDrop, tankHealth, worst.dropShare, worst.manaNeeded,
-                             worst.fightMana, healMana, worst.manaShare)
+                             worst.sec, worst.deepest, worst.gapDrop, tankHealth, worst.dropShare, worst.controlSec,
+                             worst.manaNeeded, worst.fightMana, healMana, worst.manaShare)
                        : std::string("-");
         out.clears = failed == 0 && judged > 0;
         out.why = Acore::StringFormat(

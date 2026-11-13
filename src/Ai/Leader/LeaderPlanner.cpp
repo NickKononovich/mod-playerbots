@@ -2644,17 +2644,18 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         bool notTop = false;  // the top of the threat list (the tank) is never picked
     };
 
-    std::vector<ControlCast> const& GetControlCasts(Creature* creature)
+    // [dun261] by template too (the five gate): `creature` only times the cast (its haste), nullptr its base
+    std::vector<ControlCast> const& ControlCastsOf(uint32 entry, Creature* creature)
     {
         static std::vector<ControlCast> const none;
-        if (creature->GetAIName() != "SmartAI")
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        if (!tmpl || tmpl->AIName != "SmartAI")
             return none;
         thread_local std::unordered_map<uint32, std::vector<ControlCast>> cache;
-        auto const [found, fresh] = cache.try_emplace(creature->GetEntry());
+        auto const [found, fresh] = cache.try_emplace(entry);
         if (!fresh)
             return found->second;
-        for (SmartScriptHolder const& holder :
-             sSmartScriptMgr->GetScript(int32(creature->GetEntry()), SMART_SCRIPT_TYPE_CREATURE))
+        for (SmartScriptHolder const& holder : sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
         {
             if (holder.GetEventType() != SMART_EVENT_UPDATE_IC || holder.GetActionType() != SMART_ACTION_CAST ||
                 !holder.event.minMaxRepeat.repeatMax)
@@ -2686,6 +2687,14 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 found->second.push_back(cast);
         }
         return found->second;
+    }
+
+    std::vector<ControlCast> const& GetControlCasts(Creature* creature)
+    {
+        static std::vector<ControlCast> const none;
+        if (creature->GetAIName() != "SmartAI")
+            return none;
+        return ControlCastsOf(creature->GetEntry(), creature);
     }
 
     ScriptedHelp const& GetScriptedHelp(Creature* creature)
@@ -4837,20 +4846,11 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // life (one at its initial delay, one more each repeat) times the chance it picks a given healer (one of the
     // group's living members on the map, the tank left out when the cast never picks the top) times its duration
     // (within the fight): one healer's seconds out of the fight, at most the fight
-    float HealerControlSec(std::vector<std::pair<size_t, ControlCast>> const& controls,
-                           std::vector<float> const& lifeSec, Player* tank, float fightSec)
+    float HealerControlSecOf(std::vector<std::pair<size_t, ControlCast>> const& controls,
+                             std::vector<float> const& lifeSec, uint32 members, float fightSec)
     {
         if (controls.empty() || fightSec <= 0.0f)
             return 0.0f;
-        uint32 members = 1;
-        if (Group* group = tank->GetGroup())
-        {
-            members = 0;
-            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
-                if (Player* member = ref->GetSource();
-                    member && member->IsAlive() && member->GetMap() == tank->GetMap())
-                    ++members;
-        }
         float seconds = 0.0f;
         for (auto const& [life, cast] : controls)
         {
@@ -4862,6 +4862,31 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             seconds += casts / float(picks) * std::min(cast.durationSec, fightSec);
         }
         return std::min(seconds, fightSec);
+    }
+
+    float HealerControlSec(std::vector<std::pair<size_t, ControlCast>> const& controls,
+                           std::vector<float> const& lifeSec, Player* tank, float fightSec)
+    {
+        uint32 members = 1;
+        if (Group* group = tank->GetGroup())
+        {
+            members = 0;
+            for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+                if (Player* member = ref->GetSource();
+                    member && member->IsAlive() && member->GetMap() == tank->GetMap())
+                    ++members;
+        }
+        return HealerControlSecOf(controls, lifeSec, members, fightSec);
+    }
+
+    float TemplateHealerControlSec(std::vector<uint32> const& entries, std::vector<float> const& lifeSec,
+                                   uint32 members, float fightSec)
+    {
+        std::vector<std::pair<size_t, ControlCast>> controls;
+        for (size_t i = 0; i < entries.size(); ++i)
+            for (ControlCast const& cast : ControlCastsOf(entries[i], nullptr))
+                controls.emplace_back(i, cast);
+        return HealerControlSecOf(controls, lifeSec, members, fightSec);
     }
 
     // `groupDps` > 0: the fight's cost and length are read from the mobs' health too. The group kills one mob after

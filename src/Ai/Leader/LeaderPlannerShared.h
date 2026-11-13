@@ -81,6 +81,13 @@ namespace PullPlanning
     // [split254] the tank has a ranged pull (its pull strategy's spell, known, reaching CAREFUL_MIN_PULL_RANGE, as
     // PullBackSpot reads it): its fight can be pulled back to it
     bool TankPullsAtRange(Player* tank);
+    // [dun261] the planner's drop terms for the five gate: the deepest the tank's health falls over the mobs' lives
+    // ((landed dps, seconds it lives) each) against the healers' rate after their first heal at `gapSec`, and the
+    // seconds a lone healer is expected controlled by the mobs' control casts (dun258) by their templates (`lifeSec`
+    // per entry, `members` living in the group)
+    float DropOver(std::vector<std::pair<float, float>> lives, float healHps, float gapSec);
+    float TemplateHealerControlSec(std::vector<uint32> const& entries, std::vector<float> const& lifeSec,
+                                   uint32 members, float fightSec);
 }
 
 // the tank's commit of a pull, posted to the leader's order registry
