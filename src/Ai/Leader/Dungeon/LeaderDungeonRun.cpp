@@ -105,7 +105,13 @@ namespace Leader::Dungeon
         for (Knowledge::EventItemDef const* def : Knowledge::EventItems(mapId))
         {
             // a drop of this dungeon is looted inside (the five loots its kills): only what a group carries in
-            if (!def->dropFrom.empty() || (def->difficulty >= 0 && uint8(def->difficulty) != difficulty))
+            // [dm31] ... and so is the loot of a game object of this dungeon (lootFrom: Deadmines' Defias
+            // Gunpowder crate 17155), which the five opens on its own route. Without this, every dm run reported
+            // "nobody carries Defias Gunpowder (5397) - that part is skipped" on the way in and carried that need
+            // into its report - on the 7/7 runs too (b479 runs 579-586), which is how a line that names no blocker
+            // came to be read as one.
+            if (!def->dropFrom.empty() || !def->lootFrom.empty() ||
+                (def->difficulty >= 0 && uint8(def->difficulty) != difficulty))
                 continue;
             bool held = false;
             for (Player* member : members)

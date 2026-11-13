@@ -373,6 +373,13 @@ namespace Leader::Knowledge
         // [b32_strat_gate] every member carries one (a key any player gets from the quest / the drop: Stratholme's
         // Key to the City). A member cut off behind its gate keys it from its own side (MemberKeyAtDoor).
         bool everyMember = false;
+        // [dm31] Game objects OF THIS DUNGEON whose loot holds the item: the five opens them on its own route, so
+        // the item is no carry-in need (MissingCarriedItems), exactly as a `dropFrom` creature's drop is none.
+        // Deadmines' Defias Gunpowder 5397 comes out of the Defias Gunpowder crate 17155 (loot 2882, 100 %) - a
+        // game object, not a creature, so `dropFrom` is empty and every dm run reported "nobody carries Defias
+        // Gunpowder - that part is skipped" at the door, including the runs that looted it, blew the Iron Clad
+        // Door and finished 7/7 (b479 runs 579-586 all carry that line in guild_project_runs.reason).
+        std::vector<uint32> lootFrom = {};
     };
 
     // [strat_key_pass] An auto-closing key gate (GAMEOBJECT_TYPE_DOOR, data2 autoclose ms; Stratholme: 3000) the whole

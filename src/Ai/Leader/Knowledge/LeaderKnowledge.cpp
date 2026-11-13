@@ -1065,9 +1065,13 @@ namespace Leader::Knowledge
              "Crescent Key: 100 % drop of Pusillin 14354 (Dire Maul East, the chase), carried into Dire Maul West; "
              "lock 1562 of Door 177221 (also Lockpicking 300)"},
             {429, 18268, 1, "Gordok Inner Door Key: 100 % drop of Guard Mol'dar", {14326}},
+            // [dm31] lootFrom 17155: the crate is on the five's own route (the UseGameObject starter above opens it
+            // and its 100 % loot 2882 is the one gunpowder the one Defias Cannon asks for), so nobody carries this
+            // item in and nothing behind it is skipped for want of a carrier.
             {36, 5397, 1,
              "Defias Gunpowder: the Defias Gunpowder crate GO 17155 (-106.4,-617.3,13.8; lock 57, loot 2882 100 %) "
-             "before the Defias Cannon"},
+             "before the Defias Cannon",
+             {}, false, -1, false, {17155}},
             {560, 25853, 1,
              "Pack of Incendiary Bombs: start item of quest 10283 'Taretha's Diversion' (Erozion, level 66; his "
              "gossip 7769 hands out a new one)"},

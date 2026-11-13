@@ -652,12 +652,34 @@ bool StoreLootAction::Execute(Event event)
                 // relief", "bags 97 % full"). MakeRoomFor never touches a quest item, a container, a quiver,
                 // ammunition, a consumable or a key, so the drink and food this rest is built on stay put: it gives
                 // up the lowest-value thing in the bags, a grey first.
-                if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount) != EQUIP_ERR_OK &&
-                    (itemQuest || alwaysLoot) && MakeRoomFor(bot, itemid, itemQuest))
-                    dest.clear();
-                if (bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount) != EQUIP_ERR_OK)
+                // [dm30] ... and a refusal no free slot can lift is not a bag-room refusal. Player::CanStoreItem
+                // asks CanTakeMoreSimilarItems FIRST: an item the game caps per player (item_template.maxcount, or
+                // its ItemLimitCategory) that the bot already holds that many of comes back
+                // EQUIP_ERR_CANT_CARRY_MORE_OF_THIS before a single bag is looked at. The old code read every
+                // non-OK result as "bags full", so it destroyed an item to make room that could never be used and
+                // then reported the honest failure as "no bag room". b479 dm-n 20261113-194805-dm-n-five1-1:
+                // "[bag66] Ravelandy destroys Red Defias Mask x1 (grey, 81 c) to loot [loot20] always-loot item
+                // 5397" and in the same millisecond "[loot] Ravelandy loots object 17155 Defias Gunpowder
+                // items=0/1 ...; left: item 5397 no bag room" - the Defias Gunpowder is maxcount 1 and Ravelandy
+                // was already carrying the one it had kept from an earlier run, so the mask was destroyed for
+                // nothing (user rule: nothing a member needs is destroyed or left behind) and the log named the
+                // wrong cause, which is what made a loot bug of a run that then blew the door and finished 7/7.
+                InventoryResult store =
+                    bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount);
+                if (store == EQUIP_ERR_CANT_CARRY_MORE_OF_THIS ||
+                    store == EQUIP_ERR_ITEM_MAX_LIMIT_CATEGORY_COUNT_EXCEEDED)
                 {
-                    leave("no bag room", true);
+                    leave("already holds the most of it the game allows (no room would help)", true);
+                    continue;
+                }
+                if (store != EQUIP_ERR_OK && (itemQuest || alwaysLoot) && MakeRoomFor(bot, itemid, itemQuest))
+                {
+                    dest.clear();
+                    store = bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount);
+                }
+                if (store != EQUIP_ERR_OK)
+                {
+                    leave(Acore::StringFormat("no bag room (store refusal {})", uint32(store)).c_str(), true);
                     continue;
                 }
             }
