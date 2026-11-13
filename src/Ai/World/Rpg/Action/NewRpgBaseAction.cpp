@@ -2170,6 +2170,35 @@ bool NewRpgBaseAction::FlyTowards(uint32 toNode)
     if (path.empty())
         return false;
 
+    // [hearth40] the fare is the game's, and this flight never held it ([taxi20] holds it for FlyIfFaster's): the
+    // master refuses a flight the purse cannot pay (Player::ActivateTaxiPathTo answers ERR_TAXINOTENOUGHMONEY), the
+    // status falls straight back to IDLE and the caller planned the very same flight on the next tick, over every
+    // task below it in the IDLE chain. b475 Febineysh L20 stood at the Darkshire flight master with 179c for the
+    // 210c hop to Lakeshire: 1446 plans in 2.2 h, 0 yd walked, 0c spent, his smelt runnable 116 passes and never
+    // cast. Priced undiscounted, as FlyIfFaster prices it (the master's reputation discount only lowers it)
+    uint32 fare = 0;
+    for (size_t i = 1; i < path.size(); ++i)
+    {
+        uint32 pathId = 0, cost = 0;
+        sObjectMgr->GetTaxiPath(path[i - 1], path[i], pathId, cost);
+        fare += cost;
+    }
+    if (bot->GetMoney() < fare)
+    {
+        // one line per bot and flight: the same refusal is not logged again (map thread, per bot)
+        thread_local std::unordered_map<uint64, std::pair<uint32, uint32>> shortFare;
+        auto& last = shortFare[bot->GetGUID().GetRawValue()];
+        if (last != std::pair<uint32, uint32>{master->taxiNodeId, toNode})
+        {
+            last = {master->taxiNodeId, toNode};
+            LOG_INFO("playerbots", "[hearth40] {} L{} does not plan the flight {} -> {}: its fare {} is more than "
+                     "its purse {}",
+                     bot->GetName(), bot->GetLevel(), master->taxiNodeId, toNode, GuildRiding::Money(fare),
+                     GuildRiding::Money(bot->GetMoney()));
+        }
+        return false;
+    }
+
     botAI->rpgInfo.ChangeToTravelFlight(master->templateEntry, master->pos, path);
     return true;
 }
@@ -6758,6 +6787,15 @@ bool NewRpgBaseAction::RedAreaEscape()
     if (!area || area->area_level <= 0 ||
         Acore::XP::GetColorCode(bot->GetLevel(), uint8(std::min(area->area_level, 255))) != XP_RED)
         return false;
+    // [red140] a town of its own faction is no area to flee: its guards hold it, nothing hostile spawns inside it,
+    // and it is where a player of its level stands in that zone. [mount8]'s WalkDanger already judges a town of the
+    // bot's faction as no danger on a route - this escape judged the same town red and left it, the two judges
+    // answering a standing bot differently. b475 Febineysh L20 stood in Darkshire (area 42, AREA_FLAG_TOWN, area
+    // level 25 - red for L20 by the one level of Acore::XP::GetColorCode) with his Duskwood quest log and a smelt
+    // task for that very town, and spent his whole run leaving it. The wilderness around it is judged as before
+    uint32 const ownTeam = bot->GetTeamId() == TEAM_ALLIANCE ? AREATEAM_ALLY : AREATEAM_HORDE;
+    if ((area->flags & AREA_FLAG_TOWN) && (!area->team || area->team == ownTeam))
+        return false;
     WorldPosition const bind(bot->m_homebindMapId, bot->m_homebindX, bot->m_homebindY, bot->m_homebindZ);
     WorldPosition const out = bind.GetMapId() == bot->GetMapId() ? bind : NearestHub(bot);
     if (out == WorldPosition() || out.GetMapId() != bot->GetMapId())
@@ -6826,8 +6864,18 @@ bool NewRpgBaseAction::RedAreaEscape()
         return false;
     if (!FlyTowards(bestNode))
         return false;
-    LOG_INFO("playerbots", "[red73] {} L{} {}: flies out from the flight master of node {} to known node {} ({:.0f} yd)",
-             bot->GetName(), bot->GetLevel(), why, master->taxiNodeId, bestNode, bestYd);
+    // [red141] one line per area, level and node: the plan is the same decision until one of them changes, and a
+    // flight that falls back to IDLE (the master gone, the taxi refused) had it logged on every tick - 1447 lines
+    // for Febineysh L20 in b475, 1446 of them the same sentence. Map thread, per bot
+    thread_local std::unordered_map<uint64, std::tuple<uint32, uint8, uint32>> flewOut;
+    auto& last = flewOut[bot->GetGUID().GetRawValue()];
+    if (last != std::tuple<uint32, uint8, uint32>{area->ID, bot->GetLevel(), bestNode})
+    {
+        last = {area->ID, bot->GetLevel(), bestNode};
+        LOG_INFO("playerbots",
+                 "[red73] {} L{} {}: flies out from the flight master of node {} to known node {} ({:.0f} yd)",
+                 bot->GetName(), bot->GetLevel(), why, master->taxiNodeId, bestNode, bestYd);
+    }
     return true;
 }
 
