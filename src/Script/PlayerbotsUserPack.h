@@ -24,6 +24,10 @@ namespace UserPack
     // O(1). A pack bot that plays on its own (no game client master) and leads its group.
     bool IsAutonomousLeader(Player* bot);
 
+    // World thread, at a bot's login after its saved strategies loaded. [rpgs1] a pack bot plays the pack's
+    // open-world strategies ("new rpg", "grind") from its first tick.
+    void OnBotLogin(Player* bot);
+
     // World thread. One line per pack character (".playerbots pack status").
     std::vector<std::string> StatusLines();
 

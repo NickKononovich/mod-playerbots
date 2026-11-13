@@ -31,6 +31,7 @@
 #include "PlayerbotTextMgr.h"
 #include "PlayerbotWorldThreadProcessor.h"
 #include "Playerbots.h"
+#include "PlayerbotsUserPack.h"  // [rpgs1]
 #include "RandomPlayerbotMgr.h"
 #include "SelfBotControl.h"
 #include "SharedDefines.h"
@@ -633,6 +634,7 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
         botAI->ResetStrategies(!sRandomPlayerbotMgr.IsRandomBot(bot));
     }
     PlayerbotRepository::instance().Load(botAI);
+    UserPack::OnBotLogin(bot);  // [rpgs1] before [login40] reports its New RPG strategy
 
     // [guild15] the guild bots' class spells for the levels they gained before the level-up path learned them
     // (AutoLearnTrainerSpells; the random bots learn theirs at level up). [honest] All 75 guild-plan bots, the random

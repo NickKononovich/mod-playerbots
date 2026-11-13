@@ -438,6 +438,24 @@ namespace
         Mode GetMode() const { return _mode; }
         bool IsLeader(ObjectGuid guid) const { return _leader == guid; }
 
+        // [rpgs1] the login's strategies (AiFactory gives a non-random bot no open-world play, the saved ones are
+        // the last session's) are the pack's at once, not at the next tick: b468 / b469 all 25 pack bots logged
+        // "[login40] ... no New RPG strategy" and played without it until the tick's "plays as leader"
+        void OnBotLogin(Player* bot)
+        {
+            if (!cfg.enabled || !bot || !cfg.lows.count(bot->GetGUID().GetCounter()))
+                return;
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            if (!botAI || (botAI->GetMaster() && IsRealPlayer(botAI->GetMaster()) && !IsSelfBot(bot)))
+                return;
+            if (_order.type != OrderType::None && _order.executors.count(bot->GetGUID()))
+                return;
+            if (cfg.solo)
+                EnsureAutonomousStrategies(bot, true);
+            else if ((_mode == Mode::Autonomous || _mode == Mode::Paused) && IsLeader(bot->GetGUID()))
+                EnsureAutonomousStrategies(bot, true);
+        }
+
         void Update(uint32 diff)
         {
             if (!cfg.enabled)
@@ -1754,6 +1772,8 @@ namespace UserPack
         Group* group = bot->GetGroup();
         return group && group->GetLeaderGUID() == bot->GetGUID();
     }
+
+    void OnBotLogin(Player* bot) { UserPackMgr::Instance().OnBotLogin(bot); }
 
     std::vector<std::string> StatusLines()
     {
