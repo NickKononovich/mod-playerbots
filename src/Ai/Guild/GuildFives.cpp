@@ -1452,8 +1452,12 @@ namespace FiveGate
         // is the pull of `start` again with the holds standing (pullOf `held`): what came only by a held mob's engage
         // call or its stand ([dun205]) stays out with it - a hold on the pull's own start takes only that mob out
         std::vector<char> heldMask(n, 0);
+        // [gate96] holdBudget is the number of holds the leader may spend on one pack (AutoCcMarkMaxPerPack). It is a
+        // parameter only so the gate can PRICE one more hold without ever spending it: the real call passes the
+        // configured budget and nothing about the decision changes, and a measuring call passes budget + 1 and its
+        // result is counted and thrown away. The threshold itself is the user's and is not touched here
         auto const holdPart = [&](size_t start, bool withDraws, std::vector<uint32>& members, PullLoad& load,
-                                  std::vector<uint32>& held, std::string& what) -> bool
+                                  std::vector<uint32>& held, std::string& what, uint32 holdBudget) -> bool
         {
             for (std::vector<Holder> const* holders : {&dpsHolders, &healHolders})
             {
@@ -1486,7 +1490,7 @@ namespace FiveGate
                 std::vector<Player*> usedBy;
                 PullLoad restLoad = load;
                 std::string line;
-                while (took.size() < maxHolds)
+                while (took.size() < holdBudget)
                 {
                     Holder const* bestHolder = nullptr;
                     uint32 bestSpawn = 0;
@@ -1572,6 +1576,14 @@ namespace FiveGate
         bool const losOn = losMinCasters && tankAI && tankAtRange && tankAI->HasStrategy("pull back", BOT_STATE_COMBAT);
         uint32 cornerPulls = 0;
         uint32 peeledPulls = 0;  // [dm4] pulls whose trash was peeled away from the boss they drag in
+        // [gate96] why the corner option did not apply, per over-capacity pull, so a reported 0 names its own cause
+        uint32 cornerPatrol = 0;      // the pull's own target patrols: it cannot be pulled round a corner
+        uint32 cornerFewCasters = 0;  // fewer than LosPullMinCasters casters in it
+        uint32 cornerSameMobs = 0;    // the pull round a corner brings the same mobs anyway
+        uint32 cornerNoLighter = 0;   // it brings fewer, and the pull is no lighter for it
+        // [gate96] the price of one more hold on a pack, measured and never spent (the threshold is the user's)
+        uint32 oneMoreHoldPulls = 0;
+        std::string oneMoreHoldWhy;
         constexpr uint32 OVER_LISTED = 8;  // log only
         uint32 overCount = 0;
         std::string overList;
@@ -1680,6 +1692,15 @@ namespace FiveGate
             // boss in was priced with none of the options the leader really has for it.
             bool const bossStart = spawns[start].mob.boss;
             bool cornered = false;
+            // [gate96] why the corner option did NOT apply, when it did not. "[split263] 0 round a corner" is one
+            // number standing for four different facts - the pull's own target patrols, too few casters in it, the
+            // pull round a corner brings the same mobs anyway, or it brings fewer and is no lighter - and from
+            // outside the server they cannot be told apart. b484 wc-n held its certification batch on one pull of
+            // 105, "Druid of the Fang x6 (2.42)", which is the very pack [split263] was written for (b468: "two
+            // packs of three, joined only by the Druids' stand"), and the bare 0 could not say which of the four it
+            // was. The counters below decide nothing: they only name the fact the verdict already turned on
+            if (best.load > 1.0f && !bossStart && losOn && Patrols(spawns[start]))
+                ++cornerPatrol;
             if (best.load > 1.0f && !bossStart && losOn && !Patrols(spawns[start]))
             {
                 size_t const casters = size_t(std::count_if(bestMembers.begin(), bestMembers.end(),
@@ -1687,8 +1708,14 @@ namespace FiveGate
                 std::vector<uint32> corner;
                 if (casters >= losMinCasters)
                     pullOf(start, corner, false);
-                if (!corner.empty() && corner.size() < bestMembers.size() &&
-                    std::any_of(corner.begin(), corner.end(), [&](uint32 j) { return spawns[j].keepsRange; }))
+                else
+                    ++cornerFewCasters;
+                bool const smaller = !corner.empty() && corner.size() < bestMembers.size();
+                bool const keepsOne =
+                    std::any_of(corner.begin(), corner.end(), [&](uint32 j) { return spawns[j].keepsRange; });
+                if (casters >= losMinCasters && !(smaller && keepsOne))
+                    ++cornerSameMobs;
+                if (smaller && keepsOne)
                 {
                     PullLoad const cornerLoad = loadOf(corner);
                     if (cornerLoad.load < best.load)
@@ -1703,6 +1730,8 @@ namespace FiveGate
                         best = cornerLoad;
                         cornered = true;
                     }
+                    else
+                        ++cornerNoLighter;  // [gate96] fewer mobs, and the pull is no lighter for it
                 }
             }
             if (best.load > 1.0f && !bossStart)  // [dm4] the pull's own target, as HoldForPrePullCc reads it
@@ -1712,7 +1741,7 @@ namespace FiveGate
                 std::string what;
                 std::vector<uint32> rest = bestMembers;
                 PullLoad restLoad = best;
-                if (holdPart(start, !cornered, rest, restLoad, heldNow, what) && restLoad.load <= 1.0f)
+                if (holdPart(start, !cornered, rest, restLoad, heldNow, what, maxHolds) && restLoad.load <= 1.0f)
                 {
                     ++heldPulls;
                     if (optionsNote.find("[split254] held") == std::string::npos)
@@ -1720,6 +1749,26 @@ namespace FiveGate
                                                            best.mobs, restLoad.mobs, what);
                     bestMembers = rest;
                     best = restLoad;
+                }
+                else
+                {
+                    // [gate96] the price of one more hold, measured and thrown away: would this pull come under
+                    // capacity if the leader were allowed maxHolds + 1 on one pack? Nothing here is spent and no
+                    // decision reads it - it is the figure the user needs to answer "is the hold budget the thing
+                    // standing between the guild and a clean batch", and it is his threshold to move, not mine
+                    std::string moreWhat;
+                    std::vector<uint32> moreRest = bestMembers;
+                    std::vector<uint32> moreHeld;
+                    PullLoad moreLoad = best;
+                    if (holdPart(start, !cornered, moreRest, moreLoad, moreHeld, moreWhat, maxHolds + 1) &&
+                        moreLoad.load <= 1.0f)
+                    {
+                        ++oneMoreHoldPulls;
+                        if (oneMoreHoldWhy.empty())
+                            oneMoreHoldWhy = Acore::StringFormat("{} x{} ({:.2f}) -> {} mobs ({:.2f}) with {}",
+                                                                 best.name, best.mobs, best.load, moreLoad.mobs,
+                                                                 moreLoad.load, moreWhat);
+                    }
                 }
             }
             if (best.load > 1.0f && !saves.empty())
@@ -1872,12 +1921,27 @@ namespace FiveGate
             "healers' rate too, [dm5] a boss on that and their mana alone and [dm7] a lone mob on their mana alone, "
             "neither on this drop; area damage not counted]{}{}",
             failed, judged, apart, peeledPulls, cornerPulls,
-            losOn ? "" : " (no: the tank has no ranged pull and pull back)",
+            !losOn ? std::string(" (no: the tank has no ranged pull and pull back)")
+            : cornerPulls || !failed
+                ? std::string()
+                // [gate96] a reported 0 says which fact it stands for, over the pulls that needed it
+                : Acore::StringFormat(" (none applied: {} the target patrols, {} fewer than {} casters, {} the same "
+                                      "mobs round the corner, {} fewer mobs and no lighter)",
+                                      cornerPatrol, cornerFewCasters, losMinCasters, cornerSameMobs, cornerNoLighter),
             heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
             healer->GetName() + (healer2 ? " + " + healer2->GetName() : std::string()), heal.hps, gap,
             heal.healPerMana, tank->GetName(), tankHealth, armor, avoid, bear ? " (the bear seen in form)" : "",
             1.0f - ArmorReduction(armor, worst.hi ? worst.hi : uint8(tank->GetLevel())),
-            worst.parts.empty() ? std::string("-") : worst.parts, optionsNote,
+            worst.parts.empty() ? std::string("-") : worst.parts,
+            optionsNote +
+                // [gate96] the hold budget priced, never spent: what one more hold on a pack would be worth here
+                (oneMoreHoldPulls
+                     ? Acore::StringFormat("; [gate96] {} of the {} pull(s) over capacity would come under it with "
+                                           "one more hold on the pack ({} now, the user's own setting): {}",
+                                           oneMoreHoldPulls, failed, maxHolds, oneMoreHoldWhy)
+                     : failed ? Acore::StringFormat("; [gate96] none of the {} pull(s) over capacity would come under "
+                                                    "it with one more hold on the pack ({} now)", failed, maxHolds)
+                              : std::string()),
             overList.empty()
                 ? std::string()
                 : Acore::StringFormat("; [dun263] over: {}{}", overList,
