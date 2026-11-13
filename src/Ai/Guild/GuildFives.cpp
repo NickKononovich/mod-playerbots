@@ -3426,6 +3426,8 @@ void GuildCoordinator::AutoFive()
     {
         // the free members of each dungeon's band (lock), their upgrades (no lock: the bots' own values)
         std::vector<std::pair<DungeonOption const*, std::vector<FiveCandidate>>> pools;
+        // [order364] the guild's open dungeon: its uncleared members that could enter it now, free for a five or not
+        std::map<DungeonOption const*, std::vector<FiveCandidate>> openUncleared;
         {
             CoordLock guard(lock_, __func__);
             for (DungeonOption const& d : dungeons_)
@@ -3509,6 +3511,31 @@ void GuildCoordinator::AutoFive()
                         if (rec.contentKey == d.contentKey &&
                             std::find(rec.members.begin(), rec.members.end(), c.low) != rec.members.end())
                             ++c.repeats;
+                if (pool.size() >= 5 && !sPlayerbotAIConfig.GuildDungeonOrderPerMember &&
+                    d.contentKey == orderOpenKey_)
+                    for (PlanRow const& row : plan_)
+                    {
+                        if (row.grp < 'A' || row.grp > 'C' || Cleared(d.contentKey, row.low))
+                            continue;
+                        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+                        if (!p || !p->IsInWorld() || IsHuman(p) || !p->IsAlive() || p->GetMap()->Instanceable())
+                            continue;
+                        if (auto const st = bots_.find(row.low); st != bots_.end() && st->second.fiveId)
+                            continue;
+                        if (!DungeonRefusal(d, p).empty() &&
+                            (p->GetLevel() <= d.maxLevel || !DungeonRefusal(d, p, true, true).empty()))
+                            continue;
+                        if (auto const r = refusedFor_.find(d.contentKey); r != refusedFor_.end())
+                            if (auto const m = r->second.find(row.low);
+                                m != r->second.end() && m->second == p->GetLevel())
+                                continue;
+                        FiveCandidate u;
+                        u.low = row.low;
+                        u.player = p;
+                        u.role = PlanRole(row.low, p);
+                        u.needsClear = true;
+                        openUncleared[&d].push_back(u);
+                    }
                 if (pool.size() >= 5)
                     pools.emplace_back(&d, std::move(pool));
             }
@@ -3580,6 +3607,86 @@ void GuildCoordinator::AutoFive()
                                               [&held](FiveCandidate const& c)
                                               { return std::find(held.begin(), held.end(), c.low) != held.end(); }),
                                pool.end());
+            }
+            // [order364] coordinator decision 2026-11-13: while the open dungeon has uncleared members, a tank / healer
+            // with whom the gate passes a first-clear five for them is kept out of an upgrade-only repeat; it goes to
+            // the repeats only when no such five passes. b467: the L24-25 tanks went on wc-n repeats while Rollothan
+            // L16 (healer) was busy, and when he was free only weaker tanks were
+            if (auto const u = openUncleared.find(d); u != openUncleared.end() && !u->second.empty() &&
+                std::none_of(pool.begin(), pool.end(), [](FiveCandidate const& c) { return c.needsClear; }))
+            {
+                constexpr size_t CARRIERS_SIDE = 4;  // the look's cost bound: the 4 highest of each role (8 judges)
+                std::vector<FiveCandidate const*> tanks, healers, others;
+                for (FiveCandidate const& c : pool)
+                    (c.role == "tank" ? tanks : c.role == "healer" ? healers : others).push_back(&c);
+                auto const byLevel = [](FiveCandidate const* a, FiveCandidate const* b)
+                { return a->player->GetLevel() > b->player->GetLevel(); };
+                std::stable_sort(tanks.begin(), tanks.end(), byLevel);
+                std::stable_sort(healers.begin(), healers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
+                                 { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
+                std::stable_sort(others.begin(), others.end(), byLevel);
+                std::vector<FiveCandidate const*> carriers(tanks.begin(),
+                                                           tanks.begin() + std::min(tanks.size(), CARRIERS_SIDE));
+                carriers.insert(carriers.end(), healers.begin(),
+                                healers.begin() + std::min(healers.size(), CARRIERS_SIDE));
+                std::vector<uint32> kept;
+                std::string keptWhy;
+                for (FiveCandidate const* carrier : carriers)
+                {
+                    Player* tank = carrier->role == "tank" ? carrier->player : nullptr;
+                    Player* healer = carrier->role == "healer" ? carrier->player : nullptr;
+                    std::vector<Player*> dpsSlots;
+                    std::string clears;
+                    for (FiveCandidate const& c : u->second)
+                    {
+                        Player** slot = c.role == "tank" ? &tank : c.role == "healer" ? &healer : nullptr;
+                        if (slot ? *slot != nullptr : dpsSlots.size() >= 3)
+                            continue;
+                        if (slot)
+                            *slot = c.player;
+                        else
+                            dpsSlots.push_back(c.player);
+                        clears += " " + c.player->GetName() + ",";
+                    }
+                    if (clears.empty())
+                        continue;  // its slot is the uncleared members' only one: it carries none of them
+                    if (!tank && !tanks.empty())
+                        tank = tanks.front()->player;
+                    if (!healer && !healers.empty())
+                        healer = healers.front()->player;
+                    for (FiveCandidate const* o : others)
+                        if (dpsSlots.size() < 3)
+                            dpsSlots.push_back(o->player);
+                    if (!tank || !healer || dpsSlots.size() < 3)
+                        continue;
+                    std::vector<Player*> trial{tank, healer};
+                    trial.insert(trial.end(), dpsSlots.begin(), dpsSlots.end());
+                    if (!FiveGate::Judge(d->mapId, trial).clears)
+                        continue;
+                    kept.push_back(carrier->low);
+                    clears.pop_back();
+                    keptWhy += Acore::StringFormat(" {} {} (first clear of{} passes the gate),", carrier->role,
+                                                   carrier->player->GetName(), clears);
+                }
+                if (!kept.empty())
+                {
+                    keptWhy.pop_back();
+                    pool.erase(std::remove_if(pool.begin(), pool.end(),
+                                              [&kept](FiveCandidate const& c)
+                                              { return std::find(kept.begin(), kept.end(), c.low) != kept.end(); }),
+                               pool.end());
+                    if (guardCount == 0)
+                        lookWhy[d->contentKey] += " -> [order364] kept from repeats:" + keptWhy;
+                }
+                static std::map<std::string, std::string> order364Logged;  // world thread: a log cadence
+                if (std::string& logged = order364Logged[d->contentKey]; logged != keptWhy)
+                {
+                    logged = keptWhy;
+                    LOG_INFO("playerbots", "[order364] {}: {}", d->contentKey,
+                             kept.empty() ? std::string("no free tank / healer carries an uncleared member's first "
+                                                        "clear: the repeats go on")
+                                          : "kept from upgrade-only repeats for the uncleared members:" + keptWhy);
+                }
             }
             std::vector<FiveCandidate> five;
             // [five58] the finder's band first (the five may queue); else a five that walks in: every member of it
