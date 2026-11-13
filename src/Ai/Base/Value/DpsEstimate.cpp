@@ -2517,9 +2517,20 @@ struct LiveFight
     uint32 finishers = 0, finisherPoints = 0;
     // [dps60] the on-next-swing strikes it cast (Heroic Strike, Cleave, Maul, Raptor Strike). Each one spends a
     // swing the timer produced and lands as itself, not as a white hit, so `whiteHits` alone is short of the
-    // timer's output by this count. Read off the core's own predicate (Spell::IsNextMeleeSwingSpell), not a list of
-    // spell ids: SharedDefines records SPELL_ATTR0_ON_NEXT_SWING as identical in handling, but the core acts on
-    // SPELL_ATTR0_ON_NEXT_SWING_NO_DAMAGE alone, and what the core queues is what spends a swing here.
+    // timer's output by this count. That a next-swing strike replaces a swing is both references' reading too:
+    // wowsims AutoAttacks::MaybeReplaceMHSwing ("overridden for abilities like Heroic Strike") and Rawr 2.3.23's
+    // MhActivates = FightDuration / MhEffectiveSpeed - HSOverridesOverDur - CLOverridesOverDur.
+    //
+    // Read off the core's own predicate (Spell::IsNextMeleeSwingSpell tests SPELL_ATTR0_ON_NEXT_SWING_NO_DAMAGE),
+    // not a list of spell ids, because what the core queues is what spends a swing here. SharedDefines records the
+    // sibling SPELL_ATTR0_ON_NEXT_SWING as identical in handling and spell_druid.cpp agrees, so the core's single
+    // test is incomplete - but not for a player: Spell.dbc carries 113 spells with the sibling bit alone and every
+    // one is a creature ability (Pierce Armor, Head Crack, Tendon Rip, Gore...), while all 27 ranks of Heroic
+    // Strike, all 50 player ranks of Cleave, all 16 of Maul and all 13 of Raptor Strike carry the bit the core
+    // tests. So this count cannot silently miss a bot's strike. Slam carries neither bit, correctly: it delays the
+    // swing instead of replacing it (wowsims keeps DelayMeleeBy for it alone). The core's own gap is written up in
+    // docs/UPSTREAM_CANDIDATES.md under dps60 - fixing it would move 113 creature abilities' timing, so it is not
+    // this pass's to make.
     uint32 nextSwings = 0;
 };
 
