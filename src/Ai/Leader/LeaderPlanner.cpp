@@ -13007,13 +13007,24 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 // pull); it does not, round a corner, else no safe pull here (the split, the route round it). b143
                 // rfc-h 853-913 s: the cap / stand refusals cycled 60 s in the Searing Blade room.
                 (void)blockNow;
+                // [dm2] b474 dm-n five4 1013-1100 s, the Deadmines foundry: every plan round the Goblin Engineers was
+                // refused ("35 mobs, landed 355/s, cost 35.58 tank hp"), and this last resort took a lone Goblin
+                // Craftsman unjudged because the pack it brings holds Gilnid - the boss gate below asks only whether
+                // the group is rested. A boss's own fight is his encounter's (the group is built for it), but the
+                // trash his pull drags in with him is a trash pull: it is judged as one, by the same estimate every
+                // other pull is held to. The five pulled the room and died one by one.
+                std::vector<Unit*> singleTrash;
+                for (Unit* mob : single)
+                    if (!IsBossMob(mob))
+                        singleTrash.push_back(mob);
                 float singleOverload = 0.0f;
                 std::string singleJudged;
-                bool const singleFits = one && !oneEstimate.boss && JudgeMobs(single, singleOverload, singleJudged);
-                if (one && !oneEstimate.boss && !singleFits)
+                bool const singleFits = one && JudgeMobs(singleTrash, singleOverload, singleJudged);
+                if (one && !singleFits)
                 {
-                    std::string const capWhy = Acore::StringFormat("the lone mob {} brings {} mobs: {}",
-                                                                   one->GetName(), single.size(), singleJudged);
+                    std::string const capWhy = Acore::StringFormat(
+                        "the lone mob {} brings {} mobs{}: {}", one->GetName(), single.size(),
+                        singleTrash.size() < single.size() ? " (judged without its boss)" : "", singleJudged);
                     bool corner = false;
                     if (!measured || quickOne)  // a measured group tried the corner above already
                     {
@@ -13263,7 +13274,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
     };
     static thread_local std::unordered_map<uint64, SplitMemo> splitMemos;  // per map thread, by tank
     // [lead111] a split is looked for whenever no plan stands (no size trigger), every look (no retry clock)
-    bool const splitWanted = !found && toppedUp && !boss && !targetPackBoss;
+    // [dm2] a pack that brings a boss is searched too. It was exempt because "it is pulled as his fight once the
+    // group is ready for him" - the assumption that wiped b474's dm-n five4 at the Deadmines foundry. Nothing here
+    // peels the boss: `adds` holds no boss and every peel whose own pack brings one is dropped below, so the search
+    // yields exactly the player's answer - the trash taken apart away from him first.
+    bool const splitWanted = !found && toppedUp && !boss;
     (void)smallestPull;
     SplitMemo* splitMemo = nullptr;
     if (splitWanted)
@@ -14292,17 +14307,19 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
 
             // The wait mirrors the guarantee's tiers exactly (ok-n build 18: "15 mobs", waitSec 192, a pack the
             // guarantee could never take): within the cap 90 s, within the over-cap scale 180 s, past it hopeless.
-            // A pack that brings a boss is no guarantee's: it is pulled as his fight once the group is ready for him.
+            // A boss's own pack is no guarantee's: it is pulled as his fight once the group is ready for him.
+            // [dm2] a trash pack that only drags a boss in keeps its own verdict: the trash it brings is judged
+            // (the boss gate below), and the split search above has run on it, so the reason is its own refusal.
             // [lead111] no size cap makes a refusal hopeless: the estimates above (the pull as it comes, the
             // split) did
-            if (boss || targetPackBoss)
+            if (boss)
                 _planVerdictWhy = Acore::StringFormat("refused for now: the pack of {} brings a boss, pulled as his "
                                                       "fight once the group is ready for him", target->GetName());
 
             // [b32_smpull] hopeless only once the split search of this pack failed - [lead111] its last search (a
             // fact: no peel the estimate carries), no count of searches over a time (a group not topped up yet has
             // not searched: it holds, no detour)
-            if (_planVerdictHopeless && !boss && !targetPackBoss)
+            if (_planVerdictHopeless && !boss)
             {
                 auto const memo = splitMemos.find(bot->GetGUID().GetRawValue());
                 bool const searched =
@@ -15021,6 +15038,18 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             std::string const readyGap = waitSec > 0.0f && held < BOSS_WINDOW_MAX_HOLD_MS
                                              ? std::string()
                                              : BossReadyGap(bot, askBuffs, IsEncounterBoss(drawn), drawn);
+            // [dm2] ... and the trash the pull drags in with him. This gate asked only whether the group was rested
+            // (BossReadyGap), so a pull every plan had refused went in as "his fight": b474 dm-n five4, a lone Goblin
+            // Craftsman at the Deadmines foundry that brought Gilnid and 34 more (cost 35.58 tank healths, the
+            // Goblin Engineers' Remote-Controlled Golems counted in it) - the five wiped. His own fight is his
+            // encounter's, the trash around it is a trash pull: the same estimate (JudgeMobs of the pack without its
+            // bosses) that holds every other pull holds this one.
+            std::vector<Unit*> bossTrash;
+            for (Unit* mob : chosenPack)
+                if (!IsBossMob(mob))
+                    bossTrash.push_back(mob);
+            float trashOverload = 0.0f;
+            std::string trashJudged;
             bool hold = true;
             if (waitSec > 0.0f && held < BOSS_WINDOW_MAX_HOLD_MS)
             {
@@ -15034,6 +15063,14 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 LogPatrol(bot, Acore::StringFormat("[pull boss] {}: {}; his fight, the group is not ready for him "
                                                    "({})", bot->GetName(), what, readyGap));
                 _planNotReadyWhy = Acore::StringFormat("boss pull: {} comes with it, {}", drawn->GetName(), readyGap);
+            }
+            else if (!JudgeMobs(bossTrash, trashOverload, trashJudged))
+            {
+                LogPatrol(bot, Acore::StringFormat("[dm2] [pull boss] {}: {}; his fight, but the trash it drags in "
+                                                   "with him is more than the group takes ({})", bot->GetName(), what,
+                                                   trashJudged));
+                _planNotReadyWhy = Acore::StringFormat("boss pull: {} comes with trash the group does not take: {}",
+                                                       drawn->GetName(), trashJudged);
             }
             else
                 hold = false;
