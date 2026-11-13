@@ -149,6 +149,12 @@ namespace
         // victim, no swing - measured him at 4.7 dps at that gap)
         uint32 actMs = 0;
         bool sampleAct = false;
+        // [dps41] where a melee bot's missing white swings went: the same sample points as meleeMs and actMs, one
+        // bucket per reason it could not swing, each a part of the fight. `swingBlock` is the reason seen at the
+        // last sample; the interval since then is charged to it (0 = it could swing).
+        uint32 ableMs = 0;
+        uint32 blockMs[5] = {0, 0, 0, 0, 0};
+        uint8 swingBlock = 0;
         // [dps1] what invalidates the fight as a formula check: it swam or looted at a damage event
         bool swam = false;
         bool looted = false;
@@ -430,6 +436,18 @@ namespace
             sample.outcome = died ? "died" : state.fleeing ? "fled" : "won";
             sample.invalidWhy = invalid;
             sample.ctx = state.formulaCtx;
+            // [dps41] where its swings went, each bucket a part of this fight: the samples cover the span the
+            // damage events bound, so `seconds` bounds their sum as it bounds `fought`
+            float const sampled = float(state.ableMs + state.blockMs[0] + state.blockMs[1] + state.blockMs[2] +
+                                        state.blockMs[3] + state.blockMs[4]) /
+                                  float(IN_MILLISECONDS);
+            float const fit = sampled > seconds && sampled > 0.0f ? seconds / sampled : 1.0f;
+            sample.ableSec = float(state.ableMs) / float(IN_MILLISECONDS) * fit;
+            sample.rangeSec = float(state.blockMs[0]) / float(IN_MILLISECONDS) * fit;
+            sample.facingSec = float(state.blockMs[1]) / float(IN_MILLISECONDS) * fit;
+            sample.noSwingSec = float(state.blockMs[2]) / float(IN_MILLISECONDS) * fit;
+            sample.controlSec = float(state.blockMs[3]) / float(IN_MILLISECONDS) * fit;
+            sample.switchSec = float(state.blockMs[4]) / float(IN_MILLISECONDS) * fit;
             DpsEstimate::RecordFight(bot, sample);
         }
         QuestStats::NoteCombat(bot, uint32(std::max(seconds, 0.0f) * float(IN_MILLISECONDS)), false);  // [budget12]
@@ -562,12 +580,42 @@ namespace
         state.sampleMelee = false;
         state.actMs = 0;
         state.sampleAct = false;
+        state.ableMs = 0;  // [dps41]
+        for (uint32& blocked : state.blockMs)
+            blocked = 0;
+        state.swingBlock = 0;
         state.swam = false;
         state.looted = false;
         state.formula = DpsEstimate::Result();
         state.formulaEntry = 0;
         state.formulaLevel = 0;
         state.loggedNoAttack = false;
+    }
+
+    // [dps41] why no white swing was landing on the mob the fight's formula priced, read off the core's own melee
+    // gate (Player::Update: UNIT_STATE_MELEE_ATTACKING, not casting and not charging, a victim, within melee reach,
+    // and facing it inside 120 degrees unless it stands in the boundary radius). The reasons are the core's, not a
+    // model of them: a swing the core refuses is a swing the formula counted and the bot never took.
+    // 0: it could swing. 1 range, 2 facing, 3 no swing under way, 4 not its own to spend, 5 swinging elsewhere -
+    // the order of FightSample's buckets.
+    uint8 SwingBlock(Player* bot, Unit* mob)
+    {
+        if (!bot || !mob)
+            return 0;
+        if (bot->HasUnitState(UNIT_STATE_CASTING) || bot->HasUnitState(UNIT_STATE_CHARGING) ||
+            bot->HasUnitState(UNIT_STATE_STUNNED) || bot->HasUnitState(UNIT_STATE_FLEEING) ||
+            bot->HasUnitState(UNIT_STATE_CONFUSED))
+            return 4;
+        Unit* victim = bot->GetVictim();
+        if (!victim || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+            return 3;
+        if (victim != mob)
+            return 5;
+        if (!bot->IsWithinMeleeRange(victim))
+            return 1;
+        if (!bot->IsWithinBoundaryRadius(victim) && !bot->HasInArc(2.0f * float(M_PI) / 3.0f, victim))
+            return 2;
+        return 0;
     }
 
     // [guild15] the melee-phase clock: the time since the last sample counts as melee when the bot stood in reach then
@@ -577,6 +625,16 @@ namespace
             state.meleeMs += getMSTimeDiff(state.sampleMs, now);
         if (state.sampleMs && state.sampleAct)
             state.actMs += getMSTimeDiff(state.sampleMs, now);  // [guild15]
+        // [dps41] the interval goes to the reason the last sample saw, before that sample is replaced
+        if (state.sampleMs)
+        {
+            uint32 const since = getMSTimeDiff(state.sampleMs, now);
+            if (!state.swingBlock)
+                state.ableMs += since;
+            else
+                state.blockMs[state.swingBlock - 1] += since;
+        }
+        state.swingBlock = SwingBlock(bot, mob);
         state.sampleMs = now;
         state.sampleMelee = bot->IsWithinMeleeRange(mob);
         state.sampleAct = bot->GetVictim() || bot->IsNonMeleeSpellCast(false);

@@ -2929,6 +2929,27 @@ void RecordFight(Player* bot, FightSample const& sample)
                  f.finishers ? float(f.finisherPoints) / float(f.finishers) : 0.0f);
     }
 
+    // [dps41] a melee bot's white swings: what it took, what the time it was free to swing allowed, and what the
+    // formula counted - with the time each reason of the core's own swing gate held it. The formula has a melee
+    // rotation in reach for the whole fight (`meleeShare` is 1 for all but the petless hunter), so the gap between
+    // the swings the able time allowed and the swings the formula counted is that assumption's cost, and the gap
+    // below it is the bot's. No decision reads it.
+    if (f.formula.whiteHitsPerSec > 0.0f && active > 0.0f)
+    {
+        float const swingSec = std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
+        float const allowed = sample.ableSec / swingSec;
+        float const counted = f.formula.whiteHitsPerSec * active;
+        LOG_INFO("playerbots",
+                 "[meleeup] {} L{} {}/{} swings {} of {:.1f} the able time allowed ({:.0f} %), formula counted "
+                 "{:.1f} ({:.0f} %) | able {:.1f} s of {:.1f} s: out of reach {:.1f}, not facing {:.1f}, no swing "
+                 "{:.1f}, controlled {:.1f}, swinging elsewhere {:.1f} | white dealt {} of {:.0f} the formula",
+                 bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), spec, f.whiteHits, allowed,
+                 allowed > 0.0f ? float(f.whiteHits) / allowed * 100.0f : 0.0f, counted,
+                 counted > 0.0f ? float(f.whiteHits) / counted * 100.0f : 0.0f, sample.ableSec, sample.fightSec,
+                 sample.rangeSec, sample.facingSec, sample.noSwingSec, sample.controlSec, sample.switchSec, f.white,
+                 (f.formula.white - f.formula.pet - f.formula.replacedWhite) * active);
+    }
+
     // async (the module pool's own thread), never read by a decision; the last 1000 fights per bot are kept
     std::string escapedName = bot->GetName();
     std::string escapedWhy = why;

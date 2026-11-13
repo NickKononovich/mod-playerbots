@@ -121,6 +121,19 @@ struct FightSample
     char const* outcome = "won";  // won / fled / died
     std::string invalidWhy;       // empty: a valid sample
     BuffContext ctx = BuffContext::Solo;
+    // [dps41] why a melee bot's white swings fall short of the formula's: [dps238] measured melee white at 0.66-0.85
+    // of it at b426-b429 and b479 still reads 0.75 for the guild's prot warriors (the dominant term of their 81 % of
+    // the ideal, their rotation being 92 % of it), with nothing in the log saying where the swings went. The formula
+    // has a melee bot in reach of its target for the whole fight (`meleeShare` is 1 for every melee rotation), so
+    // every one of these is time it counted swings the bot could not take. Sampled where meleeMs and actMs already
+    // are - at the fight's damage events, the interval attributed to the state seen at the one before - and each
+    // bounded by the fight's own length, so they sum to no more than it.
+    float ableSec = 0.0f;     // in reach, facing, swinging, free to act: the time the swing timer could run
+    float rangeSec = 0.0f;    // out of melee reach of the mob it fought
+    float facingSec = 0.0f;   // in reach, not facing it (Unit::isInFront: a swing is refused)
+    float noSwingSec = 0.0f;  // in reach and facing, no melee attack under way (no victim / attack stopped)
+    float controlSec = 0.0f;  // stunned, feared, confused, rooted or fleeing: not its own to spend
+    float switchSec = 0.0f;   // swinging at another unit than the mob the fight's formula priced
 };
 void RecordFight(Player* bot, FightSample const& sample);
 
