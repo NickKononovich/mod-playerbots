@@ -1270,6 +1270,7 @@ namespace Leader::Dungeon
                 }
             }
             lead.joinedPack[mob->GetGUID()] = fits && !joinUnreached ? mob->GetGUID() : ObjectGuid::Empty;
+            bool yielded = false;  // [pull92] the retreat stood down for a purposeful move (the chain pull's approach)
             if (fits && !joinUnreached)
                 joinPack(mob, packMobs, true);
             else
@@ -1291,11 +1292,30 @@ namespace Leader::Dungeon
                 float x = mob->GetPositionX() + dx / length * std::max(away, length);
                 float y = mob->GetPositionY() + dy / length * std::max(away, length);
                 float z = tank->GetPositionZ();
-                if (tank->GetMap()->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(), tank->GetPositionY(),
+                // [pull92] user rule (dungeon-flow-target: buff or drink if needed, then mob after mob with no
+                // pauses): a retreat never overwrites a purposeful fight move. b484 wc-n, ten fives at once: all ten
+                // sat at 3 bosses of 8 from minute 16 to minute 22 with no deaths and no wipes, and the log held
+                // "[lead1291] Rlpalcd: Deviate Lasher's pack (1 mobs, 39.8 yd) ... no opener of the tank reaches it"
+                // - a low prot paladin has only Hand of Reckoning (30 yd, avenger's shield not known), so the reach
+                // test was right, but the answer to a pack that FITS must be to close to the opener's reach, not to
+                // back away from it. The chain pull (lead1190) already walks the fight to exactly that point and
+                // already judges it: walkEnd takes the nearest point on the way where every pack mob is inside the
+                // opener's own range (spell data) and in sight with ground under it, LeaderAggroAt / LeaderAggroOnWalk
+                // refuse a landing or a walk that wakes anything, HealerKeepsLanding keeps the healer, and the fight
+                // is planned at the landing (planAhead = walkTo). So nothing new is needed here - the retreat was
+                // simply winning the race for lead.fightMoveTo, which the chain pull then skipped ("!fightMoveTo"),
+                // and that is one field with two judges (one-judge-per-decision). The retreat is the fallback for
+                // when the chain pull will not take the pack, so it yields to a move that has a purpose
+                yielded = lead.fightMoveTo && !lead.fightMoveWhy.empty();
+                if (!yielded &&
+                    tank->GetMap()->CheckCollisionAndGetValidCoords(tank, tank->GetPositionX(), tank->GetPositionY(),
                                                                     tank->GetPositionZ(), x, y, z))
                     lead.fightMoveTo = Position(x, y, z);
             }
-            Decisions().Write(run, "leader", fits && !joinUnreached ? "pack_joins" : "fight_moves_away",
+            Decisions().Write(run, "leader",
+                              fits && !joinUnreached ? "pack_joins"
+                              : yielded              ? "fight_move_yields"  // [pull92]
+                                                     : "fight_moves_away",
                               mob->GetGUID(), mob->GetName(), true,
                               JsonObject()
                                   .Num("packMobs", int64(packMobs.size()))
@@ -3343,7 +3363,14 @@ namespace Leader::Dungeon
                 // own 2 yd arrival tolerance), the healer along; at the walk's end the chain is judged again
                 Leader::Fight::ChainPull const chain =
                     Leader::Fight::JudgeChainPull(group, tank, fightingMobs, lead.fightSecLeft, packOf, 2.0f);
-                bool const walkNow = chain.taken && chain.walk && !lead.fightMoveTo;
+                // [pull92] ... and the other half of the same rule: a retreat already written this tick does not
+                // skip the approach. `fightMoveWhy` empty IS the retreat (the consumption below reads it exactly so:
+                // "away from an unpulled pack"), so the chain pull may replace a retreat and nothing else. Without
+                // this the b484 deadlock stood even with the retreat yielding, because judgeBlockingPack also runs
+                // from four places AFTER this block in the same tick (the woken mob, the idle blocker, the no-place
+                // resolver) and whichever ran first owned the field
+                bool const retreating = lead.fightMoveTo && lead.fightMoveWhy.empty();
+                bool const walkNow = chain.taken && chain.walk && (!lead.fightMoveTo || retreating);
                 if (chain.anchor && !chain.waiting && (!chain.walk || !chain.taken || walkNow) &&
                     lead.chainLogged.insert({chain.anchor->GetGUID(), chain.kind}).second)
                     Decisions().Write(run, "leader", "chain_pull", chain.anchor->GetGUID(), chain.anchor->GetName(),
@@ -3387,6 +3414,14 @@ namespace Leader::Dungeon
                 {
                     // [lead1190] the fight walks to the opener's reach: the tank goes (its mobs follow), the fight is
                     // planned at the walk's end (the anchor ahead) and the healer is ordered to its spot there
+                    // [pull92] the inputs of the replacement, so the next triage counts how many refusals turned
+                    // into an approach: the opener that will reach from the landing, the yards and seconds of the
+                    // walk, and whether this move displaced a retreat
+                    LOG_INFO("playerbots", "[pull92] {}: the fight walks {:.1f} yd ({:.1f} s) to {}'s opener reach "
+                             "({}), the fight planned at the landing{}",
+                             tank->GetName(), tank->GetExactDist(chain.walkTo), chain.walkSec,
+                             chain.anchor->GetName(), chain.opener,
+                             retreating ? "; it replaces the retreat from that pack [lead1291]" : "");
                     lead.fightMoveTo = chain.walkTo;
                     lead.fightMoveWhy = "[lead1190] the chain pull: the fight walks to " + chain.anchor->GetName() +
                                         "'s opener reach";
