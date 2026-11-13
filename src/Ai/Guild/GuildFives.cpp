@@ -3555,7 +3555,9 @@ void GuildCoordinator::AutoFive()
                 std::vector<uint32> held;
                 for (FiveCandidate const& c : pool)
                 {
-                    if (!c.townStop)
+                    // [order364] an uncleared member of the guild's open dungeon holds every member's next dungeon:
+                    // its clear goes before its town stop. b468: Dekorhan L23 held in every look other dps were free
+                    if (!c.townStop || (helpers && c.needsClear))
                         continue;
                     uint32 others = 0;
                     for (FiveCandidate const& o : pool)
@@ -3664,6 +3666,12 @@ void GuildCoordinator::AutoFive()
                 // [gate94] healers by their mana pool (the gate's binding term), not by level
                 std::stable_sort(healers.begin(), healers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
                                  { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
+                // [order364] a tank / healer with its first clear here is judged with every partner before its swap
+                // out: b468 wc-n, Rollothan L16 (healer, the guild's last uncleared) was judged with one tank only, the
+                // lowest mana of 8 healers, never in the top 4
+                auto const clearFirst = [](FiveCandidate const* c) { return c->needsClear; };
+                std::stable_partition(tanks.begin(), tanks.end(), clearFirst);
+                std::stable_partition(healers.begin(), healers.end(), clearFirst);
                 constexpr size_t PAIRS_SIDE = 4;  // the look's cost bound: the 4 highest of each role (16 judges)
                 if (tanks.size() > PAIRS_SIDE)
                     tanks.resize(PAIRS_SIDE);
