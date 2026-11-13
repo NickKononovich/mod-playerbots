@@ -12,6 +12,7 @@
  */
 
 #include "PullActions.h"
+#include "GuildRiding.h"  // [mount7]
 #include "BotPath.h"  // [lead109]
 #include "AggressiveTargetValue.h"
 #include "CellImpl.h"        // [lead86] the corner pack's assist search
@@ -660,6 +661,7 @@ bool PullAction::Execute(Event event)
     // wave 31: 446 failed Hand of Reckoning casts). A tank dismounts before it pulls.
     if (bot->IsMounted())
     {
+        GuildRiding::NoteDismount(bot, "a pull");  // [mount7]
         bot->Dismount();
         bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
         strategy->RequestPull(target, false);

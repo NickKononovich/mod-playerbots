@@ -69,6 +69,9 @@ uint32 Shortfall(uint32 low);
 // `from` may give its spare to `to`'s riding: it rides already, or its own riding is worth less now
 bool MayFund(uint32 fromLow, uint32 toLow);
 
+// [mount7] a code path takes the bot off its mount: the reason its walk may mount again (MountForWalk)
+void NoteDismount(Player* bot, char const* why);
+
 // [taxi1] a flight taken: its seconds saved and fare, for the guild line
 void NoteFlight(float savedSec, uint32 fare);
 }  // namespace GuildRiding

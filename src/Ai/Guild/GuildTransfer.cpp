@@ -2332,6 +2332,9 @@ void GuildCoordinator::UpdateTransfers()
     // whose spare, less what this plan already sends, covers it, else shared by the members that together cover it;
     // only members that ride already or whose own riding is worth less give (GuildRiding::MayFund)
     {
+        // [mount7] member -> the donors its last pass chose: kept while they still cover it (b470: each 5 s pass chose
+        // other donors - Maronic's letters to Hobliir, Bhogagnuth, Thokhen, Ainne, Pherua planned and dropped in turn)
+        static std::unordered_map<uint32, std::vector<uint32>> lastDonors;
         std::unordered_map<uint32, uint32> promised;  // member -> the gold the wants above already send
         for (Want const& w : wants)
             if (w.gold)
@@ -2364,6 +2367,13 @@ void GuildCoordinator::UpdateTransfers()
                     donors.emplace_back(spare, row.low);
             }
             std::sort(donors.rbegin(), donors.rend());
+            // the last pass's donors first, in their order, the rest by spare
+            if (auto const last = lastDonors.find(low); last != lastDonors.end())
+                for (auto it = last->second.rbegin(); it != last->second.rend(); ++it)
+                    if (auto const d = std::find_if(donors.begin(), donors.end(),
+                                                    [&](auto const& x) { return x.second == *it; });
+                        d != donors.end())
+                        std::rotate(donors.begin(), d, d + 1);
             std::vector<Want> shares;
             uint32 left = shortBy;
             for (auto const& [spare, from] : donors)
@@ -2393,9 +2403,12 @@ void GuildCoordinator::UpdateTransfers()
                 decision = Acore::StringFormat("{} gets its riding and mount {} ({:.1f} min/h saved) from {} members:",
                                                Who(low), Gold(shortBy), GuildRiding::SavedMinutesPerHour(low),
                                                shares.size());
+                std::vector<uint32>& chosen = lastDonors[low];
+                chosen.clear();
                 for (Want& w : shares)
                 {
                     decision += " " + Who(w.from) + " " + Gold(w.money) + ",";
+                    chosen.push_back(w.from);
                     promised[w.from] += w.money;
                     wants.push_back(std::move(w));
                 }

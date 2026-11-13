@@ -615,6 +615,27 @@ bool NewRpgBaseAction::MountForWalk(WorldPosition const& dest)
 {
     if (CheckMountStateAction::IsCastingMount(bot))
         return true;  // a move now breaks the cast off
+    NewRpgInfo& info = botAI->rpgInfo;
+    // [mount7] one mount per walk (its status since its start: the legs and re-plans of one walk, a moving target):
+    // riding, the walk is noted; got off, the core's reasons are recorded here, the code paths' by NoteDismount
+    bool const sameWalk = info.mountWalkT && info.mountWalkT == info.startT && info.mountWalkStatus == info.GetStatus();
+    if (bot->IsMounted())
+    {
+        info.mountWalkT = info.startT;
+        info.mountWalkStatus = uint8(info.GetStatus());
+        info.dismountReason.clear();
+    }
+    else if (sameWalk && info.dismountReason.empty())
+    {
+        if (bot->IsInCombat() || bot->GetVictim())
+            info.dismountReason = "a fight";
+        else if (!bot->IsOutdoors())
+            info.dismountReason = "indoors";
+        else if (bot->IsInWater())
+            info.dismountReason = "water";
+        else if (bot->GetTransport() || bot->GetVehicle() || bot->IsInFlight())
+            info.dismountReason = "a ride";
+    }
     if (bot->IsMounted() || !bot->IsAlive() || bot->IsInCombat() || bot->GetVictim() || bot->GetTransport() ||
         bot->IsInFlight() || bot->GetVehicle() || bot->GetMap()->Instanceable() || !bot->IsOutdoors() ||
         bot->IsInWater() || bot->IsNonMeleeSpellCast(false) ||
@@ -631,7 +652,22 @@ bool NewRpgBaseAction::MountForWalk(WorldPosition const& dest)
     float const paysFrom = GuildRiding::MountPaysFromYd(bot, mount);
     if (dist <= paysFrom)
         return false;
-    NewRpgInfo& info = botAI->rpgInfo;
+    if (sameWalk)
+    {
+        if (info.dismountReason.empty() || info.dismountReason == "-")
+        {
+            if (info.dismountReason.empty())
+                LOG_INFO("playerbots", "[mount7] {} L{} walks on on foot to ({:.0f},{:.0f}): it got off this walk's "
+                         "mount with no recorded reason",
+                         bot->GetName(), bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY());
+            info.dismountReason = "-";
+            return false;
+        }
+        LOG_INFO("playerbots", "[mount7] {} L{} mounts again for its walk to ({:.0f},{:.0f}), {:.0f} yd left: got off "
+                 "for {}",
+                 bot->GetName(), bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY(), dist,
+                 info.dismountReason);
+    }
     if (std::hypot(bot->GetPositionX() - info.mountTryX, bot->GetPositionY() - info.mountTryY) < paysFrom)
         return false;
     info.mountTryX = bot->GetPositionX();

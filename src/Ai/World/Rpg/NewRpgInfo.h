@@ -129,6 +129,11 @@ struct NewRpgInfo
     // [mount5] where its last mount cast for a walk began (0, 0: none since it rode): one try per spot
     float mountTryX{0.0f};
     float mountTryY{0.0f};
+    // [mount7] the walk it rode on (its status and that status' start; 0: none) and why it got off since (""
+    // none recorded yet, "-" none and logged): one mount per walk, again only after a real reason
+    uint32 mountWalkT{0};
+    uint8 mountWalkStatus{0};
+    std::string dismountReason;
     // [timers] the spots a walk to moveFarPos started from without getting closer (no stuck timer): a walk that
     // starts again within the progress step of one of them closes a loop - no walk from there gets closer
     std::vector<G3D::Vector3> stuckSpots;

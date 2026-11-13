@@ -12,6 +12,7 @@
 #include "BattlegroundWS.h"
 #include "DBCStores.h"
 #include "Event.h"
+#include "GuildRiding.h"   // [mount7] the mount's pay distance, the dismount reason
 #include "LeaderOrders.h"  // [mount_led] Leader::Orders::IsTracked
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
@@ -118,7 +119,7 @@ bool CheckMountStateAction::Execute(Event /*event*/)
 
     if (shouldDismount && bot->IsMounted())
     {
-        return Dismount();
+        return Dismount("a fight: its target in reach");
     }
 
     bool inBattleground = bot->InBattleground();
@@ -132,7 +133,7 @@ bool CheckMountStateAction::Execute(Event /*event*/)
 
         else if (ShouldDismountForMaster(master) && bot->IsMounted())
         {
-            return Dismount();
+            return Dismount("its leader got off next to it");
         }
 
         return false;
@@ -146,7 +147,7 @@ bool CheckMountStateAction::Execute(Event /*event*/)
     if (noRealMaster && !inBattleground && Leader::Orders::IsTracked(bot->GetGUID()) && !bot->isMoving())
     {
         if (bot->IsMounted() && !bot->IsFlying())
-            return Dismount();
+            return Dismount("a led run standing");
         return false;
     }
 
@@ -158,7 +159,7 @@ bool CheckMountStateAction::Execute(Event /*event*/)
     if (!bot->IsFlying() && shouldDismount && bot->IsMounted() &&
         (enemy || dps || (!noAttackers && bot->IsInCombat())))
     {
-        return Dismount();
+        return Dismount("a fight");
     }
 
     return false;
@@ -278,11 +279,12 @@ bool CheckMountStateAction::Mount()
     return false;
 }
 
-bool CheckMountStateAction::Dismount()
+bool CheckMountStateAction::Dismount(char const* why)
 {
     // Nobody leaves the saddle in mid-air: a player would fall. Stay mounted until the mount is over solid ground.
     if (!PlayerbotAI::HasGroundSupport(bot, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()))
         return false;
+    GuildRiding::NoteDismount(bot, why);  // [mount7]
 
     if (bot->isMoving())
         bot->StopMoving();
@@ -506,6 +508,11 @@ bool CheckMountStateAction::ShouldFollowMasterMountState(Player* master, bool no
 
 bool CheckMountStateAction::ShouldDismountForMaster(Player* master) const
 {
+    // [mount7] a member walking to its leader from afar rides on: the leader's state is copied once the rest of the
+    // way is too short for a mount to pay (b470 Maronic, PARTY to Ginde 1850 yd off: got off every 70-120 yd and
+    // mounted again, 30 casts)
+    if (bot->IsMounted() && !RidesWithLeader(bot, master))
+        return false;
     bool isMasterMounted = master->IsMounted() || (masterInShapeshiftForm == FORM_FLIGHT ||
                                                    masterInShapeshiftForm == FORM_FLIGHT_EPIC ||
                                                    masterInShapeshiftForm == FORM_TRAVEL) ||
@@ -649,5 +656,16 @@ bool LeaderMountStateTrigger::IsActive()
     if (!leader || leader == bot || !leader->IsInWorld() || leader->GetMapId() != bot->GetMapId())
         return false;
 
-    return CheckMountStateAction::IsMountedOrMounting(leader) != CheckMountStateAction::IsMountedOrMounting(bot);
+    bool const leaderRides = CheckMountStateAction::IsMountedOrMounting(leader);
+    bool const botRides = CheckMountStateAction::IsMountedOrMounting(bot);
+    if (!leaderRides && botRides && !CheckMountStateAction::RidesWithLeader(bot, leader))  // [mount7]
+        return false;
+    return leaderRides != botRides;
+}
+
+bool CheckMountStateAction::RidesWithLeader(Player* bot, Player* leader)
+{
+    if (!leader || leader == bot || leader->GetMapId() != bot->GetMapId())
+        return true;
+    return bot->GetExactDist(leader) <= GuildRiding::MountPaysFromYd(bot, GuildRiding::BestGroundMount(bot));
 }

@@ -5,6 +5,7 @@
  */
 
 #include "LootAction.h"
+#include "GuildRiding.h"  // [mount7]
 #include "QuestStats.h"  // [log28]
 #include "ObjectMgr.h"  // [qeff31]
 #include <mutex>          // [qeff31]
@@ -243,6 +244,7 @@ bool OpenLootAction::DoLoot(LootObject& lootObject)
 
     if (bot->IsMounted())
     {
+        GuildRiding::NoteDismount(bot, "loot / gather");  // [mount7]
         bot->RemoveAurasByType(SPELL_AURA_MOUNTED);
         botAI->SetNextCheckDelay(sPlayerbotAIConfig.ReactDelay);
         return false;

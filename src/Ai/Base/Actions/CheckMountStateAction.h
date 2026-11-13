@@ -50,6 +50,9 @@ public:
     static Player* GetMountLeader(PlayerbotAI* botAI);
     static bool IsCastingMount(Player* player);
     static bool IsMountedOrMounting(Player* player);
+    // [mount7] the bot is near enough its mount leader to copy its getting off: the way left is too short for a
+    // mount to pay (GuildRiding::MountPaysFromYd); no leader on its map: true
+    static bool RidesWithLeader(Player* bot, Player* leader);
 
 private:
     Player* master;
@@ -58,7 +61,7 @@ private:
     static std::unordered_map<uint32, PreferredMountCache> mountCache;
     float CalculateDismountDistance() const;
     float CalculateMountDistance() const;
-    bool Dismount();  // false: in the air, stays mounted
+    bool Dismount(char const* why);  // false: in the air, stays mounted; `why` for the walk ([mount7])
     void ClearStaleFlightFlags();
     bool ShouldFollowMasterMountState(Player* master, bool noAttackers, bool shouldMount) const;
     bool ShouldDismountForMaster(Player* master) const;

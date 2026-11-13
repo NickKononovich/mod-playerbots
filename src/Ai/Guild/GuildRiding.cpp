@@ -13,11 +13,13 @@
 #include <map>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "Bag.h"
 #include "ConditionMgr.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "GameEventMgr.h"
 #include "GossipDef.h"
 #include "GuildCoordinator.h"
 #include "Item.h"
@@ -63,11 +65,16 @@ namespace
         static std::once_flag built;
         std::call_once(built, []()
         {
+            // [mount7] an event's spawns stand only while it runs (b470: Thokhen's plan took the Brewfest Ram, 10 g,
+            // from a Brewfest vendor that is not there - 13.6 g asked of 12 members)
+            std::unordered_set<ObjectGuid::LowType> eventSpawns;
+            for (auto const& guids : sGameEventMgr->GameEventCreatureGuids)
+                eventSpawns.insert(guids.begin(), guids.end());
             for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
             {
                 CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(data.id);
                 MapEntry const* map = sMapStore.LookupEntry(data.mapid);
-                if (!tmpl || !map || map->Instanceable())
+                if (!tmpl || !map || map->Instanceable() || eventSpawns.count(spawnId))
                     continue;
                 Spawn spawn;
                 spawn.entry = data.id;
@@ -629,6 +636,14 @@ bool MayFund(uint32 fromLow, uint32 toLow)
     if (from->second.rides)
         return true;
     return !from->second.due || from->second.copperPerHour < to->second.copperPerHour;
+}
+
+void NoteDismount(Player* bot, char const* why)
+{
+    if (!bot || !bot->IsMounted())
+        return;
+    if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot); ai && ai->rpgInfo.mountWalkT)
+        ai->rpgInfo.dismountReason = why;
 }
 
 void NoteFlight(float savedSec, uint32 fare)

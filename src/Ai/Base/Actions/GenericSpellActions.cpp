@@ -5,6 +5,7 @@
  */
 
 #include "GenericSpellActions.h"
+#include "GuildRiding.h"  // [mount7]
 #include "AttackerCountValues.h"
 #include "BotMoveEvents.h"
 #include "Chat.h"
@@ -347,6 +348,7 @@ bool CastSpellAction::isUseful()
 
     if (spell == "mount" && bot->IsInCombat())
     {
+        GuildRiding::NoteDismount(bot, "a fight");  // [mount7]
         bot->Dismount();
         return false;
     }
@@ -388,6 +390,7 @@ bool CastSpellAction::isPossible()
         if (!sPlayerbotAIConfig.LogInGroupOnly || (bot->GetGroup() && botAI->HasGameClientMaster()))
             LOG_DEBUG("playerbots", "Can cast spell failed. Mount. - bot name: {}", bot->GetName());
 
+        GuildRiding::NoteDismount(bot, "a fight");  // [mount7]
         bot->Dismount();
         return false;
     }
