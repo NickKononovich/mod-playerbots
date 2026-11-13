@@ -17,6 +17,7 @@
 #include "MotionMaster.h"
 #include "Player.h"
 #include "Playerbots.h"
+#include "RouteLegs.h"  // [dm10] WaterSurfaceAt
 #include "RouteSearch.h"  // [lead144] NoteHeightGap
 
 bool UsesLeaderRoute(Unit* owner)
@@ -164,6 +165,14 @@ bool WalkBotPoints(Player* bot, Movement::PointsArray points)
             G3D::Vector3 const& to = points[index];
             float const rise = to.z - from.z;
             if (rise <= std::hypot(to.x - from.x, to.y - from.y) * WALKABLE_SLOPE_TAN + WALKABLE_CLIMB)
+                continue;
+            // [dm10] A step that starts below a liquid surface is swum, not climbed: the walkable slope describes
+            // walking on the mesh floor, and a swimmer rises in place by swimming. b475 Deadmines
+            // 20261113-144416-dm-n-five6-6: the leader swam in the Ironclad Cove, so its path's first point was the
+            // water-surface polygon straight above it - "[sfk243] no walk up a wall: the step (-106.7,-789.3,-1.5) ->
+            // (-106.7,-789.3,0.1) rises 1.7 yd over 0.0 yd across (point 1 of 2)" - and every walk out was refused
+            // (MovementActions.cpp: no straight move either). The five stood in the water for the rest of the run.
+            if (Leader::Travel::WaterSurfaceAt(bot, from) > from.z)
                 continue;
             thread_local std::set<std::pair<ObjectGuid, uint64>> logged;  // (bot, the wall step's cell) once
             if (logged.size() > 4096)
