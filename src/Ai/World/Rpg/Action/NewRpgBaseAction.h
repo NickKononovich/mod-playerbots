@@ -412,8 +412,10 @@ protected:
     // grindPos = the grind spot of its level nearest that giver
     // [perf214] `pending` (none: the whole sweep in this call): set when the grind-spot sweep spent this tick's
     // searches before it ended - the look is asked again next tick and goes on where the verdicts kept stop
+    // [stuck31] `otherMaps`: the givers on every map the bot has a route to, not this map's alone - what a bot on a
+    // map that holds nothing of its level has left (The Exodar at L22: map 530 is L1-20 and L58+)
     uint32 ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot = true,
-                                bool* pending = nullptr);
+                                bool* pending = nullptr, bool otherMaps = false);
     // [perf214] the IDLE look paces its grind-spot sweeps over ticks (choicePacing, set round its ChooseBestQuest);
     // choicePending: the zone choice stopped for a sweep not finished this tick
     bool choicePacing = false;

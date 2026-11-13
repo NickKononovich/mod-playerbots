@@ -76,12 +76,21 @@ Player* StuckWatchdogValue::GetWatchedLeader()
         bot->HasUnitState(UNIT_STATE_IN_FLIGHT))
         return nullptr;
 
-    // While anyone in the group fights on this map, positioning belongs to the combat logic (a healer kept at
-    // range is not "stuck"); following the leader then would walk the bot into the pack.
+    // While the group fights around the bot, positioning belongs to the combat logic (a healer kept at range is not
+    // "stuck"); following the leader then would walk the bot into the pack.
+    // [stuck30] b475 dm-n five 10: this read "anyone in the group, anywhere on this map", and inside a dungeon
+    // somebody is almost always fighting - so the watch stood down for the whole 41 min run while Eraelor stood
+    // alone in a mine tunnel 140 yd from its five and nothing noticed. A fight that far away positions nobody: the
+    // bot is out of combat, no mob of that fight can reach it, and it cannot even see the fight. The stand-down is
+    // about the fight this bot is standing in, so it holds only while a fighting member is within the bot's sight
+    // (the core's own visibility fact, Playerbots.SightDistance - wider than any spot the leader places a member
+    // on, so a ranged member at its combat spot is still covered). The bot's own combat is checked above.
     if (Group* group = bot->GetGroup())
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
             if (Player* member = ref->GetSource())
-                if (member != bot && member->IsInCombat() && member->GetMapId() == bot->GetMapId())
+                if (member != bot && member->IsInCombat() && member->GetMapId() == bot->GetMapId() &&
+                    member->GetInstanceId() == bot->GetInstanceId() &&
+                    bot->GetDistance(member) <= sPlayerbotAIConfig.SightDistance)
                     return nullptr;
 
     Player* leader = botAI->GetMaster();

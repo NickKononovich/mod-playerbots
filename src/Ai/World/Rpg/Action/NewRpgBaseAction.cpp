@@ -10119,7 +10119,7 @@ uint32 NewRpgBaseAction::ChooseQuestByRate(WorldPosition& giverPos)
 }
 
 uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosition& grindPos, bool withGrindSpot,
-                                              bool* pending)
+                                              bool* pending, bool otherMaps)
 {
     if (pending)
         *pending = false;
@@ -10135,7 +10135,8 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
     std::unordered_map<uint32, bool> routeTo;  // [travel57] landmass -> a route there (this look only)
     for (QuestStartPoint const& start : GetQuestStartPoints())
     {
-        if (start.mapId != bot->GetMapId() || !EventSpawnPresent(start.event))  // [guild15]
+        // [stuck31] otherMaps: every map, the landmass route check below is what keeps it honest
+        if ((!otherMaps && start.mapId != bot->GetMapId()) || !EventSpawnPresent(start.event))  // [guild15]
             continue;
 
         Quest const* quest = sObjectMgr->GetQuestTemplate(start.questId);
@@ -10200,8 +10201,10 @@ uint32 NewRpgBaseAction::ChooseNextLevelQuest(WorldPosition& giverPos, WorldPosi
     // nearest one whose walk it does not refuse (b341 Sylaenas L1: the same refused spot 37 times, GRIND -> MAZE ->
     // IDLE), else the nearest (the caller then tries its hub)
     std::vector<std::pair<float, WorldPosition>> grinds;
+    // [stuck31] with otherMaps the giver may be on another map: its own map's spots are the ones near it
     for (WorldLocation const& loc : sTravelMgr.GetLocsPerLevelCache(level))
-        if (loc.GetMapId() == bot->GetMapId() && bot->GetExactDist(loc) >= 10.0f &&
+        if (loc.GetMapId() == giverPos.GetMapId() &&
+            (loc.GetMapId() != bot->GetMapId() || bot->GetExactDist(loc) >= 10.0f) &&
             !WalkGivenUp(bot, loc.GetPositionX(), loc.GetPositionY()))  // [holds9] not even as the fallback
             grinds.emplace_back(giverPos.GetExactDist(loc), WorldPosition(loc));
     std::sort(grinds.begin(), grinds.end(), [](auto const& a, auto const& b) { return a.first < b.first; });

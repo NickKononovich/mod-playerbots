@@ -2263,9 +2263,35 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 if (quest && grindPos == WorldPosition() && giverPos.GetMapId() == bot->GetMapId() &&
                     bot->GetExactDist(giverPos) < 10.0f)
                 {
+                    // [stuck31] b475: Uraela L22 logged this STAY 62 times in The Exodar and sat between them
+                    // (IDLE -> STAY -> REST -> IDLE, "stood by state: GO_GRIND 161 s"). The whole picker is this
+                    // map's: ChooseNextLevelQuest skips every giver whose `start.mapId != bot->GetMapId()` and the
+                    // grind spots are filtered the same way, so on map 530 - L1-20 in the draenei zones, L58+ in
+                    // Outland - a level 22 bot has nothing to find and nothing to walk to, and standing on the
+                    // giver of a quest that needs L26 is the end of the line. "No grind spot of its level on this
+                    // map and no quest it may take" is not a reason to sit: it is the reason to leave the map. The
+                    // same choice is made again over every map the bot has a route to (the landmass route check,
+                    // the faction, enemy-zone and plannability filters all still run), and the giver it finds is
+                    // walked to like any other - MoveFarTo takes the flight or the boat.
+                    WorldPosition awayGiver;
+                    WorldPosition awayGrind;
+                    if (uint32 const awayQuest = ChooseNextLevelQuest(awayGiver, awayGrind, true, nullptr, true);
+                        awayQuest && awayGiver != WorldPosition() && awayGiver.GetMapId() != bot->GetMapId())
+                    {
+                        Quest const* away = sObjectMgr->GetQuestTemplate(awayQuest);
+                        WorldPosition const target = awayGrind != WorldPosition() ? awayGrind : awayGiver;
+                        LOG_INFO("playerbots",
+                                 "[stuck31] {} L{} GRIND reason: nothing of its level on map {} (q{} needs L{}, no "
+                                 "grind spot here) - off the map to q{} needs L{} on map {}, {} spot",
+                                 bot->GetName(), bot->GetLevel(), bot->GetMapId(), questId, quest->GetMinLevel(),
+                                 awayQuest, away ? away->GetMinLevel() : 0, awayGiver.GetMapId(),
+                                 awayGrind != WorldPosition() ? "its grind" : "its giver's");
+                        info.ChangeToGoGrind(target);
+                        return true;
+                    }
                     LOG_INFO("playerbots", "[rpg] {} L{} STAY reason: q{} needs L{}, no grind spot of its level on "
-                             "map {} and no quest it may take now", bot->GetName(), bot->GetLevel(), questId,
-                             quest->GetMinLevel(), bot->GetMapId());
+                             "map {} and no quest it may take now, nor one on any map it has a route to [stuck31]",
+                             bot->GetName(), bot->GetLevel(), questId, quest->GetMinLevel(), bot->GetMapId());
                     info.ChangeToRest();
                     bot->SetStandState(UNIT_STAND_STATE_SIT);
                     return true;
@@ -2320,8 +2346,29 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                     return true;
                 }
             }
-            LOG_INFO("playerbots", "[rpg] {} L{} STAY reason: no quest of any level on this map", bot->GetName(),
-                     bot->GetLevel());
+            // [stuck31] no quest of any level here is the same end of the line: the choice runs over every map the
+            // bot has a route to before it sits down
+            {
+                WorldPosition awayGiver;
+                WorldPosition awayGrind;
+                if (uint32 const awayQuest = ChooseNextLevelQuest(awayGiver, awayGrind, true, nullptr, true);
+                    awayQuest && awayGiver != WorldPosition() && awayGiver.GetMapId() != bot->GetMapId())
+                {
+                    Quest const* away = sObjectMgr->GetQuestTemplate(awayQuest);
+                    WorldPosition const target = awayGrind != WorldPosition() ? awayGrind : awayGiver;
+                    LOG_INFO("playerbots",
+                             "[stuck31] {} L{} GRIND reason: no quest of any level on map {} - off the map to q{} "
+                             "needs L{} on map {}, {} spot",
+                             bot->GetName(), bot->GetLevel(), bot->GetMapId(), awayQuest,
+                             away ? away->GetMinLevel() : 0, awayGiver.GetMapId(),
+                             awayGrind != WorldPosition() ? "its grind" : "its giver's");
+                    info.ChangeToGoGrind(target);
+                    return true;
+                }
+            }
+            LOG_INFO("playerbots",
+                     "[rpg] {} L{} STAY reason: no quest of any level on this map, nor one on any map it has a route "
+                     "to [stuck31]", bot->GetName(), bot->GetLevel());
             info.ChangeToRest();
             bot->SetStandState(UNIT_STAND_STATE_SIT);
             return true;

@@ -2106,15 +2106,39 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     float const regen = PlayerbotAI::IsHeal(bot) && !perCostMeasured
                             ? 100.0f * CastingRegenPerSec(bot) / std::max(float(bot->GetMaxPower(POWER_MANA)), 1.0f)
                             : 0.0f;
+    // [pull80] b475 dm-n five 10: the five stood 41 min, 48 of its holds "Guinudrond at 53-99 % mana (needs 100 % =
+    // 4.32 %/s (spell data) x 23-44 s + 11-14 reserve; heals 35.3 % per tank health (throughput) x 0.03-1.89 cost)".
+    // For a healer `rate` is HealerThroughput's manaPctPerSec - the pool it spends casting its best-rate heal back to
+    // back - so rate x fightSec is the mana it would use healing nonstop for the whole fight: 4.32 x 33 = 143 % of a
+    // pool that holds 100. The clamp below turned that into "needs 100 %", a line the healer could only meet by
+    // standing at a full pool before every trash pull (its bags held no drink: "[lead1181] drink -1.0 s"), and every
+    // fight put it back under. A healer does not chain-cast: it heals the damage the fight deals, which is exactly
+    // the term beside it - its mana per tank health healed (spell data, HealerPctPerTankHealth) over the tank health
+    // this plan costs, plus its heals-over-time upkeep less its casting regen. That term is the formula for a
+    // healer's spend; the nonstop term is an upper bound of a different question. On trash the heal term is the line
+    // (the generic rate term is left to the members whose spend really is their rotation: the tank's upkeep, a
+    // damage caster's casts). A boss line keeps the old max: its cost is the boss fight's whole damage and the group
+    // comes to a boss topped up anyway (lead1262 / lead1294) - changing that is a decision of its own.
+    // Safety: the line still floors at Playerbots.LowMana for a healer (nothing measured, floorPct below), the
+    // reserve still carries one more mob's fight, and lead1400's heal floor still holds a boss line above one cast.
     if (PlayerbotAI::IsHeal(bot))
-        need = std::max(need, std::max(perTankHealth * cost + (upkeep - regen) * fightSec, 0.0f));
+    {
+        float const healTerm = std::max(perTankHealth * cost + (upkeep - regen) * fightSec, 0.0f);
+        // perTankHealth 0 means the throughput read failed (no heal known yet): the generic term is all there is
+        need = !boss && perTankHealth > 0.0f ? healTerm : std::max(need, healTerm);
+    }
     // [lead88] user: no flat reserve - the reserve is the spend over the measured fight-length uncertainty (the mean
     // |real - estimated| seconds of this run's fights); a healer adds its share of the predicted tank damage over
     // those seconds. [lead264] While no fight is measured: the spend of one more mob's fight (FightSecOf one mob)
     NextFight oneMob;
     oneMob.mobs = 1;
     float const oneMobSec = FightSecOf(bot, oneMob);
-    float reserve = rate * oneMobSec;
+    // [pull80] the reserve is one more mob's fight at the same rate the need is read on: a healer's trash reserve is
+    // its heal term over those seconds (below), not its heal cast nonstop through them (4.32 %/s x 2.1 s = 9 of the
+    // 12 % reserve that held Ganna's pull). A healer whose heal term is all there is (fightSec 0, or the throughput
+    // read failed) keeps the generic rate, as the need does.
+    bool const healTermLine = !boss && PlayerbotAI::IsHeal(bot) && perTankHealth > 0.0f && fightSec > 0.0f;
+    float reserve = healTermLine ? 0.0f : rate * oneMobSec;
     if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
         reserve += perTankHealth * cost * oneMobSec / fightSec + upkeep * oneMobSec;
     // [lead1304] the measured fight-length error (lead88) is fight history: the reserve stays one more mob's fight
@@ -2671,6 +2695,24 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     {
         std::lock_guard<std::mutex> lock(manaRateLock);
         bossPulledShort[bot->GetGUID().GetRawValue()] = dryWhy.rfind("pulled short", 0) == 0;
+    }
+    // [pull81] b475 dm-n five 10: a raw line over 100 % is not a wait - the pool does not hold it, so no drink, no
+    // regen and no standing still ever meets it; the clamp turns it into "needs 100 %" and the gate reads that as
+    // "wait for a full pool", which is the livelock the five spent 41 min in. The clamp stays (a full pool is the
+    // most a member can bring, and pulling with less is no safer), but the number the clamp hid is named, once per
+    // member and fight length, so the next log says plainly that the plan costs more mana than the member owns and
+    // the pack, not the mana, is what has to change.
+    if (lineRaw > 100.5f)
+    {
+        thread_local std::set<std::pair<uint64, int32>> overPoolLogged;
+        if (overPoolLogged.size() > 4096)
+            overPoolLogged.clear();
+        if (!nestedManaLine && overPoolLogged.insert({bot->GetGUID().GetRawValue(), int32(fightSec)}).second)
+            LOG_INFO("playerbots",
+                     "[pull81] {}: its {} line asks {:.0f} % of a pool that holds 100 ({:.0f} s at {:.2f} %/s, {}): "
+                     "no wait meets it - read as 100 %, the plan is what has to change",
+                     bot->GetName(), boss ? "boss" : "trash", lineRaw, fightSec, rate,
+                     measured ? source : "spell data");
     }
     float const line = std::clamp(lineRaw, floorPct, 100.0f);
     if (why && !dryWhy.empty())
