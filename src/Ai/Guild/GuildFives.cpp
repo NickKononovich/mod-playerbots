@@ -569,7 +569,9 @@ namespace FiveGate
     // planner plans with); the healer's best rate (RestState::HealerThroughput) heals after its first gap. Clears
     // when, in every pull, the tank's deepest drop leaves it one more heal gap at the pull's full rate (the planner's
     // maxDrop) and the healer's mana covers the healing. Not counted: the mobs' spells, area damage on the group.
-    Verdict Judge(uint32 mapId, std::vector<Player*> const& five)
+    // [order367] healer2: a second healer of the five (one of its members past the first two), its heal added to the
+    // first one's
+    Verdict Judge(uint32 mapId, std::vector<Player*> const& five, Player* healer2 = nullptr)
     {
         std::string const gateName = "map " + std::to_string(mapId);
         SlowScope slow("five gate judge", &gateName);  // [perf211] a world-thread look's cost, named when slow
@@ -618,12 +620,28 @@ namespace FiveGate
                 // [dps242] the five's healer heals: its damage is no part of the kill times (b436 / b437 fives: the
                 // healers dealt 0.0-0.7 dps in their pulls against 22-48 by the formula, 0.01 of it); its entry stays
                 // for its mana ([dun194])
-                if (p == healer)
+                if (p == healer || p == healer2)
                     d.burst = d.white = 0.0f;
                 dps.push_back(d);
                 groupDps += d.burst;
             }
-        RestState::HealerFacts const heal = RestState::HealerThroughput(healer, tank);
+        RestState::HealerFacts heal = RestState::HealerThroughput(healer, tank);
+        // [order367] two healers: their rates and pools add up, the hp per mana is the pair's at both rates, the first
+        // heal comes after the slower one's gap, and a control cast takes out the stronger one's rate for its seconds
+        float controlledHps = 0.0f;
+        float healerShare = 1.0f;  // the first healer's share of the healing mana
+        if (healer2)
+        {
+            RestState::HealerFacts const second = RestState::HealerThroughput(healer2, tank);
+            float const manaRate = (heal.healPerMana > 0.0f ? heal.hps / heal.healPerMana : 0.0f) +
+                                   (second.healPerMana > 0.0f ? second.hps / second.healPerMana : 0.0f);
+            healerShare = heal.hps + second.hps > 0.0f ? heal.hps / (heal.hps + second.hps) : 1.0f;
+            controlledHps = std::max(heal.hps, second.hps);
+            heal.hps += second.hps;
+            heal.healPerMana = manaRate > 0.0f ? heal.hps / manaRate : 0.0f;
+            heal.maxMana += second.maxMana;
+            heal.gapSec = std::max(heal.gapSec, second.gapSec);
+        }
         // [dun172] a druid tank out of (Dire) Bear Form is judged as the bear the planner plans with
         float tankHealth = float(tank->GetMaxHealth());
         float armor = float(tank->GetArmor());
@@ -636,8 +654,10 @@ namespace FiveGate
         // [dun230] without a food / drink aura's MP5 (both fields carry it while the healer sits): b443 / b444 wc-n
         // admitted on a drinking healer's 36 mana/s ("heal mana 3079 of 4514 (770 pool + regen)"); standing, the same
         // pulls read "3012 of 939" - 3.2 times its mana, over capacity
-        float const regenCasting = RestState::ManaRegenPerSec(healer, true);
-        float const regenFull = RestState::ManaRegenPerSec(healer, false);
+        float const regenCasting =
+            RestState::ManaRegenPerSec(healer, true) + (healer2 ? RestState::ManaRegenPerSec(healer2, true) : 0.0f);
+        float const regenFull =
+            RestState::ManaRegenPerSec(healer, false) + (healer2 ? RestState::ManaRegenPerSec(healer2, false) : 0.0f);
         // [dun230] the walk between two pulls: the straight line from one pull's first mob to the next one's at the
         // tank's run speed (a path is never shorter, so the regen on it is never overcounted)
         float const runSpeed = std::max(tank->GetSpeed(MOVE_RUN), 1.0f);
@@ -687,9 +707,9 @@ namespace FiveGate
             }
             float const fightGuess = groupDps > 0.0f ? result.health / groupDps : 0.0f;
             // [dun244] the healer's rate as the planner's SustainedHealHps: its pool's healing over the fight caps it
-            float const healHps = fightGuess > 0.0f && heal.healPerMana > 0.0f
-                                      ? std::min(heal.hps, healMana * heal.healPerMana / fightGuess)
-                                      : heal.hps;
+            float healHps = fightGuess > 0.0f && heal.healPerMana > 0.0f
+                                ? std::min(heal.hps, healMana * heal.healPerMana / fightGuess)
+                                : heal.hps;
             float const startRate = rate;
             // [dun261] the planner's drop (EstimatePack): the kill order is not known - each mob lives its own kill
             // time plus half of the others' and lands its rate all that time (DropOver), and a lone healer's seconds
@@ -716,7 +736,14 @@ namespace FiveGate
             }
             result.controlSec =
                 PullPlanning::TemplateHealerControlSec(entries, lifeSec, uint32(five.size()), t);
-            float const gapSec = std::max(gap, result.controlSec);  // the five's one healer
+            float gapSec = std::max(gap, result.controlSec);  // the five's one healer
+            if (healer2)
+            {
+                // [order367] the other healer heals through the control: the controlled one's rate lost for its seconds
+                gapSec = gap;
+                if (t > 0.0f)
+                    healHps = std::max(0.0f, healHps - controlledHps * std::min(result.controlSec, t) / t);
+            }
             float const deepest = PullPlanning::DropOver(profile, healHps, gapSec);
             float const drop = std::max(0.0f, intake - healHps * std::max(t - gapSec, 0.0f));
             float const healNeeded = std::max(0.0f, intake - drop);
@@ -943,7 +970,7 @@ namespace FiveGate
             if (!ccOn || p == tank || !ai || !GetCrowdControlRole(p->getClass()) ||
                 (p->getClass() == CLASS_DRUID && AiFactory::GetPlayerSpecTab(p) == DRUID_TAB_FERAL))
                 continue;
-            (p == healer ? healHolders : dpsHolders).push_back({p, ai});
+            (p == healer || p == healer2 ? healHolders : dpsHolders).push_back({p, ai});
         }
         bool const tankAtRange = PullPlanning::TankPullsAtRange(tank);
         float const clearance = areaReach + PullPlanning::FightDriftYd();
@@ -1283,9 +1310,10 @@ namespace FiveGate
                     out.manaNeed[d.guid] -= back;
                     out.walkRegen[d.guid] += back;
                 }
-                float const used = d.guid == healer->GetGUID()
-                                       ? std::max(0.0f, best.manaNeeded - (best.fightMana - healMana))
-                                       : d.manaPerSec * best.sec;
+                float const healUsed = std::max(0.0f, best.manaNeeded - (best.fightMana - healMana));
+                float const used = d.guid == healer->GetGUID()               ? healUsed * healerShare
+                                   : healer2 && d.guid == healer2->GetGUID() ? healUsed * (1.0f - healerShare)
+                                                                             : d.manaPerSec * best.sec;
                 d.lastUsed = used;
                 if (used > 0.0f)
                     out.manaNeed[d.guid] += used;
@@ -1319,7 +1347,8 @@ namespace FiveGate
             "and [dun244] spells from templates, the healer's rate capped by its pool; [dun233] calls for help from "
             "the fight; area damage not counted]{}{}",
             failed, judged, apart, cornerPulls, losOn ? "" : " (no: the tank has no ranged pull and pull back)",
-            heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps, healer->GetName(), heal.hps, gap,
+            heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
+            healer->GetName() + (healer2 ? " + " + healer2->GetName() : std::string()), heal.hps, gap,
             heal.healPerMana, tank->GetName(), tankHealth, armor, avoid, bear ? " (the bear seen in form)" : "",
             optionsNote,
             overList.empty()
@@ -2696,6 +2725,7 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
     // of one drink (the best one the five holds: they share inside, RestoredPoints with the core's drink amount)
     {
         std::vector<Player*> players(2, nullptr);
+        Player* healer2 = nullptr;  // [order367]
         float drinkMana = 0.0f;
         std::map<ObjectGuid, float> ownDrink;  // [dun230] each one's best drink
         for (uint32 low : members)
@@ -2713,11 +2743,15 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
             else if (r == "healer" && !players[1])
                 players[1] = p;
             else
+            {
+                if (r == "healer" && !healer2)
+                    healer2 = p;
                 players.push_back(p);
+            }
         }
         if (players[0] && players[1] && drinkMana > 0.0f)
         {
-            FiveGate::Verdict const priced = FiveGate::Judge(d.mapId, players);
+            FiveGate::Verdict const priced = FiveGate::Judge(d.mapId, players, healer2);
             std::string line;
             for (Player* p : players)
             {
@@ -2876,6 +2910,7 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
     {
         // the gate's order: the tank, the healer, then the dps
         std::vector<Player*> players(2, nullptr);
+        Player* healer2 = nullptr;  // [order367]
         bool everyone = true;
         for (uint32 low : five.members)
         {
@@ -2893,11 +2928,15 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
             else if (memberRole == "healer" && !players[1])
                 players[1] = p;
             else
+            {
+                if (memberRole == "healer" && !healer2)
+                    healer2 = p;
                 players.push_back(p);
+            }
         }
         if (!everyone)
             return false;
-        FiveGate::Verdict const verdict = FiveGate::Judge(d->mapId, players);
+        FiveGate::Verdict const verdict = FiveGate::Judge(d->mapId, players, healer2);
         if (!verdict.clears)
             continue;
 
@@ -4216,6 +4255,97 @@ void GuildCoordinator::AutoFive()
                     }
                     if (found)
                         break;
+                }
+            }
+            // [order367] coordinator decision 2026-11-13: an uncleared healer of the guild's open dungeon whose heal
+            // carries no five alone goes with a second, stronger free healer (a tank, two healers, two dps) when the
+            // gate passes that five by both healers' rates. b470 wc-n: Rollothan L17 at 103 hps failed the Deviate
+            // Guardian x6 boss pull (worst 1.09-1.34) with every tank. A walk-in five: the finder takes one healer
+            Player* secondHealer = nullptr;
+            if (!verdict.clears && helpers)
+            {
+                std::vector<FiveCandidate const*> wTanks, wHealers, wDps;
+                for (FiveCandidate const& c : walkPool)
+                    (c.role == "tank" ? wTanks : c.role == "healer" ? wHealers : wDps).push_back(&c);
+                std::stable_sort(wTanks.begin(), wTanks.end(), [](FiveCandidate const* a, FiveCandidate const* b)
+                                 { return a->player->GetLevel() > b->player->GetLevel(); });
+                std::stable_sort(wHealers.begin(), wHealers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
+                                 { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
+                std::stable_sort(wDps.begin(), wDps.end(),
+                                 [](FiveCandidate const* a, FiveCandidate const* b)
+                                 {
+                                     if (a->needsClear != b->needsClear)
+                                         return a->needsClear;
+                                     return a->player->GetLevel() > b->player->GetLevel();
+                                 });
+                FiveCandidate const* weak = nullptr;
+                for (FiveCandidate const* h : wHealers)
+                    if (h->needsClear)
+                    {
+                        weak = h;
+                        break;
+                    }
+                if (weak)
+                {
+                    constexpr size_t TWO_HEALER_SIDE = 4;  // the look's cost bound, as [gate93]: 4 tanks x 4 healers
+                    std::string twoWhy;
+                    float bestLoad = 99.0f;
+                    bool passed = false;
+                    if (wDps.size() < 2)
+                        twoWhy = "fewer than 2 dps who can walk in";
+                    for (size_t ti = 0; ti < wTanks.size() && ti < TWO_HEALER_SIDE && !passed && wDps.size() >= 2;
+                         ++ti)
+                    {
+                        size_t tried = 0;
+                        for (FiveCandidate const* h : wHealers)
+                        {
+                            if (h == weak)
+                                continue;
+                            if (++tried > TWO_HEALER_SIDE)
+                                break;
+                            std::vector<Player*> trial{wTanks[ti]->player, weak->player, h->player, wDps[0]->player,
+                                                       wDps[1]->player};
+                            FiveGate::Verdict const v = FiveGate::Judge(d->mapId, trial, h->player);
+                            if (!v.clears)
+                            {
+                                if (v.worstLoad < bestLoad || twoWhy.empty())
+                                {
+                                    bestLoad = v.worstLoad;
+                                    twoWhy = Acore::StringFormat("tank {}, healers {} + {}: {}",
+                                                                 wTanks[ti]->player->GetName(),
+                                                                 weak->player->GetName(), h->player->GetName(), v.why);
+                                }
+                                continue;
+                            }
+                            twoWhy = Acore::StringFormat("tank {}, healers {} + {}, dps {}, {} -> passes the gate: {}",
+                                                         wTanks[ti]->player->GetName(), weak->player->GetName(),
+                                                         h->player->GetName(), wDps[0]->player->GetName(),
+                                                         wDps[1]->player->GetName(), v.why);
+                            five = {*wTanks[ti], *weak, *h, *wDps[0], *wDps[1]};
+                            players = trial;
+                            verdict = v;
+                            secondHealer = h->player;
+                            passed = true;
+                            break;
+                        }
+                    }
+                    if (wTanks.empty())
+                        twoWhy = "no tank who can walk in";
+                    else if (twoWhy.empty())
+                        twoWhy = "no second healer who can walk in";
+                    static std::map<std::string, std::string> order367Logged;  // world thread: a log cadence
+                    std::string const line =
+                        Acore::StringFormat("two-healer first-clear five for {}: {}", weak->player->GetName(),
+                                            passed ? twoWhy : "no pair passes, the closest " + twoWhy);
+                    if (std::string& logged = order367Logged[d->contentKey]; logged != line)
+                    {
+                        logged = line;
+                        LOG_INFO("playerbots", "[order367] {}: {}", d->contentKey, line);
+                    }
+                    if (guardCount == 0)
+                        lookWhy[d->contentKey] += passed ? " -> [order367] two healers (" + weak->player->GetName() +
+                                                               " + " + secondHealer->GetName() + ") pass the gate"
+                                                         : " -> [order367] two healers: no pair passes";
                 }
             }
             if (!verdict.clears)

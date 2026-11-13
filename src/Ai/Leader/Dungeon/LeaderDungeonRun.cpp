@@ -191,6 +191,13 @@ namespace Leader::Dungeon
             why = "the dungeon finder refused this five already";
             return false;
         }
+        // [order367] a two-healer five: the finder's role check takes one tank, one healer and three dps
+        if (std::count_if(request.members.begin(), request.members.end(),
+                          [](FiveRunMember const& m) { return m.role == "healer"; }) > 1)
+        {
+            why = "two healers: the dungeon finder takes one";
+            return false;
+        }
         for (FiveRunMember const& member : request.members)
         {
             Player* player = ObjectAccessor::FindConnectedPlayer(member.guid);
