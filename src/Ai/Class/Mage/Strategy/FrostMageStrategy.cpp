@@ -15,13 +15,21 @@ FrostMageStrategy::FrostMageStrategy(PlayerbotAI* botAI) : GenericMageStrategy(b
 // ===== Default Actions =====
 std::vector<NextAction> FrostMageStrategy::getDefaultActions()
 {
-    return {
-        NextAction("frostbolt", 5.4f),
-        NextAction("ice lance", 5.3f),   // cast during movement
-        NextAction("fire blast", 5.2f),  // cast during movement if ice lance is not learned
-        NextAction("shoot", 5.1f),
-        NextAction("fireball", 5.0f)
+    std::vector<NextAction> actions = {
+        NextAction("frostbolt", 5.4f)
     };
+    // [rot640] Ice Lance is learned at 66 and was 100 of this spec's 308 "spell not known" refusals in the b483
+    // window: the engine made its node and refused it on the same cached "spell id" (SpellIdValue, 20 s) this
+    // reads, every tick of every mage below that level. The entry stays - only the pushing waits for the spell.
+    // The line below it, Fire Blast, is already the movement shot "if ice lance is not learned".
+    if (botAI->GetAiObjectContext()->GetValue<uint32>("spell id", std::string("ice lance"))->Get())
+        actions.push_back(NextAction("ice lance", 5.3f));  // cast during movement
+    actions.push_back(NextAction("fire blast", 5.2f));  // cast during movement if ice lance is not learned
+    // [rot640] "shoot" is never gated: CastShootAction resolves the wand or ranged weapon spell itself
+    // (shootSpellId 3018 / 2764 / 5019), not through the "spell id" value, so that value says nothing about it
+    actions.push_back(NextAction("shoot", 5.1f));
+    actions.push_back(NextAction("fireball", 5.0f));
+    return actions;
 }
 
 // ===== Trigger Initialization ===

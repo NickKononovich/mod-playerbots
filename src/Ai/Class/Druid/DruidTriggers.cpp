@@ -346,6 +346,12 @@ namespace
 
 bool LifebloomOnMainTankTrigger::IsActive()
 {
+    // [rot640] Lifebloom is learned at 71, and this check does real work before the action is refused for it (the
+    // main tank, its aura, the overheal test): 153 refusals of this spec's 298 in the b483 window, on druids of
+    // level 20-25. The spell id is the same cached value the action itself is refused on (SpellIdValue, 20 s).
+    if (!AI_VALUE2(uint32, "spell id", "lifebloom"))
+        return false;
+
     Unit* target = GetTarget();
     if (!target || !target->IsAlive() || !target->IsInCombat())
         return false;

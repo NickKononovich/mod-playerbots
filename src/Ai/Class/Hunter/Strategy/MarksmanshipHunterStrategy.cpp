@@ -12,31 +12,55 @@ MarksmanshipHunterStrategy::MarksmanshipHunterStrategy(PlayerbotAI* botAI) : Gen
     // No custom ActionNodeFactory needed
 }
 
+namespace
+{
+// [rot640] A list entry for a spell the bot has not learned is not pushed at all. The engine would create its
+// node, resolve its target and then refuse it on the very same cached "spell id" this reads (SpellIdValue, 20 s
+// per name, the bot's own spell map and active spec), so the choice cannot change - only the work disappears.
+// b483 (hunters of level 19-26, who know none of the three): kill command 114, silencing shot 105 and kill shot
+// 93 refusals out of the window's 351 for this spec. None of these actions has an ActionNode of its own, so no
+// prerequisite, alternative or continuer was ever pushed in their stead either.
+bool KnowsSpell(PlayerbotAI* botAI, char const* spell)
+{
+    return botAI->GetAiObjectContext()->GetValue<uint32>("spell id", std::string(spell))->Get() != 0;
+}
+}
+
 // ===== Default Actions =====
 std::vector<NextAction> MarksmanshipHunterStrategy::getDefaultActions()
 {
-    return {
-        NextAction("kill command", 5.8f),
-        // [b31_deep] off the GCD, on cooldown on a target it cannot silence (wowsims mm.apl uses it on cooldown);
-        // [rot135] a led hunter on cooldown on every target
-        NextAction("silencing shot on cooldown", 5.75f),
-        NextAction("kill shot", 5.7f),
-        NextAction("serpent sting", 5.6f),
-        NextAction("chimera shot", 5.5f),
-        NextAction("aimed shot", 5.4f),
-        // [b31_deep] Multi-Shot fills the shared Aimed/Multi 10 s cooldown (category 85) while Aimed Shot is not
-        // castable (wowsims mm.apl: Aimed > Multi > Steady); with Aimed known the shared cooldown keeps it second
-        NextAction("multi-shot", 5.35f),
-        // [lead105] wowsims 3.3.5 MM APL: Arcane Shot is not cast (hidden) once Steady Shot is the filler
-        // Silencing Shot is held for enemy casts (the "silencing shot" trigger and the group interrupt
-        // rotation); spent as a filler it was on cooldown whenever a caster started a cast.
-        NextAction("steady shot", 5.2f),
-        // [dps230] below Steady Shot (learned at L50) Arcane Shot is the only shot between the cooldowns: L14-20
-        // marksmen cast none (b426-b429: 0 a fight against the formula's 8.9 dps of it, 0.78 of the ideal); Steady
-        // Shot above it keeps it out of the L50+ rotation (wowsims mm.apl) but for the shot on the move
-        NextAction("arcane shot", 5.15f),
-        NextAction("auto shot", 5.1f)
+    std::vector<NextAction> actions;
+    // [rot640] `spell` is the name the action casts; nullptr means the entry is never gated
+    auto const add = [&](char const* action, float relevance, char const* spell)
+    {
+        if (!spell || KnowsSpell(botAI, spell))
+            actions.push_back(NextAction(action, relevance));
     };
+
+    add("kill command", 5.8f, "kill command");
+    // [b31_deep] off the GCD, on cooldown on a target it cannot silence (wowsims mm.apl uses it on cooldown);
+    // [rot135] a led hunter on cooldown on every target
+    add("silencing shot on cooldown", 5.75f, "silencing shot");
+    add("kill shot", 5.7f, "kill shot");
+    add("serpent sting", 5.6f, "serpent sting");
+    add("chimera shot", 5.5f, "chimera shot");
+    add("aimed shot", 5.4f, "aimed shot");
+    // [b31_deep] Multi-Shot fills the shared Aimed/Multi 10 s cooldown (category 85) while Aimed Shot is not
+    // castable (wowsims mm.apl: Aimed > Multi > Steady); with Aimed known the shared cooldown keeps it second
+    add("multi-shot", 5.35f, "multi-shot");
+    // [lead105] wowsims 3.3.5 MM APL: Arcane Shot is not cast (hidden) once Steady Shot is the filler
+    // Silencing Shot is held for enemy casts (the "silencing shot" trigger and the group interrupt
+    // rotation); spent as a filler it was on cooldown whenever a caster started a cast.
+    add("steady shot", 5.2f, "steady shot");
+    // [dps230] below Steady Shot (learned at L50) Arcane Shot is the only shot between the cooldowns: L14-20
+    // marksmen cast none (b426-b429: 0 a fight against the formula's 8.9 dps of it, 0.78 of the ideal); Steady
+    // Shot above it keeps it out of the L50+ rotation (wowsims mm.apl) but for the shot on the move
+    add("arcane shot", 5.15f, "arcane shot");
+    // [rot640] Auto Shot is the hunter's white damage and every hunter has it from level 1: never gated, so no
+    // gate of mine can ever cost a hunter its shots
+    add("auto shot", 5.1f, nullptr);
+
+    return actions;
 }
 
 // ===== Trigger Initialization ===
