@@ -3396,21 +3396,69 @@ namespace SoloSafety
         state.restWhy = why;
     }
 
-    bool WaitsToRegen(Player* bot)
+    // [eco40] coordinator 2026-11-13: the bot is walking to the vendor that sells the food / drink it has none of
+    // (StartVendorRun's run: vendorRunEntry with "buy food" / "buy drink" in its reason). Such a rest ends at that
+    // vendor and nowhere else - nothing in its bags shortens it - so it must not stand the walk still. b475
+    // Bhogagnuth: "[New RPG] goes to vendor Gruham Rumdnul (397 yd): buy drink", then 278 "[rest] sits to regenerate:
+    // nothing to eat or drink" 397 yd short of the water, mana 60 % -> 81 % on spirit alone, and the leader read it
+    // as "STUCK 1 min: GO_CAMP vendor: buy drink". 1471 such sits in 11 h against 63 vendor runs that reached one
+    bool RestockRunPending(Player* bot)
     {
-        if (!bot || bot->IsInCombat())
+        PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+        if (!botAI || !botAI->rpgInfo.vendorRunEntry)
             return false;
+        std::string const& reason = botAI->rpgInfo.vendorRunReason;
+        return reason.find("buy food") != std::string::npos || reason.find("buy drink") != std::string::npos;
+    }
+
+    // what it lacks and carries nothing for: the rest actions have nothing to sit it down with
+    bool NothingForItsRest(Player* bot)
+    {
         bool const health = WantsRest(bot, false);
         bool const mana = WantsRest(bot, true);
-        // something to eat or drink for what it lacks: the rest actions sit it down with that
         bool const eats = health && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_FOOD);
         bool const drinks = mana && CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK);
         return (health || mana) && !eats && !drinks;
     }
 
+    // [eco40] the rest it is told to take cannot be taken here and the vendor run it is on is the only thing that
+    // ends it: neither the sit nor the rest-before-walk hold that walk
+    bool WalksToItsRestock(Player* bot)
+    {
+        return bot && !bot->IsInCombat() && RestockRunPending(bot) && NothingForItsRest(bot);
+    }
+
+    bool WaitsToRegen(Player* bot)
+    {
+        if (!bot || bot->IsInCombat())
+            return false;
+        if (NothingForItsRest(bot) && RestockRunPending(bot))  // [eco40] it walks to the water instead
+        {
+            static std::mutex restockWalkLock;
+            static std::set<std::pair<uint32, uint32>> restockWalkLogged;  // (bot, vendor): once per run
+            PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+            bool first = false;
+            {
+                std::lock_guard<std::mutex> guard(restockWalkLock);
+                first = restockWalkLogged.insert({bot->GetGUID().GetCounter(), botAI->rpgInfo.vendorRunEntry}).second;
+            }
+            if (first)
+                LOG_INFO("playerbots", "[eco40] {} L{} walks on to its vendor ({}) with nothing to eat or drink: the "
+                         "sit here ends at that vendor (hp {:.0f} %, mana {:.0f} %)",
+                         bot->GetName(), bot->GetLevel(), botAI->rpgInfo.vendorRunReason, bot->GetHealthPct(),
+                         bot->GetMaxPower(POWER_MANA) ? bot->GetPowerPct(POWER_MANA) : 100.0f);
+            return false;
+        }
+        return NothingForItsRest(bot);
+    }
+
     bool RestBeforeWalk(Player* bot, Position const& dest)
     {
         if (!bot || bot->IsInCombat() || !bot->IsAlive() || !Applies(bot))
+            return false;
+        // [eco40] ... and the same walk is not held by a rest asked for earlier, nor by the mob on its stretch: with
+        // nothing to eat or drink the bot would stand there until its spirit alone filled the bar (b475: 1471 sits)
+        if (WalksToItsRestock(bot))
             return false;
         bool const full = bot->GetHealth() >= bot->GetMaxHealth() &&
                           (!bot->GetMaxPower(POWER_MANA) || bot->GetPower(POWER_MANA) >= bot->GetMaxPower(POWER_MANA));
