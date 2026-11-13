@@ -3144,6 +3144,44 @@ void GuildCoordinator::UpdateDungeonOrder()
                          " members) sent in at once, every one of which has to finish completely clean");
                 CertSave(d.contentKey);
             }
+            // [cert21] user 2026-11-13 («я же просил... отправить 25 человек по каждому инсту, во второй и в третий,
+            // чтобы их сертифицировать»): a certification the guild can no longer assemble does not hold the queue.
+            // Judged on the entrance's own levels against the batch the user set, never on a dungeon's name: how many
+            // members the dungeon admits at all (the same two steps the pool takes, [cert10] Candidates and
+            // CertPoolAudit - one judge) against CERT_MEMBERS. Fewer than the batch needs and the guild has outgrown
+            // its finder band, so no dispatch can ever make the batch stand: the dungeon is left behind uncertified,
+            // said out loud, and the next one opens. b482: Ragefire Chasm admitted 12 of 75 (band L15-21 against a
+            // guild of L18-26) and had held the whole guild on "batch 1 does not form" since mastery.
+            // An offline member is counted as admitted - its level is not known here - so a dungeon only falls out
+            // when the band cannot hold the batch even counting every one of them in. Levels only rise, so this
+            // never flaps and needs no clock of its own.
+            // This sits inside "no member is left to clear it" on purpose, and that is what makes it safe: a dungeon
+            // the guild has not reached yet has members who have not cleared it, so it never gets here and the
+            // guild can never skip FORWARD over a dungeon it is merely too low for. Only one the guild has already
+            // been through, and has since outgrown, can be left behind
+            uint32 certBand = 0, certOffline = 0;
+            uint32 const certAdmits = CertAdmits(d, &certBand, &certOffline);
+            if (cs.phase != CertState::Phase::Done && certAdmits < CERT_MEMBERS)
+            {
+                std::string const line = Acore::StringFormat(
+                    "{}: outgrown - it admits {} member(s) ({} inside the finder's band L{}-{}, {} offline counted "
+                    "in) and a certification batch needs {} at once, so no batch of it can ever stand. The dungeon "
+                    "is left behind UNCERTIFIED and the guild's order goes on to the next one",
+                    d.contentKey, certAdmits, certBand, d.minLevel, d.maxLevel, certOffline, CERT_MEMBERS);
+                if (orderCertOutgrown_[d.contentKey] != line)
+                {
+                    orderCertOutgrown_[d.contentKey] = line;
+                    LOG_INFO("playerbots", "[cert21] {}", line);
+                    Decision("[cert21] " + d.name + ": the guild has outgrown its band (" + std::to_string(certAdmits)
+                             + " members can enter it, a certification batch needs " + std::to_string(CERT_MEMBERS) +
+                             " at once), so it cannot be certified and no longer holds the guild's order - the next "
+                             "dungeon opens");
+                }
+                notCounted += Acore::StringFormat("; {} left behind uncertified: it admits {} of the {} a batch "
+                                                  "needs", d.contentKey, certAdmits, CERT_MEMBERS);
+                passed.insert(d.contentKey);
+                continue;
+            }
             if (cs.phase != CertState::Phase::Done)
             {
                 open = &d;
@@ -3450,9 +3488,49 @@ void GuildCoordinator::CertifyBatch()
 // decision can never disagree. Two of its numbers are the ones the leader cannot do anything about - the members the
 // instance's entry levels admit at all, and of those the ones the finder's band would queue - and they belong in the
 // log beside the pool, because a batch of CERT_MEMBERS that fails on them fails on the roster, not on the dispatch
+// [cert21] how many members the dungeon admits at all, by the entrance's own levels and the route - the one count
+// the order gate and the audit below both read, so the verdict "outgrown" and the line that explains it can never
+// disagree. The two steps are the pool's own ([cert10] Candidates with certify): the finder's band, else (above it)
+// the walk in up to the instance's entry ceiling. A human's character plays itself and is no member of a batch; an
+// offline member is counted in, because its level is not known here and a dungeon must not fall out of the queue
+// over who happens to be logged in
+uint32 GuildCoordinator::CertAdmits(DungeonOption const& d, uint32* inFinderBand, uint32* offline) const
+{
+    uint32 admits = 0;
+    if (inFinderBand)
+        *inFinderBand = 0;
+    if (offline)
+        *offline = 0;
+    for (PlanRow const& row : plan_)
+    {
+        if (row.grp < 'A' || row.grp > 'C')
+            continue;
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
+        if (p && IsHuman(p))
+            continue;
+        if (!p)
+        {
+            ++admits;
+            if (offline)
+                ++*offline;
+            continue;
+        }
+        std::string refusal = DungeonRefusal(d, p);
+        if (!refusal.empty() && p->GetLevel() > d.maxLevel)
+            refusal = DungeonRefusal(d, p, true, true);
+        if (!refusal.empty())
+            continue;
+        ++admits;
+        if (inFinderBand && p->GetLevel() >= d.minLevel && p->GetLevel() <= d.maxLevel)
+            ++*inFinderBand;
+    }
+    return admits;
+}
+
 std::string GuildCoordinator::CertPoolAudit(DungeonOption const& d) const
 {
-    uint32 planned = 0, canEnter = 0, inFinderBand = 0;
+    uint32 planned = 0, inFinderBand = 0, offline = 0;
+    uint32 const canEnter = CertAdmits(d, &inFinderBand, &offline);  // [cert21] the gate's own count, not a copy
     // the reason a member is not in the pool -> how many, and the members an urgent order holds, by name and order
     std::map<std::string, uint32> out;
     std::string urgent;
@@ -3467,13 +3545,10 @@ std::string GuildCoordinator::CertPoolAudit(DungeonOption const& d) const
             ++out[p ? "a human's character" : "offline"];
             continue;
         }
-        // can it get in at all - the same two steps the pool itself takes ([cert10] Candidates with certify): the
-        // finder's band, else (above it) the walk in up to the instance's own entry ceiling
+        // can it get in at all - the same two steps [cert21] CertAdmits takes, for this member's own reason
         std::string refusal = DungeonRefusal(d, p);
         if (!refusal.empty() && p->GetLevel() > d.maxLevel)
             refusal = DungeonRefusal(d, p, true, true);
-        canEnter += refusal.empty() ? 1 : 0;
-        inFinderBand += p->GetLevel() >= d.minLevel && p->GetLevel() <= d.maxLevel ? 1 : 0;
         std::string why;
         if (!FreeForFive(row.low, p, &why))
         {
@@ -3493,10 +3568,10 @@ std::string GuildCoordinator::CertPoolAudit(DungeonOption const& d) const
     for (auto const& [why, n] : out)
         reasons += Acore::StringFormat("{}{} {}", reasons.empty() ? "" : ", ", why, n);
     return Acore::StringFormat(
-        " [cert20] of {} planned members {} can enter it at all (L{}-{} by the instance's own entry) and {} are "
-        "inside the finder's band L{}-{}; not in the pool: {}{}", planned, canEnter, d.walkMinLevel, d.maxLevel,
-        inFinderBand, d.minLevel, d.maxLevel, reasons.empty() ? "nobody" : reasons,
-        urgent.empty() ? "" : "; held by an urgent order: " + urgent);
+        " [cert20] of {} planned members {} can enter it at all (L{}-{} by the instance's own entry, {} offline "
+        "counted in) and {} are inside the finder's band L{}-{}; a batch needs {}; not in the pool: {}{}", planned,
+        canEnter, d.walkMinLevel, d.maxLevel, offline, inFinderBand, d.minLevel, d.maxLevel, CERT_MEMBERS,
+        reasons.empty() ? "nobody" : reasons, urgent.empty() ? "" : "; held by an urgent order: " + urgent);
 }
 
 // [cert13] The fact one five of a batch in flight is holding on. Every term is state that already exists and is

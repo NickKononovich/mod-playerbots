@@ -893,6 +893,10 @@ private:
     // move), how many of them the Dungeon Finder's band would queue, and - for every member outside the pool - the
     // one judge's own reason (FreeForFive, DungeonRefusal), counted, with the members an urgent order holds named
     std::string CertPoolAudit(DungeonOption const& d) const;
+    // [cert21] lock_ held. How many members the dungeon admits at all, by the entrance's own levels and the route -
+    // the one count both the order gate and CertPoolAudit read. Fewer than CERT_MEMBERS and the guild has outgrown
+    // the dungeon: no dispatch can make its certification batch stand, so it stops holding the guild's order
+    uint32 CertAdmits(DungeonOption const& d, uint32* inFinderBand = nullptr, uint32* offline = nullptr) const;
 
 public:
     static char const* OrderName(GuildOrderType type);  // [tasks] one name table for the whole guild
@@ -1499,6 +1503,9 @@ private:
     std::unordered_set<uint32> orderHeldBelow_;   // [lag368] the open dungeon's uncleared members below its band
     std::string orderLogged_;
     std::string five60Logged_;  // [five60] the roster occupancy line's own cadence: logged when it changes
+    // [cert21] the dungeons left behind uncertified because the guild outgrew their band -> the line that said so
+    // (its own cadence: said once, and again only if its numbers change)
+    std::map<std::string, std::string> orderCertOutgrown_;
     uint32 orderGen_{0};
     // [loot14] this build's five BoP outcomes: need worn, need held, need not worn (false need), greed, disenchant
     std::array<uint32, 5> lootBuild_{};
