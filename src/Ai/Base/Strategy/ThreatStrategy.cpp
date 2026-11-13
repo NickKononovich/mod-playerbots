@@ -689,7 +689,16 @@ namespace
     // [aoe1] user 2026-11-03 (aggro-loss-if-survives) for an area that takes mobs over the game's line: the caster
     // survives them until a tank of the group has them back (its ready taunts in reach and sight, one per global
     // cooldown, the hardest hitter first) or they die (their expected fight lifetime), with the mobs already on it,
-    // and a healer reaches it. The same terms as the leader's lead985 / lead1010 survivesSet, for every bot
+    // and a healer reaches it.
+    // [judge19] what this shares with the leader's lead985 / lead1010 survivesSet, and what it still does not. This
+    // line used to read "The same terms as the leader's survivesSet" flatly, and that claim is what hid the gap: the
+    // damage figure was the swing model against the leader's landed one, and there was no heals term at all.
+    // Shared now, one implementation each: the damage a mob lands (Leader::Fight::LandedOnDps), the healer test
+    // (HealerCovers) and the [dun235] heals term (HealerCover).
+    // Still its own, deliberately: the time until the mobs are back. The leader prices it at the tank's real threat
+    // catch-up per mob, because it knows the tank's threat; this prices it at the ready area taunts a global
+    // cooldown apart, because it runs on the member for the mobs the leader did not name. They answer for different
+    // mob sets, so they are not a second opinion on one set - but if that ever stops holding, this is the next gap.
     bool SurvivesTaking(Player* bot, PlayerbotAI* botAI, std::vector<Unit*> const& mobs, std::string& why)
     {
         Group* group = bot->GetGroup();
