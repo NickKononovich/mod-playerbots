@@ -819,6 +819,10 @@ namespace GuildGear
         out.worn = weakest ? weakest->GetEntry() : 0;
         if (!weakest)
         {
+            // [craft429] a piece of neither weight nor armor adds nothing to an empty slot: b463 every member's ring /
+            // neck plan was a vendor vanity piece (Mood Ring 1g, Soap on a Rope 1g) and Keenonk was sent to buy one
+            if (score <= 0.0f && !proto->Armor && proto->Class != ITEM_CLASS_WEAPON)
+                return false;
             out.gain = score > 0.0f ? 1.0f : 0.01f;  // a stat-less piece still fills the slot (armor)
             return true;
         }
