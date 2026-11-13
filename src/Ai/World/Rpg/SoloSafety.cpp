@@ -662,7 +662,10 @@ namespace
             else
                 state.blockMs[state.swingBlock - 1] += state.leadMs;
         }
-        state.sampleMs = now;
+        // [dps70] never 0: `sampleMs` 0 is what marks the fight's first sample, so a getMSTime() that lands exactly
+        // on 0 would make the next sample charge the lead swing a second time. The same guard the fight's own
+        // timestamps already carry (`f.firstDealtMs = now ? now : 1`); one tick of 1 ms is the whole cost.
+        state.sampleMs = now ? now : 1;
         state.sampleMelee = bot->IsWithinMeleeRange(mob);
         state.sampleAct = bot->GetVictim() || bot->IsNonMeleeSpellCast(false);
         state.swam = state.swam || bot->IsInWater();  // [dps1]

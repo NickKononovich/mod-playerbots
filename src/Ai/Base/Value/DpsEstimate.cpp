@@ -3017,22 +3017,40 @@ void RecordFight(Player* bot, FightSample const& sample)
                                 ? std::max(float(bot->GetAttackTime(OFF_ATTACK)) / float(IN_MILLISECONDS), 0.1f)
                                 : 0.0f;
         float const swung = 1.0f / mhSec + (ohSec > 0.0f ? 1.0f / ohSec : 0.0f);
+        // [dps70] a share of an allowance that is not there is not 0 %, and it is not a division either. The able
+        // clock reads the core's gate at the fight's damage events and charges each interval forward, so a fight
+        // with two events whose first reading was "no swing" puts its whole window in that bucket - and if the
+        // bot's own swing landed at the second event, the reading taken there governs no interval at all, because
+        // the window ends with it. b482 had two such fights of 73 (Almored L24 prot: 1 swing, able 0.0 of a 4.3 s
+        // window, no swing 4.3; Aestymro L23 retrib: 1 swing, able 0.0 of 5.0, no swing 5.0). The window arithmetic
+        // and the lead swing are sound in both - window == events + lead and nothing unaccounted, the [dps50]
+        // check - so the zero is the gate's own honest reading and not a hole. It is still a contradiction: a swing
+        // landed, so the bot was swinging, and the samples were too few to see it. The line says that instead of
+        // printing a percent it does not have, and the triage counts these apart from its mean rather than letting
+        // a false 0 % into it.
+        auto const share = [](uint32 took, float of) -> std::string
+        {
+            if (of > 0.0f)
+                return Acore::StringFormat("{:.0f} %", float(took) / of * 100.0f);
+            return took ? Acore::StringFormat("no allowance: the able time measured 0 s, yet {} landed - the "
+                                              "samples never caught it swinging",
+                                              took)
+                        : std::string("no allowance, nothing landed");
+        };
         LOG_INFO("playerbots",
-                 "[meleeup] {} L{} {}/{} swings {} of {:.1f} the able time allowed ({:.0f} %), formula counted "
-                 "{:.1f} ({:.0f} %) | able {:.1f} s of {:.1f} s (events {:.1f} s + lead swing {:.1f} s; fight "
+                 "[meleeup] {} L{} {}/{} swings {} of {:.1f} the able time allowed ({}), formula counted "
+                 "{:.1f} ({}) | able {:.1f} s of {:.1f} s (events {:.1f} s + lead swing {:.1f} s; fight "
                  "{:.1f} s, dps window {:.1f} s): out of reach {:.1f}, not facing {:.1f}, no swing {:.1f}, "
                  "controlled {:.1f}, swinging elsewhere {:.1f} | timer {} swings ({} white + {} next-swing "
-                 "strikes) of {:.1f} allowed ({:.0f} %), rotation planned {:.2f} replaced a second | rate {:.2f} "
+                 "strikes) of {:.1f} allowed ({}), rotation planned {:.2f} replaced a second | rate {:.2f} "
                  "landed in melee ({:.2f} over the fight, melee share {:.2f}) of {:.2f} swung a second (main "
                  "{:.2f} s, off {:.2f} s) | white dealt {} of {:.0f} the formula",
                  bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), spec, f.whiteHits, allowed,
-                 allowed > 0.0f ? float(f.whiteHits) / allowed * 100.0f : 0.0f, counted,
-                 counted > 0.0f ? float(f.whiteHits) / counted * 100.0f : 0.0f, sample.ableSec, sample.windowSec,
-                 sample.windowSec - sample.leadSec, sample.leadSec, sample.fightSec, active, sample.rangeSec,
-                 sample.facingSec, sample.noSwingSec, sample.controlSec, sample.switchSec, timerSwings, f.whiteHits,
-                 f.nextSwings, timerAllowed,
-                 timerAllowed > 0.0f ? float(timerSwings) / timerAllowed * 100.0f : 0.0f, replaced, inMelee,
-                 f.formula.whiteHitsPerSec, f.formula.meleeShare, swung, mhSec, ohSec, f.white,
+                 share(f.whiteHits, allowed), counted, share(f.whiteHits, counted), sample.ableSec,
+                 sample.windowSec, sample.windowSec - sample.leadSec, sample.leadSec, sample.fightSec, active,
+                 sample.rangeSec, sample.facingSec, sample.noSwingSec, sample.controlSec, sample.switchSec,
+                 timerSwings, f.whiteHits, f.nextSwings, timerAllowed, share(timerSwings, timerAllowed), replaced,
+                 inMelee, f.formula.whiteHitsPerSec, f.formula.meleeShare, swung, mhSec, ohSec, f.white,
                  (f.formula.white - f.formula.pet - f.formula.replacedWhite) * sample.windowSec);
     }
 
