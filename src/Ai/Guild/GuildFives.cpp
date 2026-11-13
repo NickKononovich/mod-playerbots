@@ -2187,7 +2187,7 @@ void GuildCoordinator::LoadRuns()
         "drops TEXT, reason TEXT, PRIMARY KEY (id), KEY content (content)) "
         "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[guild60] guild fives x dungeons, raids x raids'");
     if (QueryResult result = PlayerbotsDatabase.Query(
-            "SELECT id, content, kind, at, leader, members, result, bosses_killed, bosses_total, deaths "
+            "SELECT id, content, kind, at, leader, members, result, bosses_killed, bosses_total, deaths, wipes "
             "FROM guild_project_runs ORDER BY id"))
     {
         do
@@ -2208,13 +2208,91 @@ void GuildCoordinator::LoadRuns()
             rec.bossesKilled = f[7].Get<uint8>();
             rec.bossesTotal = f[8].Get<uint8>();
             rec.deaths = f[9].Get<uint16>();
+            rec.wipes = f[10].Get<uint16>();  // [cert10]
             if (rec.result == "done")
                 for (uint32 low : rec.members)
                     cleared_[rec.contentKey].insert(low);
             runs_.push_back(rec);
         } while (result->NextRow());
     }
-    LOG_INFO("playerbots", "[guild60] completion table: {} runs", runs_.size());
+    // [cert10] project rule 2026-11-13: a cumulative count is never reported without the per-run success rate beside
+    // it. "69 of 75 cleared Deadmines" was 26 successful runs and 59 that failed, stalled or went partial
+    {
+        struct Tally
+        {
+            uint32 runs = 0, done = 0, clean = 0;
+        };
+        std::map<std::string, Tally> tally;
+        for (GuildRunRecord const& rec : runs_)
+        {
+            Tally& t = tally[rec.contentKey];
+            ++t.runs;
+            if (rec.result != "done")
+                continue;
+            ++t.done;
+            if (rec.bossesTotal && rec.bossesKilled >= rec.bossesTotal && !rec.deaths && !rec.wipes)
+                ++t.clean;
+        }
+        std::string line;
+        for (auto const& [key, t] : tally)
+            line += Acore::StringFormat("{}{}: {} runs, {} done ({:.0f} %), {} clean ({:.0f} %)",
+                                        line.empty() ? "" : "; ", key, t.runs, t.done,
+                                        100.0 * double(t.done) / double(t.runs), t.clean,
+                                        100.0 * double(t.clean) / double(t.runs));
+        LOG_INFO("playerbots", "[guild60] completion table: {} runs; per-run success rate - {}", runs_.size(),
+                 line.empty() ? std::string("no run yet") : line);
+    }
+
+    // [cert10] the two-phase gate's own state: which phase each dungeon is in, how many certification batches it
+    // has cost and the last batch's per-five verdicts. The fives of a batch cut short by a restart are gone, so such
+    // a batch is one attempted and not passed: the next look forms a new one
+    cert_.clear();
+    PlayerbotsDatabase.DirectExecute(
+        "CREATE TABLE IF NOT EXISTS guild_project_cert ("
+        "content VARCHAR(16) NOT NULL, phase TINYINT UNSIGNED NOT NULL, batches INT UNSIGNED NOT NULL, "
+        "passed_batch INT UNSIGNED NOT NULL, passed_at INT UNSIGNED NOT NULL, last_batch INT UNSIGNED NOT NULL, "
+        "verdicts TEXT, PRIMARY KEY (content)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+        "COMMENT='[cert10] the dungeon gate phase two: a batch of 5 fives at once, every one of them clean'");
+    if (QueryResult result = PlayerbotsDatabase.Query(
+            "SELECT content, phase, batches, passed_batch, passed_at, last_batch, verdicts FROM guild_project_cert"))
+    {
+        do
+        {
+            Field* f = result->Fetch();
+            CertState cs;
+            uint8 const phase = f[1].Get<uint8>();
+            cs.phase = phase == 2 ? CertState::Phase::Done
+                                  : phase == 1 ? CertState::Phase::Certify : CertState::Phase::Mastery;
+            cs.batches = f[2].Get<uint32>();
+            cs.passedBatch = f[3].Get<uint32>();
+            cs.passedAt = f[4].Get<uint32>();
+            cs.lastBatch = f[5].Get<uint32>();
+            std::stringstream in(f[6].Get<std::string>());
+            std::string token;
+            while (std::getline(in, token, ';'))
+            {
+                size_t const at = token.find("five ");
+                size_t const colon = token.find(": ", at == std::string::npos ? 0 : at);
+                if (at == std::string::npos || colon == std::string::npos)
+                    continue;
+                uint32 const id = uint32(std::strtoul(token.c_str() + at + 5, nullptr, 10));
+                cs.verdicts.emplace_back(id, token.substr(colon + 2));
+            }
+            cert_[f[0].Get<std::string>()] = std::move(cs);
+        } while (result->NextRow());
+    }
+    for (auto const& [key, cs] : cert_)
+        LOG_INFO("playerbots", "[cert10] {}: phase {}, {} certification batch(es) attempted{}{}", key,
+                 cs.phase == CertState::Phase::Done ? "done (certified)"
+                     : cs.phase == CertState::Phase::Certify ? "certification (mastery done)" : "mastery",
+                 cs.batches, cs.passedBatch ? Acore::StringFormat(", passed on batch {}", cs.passedBatch)
+                                            : std::string(),
+                 cs.verdicts.empty() ? std::string()
+                                     : Acore::StringFormat("; batch {}: {} of {} fives clean", cs.lastBatch,
+                                                           std::count_if(cs.verdicts.begin(), cs.verdicts.end(),
+                                                                         [](auto const& v)
+                                                                         { return v.second == "clean"; }),
+                                                           CERT_FIVES));
 
     // [loot13] the five's goal mobs for its route (the leader's route rules), and their states back
     Leader::Travel::SetRouteGoalHooks([](uint32 low) { return sGuildCoordinator.FiveGoalMobs(low); },
@@ -2874,7 +2952,7 @@ bool GuildCoordinator::Cleared(std::string const& contentKey, uint32 low) const
 }
 
 std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(DungeonOption const& d, bool band,
-                                                                          uint32* heldByOrder)
+                                                                          uint32* heldByOrder, bool certify)
 {
     std::vector<FiveCandidate> out;
     for (PlanRow const& row : plan_)
@@ -2887,9 +2965,11 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
         std::string refusal = DungeonRefusal(d, p);
         // [order362] user rule 2026-11-11 (all 75 members, no exceptions): guild-wide a member that outlevelled the
         // dungeon uncleared still clears it - it walks in (the finder's band ends at its max, the instance does not)
+        // [cert10] the certification batch takes it by the walk in whether it cleared the dungeon or not: by then
+        // every member has, so the clear is no longer what makes the walk in allowed
         bool overMax = false;
         if (!refusal.empty() && band && !sPlayerbotAIConfig.GuildDungeonOrderPerMember &&
-            p->GetLevel() > d.maxLevel && !Cleared(d.contentKey, row.low))
+            p->GetLevel() > d.maxLevel && (certify || !Cleared(d.contentKey, row.low)))
         {
             refusal = DungeonRefusal(d, p, true, true);
             overMax = refusal.empty();
@@ -2933,7 +3013,9 @@ std::vector<GuildCoordinator::FiveCandidate> GuildCoordinator::Candidates(Dungeo
 // [order360] user rule 2026-11-11 («Я тебя просил идти всех по порядку», «и так со всеми остальными инстансами»): the
 // guild takes the dungeons one at a time by difficulty - min level, then max level, equal bands in the list's order -
 // and the next opens once every member has fully cleared the current one. b446 five 9 went to the Stockade with five
-// members none of whom had cleared Wailing Caverns or Shadowfang Keep
+// members none of whom had cleared Wailing Caverns or Shadowfang Keep.
+// [cert10] user rule 2026-11-13: that count is phase one only. The next dungeon opens when the current one is also
+// certified - 5 fives in at once, every one of them clean (CertState, CertifyBatch)
 void GuildCoordinator::UpdateDungeonOrder()
 {
     if (orderIdx_.size() != dungeons_.size())
@@ -2970,6 +3052,7 @@ void GuildCoordinator::UpdateDungeonOrder()
     std::set<std::string> passed;
     std::string notCounted;
     std::string held;
+    std::string certHold;  // [cert10] the open dungeon is held by its certification, not by an uncleared member
     uint32 heldCount = 0;
     DungeonOption const* open = nullptr;
     for (size_t index : orderIdx_)
@@ -3025,6 +3108,38 @@ void GuildCoordinator::UpdateDungeonOrder()
         }
         if (!count)
         {
+            // [cert10] mastery (every member cleared it once) is only the first half of "done": the dungeon stays
+            // the guild's open one until a certification batch of 5 fives passes completely clean. A dungeon whose
+            // 26 clears were paid for with 59 failed, stalled and partial runs is not a dungeon the guild can run
+            CertState& cs = cert_[d.contentKey];
+            if (cs.phase == CertState::Phase::Mastery)
+            {
+                cs.phase = CertState::Phase::Certify;
+                LOG_INFO("playerbots",
+                         "[cert10] {}: mastery done - every member of the guild cleared it once; certification opens: "
+                         "{} fives ({} members) go in at once and every one of them has to finish clean (done, every "
+                         "boss killed, 0 deaths, 0 wipes); nobody needing the loot is no reason to skip it",
+                         d.contentKey, CERT_FIVES, CERT_MEMBERS);
+                Decision("[cert10] " + d.name + ": every member has cleared it, and the dungeon is not done yet - it "
+                         "is certified by " + std::to_string(CERT_FIVES) + " fives (" + std::to_string(CERT_MEMBERS) +
+                         " members) sent in at once, every one of which has to finish completely clean");
+                CertSave(d.contentKey);
+            }
+            if (cs.phase != CertState::Phase::Done)
+            {
+                open = &d;
+                heldCount = 0;
+                held.clear();
+                certHold = Acore::StringFormat(
+                    "[cert10] certification: {} fives of {} members at once, all clean; batch {} {}", CERT_FIVES,
+                    CERT_MEMBERS, cs.flight.empty() ? cs.batches + 1 : cs.batches,
+                    cs.flight.empty() ? "still to form" : "in flight");
+                {
+                    std::lock_guard<std::mutex> guard(orderHeldLock_);
+                    orderHeldBelow_.clear();
+                }
+                break;
+            }
             passed.insert(d.contentKey);
             continue;
         }
@@ -3044,10 +3159,15 @@ void GuildCoordinator::UpdateDungeonOrder()
         orderHeldBelow_.clear();
     }
     std::string const line =
-        (open ? Acore::StringFormat("open up to {} ({} L{}-{}), held by {}: {} members not cleared ({})",
-                                    open->contentKey, open->name, open->minLevel, open->maxLevel, open->contentKey,
-                                    heldCount, held)
-              : std::string("every dungeon cleared by every member, none held")) +
+        (open ? (certHold.empty()
+                     ? Acore::StringFormat("open up to {} ({} L{}-{}), held by {}: {} members not cleared ({})",
+                                           open->contentKey, open->name, open->minLevel, open->maxLevel,
+                                           open->contentKey, heldCount, held)
+                     // [cert10] mastery is done and the dungeon is still held: by its certification batch
+                     : Acore::StringFormat("open up to {} ({} L{}-{}), held by {}: every member cleared it, {}",
+                                           open->contentKey, open->name, open->minLevel, open->maxLevel,
+                                           open->contentKey, certHold))
+              : std::string("every dungeon cleared and certified by every member, none held")) +
         notCounted;
     if (line != orderLogged_)
     {
@@ -3060,8 +3180,309 @@ void GuildCoordinator::UpdateDungeonOrder()
         orderOpenKey_ = key;
         if (open)
             Decision("[order360] the guild's dungeon is now " + open->name + ": no five goes elsewhere until every "
-                     "member has cleared it");
+                     "member has cleared it and [cert10] a certification batch of " + std::to_string(CERT_FIVES) +
+                     " fives has passed it clean");
     }
+}
+
+// [cert10] The certification batch of the guild's open dungeon (phase two of "done"). All CERT_FIVES fives are
+// assembled out of one pool in a single pass and committed only when all of them stand, so the 25 members go in
+// together - a half-formed batch forms nothing and waits for the next look (no timer of its own: AutoFive's cadence
+// is the only clock). Members are whoever the leader would pick; a need is explicitly NOT a requirement here, and
+// nobody needing the loot any more is no reason to skip the batch. The five gate ([next1] FiveGate::Judge) still has
+// to pass every five: it is the game's own survival math, and a certification that ignored it would be easier than
+// the runs it certifies, not harder.
+void GuildCoordinator::CertifyBatch()
+{
+    if (sPlayerbotAIConfig.GuildDungeonOrderPerMember || orderOpenKey_.empty())
+        return;
+    DungeonOption const* d = FindDungeon(orderOpenKey_);
+    if (!d)
+        return;
+    CertState& cs = cert_[d->contentKey];
+    if (cs.phase != CertState::Phase::Certify)
+        return;
+    auto const note = [&cs, d](std::string const& line)
+    {
+        if (cs.dispatchLogged == line)
+            return;
+        cs.dispatchLogged = line;
+        LOG_INFO("playerbots", "[cert10] {}: {}", d->contentKey, line);
+    };
+    if (!cs.flight.empty())
+    {
+        std::string waiting;
+        for (uint32 id : cs.flight)
+            waiting += (waiting.empty() ? "" : ", ") + std::to_string(id);
+        note(Acore::StringFormat("batch {} in flight: {} of {} fives still to report (fives {})", cs.batches,
+                                 cs.flight.size(), CERT_FIVES, waiting));
+        return;
+    }
+    // the pool: every free member that can get into the dungeon now, cleared or not ([cert10] Candidates' walk in)
+    std::vector<FiveCandidate> pool = Candidates(*d, true, nullptr, true);
+    uint32 tankCount = 0, healerCount = 0;
+    for (FiveCandidate const& c : pool)
+        tankCount += c.role == "tank" ? 1 : 0, healerCount += c.role == "healer" ? 1 : 0;
+    std::string const have =
+        Acore::StringFormat("{} free member(s) (t{} h{} d{})", pool.size(), tankCount, healerCount,
+                            pool.size() - tankCount - healerCount);
+    if (pool.size() < CERT_MEMBERS)
+    {
+        note(Acore::StringFormat("batch {} does not form: {} - the batch needs {} at once", cs.batches + 1, have,
+                                 CERT_MEMBERS));
+        return;
+    }
+    // one five out of what is left of the pool: the finder's band first, else a five that walks in (as the look
+    // does), and the gate's own pairs ([gate93]: the four highest tanks x the four largest healer pools)
+    auto const assemble = [this, d](std::vector<FiveCandidate> const& avail, std::vector<FiveCandidate>& out,
+                                    std::string& why) -> bool
+    {
+        std::vector<FiveCandidate> finderPool, walkPool;
+        for (FiveCandidate const& c : avail)
+        {
+            if (c.player->GetLevel() >= d->minLevel && !c.overMax)
+                finderPool.push_back(c);
+            if (DungeonRefusal(*d, c.player, true, c.overMax).empty())
+                walkPool.push_back(c);
+        }
+        float bestLoad = 99.0f;
+        for (std::vector<FiveCandidate> const& sub : {finderPool, walkPool})
+        {
+            if (sub.size() < 5)
+                continue;
+            std::vector<FiveCandidate> five;
+            if (PickFive(sub, five))
+            {
+                std::vector<Player*> players;
+                for (FiveCandidate const& c : five)
+                    players.push_back(c.player);
+                if (FiveGate::Verdict const v = FiveGate::Judge(d->mapId, players); v.clears)
+                {
+                    out = five;
+                    why = v.why;
+                    return true;
+                }
+                else if (v.worstLoad < bestLoad)
+                {
+                    bestLoad = v.worstLoad;
+                    why = v.why;
+                }
+            }
+            std::vector<FiveCandidate const*> tanks, healers, dps;
+            for (FiveCandidate const& c : sub)
+                (c.role == "tank" ? tanks : c.role == "healer" ? healers : dps).push_back(&c);
+            std::stable_sort(tanks.begin(), tanks.end(), [](FiveCandidate const* a, FiveCandidate const* b)
+                             { return a->player->GetLevel() > b->player->GetLevel(); });
+            // [gate94] healers by their mana pool (the gate's binding term), not by level
+            std::stable_sort(healers.begin(), healers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
+                             { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
+            std::stable_sort(dps.begin(), dps.end(), [](FiveCandidate const* a, FiveCandidate const* b)
+                             { return a->player->GetLevel() > b->player->GetLevel(); });
+            if (dps.size() < 3)
+                continue;
+            constexpr size_t PAIRS_SIDE = 4;  // the look's own cost bound ([gate93]): 16 judges a five
+            for (size_t ti = 0; ti < tanks.size() && ti < PAIRS_SIDE; ++ti)
+                for (size_t hi = 0; hi < healers.size() && hi < PAIRS_SIDE; ++hi)
+                {
+                    std::vector<Player*> players{tanks[ti]->player, healers[hi]->player, dps[0]->player,
+                                                 dps[1]->player, dps[2]->player};
+                    FiveGate::Verdict const v = FiveGate::Judge(d->mapId, players);
+                    if (v.clears)
+                    {
+                        out = {*tanks[ti], *healers[hi], *dps[0], *dps[1], *dps[2]};
+                        why = v.why;
+                        return true;
+                    }
+                    if (v.worstLoad < bestLoad)
+                    {
+                        bestLoad = v.worstLoad;
+                        why = v.why;
+                    }
+                }
+        }
+        if (why.empty())
+            why = "no tank, healer and 3 dps left in the pool that can get in";
+        return false;
+    };
+    std::vector<std::vector<FiveCandidate>> batch;
+    std::set<uint32> taken;
+    std::string gateWhyLast;
+    for (size_t slot = 0; slot < CERT_FIVES; ++slot)
+    {
+        std::vector<FiveCandidate> avail;
+        for (FiveCandidate const& c : pool)
+            if (!taken.count(c.low))
+                avail.push_back(c);
+        std::vector<FiveCandidate> five;
+        std::string why;
+        if (!assemble(avail, five, why))
+        {
+            gateWhyLast = why;
+            break;
+        }
+        for (FiveCandidate const& c : five)
+            taken.insert(c.low);
+        batch.push_back(std::move(five));
+    }
+    if (batch.size() < CERT_FIVES)
+    {
+        note(Acore::StringFormat("batch {} does not form: {}, {} of {} fives assembled - the {}. one: {}",
+                                 cs.batches + 1, have, batch.size(), CERT_FIVES, batch.size() + 1, gateWhyLast));
+        return;
+    }
+    // every five stands: now the 25 are committed together
+    ++cs.batches;
+    cs.flight.clear();
+    cs.verdicts.clear();
+    cs.lastBatch = cs.batches;
+    std::string formed;
+    for (std::vector<FiveCandidate> const& five : batch)
+    {
+        std::vector<uint32> members;
+        std::map<uint32, std::string> roles;
+        for (FiveCandidate const& c : five)
+        {
+            members.push_back(c.low);
+            roles[c.low] = c.role;
+        }
+        std::string const why = Acore::StringFormat(
+            "[cert10] certification batch {} of {}: {} of {} fives at once, every one has to finish clean (done, "
+            "every boss killed, 0 deaths, 0 wipes); a need is no requirement here", cs.batches, d->contentKey,
+            batch.size(), CERT_FIVES);
+        std::string error;
+        uint32 const id = FormFiveLocked(five.front().low, members, *d, roles, why, false, &error);
+        if (!id)
+        {
+            // one five could not be committed: the batch is not 25 at once, so none of it goes. The flight list is
+            // emptied first, so the disbands below are no verdicts of a batch that never started
+            LOG_INFO("playerbots", "[cert10] {}: batch {} rolled back - a five could not be formed: {}",
+                     d->contentKey, cs.batches, error);
+            std::vector<uint32> const rollback = cs.flight;
+            cs.flight.clear();
+            for (uint32 formedId : rollback)
+                DisbandFive(formedId, "[cert10] its certification batch could not be completed");
+            --cs.batches;
+            cs.lastBatch = cs.batches;
+            cs.dispatchLogged.clear();
+            return;
+        }
+        cs.flight.push_back(id);
+        std::string names;
+        for (FiveCandidate const& c : five)
+            names += (names.empty() ? "" : " ") + Who(c.low) + " L" + std::to_string(c.player->GetLevel()) +
+                     " " + c.role;
+        formed += Acore::StringFormat("; five {} [{}]", id, names);
+    }
+    LOG_INFO("playerbots",
+             "[cert10] {}: certification batch {} dispatched - {} fives, {} members at once; every five must finish "
+             "done with every boss killed, 0 deaths and 0 wipes, else the batch is repeated{}",
+             d->contentKey, cs.batches, CERT_FIVES, CERT_MEMBERS, formed);
+    Decision(Acore::StringFormat("[cert10] {}: certification batch {} — {} fives ({} members) go in at once. The "
+                                 "dungeon is done only if every one of them finishes clean", d->name, cs.batches,
+                                 CERT_FIVES, CERT_MEMBERS));
+    cs.dispatchLogged.clear();
+    CertSave(d->contentKey);
+}
+
+// [cert11] the verdict on one certification five, read off the figures the five-leader's report carries - the same
+// ones [guild70] prints and RecordRun writes to guild_project_runs. One judge per quantity: the deaths are
+// GuildFiveReport::deaths (StatsRegistry's own count), nothing re-counts them here. "" = clean
+std::string GuildCoordinator::CertVerdict(GuildFiveReport const& report) const
+{
+    uint32 deaths = 0;
+    for (auto const& [name, count] : report.deaths)
+        deaths += count;
+    std::string why;
+    auto const add = [&why](std::string const& text) { why += (why.empty() ? "" : ", ") + text; };
+    if (report.result != "done")  // stalled / failed / partial / stopped / timeout: all failures
+        add("result " + report.result);
+    // "every boss killed" is never vacuously true: a report with no boss sheet at all has proved nothing
+    if (!report.bossesTotal)
+        add("no boss sheet in the report");
+    else if (report.bossesKilled.size() < report.bossesTotal)
+        add(Acore::StringFormat("bosses {}/{}", report.bossesKilled.size(), report.bossesTotal));
+    if (deaths)
+        add(Acore::StringFormat("{} death(s)", deaths));
+    if (report.wipes)
+        add(Acore::StringFormat("{} wipe(s)", report.wipes));
+    return why;
+}
+
+// [cert11] one five of the batch in flight has ended (a report, or a disband that never reported). When the last of
+// them is in, the batch passes only if ALL of them were clean; a failed batch keeps its per-five reasons (that is
+// what the next fix brief is written from) and is repeated
+void GuildCoordinator::CertFiveEnded(GuildFive const& five, std::string const& why)
+{
+    auto const found = cert_.find(five.contentKey);
+    if (found == cert_.end())
+        return;
+    CertState& cs = found->second;
+    auto const at = std::find(cs.flight.begin(), cs.flight.end(), five.id);
+    if (at == cs.flight.end())
+        return;  // not a five of the batch in flight
+    cs.flight.erase(at);
+    cs.verdicts.emplace_back(five.id, why.empty() ? std::string("clean") : why);
+    LOG_INFO("playerbots", "[cert11] {} batch {} five {}: {}{}", five.contentKey, cs.batches, five.id,
+             why.empty() ? std::string("clean") : "FAILED - " + why,
+             cs.flight.empty() ? std::string()
+                               : Acore::StringFormat("; {} five(s) still to report", cs.flight.size()));
+    if (!cs.flight.empty())
+    {
+        CertSave(five.contentKey);
+        return;
+    }
+    uint32 clean = 0;
+    std::string failed;
+    for (auto const& [id, text] : cs.verdicts)
+    {
+        if (text == "clean")
+            ++clean;
+        else
+            failed += (failed.empty() ? "" : "; ") + Acore::StringFormat("five {}: {}", id, text);
+    }
+    if (clean == CERT_FIVES && cs.verdicts.size() == CERT_FIVES)
+    {
+        cs.phase = CertState::Phase::Done;
+        cs.passedBatch = cs.batches;
+        cs.passedAt = uint32(time(nullptr));
+        ++orderGen_;  // [order360] the order is recomputed: the next dungeon opens
+        LOG_INFO("playerbots",
+                 "[cert12] {}: certification PASSED on batch {} - all {} fives ({} members, at once) finished done "
+                 "with every boss killed, 0 deaths and 0 wipes; the dungeon is done for the guild and the next one "
+                 "opens", five.contentKey, cs.batches, CERT_FIVES, CERT_MEMBERS);
+        Decision(Acore::StringFormat("[cert12] {} is certified on batch {}: all {} fives clean. The dungeon is done "
+                                     "for the guild — the next one opens", five.dungeon, cs.batches, CERT_FIVES));
+    }
+    else
+    {
+        LOG_INFO("playerbots", "[cert12] {}: certification batch {} FAILED - {} of {} fives clean; {}; the batch is "
+                 "repeated", five.contentKey, cs.batches, clean, cs.verdicts.size(), failed);
+        Decision(Acore::StringFormat("[cert12] {}: certification batch {} failed — {} of {} fives clean ({}). The "
+                                     "batch is repeated", five.dungeon, cs.batches, clean, CERT_FIVES, failed));
+    }
+    cs.dispatchLogged.clear();
+    CertSave(five.contentKey);
+}
+
+// [cert10] the certification state is durable: the phase, the batches attempted and the last batch's per-five
+// verdicts survive a restart (playerbots DB guild_project_cert). A batch cut short by a restart is one attempted and
+// not passed, so it is repeated
+void GuildCoordinator::CertSave(std::string const& contentKey)
+{
+    auto const found = cert_.find(contentKey);
+    if (found == cert_.end())
+        return;
+    CertState const& cs = found->second;
+    std::string verdicts;
+    for (auto const& [id, text] : cs.verdicts)
+        verdicts += (verdicts.empty() ? "" : "; ") + Acore::StringFormat("five {}: {}", id, text);
+    std::string key = contentKey;
+    SqlEscape(key);
+    SqlEscape(verdicts);
+    PlayerbotsDatabase.Execute(
+        "REPLACE INTO guild_project_cert (content, phase, batches, passed_batch, passed_at, last_batch, verdicts) "
+        "VALUES ('{}', {}, {}, {}, {}, {}, '{}')",
+        key, uint32(cs.phase), cs.batches, cs.passedBatch, cs.passedAt, cs.lastBatch, verdicts);
 }
 
 bool GuildCoordinator::HoldsGuildDungeon(uint32 low) const
@@ -3394,6 +3815,9 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
                         ai->rpgInfo.ChangeToIdle("its five is disbanded, back to its own plan");
         }
     }
+    // [cert11] a five of a certification batch that is disbanded never hands in a report: it is a failed five of
+    // that batch, so the batch is judged on it like any other (and repeated)
+    CertFiveEnded(itr->second, "disbanded before its report" + (reason.empty() ? std::string() : ": " + reason));
     Decision("five " + std::to_string(fiveId) + " (" + itr->second.dungeon + ") disbanded" +
              (reason.empty() ? "" : ": " + reason) + " — authority back with the global leader, members quest");
     fives_.erase(itr);
@@ -4239,6 +4663,12 @@ void GuildCoordinator::AutoFive()
     {
         CoordLock guard(lock_, __func__);
         PlanRoles();
+    }
+    // [cert10] phase two of the open dungeon comes before any other five: its 5 fives are formed in one pass, so the
+    // 25 members go in together
+    {
+        CoordLock guard(lock_, __func__);
+        CertifyBatch();
     }
     // [need106] user rule 2026-11-10: every guild character clears each dungeon of its band once, and goes again only
     // while the dungeon's loot holds an upgrade it needs. need = not cleared, or a needed upgrade (NeededUpgrade). A
@@ -5265,6 +5695,9 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         return;
     }
     RecordRun(five, report);
+    // [cert11] if this five is one of a certification batch in flight, its verdict is read off the very figures
+    // RecordRun just wrote (and [guild70] printed): nothing is re-counted here
+    CertFiveEnded(five, CertVerdict(report));
 
     // [death470] One judge of a run's deaths: the five-leader's report, which is StatsRegistry's own count
     // (OnUnitDeath + RecordReentry) and the figure [guild70] and RecordRun already print. This line used to keep a
@@ -5495,6 +5928,7 @@ void GuildCoordinator::RecordRun(GuildFive const& five, GuildFiveReport const& r
     rec.bossesTotal = report.bossesTotal;
     for (auto const& [name, count] : report.deaths)
         rec.deaths += count;
+    rec.wipes = report.wipes;  // [cert10] kept with the rest: the per-run success rate is read off the table
     rec.id = runs_.empty() ? 1 : runs_.back().id + 1;  // the DB's own id may differ; the tab shows the order
     if (rec.result == "done")
     {
@@ -5829,6 +6263,41 @@ std::string GuildCoordinator::FivesText() const
             auto const role = five.roles.find(low);
             out << " " << Who(low) << "(" << (role != five.roles.end() ? role->second : "?") << ")";
         }
+    }
+    // [cert10] the two-phase gate, per dungeon: its per-run success rate, the phase, the batches attempted and the
+    // last batch's per-five verdicts (the count never stands alone)
+    for (DungeonOption const& d : dungeons_)
+    {
+        auto const found = cert_.find(d.contentKey);
+        if (found == cert_.end())
+            continue;
+        CertState const& cs = found->second;
+        uint32 runs = 0, done = 0, clean = 0, cleared = 0;
+        for (GuildRunRecord const& rec : runs_)
+        {
+            if (rec.contentKey != d.contentKey)
+                continue;
+            ++runs;
+            if (rec.result != "done")
+                continue;
+            ++done;
+            if (rec.bossesTotal && rec.bossesKilled >= rec.bossesTotal && !rec.deaths && !rec.wipes)
+                ++clean;
+        }
+        if (auto const c = cleared_.find(d.contentKey); c != cleared_.end())
+            cleared = uint32(c->second.size());
+        out << "\n  [cert10] " << d.contentKey << ": phase "
+            << (cs.phase == CertState::Phase::Done ? "done (certified)"
+                    : cs.phase == CertState::Phase::Certify ? "certification" : "mastery")
+            << ", cleared by " << cleared << " member(s) over " << runs << " run(s) - "
+            << (runs ? uint32(100.0 * double(done) / double(runs)) : 0u) << " % done, "
+            << (runs ? uint32(100.0 * double(clean) / double(runs)) : 0u) << " % clean; batches " << cs.batches;
+        if (cs.passedBatch)
+            out << " (passed on " << cs.passedBatch << ")";
+        if (!cs.flight.empty())
+            out << ", " << cs.flight.size() << " five(s) of batch " << cs.batches << " still in flight";
+        for (auto const& [id, text] : cs.verdicts)
+            out << "\n      batch " << cs.lastBatch << " five " << id << ": " << text;
     }
     return out.str();
 }
