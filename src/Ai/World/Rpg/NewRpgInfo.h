@@ -126,6 +126,9 @@ struct NewRpgInfo
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};
+    // [mount5] where its last mount cast for a walk began (0, 0: none since it rode): one try per spot
+    float mountTryX{0.0f};
+    float mountTryY{0.0f};
     // [timers] the spots a walk to moveFarPos started from without getting closer (no stuck timer): a walk that
     // starts again within the progress step of one of them closes a loop - no walk from there gets closer
     std::vector<G3D::Vector3> stuckSpots;

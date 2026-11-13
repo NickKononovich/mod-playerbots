@@ -73,6 +73,7 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include "GuildLedger.h"
+#include "GuildRiding.h"  // [mount4]
 
 namespace
 {
@@ -2325,6 +2326,90 @@ void GuildCoordinator::UpdateTransfers()
                 }
             }
         }
+
+    // [mount4] the riding plan's gold (GuildRiding::Shortfall: its Apprentice Riding and mount over its spare money),
+    // the members whose riding saves the most copper an hour first, after every gold want above: from the member
+    // whose spare, less what this plan already sends, covers it, else shared by the members that together cover it;
+    // only members that ride already or whose own riding is worth less give (GuildRiding::MayFund)
+    {
+        std::unordered_map<uint32, uint32> promised;  // member -> the gold the wants above already send
+        for (Want const& w : wants)
+            if (w.gold)
+                promised[w.from] += w.money;
+        auto const spareOf = [&](uint32 from, Player* s)
+        {
+            uint32 const spare = FoundingFreeMoney(s);
+            uint32 const sent = promised[from];
+            return spare > sent ? spare - sent : 0;
+        };
+        for (uint32 const low : GuildRiding::FundingOrder())
+        {
+            uint32 shortBy = GuildRiding::Shortfall(low);
+            Player* r = Online(low);
+            if (!shortBy || !r || !GET_PLAYERBOT_AI(r) || HumanCharacter(r) || !IsPlanned(low))
+                continue;
+            for (Mail const* m : r->GetMails())  // [eco195] the members' gold already in its mailbox
+                if (m && m->state != MAIL_STATE_DELETED && m->money && IsPlanned(m->sender))
+                    shortBy -= std::min(shortBy, m->money);
+            if (!shortBy)
+                continue;
+            std::vector<std::pair<uint32, uint32>> donors;  // (spare, member)
+            for (PlanRow const& row : plan_)
+            {
+                Player* s = row.low == low ? nullptr : Online(row.low);
+                if (!s || !GET_PLAYERBOT_AI(s) || HumanCharacter(s) || !canWalk(s) ||
+                    !GuildRiding::MayFund(row.low, low))
+                    continue;
+                if (uint32 const spare = spareOf(row.low, s); spare > MAIL_POSTAGE)
+                    donors.emplace_back(spare, row.low);
+            }
+            std::sort(donors.rbegin(), donors.rend());
+            std::vector<Want> shares;
+            uint32 left = shortBy;
+            for (auto const& [spare, from] : donors)
+            {
+                if (!left)
+                    break;
+                Want w;
+                w.key = "m" + std::to_string(low) + ":" + std::to_string(from);
+                w.gold = true;
+                w.from = from;
+                w.to = low;
+                w.money = std::min(left, spare - MAIL_POSTAGE);
+                w.purpose = "riding";
+                w.why = "a share of its riding and mount " + Gold(shortBy) + " [mount4]";
+                if (choose(w, nullptr).cost >= NONE)
+                    continue;
+                left -= w.money;
+                shares.push_back(std::move(w));
+            }
+            std::string decision;
+            if (left)
+                decision = Acore::StringFormat("{} short of its riding and mount {}: the spare money of the members "
+                                               "that may give covers {} - no gold goes",
+                                               Who(low), Gold(shortBy), Gold(shortBy - left));
+            else
+            {
+                decision = Acore::StringFormat("{} gets its riding and mount {} ({:.1f} min/h saved) from {} members:",
+                                               Who(low), Gold(shortBy), GuildRiding::SavedMinutesPerHour(low),
+                                               shares.size());
+                for (Want& w : shares)
+                {
+                    decision += " " + Who(w.from) + " " + Gold(w.money) + ",";
+                    promised[w.from] += w.money;
+                    wants.push_back(std::move(w));
+                }
+                decision.pop_back();
+            }
+            std::string const logKey = "m" + std::to_string(low);
+            std::string const state = left ? std::string("short") : decision;  // a waiting member: once
+            if (goldLogged[logKey] != state)
+            {
+                goldLogged[logKey] = state;
+                LOG_INFO("playerbots", "[mount4] the global leader: {}", decision);
+            }
+        }
+    }
 
     // e. [recipes] user 2026-11-08 (Eraelor held Recipe: Brilliant Smallfish): every recipe item in a member's bags
     // goes to the member best placed to learn it - one with that profession (its own or planned, GuildProfPath's

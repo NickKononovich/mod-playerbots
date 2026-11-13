@@ -318,6 +318,9 @@ protected:
     // [taxi20]; [fly97] walkRefused: its walk there is refused (no route, a dead end) - the flight is its way, at any
     // length, when the walks to and off it are safe (FlightTripSafe)
     bool FlyIfFaster(WorldPosition const& dest, bool walkRefused = false);
+    // [mount5] mounts for an open-world walk to `dest` long enough to pay for the mount's cast (true: the cast began or
+    // still runs - the tick is spent)
+    bool MountForWalk(WorldPosition const& dest);
     bool UseGameObjectWithGroup(GameObject* go);
     void GossipTeleportToDalaran(Player* player, Creature* envoy);
     bool HasDalaranTeleportQuest(Player* player);

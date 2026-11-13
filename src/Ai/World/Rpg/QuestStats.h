@@ -14,8 +14,8 @@
 class Player;
 
 // [guild90] questing quality counters per bot, for C:/WoW/tools/guild_stats.py: XP by source, kills that served a
-// quest, yards walked, turn-ins; the progress of the quest it works on. Counters only (no decision reads them); one
-// cumulative [qstat] line per bot on a level-up, a logout and every QSTAT_LOG_MS of its rpg ticks.
+// quest, yards walked, turn-ins; the progress of the quest it works on. Counters (only the riding plan reads
+// FootTravel); one cumulative [qstat] line per bot on a level-up, a logout and every QSTAT_LOG_MS of its rpg ticks.
 namespace QuestStats
 {
     // the New RPG status tick (out of combat): yards walked since the last tick, the active quest's progress line
@@ -33,6 +33,9 @@ namespace QuestStats
     // included, until "" ends it. A bot never owned costs a map lookup
     void NoteOwner(Player* bot, std::string const& bucket);
     uint64 NowMs();
+    // [mount1] its walking on foot in the open world since login (QuestStats' samples), the walks it began there and
+    // its tracked time (the budget's sum): the riding plan's travel share. false: nothing tracked yet
+    bool FootTravel(uint32 low, uint64& footMs, uint64& trackedMs, uint32& footStarts);
     // [log28] the triage's event lines, one per event: a town errand's start / done ("[town] <bot> <errand> done
     // after N s"), a trip's boarding / landing ("[trip] <bot> boards <what>", "[trip] <bot> lands at map M after N s")
     void TownStart(Player* bot, char const* kind);

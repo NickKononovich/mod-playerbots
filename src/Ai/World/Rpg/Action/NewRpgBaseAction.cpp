@@ -10,6 +10,8 @@
 #include "BroadcastHelper.h"
 #include "GuildCoordinator.h"  // [guild50] the quest reward pick
 #include "GuildHonest.h"       // [honest] no teleport for a guild-plan bot
+#include "GuildRiding.h"       // [mount1] the travel speed, the mount for a walk
+#include "CheckMountStateAction.h"  // [mount5]
 #include "ChatHelper.h"
 #include "Creature.h"
 #include "CreatureData.h"
@@ -599,7 +601,53 @@ bool NewRpgBaseAction::MoveFarTo(WorldPosition dest)
         return false;
     }
 
+    if (MountForWalk(dest))  // [mount5]
+        return true;
+
     return WalkTo(dest);
+}
+
+// [mount5] user 2026-11-13: a bot mounts for an open-world walk whose saved seconds beat the mount's cast (the cast
+// against the speed gain over the straight distance, a lower bound of the walk); never in an instance, indoors, in
+// water, on a transport or in a fight. The fight and gather paths dismount it (CheckMountStateAction, LootAction).
+// One try per spot: a cast that did not mount it is tried again only from elsewhere
+bool NewRpgBaseAction::MountForWalk(WorldPosition const& dest)
+{
+    if (CheckMountStateAction::IsCastingMount(bot))
+        return true;  // a move now breaks the cast off
+    if (bot->IsMounted() || !bot->IsAlive() || bot->IsInCombat() || bot->GetVictim() || bot->GetTransport() ||
+        bot->IsInFlight() || bot->GetVehicle() || bot->GetMap()->Instanceable() || !bot->IsOutdoors() ||
+        bot->IsInWater() || bot->IsNonMeleeSpellCast(false) ||
+        (bot->HasAuraType(SPELL_AURA_TRANSFORM) && bot->IsInDisallowedMountForm()))
+    {
+        if (bot->IsMounted())
+            botAI->rpgInfo.mountTryX = botAI->rpgInfo.mountTryY = 0.0f;
+        return false;
+    }
+    GuildRiding::GroundMount const mount = GuildRiding::BestGroundMount(bot);
+    if (!mount.spellId)
+        return false;
+    float const dist = bot->GetExactDist(dest);
+    float const paysFrom = GuildRiding::MountPaysFromYd(bot, mount);
+    if (dist <= paysFrom)
+        return false;
+    NewRpgInfo& info = botAI->rpgInfo;
+    if (std::hypot(bot->GetPositionX() - info.mountTryX, bot->GetPositionY() - info.mountTryY) < paysFrom)
+        return false;
+    info.mountTryX = bot->GetPositionX();
+    info.mountTryY = bot->GetPositionY();
+    if (bot->isMoving())
+        bot->StopMoving();
+    if (bot->GetShapeshiftForm() != FORM_NONE)
+        botAI->RemoveShapeshift();
+    if (!botAI->CastSpell(mount.spellId, bot))
+        return false;
+    float const run = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    LOG_INFO("playerbots", "[mount5] {} L{} mounts for a {:.0f} yd walk to ({:.0f},{:.0f}): saves {:.0f} s for a "
+             "{:.1f} s cast (+{:.0f} % speed, pays from {:.0f} yd)",
+             bot->GetName(), bot->GetLevel(), dist, dest.GetPositionX(), dest.GetPositionY(),
+             dist / run - dist / (run * (1.0f + mount.bonus)), mount.castSec, mount.bonus * 100.0f, paysFrom);
+    return true;
 }
 
 void NewRpgBaseAction::GiveUpWalkTargets(WorldPosition const& dest, std::string const& why)
@@ -2187,7 +2235,7 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
         }
         flightYd += hop;
     }
-    float const run = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    float const run = GuildRiding::TravelSpeed(bot);  // [mount1] its walks ride where it has a mount
     float const taxi = std::max(sWorld->getFloatConfig(CONFIG_TAXI_FLIGHT_SPEED), 1.0f);
     // [taxi22] the walks by their routes (Leader::WalkYd: the navmesh walk), the flight master's and the one off
     // the landing; the walk it replaces by its route too (a real walk, not the straight line)
@@ -2198,6 +2246,26 @@ bool NewRpgBaseAction::FlyIfFaster(WorldPosition const& dest, bool walkRefused)
     float const walk = Leader::WalkYd(bot, bot->GetPosition(), dest) / run;
     if ((fly >= walk && !walkRefused) || bot->GetMoney() < fare)
         return false;
+    // [taxi1] user 2026-11-13: the fare is priced like the time it saves - the seconds saved at its quest pace
+    // (QuestCopperPerMinute) against the fare; no pace measured yet: the faster way. b467: 182 flights, 2.5 g of fares
+    // in 2.4 h, Laaral's 210 c Lakeshire -> Stormwind for 41 s
+    float const saved = walk - fly;
+    float const perMinute = sGuildCoordinator.QuestCopperPerMinute(bot);
+    float const worth = perMinute > 0.0f ? saved / 60.0f * perMinute : -1.0f;
+    if (!walkRefused && worth >= 0.0f && worth <= float(fare))
+    {
+        LOG_INFO("playerbots", "[taxi2] {} walks to ({:.0f},{:.0f}): the flight {} -> {} saves {:.0f} s, worth {:.0f}c "
+                 "at its quest pace {:.1f}c/min, against the fare {}",
+                 bot->GetName(), dest.GetPositionX(), dest.GetPositionY(), from->name[0], to->name[0], saved, worth,
+                 perMinute, GuildRiding::Money(fare));
+        return false;
+    }
+    LOG_INFO("playerbots", "[taxi1] {} flies {} -> {}: {:.0f} s, fare {}, saves {:.0f} s ({})", bot->GetName(),
+             from->name[0], to->name[0], fly, GuildRiding::Money(fare), saved,
+             walkRefused  ? std::string("no walk there")
+             : worth < 0.0f ? std::string("no quest pace measured yet")
+                         : Acore::StringFormat("worth {:.0f}c at {:.1f}c/min", worth, perMinute));
+    GuildRiding::NoteFlight(walkRefused ? 0.0f : saved, fare);
     LOG_INFO("playerbots", "[taxi20] {} L{} flies {} -> {} ({} nodes, {} c): {:.0f} s by air against {:.0f} s on "
              "foot to ({:.0f},{:.0f}) [taxi22: walks by their navmesh routes, the flight by its path points]",
              bot->GetName(), bot->GetLevel(), from->name[0], to->name[0], path.size(), fare, fly, walk,
@@ -8181,7 +8249,7 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
     in.x = bot->GetPositionX();
     in.y = bot->GetPositionY();
     in.z = bot->GetPositionZ();
-    in.speed = std::max(bot->GetSpeed(MOVE_RUN), 1.0f);
+    in.speed = GuildRiding::TravelSpeed(bot);  // [mount1] a rider's legs at its mount's speed
     // [route23] coordinator 2026-11-09: the walk's pace is the one its legs showed, not the run speed. b372: the done
     // hand-in stops took 1.64x their plan (9583 s for 5845 s), the pickups 1.78x, the objectives 1.52x - the bots
     // covered 4.3-5.3 yd a second of their walking states against the 7 the plan assumed (the stops between the

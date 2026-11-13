@@ -38,6 +38,7 @@
 #include "GuildGear.h"        // [guild50]
 #include "GuildHonest.h"
 #include "GuildLedger.h"  // [eco190]
+#include "GuildRiding.h"   // [mount1]
 #include "Item.h"
 #include "ItemUsageValue.h"
 #include "Log.h"
@@ -1222,6 +1223,10 @@ void GuildCoordinator::Update(uint32 diff)
         {
             SlowScope slow("coordinator founding");
             UpdateFounding();  // [guild80] the bots' own guild: plan + charter / signatures / invites / bank tab
+        }
+        {
+            SlowScope slow("coordinator riding");
+            GuildRiding::Update();  // [mount1] one member's riding plan, the mount items to use, the guild line
         }
         {
             PMON_SCOPE(transferScope, PERF_MON_VALUE, "guild transfers plan");
@@ -2812,6 +2817,7 @@ void GuildCoordinator::UpdateOrders()
                 orders.push_back(o);
                 break;
             }
+            GuildRiding::AddOrders(p, FoundingFreeMoney(p), orders);  // [mount1] riding, then its mount
             // [supply112] BUY: a supply cook's recipe it has not learned, at the nearest vendor of its map that sells
             // it, with its own money (the [recipes] use teaches it from the bags)
             if (auto const jobs = supplyCrafts_.find(row.low); jobs != supplyCrafts_.end())
@@ -8903,6 +8909,27 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
             }
             case GuildOrderType::BUY:  // [guild50]
             {
+                if (GuildRiding::IsTrainOrder(order))  // [mount1] Apprentice Riding at its trainer
+                {
+                    if (bot->HasSkill(SKILL_RIDING) || bot->GetMoney() < order.cost || bot->IsInCombat() ||
+                        order.pos.GetMapId() != bot->GetMapId() ||
+                        NewRpgProfession::BuyFailed(bot, order.npcEntry, order.spellId))
+                        continue;
+                    order.executable = false;
+                    if (NewRpgBaseAction::TripRefused(bot, order.pos.GetPositionX(), order.pos.GetPositionY(),
+                                                      order.pos.GetPositionZ(), "riding trainer"))
+                    {
+                        order.status = "the way to the trainer is dangerous — waits for a level";
+                        continue;
+                    }
+                    NewRpgProfession::StartTrain(botAI, bot, order.spellId, SKILL_RIDING, order.npcEntry, order.pos,
+                                                 order.cost);
+                    order.status = "walks to the riding trainer";
+                    step.kind = GuildRunStep::BUSY;
+                    step.reason = "train Apprentice Riding";
+                    started(order);
+                    return step;
+                }
                 if (bot->GetItemCount(order.itemId, true) || bot->GetMoney() < order.cost || bot->IsInCombat() ||
                     order.pos.GetMapId() != bot->GetMapId() ||
                     (order.extendedCost && !GuildGear::ExtendedCostMissing(bot, order.extendedCost).empty()) ||

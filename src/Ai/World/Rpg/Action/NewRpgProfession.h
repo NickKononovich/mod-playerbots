@@ -40,6 +40,10 @@ namespace NewRpgProfession
     // (the tool purchase path: Player::BuyItemFromVendorSlot).
     void StartBuy(PlayerbotAI* botAI, Player* bot, uint32 itemId, uint32 npcEntry, WorldPosition const& pos,
                   uint32 cost);
+    // [mount1] The global leader's riding order: walk to this trainer spawn and learn `spellId` (its skill line
+    // `skill`) with the bot's own money (Trainer::TeachSpell, the trainer window's path)
+    void StartTrain(PlayerbotAI* botAI, Player* bot, uint32 spellId, uint32 skill, uint32 npcEntry,
+                    WorldPosition const& pos, uint32 cost);
     // [vendor60] `itemId` is a quest item only vendors sell (no loot gives it): true with the nearest friendly vendor
     // spawn on the bot's map whose trip it does not refuse, or true with `why` set when none can be walked to; false
     // when it is no vendor-only item

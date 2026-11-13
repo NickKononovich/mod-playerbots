@@ -41,6 +41,7 @@
 #include "World.h"
 #include "GuildLedger.h"
 #include "GuildGear.h"  // [lag327] the vendors of an item (npc_vendor)
+#include "GuildRiding.h"  // [mount1]
 
 namespace
 {
@@ -752,6 +753,24 @@ namespace NewRpgProfession
         botAI->rpgInfo.ChangeToDoProfession(task);
     }
 
+    void StartTrain(PlayerbotAI* botAI, Player* bot, uint32 spellId, uint32 skill, uint32 npcEntry,
+                    WorldPosition const& pos, uint32 cost)
+    {
+        NewRpgInfo::DoProfession task;
+        task.kind = TASK_TRAIN;
+        task.npcEntry = npcEntry;
+        task.pos = pos;
+        task.spellId = spellId;
+        task.skill = skill;
+        task.cost = cost;
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(npcEntry);
+        QuestStats::TownStart(bot, "GUILD TRAIN");  // [log28]
+        LOG_INFO("playerbots", "[rpg] {} L{} GUILD TRAIN reason: {} rank {} at {} ({:.0f} yd), cost {}c, money {}c",
+                 bot->GetName(), bot->GetLevel(), SkillName(skill), spellId, tmpl ? tmpl->Name : "?",
+                 bot->GetExactDist(pos), cost, bot->GetMoney());
+        botAI->rpgInfo.ChangeToDoProfession(task);
+    }
+
     bool BuyFailed(Player* bot, uint32 npcEntry, uint32 itemId) { return FailedBefore(bot, npcEntry, itemId); }
 
     bool QuestVendor(Player* bot, uint32 itemId, uint32& npcEntry, WorldPosition& pos, std::string& why)
@@ -1187,8 +1206,15 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         QuestStats::TownDone(bot->GetGUID().GetCounter(), bot->GetName(), "training");  // [log28]
         if (!learned)
             MarkFailed(bot, data->npcEntry, id);
+        if (data->skill == SKILL_RIDING)  // [mount1] no recipes; the riding plan's line
+        {
+            if (learned)
+                LOG_INFO("playerbots", "[mount1] {} trains Apprentice Riding at {}: {}, saves {:.1f} min/h",
+                         bot->GetName(), npc->GetName(), GuildRiding::Money(moneyBefore - bot->GetMoney()),
+                         GuildRiding::SavedMinutesPerHour(bot->GetGUID().GetCounter()));
+        }
         // [guild70] with the rank: the recipes it can learn now
-        if (bot->HasSkill(data->skill))
+        else if (bot->HasSkill(data->skill))
             NewRpgCraft::LearnRecipes(bot, npc, data->skill, NewRpgCraft::Budget(botAI, bot));
     }
     else
@@ -1232,6 +1258,10 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
                  bot->GetLevel(), bought ? "bought" : "could not buy", proto ? proto->Name1 : "?",
                  SkillName(data->skill), npc->GetName(), moneyBefore - bot->GetMoney(), bot->GetMoney());
         QuestStats::TownDone(bot->GetGUID().GetCounter(), bot->GetName(), "buy");  // [log28]
+        if (bought && GuildRiding::IsMountItem(proto))  // [mount2] the riding plan uses it (GuildRiding::Update)
+            LOG_INFO("playerbots", "[mount2] {} buys {} at {}: {}, saves {:.1f} min/h", bot->GetName(), proto->Name1,
+                     npc->GetName(), GuildRiding::Money(moneyBefore - bot->GetMoney()),
+                     GuildRiding::SavedMinutesPerHour(bot->GetGUID().GetCounter()));
         // [prof13] a buy the bags refused is no fault of this vendor (the tool waits for a slot, ToolCandidate)
         // [prof14] ... a quest item's buy (no skill: BuyQuestVendorItem) has no such wait: refused for its bags it is
         // marked failed too, so its quest is postponed ("the buy ... failed before") instead of the same buy again

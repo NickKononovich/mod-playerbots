@@ -55,6 +55,10 @@ namespace
         uint64 standingBy[RPG_STATUS_END] = {};  // [pace25] the standing seconds by its New RPG state
         uint64 standingRegenMs = 0;              // [pace25] ... of them below full health or mana (a regeneration)
         uint64 walkFlagMs = 0;  // moving with the walk flag set
+        // [mount1] the moving samples on foot in the open world (no mount, flight, transport or instance) and the
+        // walks begun there: what a mount would speed up, and the mount casts it would take
+        uint64 footMs = 0;
+        uint32 footStarts = 0;
         uint32 sampleMs = 0;
         bool sampleMoving = false;
         uint32 mapId = 0;
@@ -421,6 +425,20 @@ void QuestStats::LogEvent(Player* bot, char const* event, uint32 questId, std::s
              extra);
 }
 
+bool QuestStats::FootTravel(uint32 low, uint64& footMs, uint64& trackedMs, uint32& footStarts)
+{
+    std::lock_guard<std::mutex> guard(lock);
+    auto const itr = counters.find(low);
+    if (itr == counters.end())
+        return false;
+    footMs = itr->second.footMs;
+    footStarts = itr->second.footStarts;
+    trackedMs = 0;
+    for (auto const& [bucket, ms] : itr->second.budget)
+        trackedMs += ms;
+    return trackedMs > 0;
+}
+
 void QuestStats::NoteCombat(Player* bot, uint32 combatMs, bool died)
 {
     if (!Tracked(bot))
@@ -490,6 +508,15 @@ void QuestStats::OnRpgTick(Player* bot, uint32 /*activeQuest*/, char const* buck
                                       status != RPG_OUTDOOR_PVP && !bot->IsInCombat() && !bot->IsInFlight();
             if (dt && dt < 30 * IN_MILLISECONDS && step < MAX_TICK_STEP)
             {
+                bool const onFoot = !bot->IsMounted() && !bot->IsInFlight() && !bot->GetTransport() &&
+                                    !bot->GetMap()->Instanceable() && bot->IsOutdoors();  // [mount1]
+                if (movingNow && onFoot)
+                {
+                    if (c.sampleMoving)
+                        c.footMs += dt;
+                    else
+                        ++c.footStarts;
+                }
                 if (c.sampleMoving && movingNow)
                 {
                     c.movingMs += dt;
