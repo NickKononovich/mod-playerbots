@@ -455,9 +455,12 @@ std::string TankOpenerReach(PlayerbotAI* botAI, Player* tank, Unit* mob)
 {
     if (!botAI || !tank || !mob)
         return "no tank or mob";
-    std::string out = Acore::StringFormat("{} at ({:.1f},{:.1f},{:.1f}) {:.1f} yd, {}", mob->GetName(),
+    // the mob's combat reach goes with its point: IsWithinCombatRange compares the distance against the spell's
+    // range plus BOTH combat reaches, so a reader can redo the range arithmetic instead of taking "inside range" on
+    // trust - which is the step that narrowed b480's nine refusals to seven sight refusals in the first place
+    std::string out = Acore::StringFormat("{} at ({:.1f},{:.1f},{:.1f}) reach {:.1f}, {:.1f} yd, {}", mob->GetName(),
                                           mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ(),
-                                          tank->GetExactDist(mob),
+                                          mob->GetCombatReach(), tank->GetExactDist(mob),
                                           tank->IsWithinLOSInMap(mob) ? "in sight" : "out of sight");
     for (char const* name : TankEngageOpeners(tank, false))
     {
