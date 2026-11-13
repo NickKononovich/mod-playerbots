@@ -429,10 +429,11 @@ public:
     void DoNextAction(bool minimal = false);
     // [stuck258] the combat engine out of combat with an idle, unreached target and no action that runs: let it go
     void ReleaseIdleTargetNobodyReaches(bool acted);
-    // [stuck258] the grind picker leaves that mob alone while it stays idle (picked again, the same stand followed)
-    ObjectGuid ReleasedIdleTarget() const { return releasedIdleTarget; }
-    // [lag370] an engage given up for a fact of the moment (its pull spot has no walk): the grind picker leaves it too
-    void ReleaseIdleTarget(ObjectGuid guid) { releasedIdleTarget = guid; }
+    // [stuck40] a target let go for a fact of this moment (no action of the combat engine ran on it, its pull spot
+    // has no walk, its only walk passes a refused reach): the pickers of both engines leave it while that fact
+    // holds. The memo lives in SoloSafety::NoteUnreachable / Unreachable, keyed per target and ended by a fact (the
+    // bot or the target moved) - never a clock. It was one ObjectGuid here, which held one target at a time
+    void ReleaseIdleTarget(Unit* target, char const* why);
     virtual bool DoSpecificAction(std::string const name, Event event = Event(), bool silent = false,
                                   std::string const qualifier = "");
     void ChangeStrategy(std::string const name, BotState type);
@@ -774,7 +775,6 @@ protected:
     uint8 paceSameLooks = 0;          // [pace25] standing looks in a row there
     static constexpr uint8 PACE_SAME_LOOKS = 2;  // the fast looks a standing bot gets before the idle tick
     uint32 lastAirborneLogMs = 0;
-    ObjectGuid releasedIdleTarget;  // [stuck258] the last idle target let go: no action of its reached it
     bool fallCheckRequested = false;  // dismounted or left a vehicle: fall if nothing is below
     bool fallPending = false;         // falling; HandleFall runs where the fall spline ends
     bool wasOnVehicle = false;

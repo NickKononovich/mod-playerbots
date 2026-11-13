@@ -2542,8 +2542,17 @@ void PlayerbotAI::ChangeEngineOnNonCombat()
 // L17 (co-op with Januel, Loch Modan) 3284 s, Rollothan / Namwe / Maronic the same: "judgement of light - FAILED |
 // consecration - USELESS | exorcism - IMPOSSIBLE | melee - USELESS | no actions executed", its follower waiting on it.
 // The idle mob is let go as DropTargetAction / [reach_idle_release] do: the non-combat engine plans the next step, the
-// grind picker leaves that mob while it stays idle (ReleasedIdleTarget). Not for a led member (its leader's command
+// grind picker leaves that mob while it stays idle (ReleaseIdleTarget). Not for a led member (its leader's command
 // holds) nor in an instance, and not while a cast of its at that mob may still land (its last cast's target)
+// [stuck40] a target let go for a fact of this moment, remembered as that fact: the pair of stands it was let go at.
+// Both pickers read the same memo (GrindTargetValue, NewRpgWanderRandomAction::NextPlaceMob -> SoloSafety::
+// Unreachable), so the engine that did not drop it does not hand it straight back. No [nav200] line of its own: the
+// caller logs its own reason, and the triage's PIT alarm reads [nav200] as evidence of a navmesh pit
+void PlayerbotAI::ReleaseIdleTarget(Unit* target, char const* why)
+{
+    SoloSafety::NoteUnreachable(bot, target, why, false);
+}
+
 void PlayerbotAI::ReleaseIdleTargetNobodyReaches(bool acted)
 {
     if (acted || currentEngine != engines[BOT_STATE_COMBAT] || !bot->IsAlive() || bot->IsInCombat() ||
@@ -2555,13 +2564,20 @@ void PlayerbotAI::ReleaseIdleTargetNobodyReaches(bool acted)
         return;
     if (aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().target == target->GetGUID())
         return;
-    if (releasedIdleTarget != target->GetGUID())
-    {
-        releasedIdleTarget = target->GetGUID();
+    // [stuck40] the memo is a fact of two stands, kept per target (SoloSafety), not one guid slot on the AI: with
+    // two or three such mobs round it the slot's own candidates evicted each other and the two engines took turns
+    // between them - b477 Eraelor L24 wrote 1081 of the log's 1523 [stuck258] lines, alternating between two Venture
+    // Co. Engineers 45 and 47 yd off, and every turn paid the grind picker's pull-spot route search (b478: "[stuck258]
+    // ... Engineer L21 (45 yd)" -> "[perf26] slow route search Eraelor: 89 ms" -> "[deaths14] ... engages Engineer
+    // L20" -> "[stuck258] ... Engineer L20 (46 yd)", over and over). No clock ends it: the bot moving off this spot
+    // or the mob moving off its own does (SoloSafety::Unreachable)
+    bool const fresh = !SoloSafety::Unreachable(bot, target);
+    ReleaseIdleTarget(target, "no action of its combat engine ran on it");
+    if (fresh)
         LOG_INFO("playerbots", "[stuck258] {} L{}: the combat engine out of combat with idle {} L{} ({:.0f} yd) as its "
-                 "target and no action that runs: target dropped, back to the non-combat engine",
+                 "target and no action that runs: target dropped, back to the non-combat engine - picked again only "
+                 "once the bot or the mob leaves the stand that made it undroppable",
                  bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), bot->GetExactDist(target));
-    }
     bot->AttackStop();
     bot->SetTarget(ObjectGuid::Empty);
     bot->SetSelection(ObjectGuid::Empty);

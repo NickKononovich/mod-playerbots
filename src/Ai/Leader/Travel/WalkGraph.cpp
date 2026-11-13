@@ -42,8 +42,19 @@ namespace Leader::Travel::WalkGraph
     {
         constexpr std::array<uint32, 4> GRAPH_MAPS = {0, 1, 530, 571};  // the continents (long walks)
         constexpr uint16 NO_REGION = 0xFFFF;
-        // the route search's filter (LongRoute) for a walker that does not take steep ground
-        constexpr uint16 WALK_INCLUDE = uint16(NAV_GROUND | NAV_WATER);
+        // [nav230] the route search's filter (LongRoute), BOTH of its passes: Leader::Route tries the walk without
+        // steep ground first and then with it ("for (bool const steep : {false, true})", RouteSearch.cpp), and the
+        // core's own headless filter includes NAV_GROUND_STEEP at area cost 20 (PathGenerator::CreateFilter: "in
+        // places they are the only link"). Built without it, the graph was narrower than the walk it plans for, and
+        // every goal whose grid region reaches its neighbours only over steep ground got "no plan": b478 Dandolar
+        // L26's GO_CAMP to (37,-358,49) on map 1 - that goal's own grid region is 34 polygons with no crossing at
+        // all without steep ground (goals == nullptr, the 0 us early return) and 8099 polygons with 114 crossings
+        // into 3 grids with it (offline replica over C:/WoW/data/mmaps). The ground was never cut - navmesh_probe
+        // says CONNECTED from the walk's start (5145,121,43) and from the spot the bot gave up at (1860,-265,127) -
+        // so the caller fell back to re-searching the whole 4581 yd walk every tick, 110 slow searches of it.
+        // A steep node costs nothing wrong: the plan is only a staging hint, and each stage's leg is searched for
+        // real and the node banned when that leg is refused ([nav182])
+        constexpr uint16 WALK_INCLUDE = uint16(NAV_GROUND | NAV_WATER | NAV_GROUND_STEEP);
         constexpr uint16 WALK_EXCLUDE = uint16(NAV_MAGMA | NAV_SLIME);
         constexpr uint32 NO_NODE = std::numeric_limits<uint32>::max();
 
@@ -778,23 +789,36 @@ namespace Leader::Travel::WalkGraph
     {
         Plan plan;
         auto const started = std::chrono::steady_clock::now();
+        // [nav230] every return says what it answered and how long it took: the four lookups before the A* all
+        // returned "no plan" with us = 0 and no reason, so the caller's [nav181] line could not say which failed
+        auto const done = [&](char const* why) -> Plan&
+        {
+            plan.why = why;
+            plan.us = uint64(std::chrono::duration_cast<std::chrono::microseconds>(
+                                 std::chrono::steady_clock::now() - started)
+                                 .count());
+            return plan;
+        };
         int const slot = map && !map->Instanceable() ? SlotOf(map->GetId()) : -1;
         MapGraph const* graph = slot >= 0 ? published[size_t(slot)].load() : nullptr;
         dtNavMesh const* mesh = map ? map->GetMapCollisionData().GetMMapData().GetNavMesh() : nullptr;
         if (!graph || !mesh)
-            return plan;
+            return done("this map has no graph");
         plan.ready = true;
         uint32 fromCluster = 0;
         uint32 toCluster = 0;
         uint16 fromRegion = NO_REGION;
         uint16 toRegion = NO_REGION;
-        if (!Locate(*graph, mesh, from, fromCluster, fromRegion) || fromRegion == NO_REGION ||
-            !Locate(*graph, mesh, to, toCluster, toRegion))
-            return plan;
+        if (!Locate(*graph, mesh, from, fromCluster, fromRegion))
+            return done("the graph has no grid where the walker stands");
+        if (fromRegion == NO_REGION)
+            return done("no graph polygon under the walker (its grid is not in the live navmesh)");
+        if (!Locate(*graph, mesh, to, toCluster, toRegion))
+            return done("the graph has no grid at the goal");
         if (fromCluster == toCluster && (fromRegion == toRegion || toRegion == NO_REGION))
         {
             plan.sameRegion = true;
-            return plan;
+            return done("one grid's own polygons hold both ends");
         }
         auto const starts = graph->regionNodes.find(RegionKey(fromCluster, fromRegion));
         std::vector<uint32> const* goals = nullptr;
@@ -808,8 +832,12 @@ namespace Leader::Travel::WalkGraph
             auto const found = graph->clusterNodes.find(toCluster);
             goals = found != graph->clusterNodes.end() ? &found->second : nullptr;
         }
-        if (starts == graph->regionNodes.end() || !goals)
-            return plan;
+        if (starts == graph->regionNodes.end())
+            return done("the walker's own grid region crosses into no neighbour grid (no node in it)");
+        if (!goals)
+            return done(toRegion != NO_REGION
+                            ? "the goal's grid region crosses into no neighbour grid (no node in it)"
+                            : "the goal's grid holds no node at all");
 
         // A* over the nodes (straight lines: every edge is at least its straight line)
         size_t const count = graph->nodes.size();
@@ -913,9 +941,7 @@ namespace Leader::Travel::WalkGraph
             plan.yd = best;
             plan.found = true;
         }
-        plan.us = uint64(
-            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - started).count());
-        return plan;
+        return done(plan.found ? "found" : "the graph's nodes hold no walk from the one region to the other");
     }
 
     void NoteSearch(SearchKind kind, uint64 us, ObjectGuid walker)

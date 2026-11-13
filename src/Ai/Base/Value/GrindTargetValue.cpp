@@ -328,20 +328,22 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     // zone (its quest spots there are postponed) and the next candidate is judged
     std::sort(candidates.begin(), candidates.end(),
               [](auto const& a, auto const& b) { return a.first < b.first; });
-    size_t noWalkCandidates = 0;  // [nav200] candidates left where they stand: no walk reaches them from here
+    // [nav200] candidates left where they stand: no walk reaches them from here, or no action of the bot's combat
+    // engine ran on them from here ([stuck40]) - either way the fact is this pair of stands
+    size_t noWalkCandidates = 0;
     for (auto const& [unitDistance, unit] : candidates)
     {
         // [coop] a danger mark is the bot's solo judgement; the party judges the pack itself
         if (!coop && NewRpgBaseAction::InDangerZone(bot, unit->GetPositionX(), unit->GetPositionY()))
             continue;
-        // [stuck258] an idle mob its combat engine had as target with no action that reached it (let go): picked
-        // again it stood the same way (b428 Aestymro's party: "party engages" it, the walk walled by [party75])
-        if (unit->GetGUID() == botAI->ReleasedIdleTarget() && !unit->IsInCombat())
-            continue;
         // [nav200] a candidate the route already found no walk to from where the bot stands: the next one instead
-        // of the same impossible search. ReleasedIdleTarget holds one guid only - with two such mobs round it the
-        // picker took turns between them for 99 min (b475 Brelir). The memo ends on a fact (SoloSafety::Unreachable:
-        // the bot or the mob moved), never on a clock
+        // of the same impossible search. The memo ends on a fact (SoloSafety::Unreachable: the bot or the mob
+        // moved), never on a clock
+        // [stuck40] ... and a candidate its combat engine held with no action that ran on it (let go: picked again
+        // it stood the same way - b428 Aestymro's party, "party engages" it, the walk walled by [party75]). That
+        // one used to be a single ObjectGuid on the AI, so two such mobs round the bot evicted each other and the
+        // two engines took turns between them: b477 Eraelor L24 wrote 1081 [stuck258] lines in the hour, each turn
+        // paying the pull-spot route search below. One memo per target now, ended by the same fact
         if (SoloSafety::Unreachable(bot, unit))
         {
             ++noWalkCandidates;
@@ -397,7 +399,7 @@ Unit* GrindTargetValue::FindTargetForGrinding(uint32 assistCount)
     if (noWalkCandidates)
     {
         std::string const note =
-            Acore::StringFormat("{} of {} candidates have no walk from ({:.0f},{:.0f},{:.0f}) map {}",
+            Acore::StringFormat("{} of {} candidates have no walk and no action from ({:.0f},{:.0f},{:.0f}) map {}",
                                 noWalkCandidates, candidates.size(), bot->GetPositionX(), bot->GetPositionY(),
                                 bot->GetPositionZ(), bot->GetMapId());
         if (botAI->rpgInfo.unreachNote != note)

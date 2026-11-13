@@ -41,6 +41,10 @@ namespace Leader::Travel::WalkGraph
         std::vector<float> walked;           // the graph yd from `from` to each node
         float yd = 0.0f;                     // the plan's whole length, the last node's straight line to `to` added
         uint64 us = 0;
+        // [nav230] what this answer was, for the caller's log: every return of PlanWalk names itself, and every one
+        // of them fills `us`. A "no plan" used to come back with us = 0 (the timer was taken on the A* path alone),
+        // which read as an instant search and said nothing about which of the four lookups before the A* failed
+        char const* why = "";
     };
     // the graph walk from `from` to `to` on `map` (a continent), the nodes in `banned` left out
     Plan PlanWalk(Map* map, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<uint32> const& banned);

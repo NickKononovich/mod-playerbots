@@ -136,7 +136,11 @@ namespace SoloSafety
     // (Leader::Travel::UNREACHABLE_RECHECK_DISTANCE / _HEIGHT, the dungeon side's own rule) or the target itself
     // moved (Leader::LEADER_COMMIT_MOVED_YD, the same rule's "the object moved"). It is no navmesh workaround: the
     // failed search still writes its [nav163] line, so the triage's PIT alarm still names the place.
-    void NoteUnreachable(Player* bot, Unit* target, std::string const& why);
+    // [stuck40] the same memo holds a target no action of the bot's combat engine could run on from here: the fact
+    // that made it undroppable is the same pair of stands, so the rule that ends it is the same one. `log` false
+    // leaves the [nav200] line out - the caller writes its own ([stuck258]), and the triage's PIT alarm counts
+    // [nav200] lines as evidence of a navmesh pit, which a combat-engine release is not.
+    void NoteUnreachable(Player* bot, Unit* target, std::string const& why, bool log = true);
     // true while that memo holds for `target`; prunes the memos of spots the bot has since walked away from
     bool Unreachable(Player* bot, Unit* target);
     // [pullplan] the pull itself, in the bot's combat walk to `target` (MovementAction::ReachCombatTo): at its pull

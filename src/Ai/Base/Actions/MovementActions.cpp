@@ -2735,8 +2735,9 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
         if (path.leaderRoute && (type & PATHFIND_NOPATH) && target->IsCreature() && SoloSafety::Applies(bot) &&
             !Leader::LedBot(bot) && !NewRpgCoop::IsMember(bot) && bot->GetMap() && !bot->GetMap()->Instanceable())
         {
+            // [stuck40] that memo is what the pickers of both engines read (SoloSafety::Unreachable): no second
+            // single-guid slot on the AI, which held one such target at a time
             SoloSafety::NoteUnreachable(bot, target, "no walk reaches it");
-            botAI->ReleaseIdleTarget(target->GetGUID());
             RefuseChase(target, "no walk reaches it from where the bot stands");
             return false;
         }
@@ -2754,7 +2755,7 @@ bool MovementAction::ReachCombatTo(Unit* target, float distance)
                      "refused ({})",
                      bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), bot->GetExactDist(target),
                      SoloSafety::RouteWalls(bot));
-            botAI->ReleaseIdleTarget(target->GetGUID());
+            botAI->ReleaseIdleTarget(target, "its only walk from here passes a reach it refused");  // [stuck40]
             RefuseChase(target, "its only walk passes a reach it refused");
             return false;
         }

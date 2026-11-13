@@ -3293,14 +3293,16 @@ namespace SoloSafety
                  bot->GetName(), bot->GetLevel(), spot.x, spot.y, target->GetName(), target->GetLevel(),
                  route.found ? "its only walk passes a refused reach" : "no walk reaches it");
         if (PlayerbotAI* ai = GET_PLAYERBOT_AI(bot))
-        {
             ai->GetAiObjectContext()->GetValue<Unit*>("current target")->Set(nullptr);
-            ai->ReleaseIdleTarget(target->GetGUID());  // the grind picker leaves it while it stays idle
-        }
+        // [stuck40] the grind picker leaves it while the two stands that made it undroppable are unchanged. This was
+        // one ObjectGuid on the AI, so a second such mob evicted the first and the picker took turns between them
+        NoteUnreachable(bot, target, route.found ? "its only walk to its pull spot passes a refused reach"
+                                                 : "no walk reaches its pull spot",
+                        false);
         bot->SetTarget(ObjectGuid::Empty);
     }
 
-    void NoteUnreachable(Player* bot, Unit* target, std::string const& why)
+    void NoteUnreachable(Player* bot, Unit* target, std::string const& why, bool log)
     {
         if (!bot || !target)
             return;
@@ -3311,7 +3313,7 @@ namespace SoloSafety
             fresh = mine.find(target->GetGUID()) == mine.end();
             mine[target->GetGUID()] = {bot->GetPosition(), target->GetPosition()};
         }
-        if (!fresh)  // one line per bot and target while the memo holds (the [regress10] hearthNote cadence)
+        if (!fresh || !log)  // one line per bot and target while the memo holds (the [regress10] hearthNote cadence)
             return;
         LOG_INFO("playerbots",
                  "[nav200] {} L{} leaves {} L{} ({:.0f} yd) at ({:.1f},{:.1f},{:.1f}) map {}: {} from where it "
