@@ -576,16 +576,21 @@ namespace FiveGate
     // five is anywhere near the instance. Every term the model asks for - the formations, the engage call, what the
     // spot and the walk in wake, the scripted calls for help, the assistance chain with its hops, the fight a mob
     // that keeps its range draws, the flee-for-assistance race - is answered from the `creature` table and the
-    // templates, so the gate and the leader count the same pull. Two terms need a live world and get the closest
-    // spawn reading instead, named on the gate's own why line:
+    // templates, so the gate and the leader count the same pull. Three terms need a live world. The first gets the
+    // closest spawn reading; the other two are read as nothing, because no spawn reading of them is honest. All
+    // three are named on the gate's own why line:
     //  - Sight: there is no instance to ray-cast against. The static vmap tiles load with an instance's grids, and
     //    loading them from the world thread would race every map thread reading the same shared tree, so sight is
     //    read as the core's own aggro height gate (Creature::CanStartAttack: CREATURE_Z_ATTACK_RANGE over the two
     //    object sizes). The floors of a room are separated; a wall inside one floor is not, so a link the geometry
     //    blocks is still counted - the gate stays on the safe side of the planner there.
     //  - The walk round a corner (the planner's navmesh legs, [b34_est]) and the Scarlet Monastery chapel's scripted
-    //    call: no navmesh query and no live script run here, so neither adds to a gate count. The straight walk in
-    //    is counted (OnPullPath).
+    //    call: no navmesh query and no live script run here, so neither adds to a gate count.
+    //  - [pack20] The tank's walk in to the pull (the planner's IsOnPullPath): no term, see OnPullPath below. This
+    //    is the one known limitation of the three - a pull whose approach genuinely wakes another pack is not
+    //    counted here. It is the coverage the gate had before the one pack model too (its pull count never had a
+    //    walk term), so nothing regressed with it, and the planner carries that case from its own side: [pull84]
+    //    plans a crossing pack the walk cannot avoid as merged now rather than meeting it mid-pull.
     class SpawnPackWorld
     {
     public:
@@ -596,9 +601,8 @@ namespace FiveGate
         static constexpr float AGGRO_MIN_RANGE = 5.0f;      // a mob's aggro radius is never below combat range
 
         SpawnPackWorld(MapSpawns const& map, std::vector<char> const& left, std::vector<char> const& apart,
-                       G3D::Vector3 const& from, bool const& walked, uint8 lowestLevel, float memberSize,
-                       float groupDps)
-            : _map(map), _left(left), _apart(apart), _from(from), _walked(walked), _lowestLevel(lowestLevel),
+                       uint8 lowestLevel, float memberSize, float groupDps)
+            : _map(map), _left(left), _apart(apart), _lowestLevel(lowestLevel),
               _memberSize(memberSize), _groupDps(std::max(groupDps, 1.0f)),
               _aggroRate(sWorld->getRate(RATE_CREATURE_AGGRO)),
               _assistRadius(sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS)),
@@ -678,31 +682,19 @@ namespace FiveGate
 
         void Formation(Mob mob, std::vector<Mob>& out) const { out = _map.formation[mob]; }
 
-        // the leader walks in from the pull before this one: a mob whose aggro reach comes within that straight walk
-        // is pulled on the way and comes back with the pack (the planner's IsOnPullPath)
-        bool OnPullPath(Position const& to, Mob mob) const
-        {
-            if (!_walked)
-                return false;  // the run's first pull: the gate knows no walk in to it
-
-            Spawn const& s = _map.spawns[mob];
-            float const reach = AggroReach(mob);
-            if (reach <= 0.0f)
-                return false;
-
-            float const dx = to.GetPositionX() - _from.x;
-            float const dy = to.GetPositionY() - _from.y;
-            float const lengthSq = dx * dx + dy * dy;
-            float t = 0.0f;
-            if (lengthSq > 0.0f)
-                t = std::clamp(((s.pos.x - _from.x) * dx + (s.pos.y - _from.y) * dy) / lengthSq, 0.0f, 1.0f);
-
-            float const px = _from.x + dx * t;
-            float const py = _from.y + dy * t;
-            float const pz = _from.z + (to.GetPositionZ() - _from.z) * t;
-            return At(mob).GetExactDist(px, py, pz) <= reach + s.wander &&
-                   HeightGate(s, s.pos.z, pz, _memberSize);
-        }
+        // [pack20] The tank's walk in is a live walk, and the gate has neither of the two things that make the
+        // planner's reading of it honest, so it reads nothing here. The planner tests the short approach from where
+        // the tank stands now and ends on the mob's line of sight to it ("a pack behind the wall beside the straight
+        // line is no pull path - the real walk is judged by WalkEntersAggro"). A gate pull has no tank standing
+        // anywhere: the nearest thing is the pull before it, and the straight line from that spawn to this one
+        // sweeps a whole hall, with the height gate cutting nothing inside one tall room. b477 dm-n line 14733: the
+        // Goblin Engineer 79196 pull came out "1 start + 3 social + 5 pull path" where the planner's own count at
+        // that spawn is "1 start + 4 social + 1 pull path + 2 assist + 1 draws fight" (near 9) and "... 2 pull path
+        // + 3 assist + 1 draws fight" (near 11) - the sweep stood in for the links sight would have found, Gilnid
+        // fell out of the pack, and with him went [dm5]'s boss stand-down and [dm4]'s peel: a 9-spawn trash wall at
+        // drop 32.63 held the five. The term also made a pull depend on which pull came before it, which [perf211]'s
+        // cache does not invalidate, so a pull counted in one round was reused in a later one with a stale walk.
+        bool OnPullPath(Position const& /*to*/, Mob /*mob*/) const { return false; }
 
         // An idle mob whose aggro range reaches the spot the five fights at, a wanderer whose disc brings it there,
         // or a patrol whose beat walks into it. A patrol the leader takes apart (it has a point on its beat out of
@@ -862,13 +854,21 @@ namespace FiveGate
                                                  "patrol forecast"};
             static_assert(std::size(groups) == size_t(PullPlanning::PackWhyKind::PatrolAdded) + 1);
             std::string line;
+            uint32 spawns = 0;
             for (size_t i = 0; i < std::size(groups); ++i)
             {
-                if (_counts[i])
-                    line += Acore::StringFormat("{}{} {}", line.empty() ? "" : " + ", _counts[i], groups[i]);
+                if (!_counts[i])
+                    continue;
+
+                spawns += _counts[i];
+                line += Acore::StringFormat("{}{} {}", line.empty() ? "" : " + ", _counts[i], groups[i]);
             }
 
-            return line;
+            // [pack20] what the count is a count OF: this model counts the pack's spawns, while the judged "xN"
+            // counts those plus the summons the scripts bring over the fight ([dm3]). b477 read "1 start + 3 social
+            // + 5 pull path" beside "Goblin Engineer x24" and the two looked like a contradiction; they were 9
+            // spawns and 15 summons, and nothing said so.
+            return Acore::StringFormat("{} spawns = {}", spawns, line);
         }
 
     private:
@@ -912,8 +912,6 @@ namespace FiveGate
         MapSpawns const& _map;
         std::vector<char> const& _left;
         std::vector<char> const& _apart;
-        G3D::Vector3 const& _from;
-        bool const& _walked;
         std::vector<char> const* _held = nullptr;
         uint8 _lowestLevel;
         float _memberSize;
@@ -1330,7 +1328,7 @@ namespace FiveGate
         uint8 lowestLevel = 255;
         for (Damage const& d : dps)
             lowestLevel = std::min(lowestLevel, d.level);
-        SpawnPackWorld world(map, left, apartNow, lastPull, walked, lowestLevel, tank->GetObjectSize(), groupDps);
+        SpawnPackWorld world(map, left, apartNow, lowestLevel, tank->GetObjectSize(), groupDps);
         // [split263] `withDraws` false: the planner's pull round a corner (LosPull) - the casters walk out to the
         // tank, nobody stands where they cast, so nothing joins by their stand; `held`: spawns crowd control holds
         // before the pull - never in it, and no call, stand or formation of theirs comes either, as the planner's
@@ -1846,13 +1844,15 @@ namespace FiveGate
                                                    : "; [dm3] summons in the x" + std::to_string(worst.mobs) + ": " +
                                                          worst.summons,
                              // [pack1] the pack as the one pack model counted it, in the planner's own words
-                             // ("[pack why]"): the pull as it came, before the leader's options below. Sight is read
-                             // as the core's aggro height gate and a corner pull brings no walk calls - no instance
-                             // and no navmesh here (SpawnPackWorld)
+                             // ("[pack why]"): the pull as it came, before the leader's options below. [pack20] its
+                             // spawns, which with the [dm3] summons above make the judged "xN"; the three terms a
+                             // gate count has no live world for are named so the line can be read against the
+                             // planner's (SpawnPackWorld)
                              worstPack.empty()
                                  ? std::string()
                                  : "; [pack1] pack why: " + worstPack +
-                                       " [sight by the aggro height gate, no walk calls round a corner]")
+                                       " [+ the [dm3] summons above = the xN judged; sight by the aggro height gate,"
+                                       " no walk calls round a corner, no walk-in term]")
                        : std::string("-");
         out.clears = failed == 0 && judged > 0;
         out.worstLoad = worst.load;  // [assist22]
