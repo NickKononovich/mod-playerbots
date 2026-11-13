@@ -276,8 +276,10 @@ public:
     {
         if (!player || !spell || !spell->m_CastItem)
             return;
+        // [craft454] a bandage counts the same way a potion does (NotePotionUse drops anything that is neither):
+        // First Aid's value is what the members USE, never what a crafter sells ([econ2] b353)
         ItemTemplate const* proto = spell->m_CastItem->GetTemplate();
-        if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || proto->SubClass != ITEM_SUBCLASS_POTION)
+        if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE)
             return;
         sGuildCoordinator.NotePotionUse(player, proto->ItemId);
     }

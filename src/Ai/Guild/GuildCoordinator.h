@@ -1234,12 +1234,26 @@ private:
     // SupplyCraft worth the vendor's price of the same points (the cheapest vendor potion of the kind per point) less
     // its reagents (vendor price; herbs at the best herbalist's time per unit at its quest pace) and the cast at the
     // alchemist's pace. The jobs feed the wanted list (herbs), Alchemy's value, the craft loop and the transfer.
+    // [craft454] coordinator 2026-11-13 (approved: the cheap way, the existing judge applied to a case that fits
+    // it): a BANDAGE is a third kind in this very book. It restores health out of combat like a potion does, the
+    // vendors sell bandages for gold so [econ60]'s copper per restored point prices it the same way [supply111]
+    // prices food and drink, and the quantity is what the members actually consumed - [eco194]'s own Owed, one
+    // judge. Its line is First Aid, not Alchemy, so the kind carries its own skill line. b353 was read before this
+    // landed: [econ2] took bandage SALES out of the value then (108 of 189 craft points went to Linen Bandages the
+    // crafter kept and sold), and valuing what the members USE is the opposite error from valuing what they sell -
+    // no bandage is worth anything here unless a member bandaged itself with one
     enum PotionKind : uint8
     {
         POTION_HEAL = 0,
         POTION_MANA = 1,
-        POTION_KINDS = 2
+        POTION_BANDAGE = 2,
+        POTION_KINDS = 3
     };
+    static constexpr uint32 KIND_LINES[POTION_KINDS] = {171, 171, 129};  // SKILL_ALCHEMY ×2, SKILL_FIRST_AID
+    static char const* KindName(uint8 kind)
+    {
+        return kind == POTION_HEAL ? "healing" : kind == POTION_MANA ? "mana" : "bandage";
+    }
     struct PotionBook
     {
         uint32 used[POTION_KINDS]{};      // drunk this session
@@ -1263,7 +1277,7 @@ private:
     // from npc_vendor and the item's spell once
     struct VendorPotionPrices
     {
-        float per[POTION_KINDS]{-1.0f, -1.0f};
+        float per[POTION_KINDS]{-1.0f, -1.0f, -1.0f};
         std::string name[POTION_KINDS];
         std::unordered_set<uint32> sold;
     };
@@ -1275,8 +1289,9 @@ private:
     uint32 SupplyOwed(Player* cook, SupplyCraft const& job) const;       // crafts still owed
     // lock_ held: the cook's supply jobs for its Cooking value (copper, minutes, text)
     void SupplyWork(uint32 low, Player* p, double& value, double& minutes, std::string& text) const;
-    // [eco194] lock_ held: the alchemist's potion jobs for its Alchemy value (copper, minutes, text)
-    void PotionWork(uint32 low, Player* p, double& value, double& minutes, std::string& text) const;
+    // [eco194] lock_ held: the maker's jobs of ONE line for that line's value (copper, minutes, text) - [craft454]
+    // Alchemy's potions and First Aid's bandages are judged apart, each on its own line's walk
+    void PotionWork(uint32 low, Player* p, double& value, double& minutes, std::string& text, uint32 line) const;
     // [questrate] the member's questing value by formula (no measurements): per quest the core's quest XP at its
     // copper per XP + the money + the reward items' price over the time it takes now (the walk to the objective area
     // and the ender, or to the giver for a quest it may take; the kills by the source's health at its EstimateDps,
@@ -1350,6 +1365,18 @@ private:
     std::unordered_set<uint32> vendorItems_;
     std::unordered_map<uint32, std::set<uint32>> vendorMaps_;  // [lag329] item -> the maps of its unlimited vendors
     std::unordered_map<uint32, std::vector<ReagentVendor>> reagentVendors_;  // [lag335] item -> its vendors' spawns
+    // [craft453] a craft spell taught by a recipe item: that item, its vendor price, and whether a vendor sells it
+    // at all. A blocker ([craft451]) whose recipe comes off such an item needs the item too - bought where a vendor
+    // has it, looted where none does, and never a silent stall at the rank
+    struct RecipeItem
+    {
+        uint32 itemId{0};
+        uint32 price{0};
+        bool sold{false};
+    };
+    std::unordered_map<uint32, RecipeItem> recipeItemOf_;  // craft spell -> its recipe item
+    // recipe item -> its three best drop sources (creature name, chance in percent), for the ones no vendor sells
+    std::unordered_map<uint32, std::vector<std::pair<std::string, float>>> recipeDrops_;
     // [guild70] crafted intermediates: product -> (reagent, count per product), read-only after Load
     std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> craftedFrom_;
     std::unordered_set<uint32> skinned_;  // skinning loot (leather is gathered, not only crafted)

@@ -1877,7 +1877,7 @@ void GuildCoordinator::UpdateTransfers()
                 w.purpose = "consumable";
                 w.why = Acore::StringFormat("[eco194] the alchemist replaces the {} potions {} drank ({} of {} not "
                                             "replaced yet)",
-                                            kind == POTION_HEAL ? "healing" : "mana", Who(m), give, book.Owed(kind));
+                                            KindName(kind), Who(m), give, book.Owed(kind));  // [craft454]
                 wants.push_back(w);
             }
         }

@@ -796,6 +796,49 @@ void GuildCoordinator::LoadRecipes()
                                              f[4].Get<float>(), f[5].Get<float>(), f[6].Get<uint32>()});
         } while (result->NextRow());
     }
+    // [craft453] coordinator 2026-11-13: a [craft451] blocker whose recipe comes off a recipe ITEM rather than a
+    // trainer needs that item too, so a climb to its rank would otherwise reach the rank and stall - and a stall
+    // that looks like progress is worse than no progress. Every recipe item, the craft spell it teaches, its vendor
+    // price and whether a vendor sells it at all (reagentVendors_ above already holds the spawns of every unlimited
+    // npc_vendor item, recipe items included, so the buy needs no new index). DB 2026-11-13: item 2553 Recipe:
+    // Elixir of Minor Agility (Alchemy 50 - the Elixir that blocks the 53g Leatherworking gap) has ZERO npc_vendor
+    // rows and drops at 0.5 % from Councilman Hartin, 0.16 % from Councilman Hendricks and 0.02-0.04 % from 16 more
+    // creatures and 6 objects. The buy branch cannot serve that case at all, which is why the loot branch exists
+    recipeItemOf_.clear();
+    recipeDrops_.clear();
+    for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
+    {
+        if (proto.Class != ITEM_CLASS_RECIPE)
+            continue;
+        for (auto const& spell : proto.Spells)
+        {
+            SpellInfo const* learn = spell.SpellId > 0 ? sSpellMgr->GetSpellInfo(spell.SpellId) : nullptr;
+            for (uint8 e = 0; learn && e < MAX_SPELL_EFFECTS; ++e)
+                if (learn->Effects[e].Effect == SPELL_EFFECT_LEARN_SPELL && learn->Effects[e].TriggerSpell)
+                {
+                    RecipeItem& r = recipeItemOf_[learn->Effects[e].TriggerSpell];
+                    bool const sold = vendorItems_.count(id) != 0;
+                    if (!r.itemId || (sold && !r.sold))  // a copy a vendor sells beats one it does not
+                        r = {uint32(id), uint32(std::max<int32>(0, int32(proto.BuyPrice))), sold};
+                }
+        }
+    }
+    // the drops of the recipe items no vendor sells: the best sources by chance, so the loot need can be named
+    if (QueryResult result = WorldDatabase.Query(
+            "SELECT l.Item, t.name, MAX(l.Chance) c FROM creature_loot_template l JOIN creature_template t ON "
+            "t.lootid = l.Entry JOIN item_template i ON i.entry = l.Item WHERE i.class = 9 AND l.Chance > 0 "
+            "GROUP BY l.Item, t.name ORDER BY l.Item, c DESC"))
+    {
+        do
+        {
+            Field* f = result->Fetch();
+            auto& drops = recipeDrops_[f[0].Get<uint32>()];
+            if (drops.size() < 3)  // the three best sources name it; the rest add nothing to the decision
+                drops.push_back({f[1].Get<std::string>(), f[2].Get<float>()});
+        } while (result->NextRow());
+    }
+    LOG_INFO("playerbots", "[craft453] recipe items: {} craft spells come off one, {} of them have a known drop",
+             recipeItemOf_.size(), recipeDrops_.size());
 
     std::unordered_set<uint32> lines(std::begin(CRAFT_LINES), std::end(CRAFT_LINES));
     uint32 count = 0;
@@ -2661,9 +2704,14 @@ void GuildCoordinator::UpdateOrders()
                     // [craft438] the tool a guild priority line ([craft435]) needs never waits for a level: its stop
                     // is priced by the gap (craft436) and taken again
                     bool priorityTool = false;
+                    // [craft453] a recipe item of a guild priority line is the same kind of stop as its tool: the
+                    // line cannot craft the need without it, so its stop never waits for a level either
+                    bool const recipeStop =
+                        pick.itemId && std::any_of(recipeItemOf_.begin(), recipeItemOf_.end(),
+                                                   [&](auto const& e) { return e.second.itemId == pick.itemId; });
                     for (LinePriority const& r : linePriorities_)
                         priorityTool |= r.line == pick.skillLine && pick.itemId &&
-                                        pick.itemId == ProfessionTool(pick.skillLine);
+                                        (pick.itemId == ProfessionTool(pick.skillLine) || recipeStop);
                     if (priorityTool)
                         st.trainDue.erase(taskKey);
                     if (before != st.orders.end() && before->executable && !before->waitsTown &&
@@ -2801,9 +2849,10 @@ void GuildCoordinator::UpdateOrders()
                         look(bag->GetItemByPos(uint8(j)));
             if (!surplus.empty())
                 LOG_INFO("playerbots",
-                         "[econ62] {} L{} sells its surplus potions: {} - the guild is owed {} healing and {} mana, "
-                         "and it already holds that many",
-                         Who(row.low), p->GetLevel(), surplus, owedAll[POTION_HEAL], owedAll[POTION_MANA]);
+                         "[econ62] {} L{} sells its surplus consumables: {} - the guild is owed {} healing, {} mana "
+                         "and {} bandage [craft454], and it already holds that many",
+                         Who(row.low), p->GetLevel(), surplus, owedAll[POTION_HEAL], owedAll[POTION_MANA],
+                         owedAll[POTION_BANDAGE]);
         }
         // [tasks] SELL: what the global leader gave up goes at the next vendor visit (SellMarked), never a trip
         if (!st.sell.empty())
@@ -4984,23 +5033,28 @@ void GuildCoordinator::UpdateProfessions()
     // count stays [eco194]'s single judge, and a kind the alchemists already cover best adds nothing
     {
         VendorPotionPrices const& prices = VendorPotions();
-        auto const alchemy = recipesBySkill_.find(SKILL_ALCHEMY);
         struct PotionRecipe
         {
             Recipe const* r{nullptr};
             float points{0.0f};
             uint8 kind{0};
             uint32 reqLevel{0};
-            bool known{false};  // a guild alchemist knows it
+            bool known{false};  // a guild maker of the kind's line knows it
         };
         std::vector<PotionRecipe> brews;
-        if (alchemy != recipesBySkill_.end())
-            for (Recipe const& r : alchemy->second)
+        // [craft454] both lines that make a consumable of this book: Alchemy's potions and First Aid's bandages
+        for (uint32 const kindLine : {uint32(SKILL_ALCHEMY), uint32(SKILL_FIRST_AID)})
+        {
+            auto const list = recipesBySkill_.find(kindLine);
+            if (list == recipesBySkill_.end())
+                continue;
+            for (Recipe const& r : list->second)
             {
                 ItemTemplate const* proto = r.product ? sObjectMgr->GetItemTemplate(r.product) : nullptr;
                 PotionRecipe pr;
                 pr.kind = PotionKindOf(proto, &pr.points);
-                if (pr.kind >= POTION_KINDS || pr.points <= 0.0f || prices.per[pr.kind] <= 0.0f)
+                if (pr.kind >= POTION_KINDS || pr.points <= 0.0f || prices.per[pr.kind] <= 0.0f ||
+                    KIND_LINES[pr.kind] != kindLine)
                     continue;
                 pr.r = &r;
                 pr.reqLevel = proto->RequiredLevel;
@@ -5012,6 +5066,7 @@ void GuildCoordinator::UpdateProfessions()
                     }
                 brews.push_back(pr);
             }
+        }
         std::map<uint32, std::pair<uint32, double>> potionNeeds;  // recipe spell -> (units, value)
         std::map<uint32, uint32> potionMembers;                   // recipe spell -> members it is for
         for (auto const& [row, m] : members)
@@ -5032,7 +5087,7 @@ void GuildCoordinator::UpdateProfessions()
                         continue;
                     if (pr.known)
                         covered = std::max(covered, pr.points);
-                    else if (learnable(SKILL_ALCHEMY, pr.r->spellId) && (!open || pr.points > open->points))
+                    else if (learnable(KIND_LINES[kind], pr.r->spellId) && (!open || pr.points > open->points))
                         open = &pr;
                 }
                 if (!open || open->points <= covered)
@@ -5053,23 +5108,24 @@ void GuildCoordinator::UpdateProfessions()
             if (!recipe || entry.second <= 0.0)
                 continue;
             uint32 const forMembers = potionMembers[spellId];
-            needs.push_back({SKILL_ALCHEMY, recipe->reqSkill, spellId, recipe->product, entry.first, 0, false,
-                             "potion ×" + std::to_string(entry.first) + " for " + std::to_string(forMembers) +
+            needs.push_back({recipe->skillLine, recipe->reqSkill, spellId, recipe->product, entry.first, 0, false,
+                             std::string(KindName(PotionKindOf(sObjectMgr->GetItemTemplate(recipe->product)))) + " ×" +
+                                 std::to_string(entry.first) + " for " + std::to_string(forMembers) +
                                  " member" + (forMembers > 1 ? "s" : ""),
                              entry.second});
             if (text.size() < 300)
                 text += (text.empty() ? "" : ", ") + ItemName(recipe->product) + " ×" +
-                        std::to_string(entry.first) + " (Alch " + std::to_string(recipe->reqSkill) + ", " +
-                        Gsc(uint64(entry.second)) + ")";
+                        std::to_string(entry.first) + " (" + SkillShort(recipe->skillLine) + " " +
+                        std::to_string(recipe->reqSkill) + ", " + Gsc(uint64(entry.second)) + ")";
         }
         if (text != potionNeedsLogged_)
         {
             potionNeedsLogged_ = text;
             LOG_INFO("playerbots",
-                     "[craft450] the potions the members drank need these ranks: {} (vendor {:.3f} c a healing "
-                     "point, {:.3f} c a mana point)",
-                     text.empty() ? "none: the alchemists already make the best potions the members can use" : text,
-                     prices.per[POTION_HEAL], prices.per[POTION_MANA]);
+                     "[craft450] the consumables the members used need these ranks: {} (vendor {:.3f} c a healing "
+                     "point, {:.3f} c a mana point, {:.3f} c a bandaged point [craft454])",
+                     text.empty() ? "none: the makers already make the best ones the members can use" : text,
+                     prices.per[POTION_HEAL], prices.per[POTION_MANA], prices.per[POTION_BANDAGE]);
         }
     }
     // [craft452] coordinator 2026-11-13 (approved): a scope IS a permanent enchantment on a ranged weapon, and the
@@ -5258,13 +5314,34 @@ void GuildCoordinator::UpdateProfessions()
                              "unblocks " + blocks + " for " + std::to_string(blockedLines[item].size()) + " line" +
                                  (blockedLines[item].size() > 1 ? "s" : ""),
                              what.second});
-            if (text.size() < 300)
+            // [craft453] the rank alone opens a trainer or auto-learned recipe; one off a recipe item needs that
+            // item too, so the verdict says which and how the guild gets it - a buy where a vendor has it, a named
+            // loot need where none does. Never a bare rank the climb would reach and stall at
+            std::string how = " (at a trainer)";
+            if (!r->trainer && !r->autoLearned)
+            {
+                auto const recipe = recipeItemOf_.find(r->spellId);
+                if (recipe == recipeItemOf_.end())
+                    how = " (NO RECIPE ITEM AND NO TRAINER: nothing in the world teaches it)";
+                else if (recipe->second.sold)
+                    how = " (buy " + ItemName(recipe->second.itemId) + " for " + Gsc(recipe->second.price) + ")";
+                else
+                {
+                    std::string sources;
+                    if (auto const drops = recipeDrops_.find(recipe->second.itemId); drops != recipeDrops_.end())
+                        for (auto const& [who, chance] : drops->second)
+                            sources += (sources.empty() ? "" : ", ") +
+                                       Acore::StringFormat("{} {:.2f} %", who, chance);
+                    how = " (LOOT NEED: no vendor sells " + ItemName(recipe->second.itemId) + " - " +
+                          (sources.empty() ? std::string("and no drop is known either") : sources) + ")";
+                }
+            }
+            else if (r->autoLearned)
+                how = " (learned with the rank)";
+            if (text.size() < 400)
                 text += (text.empty() ? "" : ", ") + ItemName(item) + " ×" + std::to_string(units) + " blocks " +
                         blocks + " worth " + Gsc(uint64(what.second)) + " -> " + SkillShort(r->skillLine) + " " +
-                        std::to_string(r->reqSkill) +
-                        (r->trainer ? " (at a trainer)"
-                         : r->autoLearned ? " (learned with the rank)"
-                                          : " (NEEDS THE RECIPE ITEM: the rank alone does not open it)");
+                        std::to_string(r->reqSkill) + how;
         }
         if (text != blockedNeedsLogged_)
         {
@@ -5972,8 +6049,9 @@ void GuildCoordinator::UpdateProfessions()
                 std::string supplyText;
                 if (line == SKILL_COOKING)
                     SupplyWork(row->low, p, supplyValue, supplyMin, supplyText);
-                else if (line == SKILL_ALCHEMY)  // [eco194] the potions the members drank
-                    PotionWork(row->low, p, supplyValue, supplyMin, supplyText);
+                // [eco194] the potions the members drank, [craft454] the bandages they used
+                else if (line == SKILL_ALCHEMY || line == SKILL_FIRST_AID)
+                    PotionWork(row->low, p, supplyValue, supplyMin, supplyText, line);
                 if (reach <= skill && supplyValue <= 0.0)
                 {
                     key = std::string("blocked:") + (skill >= maxSkill ? "cap" : block.substr(0, 24));
@@ -6284,6 +6362,71 @@ void GuildCoordinator::UpdateProfessions()
                                     " for " + SkillShort(line) + " to " + std::to_string(std::min(judged, maxSkill)) +
                                     " [prof277][ench171]");
                             kinds += kinds.empty() ? "gather" : "+gather";
+                        }
+                        // [craft453] a need of this line whose recipe comes off a recipe ITEM, within the rank the
+                        // walk reaches: the crafter needs that item too, or the climb reaches the rank and stalls
+                        // there looking like progress. A vendor that sells it is a stop of the route priced like the
+                        // guild priority tool it is ([craft438]: never waiting for a level, weighed by the gap); the
+                        // reagents and the fee stay the members' ([craft436] wants them at the gap's worth, so the
+                        // crafter is not left alone with it). No vendor anywhere: a named loot need in the log, with
+                        // the drop chances, never a silent stall
+                        for (Need const* n : lineNeeds)
+                        {
+                            if (n->reqSkill > judged || p->HasSpell(n->spellId))
+                                continue;
+                            Recipe const* made = nullptr;
+                            if (auto const all = recipesBySkill_.find(line); all != recipesBySkill_.end())
+                                for (Recipe const& r : all->second)
+                                    if (r.spellId == n->spellId)
+                                        made = &r;
+                            if (!made || made->trainer || made->autoLearned)
+                                continue;  // the rank itself opens it
+                            auto const recipe = recipeItemOf_.find(n->spellId);
+                            if (recipe == recipeItemOf_.end())
+                                continue;
+                            if (p->GetItemCount(recipe->second.itemId, true))
+                                continue;  // it holds the recipe already: the craft call learns it
+                            if (recipe->second.sold)
+                            {
+                                add(GuildProfessionKind::BUY, recipe->second.itemId, 1,
+                                    ItemName(recipe->second.itemId) + " for " + SkillShort(line) + " " +
+                                        std::to_string(made->reqSkill) + ": " + ItemName(n->itemId) + " needs it " +
+                                        "[craft453]");
+                                picks.back().cost = recipe->second.price;
+                                picks.back().worth = n->value > 0.0 ? uint32(n->value) : 0;
+                                float yards = std::numeric_limits<float>::max();
+                                if (std::vector<ReagentVendor> const* spawns = ReagentVendors(recipe->second.itemId))
+                                    for (ReagentVendor const& v : *spawns)
+                                        if (!v.extendedCost && v.mapId == p->GetMapId() && FriendlyNpc(p, v.entry) &&
+                                            p->GetExactDist(v.x, v.y, v.z) < yards)
+                                        {
+                                            yards = p->GetExactDist(v.x, v.y, v.z);
+                                            picks.back().pos = WorldPosition(v.mapId, v.x, v.y, v.z);
+                                        }
+                                kinds += kinds.empty() ? "recipe" : "+recipe";
+                            }
+                            else
+                            {
+                                std::string sources;
+                                if (auto const drops = recipeDrops_.find(recipe->second.itemId);
+                                    drops != recipeDrops_.end())
+                                    for (auto const& [who, chance] : drops->second)
+                                        sources += (sources.empty() ? "" : ", ") +
+                                                   Acore::StringFormat("{} {:.2f} %", who, chance);
+                                std::string const text = Acore::StringFormat(
+                                    "{} L{} {} {} needs {} and NO VENDOR SELLS IT: {} - the climb to {} reaches the "
+                                    "rank and stops there, the recipe is a loot need",
+                                    Who(row->low), p->GetLevel(), SkillShort(line), ItemName(n->itemId),
+                                    ItemName(recipe->second.itemId),
+                                    sources.empty() ? std::string("and no drop is known either") : sources,
+                                    made->reqSkill);
+                                if (std::string& logged = st.craftLogged["craft453:" + std::to_string(n->spellId)];
+                                    logged != text)
+                                {
+                                    logged = text;
+                                    LOG_INFO("playerbots", "[craft453] {}", text);
+                                }
+                            }
                         }
                         // [craft381] the trainer's rank / recipe of this line weighs what the walk past it is worth
                         // (at its rank cap no craft runs before it): b446 Journeyman Inscription would have weighed
@@ -11862,14 +12005,28 @@ uint8 GuildCoordinator::PotionKindOf(ItemTemplate const* proto, float* points)
 {
     if (points)
         *points = 0.0f;
-    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE || proto->SubClass != ITEM_SUBCLASS_POTION)
+    if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
+        (proto->SubClass != ITEM_SUBCLASS_POTION && proto->SubClass != ITEM_SUBCLASS_BANDAGE))
         return POTION_KINDS;
+    bool const bandage = proto->SubClass == ITEM_SUBCLASS_BANDAGE;
     for (auto const& spell : proto->Spells)
     {
         SpellInfo const* info = spell.SpellId > 0 ? sSpellMgr->GetSpellInfo(spell.SpellId) : nullptr;
         for (uint8 e = 0; info && e < MAX_SPELL_EFFECTS; ++e)
         {
             SpellEffectInfo const& effect = info->Effects[e];
+            // [craft454] a bandage heals over its channel (SPELL_AURA_PERIODIC_HEAL): its points are the whole heal,
+            // the tick's amount over the ticks of its duration, the same arithmetic [supply111] uses on a food's
+            // OBS_MOD_HEALTH. A potion's are its instant effect's mean roll
+            if (bandage)
+            {
+                if (effect.ApplyAuraName != SPELL_AURA_PERIODIC_HEAL || effect.Amplitude <= 0)
+                    continue;
+                if (points)
+                    *points = float(effect.CalcValue()) * float(std::max(info->GetMaxDuration(), 0)) /
+                              float(effect.Amplitude);
+                return POTION_BANDAGE;
+            }
             uint8 const kind = effect.Effect == SPELL_EFFECT_HEAL ? POTION_HEAL
                                : effect.Effect == SPELL_EFFECT_ENERGIZE && effect.MiscValue == POWER_MANA
                                    ? POTION_MANA
@@ -11902,7 +12059,7 @@ void GuildCoordinator::NotePotionUse(Player* bot, uint32 itemId)
     LOG_INFO("playerbots",
              "[eco194] {} L{} drinks {} ({} potion {} this session, {} not replaced yet): the guild's alchemists "
              "make its replacement",
-             bot->GetName(), bot->GetLevel(), proto->Name1, kind == POTION_HEAL ? "healing" : "mana", used, owed);
+             bot->GetName(), bot->GetLevel(), proto->Name1, KindName(kind), used, owed);
 }
 
 // [econ60] the potions a vendor sells for gold: the cheapest per point of each kind is the copper an effect point
@@ -11944,7 +12101,7 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
     float const* vendorPer = prices.per;
     std::string const* vendorName = prices.name;
     std::unordered_set<uint32> const& sold = prices.sold;
-    auto const kindName = [](uint8 kind) { return kind == POTION_HEAL ? "healing" : "mana"; };
+    auto const kindName = [](uint8 kind) { return KindName(kind); };  // [craft454] healing / mana / bandage
 
     // the members' books: what their bags hold now against the last look, net of the potions drunk in between
     for (auto const& [row, m] : members)
@@ -11992,7 +12149,6 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
     std::vector<Maker> makers;
     Player* herbalist = nullptr;
     float herbalistPace = -1.0f;
-    auto const alchemy = recipesBySkill_.find(SKILL_ALCHEMY);
     for (auto const& [row, m] : members)
     {
         if (HumanCharacter(m))
@@ -12000,18 +12156,28 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
         bool const herbs = m->HasSkill(SKILL_HERBALISM) &&
                            (!herbalist ||
                             m->GetPureSkillValue(SKILL_HERBALISM) > herbalist->GetPureSkillValue(SKILL_HERBALISM));
-        bool const brews = m->HasSkill(SKILL_ALCHEMY) && alchemy != recipesBySkill_.end();
         if (herbs)
             herbalist = m;
-        if (!brews)
-            continue;
+        // [craft454] a maker of a kind: the line that kind belongs to (Alchemy brews the potions, First Aid makes
+        // the bandages), so one member can be a maker of both
         Maker maker;
+        for (uint8 kind = 0; kind < POTION_KINDS; ++kind)
+        {
+            auto const list = recipesBySkill_.find(KIND_LINES[kind]);
+            if (list == recipesBySkill_.end() || !m->HasSkill(KIND_LINES[kind]))
+                continue;
+            for (Recipe const& r : list->second)
+                if (r.product && m->HasSpell(r.spellId))
+                    if (PotionKindOf(sObjectMgr->GetItemTemplate(r.product)) == kind)
+                        maker.recipes[kind].push_back(&r);
+        }
+        bool any = false;
+        for (uint8 kind = 0; kind < POTION_KINDS; ++kind)
+            any = any || m->HasSkill(KIND_LINES[kind]);
+        if (!any)
+            continue;
         maker.low = row->low;
         maker.p = m;
-        for (Recipe const& r : alchemy->second)
-            if (r.product && m->HasSpell(r.spellId))
-                if (uint8 const kind = PotionKindOf(sObjectMgr->GetItemTemplate(r.product)); kind < POTION_KINDS)
-                    maker.recipes[kind].push_back(&r);
         makers.push_back(std::move(maker));
     }
     // the paces (QuestPace: a walk over its quest log) only of those that price a job
@@ -12135,8 +12301,8 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
                                     vendorName[kind].empty() ? "-" : vendorName[kind], vendorPer[kind],
                                     unmade[kind] ? Acore::StringFormat(", {} no alchemist makes", unmade[kind])
                                                  : std::string());
-    text += "; jobs: " + (jobText.empty() ? std::string("none") : jobText) + "; alchemists " +
-            std::to_string(makers.size());
+    text += "; jobs: " + (jobText.empty() ? std::string("none") : jobText) + "; makers " +
+            std::to_string(makers.size()) + " [craft454]";
     if (text != potionJudged_)
     {
         potionJudged_ = text;
@@ -12144,7 +12310,8 @@ void GuildCoordinator::JudgePotionSupply(std::vector<std::pair<PlanRow const*, P
     }
 }
 
-void GuildCoordinator::PotionWork(uint32 low, Player* p, double& value, double& minutes, std::string& text) const
+void GuildCoordinator::PotionWork(uint32 low, Player* p, double& value, double& minutes, std::string& text,
+                                  uint32 line) const
 {
     value = minutes = 0.0;
     auto const jobs = potionCrafts_.find(low);
@@ -12152,6 +12319,9 @@ void GuildCoordinator::PotionWork(uint32 low, Player* p, double& value, double& 
         return;
     for (SupplyCraft const& job : jobs->second)
     {
+        // [craft454] only this line's jobs: Alchemy's potions weigh Alchemy, First Aid's bandages weigh First Aid
+        if (!job.potionKind || KIND_LINES[job.potionKind - 1] != line)
+            continue;
         uint32 const owed = SupplyOwed(p, job);
         if (!owed)
             continue;
