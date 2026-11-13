@@ -5264,16 +5264,28 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
                  "): " + report.reason.substr(std::strlen(FIVE_LFG_REFUSED)) + " — walks to the entrance");
         return;
     }
-    for (auto const& [name, count] : report.deaths)
-        for (uint32 low : five.members)
-            if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
-                p && p->GetName() == name)
-                five.deaths[low] = count;
     RecordRun(five, report);
 
+    // [death470] One judge of a run's deaths: the five-leader's report, which is StatsRegistry's own count
+    // (OnUnitDeath + RecordReentry) and the figure [guild70] and RecordRun already print. This line used to keep a
+    // second copy of it (GuildFive::deaths, member -> count) built by re-resolving each dead member's NAME back to an
+    // ONLINE Player (ObjectAccessor::FindPlayer + name compare) - and it silently dropped every name the lookup
+    // missed. At report time the run has already torn down (the group is disbanded, the members teleported out and
+    // their strategies reset), so the lookup missed ALL of them: "deaths: none" on 4 of 4 Deadmines runs that had
+    // deaths, while [guild70] on the very next line had them right - b474 5-death wipe of 20261113-132050-dm-n-five4-4
+    // "Almored x1, Nurlian x1, Lanbuzz x1, Zharet x1, Septimon x1" reported as "deaths: none", b474 five2 Thamesh,
+    // b474 five6 Enyssia, b477 five1 Geefeelli. The wipe count came through (a plain uint32, no lookup), so the line
+    // read "wipes 1; deaths: none". The report's own list is printed here directly: no mapping, nothing to lose, and
+    // the roster's offline-safe name (Row()->name, as Who() uses) supplies the member number where it is known.
     std::string deaths;
-    for (auto const& [low, count] : five.deaths)
-        deaths += (deaths.empty() ? "" : ", ") + Who(low) + " ×" + std::to_string(count);
+    for (auto const& [name, count] : report.deaths)
+    {
+        std::string who = name;
+        for (uint32 low : five.members)
+            if (PlanRow const* row = Row(low); row && row->name == name)
+                who = "#" + std::to_string(row->num) + " " + name;
+        deaths += (deaths.empty() ? "" : ", ") + who + " ×" + std::to_string(count);
+    }
     std::string drops;
     for (std::string const& drop : five.drops)
         drops += (drops.empty() ? "" : ", ") + drop;

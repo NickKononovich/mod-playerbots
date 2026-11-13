@@ -185,7 +185,9 @@ struct GuildFive
     std::string why;                      // the global leader's reason for this five
     std::string runId;                    // the dungeon leader's run
     std::vector<std::string> drops;       // loot of the run, "item (who)"
-    std::map<uint32, uint32> deaths;      // member -> deaths in the run
+    // [death470] no second copy of the run's death count here: GuildFiveReport::deaths (StatsRegistry's own) is the
+    // only judge, and [guild60] prints it straight. The copy this field held was keyed by a name->online-Player
+    // lookup that failed for every run, so it read "deaths: none" whatever happened.
     bool forced{false};                   // formed by the command
     bool humanAlerted{false};
     bool poolGoesIn{false};  // [supply100] its pooled supplies carried it: no member's restock holds it
