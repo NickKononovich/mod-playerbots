@@ -2126,6 +2126,13 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
                     cast.periodSec = float(cd) / float(IN_MILLISECONDS);
                     cast.cost = float(std::max(0, judge->CalcPowerCost(bot, judge->GetSchoolMask())));
                     cast.executeSec = GlobalCooldownMs(bot, bot, judge, m.bonus.spellHaste) / float(IN_MILLISECONDS);
+                    // [dps80] and its own name: the damage is the seal's judgement, the cast is this ability, and
+                    // the plan is read against the bot's cast log. Named by the priced spell, the [dpsparts] plan
+                    // said "Judgement of Righteousness" in 96-98 % of paladin fights while the log said "Judgement
+                    // of Wisdom" / "of Light" - a ledger audit reads that as the model pricing a judgement the bot
+                    // never casts, and it is nothing of the kind: the cost and the cooldown above already come
+                    // from the ability the bot casts. The one spell id that is both is this one.
+                    cast.id = judge->Id;
                 }
                 cast.kind = Kind::Cooldown;
             }
