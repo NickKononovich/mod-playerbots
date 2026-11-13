@@ -2494,6 +2494,39 @@ bool GuildCoordinator::GivesXp(DungeonOption const& d, Player* p) const
     return FiveGate::TopLevel(d.mapId) > Acore::XP::GetGrayLevel(p->GetLevel());
 }
 
+// [five62] The orders that outrank a five - the list the rule was written with, now read by the code instead of
+// standing beside it as prose. [five60] wrote "only an URGENT order the member is working on now outranks the five
+// (a repair with a broken weapon, bags full, the guild founding, the gold a five's member waits for, another five's
+// call)" and then tested `priority == URGENT` alone. That flag carries one more thing the list never named: gathering
+// that beat questing by value ([tasks] ClassifyTask, GATHER and the gathering PROFESSION kind). So the code refused
+// what its own comment said it would take, and the cost was the whole task: a median of 26 members of 75 and 6 of
+// the 9 in-band tanks held out of every five, ten "form a five" commands refused with "busy with an urgent order:
+// GATHER" (Shalaeth, Almored, Relara, Nelaeleas, Ganna, Lyleria, Maronic, Nurlian, Bhogagnuth), and a certification
+// batch of 25 that never once assembled in the guild's whole history - the gate's own counter read batches 0.
+// Nothing new is decided here and no number is introduced: each case below is one entry of that written list, named
+// where the decision is made so the two cannot drift apart again. Whether gathering OUGHT to be urgent is a separate
+// question of the user's own (its urgency is rate x unitValue, and copper prices at ~90x a quest hour), and it is
+// deliberately not touched here: an urgent gather still outranks questing, it just no longer outranks a dungeon
+bool GuildCoordinator::OutranksFive(GuildOrder const& o)
+{
+    if (o.priority != GuildTaskPriority::URGENT)
+        return false;
+    switch (o.type)
+    {
+        case GuildOrderType::REPAIR:        // a repair with a broken weapon ([regress10] repairUrgent)
+        case GuildOrderType::BANK_DEPOSIT:  // bags full: the held items block its looting (UpdateOrders)
+        case GuildOrderType::FOUND_GUILD:   // the guild founding ([guild80]), and the rest of its own chain
+        case GuildOrderType::SIGN_CHARTER:
+        case GuildOrderType::BANK_TAB:
+        case GuildOrderType::JOIN:
+        case GuildOrderType::DONATE_GOLD:   // the gold a five's member waits for ([supply91])
+        case GuildOrderType::DUNGEON:       // another five's call ([guild60]; its member is in a five already)
+            return true;
+        default:  // gathering that beat questing, a profession call, a co-op quest, mail, a sale, a purchase
+            return false;
+    }
+}
+
 bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) const
 {
     auto refuse = [why](std::string const& text)
@@ -2528,13 +2561,10 @@ bool GuildCoordinator::FreeForFive(uint32 low, Player* p, std::string* why) cons
         // them read "busy with an order". 684 [five58] readings, 681 of them "0 free (t0 h0 d0)", 0 fives formed and
         // 0 dungeons entered in 27.6 bot-hours.
         // The price: a five's own DUNGEON order is URGENT and takes the member over ([tasks] ClassifyTask, the
-        // URGENT interrupt in UpdateOrders), so forming the five IS the recall - questing, gathering that did not
-        // beat questing and every town errand waiting for its town are all given up for it. Only an URGENT order the
-        // member is working on now outranks the five (a repair with a broken weapon, bags full, the guild founding,
-        // the gold a five's member waits for, another five's call): that one the leader does not cut across
-        if (GuildOrder const* active = ActiveOrder(st->second.orders))
-            if (active->priority == GuildTaskPriority::URGENT)
-                return refuse(std::string("busy with an urgent order: ") + OrderName(active->type));
+        // URGENT interrupt in UpdateOrders), so forming the five IS the recall - questing, gathering and every town
+        // errand are all given up for it. Only the orders [five62] OutranksFive names do not get cut across
+        if (GuildOrder const* active = ActiveOrder(st->second.orders); active && OutranksFive(*active))
+            return refuse(std::string("busy with an urgent order: ") + OrderName(active->type));
     }
     return true;
 }

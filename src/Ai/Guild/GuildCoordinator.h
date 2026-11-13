@@ -914,6 +914,11 @@ public:
     // FreeForFive's copy (orders.front().executable) refused a five to 64 of 75 members whose head order was a
     // convenient errand nobody had started - 684 [five58] readings, 681 of them "0 free (t0 h0 d0)"
     static GuildOrder const* ActiveOrder(std::vector<GuildOrder> const& orders);
+    // [five62] does this order outrank a five, by the kind of order it is? The written list - a repair with a broken
+    // weapon, bags full, the guild founding, the gold a five's member waits for, another five's call - and nothing
+    // else. The URGENT flag alone is NOT the test: it also carries gathering that beat questing, which that list
+    // never named and which held 26 of 75 members and 6 of 9 in-band tanks out of every five
+    static bool OutranksFive(GuildOrder const& o);
     // [lag368] the member holds the guild's open dungeon back: not cleared and below its band (the guild waits on its
     // level). Its own lock: read from the help pricing (NewRpgCoop) without lock_
     bool HoldsGuildDungeon(uint32 low) const;
