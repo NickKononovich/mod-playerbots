@@ -1237,11 +1237,13 @@ namespace Leader::Dungeon
             {
                 bool const movesAway = bot != tank;
                 LOG_INFO("playerbots", "[lead1291] {}: {}'s pack ({} mobs, {:.1f} yd) fits the fight but no opener of "
-                         "the tank reaches it from where it stands: not joined, {} [pull90] ({}; the tank {}, {})",
+                         "the tank reaches it from where it stands: not joined, {} [pull90] (the tank at "
+                         "({:.1f},{:.1f},{:.1f}), {}, {}; {})",
                          tank->GetName(), mob->GetName(), packMobs.size(), tank->GetExactDist(mob),
                          movesAway ? "the fight moves out of its reach [lead1340]" : "left to the chain pull",
-                         reachWhy, tank->isMoving() ? "walks" : "stands",
-                         tank->GetVictim() ? "holds a target" : "holds nothing");
+                         tank->GetPositionX(), tank->GetPositionY(), tank->GetPositionZ(),
+                         tank->isMoving() ? "walking" : "standing",
+                         tank->GetVictim() ? "holds a target" : "holds nothing", reachWhy);
                 Decisions().Write(run, "leader", "pack_join_unreached", mob->GetGUID(), mob->GetName(), true,
                                   JsonObject()
                                       .Num("packMobs", int64(packMobs.size()))
@@ -1250,6 +1252,9 @@ namespace Leader::Dungeon
                                       .Real("tankGap", tank->GetExactDist(mob))
                                       .Str("blocked", bot->GetName())
                                       .Str("reach", reachWhy)  // [pull90] the reach test's own inputs
+                                      .Real("tankX", tank->GetPositionX())
+                                      .Real("tankY", tank->GetPositionY())
+                                      .Real("tankZ", tank->GetPositionZ())
                                       .Bool("tankMoving", tank->isMoving())
                                       .Bool("movesAway", movesAway)
                                       .Str("why", movesAway ? "[lead1291] no opener of the tank reaches the pack from "

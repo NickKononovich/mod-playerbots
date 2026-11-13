@@ -446,12 +446,18 @@ bool TankOpensFromHere(PlayerbotAI* botAI, Player* tank, Unit* mob)
 // "growl: ... 30 yd"), and IsWithinCombatRange adds both combat reaches on top, so seven of the nine were inside
 // range and only the sight test can have refused them - which the line did not say. The verdict's inputs, read the
 // same way TankOpensFromHere reads them, so the next triage names the input that failed instead of guessing: the
-// mob, its distance, the sight, and every opener with its range
+// mob, its distance, the sight, and every opener with its range.
+// The mob's own position goes with it, and the caller logs the tank's: a sight refusal is a ray between two points
+// over the map's vmap, so the two points make the refusal replayable offline (Ragefire Chasm is ramps and lava
+// channels, and the b480 refusals ran 3 yd apart in Z over 20 yd of ground - a ridge between them is exactly what
+// a reader has to be able to check). Without them a sight verdict can only be believed, not audited
 std::string TankOpenerReach(PlayerbotAI* botAI, Player* tank, Unit* mob)
 {
     if (!botAI || !tank || !mob)
         return "no tank or mob";
-    std::string out = Acore::StringFormat("{} {:.1f} yd, {}", mob->GetName(), tank->GetExactDist(mob),
+    std::string out = Acore::StringFormat("{} at ({:.1f},{:.1f},{:.1f}) {:.1f} yd, {}", mob->GetName(),
+                                          mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ(),
+                                          tank->GetExactDist(mob),
                                           tank->IsWithinLOSInMap(mob) ? "in sight" : "out of sight");
     for (char const* name : TankEngageOpeners(tank, false))
     {
