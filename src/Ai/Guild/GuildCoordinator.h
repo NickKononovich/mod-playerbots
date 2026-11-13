@@ -411,6 +411,9 @@ public:
     //     an attunement (dungeon_access_requirements quest or item) or a key (a key item, a Lock.dbc item key) it
     //     lacks, an item on the leader's wanted list (IsWanted) or one of its own calls (NeedsForOwnCalls)
     std::string GreyQuestNeed(Player* bot, Quest const* quest) const;
+    // [quest120] the sentence the re-valuation logged when it abandoned this quest for the bot, empty when it did
+    // not: a giver does not offer it again (its XP only falls as the bot levels)
+    std::string QuestDroppedForValue(Player* bot, uint32 questId) const;
     // [quest14] "[quest14] <bot> skips|abandons|keeps grey q<id> <name>: <reason>", once per bot, quest and decision
     static void LogGrey(Player* bot, char const* decision, Quest const* quest, std::string const& reason);
     // [coop] map thread, read only: the bot runs or must start an URGENT task now (its first executable urgent order
@@ -680,7 +683,14 @@ private:
         // [tasks] the bag pressure last logged (free slots class: 0 full, 1 low, 2 ok; -1 not logged yet)
         int8 bagClass{-1};
         std::set<uint32> buyDropped;  // [tasks] vendor upgrades not planned (logged once per item)
-        uint64 revalueKey{0};  // [questvalue] level | login time of the last re-valuation of its log
+        uint64 revalueKey{0};  // [questvalue] level | login time | its log's own print at the last re-valuation
+        // [quest120] a quest the re-valuation abandoned for its worth: it is not taken again at a giver (its XP only
+        // falls as the bot levels, so the verdict holds), with the sentence the abandon logged
+        std::map<uint32, std::string> questDropped;
+        // [quest120] quest -> (its objective counts as last seen, the ms that print last changed): the log census's
+        // "no progress since" (the core keeps no such time)
+        std::map<uint32, std::pair<uint64, uint64>> questSeen;
+        std::string qlogLine;  // [quest120] the last [qlog] census line (logged again only when it changes)
     };
 
     // [tasks] the global leader's profession call for one member (UpdateProfessions, lock_)
@@ -1169,6 +1179,7 @@ private:
     // [questvalue] its green log quests valued against the route's rate; the ones not worth it abandoned ([quest14]
     // greys: the route's grey rule, GreyQuestNeed)
     void RevalueQuests(BotState& st, Player* p);
+    void LogQuestLog(BotState& st, Player* p);  // [quest120] the [qlog] census line of one bot's quest log
     float GatherPace(uint32 skill) const;                              // units per minute of gathering, < 0: no data
     uint32 TrainerCap(uint32 skillLine, uint8 level) const;            // the highest rank's max skill by level
     void RecordPace(BotState& st, Player* p) const;                    // UpdateHealth: its copper per quest XP

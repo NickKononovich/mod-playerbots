@@ -4254,6 +4254,14 @@ bool NewRpgBaseAction::InteractWithNpcOrGameObjectForQuest(ObjectGuid guid)
         }
         else if (takeable)
             worth = IsQuestWorthDoing(quest);
+        // [quest120] one the log's re-valuation already abandoned for its worth is not taken back (b475: 8 retakes
+        // in half an hour, Eraelor took q1010 again 25 min after dropping it, and its XP has only fallen since)
+        if (takeable && worth && !GuildCoordinator::HumanCharacter(bot))
+            if (std::string const dropped = sGuildCoordinator.QuestDroppedForValue(bot, questId); !dropped.empty())
+            {
+                GuildCoordinator::LogGrey(bot, "skips", quest, "its log's re-valuation abandoned it: " + dropped);
+                worth = false;
+            }
         if (takeable && worth)
         {
             AcceptQuest(quest, guid);

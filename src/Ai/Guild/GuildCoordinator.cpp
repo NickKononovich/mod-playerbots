@@ -2271,7 +2271,15 @@ void GuildCoordinator::UpdateOrders()
         st.disenchant.erase(std::remove_if(st.disenchant.begin(), st.disenchant.end(), gone), st.disenchant.end());
 
         // [questvalue] a level-up or a login: the green / grey quests of its log are valued again
-        if (uint64 const key = uint64(p->GetLevel()) | (uint64(p->m_logintime) << 8); key != st.revalueKey)
+        // [quest120] b475 Eraelor L24 held 13 quests, 3 of them 7-17 levels below it and 4 untouched for days: a
+        // log valued only on a level-up keeps every quest taken since (5321, taken 30 min after the last valuation,
+        // was never priced). The log's own print joins the key, so an accept, a turn-in or a completion values it
+        uint64 print = 0;
+        for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+            if (uint32 const logged = p->GetQuestSlotQuestId(slot))
+                print += uint64(logged) * 31 + uint64(p->GetQuestStatus(logged));
+        if (uint64 const key = uint64(p->GetLevel()) ^ (uint64(p->m_logintime) * 1000003ULL) ^ (print * 1000033ULL);
+            key != st.revalueKey)
         {
             st.revalueKey = key;
             RevalueQuests(st, p);
@@ -4087,6 +4095,10 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
     PlayerbotAI* ai = GET_PLAYERBOT_AI(p);
     if (!ai || HumanCharacter(p) || questStatic_.empty() || NewRpgCoop::InParty(p->GetGUID().GetCounter()))
         return;
+    // [quest120] inside a dungeon or a battleground every open-world quest sits on another map: the off-map rule
+    // below would read the whole log as unreachable, so the log is valued in the open world only
+    if (!p->GetMap() || p->GetMap()->Instanceable())
+        return;
     uint8 const level = p->GetLevel();
     float const rate = sWorld->getRate(RATE_XP_QUEST);
     float const speed = std::max(p->GetSpeed(MOVE_RUN), 1.0f);
@@ -4100,6 +4112,9 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         double copper;
         double seconds;
         bool priced;
+        bool offMap;  // [quest120] its ender sits on a map the bot is not on: no route from here reaches it
+        uint32 onMap;  // the map its ender sits on (0 when it is not known)
+        QuestStatus status;
     };
     std::vector<Row> rows;
     double routeCopper = 0.0, routeSeconds = 0.0;
@@ -4119,6 +4134,9 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         bool priced = false;
         double seconds = 0.0;
         auto const q = questStatic_.find(questId);
+        // [quest120] b475 Eraelor held q9683 (Bloodmyst Isle, map 530) and q384 (map 0) for days on map 1: a quest
+        // whose ender is on another map was never priced at all, so it never met the rate and never left the log
+        bool const offMap = q != questStatic_.end() && q->second.ender && q->second.map != p->GetMapId();
         if (q != questStatic_.end() && q->second.map == p->GetMapId() && q->second.ender)
         {
             QuestStatic const& s = q->second;
@@ -4156,7 +4174,8 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
                 priced = true;
             }
         }
-        rows.push_back({slot, quest, color, copper, seconds, priced});
+        rows.push_back({slot, quest, color, copper, seconds, priced, offMap,
+                        q == questStatic_.end() ? 0 : q->second.map, status});
         // [econ1] the route's rate: the yellow / orange quests it still works; a complete one is handed in either
         // way (its XP comes with or without the green quest) and is no measure of what the time is worth
         if (priced && color != XP_GRAY && color != XP_GREEN && status == QUEST_STATUS_INCOMPLETE)
@@ -4176,12 +4195,48 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
     else if (QuestPace(st, p, unusedCopper, &routeWhy, &routeRate))
         routeWhy = "the best quest it may take (" + routeWhy + ")";
     else
-        return;  // nothing to compare with: the log stays as it is
+        routeWhy.clear();  // nothing to compare with: only the off-map rule below may still speak
+    bool const haveRate = !routeWhy.empty();
     for (Row const& r : rows)
     {
         // [quest14] a grey quest is no XP/min question: the route's grey rule (map thread, GreyQuestNeed) keeps or
         // abandons it
-        if (r.color != XP_GREEN || !r.priced)
+        if (r.color == XP_GRAY)
+            continue;
+        if (r.offMap)
+        {
+            // [quest120] no route leaves the bot's map for it, so its worth here is 0 XP/min: it stays only for the
+            // same needs a grey quest stays for (a chain step, an upgrade, a recipe, a skill, an attunement, a key,
+            // a wanted item) - the global leader's call, GreyQuestNeed
+            uint32 const offId = r.quest->GetQuestId();
+            if (r.status == QUEST_STATUS_COMPLETE)
+                continue;  // its work is done: the hand-in waits for the map, dropping it would throw the XP away
+            std::string const need = GreyQuestNeed(p, r.quest);
+            if (!need.empty())
+            {
+                LOG_INFO("playerbots",
+                         "[quest] keep {} L{} q{} t={} at=({:.0f},{:.0f}) reason: its ender is on map {}, the bot "
+                         "quests on map {}, but {} [quest120]",
+                         p->GetName(), level, offId, QuestStats::NowMs(), x, y, r.onMap, p->GetMapId(), need);
+                continue;
+            }
+            std::string const why = Acore::StringFormat(
+                "its ender is on map {}, the bot quests on map {}: no route from here works it (0 XP/min)", r.onMap,
+                p->GetMapId());
+            LOG_INFO("playerbots", "[quest] abandon {} L{} q{} t={} at=({:.0f},{:.0f}) reason: {} [quest120]",
+                     p->GetName(), level, offId, QuestStats::NowMs(), x, y, why);
+            st.questDropped[offId] = why;
+            auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data);
+            if (doing && doing->questId == offId)
+                ai->rpgInfo.ChangeToIdle();
+            WorldPacket offPacket(CMSG_QUESTLOG_REMOVE_QUEST);
+            offPacket << uint8(r.slot);
+            WorldPackets::Quest::QuestLogRemoveQuest offRemove(std::move(offPacket));
+            offRemove.Read();
+            p->GetSession()->HandleQuestLogRemoveQuest(offRemove);
+            continue;
+        }
+        if (r.color != XP_GREEN || !r.priced || !haveRate)
             continue;
         uint32 const questId = r.quest->GetQuestId();
         float const value = float(r.copper * MINUTE / std::max(r.seconds, 1.0));
@@ -4210,6 +4265,10 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
                  "[quest] abandon {} L{} q{} t={} at=({:.0f},{:.0f}) reason: {}, {:.0f} XP/min < route rate {:.0f} "
                  "XP/min (route: {}) [econ1]",
                  p->GetName(), level, questId, QuestStats::NowMs(), x, y, colorName, value, routeRate, routeWhy);
+        // [quest120] b475 took q1010 back at a giver 25 min after this abandon (8 such retakes in half an hour of
+        // log): the verdict is remembered, and a quest's XP only falls as the bot levels, so it holds
+        st.questDropped[questId] = Acore::StringFormat("{:.0f} XP/min < route rate {:.0f} XP/min when it was dropped",
+                                                       value, routeRate);
         if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data); doing && doing->questId == questId)
             ai->rpgInfo.ChangeToIdle();
         WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
@@ -4218,6 +4277,98 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         removeQuest.Read();
         p->GetSession()->HandleQuestLogRemoveQuest(removeQuest);
     }
+    LogQuestLog(st, p);
+}
+
+// [quest120] the quest log as the client shows it, after the valuation: one [qlog] line per bot, logged again only
+// when it changes (C:/WoW/tools/world_triage.py, batch_triage.py read it). "since" is the time the quest's own
+// objective counts last moved - the core keeps no such time, so it is counted from the first census that saw it, and
+// a quest that never moves carries the age of the bot's session
+void GuildCoordinator::LogQuestLog(BotState& st, Player* p)
+{
+    if (!p)
+        return;
+    uint8 const level = p->GetLevel();
+    uint64 const now = QuestStats::NowMs();
+    uint32 held = 0, grey = 0, green = 0, high = 0, complete = 0, offMap = 0, idle = 0, wasted = 0;
+    uint64 oldest = 0;
+    uint32 oldestQuest = 0;
+    std::string quests;
+    std::set<uint32> inLog;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+    {
+        uint32 const questId = p->GetQuestSlotQuestId(slot);
+        Quest const* quest = questId ? sObjectMgr->GetQuestTemplate(questId) : nullptr;
+        if (!quest)
+            continue;
+        inLog.insert(questId);
+        ++held;
+        int32 const questLevel = std::max<int32>(1, p->GetQuestLevel(quest));
+        XPColorChar const color = Acore::XP::GetColorCode(level, uint8(questLevel));
+        QuestStatus const status = p->GetQuestStatus(questId);
+        uint64 print = uint64(status);
+        uint32 done = 0;
+        if (auto const data = p->getQuestStatusMap().find(questId); data != p->getQuestStatusMap().end())
+        {
+            for (uint8 i = 0; i < QUEST_OBJECTIVES_COUNT; ++i)
+            {
+                print = print * 101 + data->second.CreatureOrGOCount[i];
+                done += data->second.CreatureOrGOCount[i];
+            }
+            for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            {
+                print = print * 101 + data->second.ItemCount[i];
+                done += data->second.ItemCount[i];
+            }
+        }
+        auto& seen = st.questSeen[questId];
+        if (seen.second == 0 || seen.first != print)
+            seen = {print, now};
+        uint64 const sinceMs = now - seen.second;
+        if (color == XP_GRAY)
+            ++grey;
+        else if (color == XP_GREEN)
+            ++green;
+        else
+            ++high;
+        if (status == QUEST_STATUS_COMPLETE)
+            ++complete;
+        bool const away = [&]
+        {
+            auto const q = questStatic_.find(questId);
+            return q != questStatic_.end() && q->second.ender && q->second.map != p->GetMapId();
+        }();
+        if (away)
+            ++offMap;
+        // nothing done on it since it was taken, and it is one no route of this map works: a slot held for nothing
+        bool const untouched = status != QUEST_STATUS_COMPLETE && done == 0;
+        if (untouched)
+            ++idle;
+        if (untouched && (color == XP_GRAY || away))
+            ++wasted;
+        if (sinceMs > oldest)
+        {
+            oldest = sinceMs;
+            oldestQuest = questId;
+        }
+        quests += Acore::StringFormat(" | q{} L{} {} {} since={}s", questId, questLevel,
+                                      color == XP_GRAY     ? "grey"
+                                      : color == XP_GREEN  ? "green"
+                                      : color == XP_YELLOW ? "yellow"
+                                                           : "orange/red",
+                                      status == QUEST_STATUS_COMPLETE ? "complete" : "incomplete", sinceMs / 1000);
+    }
+    for (auto itr = st.questSeen.begin(); itr != st.questSeen.end();)
+        itr = inLog.count(itr->first) ? std::next(itr) : st.questSeen.erase(itr);
+    std::string const line = Acore::StringFormat(
+        "[qlog] {} L{} held={}/{} grey={} green={} yellow+={} complete={} off-map={} no-progress={} wasted={} "
+        "free={} longest-idle={}s q{}{}",
+        p->GetName(), level, held, uint32(MAX_QUEST_LOG_SIZE), grey, green, high, complete, offMap, idle, wasted,
+        uint32(MAX_QUEST_LOG_SIZE) - held, oldest / 1000, oldestQuest, quests);
+    if (line == st.qlogLine)
+        return;
+    st.qlogLine = line;
+    LOG_INFO("playerbots", "{}", line);
 }
 
 bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute, std::string* why,
@@ -6522,6 +6673,18 @@ namespace
     }
 }
 
+std::string GuildCoordinator::QuestDroppedForValue(Player* bot, uint32 questId) const
+{
+    if (!bot || !questId)
+        return std::string();
+    CoordLock guard(lock_, __func__);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end())
+        return std::string();
+    auto const dropped = itr->second.questDropped.find(questId);
+    return dropped == itr->second.questDropped.end() ? std::string() : dropped->second;
+}
+
 bool GuildCoordinator::IsGreyQuest(Player* bot, Quest const* quest)
 {
     return bot && quest && bot->GetQuestLevel(quest) <= int32(Acore::XP::GetGrayLevel(bot->GetLevel()));
@@ -6603,6 +6766,9 @@ std::string GuildCoordinator::GreyQuestNeed(Player* bot, Quest const* quest) con
                            GuildGear::GainText(ev.gain, ev.score, ev.current) + ")";
             }
             uint32 forLow = 0;
+            if (CoordLock::Held())  // [quest120] the log's re-valuation asks under the hold it already has
+                forLow = PlannedFor(item);
+            else
             {
                 CoordLock guard(lock_, __func__);
                 forLow = PlannedFor(item);
