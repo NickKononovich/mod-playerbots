@@ -4487,14 +4487,22 @@ void PlayerbotFactory::InitInstanceQuests()
     bot->SetUInt32Value(PLAYER_XP, currentXP);
 }
 
+// [econ70] the factory's own inventory wipes. Randomize and Refresh already refuse a guild-plan bot, so these are
+// unreachable for the 75 - the guard is here as well because the rule is "no bot ever deletes an item", and a future
+// caller of ClearInventory must not be the hole in it. A guild member's bags are its own: they empty at a vendor
+// (the SELL task), in a trade or by use.
 void PlayerbotFactory::ClearInventory()
 {
+    if (GuildHonest::Skip(bot, "inventory wipe (ClearInventory)"))  // [honest] [econ70] its own items stay
+        return;
     DestroyItemsVisitor visitor(bot);
     IterateItems(&visitor);
 }
 
 void PlayerbotFactory::ClearAllItems()
 {
+    if (GuildHonest::Skip(bot, "inventory and bank wipe (ClearAllItems)"))  // [honest] [econ70] its own items stay
+        return;
     DestroyItemsVisitor visitor(bot);
     IterateItems(&visitor, ITERATE_ALL_ITEMS);
 }

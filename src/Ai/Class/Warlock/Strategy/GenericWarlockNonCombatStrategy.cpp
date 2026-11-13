@@ -83,7 +83,7 @@ void GenericWarlockNonCombatStrategy::InitTriggers(std::vector<TriggerNode*>& tr
     triggers.push_back(new TriggerNode("new pet", { NextAction("set pet stance", 60.0f) }));
     triggers.push_back(new TriggerNode("no pet", { NextAction("fel domination", 30.0f) }));
     triggers.push_back(new TriggerNode("no soul shard", { NextAction("create soul shard", 60.0f) }));
-    triggers.push_back(new TriggerNode("too many soul shards", { NextAction("destroy soul shard", 60.0f) }));
+    // [econ70] no node for "destroy soul shard": a surplus shard is spent on a stone or kept, never destroyed
     triggers.push_back(new TriggerNode("soul link", { NextAction("soul link", 28.0f) }));
     triggers.push_back(new TriggerNode("demon armor", { NextAction("fel armor", 27.0f) }));
     triggers.push_back(new TriggerNode("unending breath", { NextAction("unending breath", 12.0f) }));

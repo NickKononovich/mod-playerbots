@@ -352,7 +352,8 @@ public:
     // [vendor20] the global leader marked items of the bot for sale (its bag relief, unwanted gear): a vendor visit
     // has something to sell whatever its own sale keeps
     bool HasMarkedSale(Player* bot) const;
-    // [inv380] an item the member holds for nothing and no vendor buys: the bot drops it (DropDeadWeightNow)
+    // [inv380] an item the member holds for nothing; [econ70] it is sold if a vendor buys it, else kept, never
+    // destroyed (MarkDeadWeightNow)
     struct DeadItem
     {
         uint32 itemGuidLow{0};
@@ -365,9 +366,9 @@ public:
     // (UseStartQuestItem) or the item goes; a quest item no quest of its log needs and no quest it may still take
     // wants goes with it. What a quest of its log needs for its hand-in or was handed (StartItem) always stays.
     std::vector<DeadItem> QuestDeadWeight(Player* bot) const;
-    // [inv380] map thread: the bot drops what QuestDeadWeight found, between its steps as the disenchant queue runs
-    // (no walk, no cast). true: something was dropped
-    bool DropDeadWeightNow(Player* bot);
+    // [inv380] map thread: what QuestDeadWeight found, disposed of without a deletion ([econ70]) - onto the SELL
+    // task if a vendor buys it, otherwise kept and reported as a spent slot. No game action, so it takes no step.
+    void MarkDeadWeightNow(Player* bot);
     // [supply27] map thread: the bot's five waits for its supplies (New RPG's vendor run restocks below the line)
     bool SupplyWanted(Player* bot) const;
     void SetOrderStatus(Player* bot, std::string const& status);

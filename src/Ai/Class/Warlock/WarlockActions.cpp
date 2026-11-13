@@ -354,38 +354,16 @@ bool CastCreateSoulstoneAction::isUseful()
     return hasSpace;
 }
 
+// [econ70] USER RULE 2026-11-13 («Я хочу, чтобы удаление было 0 ... Никто никогда не удаляет вещи.»): this used to
+// destroy one surplus Soul Shard per pass. It destroys nothing now. A shard's disposal is USE: Create Healthstone,
+// Create Soulstone, Create Spellstone and Create Firestone each spend one, and each has its own trigger in the
+// warlock strategies, so the warlock's own stones are made from the surplus. A shard no stone needs stays in the
+// soul bag, which holds nothing else, so it costs the normal bags no slot. No vendor buys a shard (SellPrice 0) and
+// it is soulbound, so sell and hand over are not reachable for it - keeping it is the disposal, and this says so.
 bool DestroySoulShardAction::Execute(Event /*event*/)
 {
-    // Look for the first soul shard in any bag and destroy it
-    for (int i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
-    {
-        if (Bag* pBag = (Bag*)bot->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
-        {
-            for (uint32 j = 0; j < pBag->GetBagSize(); ++j)
-            {
-                if (Item* pItem = pBag->GetItemByPos(j))
-                {
-                    if (pItem->GetTemplate()->ItemId == ITEM_SOUL_SHARD)
-                    {
-                        bot->DestroyItem(pItem->GetBagSlot(), pItem->GetSlot(), true);
-                        return true;  // Only destroy one!
-                    }
-                }
-            }
-        }
-    }
-    // Also check main inventory slots (not in bags)
-    for (int i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
-    {
-        if (Item* pItem = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
-        {
-            if (pItem->GetTemplate()->ItemId == ITEM_SOUL_SHARD)
-            {
-                bot->DestroyItem(pItem->GetBagSlot(), pItem->GetSlot(), true);
-                return true;
-            }
-        }
-    }
+    LOG_DEBUG("playerbots", "[econ70] {} keeps its surplus soul shards: a shard is spent on a stone, never destroyed",
+              bot->GetName());
     return false;
 }
 

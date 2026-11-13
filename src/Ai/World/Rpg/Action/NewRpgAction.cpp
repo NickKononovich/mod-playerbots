@@ -2057,11 +2057,11 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         return true;
 
     // [inv380] ... and in the same slot the quest-starter items and quest items the leader's rule found it carries
-    // for nothing (no vendor buys them, so the slot comes free only by dropping them)
-    if ((status == RPG_IDLE || status == RPG_GO_GRIND || status == RPG_WANDER_RANDOM || status == RPG_DO_QUEST ||
-         status == RPG_DO_GATHER || status == RPG_GO_CAMP || status == RPG_WANDER_NPC) &&
-        sGuildCoordinator.DropDeadWeightNow(bot))
-        return true;
+    // for nothing. [econ70] nothing is destroyed: what a vendor buys goes onto its SELL task, the rest it keeps and
+    // the leader's bags line reports the slot. No game action, so this takes no step and never returns for it.
+    if (status == RPG_IDLE || status == RPG_GO_GRIND || status == RPG_WANDER_RANDOM || status == RPG_DO_QUEST ||
+        status == RPG_DO_GATHER || status == RPG_GO_CAMP || status == RPG_WANDER_NPC)
+        sGuildCoordinator.MarkDeadWeightNow(bot);
 
     // [build147] the steps above can change the state without returning (b438 crash: std::get<GoCamp> on another
     // state, bad_variant_access): the switch dispatches on the state the bot is in now

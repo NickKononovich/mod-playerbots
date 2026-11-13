@@ -60,14 +60,7 @@ void GenericWarlockStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
-    triggers.push_back(
-        new TriggerNode(
-            "too many soul shards",
-            {
-                NextAction("destroy soul shard", 60.0f)
-            }
-        )
-    );
+    // [econ70] no node for "destroy soul shard": a surplus shard is spent on a stone or kept, never destroyed
     triggers.push_back(
         new TriggerNode(
             "devour magic purge",

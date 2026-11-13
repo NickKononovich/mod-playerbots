@@ -57,11 +57,17 @@ namespace
         return guid.IsItem() ? "item" : "other";
     }
 
-    // [bag66] b406: 20 quest items left on corpses "no bag room" (items 23859, 24043 ...). The item it destroys to
-    // make room: of its bags' items (never equipped ones) that are no quest item, no item a quest in its log needs,
-    // no container, ammunition or consumable (its food, drink, potions), the grey one of the lowest vendor value, else
-    // the lowest vendor value of all (its count counted); a game action (destroy), logged
-    bool MakeRoomFor(Player* bot, uint32 itemId, uint32 questId)
+    // [bag66] b406: 20 quest items left on corpses "no bag room" (items 23859, 24043 ...). The relief used to
+    // destroy the cheapest thing in the bags to make the slot.
+    // [econ70] USER RULE 2026-11-13 («Я хочу, чтобы удаление было 0 ... Никто никогда не удаляет вещи.»): it
+    // destroys nothing. A slot is freed by selling, handing over or using, and not one of the three can happen in
+    // the middle of a loot - so the item is LEFT, and this names it and the thing the bags would give up first, so
+    // the SELL task takes that one at the next vendor and the next kill of the same item fits. A named refusal beats
+    // a destroyed item: the item stays its owner's either way.
+    // Of its bags' items (never equipped ones) that are no quest item, no item a quest in its log needs, no
+    // container, ammunition or consumable (its food, drink, potions) and no key: the grey one of the lowest vendor
+    // value, else the lowest vendor value of all (its count counted). Reads only; no game action.
+    std::string BagsWouldGiveUp(Player* bot)
     {
         auto const needed = [bot](ItemTemplate const* proto)
         {
@@ -107,14 +113,12 @@ namespace
                 for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
                     consider(container->GetItemByPos(uint8(slot)));
         if (!worst)
-            return false;
-        // [loot20] questId 0: an item on the always-loot list (a five's own event item), no quest behind it
-        LOG_INFO("playerbots", "[bag66] {} destroys {} x{} ({}, {} c) to loot {} item {}{} t={}", bot->GetName(),
-                 worst->GetTemplate()->Name1, worst->GetCount(), worstGrey ? "grey" : "its lowest vendor value",
-                 worstValue, questId ? "quest" : "[loot20] always-loot", itemId,
-                 questId ? Acore::StringFormat(" for q{}", questId) : std::string(), QuestStats::NowMs());
-        bot->DestroyItem(worst->GetBagSlot(), worst->GetSlot(), true);
-        return true;
+            return "nothing in its bags may go: every slot is a quest item, a container, its ammunition, its food "
+                   "or drink, or a key";
+        return Acore::StringFormat(
+            "the slot it would give up first is {} x{} ({}, a vendor pays {} c), on its SELL task at the next vendor",
+            worst->GetTemplate()->Name1, worst->GetCount(), worstGrey ? "grey" : "its lowest vendor value",
+            worstValue);
     }
 
     // seconds since the bot opened this loot (0 when it was not seen opening it)
@@ -642,16 +646,14 @@ bool StoreLootAction::Execute(Event event)
             if (isUsefulItem)
             {
                 ItemPosCountVec dest;
-                // [bag66] a quest item never stays on the corpse for want of room: the lowest-value item of its bags
-                // (a grey one first) makes way for it
-                // [loot20] ... and an item on the always-loot list makes room the same way a quest item does. For a
-                // guild five that list is the run's own event items (TestHarnessMgr::PrepareEventItemLoot, [dm1]):
-                // the Defias Gunpowder the Defias Cannon needs for its lock. It is a quest-class item no member has
-                // a quest for, so `itemQuest` is 0 and the full-bag branch dropped it where MakeRoomFor would have
-                // made way for it - and these bots carry near-full bags all run ("[econ20] full-bags material
-                // relief", "bags 97 % full"). MakeRoomFor never touches a quest item, a container, a quiver,
-                // ammunition, a consumable or a key, so the drink and food this rest is built on stay put: it gives
-                // up the lowest-value thing in the bags, a grey first.
+                // [bag66] a quest item used to be given room by destroying the lowest-value item of the bags (a
+                // grey one first); [econ70] it is not, because nobody deletes anything - the refusal is named and
+                // the item stays on the corpse until a sell, a hand-over or a use has freed a slot.
+                // [loot20] an item on the always-loot list is treated the same way a quest item is. For a guild
+                // five that list is the run's own event items (TestHarnessMgr::PrepareEventItemLoot, [dm1]): the
+                // Defias Gunpowder the Defias Cannon needs for its lock. It is a quest-class item no member has a
+                // quest for, so `itemQuest` is 0 and without this the full-bag branch would drop it silently - and
+                // these bots carry near-full bags all run ("[econ20] full-bags material relief", "bags 97 % full").
                 // [dm30] ... and a refusal no free slot can lift is not a bag-room refusal. Player::CanStoreItem
                 // asks CanTakeMoreSimilarItems FIRST: an item the game caps per player (item_template.maxcount, or
                 // its ItemLimitCategory) that the bot already holds that many of comes back
@@ -672,14 +674,18 @@ bool StoreLootAction::Execute(Event event)
                     leave("already holds the most of it the game allows (no room would help)", true);
                     continue;
                 }
-                if (store != EQUIP_ERR_OK && (itemQuest || alwaysLoot) && MakeRoomFor(bot, itemid, itemQuest))
-                {
-                    dest.clear();
-                    store = bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount);
-                }
                 if (store != EQUIP_ERR_OK)
                 {
-                    leave(Acore::StringFormat("no bag room (store refusal {})", uint32(store)).c_str(), true);
+                    // [econ70] bags full: the loot is left and said, and nothing is destroyed to make room. For a
+                    // quest item or an always-loot item the line also names what the bags would give up first, so
+                    // the SELL task frees that slot at the next vendor instead of a destroy freeing it here.
+                    leave(Acore::StringFormat("no bag room (store refusal {}), nothing destroyed to make it{}",
+                                              uint32(store),
+                                              (itemQuest || alwaysLoot)
+                                                  ? ": " + BagsWouldGiveUp(bot)
+                                                  : std::string())
+                              .c_str(),
+                          true);
                     continue;
                 }
             }

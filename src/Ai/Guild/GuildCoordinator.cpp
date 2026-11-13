@@ -7545,34 +7545,51 @@ std::vector<GuildCoordinator::DeadItem> GuildCoordinator::QuestDeadWeight(Player
     return dead;
 }
 
-// [inv380] map thread: the bot drops what the leader's rule found it carries for nothing. Between its steps, as the
-// disenchant queue runs: no walk, no cast, and no vendor could take these items anyway.
-bool GuildCoordinator::DropDeadWeightNow(Player* bot)
+// [inv380] map thread: what the leader's rule found the member carries for nothing.
+// [econ70] USER RULE 2026-11-13 («Я хочу, чтобы удаление было 0 ... Никто никогда не удаляет вещи.»): it used to
+// destroy these. It does not. A member has three disposals - sell, hand over, use - and these items get the only one
+// that reaches them: what a vendor pays for goes onto the SELL task here, and what no vendor buys (a quest item is
+// BIND_QUEST_ITEM with SellPrice 0, so no vendor and no trade will take it) the member KEEPS, and the leader's bags
+// line keeps reporting the slot it costs (st.questDeadSlots / st.startersOpen, [inv380]). That is a slot spent on a
+// carried item, named every pass, instead of an item deleted once and gone.
+// It takes no game action now, so it never spends the bot's step: the caller runs it as a statement.
+void GuildCoordinator::MarkDeadWeightNow(Player* bot)
 {
     if (!bot || !bot->IsAlive() || bot->IsInCombat() || !IsPlanned(bot->GetGUID().GetCounter()))
-        return false;
+        return;
     // the verdict walks the bags and, for a quest item, the chain tables (GreyQuestNeed): the leader's own counts of
     // the last look gate it, so the walk runs only for a bot that holds such an item at all
     {
         CoordLock guard(lock_, __func__);
         auto const itr = bots_.find(bot->GetGUID().GetCounter());
         if (itr == bots_.end() || (!itr->second.startersOpen && !itr->second.questDeadSlots))
-            return false;
+            return;
     }
     std::vector<DeadItem> const dead = QuestDeadWeight(bot);
-    bool dropped = false;
+    if (dead.empty())
+        return;
+    CoordLock guard(lock_, __func__);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end())
+        return;
+    BotState& st = itr->second;
     for (DeadItem const& item : dead)
     {
         Item* held = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(item.itemGuidLow));
         ItemTemplate const* proto = held ? held->GetTemplate() : nullptr;
         if (!proto)
             continue;
-        LOG_INFO("playerbots", "[inv380] {} L{} drops {}{}: {}", bot->GetName(), bot->GetLevel(), proto->Name1,
-                 held->GetCount() > 1 ? " ×" + std::to_string(held->GetCount()) : "", item.why);
-        bot->DestroyItem(held->GetBagSlot(), held->GetSlot(), true);
-        dropped = true;
+        std::string const count = held->GetCount() > 1 ? " ×" + std::to_string(held->GetCount()) : "";
+        if (!proto->SellPrice)
+            continue;  // no vendor buys it: the member keeps it, and the bags line reports the slot every pass
+        if (std::find(st.sell.begin(), st.sell.end(), item.itemGuidLow) != st.sell.end() ||
+            TransferHolds(item.itemGuidLow))
+            continue;  // already on its SELL task, or a trade is moving it
+        st.sell.push_back(item.itemGuidLow);
+        LOG_INFO("playerbots", "[econ70] {} L{} {}{} → sell, never destroyed: {} (a vendor pays {})", bot->GetName(),
+                 bot->GetLevel(), proto->Name1, count, item.why,
+                 MoneyText(proto->SellPrice * std::max<uint32>(held->GetCount(), 1)));
     }
-    return dropped;
 }
 
 // [inv380] lock_ held. The grey junk a member carries onto its SELL task, and the bag counts for the bags line: the

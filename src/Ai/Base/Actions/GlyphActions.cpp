@@ -318,6 +318,9 @@ bool GiveGlyphAction::Execute(Event /*event*/)
         return false;
 
     // One glyph out of a possible stack: the giver loses exactly the copy the receiver gets.
+    // [econ70] this is a HAND-OVER, not a deletion: the receiver's slot is already reserved above
+    // (CanStoreNewItem) and StoreNewItem below puts the copy in it, so the item moves between two members. The
+    // zero-deletion rule counts items lost, and nothing is lost here.
     bot->DestroyItemCount(itemId, 1, true);
     if (Item* given = receiver->StoreNewItem(dest, itemId, true))
         receiver->SendNewItem(given, 1, true, false);
