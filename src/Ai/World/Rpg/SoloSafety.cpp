@@ -3379,6 +3379,14 @@ namespace SoloSafety
             found->second.dealtAtFlee = found->second.dealt;
         }
         found->second.fleeing = true;
+        // [death453] the walk it was on is over: its run past ends with the flee (the flee's legs are the kit's). b467
+        // Septimon L17 fled the Longshore murlocs, its flee stopped, RunPastStep took the old leg up again - 45 yd on
+        // into the murloc camp at its q152 spot, still in the fight
+        found->second.legRunPast.clear();
+        found->second.legStatic.clear();
+        found->second.legPoints.clear();
+        found->second.legSearched.clear();
+        found->second.legNamed.clear();
         found->second.rest = true;
         found->second.restWhy = why;
     }
@@ -4428,9 +4436,10 @@ namespace SoloSafety
             // walk on past the camp with it in tow. b353 Eraelor L9 (Gnarlpine Defender) and Nurlian L7 (Wrathscale
             // Siren): "PULL ... brings 1", then "RUN_PAST keeps walking past" the very mob it pulled (it was priced on
             // the leg), the walk dragged the fight into the next camp - judged 1, came 3 / 2, both died
+            // [death453] ... any pull of its own this fight: the leg was committed before the bot chose this fight
             if (found->second.engaged)
                 for (Unit* attacker : bot->getAttackers())
-                    if (attacker && attacker->IsAlive() && attacker->GetGUID() == found->second.engage.target)
+                    if (attacker && attacker->IsAlive())
                     {
                         LOG_INFO("playerbots", "[deaths13] {} L{} ends its run past: it fights its own pull of {} L{} "
                                  "(the leg's chase set holds {} mobs)",
