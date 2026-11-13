@@ -1372,6 +1372,11 @@ private:
     {
         uint32 itemId{0};
         uint32 price{0};
+        // [craft455] the rank the ITEM asks for (item_template RequiredSkillRank), which is the real gate: the
+        // recipe's own SkillLineAbility MinSkillLineRank is 1 for a recipe nobody trains (spell 3230, Elixir of
+        // Minor Agility: ability rank 1, recipe item 2553 rank 50), so a need taken from the ability alone would
+        // read "Alch 1" and look unlocked at every skill. [craft420] already reads this for the gear recipes
+        uint32 reqSkill{0};
         bool sold{false};
     };
     std::unordered_map<uint32, RecipeItem> recipeItemOf_;  // craft spell -> its recipe item

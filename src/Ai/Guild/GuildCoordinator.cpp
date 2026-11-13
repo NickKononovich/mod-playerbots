@@ -819,7 +819,8 @@ void GuildCoordinator::LoadRecipes()
                     RecipeItem& r = recipeItemOf_[learn->Effects[e].TriggerSpell];
                     bool const sold = vendorItems_.count(id) != 0;
                     if (!r.itemId || (sold && !r.sold))  // a copy a vendor sells beats one it does not
-                        r = {uint32(id), uint32(std::max<int32>(0, int32(proto.BuyPrice))), sold};
+                        r = {uint32(id), uint32(std::max<int32>(0, int32(proto.BuyPrice))),
+                             proto.RequiredSkillRank, sold};  // [craft455] the rank the item itself asks for
                 }
         }
     }
@@ -5307,10 +5308,17 @@ void GuildCoordinator::UpdateProfessions()
         {
             Recipe const* r = madeBy[item];
             uint32 const units = std::max<uint32>(1, uint32(std::ceil(what.first)));
+            // [craft455] the rank the need really asks for: a recipe nobody trains carries MinSkillLineRank 1 on
+            // its ability (spell 3230 for the Elixir), while its recipe item asks for 50 - the need must say 50, or
+            // a line already past rank 1 reads it as unlocked and the value goes to a walk that opens nothing
+            uint32 reqSkill = r->reqSkill;
+            if (!r->trainer && !r->autoLearned)
+                if (auto const recipeItem = recipeItemOf_.find(r->spellId); recipeItem != recipeItemOf_.end())
+                    reqSkill = std::max(reqSkill, recipeItem->second.reqSkill);
             std::string blocks;
             for (uint32 line : blockedLines[item])
                 blocks += (blocks.empty() ? "" : "/") + std::string(SkillShort(line));
-            needs.push_back({r->skillLine, r->reqSkill, r->spellId, item, units, 0, false,
+            needs.push_back({r->skillLine, reqSkill, r->spellId, item, units, 0, false,
                              "unblocks " + blocks + " for " + std::to_string(blockedLines[item].size()) + " line" +
                                  (blockedLines[item].size() > 1 ? "s" : ""),
                              what.second});
@@ -5341,7 +5349,7 @@ void GuildCoordinator::UpdateProfessions()
             if (text.size() < 400)
                 text += (text.empty() ? "" : ", ") + ItemName(item) + " ×" + std::to_string(units) + " blocks " +
                         blocks + " worth " + Gsc(uint64(what.second)) + " -> " + SkillShort(r->skillLine) + " " +
-                        std::to_string(r->reqSkill) + how;
+                        std::to_string(reqSkill) + how;
         }
         if (text != blockedNeedsLogged_)
         {
@@ -6386,12 +6394,13 @@ void GuildCoordinator::UpdateProfessions()
                                 continue;
                             if (p->GetItemCount(recipe->second.itemId, true))
                                 continue;  // it holds the recipe already: the craft call learns it
+                            // [craft455] the rank the need really asks for: the item's own, when it is the higher
+                            uint32 const asks = std::max(made->reqSkill, recipe->second.reqSkill);
                             if (recipe->second.sold)
                             {
                                 add(GuildProfessionKind::BUY, recipe->second.itemId, 1,
                                     ItemName(recipe->second.itemId) + " for " + SkillShort(line) + " " +
-                                        std::to_string(made->reqSkill) + ": " + ItemName(n->itemId) + " needs it " +
-                                        "[craft453]");
+                                        std::to_string(asks) + ": " + ItemName(n->itemId) + " needs it [craft453]");
                                 picks.back().cost = recipe->second.price;
                                 picks.back().worth = n->value > 0.0 ? uint32(n->value) : 0;
                                 float yards = std::numeric_limits<float>::max();
@@ -6418,8 +6427,7 @@ void GuildCoordinator::UpdateProfessions()
                                     "rank and stops there, the recipe is a loot need",
                                     Who(row->low), p->GetLevel(), SkillShort(line), ItemName(n->itemId),
                                     ItemName(recipe->second.itemId),
-                                    sources.empty() ? std::string("and no drop is known either") : sources,
-                                    made->reqSkill);
+                                    sources.empty() ? std::string("and no drop is known either") : sources, asks);
                                 if (std::string& logged = st.craftLogged["craft453:" + std::to_string(n->spellId)];
                                     logged != text)
                                 {
