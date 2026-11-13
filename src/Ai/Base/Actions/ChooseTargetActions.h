@@ -409,6 +409,9 @@ public:
 Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener = nullptr);
 // [lead1140] a ranged engage opener of the tank reaches `mob` from where it stands (spell range, in sight)
 bool TankOpensFromHere(PlayerbotAI* botAI, Player* tank, Unit* mob);
+// [pull90] the inputs TankOpensFromHere read for `mob`, for the log line of a verdict that rests on it (lead1291's
+// pack join): the mob, its distance, the sight, and every engage opener of the tank with its range
+std::string TankOpenerReach(PlayerbotAI* botAI, Player* tank, Unit* mob);
 
 class TankOpenIncomingAction : public Action
 {

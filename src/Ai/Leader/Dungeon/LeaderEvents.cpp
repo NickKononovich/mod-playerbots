@@ -1210,11 +1210,19 @@ namespace Leader::Dungeon
             // not joined - it stays a blocker (the members' guards keep them out of its reach) and the chain pull
             // judges it with its walk
             bool reached = false;
+            // [pull90] the inputs of the reach test, per pack mob: the distance, the sight and every opener's range.
+            // b480's nine refusals named none of them, and seven of the nine were inside both openers' 30 yd, so
+            // only the sight test can have refused them - the log now says which input it was
+            std::string reachWhy;
             for (ObjectGuid const& guid : packMobs)
-                if (Creature* packMob = map->GetCreature(guid); packMob && TankOpensFromHere(tankAI, tank, packMob))
+                if (Creature* packMob = map->GetCreature(guid); packMob)
                 {
-                    reached = true;
-                    break;
+                    reachWhy += (reachWhy.empty() ? "" : " | ") + TankOpenerReach(tankAI, tank, packMob);
+                    if (TankOpensFromHere(tankAI, tank, packMob))
+                    {
+                        reached = true;
+                        break;
+                    }
                 }
             // [lead1340] b256 rfc-h 5G-7 131-156 s (24 s deadlock, Trogg x3): the DK tank's pull back ended "already in
             // combat" 22 yd off its fight spot, the Trogg on it held in melee beside an idle Trogg pair (17 yd); every
@@ -1229,9 +1237,11 @@ namespace Leader::Dungeon
             {
                 bool const movesAway = bot != tank;
                 LOG_INFO("playerbots", "[lead1291] {}: {}'s pack ({} mobs, {:.1f} yd) fits the fight but no opener of "
-                         "the tank reaches it from where it stands: not joined, {}",
+                         "the tank reaches it from where it stands: not joined, {} [pull90] ({}; the tank {}, {})",
                          tank->GetName(), mob->GetName(), packMobs.size(), tank->GetExactDist(mob),
-                         movesAway ? "the fight moves out of its reach [lead1340]" : "left to the chain pull");
+                         movesAway ? "the fight moves out of its reach [lead1340]" : "left to the chain pull",
+                         reachWhy, tank->isMoving() ? "walks" : "stands",
+                         tank->GetVictim() ? "holds a target" : "holds nothing");
                 Decisions().Write(run, "leader", "pack_join_unreached", mob->GetGUID(), mob->GetName(), true,
                                   JsonObject()
                                       .Num("packMobs", int64(packMobs.size()))
@@ -1239,6 +1249,8 @@ namespace Leader::Dungeon
                                       .Str("judged", judged)
                                       .Real("tankGap", tank->GetExactDist(mob))
                                       .Str("blocked", bot->GetName())
+                                      .Str("reach", reachWhy)  // [pull90] the reach test's own inputs
+                                      .Bool("tankMoving", tank->isMoving())
                                       .Bool("movesAway", movesAway)
                                       .Str("why", movesAway ? "[lead1291] no opener of the tank reaches the pack from "
                                                               "where it stands: not joined, the fight moves out of "
@@ -11002,13 +11014,23 @@ namespace Leader::Dungeon
                     // healed / energized member on its threat list (ThreatManager::ForwardThreatForAssistingMe). A
                     // ranged member's threat rising on a mob it does not attack is that split; its own damage feeds it,
                     // so it holds like a melee member's splash
+                    // [threat40] b480 rfc-n five 1 22:02: "[lead885] Gilduck: its split threat on Ragefire Trogg (not
+                    // attacked) overtakes the tank: holds its damage" - the frost mage, at 1 % mana, stopped its
+                    // damage over a mob the bear was holding. The headroom was the whole test here, while the two
+                    // other places that ask the same question already carry the user's escape: the single-target pick
+                    // (lead985, `!headroomOn(mob) && !survivesOn(mob)`) and the area set (lead1010, survivesSet). A
+                    // member may take a mob off the tank when the leader computes it survives until the tank has it
+                    // back or the healer covers it (aggro-loss-if-survives), and that holds whether the threat came
+                    // from its hits or from the game's split of its heals and energizes - the split is the member's
+                    // own threat, not a different kind. One judge for the three (one-judge-per-decision): the splash
+                    // hold now lifts on survivesOn exactly as lead985's does, no new line of its own
                     if (mine && !PlayerbotAI::IsHeal(bot))
                         for (ObjectGuid const& other : killOrder)
                             if (Unit* splashed = ObjectAccessor::GetUnit(*tank, other);
                                 splashed && splashed != mine && splashed->IsAlive() &&
                                 splashed->GetVictim() == tank && seenOn(splashed, bot).threat > 0.0f &&
                                 getMSTimeDiff(seenOn(splashed, bot).riseMs, now) <= growsWithin(splashed) &&
-                                !headroomOn(splashed))
+                                !headroomOn(splashed) && !survivesOn(splashed))
                             {
                                 unpulledNear = Acore::StringFormat("its splash threat on {} overtakes the tank",
                                                                    splashed->GetName());
@@ -11027,9 +11049,28 @@ namespace Leader::Dungeon
                                                      .insert({bot->GetGUID().GetRawValue(),
                                                               splashed->GetGUID().GetRawValue() ^ 1u})
                                                      .second)
+                                {
+                                    // [threat40] the inputs of the hold: its projected threat there against the
+                                    // tank's at the game's overtake share, and the survive test that did not lift it
+                                    Projection const p = project(splashed);
                                     LOG_INFO("playerbots", "[lead885] {}: its split threat on {} (not attacked) "
-                                             "overtakes the tank: holds its damage",
-                                             bot->GetName(), splashed->GetName());
+                                             "overtakes the tank: holds its damage [threat40] (its {:.0f} vs the "
+                                             "tank's {:.0f} x share {:.2f} = {:.0f}; it does not survive the "
+                                             "take-back)",
+                                             bot->GetName(), splashed->GetName(), p.mineNext, p.tankNext, p.share,
+                                             p.share * p.tankNext);
+                                    Decisions().Write(run, "leader", "split_threat_hold", bot->GetGUID(),
+                                                      bot->GetName(), true,
+                                                      JsonObject()
+                                                          .Str("member", bot->GetName())
+                                                          .Str("mob", splashed->GetName())
+                                                          .Real("mine", p.mineNext)
+                                                          .Real("tank", p.tankNext)
+                                                          .Real("share", p.share)
+                                                          .Bool("survives", false)
+                                                          .Str("why", "[threat40] its split threat overtakes the "
+                                                                      "tank and it does not survive the take-back"));
+                                }
                                 mine = nullptr;
                                 break;
                             }
@@ -12122,9 +12163,43 @@ namespace Leader::Dungeon
             // on trash only at a critical moment or when back before the next boss pull. b218 rfc-h 5C 1039.9 s:
             // Innervate on trash to Rtmagab ("10 % < 12 % for the fight's 12 s left - 2 fight s gained; no later boss
             // within its recharge needs it beyond a full pool"), Bazzalan pulled 36 s later with it on its 180 s
-            // recharge. On trash a mana tool has the burn cooldowns' verdict (cooldownVerdict: the critical moment, or
+            // recharge. On trash a mana tool had the burn cooldowns' verdict (cooldownVerdict: the critical moment, or
             // back before the pull of the next boss); in a boss fight the later boss's need from a full pool as above
-            auto const manaToolVerdict = [&](Player* caster, bool self, float rechargeSec, float effectSec,
+            // [mana60] b480 rfc-n five 1 (Bierya) 21:56-22:05: lead440's mana rule ran in the boss branch only, so on
+            // trash the burn rule answered - "Evocation of Galiver held for Oggleflint (his pull in 113-228 s,
+            // recharge 240 s)" 8 times while the arcane mage sat at 1-6 % mana, and its one Evocation of the run went
+            // out only because the healer went dry and lead903 made the moment critical. The burn rule asks "is it
+            // back before his pull" and nothing else: Oggleflint was 113-228 s away, the mage rests to his line long
+            // before then, so the hold bought him nothing and cost the fights in between. The loop below asks the
+            // same "back before his pull" question (toHim >= rechargeSec: no hold from him) and adds lead440's mana
+            // test on top, so it subsumes the burn rule for a mana tool - one judge for trash and boss alike
+            // (one-judge-per-decision), no new line or clock
+            // [mana60] the inputs of every mana-tool verdict, once per caster per changed verdict, so the next triage
+            // audits it per bot: the caster's mana now, the fight's seconds left, boss fight or trash, and the test's
+            // own numbers inside `why` (the later boss, his fight, the member's need there from a full pool, the
+            // seconds to his pull, the recharge)
+            thread_local std::map<uint64, std::string> manaVerdictLogged;
+            auto const manaVerdictLog = [&](Player* caster, std::string const& why)
+            {
+                if (!caster)
+                    return;
+                if (manaVerdictLogged.size() > 4096)
+                    manaVerdictLogged.clear();
+                std::string& logged = manaVerdictLogged[caster->GetGUID().GetRawValue()];
+                if (logged == why)
+                    return;
+                logged = why;
+                Decisions().Write(run, "leader", "mana_tool_verdict", caster->GetGUID(), caster->GetName(), true,
+                                  JsonObject()
+                                      .Str("member", caster->GetName())
+                                      .Real("mana", caster->GetPowerPct(POWER_MANA))
+                                      .Real("fightSecLeft", lead.fightSecLeft)
+                                      .Bool("bossFight", fightBoss != nullptr)
+                                      .Str("why", why));
+                LOG_INFO("playerbots", "[mana60] {}: mana {:.0f} %, the fight's {:.0f} s left - {}", caster->GetName(),
+                         caster->GetPowerPct(POWER_MANA), lead.fightSecLeft, why);
+            };
+            auto const manaToolVerdict = [&](Player* caster, bool self, float rechargeSec, float /*effectSec*/,
                                              std::string& why) -> bool
             {
                 if (!critical.empty())
@@ -12132,8 +12207,6 @@ namespace Leader::Dungeon
                     why = critical;
                     return true;
                 }
-                if (!fightBoss)
-                    return cooldownVerdict(rechargeSec, effectSec, why);
                 for (auto const& [bossGuid, need] : lead.bossNeeds)
                 {
                     Creature* later =
@@ -12155,14 +12228,21 @@ namespace Leader::Dungeon
                         if (there > 100.0f)
                         {
                             why = Acore::StringFormat(
-                                "held for {}: {} needs {:.0f} % there from a full pool ({:.0f} s; his pull in {:.0f} "
-                                "s, recharge {:.0f} s)",
-                                need.name, member->GetName(), there, need.fightSec, toHim, rechargeSec);
+                                "[mana60] held for {}: {} needs {:.0f} % there from a full pool ({:.0f} s; his pull "
+                                "in {:.0f} s, recharge {:.0f} s){}",
+                                need.name, member->GetName(), there, need.fightSec, toHim, rechargeSec,
+                                fightBoss ? "" : ", on trash by the same test");
+                            manaVerdictLog(caster, why);
                             return false;
                         }
                     }
                 }
-                why = "no later boss within its recharge needs it beyond a full pool";
+                why = Acore::StringFormat("[mana60] no later boss within its recharge ({:.0f} s) needs it beyond a "
+                                          "full pool: {} at {:.0f} % gets it {}",
+                                          rechargeSec, caster ? caster->GetName() : "-",
+                                          caster ? caster->GetPowerPct(POWER_MANA) : 0.0f,
+                                          fightBoss ? "in this boss fight" : "on this trash");
+                manaVerdictLog(caster, why);
                 return true;
             };
             ManaTool best;

@@ -440,6 +440,34 @@ bool TankOpensFromHere(PlayerbotAI* botAI, Player* tank, Unit* mob)
     return false;
 }
 
+// [pull90] b480 rfc-n five 1 (the feral druid Bierya) 21:56-22:05: nine "[lead1291] ... fits the fight but no opener
+// of the tank reaches it" refusals at 20.3 / 23.4 / 25.7 / 26.3 / 30.2 / 32.5 / 34.8 / 44.3 / 48.8 yd. Both of a
+// druid's engage openers are 30 yd (the run's own [lead94] lines: "faerie fire (feral): ready, 39 of 30 yd";
+// "growl: ... 30 yd"), and IsWithinCombatRange adds both combat reaches on top, so seven of the nine were inside
+// range and only the sight test can have refused them - which the line did not say. The verdict's inputs, read the
+// same way TankOpensFromHere reads them, so the next triage names the input that failed instead of guessing: the
+// mob, its distance, the sight, and every opener with its range
+std::string TankOpenerReach(PlayerbotAI* botAI, Player* tank, Unit* mob)
+{
+    if (!botAI || !tank || !mob)
+        return "no tank or mob";
+    std::string out = Acore::StringFormat("{} {:.1f} yd, {}", mob->GetName(), tank->GetExactDist(mob),
+                                          tank->IsWithinLOSInMap(mob) ? "in sight" : "out of sight");
+    for (char const* name : TankEngageOpeners(tank, false))
+    {
+        uint32 const spell = botAI->GetAiObjectContext()->GetValue<uint32>("spell id", name)->Get();
+        SpellInfo const* info = spell && tank->HasSpell(spell) ? sSpellMgr->GetSpellInfo(spell) : nullptr;
+        if (!info)
+            out += Acore::StringFormat("; {}: not known", name);
+        else
+            out += Acore::StringFormat("; {}: {} of {:.0f} yd", name,
+                                       tank->IsWithinCombatRange(mob, info->GetMaxRange(false)) ? "in range"
+                                                                                                : "out of range",
+                                       info->GetMaxRange(false));
+    }
+    return out;
+}
+
 Unit* TankIncomingMob(PlayerbotAI* botAI, Player* bot, char const** opener)
 {
     // [lead112] b147 rfc-h 59.9-78 s: two Earthborers on the healer and the shaman while the tank, not in combat
