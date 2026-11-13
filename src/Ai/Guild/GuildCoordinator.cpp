@@ -6289,6 +6289,25 @@ bool GuildCoordinator::ProfessionBuyDue(Player* bot, uint32& itemId, uint32& cou
     return false;
 }
 
+// [craft441] the craft executor's own gate beside InSafePlace: the bot stands in the town of a CRAFT call's stop
+// ([lag342], the inn the route walked it to). The smelt keeps its forge ([econ1]) and is not a place of its own
+bool GuildCoordinator::CraftTownReady(Player* bot)
+{
+    if (!bot || !bot->IsAlive() || bot->IsInCombat() || !bot->GetMap() || bot->GetMap()->Instanceable())
+        return false;
+    if (!IsPlanned(bot->GetGUID().GetCounter()))
+        return false;
+    CoordLock guard(lock_, __func__);
+    auto const itr = bots_.find(bot->GetGUID().GetCounter());
+    if (itr == bots_.end())
+        return false;
+    for (GuildOrder const& o : itr->second.orders)
+        if (o.type == GuildOrderType::PROFESSION && o.profession == GuildProfessionKind::CRAFT &&
+            o.skillLine != SKILL_MINING && o.pos != WorldPosition() && o.townArea && TownReady(bot, o))
+            return true;
+    return false;
+}
+
 GuildProfessionKind GuildCoordinator::ProfessionCall(Player* bot, uint32* skillLine)
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
@@ -6307,10 +6326,18 @@ GuildProfessionKind GuildCoordinator::ProfessionCall(Player* bot, uint32* skillL
             (o.profession == GuildProfessionKind::CRAFT && o.skillLine == SKILL_MINING && o.pos != WorldPosition()))
             continue;
         // [lag326] a BUY call with its vendor's town: due in that town only
+        // [craft441] ... and a CRAFT call with its inn's town ([lag342]): due where the leader sent it, as in any
+        // safe place. NewRpgCraft::InSafePlace is the core's rest flag, and a bot holds REST_FLAG_IN_TAVERN only
+        // when the client sends the inn's areatrigger, which no bot does - so for a bot it reads "in a capital".
+        // b473: Orenem stood 2x ~300 s at his Astranaar craft stop with "PROFESSION/craft runnable" while the gate
+        // read "waits: craft Tail 29→150 (Astranaar)", Tailoring 25→29 in 14 h and not one craft cast, while
+        // Dekorhan (Insc) and Eraelor (LW) crafted in Darnassus
+        bool const craftTown = o.profession == GuildProfessionKind::CRAFT && o.pos != WorldPosition() &&
+                               o.townArea && TownReady(bot, o);
         bool const ready = o.profession == GuildProfessionKind::TRAIN ||
                                    (o.profession == GuildProfessionKind::BUY && o.pos != WorldPosition())
                                ? o.townArea && TownReady(bot, o)
-                               : NewRpgCraft::InSafePlace(bot);
+                               : craftTown || NewRpgCraft::InSafePlace(bot);
         if (ready)
         {
             due = &o;

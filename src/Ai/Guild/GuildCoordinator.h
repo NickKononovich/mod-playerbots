@@ -372,6 +372,9 @@ public:
     // [lag327] map thread: the bot's skill-up BUY call (item, units, its line) when it is due where the bot stands
     // (its vendor's town, [lag326]); false: none due
     bool ProfessionBuyDue(Player* bot, uint32& itemId, uint32& count, uint32& skillLine);
+    // [craft441] map thread: the bot stands in the town of a CRAFT call's own stop ([lag342]), alive and out of
+    // combat - the place the leader sent it to craft in, whether or not the core's rest flag is set there
+    bool CraftTownReady(Player* bot);
     // [lag335] the spawns of the vendors that sell an item without a stock limit (npc_vendor maxcount 0, any item:
     // GuildGear's vendor index holds only gear and bags); loaded with the recipes, read-only after
     struct ReagentVendor

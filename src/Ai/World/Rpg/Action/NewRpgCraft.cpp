@@ -913,7 +913,11 @@ namespace NewRpgCraft
 
     bool StartCraft(PlayerbotAI* botAI, Player* bot)
     {
-        if (!loaded || !InSafePlace(bot) || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()))
+        // [craft441] ... or the town of its CRAFT call's stop ([lag342]): InSafePlace is the core's rest flag, which
+        // a bot holds only in a capital (REST_FLAG_IN_TAVERN comes from the client's inn areatrigger, never sent by a
+        // bot), so a crafter whose nearest inn is an outpost one reached its stop and crafted nothing
+        if (!loaded || !sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) ||
+            (!InSafePlace(bot) && !sGuildCoordinator.CraftTownReady(bot)))
             return false;
         uint32 const low = bot->GetGUID().GetCounter();
         uint64 const fp = Fingerprint(bot);
