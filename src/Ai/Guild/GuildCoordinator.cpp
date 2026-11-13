@@ -2523,7 +2523,10 @@ void GuildCoordinator::UpdateOrders()
         // [inv380] the junk it carries for nothing onto its SELL task, whatever its bag pressure is: a vendor pays
         // for it and nothing in the guild wants it, so a slot spent on it is a slot lost for loot
         if (!HumanCharacter(p))
+        {
             AddDeadWeight(st, row.low, p);
+            AddAmmoSurplus(st, row.low, p);  // [econ71]
+        }
         if (!st.disenchant.empty())
         {
             GuildOrder o;
@@ -7654,6 +7657,132 @@ void GuildCoordinator::AddDeadWeight(BotState& st, uint32 low, Player* p)
     st.junkSlots = junk;
     st.startersOpen = starters;
     st.questDeadSlots = questDead;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [econ71] lock_ held, world thread. The ammo a member carries for nothing.
+//
+// Measured on guild 21 on 2026-11-13: 105 446 rounds across 26 bots. 43 633 of them Light Shot - bullets - and the
+// guild owns not one gun; the five members carrying a Deadly Throwing Axe hold 15 575 pieces between them and a
+// thrown weapon is its own ammo in 3.3.5, so they can fire none of it; and nothing anywhere capped the rest. The
+// acquire side is closed in ItemUsageValue ([econ71]: the derived load replaced "8 stacks for a hunter", which was
+// 8000 rounds) and in the loot path, so this is the disposal of what is already in the bags.
+//
+// All three items have SellPrice 0, so no vendor buys them and the SELL task cannot take them; nothing is ever
+// destroyed ([econ70]). That leaves exactly two routes, and this marks each stack onto one of them:
+//   USE  - a stack a member cannot fire, or holds above its own load, goes to a member who FIRES that subclass and
+//          is under its load: HeldItem forLow = that member, which the transfer planner moves by trade or mail
+//          ([guild81]) and which also settles that member's own need;
+//   BANK - with nobody to fire it (every bullet while the guild owns no gun, a thrown user's whole holding) it goes
+//          to the guild bank, HeldItem forLow 0, which the BANK_DEPOSIT order deposits ([guild30] / [bank411]). The
+//          bullets wait there for a member who equips a gun.
+// With no bank tab and no taker there is no route at all: the member keeps the stack and the line says so, which is
+// the honest outcome under the rule and not a licence to destroy it.
+//
+// Whole stacks only. A stack is the unit a bag slot, a trade and the bank all deal in, and the point of the exercise
+// is the slots these are costing - the bags whose fullness used to force the [bag66] destroy.
+// ---------------------------------------------------------------------------------------------------------------------
+void GuildCoordinator::AddAmmoSurplus(BotState& st, uint32 low, Player* p)
+{
+    uint32 const sub = ItemUsageValue::AmmoSubClassFor(p);
+    std::set<uint32> known;  // already moving: held for someone, on the SELL task, or in the disenchant queue
+    for (HeldItem const& h : st.held)
+        known.insert(h.itemGuidLow);
+    for (uint32 guid : st.sell)
+        known.insert(guid);
+    for (uint32 guid : st.disenchant)
+        known.insert(guid);
+    // the rounds of the kind it fires that it may keep, counted down as its own stacks claim it
+    uint32 room = 0;
+    uint32 surplusSlots = 0, deadSlots = 0;
+    // a member who fires this subclass and is under its own load, nearest first by nothing but need: the one with
+    // the most room takes it, so one holder's surplus does not have to be split across five receivers
+    auto const taker = [&](ItemTemplate const* proto, uint32 count) -> uint32
+    {
+        uint32 best = 0, bestRoom = 0;
+        for (auto& [otherLow, other] : bots_)
+        {
+            if (otherLow == low)
+                continue;
+            Player* r = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(otherLow));
+            if (!r || HumanCharacter(r) || ItemUsageValue::AmmoSubClassFor(r) != proto->SubClass)
+                continue;
+            uint32 const cap = ItemUsageValue::AmmoCapRounds(r, proto);
+            uint32 const held = ItemUsageValue::AmmoHeldRounds(r, proto->SubClass);
+            uint32 planned = 0;  // what this plan has already sent it
+            for (HeldItem const& h : other.held)
+                if (h.itemId == proto->ItemId)
+                    planned += h.count;
+            uint32 const free = cap > held + planned ? cap - held - planned : 0;
+            if (free >= count && free > bestRoom)
+            {
+                bestRoom = free;
+                best = otherLow;
+            }
+        }
+        return best;
+    };
+    auto const look = [&](Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || proto->Class != ITEM_CLASS_PROJECTILE || known.count(item->GetGUID().GetCounter()))
+            return;
+        uint32 const count = item->GetCount();
+        bool const fires = sub && proto->SubClass == sub;
+        if (fires)
+        {
+            if (count <= room)  // inside its own load: it keeps this stack
+            {
+                room -= count;
+                return;
+            }
+            ++surplusSlots;
+        }
+        else
+            ++deadSlots;
+        uint32 const to = taker(proto, count);
+        if (!to && !GuildBankRun::DepositState(p, proto->ItemId, count).empty())
+            return;  // no taker and no bank: it keeps the stack, the bags line below says what it costs
+        HeldItem h;
+        h.itemGuidLow = item->GetGUID().GetCounter();
+        h.itemId = proto->ItemId;
+        h.count = count;
+        h.forLow = to;  // 0: the guild bank
+        h.purpose = fires ? "ammo above its load" : "ammo it cannot fire";
+        st.held.push_back(h);
+        known.insert(h.itemGuidLow);
+        LOG_INFO("playerbots", "[econ71] {} L{} {} ×{} → {}: {} (its ranged weapon fires {}, its load {} rounds)",
+                 p->GetName(), p->GetLevel(), proto->Name1, count,
+                 to ? Who(to) : std::string("the guild bank"), h.purpose,
+                 sub == ITEM_SUBCLASS_ARROW   ? "arrows"
+                 : sub == ITEM_SUBCLASS_BULLET ? "bullets"
+                                               : "nothing",
+                 sub ? ItemUsageValue::AmmoCapRounds(p, proto) : 0);
+    };
+    if (sub)
+    {
+        // the load is derived, so it is read off the kind it actually fires: the first such stack gives the stack
+        // size the cap rounds up to ([econ71] AmmoCapRounds)
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END && !room; ++slot)
+            if (Item* item = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                if (item->GetTemplate()->Class == ITEM_CLASS_PROJECTILE && item->GetTemplate()->SubClass == sub)
+                    room = ItemUsageValue::AmmoCapRounds(p, item->GetTemplate());
+        for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END && !room; ++b)
+            if (Bag* bag = p->GetBagByPos(b))
+                for (uint32 j = 0; j < bag->GetBagSize() && !room; ++j)
+                    if (Item* item = bag->GetItemByPos(uint8(j)))
+                        if (item->GetTemplate()->Class == ITEM_CLASS_PROJECTILE &&
+                            item->GetTemplate()->SubClass == sub)
+                            room = ItemUsageValue::AmmoCapRounds(p, item->GetTemplate());
+    }
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        look(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+        if (Bag* bag = p->GetBagByPos(b))
+            for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                look(bag->GetItemByPos(uint8(j)));
+    st.ammoDeadSlots = deadSlots;
+    st.ammoSurplusSlots = surplusSlots;
 }
 
 GuildCoordinator::RepairCall GuildCoordinator::Repair(Player* bot) const

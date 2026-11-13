@@ -71,6 +71,14 @@ public:
     /** True if this poison is the highest item level of its family (use-spell SpellFamilyFlags). */
     bool IsBestPoison(ItemTemplate const* proto);
 
+    // [econ71] the one judge of how much ammo a bot carries. AmmoSubClassFor is what its EQUIPPED ranged weapon
+    // fires (ITEM_SUBCLASS_ARROW for a bow or crossbow, ITEM_SUBCLASS_BULLET for a gun, 0 for a thrown weapon, an
+    // empty ranged slot or a class with no ranged attack - and 0 means it takes no ammo at all). AmmoHeldRounds is
+    // what it already carries of that subclass; AmmoCapRounds is the derived ceiling, see the comment on its body.
+    static uint32 AmmoSubClassFor(Player* bot);
+    static uint32 AmmoHeldRounds(Player* bot, uint32 subClass);
+    static uint32 AmmoCapRounds(Player* bot, ItemTemplate const* ammoProto);
+
     static std::vector<uint32> SpellsUsingItem(uint32 itemId, Player* bot);
     static bool SpellGivesSkillUp(uint32 spellId, Player* bot);
 

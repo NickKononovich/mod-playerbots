@@ -513,63 +513,124 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
     return ITEM_USAGE_NONE;
 }
 
+// [econ71] what the bot's EQUIPPED ranged weapon fires. A thrown weapon is its own ammo in 3.3.5 and fires none, an
+// empty ranged slot fires none, and a class with no ranged attack holds none: all three answer 0. This is the same
+// map the core uses in Spell::CheckItems and that PullStrategy ([ammo84]), HunterTriggers ([rot608]), the vendor run
+// (RequiredAmmoSubClass) and FindAmmoVisitor each carry their own copy of - the copies agree, so this one is the
+// judge the acquire and disposal sides share.
+uint32 ItemUsageValue::AmmoSubClassFor(Player* bot)
+{
+    if (!bot)
+        return 0;
+    Item* ranged = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
+    ItemTemplate const* proto = ranged ? ranged->GetTemplate() : nullptr;
+    if (!proto || proto->Class != ITEM_CLASS_WEAPON)
+        return 0;
+    switch (proto->SubClass)
+    {
+        case ITEM_SUBCLASS_WEAPON_GUN:
+            return ITEM_SUBCLASS_BULLET;
+        case ITEM_SUBCLASS_WEAPON_BOW:
+        case ITEM_SUBCLASS_WEAPON_CROSSBOW:
+            return ITEM_SUBCLASS_ARROW;
+        default:  // a thrown weapon needs no ammo, and nothing else in the ranged slot fires any
+            return 0;
+    }
+}
+
+// [econ71] the rounds of that subclass it holds, bags and inventory slots alike. Only that subclass: a bow user's
+// bullets are not ammo, they are dead weight, and counting them as stock is what let 43 633 bullets sit in bags that
+// then had no room (guild 21, 2026-11-13: 13 holders, not one gun in the guild).
+uint32 ItemUsageValue::AmmoHeldRounds(Player* bot, uint32 subClass)
+{
+    if (!bot || !subClass)
+        return 0;
+    uint32 rounds = 0;
+    auto const count = [&](Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (proto && proto->Class == ITEM_CLASS_PROJECTILE && proto->SubClass == subClass)
+            rounds += item->GetCount();
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        count(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 bag = INVENTORY_SLOT_BAG_START; bag < INVENTORY_SLOT_BAG_END; ++bag)
+        if (Bag* container = bot->GetBagByPos(bag))
+            for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
+                count(container->GetItemByPos(uint8(slot)));
+    return rounds;
+}
+
+// [econ71] USER DECISION 2026-11-13 («посмотреть расход и примерно оценивать, сколько нужно, запас x2 или x3, не
+// нужно носить с собой триллион этих снарядов»): how many rounds a bot carries is DERIVED, never chosen. The old
+// rule was "8 stacks for a hunter, 2 for anyone else" (QueryItemUsageForAmmo), and an ammo stack is 1000, so a
+// hunter's target was 8000 rounds - which is exactly what the guild held (Ainne 8091, Feette 7976, Thokhen 6992).
+//
+// The derivation, all three inputs facts and all three logged by the caller that acts on it:
+//   * one round per ranged swing - the core spends exactly one (Spell::TakeAmmo), so the shots an activity costs are
+//     its seconds divided by the weapon's own swing time, bot->GetAttackTime(RANGED_ATTACK), the same interval
+//     DpsEstimate uses as a hunter's lead;
+//   * the activity it must cover without reaching a vendor is one run - the project's own run length, 20 minutes
+//     (USER RULE "test run length": a verification run is <= 20 min, and a five runs on until the dungeon has a
+//     result, which is the same order); the bot restocks at a vendor between runs (VENDOR_LOW_AMMO);
+//   * the reserve the user approved, x3 of that.
+// Rounded up to a full stack, because a vendor sells and a bag holds whole stacks. For a 2.8 s bow that is
+// 1200 / 2.8 = 429 shots, x3 = 1286, one stack up = 2000 rounds; for a 1.5 s gun 2400 shots, x3 = 7200 -> 8000.
+// 0 when its ranged weapon fires nothing: a thrown user carries no ammo at all, which is the other 15 575 pieces.
+uint32 ItemUsageValue::AmmoCapRounds(Player* bot, ItemTemplate const* ammoProto)
+{
+    uint32 const subClass = AmmoSubClassFor(bot);
+    if (!subClass || !ammoProto || ammoProto->SubClass != subClass)
+        return 0;
+    constexpr float RUN_SECONDS = 20.0f * MINUTE;  // the project's own run length, see above
+    constexpr float RESERVE = 3.0f;                // the reserve the user approved ("запас x2 или x3")
+    float const swingSec = std::max(float(bot->GetAttackTime(RANGED_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
+    uint32 const rounds = uint32(std::ceil(RUN_SECONDS / swingSec * RESERVE));
+    uint32 const stack = std::max<uint32>(ammoProto->GetMaxStackSize(), 1);
+    return ((rounds + stack - 1) / stack) * stack;
+}
+
 ItemUsage ItemUsageValue::QueryItemUsageForAmmo(ItemTemplate const* proto)
 {
     if (bot->getClass() != CLASS_HUNTER && bot->getClass() != CLASS_ROGUE && bot->getClass() != CLASS_WARRIOR)
         return ITEM_USAGE_NONE;
 
-    Item* rangedWeapon = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_RANGED);
-    uint32 requiredSubClass = 0;
+    // [econ71] the ammo its equipped ranged weapon fires, and nothing else. A thrown user and an empty ranged slot
+    // answer 0, so neither has any use for a round.
+    uint32 const requiredSubClass = AmmoSubClassFor(bot);
+    if (!requiredSubClass || proto->SubClass != requiredSubClass)
+        return ITEM_USAGE_NONE;
 
-    if (rangedWeapon)
+    uint32 currentAmmoId = bot->GetUInt32Value(PLAYER_AMMO_ID);
+
+    // Check if the bot has an ammo type assigned
+    if (currentAmmoId == 0)
+        return ITEM_USAGE_EQUIP;  // Equip the ammo if no ammo
+    // Compare new ammo vs current equipped ammo
+    ItemTemplate const* currentAmmoProto = sObjectMgr->GetItemTemplate(currentAmmoId);
+    if (currentAmmoProto)
     {
-        switch (rangedWeapon->GetTemplate()->SubClass)
-        {
-            case ITEM_SUBCLASS_WEAPON_GUN:
-                requiredSubClass = ITEM_SUBCLASS_BULLET;
-                break;
-            case ITEM_SUBCLASS_WEAPON_BOW:
-            case ITEM_SUBCLASS_WEAPON_CROSSBOW:
-                requiredSubClass = ITEM_SUBCLASS_ARROW;
-                break;
-        }
+        uint32 currentAmmoDPS =
+            (currentAmmoProto->Damage[0].DamageMin + currentAmmoProto->Damage[0].DamageMax) * 1000 / 2;
+        uint32 newAmmoDPS = (proto->Damage[0].DamageMin + proto->Damage[0].DamageMax) * 1000 / 2;
+
+        if (newAmmoDPS > currentAmmoDPS) // New ammo meets upgrade condition
+            return ITEM_USAGE_EQUIP;
+
+        if (newAmmoDPS < currentAmmoDPS) // New ammo is worse
+            return ITEM_USAGE_NONE;
     }
 
-    // Ensure the item is the correct ammo type for the equipped ranged weapon
-    if (proto->SubClass == requiredSubClass)
-    {
-        float ammoCount = BetterStacks(proto, "ammo");
-        float requiredAmmo = (bot->getClass() == CLASS_HUNTER) ? 8 : 2; // Hunters get 8 stacks, others 2
-        uint32 currentAmmoId = bot->GetUInt32Value(PLAYER_AMMO_ID);
-
-        // Check if the bot has an ammo type assigned
-        if (currentAmmoId == 0)
-            return ITEM_USAGE_EQUIP;  // Equip the ammo if no ammo
-        // Compare new ammo vs current equipped ammo
-        ItemTemplate const* currentAmmoProto = sObjectMgr->GetItemTemplate(currentAmmoId);
-        if (currentAmmoProto)
-        {
-            uint32 currentAmmoDPS = (currentAmmoProto->Damage[0].DamageMin + currentAmmoProto->Damage[0].DamageMax) * 1000 / 2;
-            uint32 newAmmoDPS = (proto->Damage[0].DamageMin + proto->Damage[0].DamageMax) * 1000 / 2;
-
-            if (newAmmoDPS > currentAmmoDPS) // New ammo meets upgrade condition
-                return ITEM_USAGE_EQUIP;
-
-            if (newAmmoDPS < currentAmmoDPS) // New ammo is worse
-                return ITEM_USAGE_NONE;
-        }
-        // Ensure we have enough ammo in the inventory
-        if (ammoCount < requiredAmmo)
-        {
-            ammoCount += CurrentStacks(proto);
-
-            if (ammoCount < requiredAmmo)  // Buy ammo to reach the proper supply
-                return ITEM_USAGE_AMMO;
-            else if (ammoCount < requiredAmmo + 1)
-                return ITEM_USAGE_KEEP;  // Keep the ammo if we don't have too much.
-        }
-    }
-    return ITEM_USAGE_NONE;
+    // [econ71] the derived load, in rounds, against the rounds it holds of that subclass. The old test was in
+    // STACKS of the same item ("8 stacks for a hunter") and so had no relation to what the bot shoots.
+    uint32 const cap = AmmoCapRounds(bot, proto);
+    uint32 const held = AmmoHeldRounds(bot, requiredSubClass);
+    if (held >= cap)
+        return ITEM_USAGE_NONE;  // it carries its full load: nothing to buy, nothing to loot
+    // [econ71] it buys when it holds less than ONE run's worth - the cap is one run x the reserve of 3, so a third
+    // of the cap is that run - and otherwise keeps what it has rather than topping up at every vendor it passes.
+    // No new number: the same two inputs the cap is derived from say both lines.
+    return held * 3 < cap ? ITEM_USAGE_AMMO : ITEM_USAGE_KEEP;
 }
 
 ParsedItemUsage ItemUsageValue::GetItemIdFromQualifier()

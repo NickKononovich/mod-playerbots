@@ -604,6 +604,10 @@ private:
         uint32 startersOpen{0};
         uint32 questDeadSlots{0};
         uint32 bagDeadKey{0};  // the three above as one key: the bags line is logged when it changes
+        // [econ71] the ammo slots it carries for nothing: stacks its ranged weapon cannot fire at all, and stacks
+        // above its derived load. Both are on their way to a member who fires them or to the guild bank.
+        uint32 ammoDeadSlots{0};
+        uint32 ammoSurplusSlots{0};
         uint32 raidLeaderLow{0};
         uint32 fiveId{0};
         std::string fiveRefused;  // [guild60] map thread: no safe walk to the five's entrance (the five is called off)
@@ -1136,6 +1140,9 @@ private:
     // [inv380] the grey junk a member carries for nothing (a vendor pays for it, no quest of its log, no crafter and
     // no cook wants it) onto its SELL task, and the bag counts for the bags line (lock_ held)
     void AddDeadWeight(BotState& st, uint32 low, Player* p);
+    // [econ71] lock_ held: the ammo a member cannot fire, and the rounds above its derived load, onto the only two
+    // routes a zero-deletion rule leaves for an item no vendor buys - a member who fires it, or the guild bank
+    void AddAmmoSurplus(BotState& st, uint32 low, Player* p);
     // [ench161] the members' spare greens / blues (unbound, no member's gear plan takes the copy, the holder does not
     // wear it better) go to an enchanter whose skill disenchants them: its own list, else held for the transfer
     void RouteSpareGreens();

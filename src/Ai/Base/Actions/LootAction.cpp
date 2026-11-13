@@ -60,14 +60,15 @@ namespace
     // [bag66] b406: 20 quest items left on corpses "no bag room" (items 23859, 24043 ...). The relief used to
     // destroy the cheapest thing in the bags to make the slot.
     // [econ70] USER RULE 2026-11-13 («Я хочу, чтобы удаление было 0 ... Никто никогда не удаляет вещи.»): it
-    // destroys nothing. A slot is freed by selling, handing over or using, and not one of the three can happen in
-    // the middle of a loot - so the item is LEFT, and this names it and the thing the bags would give up first, so
-    // the SELL task takes that one at the next vendor and the next kill of the same item fits. A named refusal beats
-    // a destroyed item: the item stays its owner's either way.
-    // Of its bags' items (never equipped ones) that are no quest item, no item a quest in its log needs, no
-    // container, ammunition or consumable (its food, drink, potions) and no key: the grey one of the lowest vendor
-    // value, else the lowest vendor value of all (its count counted). Reads only; no game action.
-    std::string BagsWouldGiveUp(Player* bot)
+    // destroys nothing. The slot comes by one of the three honest routes and the line says WHICH one it took, so
+    // the destroy count is 0 by mechanism and not by luck: it is handed to a party member with a free slot (here,
+    // at once), it is sold at the next vendor (the SELL task, which [inv380] has already marked it onto), or the
+    // step reports blocked - and a blocked step is the correct outcome under the rule, not a licence to destroy.
+    //
+    // The item the bags would give up first: of its bags' items (never equipped ones) that are no quest item, no
+    // item a quest in its log needs, no container, ammunition or consumable (its food, drink, potions) and no key,
+    // the grey one of the lowest vendor value, else the lowest vendor value of all (its count counted).
+    Item* CheapestSpare(Player* bot)
     {
         auto const needed = [bot](ItemTemplate const* proto)
         {
@@ -112,13 +113,55 @@ namespace
             if (Bag* container = bot->GetBagByPos(bag))
                 for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
                     consider(container->GetItemByPos(uint8(slot)));
-        if (!worst)
-            return "nothing in its bags may go: every slot is a quest item, a container, its ammunition, its food "
-                   "or drink, or a key";
+        return worst;
+    }
+
+    // [econ70] route 1, the one that can free a slot HERE: the spare goes to a party member standing within the
+    // core's own trade range with room for it, the same move GiveGlyphAction makes between two members. The
+    // receiver is stored FIRST and the giver's copy removed only once the store succeeded, so a failed hand-over
+    // leaves the item where it was - under a zero-deletion rule the order matters. A soulbound item is never
+    // handed over: the game binds it to its owner and no trade can move it. Returns the route taken, or "".
+    std::string HandSpareToMember(Player* bot)
+    {
+        Group* group = bot->GetGroup();
+        Item* spare = group ? CheapestSpare(bot) : nullptr;
+        ItemTemplate const* proto = spare ? spare->GetTemplate() : nullptr;
+        if (!proto || spare->IsSoulBound())
+            return "";
+        uint32 const count = spare->GetCount();
+        std::string const name = proto->Name1;
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        {
+            Player* member = ref->GetSource();
+            if (!member || member == bot || !member->IsInWorld() || member->GetMap() != bot->GetMap() ||
+                !member->IsAlive() || !bot->IsWithinDistInMap(member, TRADE_DISTANCE))
+                continue;
+            ItemPosCountVec dest;
+            if (member->CanStoreNewItem(NULL_BAG, NULL_SLOT, dest, proto->ItemId, count) != EQUIP_ERR_OK)
+                continue;
+            Item* given = member->StoreNewItem(dest, proto->ItemId, true);
+            if (!given)
+                continue;  // nothing moved and nothing was removed: the item is still the bot's
+            member->SendNewItem(given, count, true, false);
+            bot->DestroyItem(spare->GetBagSlot(), spare->GetSlot(), true);  // the other half of the hand-over
+            return Acore::StringFormat("handed {} x{} to {}, who had a slot", name, count, member->GetName());
+        }
+        return "";
+    }
+
+    // [econ70] what the line says when no slot could be freed here: the spare and the route that will take it.
+    std::string BagsWouldGiveUp(Player* bot)
+    {
+        Item* worst = CheapestSpare(bot);
+        ItemTemplate const* proto = worst ? worst->GetTemplate() : nullptr;
+        if (!proto)
+            return "blocked: nothing in its bags may go, every slot is a quest item, a container, its ammunition, "
+                   "its food or drink, or a key, and no party member within trade range had a slot";
         return Acore::StringFormat(
-            "the slot it would give up first is {} x{} ({}, a vendor pays {} c), on its SELL task at the next vendor",
-            worst->GetTemplate()->Name1, worst->GetCount(), worstGrey ? "grey" : "its lowest vendor value",
-            worstValue);
+            "route sell: no party member within trade range had a slot, so {} x{} ({}, a vendor pays {} c) goes on "
+            "its SELL task at the next vendor and the next kill of this fits",
+            proto->Name1, worst->GetCount(), proto->Quality == ITEM_QUALITY_POOR ? "grey" : "its lowest vendor value",
+            uint64(proto->SellPrice) * worst->GetCount());
     }
 
     // seconds since the bot opened this loot (0 when it was not seen opening it)
@@ -622,6 +665,29 @@ bool StoreLootAction::Execute(Event event)
         if (!proto)
             continue;
 
+        // [econ71] a round its own ranged weapon cannot fire, or one it already carries its derived load of, is not
+        // taken at all. This gate is OUTSIDE the full-bags branch on purpose: below 80 % bags the loot strategy
+        // decides, and a projectile passes it, so a bot that once held a partial stack of an ammo had every drop of
+        // that ammo in the world join it for as long as it lived. Guild 21, 2026-11-13: 105 446 rounds across 26
+        // bots, 43 633 of them bullets with not one gun in the guild, and the five thrown users - who fire no ammo
+        // at all, a thrown weapon being its own ammo in 3.3.5 - carrying 15 575 pieces between them. Those dead
+        // stacks sat in exactly the bags whose fullness used to force the [bag66] destroy.
+        if (proto->Class == ITEM_CLASS_PROJECTILE)
+        {
+            uint32 const ammoSub = ItemUsageValue::AmmoSubClassFor(bot);
+            if (proto->SubClass != ammoSub)
+            {
+                leave("its ranged weapon cannot fire it");
+                continue;
+            }
+            if (ItemUsageValue::AmmoHeldRounds(bot, ammoSub) + itemcount >
+                ItemUsageValue::AmmoCapRounds(bot, proto))
+            {
+                leave("it already carries its full load of that ammo");
+                continue;
+            }
+        }
+
         // Skip loot that isn't useful when bags are nearly full.
         if (!IsRealPlayer(botAI->GetMaster()) && AI_VALUE(uint8, "bag space") > 80)
         {
@@ -674,11 +740,22 @@ bool StoreLootAction::Execute(Event event)
                     leave("already holds the most of it the game allows (no room would help)", true);
                     continue;
                 }
+                // [econ70] bags full for an item the bot means to take: the slot comes by a hand-over to a party
+                // member with room, and nothing is destroyed. The route taken is logged either way.
+                std::string route;
+                if (store != EQUIP_ERR_OK && (itemQuest || alwaysLoot))
+                    if (route = HandSpareToMember(bot); !route.empty())
+                    {
+                        LOG_INFO("playerbots", "[econ70] {} L{} frees a slot for {} item {}: route hand-over, {}",
+                                 bot->GetName(), bot->GetLevel(),
+                                 itemQuest ? "quest" : "[loot20] always-loot", itemid, route);
+                        dest.clear();
+                        store = bot->CanStoreNewItem(INVENTORY_SLOT_BAG_0, NULL_SLOT, dest, itemid, itemcount);
+                    }
                 if (store != EQUIP_ERR_OK)
                 {
-                    // [econ70] bags full: the loot is left and said, and nothing is destroyed to make room. For a
-                    // quest item or an always-loot item the line also names what the bags would give up first, so
-                    // the SELL task frees that slot at the next vendor instead of a destroy freeing it here.
+                    // [econ70] no slot came free here, so the loot is LEFT and said - never destroyed for. For a
+                    // quest item or an always-loot item the line names the route that will free the slot instead.
                     leave(Acore::StringFormat("no bag room (store refusal {}), nothing destroyed to make it{}",
                                               uint32(store),
                                               (itemQuest || alwaysLoot)
