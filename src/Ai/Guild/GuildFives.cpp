@@ -4911,7 +4911,16 @@ void GuildCoordinator::AutoFive()
                 if (guildDone_.count(d.contentKey))
                 {
                     if (guardCount == 0 && lookWhy.count(d.contentKey))
+                    {
                         lookWhy[d.contentKey] += " -> done for the guild: no member needs it";
+                        // [cert10] no need left is not done: the certification batch still has to pass, and the
+                        // look says so instead of leaving "done" to be read off a dungeon that is still being judged
+                        if (auto const cs = cert_.find(d.contentKey);
+                            cs != cert_.end() && cs->second.phase == CertState::Phase::Certify)
+                            lookWhy[d.contentKey] += Acore::StringFormat(
+                                " -> [cert10] not done yet: certification batch {} {}", cs->second.batches,
+                                cs->second.flight.empty() ? "still to form" : "in flight");
+                    }
                     continue;
                 }
                 if (guardCount == 0 && lookWhy.count(d.contentKey))
