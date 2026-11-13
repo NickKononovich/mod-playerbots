@@ -2008,8 +2008,15 @@ namespace SoloSafety
 
     Verdict Judge(Player* bot, Unit* target)
     {
-        Verdict verdict;
         if (!target || !Applies(bot))
+            return Verdict();
+        return JudgeAlone(bot, target);
+    }
+
+    Verdict JudgeAlone(Player* bot, Unit* target)
+    {
+        Verdict verdict;
+        if (!bot || !target || !GET_PLAYERBOT_AI(bot))
             return verdict;
 
         // where the fight stands with no pull spot: at the target for melee, at the bot's reach on its side for a
@@ -3599,6 +3606,34 @@ namespace SoloSafety
         for (auto const& [t, at] : found)
             spots.push_back(at);
         return true;
+    }
+
+    bool StandsInLostReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots)
+    {
+        who.clear();
+        spots.clear();
+        std::string covering;
+        if (!bot || !bot->IsAlive() || !GET_PLAYERBOT_AI(bot) || !StandsInReach(bot, covering, spots))
+            return false;
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        for (ObjectGuid const& guid :
+             GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get())
+        {
+            Creature* mob = ObjectAccessor::GetCreature(*bot, guid);
+            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() ||
+                !InDisc(AggroDisc(mob, bot), here))
+                continue;
+            Verdict const verdict = JudgeAlone(bot, mob);
+            if (verdict.kind != Verdict::Kind::Refuse)
+                continue;
+            who += Acore::StringFormat("{}{} L{} ({} mobs, {:.0f} dmg at ehp {:.0f})", who.empty() ? "" : ", ",
+                                       mob->GetName(), mob->GetLevel(), verdict.mobs, verdict.damage,
+                                       verdict.ehpFull);
+        }
+        if (who.empty())
+            spots.clear();
+        return !who.empty();
     }
 
     void NoteNoWayOut(Player* bot, std::string const& who, size_t spots, char const* site)

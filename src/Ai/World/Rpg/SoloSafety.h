@@ -98,6 +98,8 @@ namespace SoloSafety
     };
     // the bot's pull of `target` now
     Verdict Judge(Player* bot, Unit* target);
+    // [death456] the same judge for the bot as if alone, whether or not a party holds it now (a party's end)
+    Verdict JudgeAlone(Player* bot, Unit* target);
     // the bot engages `target` on the verdict (the fight record's prediction; its pull spot)
     void NoteEngage(Player* bot, Unit* target, Verdict const& verdict);
     // [fight49] the judged fight's safe area: its spot and the yards round it no idle mob's reach the judge left out
@@ -168,6 +170,9 @@ namespace SoloSafety
     // [login67] atRestart: the reaches its next login meets - every mob at its home (the restart respawns the dead
     // ones and the fighting ones are back home), dead and fighting mobs too
     bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots, bool atRestart = false);
+    // [death456] StandsInReach's idle reaches over the bot that its judge alone refuses (`who`: each with its pack);
+    // `spots` the ways out of every reach then
+    bool StandsInLostReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots);
     // [deaths140] a wait (walled-in hold, Hearthstone cooldown) found no spot out of `who`'s reaches with a clean walk:
     // logged once per bot and set of reaches, the wait is taken where it stands. A log, no decision
     void NoteNoWayOut(Player* bot, std::string const& who, size_t spots, char const* site);

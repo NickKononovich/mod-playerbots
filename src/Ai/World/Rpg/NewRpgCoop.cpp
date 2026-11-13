@@ -209,6 +209,12 @@ struct Party
     WorldPosition retry{};
     // [help13] the camp's mobs seen dead since the assign: killed for good (their respawn is a new camp, not this one)
     std::set<ObjectGuid> campDead;
+    // [death456] its end waits until every member stands where it is safe alone: the party walks out together first
+    // (the requester leads to `walkOutTo`, the helpers follow); `walkOutExit` / `walkOutDone` the end it waits with
+    bool walkOut = false;
+    WorldPosition walkOutTo{};
+    std::string walkOutExit;
+    bool walkOutDone = false;
 };
 
 // [b372] recursive: AssignLocked (held) -> WalkYd -> SoloSafety::RouteCosts -> JudgesPulls took it again (b371 crash).
@@ -2936,6 +2942,94 @@ bool HelpFormOperation::Execute()
     return true;
 }
 
+// [death456] a member left alone where it stands now: unsafe when its area is red for its level (its walk out crosses
+// the area's wanderers: RedAreaEscape) or an idle reach over it holds a pack its judge alone refuses. `to`: its way out
+// (out of every reach, else its bind point on this map, else its hub); `why` the reason
+bool UnsafeAlone(Player* m, std::string& why, WorldPosition& to)
+{
+    why.clear();
+    to = WorldPosition();
+    if (!m || !m->IsInWorld() || !m->IsAlive() || m->GetMap()->Instanceable())
+        return false;
+    WorldPosition const bind(m->m_homebindMapId, m->m_homebindX, m->m_homebindY, m->m_homebindZ);
+    WorldPosition const home = bind.GetMapId() == m->GetMapId() ? bind : NewRpgBaseAction::NearestHub(m);
+    if (AreaTableEntry const* area = sAreaTableStore.LookupEntry(m->GetAreaId());
+        area && area->area_level > 0 &&
+        Acore::XP::GetColorCode(m->GetLevel(), uint8(std::min(area->area_level, 255))) == XP_RED)
+    {
+        why = Acore::StringFormat("{} L{} stands in {} (area level {}, red for it)", m->GetName(), m->GetLevel(),
+                                  area->area_name[0], area->area_level);
+        to = home;
+        return true;
+    }
+    std::string who;
+    std::vector<G3D::Vector3> spots;
+    if (!SoloSafety::StandsInLostReach(m, who, spots))
+        return false;
+    why = Acore::StringFormat("{} L{} stands in the reach of {} its judge refuses alone", m->GetName(), m->GetLevel(),
+                              who);
+    to = spots.empty() ? home : WorldPosition(m->GetMapId(), spots.front().x, spots.front().y, spots.front().z);
+    return true;
+}
+
+// [death456] the first member of the party not safe alone where it stands, with a way out on the requester's map
+bool PartyUnsafeLocked(Party const& party, Player* req, std::string& why, WorldPosition& to)
+{
+    for (ObjectGuid const& guid : party.members)
+    {
+        Player* m = guid == party.requester ? req : SameMapPlayer(req, guid);
+        if (m && UnsafeAlone(m, why, to) && to != WorldPosition() && to.GetMapId() == req->GetMapId())
+            return true;
+    }
+    return false;
+}
+
+// [death456] the requester's tick of a walk-out: at the way out, out of a fight, with its helpers by it, it ends the
+// party where every member is safe alone; else it leads on to the way out of the first one that is not (each look from
+// where they stand then). A walk out given up, or none found, ends the party as before, logged
+void WalkOutStepLocked(Party& party, Player* req, uint32 now, Out& out)
+{
+    PlayerbotAI* ai = GET_PLAYERBOT_AI(req);
+    if (!ai)
+        return;
+    auto const endNow = [&](std::string const& how)
+    {
+        out.logs.push_back(Acore::StringFormat("[death456] walk-out group={} to={} ends: {}{}", party.id,
+                                               party.requesterName, how, HelpStamp()));
+        std::string const exit = party.walkOutExit;
+        HelpEndLocked(party, party.requester.GetCounter(), exit, party.walkOutDone, now, out);
+    };
+    if (NewRpgBaseAction::WalkGivenUp(req, party.walkOutTo.GetPositionX(), party.walkOutTo.GetPositionY()))
+        return endNow(Acore::StringFormat("its walk out to ({:.0f},{:.0f}) is given up",
+                                          party.walkOutTo.GetPositionX(), party.walkOutTo.GetPositionY()));
+    bool together = !req->IsInCombat();
+    for (ObjectGuid const& guid : party.members)
+        if (Player* m = guid == party.requester ? req : SameMapPlayer(req, guid))
+            together = together && !m->IsInCombat() && (!m->IsAlive() || m->IsAtGroupRewardDistance(req));
+    constexpr float ARRIVED = 10.0f;  // RPG_GO_CAMP's arrival reach (NewRpgStatusUpdateAction)
+    bool const arrived = req->GetExactDist(party.walkOutTo) < ARRIVED;
+    if (together && arrived)
+    {
+        std::string why;
+        WorldPosition to;
+        if (!PartyUnsafeLocked(party, req, why, to))
+            return endNow(Acore::StringFormat("every member is safe alone at ({:.0f},{:.0f})", req->GetPositionX(),
+                                              req->GetPositionY()));
+        if (arrived && req->GetExactDist(to) < ARRIVED)
+            return endNow("no way out found from here: " + why);
+        if (to != party.walkOutTo)
+        {
+            out.logs.push_back(Acore::StringFormat("[death456] walk-out group={} to={} on to ({:.0f},{:.0f}): {}{}",
+                                                   party.id, party.requesterName, to.GetPositionX(),
+                                                   to.GetPositionY(), why, HelpStamp()));
+            party.walkOutTo = to;
+        }
+    }
+    auto const* camp = std::get_if<NewRpgInfo::GoCamp>(&ai->rpgInfo.data);
+    if (!camp || camp->pos != party.walkOutTo)
+        ai->rpgInfo.ChangeToGoCamp(party.walkOutTo);
+}
+
 // a help party's member tick (lock held, map thread): its exits, the helper's walk to the requester and, for a human,
 // the invite once it is there
 NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& me, uint32 now, Out& out)
@@ -2955,13 +3049,27 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
     Player* req = isRequester ? bot : SameMapPlayer(bot, party.requester);
     std::string exit;
     bool done = false;
+    bool held = false;  // [death456] an end the party itself chose: it waits until every member is safe alone
     Group* group = bot->GetGroup();
     if (!req)
         exit = "the requester is gone (offline or another map)";
+    else if (party.walkOut)
+    {
+        if (bot->GetMap()->Instanceable())
+            exit = "in an instance";
+        else if (!party.group.IsEmpty() && (!group || group->GetGUID() != party.group))
+            exit = "its group is gone";
+        else if (isRequester)
+        {
+            WalkOutStepLocked(party, bot, now, out);  // may end the party: `party` is not read after it
+            return order;
+        }
+    }
     else if (!HelpOpen(req, party))
     {
         exit = party.campOnly ? "camp cleared" : "the requester's objective closed";
         done = true;
+        held = true;
     }
     else if (bot->GetMap()->Instanceable())
         exit = "in an instance";
@@ -2977,7 +3085,10 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
         // Shalaeth's on her sell run 123 s after Relara arrived
         else if (party.campOnly && party.campAt != WorldPosition() &&
                  NewRpgBaseAction::WalkGivenUp(bot, party.campAt.GetPositionX(), party.campAt.GetPositionY()))
+        {
             exit = "the requester's walk to the camp is given up";
+            held = true;
+        }
         else if (!party.campOnly && (!quest || quest->questId != party.helpObj.questId) &&
                  !(ai && (ai->rpgInfo.vendorRunEntry || ai->rpgInfo.GetStatus() == RPG_REST ||
                           ai->rpgInfo.GetStatus() == RPG_IDLE)))
@@ -2994,7 +3105,10 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
                                     !NewRpgBaseAction::WalkGivenUp(bot, party.campAt.GetPositionX(),
                                                                    party.campAt.GetPositionY()));
             if (!resumable)
+            {
                 exit = "its own plan moved on";
+                held = true;
+            }
             else
             {
                 out.logs.push_back(Acore::StringFormat(
@@ -3034,8 +3148,30 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
     }
     if (!exit.empty())
     {
-        HelpEndLocked(party, done ? party.requester.GetCounter() : low, exit, done, now, out);
-        return order;
+        // [death456] the party ends where every member is safe alone, else it walks out together first. b466 Rollothan
+        // L16 healed Ginde's q91 party to its end in Galardell Valley (area level 22), left there alone with its
+        // Hearthstone 787 s off
+        std::string why;
+        WorldPosition to;
+        if (!held || party.human || !PartyUnsafeLocked(party, req, why, to))
+        {
+            HelpEndLocked(party, done ? party.requester.GetCounter() : low, exit, done, now, out);
+            return order;
+        }
+        party.walkOut = true;
+        party.walkOutTo = to;
+        party.walkOutExit = exit;
+        party.walkOutDone = done;
+        out.logs.push_back(Acore::StringFormat(
+            "[death456] walk-out group={} to={} ({:.0f},{:.0f}) {:.0f} yd from the requester: ends ({}) once every "
+            "member is safe alone - {}{}",
+            party.id, party.requesterName, to.GetPositionX(), to.GetPositionY(), req->GetExactDist(to), exit, why,
+            HelpStamp()));
+        if (isRequester)
+        {
+            WalkOutStepLocked(party, bot, now, out);
+            return order;
+        }
     }
     if (isRequester)
         return order;
