@@ -1284,12 +1284,21 @@ private:
         POTION_HEAL = 0,
         POTION_MANA = 1,
         POTION_BANDAGE = 2,
-        POTION_KINDS = 3
+        // [craft464] food is the seventh thing the guild needs and the only one of the six kinds' shape that was
+        // missing: Cooking is held by all 75 members and had no Need anywhere, so its walk read "unlocks 0c" in 81
+        // of 81 readings while its supply term read 0 for the same reason Minor Healing Potion did. Health restored
+        // by eating is the points, by the game's own spell data (FoodRestores, [supply111]'s arithmetic)
+        POTION_FOOD = 3,
+        POTION_KINDS = 4
     };
-    static constexpr uint32 KIND_LINES[POTION_KINDS] = {171, 171, 129};  // SKILL_ALCHEMY ×2, SKILL_FIRST_AID
+    // SKILL_ALCHEMY ×2, SKILL_FIRST_AID, [craft464] SKILL_COOKING
+    static constexpr uint32 KIND_LINES[POTION_KINDS] = {171, 171, 129, 185};
     static char const* KindName(uint8 kind)
     {
-        return kind == POTION_HEAL ? "healing" : kind == POTION_MANA ? "mana" : "bandage";
+        return kind == POTION_HEAL ? "healing"
+               : kind == POTION_MANA ? "mana"
+               : kind == POTION_FOOD ? "food"  // [craft464]
+                                     : "bandage";
     }
     struct PotionBook
     {
@@ -1316,7 +1325,7 @@ private:
     // from npc_vendor and the item's spell once
     struct VendorPotionPrices
     {
-        float per[POTION_KINDS]{-1.0f, -1.0f, -1.0f};
+        float per[POTION_KINDS]{-1.0f, -1.0f, -1.0f, -1.0f};  // [craft464] food added
         std::string name[POTION_KINDS];
         std::unordered_set<uint32> sold;
     };

@@ -413,6 +413,53 @@ namespace
     }
 
     // Player::UpdateCraftSkill -> CraftSkillGainChance (per mille), the same formula and config values
+    // [supply111] what a food or drink restores by the game's own numbers: MOD_REGEN and MOD_POWER_REGEN are per 5 s
+    // over the aura's duration, OBS_MOD_HEALTH / OBS_MOD_POWER their amount per amplitude. [eco204] the core's drink
+    // holds 0 on its MOD_POWER_REGEN until its PERIODIC_DUMMY's amount is moved onto it (AuraEffect::UpdatePeriodic),
+    // so the plain drinks read "0" without the dummy.
+    // [craft464] hoisted out of UpdateSupply's lambda so PotionKindOf can price a food by the same arithmetic instead
+    // of a second copy of it ([[one-judge-per-decision]]: two judges of one number is the night's recurring bug)
+    void FoodRestores(ItemTemplate const* proto, float& hp, float& mana)
+    {
+        hp = mana = 0.0f;
+        SpellInfo const* spell = proto ? sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId) : nullptr;
+        if (!spell)
+            return;
+        float const duration = float(std::max(spell->GetMaxDuration(), 0));
+        float dummy = 0.0f;
+        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+            if (spell->Effects[e].ApplyAuraName == SPELL_AURA_PERIODIC_DUMMY)
+                dummy = float(spell->Effects[e].CalcValue());
+        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
+        {
+            SpellEffectInfo const& effect = spell->Effects[e];
+            float const amount = effect.ApplyAuraName == SPELL_AURA_MOD_POWER_REGEN && effect.CalcValue() <= 0
+                                     ? dummy
+                                     : float(effect.CalcValue());
+            float const amplitude = float(effect.Amplitude);
+            switch (effect.ApplyAuraName)
+            {
+                case SPELL_AURA_MOD_REGEN:
+                    hp += amount * duration / 5000.0f;
+                    break;
+                case SPELL_AURA_MOD_POWER_REGEN:
+                    if (effect.MiscValue == POWER_MANA)
+                        mana += amount * duration / 5000.0f;
+                    break;
+                case SPELL_AURA_OBS_MOD_HEALTH:
+                    if (amplitude > 0.0f)
+                        hp += amount * duration / amplitude;
+                    break;
+                case SPELL_AURA_OBS_MOD_POWER:
+                    if (amplitude > 0.0f && effect.MiscValue == POWER_MANA)
+                        mana += amount * duration / amplitude;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
     int32 CraftChance(uint32 skillValue, uint32 grayLevel, uint32 yellowLevel)
     {
         int32 const orange = int32(sWorld->getIntConfig(CONFIG_SKILL_CHANCE_ORANGE) * 10);
@@ -2943,10 +2990,10 @@ void GuildCoordinator::UpdateOrders()
                         look(bag->GetItemByPos(uint8(j)));
             if (!surplus.empty())
                 LOG_INFO("playerbots",
-                         "[econ62] {} L{} sells its surplus consumables: {} - the guild is owed {} healing, {} mana "
-                         "and {} bandage [craft454], and it already holds that many",
+                         "[econ62] {} L{} sells its surplus consumables: {} - the guild is owed {} healing, {} mana, "
+                         "{} bandage [craft454] and {} food [craft464], and it already holds that many",
                          Who(row.low), p->GetLevel(), surplus, owedAll[POTION_HEAL], owedAll[POTION_MANA],
-                         owedAll[POTION_BANDAGE]);
+                         owedAll[POTION_BANDAGE], owedAll[POTION_FOOD]);
         }
         // [tasks] SELL: what the global leader gave up goes at the next vendor visit (SellMarked), never a trip
         if (!st.sell.empty())
@@ -4801,6 +4848,20 @@ bool GuildCoordinator::QuestPace(BotState& st, Player* p, float& copperPerMinute
         uint32 left = 0, total = 0;
         if (!quest || q == questStatic_.end() || !killSeconds(quest, q->second, nullptr, kills, left, total))
             continue;
+        // [gather50] b483: the whole guild's gathering was switched off by this scan. q14082 "Learn to Ride at the
+        // Exodar" asks item 46879, which no creature_loot / gameobject_loot / item_loot / npc_vendor row gives, so
+        // itemHp is 0, killSeconds prices its objective at no seconds and still reports success - and a bot standing
+        // by the giver read "64 XP in 2 s (2152 XP/min)" = 3286 c/min. The scan is a MAX over XP/seconds, so that one
+        // near-zero denominator became every comparison's questing pace: 63 of the 207 gathers of the run were filed
+        // QUESTS_ON (GuildCoordinator ~2712 `o.executable = a.worth`, so they never ran), the blocking pace reading a
+        // median 1078 and a p90 18240 c/min against the 27-85 c/min a priced log actually pays. An objective the
+        // formula cannot price is not a cheaper quest, it is an unknown one, and killSeconds already says so for
+        // `dps <= 0` by returning false - this says it for the objective whose source the data does not know. No
+        // quest the formula CAN price is dropped: `total == 0` (a talk / delivery quest, whose whole cost really is
+        // the walk) keeps its pace, and a bot left with nothing priced returns false as before, which the gathering
+        // plan already reads as "no quest it can price"
+        if (total > 0 && kills <= 0.0)
+            continue;
         double const seconds = (dist(x, y, q->second.giverX, q->second.giverY) + q->second.idealYd) / speed + kills;
         double const copper = worth(quest);
         float const perMinute = float(xpOf(quest) * MINUTE / std::max(seconds, 1.0));  // [econ1] the best by XP
@@ -5175,8 +5236,9 @@ void GuildCoordinator::UpdateProfessions()
             bool known{false};  // a guild maker of the kind's line knows it
         };
         std::vector<PotionRecipe> brews;
-        // [craft454] both lines that make a consumable of this book: Alchemy's potions and First Aid's bandages
-        for (uint32 const kindLine : {uint32(SKILL_ALCHEMY), uint32(SKILL_FIRST_AID)})
+        // [craft454] the lines that make a consumable of this book: Alchemy's potions, First Aid's bandages and
+        // [craft464] Cooking's food - the one all 75 members hold, and the one that had no need of any kind
+        for (uint32 const kindLine : {uint32(SKILL_ALCHEMY), uint32(SKILL_FIRST_AID), uint32(SKILL_COOKING)})
         {
             auto const list = recipesBySkill_.find(kindLine);
             if (list == recipesBySkill_.end())
@@ -5288,10 +5350,12 @@ void GuildCoordinator::UpdateProfessions()
             potionSkipLogged_ = skipText;
             LOG_INFO("playerbots",
                      "[craft450] the consumables the members used need these ranks: {} (vendor {:.3f} c a healing "
-                     "point, {:.3f} c a mana point, {:.3f} c a bandaged point [craft454]); no member may drink {} of "
-                     "the kinds' products, so they are no need of any rank: {} [craft460]",
+                     "point, {:.3f} c a mana point, {:.3f} c a bandaged point [craft454], {:.3f} c an eaten point "
+                     "[craft464]); no member may use {} of the kinds' products, so they are no need of any rank: {} "
+                     "[craft460]",
                      text.empty() ? "none: the makers already make the best ones the members can use" : text,
-                     prices.per[POTION_HEAL], prices.per[POTION_MANA], prices.per[POTION_BANDAGE], skipped,
+                     prices.per[POTION_HEAL], prices.per[POTION_MANA], prices.per[POTION_BANDAGE],
+                     prices.per[POTION_FOOD], skipped,
                      skipText.empty() ? "none" : skipText);
         }
     }
@@ -11978,48 +12042,7 @@ void GuildCoordinator::JudgeSupplySource(std::vector<std::pair<PlanRow const*, P
                                 learn->Effects[e].TriggerSpell)
                                 recipeItem[learn->Effects[e].TriggerSpell] = {id, proto.BuyPrice};
     });
-    auto const restores = [](ItemTemplate const* proto, float& hp, float& mana)
-    {
-        hp = mana = 0.0f;
-        SpellInfo const* spell = proto ? sSpellMgr->GetSpellInfo(proto->Spells[0].SpellId) : nullptr;
-        if (!spell)
-            return;
-        float const duration = float(std::max(spell->GetMaxDuration(), 0));
-        // [eco204] the core's drink: its MOD_POWER_REGEN holds 0 until its PERIODIC_DUMMY's amount is moved onto it
-        // (AuraEffect::UpdatePeriodic) - the plain drinks restored "0" here and only a few newer ones were judged
-        float dummy = 0.0f;
-        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
-            if (spell->Effects[e].ApplyAuraName == SPELL_AURA_PERIODIC_DUMMY)
-                dummy = float(spell->Effects[e].CalcValue());
-        for (uint8 e = 0; e < MAX_SPELL_EFFECTS; ++e)
-        {
-            SpellEffectInfo const& effect = spell->Effects[e];
-            float const amount = effect.ApplyAuraName == SPELL_AURA_MOD_POWER_REGEN && effect.CalcValue() <= 0
-                                     ? dummy
-                                     : float(effect.CalcValue());
-            float const amplitude = float(effect.Amplitude);
-            switch (effect.ApplyAuraName)
-            {
-                case SPELL_AURA_MOD_REGEN:
-                    hp += amount * duration / 5000.0f;
-                    break;
-                case SPELL_AURA_MOD_POWER_REGEN:
-                    if (effect.MiscValue == POWER_MANA)
-                        mana += amount * duration / 5000.0f;
-                    break;
-                case SPELL_AURA_OBS_MOD_HEALTH:
-                    if (amplitude > 0.0f)
-                        hp += amount * duration / amplitude;
-                    break;
-                case SPELL_AURA_OBS_MOD_POWER:
-                    if (amplitude > 0.0f && effect.MiscValue == POWER_MANA)
-                        mana += amount * duration / amplitude;
-                    break;
-                default:
-                    break;
-            }
-        }
-    };
+    auto const& restores = FoodRestores;  // [craft464] one judge: PotionKindOf prices a food by the same arithmetic
     auto const supplyItem = [](ItemTemplate const& proto, uint32 category)
     {
         return proto.Class == ITEM_CLASS_CONSUMABLE && proto.Spells[0].SpellCategory == category;
@@ -12485,8 +12508,22 @@ uint8 GuildCoordinator::PotionKindOf(ItemTemplate const* proto, float* points)
     if (points)
         *points = 0.0f;
     if (!proto || proto->Class != ITEM_CLASS_CONSUMABLE ||
-        (proto->SubClass != ITEM_SUBCLASS_POTION && proto->SubClass != ITEM_SUBCLASS_BANDAGE))
+        (proto->SubClass != ITEM_SUBCLASS_POTION && proto->SubClass != ITEM_SUBCLASS_BANDAGE &&
+         proto->SubClass != ITEM_SUBCLASS_FOOD))
         return POTION_KINDS;
+    // [craft464] a food restores over the aura it applies, so its points are what the game says it restores
+    // (FoodRestores, [supply111]'s own arithmetic). Health is the measure: Cooking makes the food the members eat,
+    // while the drinks that restore mana come off a vendor, so a drink is nobody's craft and is not a need
+    if (proto->SubClass == ITEM_SUBCLASS_FOOD)
+    {
+        float hp = 0.0f, mana = 0.0f;
+        FoodRestores(proto, hp, mana);
+        if (hp <= 0.0f)
+            return POTION_KINDS;
+        if (points)
+            *points = hp;
+        return POTION_FOOD;
+    }
     bool const bandage = proto->SubClass == ITEM_SUBCLASS_BANDAGE;
     for (auto const& spell : proto->Spells)
     {
