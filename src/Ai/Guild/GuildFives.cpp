@@ -3821,7 +3821,7 @@ void GuildCoordinator::UpdateFives()
                                                                  "run needs){}, {} food",
                                                                  drinks, manaUsers, drinksNeeded,
                                                                  mages ? ", a mage conjures its own" : "", food);
-                if (pooled || five.poolGoesIn)
+                if (pooled)
                 {
                     if (!five.poolGoesIn)
                     {
@@ -3833,43 +3833,29 @@ void GuildCoordinator::UpdateFives()
                     for (uint32 low : five.members)
                         bots_[low].supplyDone = true;  // no member's own restock holds it
                 }
-            }
-            // [supply100] coordinator 2026-11-10: the five's pooled supplies decide, not each member's. Inside the
-            // dungeon share92 tops every member up from the one holding most (they stand together at the run's
-            // start), the mages give water, the healer heals what food would. The five goes in when its mana users
-            // hold, together, the restock line each (RESTOCK_FOOD_MIN x mana users), or a mage conjures water; a
-            // short member's own vendor run or supply gold never holds a five that the pool carries. b415: no five
-            // entered in 20 min - waits up to ~1290 s (Ellosera, five 4, "the guild's supply gold is on its way"),
-            // ~1050 s (Dekorhan, five 10), ~810 s (Selalleas, five 10), ~330 s (Mutil, five 1)
-            {
-                uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0, drinksNeeded = 0;
-                for (uint32 low : five.members)
+                // [dun280] coordinator 2026-11-13: the pool is read again every pass until the five is in, and a
+                // five whose pool has fallen back below the lines' total does not go: the verdict was latched, so a
+                // five cleared minutes earlier walked in on a figure its members had since drunk. b475 five 20
+                // (dm-n) was cleared at "pool 64 drinks ... 46 the run needs" and arrived at "[dun208] five 20 drink
+                // (pool 4 of the lines' 46, short)"; five 16 at "pool 110 of 58" arrived at 28 of 58. Its members'
+                // own restock is armed again by the same fact (their vendor run, a mage's conjuring, the five's
+                // trades), so the five is supplied and goes - it is not parked
+                else if (five.poolGoesIn)
                 {
-                    Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
-                    if (!p || !p->IsInWorld())
-                        continue;
-                    if (p->GetMaxPower(POWER_MANA))
-                    {
-                        ++manaUsers;
-                        drinksNeeded += drinkLine(low);
-                        drinks += CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
-                    }
-                    food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
-                    mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
-                }
-                bool const pooled = drinks >= drinksNeeded;
-                if ((pooled || five.poolGoesIn) && !five.poolGoesIn)
-                {
-                    LOG_INFO("playerbots", "[supply100] five {} ({}): its supplies pooled carry the run: {} drinks for {} "
-                             "mana users ([dun194] {} the run needs){}, {} food; goes in, topped up inside",
-                             id, five.contentKey, drinks, manaUsers, drinksNeeded,
-                             mages ? ", a mage conjures its own" : "", food);
-                    five.poolGoesIn = true;
-                }
-                if (five.poolGoesIn)
+                    LOG_INFO("playerbots", "[dun280] five {} ({}): its pool no longer carries the run: {}; it is "
+                             "supplied before it goes in",
+                             id, five.contentKey, poolText);
+                    five.poolGoesIn = false;
                     for (uint32 low : five.members)
-                        bots_[low].supplyDone = true;  // no member's own restock or supply gold holds it
+                    {
+                        BotState& st = bots_[low];
+                        st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+                    }
+                }
             }
+            // [dun280] the pool verdict above is the only one: a second count of the same drinks ran here, without
+            // the [supply104] bag-room term and without the [dun199] conjure order, and could latch poolGoesIn back
+            // on after the first had cleared it. One judge, one verdict (the user's rule on duplicate judges)
             bool supplied = true;
             for (uint32 low : five.members)
             {
