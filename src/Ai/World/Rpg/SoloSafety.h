@@ -259,6 +259,11 @@ namespace SoloSafety
     // [runpast15] `searched`: the whole searched walk the leg was cut from (to the search's end, past the leg's sight)
     void CommitRunPast(Player* bot, std::vector<G3D::Vector3> const& points,
                        std::vector<G3D::Vector3> const& searched = {});
+    // [death452] the beyond-sight orange / red spawn reaches the bot's last route search priced as run pasts
+    // (NewRpgBaseAction::StaticDangerDiscs): committed with that search's leg, an attacker from one is in its set
+    void NoteStaticRunPast(Player* bot, std::vector<G3D::Vector4> const& reaches);
+    // [death452] the committed leg was priced at more health than the bot has now (a fight since): searched again
+    bool LegPricedAbove(Player* bot);
     // [runpast15] the stop of the walk being searched (a far walk's destination) while its stage / leg searches run
     // on this thread: RouteCosts measures a run past's walk on to that stop, not to the search's own end (a stage two
     // sights ahead). b355: 953 "[deaths14] no run past" walls measured to the stage - MAZE 20 -> 57, MOVE_FAR_LOOP

@@ -124,6 +124,9 @@ namespace
         float runPastHp = 0.0f;
     };
 
+    constexpr float RUN_PAST_ON_LEG = 8.0f;        // [death452] the farRoute tolerance (MoveFarToDirect)
+    constexpr size_t RUN_PAST_SEARCHES_KEPT = 8;   // [death452] the searches of one walk's look (a stage, vias, legs)
+
     struct SoloBotState
     {
         // the open fight
@@ -191,6 +194,19 @@ namespace
         // the committed leg's: its set, its points, the mobs its RUN_PAST lines named
         std::unordered_map<uint64, float> pendingRunPast;
         std::unordered_map<uint64, float> legRunPast;
+        // [death452] each route search's run-past set by where it started (a leg is committed from the search it was
+        // cut from, wherever that started), its beyond-sight orange / red spawn reaches priced as run pasts, and the
+        // health it was priced at; the committed leg's static reaches and health
+        struct SearchRunPast
+        {
+            G3D::Vector3 from;
+            std::unordered_map<uint64, float> chases;
+            std::vector<G3D::Vector4> statics;
+            float hp = 0.0f;
+        };
+        std::vector<SearchRunPast> searchRunPast;
+        std::vector<G3D::Vector4> legStatic;
+        float legHp = 0.0f;
         bool runPastHitLogged = false;  // [death384] its held-hit line logged
         bool runPastWalking = false;    // [death384] the run-past executor's last look: it walks the leg on
         // [runpast87] the keep-walking chase it took last: priced damage and seconds, its health and the fight's taken
@@ -4156,10 +4172,68 @@ namespace SoloSafety
             return;
         std::lock_guard<std::mutex> guard(lock);
         SoloBotState& state = states[bot->GetGUID().GetCounter()];
-        state.legRunPast = state.pendingRunPast;
-        state.legPoints = state.legRunPast.empty() ? std::vector<G3D::Vector3>() : points;
-        state.legSearched = state.legRunPast.empty() ? std::vector<G3D::Vector3>() : searched;  // [runpast15]
+        // [death452] the set of the search this leg was cut from: the latest search that started at the searched
+        // walk's start (or its end: a search from the destination back, walked the other way)
+        std::vector<G3D::Vector3> const& walk = searched.empty() ? points : searched;
+        SoloBotState::SearchRunPast const* match = nullptr;
+        for (auto it = state.searchRunPast.rbegin(); !walk.empty() && it != state.searchRunPast.rend(); ++it)
+        {
+            auto const startsAt = [&](G3D::Vector3 const& at)
+            { return std::hypot(at.x - it->from.x, at.y - it->from.y) <= RUN_PAST_ON_LEG; };
+            if (startsAt(walk.front()) || startsAt(walk.back()))
+            {
+                match = &*it;
+                break;
+            }
+        }
+        size_t const before = state.pendingRunPast.size();
+        state.legRunPast = match ? match->chases : state.pendingRunPast;
+        state.legStatic = match ? match->statics : std::vector<G3D::Vector4>();
+        state.legHp = match ? match->hp : float(bot->GetHealth());
+        bool const runPastLeg = !state.legRunPast.empty() || !state.legStatic.empty();
+        if (match && (state.legRunPast.size() != before || !state.legStatic.empty()))
+            LOG_INFO("playerbots", "[death452] {} L{} commits its leg's run past from the search at ({:.0f},{:.0f}): {} "
+                     "mob(s) in sight, {} reach(es) beyond it (the search from its spot had {})",
+                     bot->GetName(), bot->GetLevel(), match->from.x, match->from.y, state.legRunPast.size(),
+                     state.legStatic.size(), before);
+        state.searchRunPast.clear();
+        state.legPoints = runPastLeg ? points : std::vector<G3D::Vector3>();
+        state.legSearched = runPastLeg ? searched : std::vector<G3D::Vector3>();  // [runpast15]
         state.legNamed.clear();
+    }
+
+    void NoteStaticRunPast(Player* bot, std::vector<G3D::Vector4> const& reaches)
+    {
+        if (!bot || reaches.empty())
+            return;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        if (found == states.end() || found->second.searchRunPast.empty())
+            return;
+        std::vector<G3D::Vector4>& statics = found->second.searchRunPast.back().statics;
+        statics.insert(statics.end(), reaches.begin(), reaches.end());
+    }
+
+    bool LegPricedAbove(Player* bot)
+    {
+        if (!bot)
+            return false;
+        std::lock_guard<std::mutex> guard(lock);
+        auto const found = states.find(bot->GetGUID().GetCounter());
+        return found != states.end() && found->second.legHp > float(bot->GetHealth());
+    }
+
+    namespace
+    {
+        // [death452] the attacker came from a beyond-sight reach the committed leg priced as a run past
+        bool InLegStatic(std::vector<G3D::Vector4> const& statics, Creature const* mob)
+        {
+            Position const home = mob->GetHomePosition();
+            for (G3D::Vector4 const& disc : statics)
+                if (std::hypot(home.GetPositionX() - disc.x, home.GetPositionY() - disc.y) <= disc.w)
+                    return true;
+            return false;
+        }
     }
 
     namespace
@@ -4269,7 +4343,7 @@ namespace SoloSafety
             return false;
         std::lock_guard<std::mutex> guard(lock);
         auto const found = states.find(bot->GetGUID().GetCounter());
-        return found != states.end() && !found->second.legRunPast.empty();
+        return found != states.end() && (!found->second.legRunPast.empty() || !found->second.legStatic.empty());
     }
 
     bool PendingRunPast(Player* bot)
@@ -4304,7 +4378,8 @@ namespace SoloSafety
             if (found == states.end())
                 return false;
             bool const runPast = found->second.runPastWalking &&
-                                 found->second.legRunPast.count(target->GetGUID().GetRawValue());
+                                 (found->second.legRunPast.count(target->GetGUID().GetRawValue()) ||
+                                  InLegStatic(found->second.legStatic, target->ToCreature()));  // [death452]
             // [death409] ... and a survival flee on the move: its price is the leash from the flee's start, a stun or
             // hit on a chaser renews it (Unit::AtTargetAttacked; UNIT_STATE_LOST_CONTROL extends it while stunned,
             // shared with its assistants) - b453 Geron L19 took 1722 against a chase priced 486
@@ -4339,12 +4414,15 @@ namespace SoloSafety
             return false;
         std::unordered_map<uint64, float> set;
         std::vector<G3D::Vector3> points;
+        std::vector<G3D::Vector4> statics;  // [death452]
         {
             std::lock_guard<std::mutex> guard(lock);
             auto const found = states.find(bot->GetGUID().GetCounter());
-            if (found == states.end() || found->second.legRunPast.empty() || found->second.legPoints.size() < 2)
+            if (found == states.end() || (found->second.legRunPast.empty() && found->second.legStatic.empty()) ||
+                found->second.legPoints.size() < 2)
                 return false;
             set = found->second.legRunPast;
+            statics = found->second.legStatic;
             points = found->second.legPoints;
             // [deaths13] the bot's own judged pull is among its attackers: it fights that pull where it stands, no
             // walk on past the camp with it in tow. b353 Eraelor L9 (Gnarlpine Defender) and Nurlian L7 (Wrathscale
@@ -4359,10 +4437,30 @@ namespace SoloSafety
                                  bot->GetName(), bot->GetLevel(), attacker->GetName(), attacker->GetLevel(),
                                  found->second.legRunPast.size());
                         found->second.legRunPast.clear();
+                        found->second.legStatic.clear();
                         found->second.legPoints.clear();
                         found->second.legNamed.clear();
                         return false;
                     }
+        }
+        // [death452] an attacker from a beyond-sight reach the leg priced as a run past: in its set, its chase now
+        if (!statics.empty())
+        {
+            std::vector<std::pair<uint64, float>> added;
+            for (Unit* attacker : bot->getAttackers())
+                if (Creature* mob = attacker ? attacker->ToCreature() : nullptr)
+                    if (mob->IsAlive() && !set.count(mob->GetGUID().GetRawValue()) && InLegStatic(statics, mob))
+                        added.push_back({mob->GetGUID().GetRawValue(), RunPastChase(bot, mob).damage});
+            if (!added.empty())
+            {
+                std::lock_guard<std::mutex> guard(lock);
+                SoloBotState& state = states[bot->GetGUID().GetCounter()];
+                for (auto const& [key, damage] : added)
+                {
+                    set[key] = damage;
+                    state.legRunPast[key] = damage;
+                }
+            }
         }
         // still on the leg: its nearest point within the far walk's own tolerance (MoveFarToDirect's farRoute, 8 yd);
         // at its end or off it the leg is over
@@ -4445,6 +4543,7 @@ namespace SoloSafety
             std::lock_guard<std::mutex> guard(lock);
             SoloBotState& state = states[bot->GetGUID().GetCounter()];
             state.legRunPast.clear();
+            state.legStatic.clear();
             state.legPoints.clear();
             state.legNamed.clear();
             state.runPastPriced = 0.0f;  // [runpast87]
@@ -5350,8 +5449,15 @@ namespace SoloSafety
             LOG_INFO("playerbots", "[solo] {} L{} {}", bot->GetName(), bot->GetLevel(), runPastLine);
         state.runPastLogged = runPastLine;
         // [runpast11] a search from where the bot stands: its run-past set waits for the leg's commit
-        if (bot->GetExactDist(from.x, from.y, from.z) <= bot->GetCombatReach())
-            state.pendingRunPast = std::move(chaseOf);
+        // [death452] ... and every search's set is kept by its start: the leg is committed from the search it was cut
+        // from (a search whose start the navmesh snapped off the bot's spot, a stage's or a via's walk). Before, only
+        // a start within the combat reach in 3D kept it: b467 Salleas L21 "run-past priced 316 hp vs hp 442: Scorched
+        // Basilisk L27", its graph stage leg committed with no set, it stood and fought the Basilisk
+        if (bot->GetExactDist2d(from.x, from.y) <= RUN_PAST_ON_LEG)
+            state.pendingRunPast = chaseOf;
+        state.searchRunPast.push_back({from, std::move(chaseOf), {}, float(bot->GetHealth())});
+        if (state.searchRunPast.size() > RUN_PAST_SEARCHES_KEPT)
+            state.searchRunPast.erase(state.searchRunPast.begin());
         state.routeMs = getMSTime();
         state.routeMobs = std::move(seen);
         state.routeWalls = std::move(walls);

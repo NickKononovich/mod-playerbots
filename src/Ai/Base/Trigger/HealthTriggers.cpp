@@ -2740,7 +2740,8 @@ bool LeaderRests(Player* bot)
            events.ready == Leader::ReadyEvent::Rest;
 }
 
-bool WantsDrink(Player* bot, std::string* why, std::string* skip)
+// the rest lines, wherever the bot stands (WantsDrink / WantsFood add the camp's reach)
+static bool DrinkLines(Player* bot, std::string* why, std::string* skip)
 {
     // A warrior, rogue, DK (or a druid's rage / energy on top of its mana pool) has no mana to drink for.
     uint32 const maxMana = bot->GetMaxPower(POWER_MANA);
@@ -2749,7 +2750,7 @@ bool WantsDrink(Player* bot, std::string* why, std::string* skip)
 
     // [guild13] a solo bot rests to full when its next pull needs it, and after a death (SoloSafety)
     if (!Leader::LedGroup(bot) && SoloSafety::WantsRest(bot, true, why))
-        return !SoloSafety::RestSpotInReach(bot);  // [deaths14] out of every reach first (RestEscape)
+        return true;
 
     // [lead47] b96 rfc-h 332-372 s: the leader's Rest ("the boss pull waits: mana 78 % < 90 %") never reached the
     // drink - "rest mana" fires only below the member's own line (70 % before a mini-boss). Under the leader's Rest
@@ -2928,10 +2929,10 @@ float HealthLine(Player* bot)
     return REST_HEALTH_PCT;
 }
 
-bool WantsFood(Player* bot, std::string* why)
+static bool FoodLines(Player* bot, std::string* why)
 {
     if (!Leader::LedGroup(bot) && SoloSafety::WantsRest(bot, false, why))  // [guild13]
-        return !SoloSafety::RestSpotInReach(bot);  // [deaths14] out of every reach first (RestEscape)
+        return true;
     // [dun242] at the most its meal gives, it is full: b446 wc-n five7-6 2880-3135 s, the bear tank Ryarii stood up
     // "full (hp 100 %)" in caster form, shifted to Bear Form (more max health: 98 %), the leader's Rest sent it to
     // eat again - 47 meals, 88 drinking phases, the pull held "the tank rests (health 98 %)" until the stall
@@ -2991,6 +2992,20 @@ bool WantsFood(Player* bot, std::string* why)
     }
     return false;
 }
+
+// [deaths14] out of every reach first (RestEscape) - [death452] for every rest of a solo bot, not only the one its
+// pull asked for: b467 Blahadrin L23 ate at hp 48 % ("no healer close by") at its fight spot inside a Rabid Shadowhide
+// Gnoll's reach in Galardell Valley; the Gnoll and its camp came while it sat
+static bool RestsInReach(Player* bot) { return !Leader::LedGroup(bot) && SoloSafety::RestSpotInReach(bot); }
+
+bool WantsDrink(Player* bot, std::string* why, std::string* skip)
+{
+    return DrinkLines(bot, why, skip) && !RestsInReach(bot);
+}
+
+bool WantsFood(Player* bot, std::string* why) { return FoodLines(bot, why) && !RestsInReach(bot); }
+
+bool BelowRestLines(Player* bot) { return DrinkLines(bot, nullptr, nullptr) || FoodLines(bot, nullptr); }
 
 bool RestDone(Player* bot)
 {

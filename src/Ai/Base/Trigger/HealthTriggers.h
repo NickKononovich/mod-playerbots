@@ -540,6 +540,8 @@ bool HealerHasWork(Player* bot);
 // skip: set when the next fight's prediction keeps the bot up although the fixed line would have it drink.
 bool WantsDrink(Player* bot, std::string* why = nullptr, std::string* skip = nullptr);
 bool WantsFood(Player* bot, std::string* why = nullptr);
+// [death452] below a rest line wherever it stands (WantsDrink / WantsFood are false inside a camp's reach)
+bool BelowRestLines(Player* bot);
 // [lead116] the health a bot rests to: a led group's tank needs its next fight's cost in tank healths (the planner's
 // estimate, NextFight::cost), every other bot (or no known fight) the fixed REST_HEALTH_PCT
 float HealthLine(Player* bot);

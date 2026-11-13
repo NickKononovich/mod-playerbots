@@ -16,6 +16,7 @@
 #include "DBCStores.h"
 #include "WaypointMgr.h"  // [patrol86] patrol beats in the spawn index
 #include "CellImpl.h"  // [red85] the guards round a login spot
+#include "HealthTriggers.h"  // [death452] RestState::BelowRestLines
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "GameObject.h"
@@ -3351,7 +3352,18 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     if (!newDest && IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL))
     {
         LastMovement& last = AI_VALUE(LastMovement&, "last movement");
-        if (bot->isMoving() || last.msTime == botAI->rpgInfo.waitClockMs)
+        // [death452] a leg priced at more health than it has now (a fight on it since) is priced again from here:
+        // b467 Jurdogs L18 fled a Dragonmaw Grunt, stood up at 36 % and walked on its leg priced at hp 547 into it
+        bool const repriced = SoloSafety::Applies(bot) && SoloSafety::LegPricedAbove(bot);
+        if (repriced)
+        {
+            LOG_INFO("playerbots", "[death452] {} L{} prices its walk again at hp {} (its leg was priced at more)",
+                     bot->GetName(), bot->GetLevel(), bot->GetHealth());
+            bot->StopMoving();
+            botAI->rpgInfo.farRoute.clear();
+            SoloSafety::CommitRunPast(bot, {});
+        }
+        else if (bot->isMoving() || last.msTime == botAI->rpgInfo.waitClockMs)
             return true;
         last.lastdelayTime = 0.0f;
         last.msTime = 0;
@@ -5597,6 +5609,14 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             sum += damage;
     }
     size_t const ranPast = size_t(std::count(refused.begin(), refused.end(), false));
+    {
+        // [death452] the reaches run past are committed with this search's leg: their mobs are the executor's
+        std::vector<G3D::Vector4> runPast;
+        for (size_t i = 0; i < chases.size(); ++i)
+            if (!refused[i])
+                runPast.push_back(chases[i].disc);
+        SoloSafety::NoteStaticRunPast(bot, runPast);
+    }
     if (!chases.empty())
     {
         // [lag356] once per bot and verdict (every reach run past / some refused): b447 logged each count change
@@ -6611,7 +6631,9 @@ bool NewRpgBaseAction::RestEscape()
         return false;
     bool const hurt = bot->GetHealth() < bot->GetMaxHealth() ||
                       (bot->GetMaxPower(POWER_MANA) && bot->GetPower(POWER_MANA) < bot->GetMaxPower(POWER_MANA));
-    if (!hurt || !(SoloSafety::WantsRest(bot, false) || SoloSafety::WantsRest(bot, true) || bot->IsSitState()))
+    // [death452] ... or a rest its own lines ask for (the rest no longer sits down inside the reach)
+    if (!hurt || !(SoloSafety::WantsRest(bot, false) || SoloSafety::WantsRest(bot, true) || bot->IsSitState() ||
+                   RestState::BelowRestLines(bot)))
         return false;
     std::string who;
     std::vector<G3D::Vector3> spots;
