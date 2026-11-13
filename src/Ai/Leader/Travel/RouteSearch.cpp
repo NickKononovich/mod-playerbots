@@ -545,7 +545,10 @@ namespace Leader::Travel
         {
             ++info->findPaths;
             if (dtNodePool const* pool = query->getNodePool())
+            {
                 info->nodes += uint64(pool->getNodeCount());
+                info->nodesForward += uint64(pool->getNodeCount());  // [perf40]
+            }
         }
         if (dtStatusFailed(status) || polyCount <= 0)
         {
@@ -576,7 +579,10 @@ namespace Leader::Travel
             {
                 ++info->reverse;
                 if (dtNodePool const* pool = query->getNodePool())
+                {
                     info->nodes += uint64(pool->getNodeCount());
+                    info->nodesReverse += uint64(pool->getNodeCount());  // [perf40]
+                }
             }
             for (int index = 0; usable && index < backCount; ++index)
                 usable = WalkableBack(navMesh, back[size_t(index)]);  // [nav185]
@@ -586,6 +592,8 @@ namespace Leader::Travel
                 polys.swap(back);
                 polyCount = backCount;
                 complete = true;
+                if (info)
+                    ++info->reverseWon;  // [perf40] the walk this pool's size bought
             }
         }
         if (!complete && ROUTE_LONG_BIG_POOL && dtStatusDetail(status, DT_OUT_OF_NODES))
@@ -601,7 +609,10 @@ namespace Leader::Travel
                 {
                     ++info->big;
                     if (dtNodePool const* pool = big->getNodePool())
+                    {
                         info->nodes += uint64(pool->getNodeCount());
+                        info->nodesBig += uint64(pool->getNodeCount());  // [perf40]
+                    }
                 }
             }
             if (dtStatusSucceed(wideStatus) && wideCount > 0 && wide[size_t(wideCount - 1)] == endRef)
@@ -609,6 +620,8 @@ namespace Leader::Travel
                 polys.swap(wide);
                 polyCount = wideCount;
                 complete = true;
+                if (info)
+                    ++info->bigWon;  // [perf40] the walk this pool's size bought
             }
             // [perf210] the big pool visited every polygon it reaches without running out: no way there with these
             // polygons open (nor a ground walk back, Detour's ground links being two-way - the back search's rule)
@@ -1099,6 +1112,8 @@ namespace Leader
             uint32 depth = 0;
             uint64 pullUs = 0, costsUs = 0, findPathUs = 0, samplesUs = 0, openAirUs = 0, staticUs = 0, zoneUs = 0;
             uint64 longRoutes = 0, findPaths = 0, reverse = 0, big = 0, nodes = 0;
+            // [perf40] what each pool's size buys, and where the nodes go
+            uint64 reverseWon = 0, bigWon = 0, nodesForward = 0, nodesReverse = 0, nodesBig = 0;
             uint64 filterTests = 0, filterMemo = 0;
             uint64 pass3Skipped = 0, passesReused = 0, costsReused = 0, staticSearches = 0;
             uint64 memoHits = 0;  // [perf213] long routes answered from the per-thread memo
@@ -1117,6 +1132,11 @@ namespace Leader
                 reverse += o.reverse;
                 big += o.big;
                 nodes += o.nodes;
+                reverseWon += o.reverseWon;  // [perf40]
+                bigWon += o.bigWon;
+                nodesForward += o.nodesForward;
+                nodesReverse += o.nodesReverse;
+                nodesBig += o.nodesBig;
                 filterTests += o.filterTests;
                 filterMemo += o.filterMemo;
                 pass3Skipped += o.pass3Skipped;
@@ -1168,15 +1188,22 @@ namespace Leader
                 "{} back / {} big pool, {:.0f} nodes per long route), samples {:.0f} %, open air {:.0f} %, unseen "
                 "spawns {:.0f} %, areas {:.0f} %, rest {:.0f} %; saved: {} pass-3 searches, {} passes and {} "
                 "route costs of the {} unseen-spawn searches reused, {} long routes from the [perf213] memo; "
-                "filter memo {:.0f} % of {} polygon tests",
+                "filter memo {:.0f} % of {} polygon tests; [perf40] pools: nodes {} forward / {} back / {} big "
+                "pool ({:.0f} nodes a big call, {:.0f} % of its {} pool), walks completed {} by the back search, "
+                "{} by the big pool ({:.1f} % of its calls)",
                 elapsed / IN_MILLISECONDS, times.size(), at(0.5f), at(0.95f), float(times.back()) / 1000.0f,
                 double(sumUs) / 1000.0, pct(sum.costsUs), pct(sum.pullUs), pct(sum.findPathUs), sum.longRoutes,
                 sum.findPaths, sum.reverse, sum.big, sum.longRoutes ? double(sum.nodes) / double(sum.longRoutes) : 0.0,
                 pct(sum.samplesUs), pct(sum.openAirUs), pct(sum.staticUs), pct(sum.zoneUs),
                 staged < sumUs ? pct(sumUs - staged) : 0.0, sum.pass3Skipped, sum.passesReused, sum.costsReused,
                 sum.staticSearches, sum.memoHits,
-                sum.filterTests ? 100.0 * double(sum.filterMemo) / double(sum.filterTests) : 0.0,
-                sum.filterTests);
+                sum.filterTests ? 100.0 * double(sum.filterMemo) / double(sum.filterTests) : 0.0, sum.filterTests,
+                // [perf40]
+                sum.nodesForward, sum.nodesReverse, sum.nodesBig,
+                sum.big ? double(sum.nodesBig) / double(sum.big) : 0.0,
+                sum.big ? 100.0 * double(sum.nodesBig) / (double(sum.big) * double(Travel::LONG_ROUTE_BIG_NODES)) : 0.0,
+                Travel::LONG_ROUTE_BIG_NODES, sum.reverseWon, sum.bigWon,
+                sum.big ? 100.0 * double(sum.bigWon) / double(sum.big) : 0.0);
             times.clear();
             sum = SearchProfile{};
             sumUs = 0;
@@ -1483,6 +1510,11 @@ namespace Leader
                         routeProfile.reverse += info.reverse;
                         routeProfile.big += info.big;
                         routeProfile.nodes += info.nodes;
+                        routeProfile.reverseWon += info.reverseWon;  // [perf40]
+                        routeProfile.bigWon += info.bigWon;
+                        routeProfile.nodesForward += info.nodesForward;
+                        routeProfile.nodesReverse += info.nodesReverse;
+                        routeProfile.nodesBig += info.nodesBig;
                         routeProfile.findPathUs += info.findPathUs;
                         routeProfile.samplesUs += info.samplesUs;
                         routeProfile.filterTests += info.filterTests;

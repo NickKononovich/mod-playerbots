@@ -58,6 +58,15 @@ namespace Leader::Travel
         uint32 reverse = 0;    // back searches after the forward one ran out of nodes
         uint32 big = 0;        // big-pool searches (65535 nodes)
         uint64 nodes = 0;      // nodes the searches used, summed
+        // [perf40] which of the three searches completed the walk, and the nodes each spent: the big pool is 2 % of
+        // the long routes and the bulk of the route search's time (b477: 29 ms a call, 91 % of 3.8 s a minute), and
+        // its mean node count sits at 94 % of its pool - a search that reaches the goal stops there, so a pool spent
+        // to the last node did not. These say exactly how many walks each pool's size buys. A log, no decision
+        uint32 reverseWon = 0;
+        uint32 bigWon = 0;
+        uint64 nodesForward = 0;
+        uint64 nodesReverse = 0;
+        uint64 nodesBig = 0;
         uint64 findPathUs = 0;
         uint64 samplesUs = 0;
         uint64 filterTests = 0;  // polygon tests against the refused discs / boxes
