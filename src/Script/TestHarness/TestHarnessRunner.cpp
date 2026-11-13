@@ -3141,11 +3141,59 @@ namespace TestHarness
         Leader::Travel::LogHarnessHold(group, leader, blocker, walk, x, y, z);
     }
 
+    // [dm1] A guild five takes its own event items out of the dungeon, and every one of them is a quest-class item
+    // no member has a quest for: StoreLootAction::IsLootAllowed falls through to the loot strategy, whose item usage
+    // for such an item is ITEM_USAGE_NONE, so it stays where it dropped. b473 dm-n 20261113-122826-dm-n-five11-11:
+    // the Defias Gunpowder crate 17155 opened at 1840 s and "[loot] Ganna loots object 17155 Defias Gunpowder
+    // items=0/1" left the Defias Gunpowder 5397 in it - the Defias Cannon 16398 asks that item for its lock, so the
+    // Iron Clad Door 16397 never blew and Mr. Smite, Cookie, Captain Greenskin and Edwin VanCleef stayed
+    // "behind a closed door" for the rest of the run. What the map's own starters ask for goes on every member's
+    // always-loot list, so whoever opens the crate keeps what is in it.
+    void TestHarnessMgr::PrepareEventItemLoot(Party& party)
+    {
+        if (!party.content)
+            return;
+
+        std::set<uint32> wanted;
+        for (EventItemDef const* def : EventItems(party.content->mapId))
+            if (def->difficulty < 0 || def->difficulty == int8(party.content->difficulty))
+                wanted.insert(def->itemId);
+        for (EventStarterDef const* def : EventStarters(party.content->mapId))
+        {
+            if (def->itemId)
+                wanted.insert(def->itemId);
+            if (def->priorityItem)
+                wanted.insert(def->priorityItem);
+        }
+
+        std::string names;
+        for (uint32 itemId : wanted)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+            if (!proto)
+                continue;
+            names += (names.empty() ? "" : ", ") + std::string(proto->Name1);
+            for (Member const& member : party.members)
+                if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
+                    if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
+                        botAI->GetAiObjectContext()
+                            ->GetValue<std::set<uint32>&>("always loot list")
+                            ->Get()
+                            .insert(itemId);
+        }
+        if (names.empty())
+            return;
+
+        LOG_INFO("playerbots", "[dm1] {}: the five loots the run's event items itself: {}", party.id, names);
+        LogEvent(party, "event_item_always_loot", JsonObject().Str("items", names));
+    }
+
     void TestHarnessMgr::PrepareEventItems(Party& party, Player* leader, bool atStart)
     {
         if (!leader || !party.content)
             return;
-        // [guild60] a guild five gets no handouts: its event items and quests are its own (looted, taken)
+        // [guild60] a guild five gets no handouts: its event items and quests are its own (looted, taken; its
+        // always-loot list is set at the run's start, PrepareEventItemLoot)
         if (party.guild)
             return;
 

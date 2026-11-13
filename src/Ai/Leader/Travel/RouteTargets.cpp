@@ -4721,6 +4721,19 @@ namespace Leader::Travel
         // the Gate's key starter, whose walk ran through the closed East Garrison Door 170570 ("starter_blocked"); the
         // Garrison Door's own key starter was "a key for another door", never promoted, and lost to trash every time
         // - at 1519-1565 s the group stood 20 yd from that door with the Shadowforge Key in the tank's bags.
+        // [dm1] A starter opens a door it is not itself: the object is the key, the door is its expectDoor /
+        // opensDoor (Deadmines: the Defias Cannon 16398 blows the Iron Clad Door 16397 open; Smite, Cookie,
+        // Greenskin and VanCleef are skipped "behind a closed door (Iron Clad Door 16397)"). Matched on entries
+        // alone, that cannon counted as "a key for another door" and was never the promoted starter.
+        auto const starterOpens = [&blockingDoors](EventStarterDef const* def)
+        {
+            if (blockingDoors.count(def->expectDoor) || blockingDoors.count(def->opensDoor))
+                return true;
+            for (uint32 const entry : def->entries)
+                if (blockingDoors.count(entry))
+                    return true;
+            return false;
+        };
         auto& chainDoors = keyDoorChain[group.InstanceId()];
         if (nextBossDoorBlocked && !blockingDoors.empty())
             for (auto const& [entry, seenMs] : chainDoors)
@@ -4732,7 +4745,11 @@ namespace Leader::Travel
         // five12-12: the Defias Gunpowder crate 17155 opened at 1414 s, its Defias Gunpowder 5397 never taken, the
         // Defias Cannon 16398 "no usable object" (its lock asks the gunpowder) and Smite / Cookie / Greenskin /
         // VanCleef "behind a closed door (Iron Clad Door 16397)" until the stall at 1941 s
-        if (!leader->IsInCombat() && leader->GetLootGUID().IsEmpty())
+        // [dm1] Taken in combat too: that crate's own opening is a Defias Taskmaster ambush, so the leader is in
+        // combat from the moment it stands on it, and by the end of the fight the route has walked it away - b473
+        // 20261113-122826-dm-n-five11-11 opened the crate at 1840 s and was 200 yd off by 1903 s with the gunpowder
+        // still in it. Looting a chest is packets, not a cast: the fight does not stop it.
+        if (leader->GetLootGUID().IsEmpty())
             for (StarterTrack const& starter : group.Route().starters)
             {
                 if (starter.def->kind != StarterKind::UseGameObject)
@@ -5206,9 +5223,7 @@ namespace Leader::Travel
                     // another closed door: that door joins the chain, its own key starter is promoted
                     if (nextBossDoorBlocked && starter.def->kind == StarterKind::UseItem)
                     {
-                        bool forBlocking = false;
-                        for (uint32 const entry : starter.def->entries)
-                            forBlocking |= blockingDoors.count(entry) != 0;
+                        bool const forBlocking = starterOpens(starter.def);  // [dm1] its door, not only its object
                         if (forBlocking && !blockingDoors.count(door->GetEntry()))
                         {
                             bool const fresh = !chainDoors.count(door->GetEntry()) ||
@@ -5240,13 +5255,9 @@ namespace Leader::Travel
             bool const rearmedBehind = starter.rearmedBehindMs && starter.uses < starter.def->maxUses &&
                                        getMSTimeDiff(starter.rearmedBehindMs, now) < REARM_BEHIND_PRIORITY_MS;
             // [queue-door-starter-match] a key (UseItem) for a door none of the blocking doors is: not promoted
-            bool keyForOtherDoor = false;
-            if (nextBossDoorBlocked && !blockingDoors.empty() && starter.def->kind == StarterKind::UseItem)
-            {
-                keyForOtherDoor = true;
-                for (uint32 const entry : starter.def->entries)
-                    keyForOtherDoor &= !blockingDoors.count(entry);
-            }
+            // [dm1] ... the door it opens counts as well as the object it is used on (starterOpens)
+            bool const keyForOtherDoor = nextBossDoorBlocked && !blockingDoors.empty() &&
+                                         starter.def->kind == StarterKind::UseItem && !starterOpens(starter.def);
             // [lead11] the door the leader's plan must open first (TickLeaderPlanner: doorStepEntry)
             bool const doorStep =
                 group.State().doorStepEntry && group.State().doorStepMs &&

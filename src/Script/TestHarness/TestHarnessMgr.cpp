@@ -1758,6 +1758,7 @@ namespace TestHarness
         }
         party->groupGuid = group->GetGUID();
         ApplyStrategies(*party);
+        PrepareEventItemLoot(*party);  // [dm1] the event items the run's starters ask for are looted, not handed out
         SetPhase(*party, Phase::Entering);
         LOG_INFO("playerbots", "[guild70] five {} clears {} as party {} (leader {})", fiveId, content->key, party->id,
                  leader.ToString());

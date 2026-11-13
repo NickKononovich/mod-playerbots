@@ -618,8 +618,12 @@ bool StoreLootAction::Execute(Event event)
             // reagent) or its own called skill-ups need: b428 the guild fishers' catches were offered and left -
             // 4182 of 4188 bobbers "items=0/1", 271 Lesser Sagefish School loots 0/1 (Shalaeth, bags 97 % full; a
             // raw fish's usage is AH) - not one fish reached the guild in 6.4 h of fishing
+            // [dm1] ... and an item on its always-loot list (the five's event items: the Defias Gunpowder 5397 its
+            // run needs for the Defias Cannon). Its usage is ITEM_USAGE_NONE, so without this the full-bag branch
+            // drops what IsLootAllowed just allowed
             bool const isUsefulItem =
                 itemQuest || proto->StartQuest || guid.IsItem() ||  // [craft406] its own item's loot
+                AI_VALUE(std::set<uint32>&, "always loot list").count(itemid) ||
                 (usage != ITEM_USAGE_NONE && usage != ITEM_USAGE_VENDOR && usage != ITEM_USAGE_AH) ||
                 (sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter()) &&
                  (sGuildCoordinator.IsWanted(itemid) || sGuildCoordinator.NeedsForOwnCalls(bot, itemid)));

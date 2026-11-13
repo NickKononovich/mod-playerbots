@@ -607,6 +607,9 @@ namespace TestHarness
         // Puts the event items of the content (EventItems) into the leader's bags, logged as "event_item": the
         // carried ones at the start (atStart), the dungeon drops once their creatures are dead (every tick).
         void PrepareEventItems(Party& party, Player* leader, bool atStart);
+        // [dm1] A guild five gets no handouts: the items its starters ask for go on every member's always-loot list
+        // instead, so the one that opens the chest they lie in keeps them. Logged as "event_item_always_loot".
+        void PrepareEventItemLoot(Party& party);
         // The starters naming these entries are used up (EventStarterDef::afterUsed).
         bool StartersUsed(Party const& party, std::vector<uint32> const& entries) const;
         // A gossip / escort starter the bots' own dungeon strategy already did counts as used up: the item that only
