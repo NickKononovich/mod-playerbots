@@ -3211,11 +3211,44 @@ void GuildCoordinator::CertifyBatch()
     };
     if (!cs.flight.empty())
     {
+        // [cert13] what each unreported five is holding on, by name. A batch that holds blocks the whole dungeon
+        // order, so the fact it holds on is read off the gate instead of grepped out of the log afterwards
         std::string waiting;
+        std::string silent;
         for (uint32 id : cs.flight)
-            waiting += (waiting.empty() ? "" : ", ") + std::to_string(id);
-        note(Acore::StringFormat("batch {} in flight: {} of {} fives still to report (fives {})", cs.batches,
+        {
+            auto const held = fives_.find(id);
+            if (held == fives_.end())
+            {
+                // unreachable: the only two paths that drop a five (DisbandFive, OnFiveRunEnd) both judge it first
+                waiting += Acore::StringFormat("{}five {}: gone from the fives without a verdict",
+                                               waiting.empty() ? "" : "; ", id);
+                silent += (silent.empty() ? "" : ", ") + std::to_string(id);
+                continue;
+            }
+            std::string const hold = CertFlightHold(held->second);
+            waiting += Acore::StringFormat("{}five {}: {}", waiting.empty() ? "" : "; ", id, hold);
+            if (hold.rfind("nothing names", 0) == 0)
+                silent += (silent.empty() ? "" : ", ") + std::to_string(id);
+        }
+        note(Acore::StringFormat("batch {} in flight: {} of {} fives still to report; {}", cs.batches,
                                  cs.flight.size(), CERT_FIVES, waiting));
+        if (!silent.empty())
+        {
+            // the five sits in a state nothing names - the same shape as the frozen led member whose refusal never
+            // appeared once in a million lines. The silence is the defect; it is said out loud, never guessed at
+            // and never closed on a clock
+            static std::string silentLogged;
+            std::string const line = d->contentKey + " batch " + std::to_string(cs.batches) + ": " + silent;
+            if (silentLogged != line)
+            {
+                silentLogged = line;
+                LOG_INFO("playerbots", "[cert13] {}: certification batch {} holds on five(s) {} that nothing names - "
+                         "no stage, no refusal, no supply shortfall, no run phase. The batch cannot be judged on a "
+                         "fact it does not have: fix the silence",
+                         d->contentKey, cs.batches, silent);
+            }
+        }
         return;
     }
     // the pool: every free member that can get into the dungeon now, cleared or not ([cert10] Candidates' walk in)
@@ -3382,6 +3415,51 @@ void GuildCoordinator::CertifyBatch()
                                  CERT_FIVES, CERT_MEMBERS));
     cs.dispatchLogged.clear();
     CertSave(d->contentKey);
+}
+
+// [cert13] The fact one five of a batch in flight is holding on. Every term is state that already exists and is
+// already named elsewhere - the run's own phase ([guild70]), a refused walk ([lfg69] fiveRefused), the supply
+// shortfall ([supply27] supplyShort), the gold at the leader's mailbox ([eco199]), the walk to the entrance - so
+// this is a report with no judge of its own and nothing here decides anything. The one answer that matters is the
+// last: a five whose state nothing names cannot be judged on a fact, and saying so is the point of the line.
+std::string GuildCoordinator::CertFlightHold(GuildFive const& five) const
+{
+    if (five.stage == GuildFive::Stage::Run)
+    {
+        std::string const phase = Leader::Dungeon::DungeonRuns::Instance().Phase(five.id);
+        return phase.empty() ? std::string("in the dungeon, between its run's phases") : "in the dungeon: " + phase;
+    }
+    std::string why;
+    uint32 offline = 0;
+    for (uint32 low : five.members)
+    {
+        if (!ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low)))
+        {
+            ++offline;
+            why += (why.empty() ? "" : "; ") + Who(low) + " offline";
+            continue;
+        }
+        auto const st = bots_.find(low);
+        if (st == bots_.end())
+            continue;
+        if (!st->second.fiveRefused.empty())
+            why += (why.empty() ? "" : "; ") + Who(low) + " refused: " + st->second.fiveRefused;
+        else if (!st->second.supplyShort.empty())
+            why += (why.empty() ? "" : "; ") + Who(low) + " supply " + st->second.supplyShort;
+        else if (low == five.leaderLow && needGoldOnWay_.count(low))
+            why += (why.empty() ? "" : "; ") + Who(low) + " takes the guild's gold at a mailbox [eco199]";
+        else if (!five.arrived.count(low) && st->second.run && st->second.runType == GuildOrderType::DUNGEON)
+            why += (why.empty() ? "" : "; ") + Who(low) + " walks to the entrance";
+    }
+    if (!why.empty())
+        return Acore::StringFormat("gathering ({}/{} at the entrance): {}", five.arrived.size(), five.members.size(),
+                                   why);
+    if (five.arrived.size() == five.members.size())
+        return Acore::StringFormat("all {} at the entrance: waits for its way in (the finder, or the walk in)",
+                                   five.members.size());
+    // [cert13] no member is refused, short, walking, offline or in - and the five is not in: nothing names it
+    return Acore::StringFormat("nothing names what holds it ({}/{} at the entrance, no refusal, no supply "
+                               "shortfall, no walk, no run)", five.arrived.size(), five.members.size());
 }
 
 // [cert11] the verdict on one certification five, read off the figures the five-leader's report carries - the same
