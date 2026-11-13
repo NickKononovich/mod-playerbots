@@ -13056,7 +13056,8 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 {
                     std::string const capWhy = Acore::StringFormat(
                         "the lone mob {} brings {} mobs{}: {}", one->GetName(), single.size(),
-                        singleTrash.size() < single.size() ? " (judged without its boss)" : "", singleJudged);
+                        // [dm8] tagged, so a run can be counted for the judge that refused, not only read
+                        singleTrash.size() < single.size() ? " ([dm2] judged without its boss)" : "", singleJudged);
                     bool corner = false;
                     if (!measured || quickOne)  // a measured group tried the corner above already
                     {
@@ -13111,10 +13112,16 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                                   : Acore::StringFormat("every plan too dangerous, one mob{}",
                                                         walkIn ? " walked in (no ranged pull)" : " at range")) +
                         Acore::StringFormat("; packs: one {} where it is fought", single.size());
+                    // [dm8] the trash verdict on the line the pull is taken on: b475 read "[dm2] prints zero lines"
+                    // over a run whose foundry fights had happened, because dm2 logged only its refusals - there is
+                    // no telling from that whether its judge ran and passed or was never reached
                     LOG_INFO("playerbots", "[pull one] {}: every plan around {} too dangerous ({} mobs, cost {:.2f} "
-                             "tank hp); pulls one mob, {}{}, expects {}", bot->GetName(), target->GetName(),
+                             "tank hp); pulls one mob, {}{}, expects {}{}", bot->GetName(), target->GetName(),
                              adds.size() + 1, best.estimate.cost, one->GetName(), _planPullBack ? " (pull back)" : "",
-                             single.size());
+                             single.size(),
+                             singleTrash.size() < single.size()
+                                 ? Acore::StringFormat(" ([dm2] it brings a boss: its trash judged, {})", singleJudged)
+                                 : std::string());
                 }
             }
 
@@ -15115,8 +15122,11 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
                 return false;
             }
 
-            LOG_INFO("playerbots", "[pull boss] {}: {}; pulled as his fight, the group ready for him", bot->GetName(),
-                     what);
+            // [dm8] ... and the trash verdict that let it through, on the same line: dm2's judge is read off every
+            // boss pull taken, not only off the holds it writes
+            LOG_INFO("playerbots", "[pull boss] {}: {}; pulled as his fight, the group ready for him and [dm2] the "
+                     "trash it brings judged, {}", bot->GetName(), what,
+                     trashJudged.empty() ? std::string("no trash with him") : trashJudged);
             _planReason = Acore::StringFormat("brings {} ({}): his fight, the group ready; ", drawn->GetName(),
                                               drawnWhy) +
                           _planReason;
