@@ -12481,14 +12481,19 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // Searing Blade Enforcer: it joins his fight", and the boss came with that whole pack. The walk to the boss
         // wakes it whatever the plan: its pack apart from the boss is less than the boss's fight on top of it, so it
         // is planned first at any overload (the leader's readiness lines still hold the pull until the group is up)
+        // [dun260] ... and at any overload means no fallback's tank-carries test (fallbackCost: a pack the tank does
+        // not carry was refused, and the boss came with it): b467 wc-n five4-4, the Druid of the Fang pack (6 mobs,
+        // overload 2.84) refused, Lord Cobrahn "pulled where he stands with 11 mobs ... overload 7.02" with it, the
+        // tank died. Nor is it a fallback: the boss pull's readiness lines (rest, mana, health) hold it
         if (!found)
         {
-            fallbackCost = true;
-            fallback = found = tryPlan(bossWalkWakes, false, std::numeric_limits<float>::max(), false, false);
-            fallbackCost = false;
+            found = tryPlan(bossWalkWakes, false, std::numeric_limits<float>::max(), false, false);
+            fallback = false;
             if (found)
-                LOG_INFO("playerbots", "[lead117] {}: the walk to {} wakes {}: its pack first, apart from the boss",
-                         bot->GetName(), target->GetName(), bossWalkWakes->GetName());
+                LOG_INFO("playerbots", "[lead117] [dun260] {}: the walk to {} wakes {}: its pack first, apart from "
+                         "the boss ({} mobs, cost {:.2f} tank hp, fight {:.0f} s)",
+                         bot->GetName(), target->GetName(), bossWalkWakes->GetName(), chosen.mobs, chosen.cost,
+                         chosen.fightSec);
         }
         if (found)
             _planReason = Acore::StringFormat("the walk to {} wakes {}, taken first; ", target->GetName(),
