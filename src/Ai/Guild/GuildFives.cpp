@@ -3753,6 +3753,13 @@ void GuildCoordinator::UpdateFives()
             };
             {
                 uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0, drinksNeeded = 0;
+                // [dun281] measured, decides nothing: the share of the pool that is a conjuring mage's own stock,
+                // and the lines [dun198] excused it. The pool excuses a mage's need (drinkLine: it conjures) and
+                // still counts its bags, so a mage carrying its own water can read as the five's cover. The
+                // in-run share ([dun208] RunLine) gives that same mage its full priced line, which is what keeps
+                // its conjured stock from being shared away (b436 Feeli at 6 % mana with no drink). Two questions,
+                // one requirement - the leader's priced drinkNeed; this line says what the difference is worth
+                uint32 mageDrinks = 0, mageLines = 0;
                 std::string noRoom;  // [supply104] a short member the pool cannot reach: no free bag slot
                 for (uint32 low : five.members)
                 {
@@ -3765,6 +3772,12 @@ void GuildCoordinator::UpdateFives()
                         drinksNeeded += drinkLine(low);
                         uint32 const own = CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
                         drinks += own;
+                        if (!drinkLine(low))  // [dun281] a mage excused by [dun198]
+                        {
+                            mageDrinks += own;
+                            auto const priced = five.drinkNeed.find(low);
+                            mageLines += priced != five.drinkNeed.end() ? priced->second : 0;
+                        }
                         // [supply104] the hand-over must be possible: a member below the line takes a stack only
                         // into a free slot (the giver's side: share103 hands the whole stack when it cannot split)
                         if (own < drinkLine(low) && !p->GetFreeInventorySpace())
@@ -3817,10 +3830,17 @@ void GuildCoordinator::UpdateFives()
                                  "a stack - restocks or frees a slot first",
                                  id, five.contentKey, noRoom);
                     }
-                std::string const poolText = Acore::StringFormat("pool {} drinks for {} mana users ([dun194] {} the "
-                                                                 "run needs){}, {} food",
-                                                                 drinks, manaUsers, drinksNeeded,
-                                                                 mages ? ", a mage conjures its own" : "", food);
+                std::string const poolText =
+                    Acore::StringFormat("pool {} drinks for {} mana users ([dun194] {} the run needs){}, {} food",
+                                        drinks, manaUsers, drinksNeeded,
+                                        mages ? ", a mage conjures its own" : "", food) +
+                    // [dun281] measured only: of that pool, what a conjuring mage holds for itself, against the
+                    // line the pool excused it and the in-run share ([dun208]) still gives it
+                    (mageDrinks || mageLines
+                         ? Acore::StringFormat(" [dun281] of the pool {} drink(s) are a conjuring mage's own, its "
+                                               "excused line {} (the in-run share still gives it that)",
+                                               mageDrinks, mageLines)
+                         : std::string());
                 if (pooled)
                 {
                     if (!five.poolGoesIn)
