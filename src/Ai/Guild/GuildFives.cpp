@@ -3771,13 +3771,20 @@ void GuildCoordinator::UpdateFives()
                         ++manaUsers;
                         drinksNeeded += drinkLine(low);
                         uint32 const own = CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
-                        drinks += own;
-                        if (!drinkLine(low))  // [dun281] a mage excused by [dun198]
+                        // [dun282] a mage excused by [dun198] supplies itself, so its bags are not the five's
+                        // pool either: the sum counted its water for the others while counting none of its need,
+                        // and one expression may not disagree with itself. b475 measured the cost at nothing -
+                        // every five with a conjuring mage carried 165 drinks against a line of 6, 144/9, 102/14,
+                        // 92/37, 89/26, 54/7. The in-run share ([dun208] RunLine) still gives that mage its full
+                        // priced line: that is a different question and it stays as it is
+                        if (!drinkLine(low))  // [dun281] its own stock, against the line [dun198] excused it
                         {
                             mageDrinks += own;
                             auto const priced = five.drinkNeed.find(low);
                             mageLines += priced != five.drinkNeed.end() ? priced->second : 0;
                         }
+                        else
+                            drinks += own;
                         // [supply104] the hand-over must be possible: a member below the line takes a stack only
                         // into a free slot (the giver's side: share103 hands the whole stack when it cannot split)
                         if (own < drinkLine(low) && !p->GetFreeInventorySpace())
@@ -3870,6 +3877,24 @@ void GuildCoordinator::UpdateFives()
                     {
                         BotState& st = bots_[low];
                         st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+                    }
+                }
+                // [dun282] what the gate's strictness costs: every time the shortfall changes while the five is
+                // still gathering, the seconds it has stood formed and what it is short of. A hold that outlives
+                // the trip to a vendor or a mage's casting is this line repeated with the figure barely moving -
+                // the fix must not turn "enters short" into "never enters". Logged, never read: nothing here
+                // decides on elapsed time
+                if (!pooled && drinksNeeded > drinks)
+                {
+                    uint32 const shortBy = drinksNeeded - drinks;
+                    if (std::string& logged = fiveLfgWhy[id + 2000000];
+                        logged != std::to_string(shortBy) + "|" + noRoom)
+                    {
+                        logged = std::to_string(shortBy) + "|" + noRoom;
+                        LOG_INFO("playerbots",
+                                 "[dun282] five {} ({}): held at the gate for supply, {} s since it formed: short "
+                                 "{} drink(s) of the lines' {}; {}",
+                                 id, five.contentKey, Now() - five.since, shortBy, drinksNeeded, poolText);
                     }
                 }
             }
