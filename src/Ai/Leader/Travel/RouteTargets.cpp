@@ -3824,10 +3824,12 @@ namespace Leader::Travel
         // Nothing on the route and no boss to walk to (not targetable yet, held back): the old full clear. Not while
         // the next boss lies over a link: with nothing chosen the group walks to it (WalkToLink), as before.
         // [loot13] each goal mob's state for its owner: killed, or the route's verdict on it
+        std::set<uint32> goalSeen;
         if (!goalMobs.empty() && routeGoalSink)
             for (Creature* creature : candidates)
                 if (creature && goalMobs.count(creature->GetEntry()))
                 {
+                    goalSeen.insert(creature->GetEntry());
                     std::string state = "killed";
                     if (creature->IsAlive())
                     {
@@ -3839,6 +3841,44 @@ namespace Leader::Travel
                     }
                     routeGoalSink(leader->GetGUID().GetCounter(), creature->GetEntry(), state);
                 }
+        // [loot16] a goal mob with no creature in the instance (an instance loads all its grids, Map::OnCreateMap):
+        // absent, with the evidence - its spawn's respawn time (a script despawned it at its AI init: Deviate Faerie
+        // Dragon's SmartAI despawns it in 85 % of the instances; or it died before) or no copy of its spawn at all
+        if (!goalMobs.empty() && routeGoalSink)
+            for (auto const& [entry, drops] : goalMobs)
+            {
+                if (goalSeen.count(entry))
+                    continue;
+                std::string state;
+                // its spawns on this map, once per (map, entry) and thread: the store is the whole world's
+                thread_local std::map<std::pair<uint32, uint32>, std::vector<CreatureData const*>> goalSpawns;
+                auto found = goalSpawns.find({map->GetId(), entry});
+                if (found == goalSpawns.end())
+                {
+                    std::vector<CreatureData const*> spawns;
+                    for (auto const& [spawnId, data] : sObjectMgr->GetAllCreatureData())
+                        if (data.mapid == map->GetId() && (data.id == entry || data.id2 == entry || data.id3 == entry))
+                            spawns.push_back(&data);
+                    found = goalSpawns.emplace(std::make_pair(map->GetId(), entry), std::move(spawns)).first;
+                }
+                for (CreatureData const* spawn : found->second)
+                {
+                    CreatureData const& data = *spawn;
+                    ObjectGuid::LowType const spawnId = data.spawnId;
+                    time_t const respawn = map->GetCreatureRespawnTime(spawnId);
+                    time_t const now = GameTime::GetGameTime().count();
+                    state = respawn > now
+                                ? Acore::StringFormat("absent: spawn {} at ({:.0f},{:.0f},{:.0f}) despawned in this "
+                                                      "instance, respawns in {} s", spawnId, data.posX, data.posY,
+                                                      data.posZ, uint32(respawn - now))
+                                : Acore::StringFormat("absent: spawn {} at ({:.0f},{:.0f},{:.0f}) has no creature in "
+                                                      "the instance", spawnId, data.posX, data.posY, data.posZ);
+                    if (respawn > now)
+                        break;
+                }
+                routeGoalSink(leader->GetGUID().GetCounter(), entry,
+                              state.empty() ? "absent: no spawn of it on this map" : state);
+            }
         bool const routeFallback = hostiles.empty() && !viaLink && !viaStarterLink;
         // [dun250] b458 wc-n five6-4: the Disciple of Naralex died at 3554 s (escort_end "died", rearmed); the
         // fallback cleared trash across the caverns until 3965 s, he respawned at 300 s at his spawn and the run hit

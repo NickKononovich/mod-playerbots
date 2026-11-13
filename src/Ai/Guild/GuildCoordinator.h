@@ -841,14 +841,17 @@ public:
         std::string state;
         float value{0.0f};
         float health{0.0f};
+        float presence{1.0f};  // [loot16] the share of instances it is in
         bool boss{false};
-        bool taken{false};
+        bool taken{false};         // a need: worth a repeat of the dungeon (its presence weighed)
+        bool takenIfThere{false};  // [loot16] a route goal: worth the detour where it stands
     };
     struct FiveGoals
     {
         std::map<uint32, FiveGoalMob> mobs;  // creature entry -> goal
     };
-    static FiveGoals GoalsFor(DungeonOption const& d, std::vector<Player*> const& members);
+    FiveGoals GoalsFor(DungeonOption const& d, std::vector<Player*> const& members) const;
+    float Presence(uint32 entry) const;  // [loot16]
     // [loot13] map thread: the goal mobs (entry -> its needed drops) the route of this member's five must kill
     std::map<uint32, std::string> FiveGoalMobs(uint32 memberLow) const;
     // [loot13] map thread: the route's state of a goal mob ("killed" stays)
@@ -857,7 +860,9 @@ public:
 private:
     mutable std::mutex goalLock_;                     // [loot13] goals_ / goalFiveOf_ (map threads read them)
     std::unordered_map<uint32, uint32> goalFiveOf_;   // member -> its five with goals
-    std::map<uint32, FiveGoals> goals_;               // five id -> its goals  // lock_ held
+    std::map<uint32, FiveGoals> goals_;               // five id -> its goals
+    std::map<uint32, float> scriptPresence_;          // [loot16] entry -> 1 - its AI-start despawn chance
+    std::map<uint32, std::pair<uint32, uint32>> presenceSeen_;  // [loot16] entry -> (runs it was there, runs looked)  // lock_ held
     // [guild60] hooks of the order flow (lock_ held): the member's walk to the entrance (true: `step` set), its
     // arrival there (OnCampReached), its legitimate wait there, the tab lines, a five's loot (map thread, no lock)
     bool FiveStep(Player* bot, BotState& st, GuildRunStep& step);

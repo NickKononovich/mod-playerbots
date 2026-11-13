@@ -50,6 +50,7 @@
 #include "SelfBotControl.h"
 #include "SlowScope.h"  // [perf211]
 #include "GuildGear.h"  // [loot12] the guild's one gear judge
+#include "SmartScriptMgr.h"  // [loot16] a source's AI-start despawn
 #include "StatsWeightCalculator.h"
 #include "TestHarnessData.h"
 #include "LeaderDungeonRun.h"  // [guild70] the five-leader runs the dungeon (no test harness)
@@ -1567,6 +1568,32 @@ void GuildCoordinator::LoadDungeons()
                 }
                 d.bossItems.assign(items.begin(), items.end());
             }
+        // [loot16] a source a script despawns when its AI starts (SMART_EVENT_AI_INIT / RESPAWN ->
+        // SMART_ACTION_FORCE_DESPAWN, at its event chance) is in an instance only that share of the time
+        std::set<uint32> sourceEntries;
+        for (DungeonOption const& d : dungeons_)
+            for (auto const& [itemId, list] : d.itemSources)
+                for (auto const& [entry, chance] : list)
+                    sourceEntries.insert(entry);
+        std::string ids;
+        for (uint32 entry : sourceEntries)
+            ids += (ids.empty() ? "" : ",") + std::to_string(entry);
+        if (!ids.empty())
+            if (QueryResult result = WorldDatabase.Query(
+                    "SELECT entryorguid, event_chance FROM smart_scripts WHERE source_type = 0 AND event_type IN "
+                    "({}, {}) AND action_type = {} AND entryorguid IN ({})",
+                    uint32(SMART_EVENT_AI_INIT), uint32(SMART_EVENT_RESPAWN), uint32(SMART_ACTION_FORCE_DESPAWN), ids))
+            {
+                do
+                {
+                    Field* f = result->Fetch();
+                    float& presence = scriptPresence_.emplace(f[0].Get<int32>(), 1.0f).first->second;
+                    presence *= 1.0f - std::min(100.0f, float(f[1].Get<uint8>())) / 100.0f;
+                } while (result->NextRow());
+            }
+        for (auto const& [entry, presence] : scriptPresence_)
+            LOG_INFO("playerbots", "[loot16] source {} is in an instance {:.0f} % of the time (its AI-start despawn)",
+                     entry, presence * 100.0f);
     }
 
     std::sort(dungeons_.begin(), dungeons_.end(),
@@ -1707,7 +1734,8 @@ std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, 
 // needed drops (GuildGear's judge, no copy owned) with their sources and chances. A boss is the route's anyway; another
 // source (a rare, a wanderer) the route takes when its expected gain per run (chance x the slot gain, the best member's)
 // over its kill effort (its template health) is at least the bosses' own: the detour earns what the run earns
-GuildCoordinator::FiveGoals GuildCoordinator::GoalsFor(DungeonOption const& d, std::vector<Player*> const& members)
+GuildCoordinator::FiveGoals GuildCoordinator::GoalsFor(DungeonOption const& d,
+                                                       std::vector<Player*> const& members) const
 {
     FiveGoals goals;
     struct Need
@@ -1745,9 +1773,10 @@ GuildCoordinator::FiveGoals GuildCoordinator::GoalsFor(DungeonOption const& d, s
                 continue;
             mob.name = info->Name;
             mob.boss = (info->flags_extra & CREATURE_FLAG_EXTRA_DUNGEON_BOSS) || info->rank == CREATURE_ELITE_WORLDBOSS;
+            mob.presence = Presence(entry);
             if (CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(info->maxlevel, info->unit_class))
                 mob.health = float(stats->GenerateHealth(info));
-            mob.value += chance * need.gain;
+            mob.value += mob.presence * chance * need.gain;  // [loot16] a kill only where it is
             std::string who;
             for (std::string const& name : need.who)
                 who += (who.empty() ? "" : ", ") + name;
@@ -1755,7 +1784,7 @@ GuildCoordinator::FiveGoals GuildCoordinator::GoalsFor(DungeonOption const& d, s
                                              ItemName(itemId), chance * 100.0f, who);
             if (mob.boss)
             {
-                bossValue += chance * need.gain;
+                bossValue += mob.presence * chance * need.gain;
                 if (bossSeen.insert(entry).second)
                     bossHealth += mob.health;
             }
@@ -1764,17 +1793,24 @@ GuildCoordinator::FiveGoals GuildCoordinator::GoalsFor(DungeonOption const& d, s
     {
         if (mob.boss)
         {
-            mob.taken = true;
+            mob.taken = mob.takenIfThere = true;
             mob.why = "a boss of the route";
             continue;
         }
-        // nothing else to earn on the route: the source is the run's whole value
-        float const perHealth = mob.health > 0.0f ? mob.value / mob.health : mob.value;
+        // nothing else to earn on the route: the source is the run's whole value. [loot16] The route kills it where
+        // it stands (its kill's own gain, presence 1); the need to repeat the dungeon for it weighs its presence
         float const routePerHealth = bossHealth > 0.0f ? bossValue / bossHealth : 0.0f;
-        mob.taken = mob.value > 0.0f && perHealth >= routePerHealth;
-        mob.why = Acore::StringFormat("expected gain {:.3f} a kill over {:.0f} health ({:.2e} a point) {} the bosses' "
-                                      "{:.2e}", mob.value, mob.health, perHealth, mob.taken ? ">=" : "<",
-                                      routePerHealth);
+        float const health = std::max(1.0f, mob.health);
+        float const killValue = mob.presence > 0.0f ? mob.value / mob.presence : 0.0f;
+        mob.takenIfThere = killValue > 0.0f && killValue / health >= routePerHealth;
+        mob.taken = mob.value > 0.0f && mob.value / health >= routePerHealth;
+        mob.why = Acore::StringFormat("expected gain {:.3f} a kill, {:.3f} a run (in the instance {:.0f} %) over "
+                                      "{:.0f} health ({:.2e} / {:.2e} a point) vs the bosses' {:.2e}: {}",
+                                      killValue, mob.value, mob.presence * 100.0f, mob.health, killValue / health,
+                                      mob.value / health, routePerHealth,
+                                      mob.taken ? "a need and a route goal"
+                                      : mob.takenIfThere ? "a route goal where it stands, no repeat for it"
+                                                         : "neither");
     }
     return goals;
 }
@@ -2594,7 +2630,7 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
         std::string text;
         for (auto const& [entry, mob] : goals.mobs)
             text += Acore::StringFormat("{}{} ({}{}): {}", text.empty() ? "" : " | ", mob.name, mob.boss ? "boss" : "",
-                                        mob.boss ? "" : (mob.taken ? "the route takes it: " : "not taken: ") + mob.why,
+                                        mob.boss ? "" : (mob.takenIfThere ? "the route takes it: " : "not taken: ") + mob.why,
                                         mob.items);
         LOG_INFO("playerbots", "[loot13] five {} ({}) goals: {}", five.id, d.contentKey, text.empty() ? "none" : text);
         std::lock_guard<std::mutex> goalGuard(goalLock_);
@@ -4309,11 +4345,17 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
             {
                 if (mob.boss)
                     continue;
-                std::string const state = mob.state.empty() ? "never seen by the route (not spawned in the instance?)"
-                                                            : mob.state;
-                missed += mob.taken && state != "killed";
+                std::string const state = mob.state.empty() ? "no report from the route (no retarget ran)" : mob.state;
+                // [loot16] the runs' own count of its presence (the script's share is the prior)
+                if (!mob.state.empty())
+                {
+                    auto& seen = presenceSeen_[entry];
+                    seen.second += 1;
+                    seen.first += mob.state.rfind("absent", 0) == 0 ? 0 : 1;
+                }
+                missed += mob.takenIfThere && state != "killed" && state.rfind("absent", 0) != 0;
                 text += Acore::StringFormat("{}{} ({}): {}", text.empty() ? "" : " | ", mob.name,
-                                            mob.taken ? "a goal" : "not a goal", state);
+                                            mob.takenIfThere ? "a goal" : "not a goal", state);
             }
             if (!text.empty())
                 LOG_INFO("playerbots", "[loot13] five {} run {} goal mobs: {}; {} goal(s) not killed", fiveId,
@@ -4354,6 +4396,19 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
     fives_.erase(itr);
 }
 
+// [loot16] the share of instances a source is in: its script's AI-start despawn chance as one observation beside the
+// runs' own count (seen alive or killed / every run that looked)
+float GuildCoordinator::Presence(uint32 entry) const
+{
+    auto const script = scriptPresence_.find(entry);
+    float const prior = script != scriptPresence_.end() ? script->second : 1.0f;
+    std::lock_guard<std::mutex> goalGuard(goalLock_);
+    auto const seen = presenceSeen_.find(entry);
+    if (seen == presenceSeen_.end())
+        return prior;
+    return (float(seen->second.first) + prior) / (float(seen->second.second) + 1.0f);
+}
+
 std::map<uint32, std::string> GuildCoordinator::FiveGoalMobs(uint32 memberLow) const
 {
     std::map<uint32, std::string> mobs;
@@ -4363,7 +4418,7 @@ std::map<uint32, std::string> GuildCoordinator::FiveGoalMobs(uint32 memberLow) c
         return mobs;
     if (auto const goals = goals_.find(of->second); goals != goals_.end())
         for (auto const& [entry, mob] : goals->second.mobs)
-            if (mob.taken && !mob.boss)
+            if (mob.takenIfThere && !mob.boss)  // [loot16]
                 mobs[entry] = mob.items;
     return mobs;
 }
