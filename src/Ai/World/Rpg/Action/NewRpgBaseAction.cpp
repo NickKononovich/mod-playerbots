@@ -2757,13 +2757,27 @@ bool NewRpgBaseAction::PocketRescue()
     return true;
 }
 
+// [death461] the bot prices its own walk a sight at a time: a solo bot, or an open-world co-op / help party's leader
+// ([group22]: the reaches it never fights refused, the packs judged for the party). b470 Febineysh / Galiver L19-20
+// (q167 party out of Darkshire) and Galiver / Kylantino (the walk-out from Addle's Stead, "walks the route found from
+// the destination back (3092 yd)") were walked whole through Duskwood, only the first sight priced: 3 deaths to the
+// Nightbane; Ginde / Irorm's core path to Menethil Bay: 29 Bluegill fights, Irorm died
+static bool PricesWalkInSight(Player* bot)
+{
+    if (SoloSafety::Applies(bot))
+        return true;
+    PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+    return botAI && NewRpgCoop::JudgesPulls(bot) && !bot->GetMap()->Instanceable() &&
+           botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT);
+}
+
 bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
 {
     // [guild14] a solo bot walks such a path only as far as it sees, and only when that stretch passes no mob of
     // orange / red con (b307 Guinudrond L9: the core's 2887 yd path from Loch Modan to Elwynn crossed Searing Gorge)
     auto const SafeLeg = [&](Movement::PointsArray& points)
     {
-        if (!SoloSafety::Applies(bot) || points.size() < 2)
+        if (!PricesWalkInSight(bot) || points.size() < 2)  // [death461]
             return true;
         float walked = 0.0f;
         for (size_t i = 1; i < points.size(); ++i)
@@ -2842,7 +2856,7 @@ bool NewRpgBaseAction::WalkOffIsland(WorldPosition const& dest, float disToDest)
         // walk back to the walk's start: b435 Sycina L18's partial legs (21, 50, 114 yd) toward the Zoram Strand went
         // up a Stonetalon valley onto a ridge (1764,-1019,246) whose only way out is 4084 yd, past the search's pool:
         // every walk from there a dead end, 89 WALK_FAIL in b438
-        if (!(coreType & PATHFIND_NORMAL) && SoloSafety::Applies(bot))
+        if (!(coreType & PATHFIND_NORMAL) && PricesWalkInSight(bot))  // [death461]
         {
             NewRpgInfo const& info = botAI->rpgInfo;
             G3D::Vector3 const start = info.moveFarFromSet ? info.moveFarFrom : here;
@@ -3852,16 +3866,32 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 // mobs met on a walk planned through a camp the bot had not seen yet
                 G3D::Vector3 leg = endPos;
                 // [b381] a path with a length but no points (the v21 core) keeps its end: b380 crash in PointOnPath
-                if (SoloSafety::Applies(bot) && path.length > sPlayerbotAIConfig.SightDistance &&
-                    path.points.size() >= 2)
+                bool const inSight = PricesWalkInSight(bot);  // [death461]
+                if (inSight && path.length > sPlayerbotAIConfig.SightDistance && path.points.size() >= 2)
+                {
                     leg = Leader::Travel::PointOnPath(path.points, sPlayerbotAIConfig.SightDistance);
+                    if (!SoloSafety::Applies(bot))
+                    {
+                        static std::mutex legLogLock;  // one line per bot (a log line, no decision)
+                        static std::unordered_set<uint32> legLogged;
+                        bool fresh = false;
+                        {
+                            std::lock_guard<std::mutex> guard(legLogLock);
+                            fresh = legLogged.insert(bot->GetGUID().GetCounter()).second;
+                        }
+                        if (fresh)
+                            LOG_INFO("playerbots", "[death461] {} L{} walks its party a sight at a time: {:.0f} of a "
+                                     "{:.0f} yd walk to ({:.0f},{:.0f})",
+                                     bot->GetName(), bot->GetLevel(), sPlayerbotAIConfig.SightDistance, path.length,
+                                     dest.GetPositionX(), dest.GetPositionY());
+                    }
+                }
                 // [guild15] a stretch of the leg that drops through open air (no ground or liquid under it, sampled as
                 // PlayerbotAI::GuardAirborneSpline samples a descending leg): the guard cuts that walk at the rim on
                 // every try (b333 Hobliir, Ellosera at the Exodar: "refused a straight move over open air", STUCK);
                 // the ways off from here are searched instead (the core's path, the route back, a survivable jump)
                 if (G3D::Vector3 rim; LegOverOpenAir(bot, path.points,
-                                                       SoloSafety::Applies(bot) ? sPlayerbotAIConfig.SightDistance
-                                                                                : path.length,
+                                                       inSight ? sPlayerbotAIConfig.SightDistance : path.length,
                                                        rim))
                 {
                     NoteWalkFailure(dest, Acore::StringFormat("route {} ({:.0f} yd): its leg drops through open air at "
@@ -3935,7 +3965,7 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             // path fallback walked it on toward the refused area a leg at a time and back (b406 Orenem L15: a 4211 yd
             // giver walk past Fallen Sky Lake, area level 26 - three "walks the core's path" legs, a MOVE_FAR_LOOP
             // after 499 s)
-            if (SoloSafety::Applies(bot) && path.refusedArea)
+            if (PricesWalkInSight(bot) && path.refusedArea)  // [death461] a party leader's refused walk too
             {
                 LOG_INFO("playerbots", "[loop70] {} L{} walk to ({:.0f},{:.0f}) {:.0f} yd refused: every way passes "
                          "an area or static spawns it must not walk through",
