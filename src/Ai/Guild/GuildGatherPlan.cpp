@@ -1238,6 +1238,12 @@ void GuildGatherPlan::Refuse(Player* bot, uint32 placeId, std::string const& why
              bot->GetLevel(), place ? PlaceName(*place) : std::to_string(placeId), why);
 }
 
+void GuildGatherPlan::Unrefuse(uint32 botLow, uint32 placeId)
+{
+    std::lock_guard<std::mutex> guard(lock_);
+    refused_.erase({botLow, placeId});
+}
+
 std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> const& shortfall,
                                                       std::vector<Player*> const& gatherers,
                                                       std::map<uint32, float> const& questPace,

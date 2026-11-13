@@ -139,6 +139,8 @@ public:
     // map thread: the bot's walk to its place was refused by the solo judge (TripRefused) or ended no nearer than the
     // last one (the walk gave the place up): the place is off for this bot until its next level, Assign picks again
     void Refuse(Player* bot, uint32 placeId, std::string const& why);
+    // [assist5] an escort cleared the place's guard where the gatherer stands: the place is its choice again
+    void Unrefuse(uint32 botLow, uint32 placeId);
     // [gather] the continent rule (user): Outland from level 58, Northrend from 68, no other continent below 58
     static bool ContinentAllowed(Player* bot, uint32 mapId, WorldPosition const& spot);
 

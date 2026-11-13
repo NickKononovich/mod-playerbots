@@ -644,7 +644,9 @@ void GuildCoordinator::Load()
     NewRpgCoop::SetCoordinatorHooks({[this](Player* b, std::string* w) { return UrgentTask(b, w); },
                                      [this](uint32 l, uint32 partner, uint32 q, bool lead, std::string const& w)
                                      { AddCoopTask(l, partner, q, lead, w); },
-                                     [this](uint32 l, uint32 q, std::string const& w) { EndCoopTask(l, q, w); }});
+                                     [this](uint32 l, uint32 q, std::string const& w) { EndCoopTask(l, q, w); },
+                                     [this](uint32 l, std::string* w) { return AssistWeight(l, w); },  // [assist2]
+                                     [this](uint32 l, uint32 place, bool done) { OnEscortEnd(l, place, done); }});
     loaded_ = true;
 }
 
@@ -1238,6 +1240,10 @@ void GuildCoordinator::Update(uint32 diff)
         {
             SlowScope slow("coordinator fives");
             UpdateFives();  // [guild60]
+        }
+        {
+            SlowScope slow("coordinator assist");
+            UpdateAssist();  // [assist1] the guild's blockers, the weights the help pricing reads, the escorts
         }
         NewRpgCoop::UpdateHelp();  // [help] the guild's help requests: helpers assigned, human parties ended
     }
@@ -8734,6 +8740,8 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                                                           st.gatherWalkLeft, left);
                         if (!refusal.empty())
                         {
+                            if (refusal.rfind("the solo judge", 0) == 0)  // [assist5] a guard, not the route
+                                NoteGatherBlocked(bot, order.placeId, refusal);
                             sGuildGatherPlan.Refuse(bot, order.placeId, refusal);
                             st.gatherWalkPlace = 0;
                             order.executable = false;
@@ -8760,6 +8768,7 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                         if (NewRpgBaseAction::TripRefused(bot, place->spot.GetPositionX(), place->spot.GetPositionY(),
                                                           place->spot.GetPositionZ(), "skinning place"))
                         {
+                            NoteGatherBlocked(bot, order.placeId, "the solo judge refused the walk (TRIP_REFUSED)");
                             sGuildGatherPlan.Refuse(bot, order.placeId,
                                                     "the solo judge refused the walk (TRIP_REFUSED)");
                             order.executable = false;

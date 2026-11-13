@@ -791,6 +791,32 @@ public:
     // [lag368] the member holds the guild's open dungeon back: not cleared and below its band (the guild waits on its
     // level). Its own lock: read from the help pricing (NewRpgCoop) without lock_
     bool HoldsGuildDungeon(uint32 low) const;
+    // [assist1] user 2026-11-13: the guild balances itself (GuildAssist.cpp). World thread, every 5 s: what holds the
+    // guild back (the open dungeon's members below its band, gather places blocked for the guild's needs, laggards
+    // whose own progress is stuck) and what one experience point of each member is worth to the guild for it
+    void UpdateAssist();
+    // [assist2] any thread (its own lock): that weight (1 = to itself only); the help pricing weighs value and cost
+    float AssistWeight(uint32 low, std::string* why) const;
+    // [assist5] map thread: the gatherer's walk to its gather place was refused by its solo judge - an escort is asked
+    // (UpdateAssist posts it) when the gather's worth is known
+    void NoteGatherBlocked(Player* bot, uint32 placeId, std::string const& why);
+    void OnEscortEnd(uint32 low, uint32 placeId, bool done);  // [assist5] world thread
+
+private:
+    mutable std::mutex assistLock_;  // [assist1] behind it: the weights and the escort asks (never waits on another)
+    std::unordered_map<uint32, std::pair<float, std::string>> assistWeight_;
+    struct EscortAsk
+    {
+        uint32 low{0};
+        uint32 placeId{0};
+        uint8 level{0};
+        WorldPosition spot{};
+        float valueCopper{0.0f};  // the gather's worth: its share of units at the guild's value
+        std::string why;
+    };
+    std::vector<EscortAsk> escortAsks_;
+    std::string assistBlockersLogged_;  // [assist1] world thread: the last blocker / assignment lines
+    std::string assistAssignLogged_;
 
 private:
     std::string OrderHold(DungeonOption const& d, uint32 low, Player* p);

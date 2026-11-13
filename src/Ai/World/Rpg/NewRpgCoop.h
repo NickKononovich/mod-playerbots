@@ -149,6 +149,13 @@ struct CoordinatorHooks
     std::function<void(uint32 low, uint32 partnerLow, uint32 questId, bool leads, std::string const& why)> addTask;
     // map / world thread, without the board's lock: the co-op task ends (its exit reason)
     std::function<void(uint32 low, uint32 questId, std::string const& why)> endTask;
+    // [assist2] any thread, maybe with the board's lock held (never lock_): what one experience point of the member is
+    // worth to the guild (1: to itself only; more: the guild waits on its progress, GuildCoordinator's blocker list);
+    // `why` its reason. The help's value and every helper's cost are weighed by it
+    std::function<float(uint32 low, std::string* why)> guildWeight;
+    // [assist5] world thread, without the board's lock: a gatherer's escort party ended (done: the place's guard is
+    // dead where the gatherer stands - its place is its choice again)
+    std::function<void(uint32 low, uint32 placeId, bool done)> escortEnd;
 };
 void SetCoordinatorHooks(CoordinatorHooks const& coordinatorHooks);
 
@@ -166,6 +173,24 @@ void SetCoordinatorHooks(CoordinatorHooks const& coordinatorHooks);
 // kill / loot objective of the quest) closes, then leave the group and go back to their plan.
 // Log: [help] request|assign|refuse|join|invite|done|leave <who> k=v ... t=<unix ms> reason=<text>
 // (C:/WoW/tools/quest_metrics.py --section help)
+
+// [assist5] world thread: the global leader asks an escort for a gatherer whose walk to its gather place its solo
+// judge refused - a camp request at the place's spot priced from the static spawns that reach it (CampPackAt);
+// `valueXp` the gather's worth in the gatherer's own experience. It ends when the gatherer stands at the place and no
+// mob of that pack is alive there. False: no request (another open, a party, priced out at this level, no hostile
+// spawn reaches the spot)
+bool PostEscort(Player* gatherer, uint32 placeId, WorldPosition const& spot, float valueXp, std::string const& why);
+// [assist1] the help requests and parties now (the global leader's assist lines)
+struct HelpView
+{
+    uint32 request = 0;
+    uint32 party = 0;  // 0: open, no helper yet
+    uint32 requester = 0;
+    std::vector<uint32> helpers;
+    std::string goal;         // "q<id>", "camp", "escort place <id>"
+    std::string lastRefusal;  // an open one's last refusal
+};
+std::vector<HelpView> HelpSnapshot();
 
 // world thread (the chat hooks): a human's message to the guild; true when it was a help request (answered in chat)
 bool HelpChat(Player* sender, std::string const& msg, Player* receiver);

@@ -64,6 +64,7 @@
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include <set>  // [help13]
+#include <list>  // [assist5]
 
 namespace
 {
@@ -215,6 +216,13 @@ struct Party
     WorldPosition walkOutTo{};
     std::string walkOutExit;
     bool walkOutDone = false;
+    // [assist5] an escort party: the gather place, the guard pack's entries and reach round campAt; its open check is
+    // a grid search, kept for a second (every member asks it each tick; a guard's death is what changes it)
+    uint32 escortPlace = 0;
+    std::vector<uint32> campEntries;
+    float campRadius = 0.0f;
+    uint32 escortCheckedAt = 0;
+    bool escortOpen = true;
 };
 
 // [b372] recursive: AssignLocked (held) -> WalkYd -> SoloSafety::RouteCosts -> JudgesPulls took it again (b371 crash).
@@ -2073,6 +2081,12 @@ struct HelpRequest
     // when one changes (b368: Ginde's request priced 112 times, Salleas' 102)
     uint64 refusedKey = 0;
     bool priceDropped = false;  // [help36] refused by its price: dropped by UpdateHelp after its look
+    // [assist5] a gatherer's escort: its gather place, the gather's worth in its own experience, the static pack's
+    // creature entries and reach round the place's spot (r.at)
+    uint32 escortPlace = 0;
+    float escortXp = 0.0f;
+    std::vector<uint32> campEntries;
+    float campRadius = 0.0f;
 };
 
 std::map<uint32, HelpRequest> helpRequests;  // behind the board's lock
@@ -2137,9 +2151,36 @@ bool CampOpen(Player* p, std::vector<ObjectGuid> const& mobs, uint32& killed, st
     return open;
 }
 
+// [assist5] a live, hostile mob of the escort's guard pack within its reach of the place's spot, seen by the gatherer
+// (`p`) from where it stands; a gatherer not yet in sight of the spot is still on its way (open)
+bool EscortGuardAlive(Player* p, WorldPosition const& at, std::vector<uint32> const& entries, float radius)
+{
+    if (!p || at.GetMapId() != p->GetMapId() || p->GetExactDist(at) > sPlayerbotAIConfig.SightDistance)
+        return true;
+    for (uint32 const entry : entries)
+    {
+        std::list<Creature*> found;
+        p->GetCreatureListWithEntryInGrid(found, entry, sPlayerbotAIConfig.SightDistance + radius);
+        for (Creature* mob : found)
+            if (mob->IsAlive() && mob->IsHostileTo(p) && mob->GetExactDist2d(&at) <= radius)
+                return true;
+    }
+    return false;
+}
+
 bool HelpOpen(Player* p, Party& party)
 {
     uint32 units = 0;
+    if (party.escortPlace)  // [assist5]
+    {
+        uint32 const now = getMSTime();
+        if (!party.escortCheckedAt || getMSTimeDiff(party.escortCheckedAt, now) >= IN_MILLISECONDS)
+        {
+            party.escortCheckedAt = now;
+            party.escortOpen = EscortGuardAlive(p, party.campAt, party.campEntries, party.campRadius);
+        }
+        return p && party.escortOpen;
+    }
     if (party.campOnly)
         return p && CampOpen(p, party.campMobs, units, &party.campDead);
     return p && HelpUnits(p, party.helpObj.questId, party.helpObj.index, party.wholeQuest, units);
@@ -2380,6 +2421,19 @@ float TimeRate(Player* p)
     return std::max(route, grind);
 }
 
+// [assist2] what one experience point of the member is worth to the guild (GuildCoordinator's blocker list: 1 when
+// nobody waits on it)
+float GuildWeight(Player* p, std::string* why = nullptr)
+{
+    if (!p || !hooks.guildWeight)
+        return 1.0f;
+    return std::max(1.0f, hooks.guildWeight(p->GetGUID().GetCounter(), why));
+}
+
+// [assist3] user 2026-11-13: a helper's whole trip is its cost - the walk there, the help, the walk back to where its
+// own plan stood - at its own time's worth (its route's experience per second, weighed by what the guild waits on it)
+float HelperSeconds(float eta, float fight) { return 2.0f * eta + fight; }
+
 // lock held: the global leader assigns the helpers of one open request (world thread: every player readable). `reply`:
 // the answer for a human requester
 // [help53] the help update's two passes: the walks its pricing asks for are searched outside the board's lock.
@@ -2574,10 +2628,11 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                     // [help20] the winner whose time costs least: its own route's experience per second over its
                     // walk and the help (before, the nearest winner: a far one with nothing to do cost the same)
                     // [help34] its walk searched only when its lower bound still beats the best winner
-                    if (winner && TimeRate(c->p) * (c->eta + with.seconds) >= bestCost)
+                    // [assist3] its trip there and back at its guild-weighed rate
+                    if (winner && TimeRate(c->p) * GuildWeight(c->p) * HelperSeconds(c->eta, with.seconds) >= bestCost)
                         continue;
                     exactWalk(*c);
-                    float const cost = TimeRate(c->p) * (c->eta + with.seconds);  // [help22]
+                    float const cost = TimeRate(c->p) * GuildWeight(c->p) * HelperSeconds(c->eta, with.seconds);
                     if (!winner || cost < bestCost)
                     {
                         winner = true;
@@ -2640,7 +2695,9 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     {
         float const killXp = float(Acore::XP::BaseGain(c.p->GetLevel(), c.p->GetLevel(), helpContent)) *
                              sWorld->getRate(RATE_XP_KILL);
-        helpCost += std::max(0.0f, TimeRate(c.p) * (c.eta + v.seconds) - float(r.mobs.size()) * killXp / partySize);
+        // [assist3] the trip there and back, at the helper's guild-weighed rate
+        helpCost += std::max(0.0f, TimeRate(c.p) * GuildWeight(c.p) * HelperSeconds(c.eta, v.seconds) -
+                                       float(r.mobs.size()) * killXp / partySize);
         farthest = std::max(farthest, c.eta);
     }
     // [help25] a blocked requester's own time is no cost of the help: alone it gains nothing at that camp, and its
@@ -2650,7 +2707,17 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     // MemberNotReady) until the farthest helper arrives - its wait is a cost whether or not it wins alone. b386:
     // Rollothan was sent 5741 yd (eta 820 s) to Maronic's camp, "value 2850, cost 1560" without Maronic's 820 s at
     // 3.15 xp/s (2583 xp); Maronic stood 600 s in the wait, the help ended unfinished
-    helpCost += TimeRate(req) * farthest;
+    std::string reqWeightWhy;
+    float const reqWeight = GuildWeight(req, &reqWeightWhy);  // [assist2]
+    helpCost += TimeRate(req) * reqWeight * farthest;
+    // [assist7] the core's group split (KillRewarder via KillXp: the highest member the mob is not grey for, the level
+    // share): the camp's kill experience the requester gives up to its helpers - a cost only where alone it wins
+    float splitLoss = 0.0f;
+    if (aloneWins && r.topLevel)
+        splitLoss = float(r.mobs.size()) * std::max(0.0f, KillXp(req, 0, r.topLevel, {req}) -
+                                                              KillXp(req, 0, r.topLevel, party)) *
+                    reqWeight;
+    helpCost += splitLoss;
     // [help21] a camp request (no quest of its own: a camp in its way) is worth the quests it walls off: the
     // requester's open log quests with an objective spot within its sight of the camp. Before, 0: every camp request
     // refused (b368: 263 refusals, Salleas "value 0 xp ... cost 2061")
@@ -2680,16 +2747,24 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
                     }
 
     float const saved = aloneWins ? std::max(0.0f, aloneSeconds - v.seconds) : 0.0f;
-    float const helpValue = questXp + QuestRoute::XpPerSecond(req->GetGUID().GetCounter()) * saved;
+    // [assist2] the requester's experience at what the guild waits on it, and [assist5] an escort's gather worth
+    float const ownValue = questXp + QuestRoute::XpPerSecond(req->GetGUID().GetCounter()) * saved;
+    float const helpValue = ownValue * reqWeight + r.escortXp;
     // [help22] the line names the rates its cost was priced with (a helper's route, else its grind rate)
     std::string rates;
     for (Candidate const& c : chosen)
-        rates += Acore::StringFormat("{}{} {:.2f} xp/s{}", rates.empty() ? "" : ", ", c.p->GetName(), TimeRate(c.p),
-                                     QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) > 0.0f ? "" : " (grind)");
+        rates += Acore::StringFormat("{}{} {:.2f} xp/s{} x{:.2f} trip {:.0f}+{:.0f} s", rates.empty() ? "" : ", ",
+                                     c.p->GetName(), TimeRate(c.p),
+                                     QuestRoute::XpPerSecond(c.p->GetGUID().GetCounter()) > 0.0f ? "" : " (grind)",
+                                     GuildWeight(c.p), 2.0f * c.eta, v.seconds);  // [assist3]
+    if (reqWeight > 1.0f || r.escortXp > 0.0f)  // [assist2] / [assist5]
+        rates += Acore::StringFormat("; [assist2] requester x{:.2f} ({}), escort {:.0f} xp", reqWeight,
+                                     reqWeightWhy.empty() ? "its own" : reqWeightWhy, r.escortXp);
     std::string const priced =
         Acore::StringFormat("value {:.0f} xp (quest {:.0f} [help28] + {:.0f} s saved), cost {:.0f} xp ([help22] helpers {}; "
-                            "requester's wait {:.0f} s at {:.2f} xp/s, counted [help35])",
-                            helpValue, questXp, saved, helpCost, rates, farthest, TimeRate(req));
+                            "requester's wait {:.0f} s at {:.2f} xp/s, counted [help35]; [assist7] its kill xp to the "
+                            "split {:.0f})",
+                            helpValue, questXp, saved, helpCost, rates, farthest, TimeRate(req), splitLoss);
     if (!r.human && helpCost >= helpValue)  // [help22] no value (0) is no help either
     {
         r.refusedKey = priceKey;  // [help21]
@@ -2702,6 +2777,21 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         out.logs.push_back(Acore::StringFormat("[help36] drop {} quest=q{} request={}{} reason=no help worth its "
                                                "price at L{} (asked again at its next level): {}",
                                                r.name, r.obj.questId, r.id, HelpStamp(), req->GetLevel(), priced));
+        // [assist4] user 2026-11-13: the nearest helper's whole trip against the value - the blocked member works
+        // round it on its own (its judge's detour or slow safe kills)
+        Candidate const* nearest = nullptr;
+        for (Candidate const& c : chosen)
+            if (!nearest || c.eta < nearest->eta)
+                nearest = &c;
+        if (nearest)
+            out.logs.push_back(Acore::StringFormat(
+                "[assist4] no helper worth the trip for {} ({}): nearest {} L{}, {:.1f} min there and back + "
+                "{:.1f} min help for {:.0f} xp value (cost {:.0f} xp){}",
+                r.name, r.escortPlace ? "escort place " + std::to_string(r.escortPlace)
+                        : r.campOnly  ? std::string("camp")
+                                      : "q" + std::to_string(r.obj.questId),
+                nearest->p->GetName(), nearest->p->GetLevel(), 2.0f * nearest->eta / 60.0f, v.seconds / 60.0f,
+                helpValue, helpCost, HelpStamp()));
 
         if (why != r.lastRefusal)
         {
@@ -2733,6 +2823,9 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     party_.campOnly = r.campOnly;  // [help12]
     party_.campMobs = r.campMobs;
     party_.retry = r.retry;
+    party_.escortPlace = r.escortPlace;  // [assist5]
+    party_.campEntries = r.campEntries;
+    party_.campRadius = r.campRadius;
     if (r.campOnly)
         CampOpen(req, r.campMobs, party_.haveAtAssign);
     else
@@ -3106,7 +3199,16 @@ NewRpgCoop::Order HelpTickLocked(PlayerbotAI* /*botAI*/, Player* bot, Posting& m
                                                                    party.campAt.GetPositionY()));
             if (!resumable)
             {
-                exit = "its own plan moved on";
+                // [assist6] which fact ended it (b-log 2026-11-13: 11 of 18 priced helps ended so, 4800 of 51875 xp
+                // of value delivered)
+                exit = std::string("its own plan moved on (") +
+                       (!ai || !help                 ? "no help quest"
+                        : !bot->IsAlive()            ? "dead"
+                        : bot->IsInFlight() || ai->rpgInfo.GetStatus() == RPG_TRAVEL_FLIGHT ? "on a flight"
+                        : bot->GetTransport()        ? "on a transport"
+                        : bot->GetQuestStatus(party.helpObj.questId) != QUEST_STATUS_INCOMPLETE ? "quest no longer open"
+                                                     : "its walk to the camp given up") +
+                       ")";
                 held = true;
             }
             else
@@ -3221,6 +3323,9 @@ void HelpEndLocked(Party& party, uint32 who, std::string const& reason, bool don
         else
             HelpUnits(req, party.helpObj.questId, party.helpObj.index, party.wholeQuest, unitsNow);
     }
+    if (party.escortPlace && hooks.escortEnd)  // [assist5] the gatherer's place is its choice again when done
+        out.after.push_back([low = party.requester.GetCounter(), place = party.escortPlace, done]()
+                            { hooks.escortEnd(low, place, done); });
     // [help12] the camp cleared: the requester's refused walk is its choice again
     if (done && party.campOnly && party.retry != WorldPosition())
         out.after.push_back(
@@ -4073,9 +4178,12 @@ void UpdateHelp()
             std::string drop;
             if (!req || !req->IsInWorld())
                 drop = "the requester is offline";
-            else if (r.campOnly ? !CampOpen(req, r.campMobs, units)
-                                : !HelpUnits(req, r.obj.questId, r.obj.index, r.wholeQuest, units))
-                drop = r.campOnly ? "the camp is gone (its mobs dead)" : "its objective closed";
+            else if (r.escortPlace ? !EscortGuardAlive(req, r.at, r.campEntries, r.campRadius)  // [assist5]
+                     : r.campOnly  ? !CampOpen(req, r.campMobs, units)
+                                   : !HelpUnits(req, r.obj.questId, r.obj.index, r.wholeQuest, units))
+                drop = r.escortPlace ? "the place's guard is dead where it stands"
+                       : r.campOnly  ? "the camp is gone (its mobs dead)"
+                                     : "its objective closed";
             else if (!r.human)
             {
                 auto const post = postings.find(r.requester.GetCounter());
@@ -4769,6 +4877,107 @@ void OnStaticCampLost(Player* bot, uint32 questId, int32 objectiveIdx, WorldPosi
         LOG_INFO("playerbots", "{}", seekLine);
     if (!helpLine.empty())
         LOG_INFO("playerbots", "{}", helpLine);
+}
+
+bool PostEscort(Player* gatherer, uint32 placeId, WorldPosition const& spot, float valueXp, std::string const& why)
+{
+    if (!gatherer || !gatherer->IsInWorld() || !placeId || spot.GetMapId() != gatherer->GetMapId() ||
+        gatherer->GetGroup() || gatherer->GetMap()->Instanceable() ||
+        !sGuildCoordinator.IsPlanned(gatherer->GetGUID().GetCounter()))
+        return false;
+    // the pack that wakes when the gatherer stands at the spot: each hostile spawn whose aggro reach at the
+    // gatherer's level (the core's detection range less the level gap, the wander area) covers it
+    FactionTemplateEntry const* own = gatherer->GetFactionTemplateEntry();
+    float const rate = sWorld->getRate(RATE_CREATURE_AGGRO);
+    std::vector<CampMob> const& pack = CampPackAt(spot.GetMapId(), spot.GetPositionX(), spot.GetPositionY());
+    HelpRequest r;
+    std::set<uint32> entries;
+    float damage = 0.0f, seconds = 0.0f;
+    for (CampMob const& m : pack)
+    {
+        FactionTemplateEntry const* faction = sFactionTemplateStore.LookupEntry(m.tmpl->faction);
+        if (!own || !faction || !faction->IsHostileTo(*own) || (m.tmpl->unit_flags & UNIT_FLAG_NON_ATTACKABLE))
+            continue;
+        float const reach = std::clamp(m.tmpl->detection_range - (float(m.level) - float(gatherer->GetLevel())),
+                                       5.0f, float(MAX_AGGRO_RADIUS)) *
+                                rate +
+                            m.wander;
+        if (m.dist > reach)
+            continue;
+        r.mobs.push_back({m.hp, m.meleeDps * (1.0f - ArmorShare(gatherer, m.level))});
+        entries.insert(m.tmpl->Entry);
+        r.campRadius = std::max(r.campRadius, m.dist + m.wander);
+        r.topLevel = std::max(r.topLevel, m.level);
+    }
+    if (r.mobs.empty())
+    {
+        LOG_INFO("playerbots", "[assist5] no-escort {} place={}{} reason=no hostile spawn reaches the place's spot "
+                 "({:.0f},{:.0f}): its refusal lies on the way, not at the place",
+                 gatherer->GetName(), placeId, Stamp(), spot.GetPositionX(), spot.GetPositionY());
+        return false;
+    }
+    float const solo = std::max(DpsEstimate::EstimateDps(gatherer, nullptr, DpsEstimate::BuffContext::Solo), 1.0f);
+    for (auto const& [hp, dps] : r.mobs)
+    {
+        seconds += hp / solo;
+        damage += dps * seconds;
+    }
+    std::string line;
+    {
+        std::lock_guard<std::recursive_mutex> guard(lock);
+        uint32 const low = gatherer->GetGUID().GetCounter();
+        if (auto const post = postings.find(low); post != postings.end() && post->second.party)
+            return false;
+        for (auto const& [id, open] : helpRequests)
+            if (open.requester == gatherer->GetGUID())
+                return false;  // one open request per bot
+        if (PriceRefusedLocked(gatherer, 0, spot))
+            return false;  // [help36] priced out at this level
+        r.id = nextHelp++;
+        r.requester = gatherer->GetGUID();
+        r.name = gatherer->GetName();
+        r.campOnly = true;
+        r.escortPlace = placeId;
+        r.escortXp = valueXp;
+        r.campEntries.assign(entries.begin(), entries.end());
+        r.level = gatherer->GetLevel();
+        r.retry = spot;
+        r.at = spot;
+        r.askedAt = getMSTime();
+        r.measured = false;
+        r.camp = Acore::StringFormat("escort place {}: static guard x{} top L{}, {:.0f} dmg over {:.0f} s alone",
+                                     placeId, r.mobs.size(), r.topLevel, damage, seconds);
+        line = Acore::StringFormat("[assist5] request {} kind=escort place={} request={} mobs={} at=({:.0f},{:.0f}) "
+                                   "value={:.0f} xp camp=\"{}\"{} reason={}",
+                                   r.name, placeId, r.id, r.mobs.size(), spot.GetPositionX(), spot.GetPositionY(),
+                                   valueXp, r.camp, Stamp(), why);
+        helpRequests[r.id] = std::move(r);
+    }
+    LOG_INFO("playerbots", "{}", line);
+    return true;
+}
+
+std::vector<HelpView> HelpSnapshot()
+{
+    std::vector<HelpView> views;
+    std::lock_guard<std::recursive_mutex> guard(lock);
+    for (auto const& [id, r] : helpRequests)
+    {
+        HelpView v;
+        v.request = id;
+        v.party = r.party;
+        v.requester = r.requester.GetCounter();
+        v.goal = r.escortPlace ? "escort place " + std::to_string(r.escortPlace)
+                 : r.campOnly  ? std::string("camp")
+                               : "q" + std::to_string(r.obj.questId);
+        v.lastRefusal = r.lastRefusal;
+        if (auto const party = parties.find(r.party); party != parties.end())
+            for (ObjectGuid const& guid : party->second.members)
+                if (guid != r.requester)
+                    v.helpers.push_back(guid.GetCounter());
+        views.push_back(std::move(v));
+    }
+    return views;
 }
 }  // namespace NewRpgCoop
 
