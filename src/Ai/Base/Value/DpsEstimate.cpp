@@ -1584,6 +1584,11 @@ struct Profile
     float altPerEnergy = 0.0f;  // [rot610] ... energy spells (a builder-finisher cycle per its energy)
     std::vector<std::pair<uint32, float>> parts;  // [dpscal] damage per second by rotation spell ([dpsparts] log)
     float replacedWhite = 0.0f;  // [rot611] the swings a next-swing strike replaces (in `white`, logged in its part)
+    // [dps60] the same swings in hits a second, taken out of `whiteHitsPerSec` below. The swing timer produced them;
+    // a next-swing strike spent them, so they land as that strike and not as a white hit. [meleeup] adds them back
+    // to price the timer's own output, which is what the able time allows - and the gap between the strikes the
+    // rotation planned and the ones the bot cast is then the rotation's, read off one line instead of guessed.
+    float replacedHitsPerSec = 0.0f;
     float whiteHitsPerSec = 0.0f;  // [dps238] its landed melee swings a second ([dpsparts] log only)
     // [dps50] the part of the fight `whiteHitsPerSec` has it in melee reach (1 for every rotation but the petless
     // hunter's, who shoots until the mob arrives): the [meleeup] allowance prices only the able time, which already
@@ -2333,6 +2338,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             {
                 p.parts.back().second += rate * mh.damage;
                 p.replacedWhite = rate * mh.damage;
+                p.replacedHitsPerSec = std::min(p.whiteHitsPerSec, rate * mh.landed);  // [dps60]
                 p.whiteHitsPerSec = std::max(0.0f, p.whiteHitsPerSec - rate * mh.landed);  // [dps238]
             }
         }
@@ -2509,6 +2515,12 @@ struct LiveFight
     // casts 0.7-0.9 of the window when hit and ~1.0 when not)
     uint32 whiteHits = 0;
     uint32 finishers = 0, finisherPoints = 0;
+    // [dps60] the on-next-swing strikes it cast (Heroic Strike, Cleave, Maul, Raptor Strike). Each one spends a
+    // swing the timer produced and lands as itself, not as a white hit, so `whiteHits` alone is short of the
+    // timer's output by this count. Read off the core's own predicate (Spell::IsNextMeleeSwingSpell), not a list of
+    // spell ids: SharedDefines records SPELL_ATTR0_ON_NEXT_SWING as identical in handling, but the core acts on
+    // SPELL_ATTR0_ON_NEXT_SWING_NO_DAMAGE alone, and what the core queues is what spends a swing here.
+    uint32 nextSwings = 0;
 };
 
 std::mutex liveLock;
@@ -2979,6 +2991,16 @@ void RecordFight(Player* bot, FightSample const& sample)
                                                           : f.formula.whiteHitsPerSec;
         float const allowed = inMelee * sample.ableSec;
         float const counted = f.formula.whiteHitsPerSec * sample.windowSec;
+        // [dps60] the swing timer's own output against what the able time allows it: a next-swing strike spends a
+        // swing and lands as itself, so both sides add the replaced swings back. This is the pair that answers the
+        // able time; the landed-white pair above answers the rotation on top of it. b480's prot warriors read 86 %
+        // of their able time on landed white alone and 94 % with their 82 Heroic Strikes counted - 8 of the 14
+        // points were the strike, and `replacedHitsPerSec` is what the rotation planned to spend against them.
+        float const replaced = f.formula.meleeShare > 0.0f
+                                   ? f.formula.replacedHitsPerSec / f.formula.meleeShare
+                                   : f.formula.replacedHitsPerSec;
+        float const timerAllowed = (inMelee + replaced) * sample.ableSec;
+        uint32 const timerSwings = f.whiteHits + f.nextSwings;
         float const mhSec = std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
         float const ohSec = bot->HasOffhandWeaponForAttack()
                                 ? std::max(float(bot->GetAttackTime(OFF_ATTACK)) / float(IN_MILLISECONDS), 0.1f)
@@ -2988,14 +3010,17 @@ void RecordFight(Player* bot, FightSample const& sample)
                  "[meleeup] {} L{} {}/{} swings {} of {:.1f} the able time allowed ({:.0f} %), formula counted "
                  "{:.1f} ({:.0f} %) | able {:.1f} s of {:.1f} s (events {:.1f} s + lead swing {:.1f} s; fight "
                  "{:.1f} s, dps window {:.1f} s): out of reach {:.1f}, not facing {:.1f}, no swing {:.1f}, "
-                 "controlled {:.1f}, swinging elsewhere {:.1f} | rate {:.2f} landed in melee ({:.2f} over the "
-                 "fight, melee share {:.2f}) of {:.2f} swung a second (main {:.2f} s, off {:.2f} s) | white dealt "
-                 "{} of {:.0f} the formula",
+                 "controlled {:.1f}, swinging elsewhere {:.1f} | timer {} swings ({} white + {} next-swing "
+                 "strikes) of {:.1f} allowed ({:.0f} %), rotation planned {:.2f} replaced a second | rate {:.2f} "
+                 "landed in melee ({:.2f} over the fight, melee share {:.2f}) of {:.2f} swung a second (main "
+                 "{:.2f} s, off {:.2f} s) | white dealt {} of {:.0f} the formula",
                  bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), spec, f.whiteHits, allowed,
                  allowed > 0.0f ? float(f.whiteHits) / allowed * 100.0f : 0.0f, counted,
                  counted > 0.0f ? float(f.whiteHits) / counted * 100.0f : 0.0f, sample.ableSec, sample.windowSec,
                  sample.windowSec - sample.leadSec, sample.leadSec, sample.fightSec, active, sample.rangeSec,
-                 sample.facingSec, sample.noSwingSec, sample.controlSec, sample.switchSec, inMelee,
+                 sample.facingSec, sample.noSwingSec, sample.controlSec, sample.switchSec, timerSwings, f.whiteHits,
+                 f.nextSwings, timerAllowed,
+                 timerAllowed > 0.0f ? float(timerSwings) / timerAllowed * 100.0f : 0.0f, replaced, inMelee,
                  f.formula.whiteHitsPerSec, f.formula.meleeShare, swung, mhSec, ohSec, f.white,
                  (f.formula.white - f.formula.pet - f.formula.replacedWhite) * sample.windowSec);
     }
@@ -3118,6 +3143,8 @@ void NoteCast(Player* player, SpellInfo const* info)
     std::lock_guard<std::mutex> guard(liveLock);
     LiveFight& f = live[player->GetGUID().GetRawValue()];
     ++f.casts[info->Id];
+    if (info->HasAttribute(SPELL_ATTR0_ON_NEXT_SWING_NO_DAMAGE))  // [dps60]
+        ++f.nextSwings;
     if (info->NeedsComboPoints())  // [dps238] its points before the finisher takes them
     {
         ++f.finishers;
