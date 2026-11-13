@@ -463,23 +463,32 @@ namespace CarefulPlanVerdict
     bool GetNextFight(ObjectGuid tank, Fight& out)
     {
         std::lock_guard<std::mutex> guard(verdictLock);
-        auto const found = verdicts.find(tank.GetRawValue());
-        if (found == verdicts.end())
+        // [lead182b] no usable verdict: the pack the planner's held look is about, while that look is fresh
+        // [pull83] b475: this answered with the look only while the tank had no verdict row at all. A row that had
+        // aged out took the other exit - "no next fight" - and the member's own rest line then fell to the fixed
+        // low line (Playerbots.LowMana, 15 %) while the leader's gate on the very same tick asked for the pack's
+        // real need ("needs 36 %", "needs 100 %"). The bot stood up at 21 % into a 24 s drink ("mana at its line"),
+        // the leader refused the pull, the bot sat again: 1475 drinks removed against 109 that ran out, 353 of the
+        // stand-ups below 30 % mana, and nine Deadmines runs ended "stalled" with 0 wipes and 0 deaths. Both sides
+        // read one line now: the verdict when there is one, else the look this tank's planner is holding.
+        auto const lookFight = [&](Fight& fight)
         {
-            // [lead182b] no verdict yet: the pack the planner's held look is about, while that look is fresh
             auto const look = looks.find(tank.GetRawValue());
             if (look == looks.end() || !look->second.mobs ||
                 getMSTimeDiff(look->second.ms, getMSTime()) > CAREFUL_VERDICT_TTL_MS)
                 return false;
-            out = Fight();
-            out.mobs = look->second.mobs;
+            fight = Fight();
+            fight.mobs = look->second.mobs;
             return true;
-        }
+        };
+        auto const found = verdicts.find(tank.GetRawValue());
+        if (found == verdicts.end())
+            return lookFight(out);
 
         if (!IsKept(found->second, getMSTime()))
         {
             verdicts.erase(found);
-            return false;
+            return lookFight(out);
         }
 
         out = found->second.fight;

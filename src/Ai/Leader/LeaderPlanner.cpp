@@ -10075,6 +10075,13 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             next.mobs = uint32(_planLookPack.size());
             next.fightSec = 0.0f;  // read from the mobs (FightSecOf), not the ended pull's seconds
         }
+        // [pull83] b475: the look's pack is noted on every look, not only on the one that found no published fight.
+        // [lead182b] noted it only in the branch above, so the moment GetNextFight began answering with that look
+        // the note stopped being refreshed, the look aged out, and the members' own lines fell back to the fixed
+        // low line while this gate went on asking for the pack's real need. The note is the pack this gate is
+        // about; a published verdict still wins over it (GetNextFight reads the verdicts first).
+        if (!_planLookPack.empty())
+            CarefulPlanVerdict::NoteLook(bot, std::max<uint32>(next.mobs, uint32(_planLookPack.size())));
         float const tankLine = bot->GetMaxPower(POWER_MANA) ? RestState::TankManaLine(bot, next, &terms) : 0.0f;
         if (bot->getClass() == CLASS_PALADIN && bot->GetPowerPct(POWER_MANA) < tankLine)
         {
