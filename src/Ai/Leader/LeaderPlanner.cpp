@@ -2568,6 +2568,9 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         // (ModHealth 0.1 against 3) read as an average elite, "13 mobs at cost 143.10 / 191.00".
         float summonHealth = 1.0f;
         float summonDamage = 1.0f;
+        // [dm3] the one creature entry it summons when its script summons a single kind (0: none, unknown, or
+        // several). The five gate prices that template itself, as it prices every other spawn.
+        uint32 summonEntry = 0;
     };
 
     // [dun205] the planner's KeepsRange by template (the five gate): a SmartAI damage cast with SMARTCAST_COMBAT_MOVE
@@ -2697,19 +2700,23 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return ControlCastsOf(creature->GetEntry(), creature);
     }
 
-    ScriptedHelp const& GetScriptedHelp(Creature* creature)
+    // [dm3] by template (the five gate reads the same stream through PullPlanning::TemplateSummonStream, so the gate
+    // and the planner cannot drift), as [dun261] ControlCastsOf does for the control casts
+    ScriptedHelp const& ScriptedHelpOf(uint32 entry)
     {
         static ScriptedHelp const none;
-        if (creature->GetAIName() != "SmartAI")
+        CreatureTemplate const* own = sObjectMgr->GetCreatureTemplate(entry);
+        if (!own || own->AIName != "SmartAI")
             return none;
 
         thread_local std::unordered_map<uint32, ScriptedHelp> cache;
-        uint32 const entry = creature->GetEntry();
         auto found = cache.find(entry);
         if (found != cache.end())
             return found->second;
 
         ScriptedHelp help;
+        uint32 onlyKind = 0;  // [dm3] the single creature entry its summons are, 0 once a second kind appears
+        bool mixedKinds = false;
         float summonHealthSum = 0.0f;  // [b36_scholo]
         float summonDamageSum = 0.0f;
         SmartAIEventList const scripts = sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE);
@@ -2777,7 +2784,6 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             // [b36_scholo] the summon's own stats against the summoner's (see ScriptedHelp)
             float healthShare = 1.0f;
             float damageShare = 1.0f;
-            CreatureTemplate const* own = creature->GetCreatureTemplate();
             CreatureTemplate const* summon = summonEntry ? sObjectMgr->GetCreatureTemplate(summonEntry) : nullptr;
             if (own && summon && own->ModHealth > 0.0f && own->DamageModifier > 0.0f)
             {
@@ -2786,6 +2792,13 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             }
             summonHealthSum += healthShare * times;
             summonDamageSum += damageShare * times;
+            // [dm3] what comes, while it is one kind
+            if (!summon)
+                mixedKinds = true;
+            else if (!onlyKind)
+                onlyKind = summonEntry;
+            else if (onlyKind != summonEntry)
+                mixedKinds = true;
         }
 
         if (help.summons > 0.0f)
@@ -2793,7 +2806,26 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             help.summonHealth = summonHealthSum / help.summons;
             help.summonDamage = summonDamageSum / help.summons;
         }
+        help.summonEntry = mixedKinds ? 0 : onlyKind;  // [dm3]
         return cache.emplace(entry, help).first->second;
+    }
+
+    ScriptedHelp const& GetScriptedHelp(Creature* creature)
+    {
+        static ScriptedHelp const none;
+        return creature->GetAIName() == "SmartAI" ? ScriptedHelpOf(creature->GetEntry()) : none;
+    }
+
+    // [dm3] the five gate's reader of the same stream (LeaderPlannerShared.h)
+    void TemplateSummonStream(uint32 entry, float& once, float& perSec, uint32& summonEntry, float& healthShare,
+                              float& damageShare)
+    {
+        ScriptedHelp const& help = ScriptedHelpOf(entry);
+        once = help.summons;
+        perSec = help.summonsPerSec;
+        summonEntry = help.summonEntry;
+        healthShare = help.summonHealth;
+        damageShare = help.summonDamage;
     }
 
     // Creature::CallForHelp of `caller` fighting at `from` (CallOfHelpCreatureInRangeDo): `mob` comes if it is

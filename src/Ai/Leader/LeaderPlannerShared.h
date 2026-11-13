@@ -60,6 +60,13 @@ namespace PullPlanning
     float ScriptedCallRadius(uint32 entry);
     // [dun205] a template that stands and casts once it fights (the planner's KeepsRange by entry)
     bool KeepsRangeEntry(uint32 entry);
+    // [dm3] the summons an entry's SmartAI brings into a fight, the planner's own reading (ScriptedHelpOf, [lead260]),
+    // so the five gate and the planner price one stream: `once` come once a fight, `perSec` is the repeating in-combat
+    // timer's rate per second of the fight, `summonEntry` is what comes while it is a single kind (0: unknown or
+    // several - the summon is then read as an average mob of the pack, scaled by `healthShare` / `damageShare`, the
+    // summons' average against their summoner's template, [b36_scholo])
+    void TemplateSummonStream(uint32 entry, float& once, float& perSec, uint32& summonEntry, float& healthShare,
+                              float& damageShare);
     // [dun244] the planner's spell model of a mob by its template (GetMobSpells' sources and formula, no live
     // creature): its spells' damage per second, the share of the fight it casts (no swing meanwhile) and its weapon
     // specials per second (`weaponHit`: its average weapon hit)

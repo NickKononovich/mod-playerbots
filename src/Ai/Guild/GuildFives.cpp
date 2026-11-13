@@ -276,7 +276,44 @@ namespace FiveGate
         float castShare = 0.0f;
         float weaponDps = 0.0f;
         bool keepsRange = false;
+        // [dm3] what its script summons into the fight, the planner's own stream
+        // (PullPlanning::TemplateSummonStream, [lead260]): `summonOnce` come once, `summonPerSec` is the repeating
+        // in-combat timer's rate per second of fight, `summonEntry` what comes while it is one kind (0: unknown or
+        // several, read as an average mob of the pack scaled by the shares)
+        float summonOnce = 0.0f;
+        float summonPerSec = 0.0f;
+        uint32 summonEntry = 0;
+        float summonHealthShare = 1.0f;
+        float summonDamageShare = 1.0f;
     };
+
+    // [dm3] one creature template read as the gate's Mob - the spawn loader's own reading, shared with the summons a
+    // pull's scripts bring (judge below prices those from their own templates, as it prices every spawn). False: the
+    // template or its creature_classlevelstats row is missing.
+    bool MobOfTemplate(uint32 entry, Mob& out)
+    {
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        CreatureBaseStats const* stats =
+            tmpl ? sObjectMgr->GetCreatureBaseStats(tmpl->maxlevel, tmpl->unit_class) : nullptr;
+        if (!stats)
+            return false;
+        out.entry = tmpl->Entry;
+        out.name = tmpl->Name;
+        out.level = tmpl->maxlevel;
+        out.health = float(stats->GenerateHealth(tmpl));
+        float const swing = std::max(float(tmpl->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
+        float const base = stats->GenerateBaseDamage(tmpl);
+        // [gate20] its average swing before armor (the shield blocks a flat amount of it), and that over its swing
+        out.weaponHit =
+            ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier;
+        out.melee = out.weaponHit / swing;
+        PullPlanning::TemplateSpellDps(out.entry, out.weaponHit, out.spellDps, out.castShare,
+                                       out.weaponDps);  // [dun244]
+        out.keepsRange = PullPlanning::KeepsRangeEntry(out.entry);  // [dun205]
+        PullPlanning::TemplateSummonStream(out.entry, out.summonOnce, out.summonPerSec, out.summonEntry,
+                                           out.summonHealthShare, out.summonDamageShare);
+        return true;
+    }
 
     // [dun170] a spawn where the core puts it and how it moves: a wanderer anywhere on its wander disc
     // (RANDOM_MOTION_TYPE, wander_distance), a waypoint patrol along its path (its formation leader's
@@ -427,24 +464,12 @@ namespace FiveGate
                     s.path = paths[path->second];
                 else if (auto const own = pathOf.find(s.guid); own != pathOf.end())
                     s.path = paths[own->second];
-                s.mob.entry = tmpl->Entry;
-                s.mob.name = tmpl->Name;
-                s.mob.level = tmpl->maxlevel;
-                s.mob.health = float(stats->GenerateHealth(tmpl));
-                float const swing = std::max(float(tmpl->BaseAttackTime), 1.0f) / float(IN_MILLISECONDS);
-                float const base = stats->GenerateBaseDamage(tmpl);
-                s.mob.melee = ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) *
-                              tmpl->DamageModifier / swing;
+                if (!MobOfTemplate(tmpl->Entry, s.mob))  // [dm3]
+                    continue;
                 s.mob.boss = credits.count(tmpl->Entry) || tmpl->rank == CREATURE_ELITE_WORLDBOSS;
-                float const weaponHit =
-                    ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier;
-                s.mob.weaponHit = weaponHit;  // [gate20]
-                data.meanHit += weaponHit;
-                PullPlanning::TemplateSpellDps(tmpl->Entry, weaponHit, s.mob.spellDps, s.mob.castShare,
-                                               s.mob.weaponDps);  // [dun244]
+                data.meanHit += s.mob.weaponHit;  // [gate20]
                 s.callRadius = PullPlanning::ScriptedCallRadius(tmpl->Entry);
-                s.keepsRange = PullPlanning::KeepsRangeEntry(tmpl->Entry);
-                s.mob.keepsRange = s.keepsRange;
+                s.keepsRange = s.mob.keepsRange;
                 s.detection = tmpl->detection_range;
                 data.topLevel = std::max(data.topLevel, s.mob.level);
                 spawns.push_back(std::move(s));
@@ -710,6 +735,7 @@ namespace FiveGate
             size_t mobs = 0;
             std::string name;
             bool boss = false;
+            std::string summons;  // [dm3] the stream its scripts bring, for the why line
         };
         // [gate20] the attack table of a template against this tank, once per entry (the pulls read it again and again)
         std::map<uint32, std::pair<float, std::string>> shareOf;
@@ -723,6 +749,32 @@ namespace FiveGate
                 PullPlanning::TemplateTakenShare(m.entry, m.level, tank, m.weaponHit * armorKeeps, &parts);
             shareOf[m.entry] = {share, m.name + ": " + parts};
             return share;
+        };
+        // [dm3] the mob one summoner's stream brings, built once per summoner entry (the pulls read it again and
+        // again): its own template when the script names one kind, else the summoner scaled by the planner's shares.
+        // A summon carries no stream of its own, as the planner's lives do not.
+        std::map<uint32, Mob> summonCache;
+        auto const summonOf = [&summonCache](Mob const& summoner) -> Mob const&
+        {
+            auto const found = summonCache.find(summoner.entry);
+            if (found != summonCache.end())
+                return found->second;
+            Mob summon;
+            if (!summoner.summonEntry || !MobOfTemplate(summoner.summonEntry, summon))
+            {
+                summon = summoner;
+                summon.name += " (summon)";
+                summon.health *= summoner.summonHealthShare;
+                summon.melee *= summoner.summonDamageShare;
+                summon.weaponHit *= summoner.summonDamageShare;
+                summon.weaponDps *= summoner.summonDamageShare;
+                summon.spellDps *= summoner.summonDamageShare;
+            }
+            summon.summonOnce = 0.0f;
+            summon.summonPerSec = 0.0f;
+            summon.summonEntry = 0;
+            summon.boss = false;
+            return summonCache.emplace(summoner.entry, std::move(summon)).first->second;
         };
         auto const judge = [&](std::vector<Mob>& mobs, bool boss) -> PullLoad
         {
@@ -741,6 +793,46 @@ namespace FiveGate
             };
             PullLoad result;
             float rate = 0.0f;
+            // [dm3] b474 dm-n: the gate priced the Deadmines foundry as "Goblin Engineer x6 (9639 hp): fight 83-101 s"
+            // while the planner counted 35 mobs there - each Goblin Engineer casts Summon Remote-Controlled Golem
+            // (3605) every 35 s it fights. The summons a pull's scripts bring are the planner's own stream
+            // (PullPlanning::TemplateSummonStream, [lead260]: what comes once plus the repeating timer's rate over the
+            // pack's own kill time, as EstimatePack counts it), each priced from its own template like every spawn;
+            // one whose kind the script does not name is an average mob of the pack scaled by the planner's shares
+            // ([b36_scholo]). A summon brings none of its own: the planner's lives carry no stream either.
+            {
+                float packHealth = 0.0f;
+                for (Mob const& m : mobs)
+                    packHealth += m.health;
+                if (!mobs.empty())
+                    result.name = mobs.front().name;  // the pull is named by its own lightest mob, never a summon
+                float const packSec = groupDps > 0.0f ? packHealth / groupDps : 0.0f;
+                size_t const own = mobs.size();
+                std::map<std::string, uint32> streams;  // what one summoner brings -> how many over this fight
+                for (size_t i = 0; i < own; ++i)
+                {
+                    // `mobs` grows below, so the summoner is read by value: a reference into it would dangle
+                    Mob const summoner = mobs[i];
+                    if (summoner.summonOnce <= 0.0f && summoner.summonPerSec <= 0.0f)
+                        continue;
+                    uint32 const count = uint32(std::lround(summoner.summonOnce + summoner.summonPerSec * packSec));
+                    if (!count)
+                        continue;
+                    Mob const& summon = summonOf(summoner);
+                    std::string const every =
+                        summoner.summonPerSec > 0.0f
+                            ? Acore::StringFormat(" every {:.0f} s", 1.0f / summoner.summonPerSec)
+                            : std::string();
+                    streams[Acore::StringFormat("{} summons {}{}", summoner.name, summon.name, every)] += count;
+                    mobs.insert(mobs.end(), count, summon);
+                }
+                for (auto const& [what, count] : streams)
+                    result.summons +=
+                        Acore::StringFormat("{}{} x{}", result.summons.empty() ? "" : ", ", what, count);
+                if (mobs.size() != own)  // the summons joined: the kill order below reads the pack sorted
+                    std::sort(mobs.begin(), mobs.end(),
+                              [](Mob const& a, Mob const& b) { return a.health < b.health; });
+            }
             for (Mob const& m : mobs)
             {
                 rate += landed(m);
@@ -807,7 +899,7 @@ namespace FiveGate
             result.deepest = deepest;
             result.mobs = mobs.size();
             result.boss = boss;
-            if (!mobs.empty())
+            if (result.name.empty() && !mobs.empty())  // [dm3] named above, before its summons joined
                 result.name = mobs.front().name;
             // [gate20] the drop's terms for the log: the attack table of the mob landing the most on the tank
             float heaviest = 0.0f;
@@ -1380,10 +1472,14 @@ namespace FiveGate
             worst.mobs ? Acore::StringFormat(
                              "{}{} x{} (L{}-{}, {:.0f} hp): fight {:.0f} s, tank drop {:.0f} + one gap {:.0f} of "
                              "{:.0f} hp ({:.2f}), [dun261] healer controlled {:.1f} s, heal mana {:.0f} of {:.0f} "
-                             "({:.0f} pool + regen) ({:.2f})",
+                             "({:.0f} pool + regen) ({:.2f}){}",
                              worst.boss ? "boss pull " : "", worst.name, worst.mobs, worst.lo, worst.hi, worst.health,
                              worst.sec, worst.deepest, worst.gapDrop, tankHealth, worst.dropShare, worst.controlSec,
-                             worst.manaNeeded, worst.fightMana, healMana, worst.manaShare)
+                             worst.manaNeeded, worst.fightMana, healMana, worst.manaShare,
+                             // [dm3] the stream in the count: which summoner, at what rate, how many over the fight
+                             worst.summons.empty() ? std::string()
+                                                   : "; [dm3] summons in the x" + std::to_string(worst.mobs) + ": " +
+                                                         worst.summons)
                        : std::string("-");
         out.clears = failed == 0 && judged > 0;
         out.worstLoad = worst.load;  // [assist22]
@@ -1398,7 +1494,7 @@ namespace FiveGate
             "{:.0f} hps (gap {:.1f} s, {:.1f} hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{}; [gate20] "
             "drop terms: armor keeps {:.2f}, {} [mob melee "
             "and [dun244] spells from templates, the healer's rate capped by its pool; [dun233] calls for help from "
-            "the fight; area damage not counted]{}{}",
+            "the fight; [dm3] the scripts' summons over the fight; area damage not counted]{}{}",
             failed, judged, apart, cornerPulls, losOn ? "" : " (no: the tank has no ranged pull and pull back)",
             heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
             healer->GetName() + (healer2 ? " + " + healer2->GetName() : std::string()), heal.hps, gap,
