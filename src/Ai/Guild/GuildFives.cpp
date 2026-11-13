@@ -3134,15 +3134,40 @@ void GuildCoordinator::UpdateDungeonOrder()
             if (cs.phase == CertState::Phase::Mastery)
             {
                 cs.phase = CertState::Phase::Certify;
+                // [cert22] this moment is the FIRST half closing, not the second one starting: the batch goes in
+                // while the dungeon is open, so what changes here is only that nobody owes a first clear any more.
+                // How many batches have actually gone in is read off the record, never asserted: a dungeon that was
+                // waiting behind another one has had none
                 LOG_INFO("playerbots",
-                         "[cert10] {}: mastery done - every member of the guild cleared it once; certification opens: "
-                         "{} fives ({} members) go in at once and every one of them has to finish clean (done, every "
-                         "boss killed, 0 deaths, 0 wipes); nobody needing the loot is no reason to skip it",
-                         d.contentKey, CERT_FIVES, CERT_MEMBERS);
-                Decision("[cert10] " + d.name + ": every member has cleared it, and the dungeon is not done yet - it "
-                         "is certified by " + std::to_string(CERT_FIVES) + " fives (" + std::to_string(CERT_MEMBERS) +
-                         " members) sent in at once, every one of which has to finish completely clean");
+                         "[cert10] {}: mastery done - every member of the guild has now cleared it once. The other "
+                         "half is a batch of {} fives ({} members at once, every one clean): {} so far, and the "
+                         "dungeon is stamped as soon as one of them passes",
+                         d.contentKey, CERT_FIVES, CERT_MEMBERS,
+                         cs.batches ? Acore::StringFormat("{} dispatched", cs.batches) : std::string("none yet"));
+                Decision("[cert10] " + d.name + ": every member has now cleared it once. The dungeon is still not "
+                         "done: it needs a batch of " + std::to_string(CERT_FIVES) + " fives (" +
+                         std::to_string(CERT_MEMBERS) + " members at once) to finish completely clean, and " +
+                         (cs.batches ? std::to_string(cs.batches) + " batch(es) have gone in so far"
+                                     : std::string("none has gone in yet")));
                 CertSave(d.contentKey);
+            }
+            // [cert22] the other half of the stamp: a batch that passed clean while members still owed their first
+            // clear ([cert12] recorded the pass and left the phase alone) is stamped the moment the last debt closes.
+            // Both halves are facts on record by then - the clean batch and every member's own clear - and neither
+            // was waived or counted early
+            if (cs.phase == CertState::Phase::Certify && cs.passedBatch)
+            {
+                cs.phase = CertState::Phase::Done;
+                ++orderGen_;
+                LOG_INFO("playerbots",
+                         "[cert22] {}: certified - batch {} had already passed clean and the last member that owed it "
+                         "a first clear has now run it; both halves hold, the dungeon is done and the next one opens",
+                         d.contentKey, cs.passedBatch);
+                Decision("[cert22] " + d.name + " is certified: its batch " + std::to_string(cs.passedBatch) +
+                         " passed clean and every member has now cleared it at least once — the next dungeon opens");
+                CertSave(d.contentKey);
+                passed.insert(d.contentKey);
+                continue;
             }
             // [cert21] user 2026-11-13 («я же просил... отправить 25 человек по каждому инсту, во второй и в третий,
             // чтобы их сертифицировать»): a certification the guild can no longer assemble does not hold the queue.
@@ -3204,6 +3229,18 @@ void GuildCoordinator::UpdateDungeonOrder()
         held = names.substr(1);
         heldCount = count;
         open = &d;
+        // [cert22] the batch runs alongside those first clears now, so the order line carries both halves of the
+        // stamp: a reader must not have to guess whether the batch has gone in while debts are still open
+        if (auto const cs = cert_.find(d.contentKey); cs != cert_.end())
+            certHold = cs->second.passedBatch
+                           ? Acore::StringFormat("[cert22] batch {} has passed clean; the stamp waits only on these "
+                                                 "first clears", cs->second.passedBatch)
+                           : Acore::StringFormat("[cert22] certification batch {} {} at the same time ({} fives, {} "
+                                                 "members at once, all clean)",
+                                                 cs->second.flight.empty() ? cs->second.batches + 1
+                                                                           : cs->second.batches,
+                                                 cs->second.flight.empty() ? "still to form" : "in flight",
+                                                 CERT_FIVES, CERT_MEMBERS);
         {
             std::lock_guard<std::mutex> guard(orderHeldLock_);
             orderHeldBelow_ = std::unordered_set<uint32>(below.begin(), below.end());
@@ -3215,11 +3252,14 @@ void GuildCoordinator::UpdateDungeonOrder()
         std::lock_guard<std::mutex> guard(orderHeldLock_);
         orderHeldBelow_.clear();
     }
+    // [cert22] the two halves of the stamp are separate facts and the line says both: the members that still owe a
+    // first clear (heldCount), and the certification batch, which now runs at the same time as they pay them off
     std::string const line =
-        (open ? (certHold.empty()
-                     ? Acore::StringFormat("open up to {} ({} L{}-{}), held by {}: {} members not cleared ({})",
+        (open ? (heldCount
+                     ? Acore::StringFormat("open up to {} ({} L{}-{}), held by {}: {} members not cleared ({}){}",
                                            open->contentKey, open->name, open->minLevel, open->maxLevel,
-                                           open->contentKey, heldCount, held)
+                                           open->contentKey, heldCount, held,
+                                           certHold.empty() ? std::string() : "; " + certHold)
                      // [cert10] mastery is done and the dungeon is still held: by its certification batch
                      : Acore::StringFormat("open up to {} ({} L{}-{}), held by {}: every member cleared it, {}",
                                            open->contentKey, open->name, open->minLevel, open->maxLevel,
@@ -3257,7 +3297,13 @@ void GuildCoordinator::CertifyBatch()
     if (!d)
         return;
     CertState& cs = cert_[d->contentKey];
-    if (cs.phase != CertState::Phase::Certify)
+    // [cert22] user 2026-11-13: the batch goes in NOW, it does not wait for the first clears to be paid off. The 25
+    // members of the batch ARE 25 first clears - they clear the dungeon in the very five that is judged on it - so
+    // mastery is not waived here, it is served at the same time as it is proved. The one thing that cannot be done
+    // early is the stamp: Done needs BOTH the clean batch and every member's first clear (CertFiveEnded,
+    // UpdateDungeonOrder), and neither is waived or back-dated. The rest of the roster goes on paying off its first
+    // clears with ordinary fives in the same pass - the batch holds 25 members, the others stay free for them
+    if (cs.phase == CertState::Phase::Done)
         return;
     auto const note = [&cs, d](std::string const& line)
     {
@@ -3266,6 +3312,15 @@ void GuildCoordinator::CertifyBatch()
         cs.dispatchLogged = line;
         LOG_INFO("playerbots", "[cert10] {}: {}", d->contentKey, line);
     };
+    // [cert22] the certification half is already proved and does not get re-run: a further batch would take 25
+    // members away from the very first clears the stamp is now waiting on, and those are ordinary fives' work
+    if (cs.passedBatch && cs.flight.empty())
+    {
+        note(Acore::StringFormat("batch {} has passed clean; no further batch goes in - the stamp waits only on the "
+                                 "members that still owe it a first clear, and ordinary fives close those",
+                                 cs.passedBatch));
+        return;
+    }
     if (!cs.flight.empty())
     {
         // [cert13] what each unreported five is holding on, by name. A batch that holds blocks the whole dungeon
@@ -3677,16 +3732,29 @@ void GuildCoordinator::CertFiveEnded(GuildFive const& five, std::string const& w
     }
     if (clean == CERT_FIVES && cs.verdicts.size() == CERT_FIVES)
     {
-        cs.phase = CertState::Phase::Done;
         cs.passedBatch = cs.batches;
         cs.passedAt = uint32(time(nullptr));
-        ++orderGen_;  // [order360] the order is recomputed: the next dungeon opens
+        // [cert22] the batch is recorded the moment it passes, and the stamp waits for the other half. Phase Certify
+        // means every member has already paid its first clear (UpdateDungeonOrder sets it), so the dungeon is done
+        // now; phase Mastery means some still owe one, and then the pass stands on record and the stamp is put on by
+        // UpdateDungeonOrder as soon as the last debt closes. Neither half is waived and neither is back-dated
+        bool const mastered = cs.phase == CertState::Phase::Certify;
+        if (mastered)
+        {
+            cs.phase = CertState::Phase::Done;
+            ++orderGen_;  // [order360] the order is recomputed: the next dungeon opens
+        }
         LOG_INFO("playerbots",
-                 "[cert12] {}: certification PASSED on batch {} - all {} fives ({} members, at once) finished done "
-                 "with every boss killed, 0 deaths and 0 wipes; the dungeon is done for the guild and the next one "
-                 "opens", five.contentKey, cs.batches, CERT_FIVES, CERT_MEMBERS);
-        Decision(Acore::StringFormat("[cert12] {} is certified on batch {}: all {} fives clean. The dungeon is done "
-                                     "for the guild — the next one opens", five.dungeon, cs.batches, CERT_FIVES));
+                 "[cert12] {}: certification batch {} PASSED - all {} fives ({} members, at once) finished done with "
+                 "every boss killed, 0 deaths and 0 wipes; {}", five.contentKey, cs.batches, CERT_FIVES, CERT_MEMBERS,
+                 mastered ? "the dungeon is done for the guild and the next one opens"
+                          : "the certification now waits only on the members that still owe it a first clear - the "
+                            "stamp goes on as soon as the last of them has run it once");
+        Decision(Acore::StringFormat(
+            "[cert12] {}: certification batch {} passed clean - all {} fives. {}", five.dungeon, cs.batches,
+            CERT_FIVES, mastered ? "The dungeon is certified and done for the guild — the next one opens"
+                                 : "The dungeon is NOT stamped yet: it waits for the members that still owe it a "
+                                   "first clear, and nothing of that is written off"));
     }
     else
     {
@@ -5220,7 +5288,18 @@ void GuildCoordinator::AutoFive()
                             if (auto const m = n->second.find(c.low); m != n->second.end())
                                 text += " " + Who(c.low) + " " + m->second + ",";
                         text.pop_back();
-                        text += Acore::StringFormat(" ({} members need it in all)", n->second.size());
+                        // [cert23] the count is split by the KIND of need, because "67 members need it in all" was
+                        // read as 67 members owing a first clear when in truth 3 owed one and 64 wanted loot or
+                        // experience - and it was believed because 67 is also the number of members in that band, so
+                        // two different counts of "who still has to run this dungeon" agreed by coincidence. The
+                        // first-clear debt is the one the certification stamp waits on ([cert22]); it is now its own
+                        // figure here, as it already is in [need106]'s "N cleared, M uncleared"
+                        uint32 clears = 0;
+                        for (auto const& [low, need] : n->second)
+                            clears += need == "clear" ? 1 : 0;
+                        text += Acore::StringFormat(" ({} members need something of it: {} a first clear, {} an "
+                                                    "upgrade or experience)", n->second.size(), clears,
+                                                    n->second.size() - clears);
                         lookWhy[d.contentKey].insert(0, text.substr(1) + "; ");
                     }
                 // [assist18] the free members with a need of a dungeon the order lets a five into whose pool holds a

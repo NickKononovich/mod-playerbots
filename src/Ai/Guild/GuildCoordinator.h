@@ -813,24 +813,31 @@ private:
     // [cert10] user rule 2026-11-13 («мне нужно, чтобы 20 последних прогонов проходили чисто, без затыков, без
     // смертей… запускаешь все 25 человек, по 5 пятёрок, и они должны пройти без смертей, без застреваний… мы
     // оказывается 59 раз вставали, но это не заметили»): a dungeon is done for the guild in TWO phases.
-    //   phase one, mastery:       all 75 members cleared it at least once ([order360]'s own count) - the old rule,
-    //                             and now only the first half of it;
-    //   phase two, certification: 25 members go in as 5 fives AT ONCE and every one of the five finishes completely
-    //                             clean - result "done", every boss killed, 0 deaths, 0 wipes. "stalled", "failed",
-    //                             "partial" and "stopped" are all failures, and nobody needing the loot any more is
-    //                             no reason to skip the batch.
-    // The next dungeon opens only when a batch passes; a failed batch is repeated. Why: Deadmines read "69 of 75
-    // cleared" off 26 successful runs while 59 runs failed, stalled or went partial (31 % per run) and the counter
-    // called that progress. At 31 % per run, five clean fives at once is 0.31^5 = 0.3 %, so the gate cannot pass by
-    // luck. No retry limit, no cooldown between batches, no time budget: the only two numbers are the user's own
-    // five fives and 25 bots.
+    //   mastery:       all 75 members cleared it at least once ([order360]'s own count) - the old rule, and now only
+    //                  the first half of it;
+    //   certification: 25 members go in as 5 fives AT ONCE and every one of the five finishes completely clean -
+    //                  result "done", every boss killed, 0 deaths, 0 wipes. "stalled", "failed", "partial" and
+    //                  "stopped" are all failures, and nobody needing the loot any more is no reason to skip it.
+    // [cert22] user 2026-11-13: the two are NOT in sequence. The batch goes in as soon as the dungeon is the guild's
+    // open one, because its 25 members clear the dungeon in the very fives that are judged on it - the batch IS 25
+    // first clears - while the rest of the roster pays off its own with ordinary fives in the same pass. Only the
+    // STAMP needs both halves: Done is set when a batch has passed clean AND every member has cleared it once,
+    // whichever of the two lands last (CertifyBatch, CertFiveEnded, UpdateDungeonOrder). Neither half is ever waived,
+    // lowered, back-dated or counted in parts.
+    // The next dungeon opens only on that stamp; a failed batch is repeated. Why: Deadmines read "69 of 75 cleared"
+    // off 26 successful runs while 59 runs failed, stalled or went partial (31 % per run) and the counter called that
+    // progress. At 31 % per run, five clean fives at once is 0.31^5 = 0.3 %, so the gate cannot pass by luck. No
+    // retry limit, no cooldown between batches, no time budget: the only two numbers are the user's own five fives
+    // and 25 bots.
     struct CertState
     {
         enum class Phase : uint8
         {
-            Mastery,  // some member has not cleared it yet
-            Certify,  // every member cleared it: the batch of 5 fives has still to pass
-            Done      // a batch passed completely clean - the next dungeon opens
+            // [cert22] the phase is the MASTERY half only: the batch runs in either of the first two, and passedBatch
+            // is the certification half's own record
+            Mastery,  // some member has not cleared it yet (the batch still goes in: its 25 are 25 first clears)
+            Certify,  // every member cleared it; if a batch has passed by then the stamp goes on at once
+            Done      // both halves hold - a batch passed clean AND every member cleared it - the next dungeon opens
         };
 
         Phase phase{Phase::Mastery};
