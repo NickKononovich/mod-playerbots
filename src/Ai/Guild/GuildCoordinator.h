@@ -7,6 +7,7 @@
 #ifndef PLAYERBOTS_GUILDCOORDINATOR_H
 #define PLAYERBOTS_GUILDCOORDINATOR_H
 
+#include <array>
 #include <atomic>
 #include <deque>
 #include <map>
@@ -732,6 +733,8 @@ private:
         float reach{10.0f};
         uint32 entranceZone{0};
         std::vector<uint32> bossItems;
+        // [loot13] item -> (creature entry, the chance one kill drops it), the bosses' and rares' own loot
+        std::map<uint32, std::vector<std::pair<uint32, float>>> itemSources;
     };
 
     struct FiveCandidate
@@ -790,7 +793,8 @@ private:
                           std::map<uint32, std::string> const& roles, std::string const& why, bool forced,
                           std::string* error);
     void FiveOrder(BotState const& st, uint32 low, Player* p, std::vector<GuildOrder>& orders) const;  // lock_ held
-    void RecordRun(GuildFive const& five, GuildFiveReport const& report);  // lock_ held
+    void RecordRun(GuildFive const& five, GuildFiveReport const& report);
+    std::string FiveLootOutcome(GuildFive const& five);  // [loot14]  // lock_ held
     // [guild60] hooks of the order flow (lock_ held): the member's walk to the entrance (true: `step` set), its
     // arrival there (OnCampReached), its legitimate wait there, the tab lines, a five's loot (map thread, no lock)
     bool FiveStep(Player* bot, BotState& st, GuildRunStep& step);
@@ -1202,6 +1206,8 @@ private:
     std::unordered_set<uint32> orderHeldBelow_;   // [lag368] the open dungeon's uncleared members below its band
     std::string orderLogged_;
     uint32 orderGen_{0};
+    // [loot14] this build's five BoP outcomes: need worn, need held, need not worn (false need), greed, disenchant
+    std::array<uint32, 5> lootBuild_{};
     struct OrderOpen
     {
         uint8 level{0};

@@ -768,8 +768,8 @@ namespace GuildGear
         if (proto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(proto, member->getClass()))
             return false;
         if (proto->Class == ITEM_CLASS_ARMOR &&
-            !sRandomItemMgr.CanEquipArmor(proto, member->getClass(), std::max<uint32>(member->GetLevel(),
-                                                                                        proto->RequiredLevel)))
+            !sRandomItemMgr.CanEquipArmor(proto, member->getClass(),
+                                          std::max<uint32>(member->GetLevel(), proto->RequiredLevel), true))  // [loot11]
             return false;
         if (!owned)
         {
@@ -812,6 +812,14 @@ namespace GuildGear
                 weakestSlot = slot;
             }
         }
+        // [loot15] the leader checks the core's own limits itself (proficiency, level, class / race, unique, two-hand
+        // beside an off-hand): the swap the equip will ask Player::CanEquipItem for
+        if (owned)
+        {
+            uint16 dest = 0;
+            if (member->CanEquipItem(weakestSlot, dest, owned, true) != EQUIP_ERR_OK)
+                return false;
+        }
         float const score = calc.CalculateItem(proto->ItemId, randomProp);
         out.score = score;
         out.current = std::max(0.0f, current);
@@ -832,7 +840,7 @@ namespace GuildGear
         bool const oldFits =
             (old->Class != ITEM_CLASS_WEAPON || sRandomItemMgr.CanEquipWeapon(old, member->getClass())) &&
             (old->Class != ITEM_CLASS_ARMOR ||
-             sRandomItemMgr.CanEquipArmor(old, member->getClass(), member->GetLevel()));
+             sRandomItemMgr.CanEquipArmor(old, member->getClass(), member->GetLevel(), true));
         bool const oldBroken = weakest->GetUInt32Value(ITEM_FIELD_DURABILITY) == 0 &&
                                weakest->GetUInt32Value(ITEM_FIELD_MAXDURABILITY);
         float const threshold = oldFits ? sPlayerbotAIConfig.EquipUpgradeThreshold : 1.0f;
@@ -869,6 +877,16 @@ namespace GuildGear
     bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out, bool plan)
     {
         return EvaluateFor(member, calc, proto, 0, nullptr, out, plan);
+    }
+
+    bool EvaluateDrop(Player* member, ItemTemplate const* proto, int32 randomProperty, Eval& out)
+    {
+        if (!member || !proto || EquipGroup(proto->InventoryType) == 0xFF)
+            return false;
+        StatsWeightCalculator calc(member);  // as ShouldEquip weighs it
+        calc.SetItemSetBonus(false);
+        calc.SetOverflowPenalty(false);
+        return EvaluateFor(member, calc, proto, randomProperty, nullptr, out, false);
     }
 }
 

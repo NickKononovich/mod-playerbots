@@ -513,6 +513,16 @@ bool EquipAction::EquipLeaderUpgrades()
         }
         else
         {
+            // [loot15] the leader's pick must pass the core: a refusal here is a leader bug (its judge missed a limit)
+            uint16 dest = 0;
+            if (InventoryResult const refused = bot->CanEquipItem(bestSlot, dest, best, true);
+                refused != EQUIP_ERR_OK)
+            {
+                LOG_INFO("playerbots", "[loot15] {} L{}: leader picked an item the bot cannot equip: {} slot {}: "
+                         "inventory result {}", bot->GetName(), bot->GetLevel(), best->GetTemplate()->Name1,
+                         uint32(bestSlot), uint32(refused));
+                continue;
+            }
             WorldPacket packet(CMSG_AUTOEQUIP_ITEM_SLOT, 2);
             packet << best->GetGUID() << bestSlot;
             WorldPackets::Item::AutoEquipItemSlot nicePacket(std::move(packet));

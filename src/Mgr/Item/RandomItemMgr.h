@@ -200,7 +200,9 @@ public:
     [[nodiscard]] float GetItemRarity(uint32 itemId) const;
     [[nodiscard]] std::vector<uint32> const& GetEnchantmentPool(uint32 entry) const;
 
-    [[nodiscard]] bool CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32 level) const;
+    // [loot11] anyType: no class armor-type / stat-fit rule (a guild member: the leader's stat weights decide)
+    [[nodiscard]] bool CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32 level,
+                                     bool anyType = false) const;
     [[nodiscard]] bool CanEquipWeapon(ItemTemplate const* proto, uint8 clazz) const;
     [[nodiscard]] bool ShouldEquipArmorForSpec(ItemTemplate const* proto, uint8 clazz, uint8 spec) const;
     [[nodiscard]] bool ShouldEquipWeaponForSpec(ItemTemplate const* proto, uint8 clazz, uint8 spec) const;

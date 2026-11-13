@@ -49,6 +49,7 @@
 #include "PlayerbotsDatabase.h"
 #include "SelfBotControl.h"
 #include "SlowScope.h"  // [perf211]
+#include "GuildGear.h"  // [loot12] the guild's one gear judge
 #include "StatsWeightCalculator.h"
 #include "TestHarnessData.h"
 #include "LeaderDungeonRun.h"  // [guild70] the five-leader runs the dungeon (no test harness)
@@ -188,29 +189,57 @@ namespace
         return proto && (proto->Class == ITEM_CLASS_ARMOR || proto->Class == ITEM_CLASS_WEAPON);
     }
 
-    // the item's gain for the member (the coordinator's BoE rule): EQUIP / REPLACE of its "item upgrade", the score
-    // over its worn piece; < 0: no upgrade
+    // the item's gain for the member: [loot12] the guild's one gear judge (GuildGear::EvaluateDrop, the verdict its
+    // plan and its equip use). b456-b467: the roll asked "item upgrade" (REPLACE over any worn piece) while the equip
+    // refused the armor type - Nurlian won Serpent Gloves twice, Aestymro Serpent's Shoulders 4 times, none worn;
+    // a member that owns a copy is no need either. < 0: no upgrade
     float UpgradeGain(Player* m, ItemTemplate const* proto, int32 randomProperty)
     {
-        PlayerbotAI* ai = GET_PLAYERBOT_AI(m);
-        if (!ai || !proto || m->CanUseItem(proto) != EQUIP_ERR_OK)
+        if (!GET_PLAYERBOT_AI(m) || !proto)
             return -1.0f;
-        std::string const qualifier =
-            std::to_string(proto->ItemId) + (randomProperty ? "," + std::to_string(randomProperty) : "");
-        ItemUsage const usage = ai->GetAiObjectContext()->GetValue<ItemUsage>("item upgrade", qualifier)->Get();
-        if (usage != ITEM_USAGE_EQUIP && usage != ITEM_USAGE_REPLACE)
+        GuildGear::Eval ev;
+        if (!GuildGear::EvaluateDrop(m, proto, randomProperty, ev))
             return -1.0f;
-        StatsWeightCalculator calc(m);
-        float const score = calc.CalculateItem(proto->ItemId, randomProperty);
-        float current = 0.0f;
-        uint8 const slot = m->FindEquipSlot(proto, NULL_SLOT, true);
-        if (slot != NULL_SLOT)
-            if (Item* worn = m->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            {
-                calc.Reset();
-                current = calc.CalculateItem(worn->GetEntry(), worn->GetItemRandomPropertyId());
-            }
-        return current > 0.0f ? (score - current) / current : 1.0f;
+        return ev.gain;
+    }
+
+    // [loot12] an owned item: whether the member's equip (the same judge) would wear it
+    bool WouldWear(Player* m, Item* item)
+    {
+        uint8 slot = NULL_SLOT;
+        float gain = 0.0f;
+        std::string decision;
+        return GET_PLAYERBOT_AI(m) && GuildGear::ShouldEquip(m, item, slot, gain, decision);
+    }
+
+    // [loot13] one loot row: item, reference, chance (percent), group
+    using LootRow = std::tuple<uint32, uint32, float, uint8>;
+
+    // the chance a kill drops this row (LootTemplate::Process): an explicit chance as it stands, a grouped row of
+    // chance 0 shares what the group's explicit rows leave equally; 0: the row is not in the table
+    float LootRowChance(std::set<LootRow> const& table, uint32 item, uint32 reference)
+    {
+        for (auto const& [rowItem, rowRef, chance, group] : table)
+        {
+            if (rowItem != item || rowRef != reference)
+                continue;
+            if (chance > 0.0f)
+                return std::min(1.0f, chance / 100.0f);
+            if (!group)
+                return reference ? 1.0f : 0.0f;
+            float explicitSum = 0.0f;
+            uint32 equal = 0;
+            for (auto const& [otherItem, otherRef, otherChance, otherGroup] : table)
+                if (otherGroup == group)
+                {
+                    if (otherChance > 0.0f)
+                        explicitSum += otherChance;
+                    else
+                        ++equal;
+                }
+            return equal ? std::max(0.0f, 100.0f - explicitSum) / 100.0f / float(equal) : 0.0f;
+        }
+        return 0.0f;
     }
 
     bool CanDisenchant(Player* p, ItemTemplate const* proto)
@@ -1396,8 +1425,12 @@ void GuildCoordinator::LoadDungeons()
         for (auto const& [mapId, list] : byMap)
             maps += (maps.empty() ? "" : ",") + std::to_string(mapId);
         std::map<uint32, std::vector<std::tuple<uint32, uint32, uint32>>> rows;  // map -> (creature, item, reference)
+        // [loot13] the loot tables with their chances: creature entry / reference id -> (item, reference, chance, group)
+        std::map<uint32, std::set<LootRow>> tables;
+        std::map<uint32, std::set<LootRow>> refTables;
         if (QueryResult result = WorldDatabase.Query(
-                "SELECT DISTINCT c.map, t.entry, l.Item, l.Reference FROM creature c JOIN creature_template t ON "
+                "SELECT DISTINCT c.map, t.entry, l.Item, l.Reference, l.Chance, l.GroupId FROM creature c JOIN "
+                "creature_template t ON "
                 "t.entry = c.id JOIN creature_loot_template l ON l.Entry = t.lootid WHERE c.map IN ({}) AND "
                 "(t.`rank` >= 2 OR t.entry IN (SELECT creditEntry FROM instance_encounters WHERE creditType = 0))",
                 maps))
@@ -1406,6 +1439,8 @@ void GuildCoordinator::LoadDungeons()
             {
                 Field* f = result->Fetch();
                 rows[f[0].Get<uint32>()].emplace_back(f[1].Get<uint32>(), f[2].Get<uint32>(), f[3].Get<uint32>());
+                tables[f[1].Get<uint32>()].insert(
+                    {f[2].Get<uint32>(), f[3].Get<uint32>(), f[4].Get<float>(), f[5].Get<uint8>()});
             } while (result->NextRow());
         }
         std::map<uint32, std::vector<std::pair<uint32, uint32>>> refs;  // reference -> (item, reference)
@@ -1421,13 +1456,16 @@ void GuildCoordinator::LoadDungeons()
                 ids += (ids.empty() ? "" : ",") + std::to_string(id);
             wanted.clear();
             if (QueryResult result =
-                    WorldDatabase.Query("SELECT Entry, Item, Reference FROM reference_loot_template WHERE Entry IN ({})", ids))
+                    WorldDatabase.Query("SELECT Entry, Item, Reference, Chance, GroupId FROM reference_loot_template "
+                                        "WHERE Entry IN ({})", ids))
             {
                 do
                 {
                     Field* f = result->Fetch();
                     uint32 const reference = f[2].Get<uint32>();
                     refs[f[0].Get<uint32>()].emplace_back(f[1].Get<uint32>(), reference);
+                    refTables[f[0].Get<uint32>()].insert({f[1].Get<uint32>(), reference, f[3].Get<float>(),
+                                                          f[4].Get<uint8>()});
                     if (reference && !refs.count(reference))
                         wanted.insert(reference);
                 } while (result->NextRow());
@@ -1479,6 +1517,19 @@ void GuildCoordinator::LoadDungeons()
                 DungeonOption& d = dungeons_[index];
                 TestHarness::ContentDef const* content = TestHarness::FindContent(d.contentKey);
                 std::set<uint32> items;
+                // [loot13] each item's sources in the dungeon with the chance a kill drops it
+                auto const addSource = [&](uint32 itemId, uint32 creature, float chance)
+                {
+                    if (!items.count(itemId) || chance <= 0.0f)
+                        return;
+                    auto& list = d.itemSources[itemId];
+                    auto const same = std::find_if(list.begin(), list.end(),
+                                                   [creature](auto const& s) { return s.first == creature; });
+                    if (same == list.end())
+                        list.emplace_back(creature, std::min(1.0f, chance));
+                    else
+                        same->second = 1.0f - (1.0f - same->second) * (1.0f - std::min(1.0f, chance));
+                };
                 for (auto const& [creature, item, reference] : rows[mapId])
                 {
                     // a wing: its own bosses only
@@ -1486,21 +1537,31 @@ void GuildCoordinator::LoadDungeons()
                         std::find(content->bossEntries.begin(), content->bossEntries.end(), creature) ==
                             content->bossEntries.end())
                         continue;
+                    float const rowChance = LootRowChance(tables[creature], item, reference);
                     if (!reference)
                     {
                         addItem(items, item);
+                        addSource(item, creature, rowChance);
                         continue;
                     }
                     if (worldRefs.count(reference))
                         continue;
                     for (auto const& [refItem, refRef] : refs[reference])
                     {
+                        float const refChance = rowChance * LootRowChance(refTables[reference], refItem, refRef);
                         if (!refRef)
+                        {
                             addItem(items, refItem);
+                            addSource(refItem, creature, refChance);
+                        }
                         else
                             for (auto const& [deepItem, deepRef] : refs[refRef])
                                 if (!deepRef)
+                                {
                                     addItem(items, deepItem);
+                                    addSource(deepItem, creature,
+                                              refChance * LootRowChance(refTables[refRef], deepItem, deepRef));
+                                }
                     }
                 }
                 d.bossItems.assign(items.begin(), items.end());
@@ -4135,6 +4196,7 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         needs += (needs.empty() ? "" : "; ") +
                  report.reason.substr(at, end == std::string::npos ? std::string::npos : end - at);
     }
+    std::string const lootLine = FiveLootOutcome(five);  // [loot14]
     std::string open;
     for (uint32 low : five.members)
         if (PlanRow const* row = Row(low); row && !Cleared(five.contentKey, low))
@@ -4147,7 +4209,8 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         "leader: " + report.result + ", bosses " + std::to_string(report.bossesKilled.size()) + "/" +
         std::to_string(report.bossesTotal) + ", " + std::to_string(report.durationSec / 60) + " min, wipes " +
         std::to_string(report.wipes) + "; deaths: " + (deaths.empty() ? "none" : deaths) +
-        "; loot: " + (drops.empty() ? "none" : drops) + "; needed: " + (needs.empty() ? "nothing" : needs);
+        "; loot: " + (drops.empty() ? "none" : drops) + " (" + lootLine + "); needed: " +
+        (needs.empty() ? "nothing" : needs);
     LOG_INFO("playerbots", "[guild60] report {} run {}: {} ({})", fiveId, report.runId, text, report.reason);
     Decision(text);
 
@@ -4162,6 +4225,79 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         st.fiveRefused.clear();
     }
     fives_.erase(itr);
+}
+
+// [loot14] user 2026-11-13: every BoP the five gave, by its end - (a) a need win worn, (b) a need win held for a
+// fact (an empty socket waits for its gem; a better piece the member wears now took the slot), (c) a need win neither
+// worn nor held: a false need roll (must stay 0); greed when nobody needed it, the enchanter's disenchant. Under lock_
+std::string GuildCoordinator::FiveLootOutcome(GuildFive const& five)
+{
+    uint32 worn = 0, held = 0, falseNeed = 0, greed = 0, disenchant = 0;
+    std::string heldText, falseText;
+    for (auto const& [key, decided] : five.rolls)
+    {
+        uint32 const itemId = key.second;
+        if (!decided.first)
+        {
+            ++greed;
+            continue;
+        }
+        if (decided.second)
+        {
+            ++disenchant;
+            continue;
+        }
+        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+        Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(decided.first));
+        if (!proto || !p)
+            continue;  // offline at the end: judged by its next five
+        bool wearing = false;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END && !wearing; ++slot)
+            if (Item* item = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                wearing = item->GetEntry() == itemId;
+        if (wearing)
+        {
+            ++worn;
+            continue;
+        }
+        std::string const what = ItemName(itemId) + " (" + p->GetName() + ", " +
+                                 GuildGear::GroupName(GuildGear::EquipGroup(proto->InventoryType)) + ")";
+        std::string reason;
+        if (!p->GetItemCount(itemId, true))
+            reason = "";  // sold / destroyed: never worn
+        else if (proto->Socket[0].Color)
+            reason = "an empty socket waits for its gem";
+        else
+            for (uint8 slot : GuildGear::SlotsFor(p, proto))
+                if (Item* now = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot); now && now->GetTemplate()->ItemLevel >
+                                                                                    proto->ItemLevel)
+                    reason = "a better piece took the slot: " + now->GetTemplate()->Name1;
+        if (!reason.empty())
+        {
+            ++held;
+            heldText += (heldText.empty() ? "" : ", ") + what + ": " + reason;
+        }
+        else
+        {
+            ++falseNeed;
+            falseText += (falseText.empty() ? "" : ", ") + what;
+        }
+    }
+    lootBuild_[0] += worn;
+    lootBuild_[1] += held;
+    lootBuild_[2] += falseNeed;
+    lootBuild_[3] += greed;
+    lootBuild_[4] += disenchant;
+    std::string const line = std::to_string(five.rolls.size()) + " BoP rolled: " + std::to_string(worn) +
+                             " equipped by a need, " + std::to_string(held) + " need held, " +
+                             std::to_string(greed) + " greed (nobody needed), " + std::to_string(disenchant) +
+                             " disenchant, " + std::to_string(falseNeed) + " need but not equipped [loot14]";
+    LOG_INFO("playerbots", "[loot14] five {} run {} loot: {}{}{}; build so far: {} equipped by a need, {} held, {} "
+             "need but not equipped, {} greed, {} disenchant",
+             five.id, five.runId, line, falseText.empty() ? "" : "; not equipped: " + falseText,
+             heldText.empty() ? "" : "; held: " + heldText, lootBuild_[0], lootBuild_[1], lootBuild_[2],
+             lootBuild_[3], lootBuild_[4]);
+    return line;
 }
 
 void GuildCoordinator::RecordRun(GuildFive const& five, GuildFiveReport const& report)
@@ -4598,9 +4734,17 @@ bool GuildCoordinator::FiveRollVote(Player* bot, uint64 lootGuid, uint32 itemId,
             Decision("five " + std::to_string(fiveId) + ": BoP " + ItemName(itemId) + " → " + Who(decided.first) +
                      (decided.second ? " (an upgrade for nobody, disenchants)"
                                      : " (+" + std::to_string(int32(bestGain * 100.0f + 0.5f)) + "% to the slot)"));
+        else if (inserted)
+            Decision("five " + std::to_string(fiveId) + ": BoP " + ItemName(itemId) +
+                     " — an upgrade for nobody: every member greeds [loot12]");
     }
+    // [loot12] user 2026-11-13: NEED only for the member the judge picked; nobody's item is a greed for all (the
+    // bot's own roll rules asked "item usage" again and could need what the judge refused)
     if (!decided.first)
-        return false;
+    {
+        vote = uint8(GREED);
+        return true;
+    }
     vote = decided.first == low ? uint8(decided.second ? GREED : NEED) : uint8(PASS);
     return true;
 }
@@ -4615,7 +4759,7 @@ void GuildCoordinator::FiveLoot(Player* player, Item* item, uint32 count)
     bool disenchant = false;
     if (Equipment(proto) && proto->Bonding == BIND_WHEN_PICKED_UP && item->IsSoulBound() && GET_PLAYERBOT_AI(player))
     {
-        bopSpare = UpgradeGain(player, proto, item->GetItemRandomPropertyId()) <= 0.0f;
+        bopSpare = !WouldWear(player, item);  // [loot12] the copy it holds (EvaluateDrop is for an item not owned)
         disenchant = bopSpare && CanDisenchant(player, proto);
     }
     CoordLock guard(lock_, __func__);

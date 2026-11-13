@@ -131,6 +131,9 @@ namespace GuildGear
     // `calc` belongs to the member. plan: the item's level or reputation may still be ahead (out.locked says which).
     bool Evaluate(Player* member, StatsWeightCalculator& calc, ItemTemplate const* proto, Eval& out,
                   bool plan = false);
+    // [loot12] the same verdict for a dropped item with its random suffix (a five's need roll): one judge for the
+    // plan, the roll and the equip; a member that owns a copy already (bags, bank, worn) is no need
+    bool EvaluateDrop(Player* member, ItemTemplate const* proto, int32 randomProperty, Eval& out);
 
     // Counts, memory and build time of the index, for the startup log and the checks.
     std::string Stats();

@@ -339,10 +339,12 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
         shouldEquip = true;
 
     bool canWear = true;  // [guild12] the class may wear it at all (the tie-breaks below need it)
+    // [loot11] a guild member wears what the guild's judge picks (GuildGear::EvaluateFor): no armor-type veto
+    bool const guildJudge = sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter());
     if (itemProto->Class == ITEM_CLASS_WEAPON && !sRandomItemMgr.CanEquipWeapon(itemProto, bot->getClass()))
         canWear = false;
     if (itemProto->Class == ITEM_CLASS_ARMOR &&
-        !sRandomItemMgr.CanEquipArmor(itemProto, bot->getClass(), bot->GetLevel()))
+        !sRandomItemMgr.CanEquipArmor(itemProto, bot->getClass(), bot->GetLevel(), guildJudge))
         canWear = false;
     if (!canWear)
         shouldEquip = false;
@@ -417,8 +419,10 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
         if (oldItem)
         {
             // uint32 oldStatWeight = sRandomItemMgr.GetLiveStatWeight(bot, oldItemProto->ItemId);
+            // [loot11] never over a piece the class should not wear (b456-b467: cloth Serpent Gloves were a NEED
+            // "REPLACE" for shamans and paladins while the guild's equip refused them: 9 copies held unworn)
             if (itemScore || oldScore)
-                shouldEquipInSlot = itemScore > oldScore * sPlayerbotAIConfig.EquipUpgradeThreshold;
+                shouldEquipInSlot = canWear && itemScore > oldScore * sPlayerbotAIConfig.EquipUpgradeThreshold;
         }
 
         // Bigger quiver
@@ -435,7 +439,7 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
             existingShouldEquip = false;
 
         if (oldItemProto->Class == ITEM_CLASS_ARMOR &&
-            !sRandomItemMgr.CanEquipArmor(oldItemProto, bot->getClass(), bot->GetLevel()))
+            !sRandomItemMgr.CanEquipArmor(oldItemProto, bot->getClass(), bot->GetLevel(), guildJudge))
             existingShouldEquip = false;
 
         // uint32 oldItemPower = sRandomItemMgr.GetLiveStatWeight(bot, oldItemProto->ItemId);

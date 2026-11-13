@@ -1045,7 +1045,7 @@ std::vector<uint32> const& RandomItemMgr::GetEnchantmentPool(uint32 entry) const
     return it->second;
 }
 
-bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32 level) const
+bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32 level, bool anyType) const
 {
     // skip null proto or invalid class
     if (!proto || clazz >= MAX_CLASSES)
@@ -1065,6 +1065,11 @@ bool RandomItemMgr::CanEquipArmor(ItemTemplate const* proto, uint8 clazz, uint32
 
     if ((clazz == CLASS_WARRIOR || clazz == CLASS_PALADIN || clazz == CLASS_SHAMAN) &&
         proto->SubClass == ITEM_SUBCLASS_ARMOR_SHIELD)
+        return true;
+
+    // [loot11] the guild leader's one judge: every armor type the core lets the class wear (Player::CanUseItem's
+    // proficiency), the stat weights decide - 3.3.5a has no armor-type bonus (no "Mail Specialization" in Spell.dbc)
+    if (anyType)
         return true;
 
     uint32 const requiredSubClass = [&]() -> uint32
