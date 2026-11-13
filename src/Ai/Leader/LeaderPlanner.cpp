@@ -9006,6 +9006,43 @@ bool AggressiveTargetAction::DecideLook()
                 _lookWhy = "the leader picks no mob" + (leaderInputs->pickWhy.empty()
                                                             ? std::string()
                                                             : " (" + leaderInputs->pickWhy + ")");
+                // [pull85] b475: three of the stalled Deadmines runs ended standing on a route target the tank
+                // never walked to - five 7 on a Goblin Woodcarver 79.7 yd off for 75 s, five 8 on a Goblin
+                // Craftsman 91.8 yd off for 105 s, five 17 on a Woodcarver 47.0 yd off for 127 s, each with "last
+                // move by leader move order" two minutes old. The leader's own pick drops a route target past
+                // ROUTE_TARGET_PICK_RANGE ("[pull hold] no aggressive target of 1 possible (1 range 40)"), so it
+                // picks no mob, and this branch then refused the planner's approach walk as well ("the leader's
+                // route walks the group on") - a route step that did not come. Nobody moved.
+                // The route target is the leader's own decision about where this group goes; being far from it is a
+                // reason to walk, never a reason to stand. So when the leader has a route target and the tank is
+                // not at it, the tank walks toward it - the leader's pick decides what to pull, this only closes
+                // the distance its pick is measured over. The same facts the planner's own approach walk waits on
+                // still hold it back (a fight, a walk already running, a member below its line), and no elapsed
+                // time enters it: the condition is a route target the tank is not standing at.
+                if (ObjectGuid const routeGoal = RouteTarget::Get(bot->GetGUID()); !routeGoal.IsEmpty())
+                    if (Unit* goal = botAI->GetUnit(routeGoal);
+                        goal && goal->IsAlive() && goal->IsInWorld() && !goal->IsInCombat() &&
+                        bot->GetExactDist(goal) > APPROACH_DISTANCE + 1.0f &&
+                        std::fabs(goal->GetPositionZ() - bot->GetPositionZ()) <= APPROACH_MAX_HEIGHT &&
+                        !bot->IsInCombat() && !bot->isMoving() && !IsGroupFighting(bot) && IsGroupToppedUp(bot) &&
+                        !PullReadiness::GroupPreparing(bot))
+                    {
+                        _approach = routeGoal;
+                        _lookWhy += " - walks toward its route target " + std::string(goal->GetName()) +
+                                    Acore::StringFormat(" ({:.0f} yd) [pull85]", bot->GetExactDist(goal));
+                        static thread_local uint32 goalWalkMs = 0;  // per map thread, a log cadence only
+                        if (!goalWalkMs || getMSTimeDiff(goalWalkMs, getMSTime()) > 5 * IN_MILLISECONDS)
+                        {
+                            goalWalkMs = getMSTime();
+                            if (!goalWalkMs)
+                                goalWalkMs = 1;
+                            LOG_INFO("playerbots", "[pull85] {}: the leader picks no mob ({}) and its route target "
+                                     "{} stands {:.0f} yd off: walks toward it instead of standing", bot->GetName(),
+                                     leaderInputs->pickWhy.empty() ? "no reason given" : leaderInputs->pickWhy,
+                                     goal->GetName(), bot->GetExactDist(goal));
+                        }
+                        return true;
+                    }
                 return false;
             }
             LogPullHold(bot, "no aggressive target", nullptr);
