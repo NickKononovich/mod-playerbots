@@ -6,7 +6,6 @@
 
 #include "DestroyItemAction.h"
 #include "Event.h"
-#include "GuildCoordinator.h"  // [inv380] the leader's verdict on a quest item it carries for nothing
 #include "ItemCountValue.h"
 #include "Playerbots.h"
 #include <algorithm>
@@ -104,32 +103,6 @@ bool SmartDestroyItemAction::Execute(Event /*event*/)
     }
 
     return false;
-}
-
-bool DropDeadWeightAction::isUseful()
-{
-    return !IsRealPlayer(botAI->GetMaster()) && !bot->IsInCombat() && bot->IsAlive() &&
-           sGuildCoordinator.IsPlanned(bot->GetGUID().GetCounter());
-}
-
-bool DropDeadWeightAction::Execute(Event /*event*/)
-{
-    std::vector<GuildCoordinator::DeadItem> const dead = sGuildCoordinator.QuestDeadWeight(bot);
-    if (dead.empty())
-        return false;
-
-    for (GuildCoordinator::DeadItem const& item : dead)
-    {
-        Item* held = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(item.itemGuidLow));
-        ItemTemplate const* proto = held ? held->GetTemplate() : nullptr;
-        if (!proto)
-            continue;
-        LOG_INFO("playerbots", "[inv380] {} L{} drops {}{}: {}", bot->GetName(), bot->GetLevel(), proto->Name1,
-                 held->GetCount() > 1 ? " ×" + std::to_string(held->GetCount()) : "", item.why);
-        bot->DestroyItem(held->GetBagSlot(), held->GetSlot(), true);
-    }
-
-    return true;
 }
 
 bool SmartDestroyItemAction::DestroyUntilBagSpace(std::vector<uint32> const& itemIds)

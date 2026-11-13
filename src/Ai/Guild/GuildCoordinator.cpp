@@ -6966,6 +6966,28 @@ std::vector<GuildCoordinator::DeadItem> GuildCoordinator::QuestDeadWeight(Player
     return dead;
 }
 
+// [inv380] map thread: the bot drops what the leader's rule found it carries for nothing. Between its steps, as the
+// disenchant queue runs: no walk, no cast, and no vendor could take these items anyway.
+bool GuildCoordinator::DropDeadWeightNow(Player* bot)
+{
+    if (!bot || !bot->IsAlive() || bot->IsInCombat())
+        return false;
+    std::vector<DeadItem> const dead = QuestDeadWeight(bot);
+    bool dropped = false;
+    for (DeadItem const& item : dead)
+    {
+        Item* held = bot->GetItemByGuid(ObjectGuid::Create<HighGuid::Item>(item.itemGuidLow));
+        ItemTemplate const* proto = held ? held->GetTemplate() : nullptr;
+        if (!proto)
+            continue;
+        LOG_INFO("playerbots", "[inv380] {} L{} drops {}{}: {}", bot->GetName(), bot->GetLevel(), proto->Name1,
+                 held->GetCount() > 1 ? " ×" + std::to_string(held->GetCount()) : "", item.why);
+        bot->DestroyItem(held->GetBagSlot(), held->GetSlot(), true);
+        dropped = true;
+    }
+    return dropped;
+}
+
 // [inv380] lock_ held. The grey junk a member carries onto its SELL task, and the bag counts for the bags line: the
 // quest-starter items it holds unopened and the quest items no quest of its log needs (their verdict is the bot's
 // own thread, QuestDeadWeight).
