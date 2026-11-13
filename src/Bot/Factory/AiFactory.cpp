@@ -270,7 +270,12 @@ std::string AiFactory::GetPlayerSpecName(Player* player)
             if (tab == DRUID_TAB_BALANCE)
                 specName = "balance";
             else if (tab == DRUID_TAB_FERAL)
-                specName = "feraldps";
+                // [rot620] The feral tree holds two specs: the bear tank and the cat damage dealer. One name for
+                // both read every bear tank as a cat ("feraldps" in playerbots_fight_history and the fight log, the
+                // cat's stat weights in playerbots_weightscales, which carries its own feraltank row). The judge is
+                // the role the bot plays, the "bear" strategy AiFactory gave it (STRATEGY_TYPE_TANK), not its form:
+                // a tank out of form between pulls is still the tank.
+                specName = PlayerbotAI::IsTank(player) ? "feraltank" : "feraldps";
             else if (tab == DRUID_TAB_RESTORATION)
                 specName = "resto";
             break;
@@ -423,7 +428,17 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
                 engine->addStrategiesNoInit("resto", "cure", "dps assist", "tranquility", nullptr);
             else
             {
-                if (player->HasSpell(SPELL_CAT_FORM) && !HasDruidThickHide(player))
+                // [rot620] The feral's form for the whole fight is decided here and nowhere else: "cat" or "bear"
+                // carries its own rotation, and the bear forfeits half the white hits a second (normalized 2500 ms
+                // against the cat's 1000) and the attack power of its agility (3.3.5: Cat Form alone converts it).
+                // Its inputs are logged because that price is only right for a tank.
+                bool const cat = player->HasSpell(SPELL_CAT_FORM) && !HasDruidThickHide(player);
+                LOG_INFO("playerbots",
+                         "[rot620] {} L{} feral plays {}: cat form known {}, thick hide {}, tank by spec {}",
+                         player->GetName(), player->GetLevel(), cat ? "cat" : "bear",
+                         uint32(player->HasSpell(SPELL_CAT_FORM)), uint32(HasDruidThickHide(player)),
+                         uint32(PlayerbotAI::IsTank(player, true)));
+                if (cat)
                     engine->addStrategiesNoInit("cat", "aoe", "cc", "dps assist", "feral charge", nullptr);
                 else
                     engine->addStrategiesNoInit("bear", "tank assist", "pull", "pull back", "feral charge", nullptr);
