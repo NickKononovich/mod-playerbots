@@ -18,6 +18,7 @@
 #include "AiFactory.h"
 #include "Creature.h"
 #include "DBCStores.h"
+#include "EstimatedLifetimeValue.h"  // [dps44] SND_MIN_COMBO_POINTS / SND_MIN_LIFETIME_S, the caster's own gate
 #include "Group.h"
 #include "HealthTriggers.h"  // [dun230] RestState::DrinkRegenPerSec
 #include "Item.h"
@@ -2211,9 +2212,9 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             for (SpellEffectInfo const& effect : hasteFinisher->GetEffects())
                 if (effect.ApplyAuraName == SPELL_AURA_MOD_MELEE_HASTE)
                     hastePct = std::max(hastePct, float(effect.CalcValue(bot)));
-            constexpr uint8 SOLO_POINTS = 2;
-            constexpr float SOLO_AFTER_SEC = 6.0f;
-            uint8 const points = lifeSec > 0.0f ? SOLO_POINTS : MAX_COMBO;
+            // [dps44] the caster's own gate, from its one definition in EstimatedLifetimeValue.h (was a second
+            // pair of literals here, which is why the comment above had to name RogueTriggers.cpp)
+            uint8 const points = lifeSec > 0.0f ? SND_MIN_COMBO_POINTS : MAX_COMBO;
             int32 durationMs = hasteFinisher->GetDuration();
             int32 const maxMs = hasteFinisher->GetMaxDuration();
             if (durationMs > 0 && maxMs > durationMs)
@@ -2234,7 +2235,7 @@ Profile ComputeAt(Player* bot, Unit* target, BuffContext ctx, float lifeSec, boo
             if (lifeSec > 0.0f)
             {
                 float const after = lifeSec - cyc.executeSec;
-                uptime = after >= SOLO_AFTER_SEC ? std::min(durationSec, after) : 0.0f;
+                uptime = after >= SND_MIN_LIFETIME_S ? std::min(durationSec, after) : 0.0f;
                 limit = 1.0f / lifeSec;
             }
             float const gain = meleeWhite * hastePct / 100.0f * uptime;

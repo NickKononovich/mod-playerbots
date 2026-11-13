@@ -30,6 +30,9 @@ private:
     // [rot51] debug trace of the finisher inputs at 4+ combo points on a dungeon boss (logged when they change)
     void TraceFinisher();
     std::string lastTrace;
+    // [dps44] the gate's two readings of the target's life against the formula's, logged when they change
+    void TraceLifetime(uint8 comboPoints, bool passed);
+    std::string lastLifetime;
 };
 
 // [b31_wr] the self buff (63848, 60 s) missing or under 5 s, on a bleeding target (the cast needs one)

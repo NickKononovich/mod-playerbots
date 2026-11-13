@@ -13,6 +13,7 @@
 #include "ServerFacade.h"
 #include "StringFormat.h"  // [rot51]
 #include "TargetValue.h"
+#include "DpsEstimate.h"            // [dps44] the formula's own whole-fight reading, for the trace
 #include "EstimatedLifetimeValue.h"  // [dps234] ExpectedLifetime
 
 namespace
@@ -35,19 +36,23 @@ constexpr float BLADE_FLURRY_CC_CHECK_RANGE = 8.0f;
 // [rot431] Blade Flurry hits one extra target: on trash it pays on a pack of two (user rule: the cooldown rule, packs
 // of 2+); on a boss it stays on cooldown on one target (wowsims rogue__combat.apl.json)
 constexpr uint32 BLADE_FLURRY_TRASH_MIN_TARGETS = 2;
-constexpr uint8 SND_MIN_COMBO_POINTS = 2;
+// [dps44] SND_MIN_COMBO_POINTS and SND_MIN_LIFETIME_S come from EstimatedLifetimeValue.h: the formula that prices
+// Slice and Dice ([dps237]) reads the same two numbers and they must move together
 constexpr uint8 SND_EARLY_REFRESH_MIN_COMBO_POINTS = 4;  // a running SnD is only refreshed with 4+ points
 constexpr int32 SND_PRE_REFRESH_MS = 6000;
-constexpr float SND_MIN_LIFETIME_S = 6.0f;
 // [rot140] wowsims rogue__mutilate.apl.json: Cold Blood "currentComboPoints == 5 or remainingTime <= 5s", and only the
 // Slice and Dice line at <= 1 s (SLICE_AND_DICE_REFRESH_MS) ranks above it
 constexpr float COLD_BLOOD_FIGHT_END_S = 5.0f;
 constexpr uint32 FINISHER_ENERGY = 35;
 
-// Whether the current target lives minSeconds more (true when it cannot be told). [dps234] ExpectedLifetime: its
-// observed health loss, else the group's damage by the share of the members on it. Was the whole group's damage on
-// it: a guild rogue questing alone, grouped with its five far away, read its mob dead in 2-4 s and never cast Slice
-// and Dice (b426-b429: 1 cast in 896 solo fights, 2-point Slice and Dice in every dungeon fight)
+// Whether the current target lives minSeconds more (true when it cannot be told). [dps234] Was the whole group's
+// damage on it: a guild rogue questing alone, grouped with its five far away, read its mob dead in 2-4 s and never
+// cast Slice and Dice (b426-b429: 1 cast in 896 solo fights, 2-point Slice and Dice in every dungeon fight).
+// [dps44] this said "its observed health loss, else the group's damage" until b479, which [lead1300] had already
+// stopped being true: ExpectedLifetime is the target's health NOW over the formula damage of the members on it now,
+// and no measured rate is read. It is the same judge as the formula's own lifeSec (the target's health over its
+// burst), asked a different question - what is left from here, not how long the whole fight is - so the two
+// readings differ by what the fight has already taken off the mob, and that is not a disagreement.
 bool TargetLivesFor(PlayerbotAI* botAI, float minSeconds)
 {
     AiObjectContext* context = botAI->GetAiObjectContext();
@@ -376,6 +381,38 @@ bool ShadowDanceTrigger::IsActive()
 // build 30 Combat refreshed it at 2 points 3.3 times a minute.
 // [rot51] b187 5B combat: Rupture 0.8 a minute against the sim's 2.2, white swings low. The finisher inputs at 4+
 // points on a boss, one line per change (seconds and energy in steps of 10).
+// [dps44] One quantity, two questions. The gate asks ExpectedLifetime - the target's health NOW over the formula
+// damage on it - and refuses Slice and Dice below SND_MIN_LIFETIME_S. The formula ([dps237]) asks lifeSec - the
+// target's MAX health over the bot's burst - and gives the buff no uptime when the whole fight cannot clear the same
+// bar. Both read the same judge, so they cannot contradict; what they can do is straddle, because the gate is asked
+// partway into the fight and by then the mob has lost what the fight has taken off it. b479 4/combat: the formula
+// priced Slice and Dice at 27 % of its plan while the bot cast it in 2 of 21 fights, and whether that is the gate
+// reading short or the fight simply being too short is what this line settles. Logged when it changes, like
+// TraceFinisher above; no decision reads it.
+void SliceAndDiceTrigger::TraceLifetime(uint8 comboPoints, bool passed)
+{
+    Unit* target = AI_VALUE(Unit*, "current target");
+    if (!target || !target->IsAlive() || !bot->IsInCombat())
+    {
+        lastLifetime.clear();
+        return;
+    }
+    std::string source;
+    float const remaining = ExpectedLifetime(botAI, target, &source);
+    float const burst = DpsEstimate::Estimate(bot, target, DpsEstimate::ContextOf(bot)).burstDps;
+    float const whole = burst > 0.0f ? float(target->GetMaxHealth()) / burst : 0.0f;
+    uint32 const healthPct = target->GetMaxHealth() ? uint32(100 * target->GetHealth() / target->GetMaxHealth()) : 0;
+    std::string const trace = Acore::StringFormat(
+        "[dps44] {} slice and dice {}: {} points, the gate reads {:.1f} s left of a {:.1f} s fight by the formula "
+        "({} % health, bar {:.1f} s, {})",
+        bot->GetName(), passed ? "due" : "held", comboPoints, remaining, whole, healthPct, SND_MIN_LIFETIME_S,
+        source);
+    if (trace == lastLifetime)
+        return;
+    lastLifetime = trace;
+    LOG_INFO("playerbots", "{}", trace);
+}
+
 void SliceAndDiceTrigger::TraceFinisher()
 {
     constexpr uint8 TRACE_MIN_COMBO_POINTS = 4;
@@ -409,9 +446,11 @@ bool SliceAndDiceTrigger::IsActive()
     TraceFinisher();
     uint8 const comboPoints = AI_VALUE2(uint8, "combo", "current target");
     if (comboPoints < SND_MIN_COMBO_POINTS)
-        return false;
+        return false;  // [dps44] not traced: the gate has not been asked yet, and this runs every tick
 
-    if (!TargetLivesFor(botAI, SND_MIN_LIFETIME_S))
+    bool const lives = TargetLivesFor(botAI, SND_MIN_LIFETIME_S);
+    TraceLifetime(comboPoints, lives);  // [dps44]
+    if (!lives)
         return false;
 
     Aura* aura = botAI->GetAura(spell, bot, checkIsOwner, checkDuration);

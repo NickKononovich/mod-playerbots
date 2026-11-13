@@ -91,6 +91,16 @@ float ExpectedLifetime(PlayerbotAI* botAI, Unit* target, std::string* source = n
 // [rot341] the same for a decision on a dot's full duration (wowsims' simTimeRemain); [lead1300] by the formula too
 float ExpectedFightLifetime(PlayerbotAI* botAI, Unit* target);
 
+// [dps44] The gate on Slice and Dice, defined once because two places read it: the trigger that casts the buff
+// (RogueTriggers.cpp SliceAndDiceTrigger::IsActive - at least this many combo points, and the target living at
+// least this many seconds more by ExpectedLifetime above) and the formula that prices it (DpsEstimate.cpp
+// [dps237], which gives the buff no uptime on a fight too short to clear the same bar). They were two pairs of
+// literals in two files, agreeing with nothing keeping them in step, and the [dps237] comment named
+// RogueTriggers.cpp because it could not say it in code. One quantity, one definition: change it here and both
+// the casting and the pricing of Slice and Dice move together.
+constexpr uint8 SND_MIN_COMBO_POINTS = 2;
+constexpr float SND_MIN_LIFETIME_S = 6.0f;
+
 // [lead451] A member's held cast (CastTimeMultiplier): the target it would not live to the cast's landing on and the
 // seconds the cast needs to land (its cast time, flight and the next tick). The member reports the fact; the leader's
 // target pick reads it (a mob that dies before this member's cast lands goes to the members whose damage lands).
