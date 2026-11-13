@@ -4113,7 +4113,7 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         double seconds;
         bool priced;
         bool offMap;  // [quest120] its ender sits on a map the bot is not on: no route from here reaches it
-        uint32 onMap;  // the map its ender sits on (0 when it is not known)
+        uint16 onMap;  // the map its ender sits on, QuestStatic::map's own type (0 when it is not known)
         QuestStatus status;
     };
     std::vector<Row> rows;
@@ -4175,7 +4175,7 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
             }
         }
         rows.push_back({slot, quest, color, copper, seconds, priced, offMap,
-                        q == questStatic_.end() ? 0 : q->second.map, status});
+                        uint16(q == questStatic_.end() ? 0 : q->second.map), status});
         // [econ1] the route's rate: the yellow / orange quests it still works; a complete one is handed in either
         // way (its XP comes with or without the green quest) and is no measure of what the time is worth
         if (priced && color != XP_GRAY && color != XP_GREEN && status == QUEST_STATUS_INCOMPLETE)
