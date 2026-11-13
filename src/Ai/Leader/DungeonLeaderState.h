@@ -236,6 +236,9 @@ namespace Leader
             ObjectGuid routeTarget;
             std::string why;
             bool logged = false;
+            // [commit10] the refusal was the leader's route search's own answer ("no route"), not a fact about where
+            // the tank and the mob stood: a step either of them takes does not make it false (LeaderReports)
+            bool noRoute = false;
         };
         WalkRefusal walkRefused;
         std::set<std::pair<ObjectGuid, ObjectGuid>> blockedReadyLogged;  // [dun248] (commit mob, member) logged
@@ -560,6 +563,9 @@ namespace Leader
             bool tankFighting = false;
             uint32 peaceSinceMs = 0;
             bool mobFighting = false;
+            // [commit10] the verdict was the leader's route search's own answer ("no route"): released on that
+            // search answering differently, never on the mob or the tank shifting (LeaderUnreachableChanged)
+            bool noRoute = false;
         };
         std::map<ObjectGuid, Unreachable> unreachable;
         std::string keptPickWhy;

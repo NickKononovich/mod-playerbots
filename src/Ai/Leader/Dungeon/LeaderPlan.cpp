@@ -2882,9 +2882,16 @@ namespace Leader::Dungeon
                 if (mob && lead.walkRefused.mob == mobGuid)
                 {
                     auto& refused = lead.walkRefused;
-                    bool const unchanged = tank->GetExactDist(refused.tankAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
-                                           mob->GetExactDist(refused.mobAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
-                                           group.RouteTarget() == refused.routeTarget;
+                    bool const stood = tank->GetExactDist(refused.tankAt) <= Leader::LEADER_COMMIT_MOVED_YD &&
+                                       mob->GetExactDist(refused.mobAt) <= Leader::LEADER_COMMIT_MOVED_YD;
+                    // [commit10] b477 20261113-175622-dm-n-five1-1: the refusal was the leader's route search's
+                    // own "no route", and a wandering mob's step cleared this hold 4.5 times a second for 296 s
+                    // (1345 commits, 917 of them refused again by that same search, commit_held logged 4 times).
+                    // A step neither of them judged is no new walk: a "no route" hold ends when the route search
+                    // answers differently, which is asked where the step used to clear the hold by itself.
+                    bool const unchanged = group.RouteTarget() == refused.routeTarget &&
+                                           (stood || (refused.noRoute &&
+                                                      !Leader::Route(tank, mob->GetPosition()).found));
                     if (unchanged)
                     {
                         if (!refused.logged)

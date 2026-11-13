@@ -33,6 +33,7 @@
 #include "SpellMgr.h"
 #include "StringFormat.h"
 #include "LeaderGround.h"  // [dun206] LeaderGroundZ
+#include "LeaderOrders.h"  // [commit10] Leader::Route, the leader's own route search
 #include "TerrainHazard.h"
 #include "Timer.h"  // [lead1121] getMSTime
 #include <algorithm>
@@ -571,10 +572,26 @@ namespace Leader::Fight
         // under holds
         if (!mob || !mob->IsAlive())
             return "the mob is gone";
-        if (tank->GetExactDist(verdict.tankAt) > Leader::LEADER_COMMIT_MOVED_YD)
-            return "the tank moved";
-        if (mob->GetExactDist(verdict.mobAt) > Leader::LEADER_COMMIT_MOVED_YD)
-            return "the mob moved";
+        // [commit10] b477 20261113-175622-dm-n-five1-1: a verdict the leader's own route search gave ("no route")
+        // was released 917 times in 296 s by "the mob moved" - a wanderer's step - and the same pick came straight
+        // back for a walk the same search vetoed again: 1345 commits, 4.5 a second, commit_held reached 4 times.
+        // Where the two stand is not what that verdict rests on; the route search's answer is. So it is asked
+        // again, and only a route found ends the verdict. The search runs where the old rule released (something
+        // moved), so it replaces the engage's own search instead of adding one - one judge, not two.
+        bool const tankMoved = tank->GetExactDist(verdict.tankAt) > Leader::LEADER_COMMIT_MOVED_YD;
+        bool const mobMoved = mob->GetExactDist(verdict.mobAt) > Leader::LEADER_COMMIT_MOVED_YD;
+        if (verdict.noRoute)
+        {
+            if ((tankMoved || mobMoved) && Leader::Route(tank, mob->GetPosition()).found)
+                return "the route search finds a route now";
+        }
+        else
+        {
+            if (tankMoved)
+                return "the tank moved";
+            if (mobMoved)
+                return "the mob moved";
+        }
         if (TankHeld(tank) != verdict.tankHeld)
             return verdict.tankHeld ? "the tank's stun / root ended" : "the tank is stunned / rooted";
         if (tank->IsInCombat() != verdict.tankFighting)

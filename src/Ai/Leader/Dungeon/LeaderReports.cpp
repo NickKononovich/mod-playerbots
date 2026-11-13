@@ -177,6 +177,16 @@ namespace Leader::Dungeon
             bool const walkState = report.why.find("IsWaitingForLastMove") != std::string::npos ||
                                    report.why.find("IsDuplicateMove") != std::string::npos ||
                                    report.why.find("IsMovingAllowed") != std::string::npos;
+            // [commit10] b477 20261113-175622-dm-n-five1-1 (296 s): 1345 pull_commit against 917 commit_failed
+            // "engage: the route walk refused by no route (the leader's route search)" - 4.5 commits a second, each
+            // vetoed by the leader's own route search, while commit_held fired 4 times: a wandering mob's step
+            // released both the [dun246] hold and the [lead1011] unreachable store ("the mob moved"), and the same
+            // pick came straight back. A "no route" refusal is the route search's verdict on the way there, not a
+            // fact about where the two stood: the one that may end it is that search answering differently. Marked
+            // here (the refusal's own text, as walkState above reads the tank's own walk states) and read by
+            // LeaderUnreachableChanged and the [dun246] hold.
+            bool const noRoute = report.why.find("no route (the leader's route search)") != std::string::npos ||
+                                 report.why.find("no route to the order mob") != std::string::npos;
             if (report.what == "commit_failed" && !report.target.IsEmpty() && !walkState)
                 if (Unit* refused = ObjectAccessor::GetUnit(*leader, report.target))  // [dun246]
                 {
@@ -187,6 +197,7 @@ namespace Leader::Dungeon
                     walkRefused.routeTarget = group.RouteTarget();
                     walkRefused.why = report.why;
                     walkRefused.logged = false;
+                    walkRefused.noRoute = noRoute;  // [commit10]
                 }
             if (report.what == "commit_failed" && !report.target.IsEmpty() && !walkState &&
                 !group.State().unreachable.count(report.target))
@@ -195,6 +206,7 @@ namespace Leader::Dungeon
                 group.State().unreachable[report.target] =
                     LeaderUnreachable(leader, refusedMob, "the tank's walk refused: " + report.why,
                                       group.State().peaceSinceMs);  // [lead1011] with the facts it was judged under
+                group.State().unreachable[report.target].noRoute = noRoute;  // [commit10]
                 Leader::Orders::Close(group.LeaderGuid(), Leader::OrderState::Aborted,
                                       "the tank's walk refused: " + report.why, leader->GetPosition(), nullptr);
                 // [lead109] b142 rfc-h 381.4-383 s: the leader had committed and issued the same mob again in the
