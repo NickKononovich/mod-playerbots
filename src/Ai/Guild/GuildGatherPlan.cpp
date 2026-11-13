@@ -295,6 +295,7 @@ void GuildGatherPlan::Load()
     placesByItem_.clear();
     gatherSkill_.clear();
     harvest_.clear();
+    supply_.clear();  // [gather42]
     LoadPools();
     LoadHostiles();
     LoadNodesAndChests();
@@ -307,12 +308,19 @@ void GuildGatherPlan::Load()
     // common herb at; and its skill 0 made Silverleaf read as gatherable by anyone (gatherSkill_)
     for (GatherPlace const& place : places_)
     {
-        if (place.instance || place.kind == GatherKind::CHEST || place.kind == GatherKind::DROP)
+        if (place.instance || place.kind == GatherKind::CHEST)
             continue;
+        // [gather42] the same walk fills supply_: a mob's own drop is a farm the guild can work ([ench164] made it
+        // one), a chest is not, so an item whose only places are chests is in neither set
+        bool const drop = place.kind == GatherKind::DROP;
         for (auto const* yield : {&place.yield, &place.poolYield})
             for (auto const& [item, amount] : *yield)
                 if (amount > 0.0f)
-                    harvest_.insert(item);
+                {
+                    supply_.insert(item);
+                    if (!drop)
+                        harvest_.insert(item);
+                }
     }
     for (size_t i = 0; i < places_.size(); ++i)
     {
@@ -938,6 +946,11 @@ bool GuildGatherPlan::Gatherable(uint32 itemId, uint32* skill, int32* reqSkill) 
     if (reqSkill)
         *reqSkill = itr->second.second;
     return true;
+}
+
+bool GuildGatherPlan::Supplied(uint32 itemId) const
+{
+    return supply_.count(itemId) != 0;  // [gather42]
 }
 
 std::vector<GatherPlace const*> GuildGatherPlan::PlacesFor(uint32 itemId) const

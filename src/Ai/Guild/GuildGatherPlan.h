@@ -149,6 +149,11 @@ public:
     GatherPlace const* Place(uint32 placeId) const;  // read-only after Load
     // the item can be gathered somewhere (any kind) and with which skill; false: craft / vendor / drop only
     bool Gatherable(uint32 itemId, uint32* skill = nullptr, int32* reqSkill = nullptr) const;
+    // [gather42] a place the guild can actually supply the item from in quantity: an open-world node, skinnable mob,
+    // water or a mob's own drop ([ench164]). False for an item whose only places are chests - [ui11]'s rule that a
+    // chest never stands in for the harvest, read here as "a chest is no supply line": a crafter's walk must not
+    // book minutes against a chest's rate (b480 Mageweave Cloth x128 at 0.4/h read 19045 min of gathering)
+    bool Supplied(uint32 itemId) const;
     // [fish14] the places that yield the item (read-only after Load, any thread)
     std::vector<GatherPlace const*> PlacesFor(uint32 itemId) const;
     // [supply111] the bot's best rate (units per hour, by formula) of the item over its open-world places, 0 = none
@@ -213,6 +218,7 @@ private:
     std::unordered_map<uint32, std::vector<std::pair<uint32, float>>> convertedFrom_;
     std::unordered_set<uint32> disenchantMats_;
     std::unordered_set<uint32> harvest_;  // items of open-world nodes, skinning and fishing (the [gather] got lines)
+    std::unordered_set<uint32> supply_;   // [gather42] harvest_ plus the mobs' own drops: everything but chests
 
     // load-time only
     struct PoolInfo

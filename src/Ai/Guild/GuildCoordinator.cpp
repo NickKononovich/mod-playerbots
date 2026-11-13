@@ -6043,7 +6043,15 @@ void GuildCoordinator::UpdateProfessions()
                                 // gathering stays the nodes (its GATHER profession call runs DO_GATHER, no place)
                                 uint32 planSkill = 0;
                                 int32 planReq = 0;
+                                // [gather42] ... but only where the guild has a supply line to work: a chest is not
+                                // one ([ui11] already says a chest never stands in for the harvest). b480 Mageweave
+                                // Cloth x128 had no source but Solid Chest at 0.4 units an hour, and every tailor's
+                                // walk booked "19045.2 min" against it - a five-figure minute count that then
+                                // dominated `minutes` in the value line and made the line lose to questing whatever
+                                // it unlocked. A chest-only reagent takes the unreached path below instead, which
+                                // stops the walk and names it, so no estimate divides by a near-zero pace
                                 bool const planned = src == gatherSource_.end() &&
+                                                     sGuildGatherPlan.Supplied(rawItem) &&
                                                      sGuildGatherPlan.Gatherable(rawItem, &planSkill, &planReq);
                                 if (planned)
                                     if (float const pace = gatherPace(rawItem, planSkill,
@@ -6063,7 +6071,9 @@ void GuildCoordinator::UpdateProfessions()
                                         ? std::string("no member gatherer reaches it (") + SkillShort(planSkill) + " " +
                                               std::to_string(std::max<int32>(0, planReq)) + ") [ench163]"
                                     : planned ? std::string("no gatherer of the guild kills its mobs safely [ench164]")
-                                              : std::string("neither held nor gathered in the guild");
+                                    : sGuildGatherPlan.Gatherable(rawItem)
+                                        ? std::string("only chests hold it, which is no supply line [gather42]")
+                                        : std::string("neither held nor gathered in the guild");
                                 why = ItemName(rawItem) + " ×" + std::to_string(uint32(std::ceil(units))) + ": " +
                                       unreached;
                                 if (!tierItem && (src != gatherSource_.end() || (planned && planSkill)))
@@ -7010,19 +7020,25 @@ void GuildCoordinator::RankGuildCrafts(std::vector<std::pair<PlanRow const*, Pla
                 continue;
             double const left = units - std::min(units, heldOf(item));
             uint32 skill = 0, req = 0;
+            bool supplied = true;
             if (auto const src = gatherSource_.find(item); src != gatherSource_.end())
             {
                 skill = src->second.first;
                 req = src->second.second;
             }
-            else if (int32 planReq = 0; sGuildGatherPlan.Gatherable(item, &skill, &planReq))
+            // [gather42] a chest is no supply line here either: without this the gap's minutes took a chest's rate
+            else if (int32 planReq = 0;
+                     (supplied = sGuildGatherPlan.Supplied(item)) &&
+                     sGuildGatherPlan.Gatherable(item, &skill, &planReq))
                 req = uint32(std::max<int32>(0, planReq));
             for (auto const& [row, m] : members)
                 if (skill && !HumanCharacter(m) && m->HasSkill(skill) && m->GetPureSkillValue(skill) >= req)
                     gatherers.insert(row->low);
             if (left <= 0.0)
                 continue;
-            float const pace = gatherPace(item, skill, req, nullptr);
+            // [gather42] `supplied` false: only chests hold it, so there is no rate to divide by - it joins the
+            // reagents the guild cannot bring instead of booking minutes at a chest's 0.4 units an hour
+            float const pace = supplied ? gatherPace(item, skill, req, nullptr) : 0.0f;
             if (pace > 0.0f)
                 gatherMin += left / pace;
             else if (unreached.size() < 60)
