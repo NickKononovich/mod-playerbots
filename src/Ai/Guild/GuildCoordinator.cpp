@@ -6970,8 +6970,16 @@ std::vector<GuildCoordinator::DeadItem> GuildCoordinator::QuestDeadWeight(Player
 // disenchant queue runs: no walk, no cast, and no vendor could take these items anyway.
 bool GuildCoordinator::DropDeadWeightNow(Player* bot)
 {
-    if (!bot || !bot->IsAlive() || bot->IsInCombat())
+    if (!bot || !bot->IsAlive() || bot->IsInCombat() || !IsPlanned(bot->GetGUID().GetCounter()))
         return false;
+    // the verdict walks the bags and, for a quest item, the chain tables (GreyQuestNeed): the leader's own counts of
+    // the last look gate it, so the walk runs only for a bot that holds such an item at all
+    {
+        CoordLock guard(lock_, __func__);
+        auto const itr = bots_.find(bot->GetGUID().GetCounter());
+        if (itr == bots_.end() || (!itr->second.startersOpen && !itr->second.questDeadSlots))
+            return false;
+    }
     std::vector<DeadItem> const dead = QuestDeadWeight(bot);
     bool dropped = false;
     for (DeadItem const& item : dead)
