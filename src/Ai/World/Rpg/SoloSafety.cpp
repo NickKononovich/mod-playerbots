@@ -1621,11 +1621,60 @@ namespace
                         // Blackrock Scouts / Sentries flee at 15 %, 8 came to a camp walk priced as single pulls
                         G3D::Vector3 const arrival(nearest->GetPositionX(), nearest->GetPositionY(),
                                                    nearest->GetPositionZ());
+                        size_t const hopFrom = pack.size() - 1;  // the helper, then its arrival callees
                         if (assist > 0.0f)
                             for (Creature* c : idle)
                                 if (!Has(c) && c->GetExactDist(arrival.x, arrival.y, arrival.z) <= assist &&
                                     c->CanAssistTo(pack[i].mob, bot) && Sees(arrival, c))
                                     pack.push_back({c, true});
+                        // [death454] ... and each one answering makes its own calls on its way to the fight: the
+                        // core's periodic CallAssistance (Creature::Update every ASSISTANCE_PERIOD from where it is,
+                        // AnyAssistCreatureInRangeCheck within the assistance radius; the AssistDelayEvent's
+                        // NoCallAssistance is reset there), so the chain grows hop by hop from each caller's walk to
+                        // the fight. b467 Irorm L23: a Mosshide runner's helper brought a second
+                        // hop of Fenrunners / Mistweavers 12-20 yd past the [death443] radius - judged 2, came 7
+                        float const period =
+                            float(sWorld->getIntConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD)) / IN_MILLISECONDS;
+                        for (size_t h = hopFrom; assist > 0.0f && period > 0.0f && h < pack.size(); ++h)
+                        {
+                            Creature* caller = pack[h].mob;
+                            if (caller->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE))
+                                continue;
+                            G3D::Vector3 const start(caller->GetPositionX(), caller->GetPositionY(),
+                                                     caller->GetPositionZ());
+                            float const walk = (*fight - start).length();
+                            float const step = std::max(caller->GetSpeed(MOVE_RUN) * period, 1.0f);
+                            for (Creature* c : idle)
+                            {
+                                if (Has(c) || !c->CanAssistTo(caller, bot))
+                                    continue;
+                                for (float d = 0.0f; d <= walk + step; d += step)
+                                {
+                                    G3D::Vector3 const at =
+                                        walk > 0.0f ? start + (*fight - start) * (std::min(d, walk) / walk) : start;
+                                    if (c->GetExactDist(at.x, at.y, at.z) <= assist && Sees(at, c))
+                                    {
+                                        pack.push_back({c, true});
+                                        static std::mutex hopLogLock;  // one line per bot and mob: a log cadence
+                                        static std::unordered_set<uint64> hopLogged;
+                                        bool fresh = false;
+                                        {
+                                            std::lock_guard<std::mutex> guard(hopLogLock);
+                                            if (hopLogged.size() > 65536)
+                                                hopLogged.clear();
+                                            fresh = hopLogged.insert(c->GetGUID().GetCounter() * 1000003ull +
+                                                                     bot->GetGUID().GetCounter()).second;
+                                        }
+                                        if (fresh)
+                                            LOG_INFO("playerbots", "[death454] {} L{} judge: {} L{} joins at the call "
+                                                     "of {} L{} on its way to the fight ({:.0f} yd from the fight)",
+                                                     bot->GetName(), bot->GetLevel(), c->GetName(), c->GetLevel(),
+                                                     caller->GetName(), caller->GetLevel(), (at - *fight).length());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
                         // one line per runner and helper beyond the radius round the fight spot alone
                         if (best > sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS))
                         {
