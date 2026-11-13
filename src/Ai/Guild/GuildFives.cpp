@@ -537,6 +537,22 @@ namespace FiveGate
         return std::clamp(armor / (armor + 85.0f * lvl + 400.0f), 0.0f, 0.75f);
     }
 
+    // [order368] the gate's own tank term: the health a mob of `level` has to take off it for the drop the gate
+    // prices (its armor and its dodge / parry, as Judge reads them; a druid tank as the bear the planner plans with).
+    // Not the gate's whole verdict - the pull's mobs and the healer set that - but the one term the tank changes
+    float TankEffectiveHealth(Player* tank, uint8 level)
+    {
+        if (!tank)
+            return 0.0f;
+        float health = float(tank->GetMaxHealth());
+        float armor = float(tank->GetArmor());
+        float dodge = tank->GetUnitDodgeChance();
+        float parry = tank->GetUnitParryChance();
+        PullPlanning::BearStatsSeen(tank, health, armor, dodge, parry);
+        float const avoid = std::clamp((dodge + parry) / 100.0f, 0.0f, 0.75f);
+        return health / std::max(0.01f, (1.0f - ArmorReduction(armor, level)) * (1.0f - avoid));
+    }
+
     struct Verdict
     {
         bool clears = true;
@@ -4255,6 +4271,110 @@ void GuildCoordinator::AutoFive()
                     }
                     if (found)
                         break;
+                }
+            }
+            // [order368] user point 2026-11-13: a first-clear five takes its carriers by the terms the gate prices,
+            // not by level - the tank by the gate's own drop term (TankEffectiveHealth: its armor and avoidance
+            // against a mob of the band's top), the dps by their formula dps (the group dps sets the fight length, and
+            // a shorter fight is less damage taken and less healing). b472 wc-n, the same Deviate Guardian x6 pull:
+            // Thelengyl tank 1.09, Irorm 1.23 - the tank alone moved the load 14 %
+            if (!verdict.clears && helpers)
+            {
+                std::vector<FiveCandidate const*> wTanks, wHealers, wDps;
+                for (FiveCandidate const& c : walkPool)
+                    (c.role == "tank" ? wTanks : c.role == "healer" ? wHealers : wDps).push_back(&c);
+                uint8 const mobLevel = uint8(d->maxLevel);
+                std::map<uint32, float> ehp, formulaDps;
+                for (FiveCandidate const* c : wTanks)
+                    ehp[c->low] = FiveGate::TankEffectiveHealth(c->player, mobLevel);
+                for (FiveCandidate const* c : wDps)
+                    formulaDps[c->low] =
+                        DpsEstimate::Estimate(c->player, nullptr, DpsEstimate::BuffContext::Group).burstDps;
+                std::stable_sort(wTanks.begin(), wTanks.end(), [&ehp](FiveCandidate const* a, FiveCandidate const* b)
+                                 { return ehp[a->low] > ehp[b->low]; });
+                std::stable_sort(wHealers.begin(), wHealers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
+                                 { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
+                // [order368] an uncleared member keeps its slot; among equals the highest formula dps
+                std::stable_sort(wDps.begin(), wDps.end(),
+                                 [&formulaDps](FiveCandidate const* a, FiveCandidate const* b)
+                                 {
+                                     if (a->needsClear != b->needsClear)
+                                         return a->needsClear;
+                                     return formulaDps[a->low] > formulaDps[b->low];
+                                 });
+                // the uncleared members of each role take their slots: the carriers fill the rest
+                std::vector<FiveCandidate const*> tankTries, healerTries;
+                for (FiveCandidate const* c : wTanks)
+                    if (c->needsClear)
+                        tankTries.assign(1, c);
+                for (FiveCandidate const* c : wHealers)
+                    if (c->needsClear)
+                        healerTries.assign(1, c);
+                constexpr size_t CARRIER_SIDE = 4;  // the look's cost bound, as [gate93]
+                if (tankTries.empty())
+                    tankTries.assign(wTanks.begin(), wTanks.begin() + std::min(wTanks.size(), CARRIER_SIDE));
+                if (healerTries.empty())
+                    healerTries.assign(wHealers.begin(), wHealers.begin() + std::min(wHealers.size(), CARRIER_SIDE));
+                std::vector<FiveCandidate const*> dpsSlots(wDps.begin(),
+                                                           wDps.begin() + std::min(wDps.size(), size_t(3)));
+                std::string best368;
+                float bestLoad368 = 99.0f;
+                for (FiveCandidate const* t : tankTries)
+                {
+                    if (verdict.clears || dpsSlots.size() < 3)
+                        break;
+                    for (FiveCandidate const* h : healerTries)
+                    {
+                        std::vector<Player*> trial{t->player, h->player, dpsSlots[0]->player, dpsSlots[1]->player,
+                                                   dpsSlots[2]->player};
+                        FiveGate::Verdict const v = FiveGate::Judge(d->mapId, trial);
+                        float groupDps = 0.0f;
+                        std::string names;
+                        for (FiveCandidate const* c : dpsSlots)
+                        {
+                            groupDps += formulaDps[c->low];
+                            names += (names.empty() ? "" : "/") + c->player->GetName();
+                        }
+                        std::string const line = Acore::StringFormat(
+                            "tank {} (drop {:.2f}, effective hp {:.0f}, the highest of {}), healer {}, dps {} (group "
+                            "dps {:.0f}) -> load {:.2f}",
+                            t->player->GetName(), v.worstDrop, ehp[t->low], wTanks.size(), h->player->GetName(), names,
+                            groupDps, v.worstLoad);
+                        if (v.clears)
+                        {
+                            best368 = line + ": passes the gate";
+                            five = {*t, *h, *dpsSlots[0], *dpsSlots[1], *dpsSlots[2]};
+                            players = trial;
+                            verdict = v;
+                            break;
+                        }
+                        if (v.worstLoad < bestLoad368)
+                        {
+                            bestLoad368 = v.worstLoad;
+                            best368 = line;
+                        }
+                    }
+                }
+                if (!best368.empty())
+                {
+                    std::string clears;
+                    for (FiveCandidate const& c : five)
+                        if (c.needsClear)
+                            clears += (clears.empty() ? "" : ", ") + c.player->GetName();
+                    std::string const line = Acore::StringFormat("first clear for {}: {}",
+                                                                 clears.empty() ? "its uncleared members" : clears,
+                                                                 best368);
+                    static std::map<std::string, std::string> order368Logged;  // world thread: a log cadence
+                    if (std::string& logged = order368Logged[d->contentKey]; logged != line)
+                    {
+                        logged = line;
+                        LOG_INFO("playerbots", "[order368] {} {}", d->contentKey, line);
+                    }
+                    if (guardCount == 0)
+                        lookWhy[d->contentKey] +=
+                            verdict.clears ? " -> [order368] the carriers the gate prices pass it"
+                                           : Acore::StringFormat(" -> [order368] the best carriers still load {:.2f}",
+                                                                 bestLoad368);
                 }
             }
             // [order367] coordinator decision 2026-11-13: an uncleared healer of the guild's open dungeon whose heal
