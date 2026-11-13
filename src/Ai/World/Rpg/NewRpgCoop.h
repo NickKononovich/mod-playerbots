@@ -158,6 +158,8 @@ struct CoordinatorHooks
     // [assist5] world thread, without the board's lock: a gatherer's escort party ended (done: the place's guard is
     // dead where the gatherer stands - its place is its choice again)
     std::function<void(uint32 low, uint32 placeId, bool done)> escortEnd;
+    // [assist18] any thread (never lock_): the five the member would be taken into next, "" = none
+    std::function<std::string(uint32 low)> fiveWanted;
 };
 void SetCoordinatorHooks(CoordinatorHooks const& coordinatorHooks);
 

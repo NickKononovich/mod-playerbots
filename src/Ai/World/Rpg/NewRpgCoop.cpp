@@ -2478,6 +2478,19 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         return false;
     if (!r.human && (req->IsInFlight() || req->GetTransport()))
         return false;  // [assist16] priced once it has landed: where it stands then is where its helpers walk to
+    // [assist18] the next five would take the requester (the five look's own pool): its helpers' trip would be cut off
+    // - no help while it stays wanted there (b470: Brelir, Peny, Gnetlibozz taken into fives 80-495 s in)
+    if (std::string const wanted = !r.human && hooks.fiveWanted ? hooks.fiveWanted(req->GetGUID().GetCounter()) : "";
+        !wanted.empty())
+    {
+        std::string const why = "[assist18] skip: " + r.name + " is wanted by the next " + wanted + " five";
+        if (why != r.lastRefusal && !helpPlanning)
+        {
+            r.lastRefusal = why;
+            out.logs.push_back(Acore::StringFormat("{} (request={}){}", why, r.id, HelpStamp()));
+        }
+        return false;
+    }
     Quest const* quest = sObjectMgr->GetQuestTemplate(r.obj.questId);
     std::string const title = r.campOnly ? std::string("camp")  // [help12]
                               : quest ? quest->GetTitle() : "q" + std::to_string(r.obj.questId);
@@ -2545,6 +2558,12 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         // open dungeon's band and not cleared there is what the guild waits on - its time goes to its own levels; it
         // helps only when no other member fits. b449 Rollothan L14 (with Gilduck and Sylaenas the last three for RFC)
         // was sent as healer to Januel L18's q167 camp
+        // [assist18] the next five would take this helper: its walk would be cut off
+        if (std::string const wanted = hooks.fiveWanted ? hooks.fiveWanted(low) : ""; !wanted.empty())
+        {
+            ++skipped["[assist18] wanted by the next " + wanted.substr(0, wanted.find(' ')) + " five"];
+            continue;
+        }
         if (sGuildCoordinator.HoldsGuildDungeon(low))
         {
             ++skipped["the guild's open dungeon waits on its level"];

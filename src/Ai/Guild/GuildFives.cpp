@@ -3713,6 +3713,8 @@ void GuildCoordinator::AutoFive()
     // [five58] user direction 2026-11-09: one line per look - each dungeon with members in its band, how many are
     // free, their roles and why no five goes (no tank / no healer / too few dps / nothing to gain / the gate)
     std::map<std::string, std::string> lookWhy;
+    std::unordered_map<uint32, std::string> fiveWanted;  // [assist18] this look's members a five would take
+    std::set<std::string> gateNo;                        // [assist18] the dungeons whose five the gate refused
     for (uint32 guardCount = 0; guardCount < 10; ++guardCount)  // one five per dungeon look, at most ten a look
     {
         // the free members of each dungeon's band (lock), their upgrades (no lock: the bots' own values)
@@ -3796,6 +3798,24 @@ void GuildCoordinator::AutoFive()
                         text.pop_back();
                         text += Acore::StringFormat(" ({} members need it in all)", n->second.size());
                         lookWhy[d.contentKey].insert(0, text.substr(1) + "; ");
+                    }
+                // [assist18] the free members with a need of a dungeon the order lets a five into whose pool holds a
+                // five's roles (a tank, a healer, five in all): the next five there would take them - the help
+                // pricing leaves them out (b470: 3 of 8 helps ended by a five call)
+                if (guardCount == 0)
+                    if (auto const n = needs.find(d.contentKey);
+                        n != needs.end() && pool.size() >= 5 &&
+                        (sPlayerbotAIConfig.GuildDungeonOrderPerMember || orderOpenKey_.empty() ||
+                         d.contentKey == orderOpenKey_))
+                    {
+                        bool const tank = std::any_of(pool.begin(), pool.end(),
+                                                      [](FiveCandidate const& c) { return c.role == "tank"; });
+                        bool const healer = std::any_of(pool.begin(), pool.end(),
+                                                        [](FiveCandidate const& c) { return c.role == "healer"; });
+                        if (tank && healer)
+                            for (FiveCandidate const& c : pool)
+                                if (auto const m = n->second.find(c.low); m != n->second.end())
+                                    fiveWanted.emplace(c.low, d.contentKey + " (" + m->second + ")");
                     }
                 for (FiveCandidate& c : pool)
                     for (GuildRunRecord const& rec : runs_)
@@ -4106,7 +4126,10 @@ void GuildCoordinator::AutoFive()
             if (!verdict.clears)
             {
                 if (guardCount == 0)
+                {
                     lookWhy[d->contentKey] += " -> the gate says no: " + verdict.why;
+                    gateNo.insert(d->contentKey);  // [assist18]
+                }
                 if (std::string& logged = gateWhy[d->contentKey]; logged != verdict.why)
                 {
                     logged = verdict.why;
@@ -4161,6 +4184,9 @@ void GuildCoordinator::AutoFive()
                 line += (line.empty() ? "" : "; ") + key + ": " + text;
             LOG_INFO("playerbots", "[five58] look: {}{}", line.empty() ? "no planned member in any dungeon band" : line,
                      best ? " => forms " + best->contentKey : std::string(" => no five"));
+            for (auto itr = fiveWanted.begin(); itr != fiveWanted.end();)  // [assist18] a five the gate passes
+                itr = gateNo.count(itr->second.substr(0, itr->second.find(' '))) ? fiveWanted.erase(itr) : ++itr;
+            SetFiveWanted(std::move(fiveWanted));
         }
         if (!best)
             return;

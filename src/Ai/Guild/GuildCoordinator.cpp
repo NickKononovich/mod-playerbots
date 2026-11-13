@@ -647,7 +647,8 @@ void GuildCoordinator::Load()
                                      { AddCoopTask(l, partner, q, lead, w); },
                                      [this](uint32 l, uint32 q, std::string const& w) { EndCoopTask(l, q, w); },
                                      [this](uint32 l, std::string* w) { return AssistWeight(l, w); },  // [assist2]
-                                     [this](uint32 l, uint32 place, bool done) { OnEscortEnd(l, place, done); }});
+                                     [this](uint32 l, uint32 place, bool done) { OnEscortEnd(l, place, done); },
+                                     [this](uint32 l) { return FiveWanted(l); }});  // [assist18]
     loaded_ = true;
 }
 

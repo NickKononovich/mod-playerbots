@@ -801,6 +801,10 @@ public:
     // (UpdateAssist posts it) when the gather's worth is known
     void NoteGatherBlocked(Player* bot, uint32 placeId, std::string const& why);
     void OnEscortEnd(uint32 low, uint32 placeId, bool done);  // [assist5] world thread
+    // [assist18] any thread (its own lock): the five the member would be taken into next ("wc-n (clear)"), "" = none -
+    // the five look's free members with a need of a dungeon whose pool holds a five's roles and passes the gate
+    std::string FiveWanted(uint32 low) const;
+    void SetFiveWanted(std::unordered_map<uint32, std::string>&& wanted);  // UpdateFives' look
 
 private:
     mutable std::mutex assistLock_;  // [assist1] behind it: the weights and the escort asks (never waits on another)
@@ -815,6 +819,7 @@ private:
         std::string why;
     };
     std::vector<EscortAsk> escortAsks_;
+    std::unordered_map<uint32, std::string> fiveWanted_;  // [assist18]
     std::string assistBlockersLogged_;  // [assist1] world thread: the last blocker / assignment lines
     std::string assistAssignLogged_;
 

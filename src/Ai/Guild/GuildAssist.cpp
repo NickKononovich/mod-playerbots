@@ -79,6 +79,19 @@ float GuildCoordinator::AssistWeight(uint32 low, std::string* why) const
     return found->second.first;
 }
 
+std::string GuildCoordinator::FiveWanted(uint32 low) const
+{
+    std::lock_guard<std::mutex> guard(assistLock_);
+    auto const found = fiveWanted_.find(low);
+    return found == fiveWanted_.end() ? std::string() : found->second;
+}
+
+void GuildCoordinator::SetFiveWanted(std::unordered_map<uint32, std::string>&& wanted)
+{
+    std::lock_guard<std::mutex> guard(assistLock_);
+    fiveWanted_ = std::move(wanted);
+}
+
 void GuildCoordinator::NoteGatherBlocked(Player* bot, uint32 placeId, std::string const& why)
 {
     if (!bot || !placeId)
