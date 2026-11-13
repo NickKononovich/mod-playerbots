@@ -747,17 +747,38 @@ namespace FiveGate
                 }
             }
         }
-        auto const pullOf = [&](size_t i, std::vector<uint32>& members)
+        // [split263] `withDraws` false: the planner's pull round a corner (LosPull) - the casters walk out to the tank,
+        // nobody stands where they cast, so nothing joins by their stand ([dun205]); `held`: spawns crowd control holds
+        // before the pull - never in it, no call or stand of theirs, only their formation engages with them
+        auto const pullOf = [&](size_t i, std::vector<uint32>& members, bool withDraws = true,
+                                std::vector<char> const* held = nullptr)
         {
             members.clear();
             ++stamp;
             auto const add = [&](uint32 j)
             {
-                if (left[j] && in[j] != stamp)
+                if (!left[j] || in[j] == stamp)
+                    return;
+                in[j] = stamp;
+                if (!held || !(*held)[j])
                 {
-                    in[j] = stamp;
                     members.push_back(j);
+                    return;
                 }
+                for (uint32 f : map.formation[j])
+                    if (left[f] && in[f] != stamp && !(*held)[f])
+                    {
+                        in[f] = stamp;
+                        members.push_back(f);
+                    }
+            };
+            // a mob that joins with its own engage call (Creature::CallAssistance); a held one never engages
+            auto const join = [&](uint32 j)
+            {
+                add(j);
+                if (!held || !(*held)[j])
+                    for (uint32 helped : map.assists[j])
+                        add(helped);
             };
             add(uint32(i));
             if (Patrols(spawns[i]))
@@ -811,11 +832,7 @@ namespace FiveGate
                 {
                     for (uint32 j : map.calls[member])
                         if (left[j] && in[j] != stamp)
-                        {
-                            add(j);
-                            for (uint32 helped : map.assists[j])
-                                add(helped);
-                        }
+                            join(uint32(j));
                 }
                 else if (caller.callRadius > 0.0f)
                 {
@@ -827,19 +844,13 @@ namespace FiveGate
                             std::find(map.formation[member].begin(), map.formation[member].end(), uint32(j)) ==
                                 map.formation[member].end() &&
                             Answers(calling, spawns[i].pos, spawns[j], spawns[j].pos, caller.callRadius))
-                        {
-                            add(uint32(j));
-                            for (uint32 helped : map.assists[j])
-                                add(helped);
-                        }
+                            join(uint32(j));
                 }
+                if (!withDraws)
+                    continue;
                 for (uint32 j : draws[member])  // [dun205]
                     if (left[j] && in[j] != stamp)
-                    {
-                        add(j);
-                        for (uint32 helped : map.assists[j])
-                            add(helped);
-                    }
+                        join(uint32(j));
             }
         };
 
@@ -932,14 +943,41 @@ namespace FiveGate
             }
             return judge(pullMobs, boss);
         };
-        // the rest's pull and load with the held spawns out; `held` grows; false: no hold helps
-        auto const holdPart = [&](std::vector<uint32>& members, PullLoad& load, std::vector<uint32>& held,
-                                  std::string& what) -> bool
+        // the rest's pull and load with the held spawns out; `held` grows; false: no hold helps. [split263] The rest
+        // is the pull of `start` again with the holds standing (pullOf `held`): what came only by a held mob's engage
+        // call or its stand ([dun205]) stays out with it - a hold on the pull's own start takes only that mob out
+        std::vector<char> heldMask(n, 0);
+        auto const holdPart = [&](size_t start, bool withDraws, std::vector<uint32>& members, PullLoad& load,
+                                  std::vector<uint32>& held, std::string& what) -> bool
         {
             for (std::vector<Holder> const* holders : {&dpsHolders, &healHolders})
             {
                 std::vector<uint32> rest = members;
                 std::vector<uint32> took;
+                auto const restWithout = [&](uint32 j, std::vector<uint32>& trial)
+                {
+                    trial.clear();
+                    if (j == start || std::find(took.begin(), took.end(), uint32(start)) != took.end() ||
+                        Patrols(spawns[start]))
+                    {
+                        for (uint32 k : rest)
+                            if (k != j)
+                                trial.push_back(k);
+                        return;
+                    }
+                    for (uint32 t : took)
+                        heldMask[t] = 1;
+                    heldMask[j] = 1;
+                    pullOf(start, trial, withDraws, &heldMask);
+                    for (uint32 t : took)
+                        heldMask[t] = 0;
+                    heldMask[j] = 0;
+                    // never more than the pull it holds from (a patrol's reach may differ on a rebuild)
+                    trial.erase(std::remove_if(trial.begin(), trial.end(),
+                                               [&](uint32 k)
+                                               { return std::find(rest.begin(), rest.end(), k) == rest.end(); }),
+                                trial.end());
+                };
                 std::vector<Player*> usedBy;
                 PullLoad restLoad = load;
                 std::string line;
@@ -959,9 +997,7 @@ namespace FiveGate
                             if (!key.hold.spellId)
                                 continue;
                             std::vector<uint32> trial;
-                            for (uint32 k : rest)
-                                if (k != j)
-                                    trial.push_back(k);
+                            restWithout(j, trial);
                             if (trial.empty())
                                 continue;
                             PullLoad const trialLoad = loadOf(trial);
@@ -1023,6 +1059,14 @@ namespace FiveGate
         uint32 savedPulls = 0;
         uint32 savesBroken = 0;
         std::string optionsNote;  // the first pull each option made fit
+        // [split263] the planner's pull round a corner (LosPull: the tank's pull back strategy, a ranged pull)
+        PlayerbotAI* const tankAI = GET_PLAYERBOT_AI(tank);
+        size_t const losMinCasters = sPlayerbotAIConfig.LosPullMinCasters;
+        bool const losOn = losMinCasters && tankAI && tankAtRange && tankAI->HasStrategy("pull back", BOT_STATE_COMBAT);
+        uint32 cornerPulls = 0;
+        constexpr uint32 OVER_LISTED = 8;  // log only
+        uint32 overCount = 0;
+        std::string overList;
         for (;;)
         {
             for (uint32 p : map.patrols)
@@ -1069,6 +1113,40 @@ namespace FiveGate
             float const startClock =
                 clock + (walked ? (spawns[bestMembers.front()].pos - lastPull).length() / runSpeed : 0.0f);
             std::vector<uint32> heldNow;
+            // [split263] a pull over capacity that its casters' stand makes ([dun205]: the members on a caster that
+            // keeps its range wake what sees them there) is pulled round a corner as the planner's LosPull does (the
+            // tank's ranged pull and its pull back, at least LosPullMinCasters casters): the casters walk out to the
+            // tank and bring only their own engage calls; the mobs their stand would wake stay standing for their own
+            // pulls. b468 wc-n: "Druid of the Fang x6 (7542 hp)" - four Druids and a Dreadfang and a Venomwing whose
+            // engage calls (the core's 10 yd assistance) make two packs of three, joined only by the Druids' stand,
+            // held 49 of 50 fives (worst 3.2-5.6); the planner pulled them 2-3 at a time
+            size_t const start = bestMembers.front();
+            bool cornered = false;
+            if (best.load > 1.0f && !best.boss && losOn && !Patrols(spawns[start]))
+            {
+                size_t const casters = size_t(std::count_if(bestMembers.begin(), bestMembers.end(),
+                                                            [&](uint32 j) { return spawns[j].keepsRange; }));
+                std::vector<uint32> corner;
+                if (casters >= losMinCasters)
+                    pullOf(start, corner, false);
+                if (!corner.empty() && corner.size() < bestMembers.size() &&
+                    std::any_of(corner.begin(), corner.end(), [&](uint32 j) { return spawns[j].keepsRange; }))
+                {
+                    PullLoad const cornerLoad = loadOf(corner);
+                    if (cornerLoad.load < best.load)
+                    {
+                        ++cornerPulls;
+                        if (optionsNote.find("[split263] round a corner") == std::string::npos)
+                            optionsNote += Acore::StringFormat(
+                                "; [split263] round a corner: {} x{} ({:.2f}) -> {} x{} ({:.2f}), {} left standing",
+                                best.name, best.mobs, best.load, cornerLoad.name, cornerLoad.mobs, cornerLoad.load,
+                                bestMembers.size() - corner.size());
+                        bestMembers = corner;
+                        best = cornerLoad;
+                        cornered = true;
+                    }
+                }
+            }
             if (best.load > 1.0f && !best.boss)
             {
                 // as the planner: the holds count only when they carry the rest (else the pull as it comes goes on
@@ -1076,7 +1154,7 @@ namespace FiveGate
                 std::string what;
                 std::vector<uint32> rest = bestMembers;
                 PullLoad restLoad = best;
-                if (holdPart(rest, restLoad, heldNow, what) && restLoad.load <= 1.0f)
+                if (holdPart(start, !cornered, rest, restLoad, heldNow, what) && restLoad.load <= 1.0f)
                 {
                     ++heldPulls;
                     if (optionsNote.find("[split254] held") == std::string::npos)
@@ -1141,7 +1219,14 @@ namespace FiveGate
             }
             clock = startClock + best.sec;
             if (best.load > 1.0f)
+            {
                 ++failed;
+                // [dun263] each pull the gate refuses, where it starts (the spawn's guid)
+                if (++overCount <= OVER_LISTED)
+                    overList += Acore::StringFormat("{}{}{} x{} {:.2f} at {}", overList.empty() ? "" : ", ",
+                                                    best.boss ? "boss pull " : "", best.name, best.mobs, best.load,
+                                                    spawns[start].guid);
+            }
             if (best.load > worst.load)
                 worst = best;
             // [dun194] the pull's mana for each mana user; [dun230] less what the walk to it regenerates of the
@@ -1185,13 +1270,21 @@ namespace FiveGate
         out.clears = failed == 0 && judged > 0;
         out.why = Acore::StringFormat(
             "{} of {} pulls over capacity ([dun170] as the leader splits them, {} patrols pulled apart, each from full "
-            "after a rest; [split254] {} with crowd control, {} with the tank's defensive, {} defensives not back for "
-            "a boss); worst {:.2f}: {}; group burst dps {:.0f}, healer {} {:.0f} hps (gap {:.1f} s, {:.1f} "
-            "hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{} [mob melee and [dun244] spells from templates, "
-            "the healer's rate capped by its pool; [dun233] calls for help from the fight; area damage not counted]{}",
-            failed, judged, apart, heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
-            healer->GetName(), heal.hps, gap, heal.healPerMana, tank->GetName(), tankHealth, armor, avoid,
-            bear ? " (the bear seen in form)" : "", optionsNote);
+            "after a rest; [split263] {} round a corner{}; [split254] {} with crowd control, {} with the tank's "
+            "defensive, {} defensives not back for a boss); worst {:.2f}: {}; group burst dps {:.0f}, healer {} "
+            "{:.0f} hps (gap {:.1f} s, {:.1f} hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{} [mob melee "
+            "and [dun244] spells from templates, the healer's rate capped by its pool; [dun233] calls for help from "
+            "the fight; area damage not counted]{}{}",
+            failed, judged, apart, cornerPulls, losOn ? "" : " (no: the tank has no ranged pull and pull back)",
+            heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps, healer->GetName(), heal.hps, gap,
+            heal.healPerMana, tank->GetName(), tankHealth, armor, avoid, bear ? " (the bear seen in form)" : "",
+            optionsNote,
+            overList.empty()
+                ? std::string()
+                : Acore::StringFormat("; [dun263] over: {}{}", overList,
+                                      overCount > OVER_LISTED
+                                          ? Acore::StringFormat(" +{} more", overCount - OVER_LISTED)
+                                          : std::string()));
         return out;
     }
 }
