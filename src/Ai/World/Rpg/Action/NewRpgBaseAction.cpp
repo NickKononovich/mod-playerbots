@@ -9001,6 +9001,12 @@ namespace
 // chosen here and a creature too far below the bot sweeps nothing. Its experience is the core's own BaseGain over
 // its level, which is 0 below the grey line, so grey ground is worth nothing without a filter of ours. Spawns come
 // from the startup-loaded cell lists (no query on a map thread). Reported only in this pass: nothing decides on it.
+//
+// THE SWEEP IS NOT JUDGED. It counts every crossable creature, so its figure is an upper bound on what a walk
+// yields: the bot stops for some of them and runs past others. Whoever prices a decision on this term applies the
+// engagement judge per creature FIRST, and only then compares the result with an expectation. Reading the raw
+// figure as the yield and calling the term wrong because the figure is high would condemn a sound rule for a
+// filter that was never applied - the mistake this whole line of work exists to undo.
 float NewRpgBaseAction::GroundXpOfLeg(Player* bot, QuestRoute::Point const& from, QuestRoute::Point const& to,
                                       std::map<uint32, uint32>& npcLeft, uint32& count)
 {
