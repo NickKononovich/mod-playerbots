@@ -1539,8 +1539,32 @@ namespace Leader::Dungeon
                 // "the patrol first: its own pull" releases of Rethilgore's pack, the patrol's own pull "no safe pull
                 // ... overload 2.11", nothing issued for 4 minutes, stalled at 0/8
                 bool patrolOwnRefused = false;
-                if (Leader::LEADER_PATROL_IS_TARGET && !fits && patrolGap <= 2.0f * patrolReach &&
-                    !lead.commitIssued && broken.empty())
+                // [dm32] A patrol that is the route's own next boss is never waited out: waiting is a question that
+                // has no answer on it. The wait exists to let an INCIDENTAL patrol pass; a boss the run must kill
+                // never passes, it is the objective, and the user's rule bars the alternative outright (never skip
+                // a boss). The judge cannot end the wait either: JudgeMobs returns `fits = !estimate.boss &&
+                // overload <= 1.0f` (LeaderPlanner.cpp), so a pack holding a boss is refused whatever its numbers
+                // say - both JudgePack calls here answer "no" forever, and neither escape ([dun219] a beat that
+                // never leaves, [dun226] the beat's far end) was written for "the patrol never leaves because it is
+                // the target". b479 dm-n 20261113-203307-dm-n-five9-4: "[dun217] Goblin Shipbuilder kept, its pull
+                // waits out the patrol Captain Greenskin (30 yd, reach 15): with it 6 mobs, cost 1.87 tank hp,
+                // fight 40 s, overload 0.50 of 1.00, a boss; alone 5 mobs, ... overload 0.38 of 1.00, a boss" - the
+                // numbers fit twice over, the refusal was the word "boss" - and that line is the LAST pull plan of
+                // the run: no pull 60, no [dun219], no [dun226], ten minutes of "engage Goblin Shipbuilder" with
+                // "no line of sight from the bot's eyes", stalled at 5/7 with Greenskin and VanCleef never engaged
+                // (4 of the 7 dm-n runs that stopped at 5/7 end exactly this way).
+                // So the boss is planned as the boss fight it is: it becomes the leader's pick ("its own pull"
+                // below), which is the ONE route into the planner's boss path - his tactics, the cooldown plan, the
+                // trash standing in reach of the fight collected as his adds, and his own gate. Nothing is
+                // committed here: a pick is planned, and a plan the gate refuses leaves the gate's verdict for the
+                // leader to act on (a rest, another target, a re-route), exactly as [pull84]'s merged plan does. If
+                // the only way to engage him is a fight the gate refuses, that is a finding - the gate decides, and
+                // the 88 dm-n runs' safety record is not spent to get past it.
+                bool const patrolIsRouteBoss = Leader::LEADER_PATROL_IS_TARGET && patrol &&
+                                               patrol->GetGUID() == lead.nextBossGuid &&
+                                               IsBossLook(tank, patrol->GetGUID());
+                if (Leader::LEADER_PATROL_IS_TARGET && !patrolIsRouteBoss && !fits &&
+                    patrolGap <= 2.0f * patrolReach && !lead.commitIssued && broken.empty())
                 {
                     std::vector<ObjectGuid> own;
                     for (Creature* walker : walkers)
@@ -1609,15 +1633,25 @@ namespace Leader::Dungeon
                 if (Leader::LEADER_PATROL_IS_TARGET && !fits && patrolGap <= 2.0f * patrolReach &&
                     !lead.commitIssued && broken.empty() && !patrolOwnRefused)
                 {
+                    // [dm32] the route's own next boss on its patrol: said once, so the next run is judged on it
+                    if (patrolIsRouteBoss && lead.patrolTarget != patrol->GetGUID())
+                        LOG_INFO("playerbots", "[dm32] {}: the patrol {} is the route's next boss: no wait can end "
+                                 "on it - planned as its own boss fight, the trash in reach of it as his adds, and "
+                                 "his gate decides (with it {}; the commit {} is let go)",
+                                 run.runId, patrol->GetName(), judged, mob ? mob->GetName() : std::string("?"));
                     lead.patrolTarget = patrol->GetGUID();
                     Decisions().Write(run, "leader", "patrol_target", patrol->GetGUID(), patrol->GetName(),
                                                   true,
                                                   JsonObject().Str("choice", "own pull")
                                                       .Str("pull", mob ? mob->GetName() : "?")
-                                                      .Str("reason", "the combined fight is over the budget: " +
-                                                                         judged)
+                                                      .Str("reason", (patrolIsRouteBoss
+                                                                          ? "the route's next boss: no wait can end "
+                                                                            "on it, planned as his own fight [dm32]: "
+                                                                          : "the combined fight is over the budget: ")
+                                                                         + judged)
                                                       .Real("overload", overload).Real("gap", patrolGap));
-                    broken = "the patrol first: its own pull";
+                    broken = patrolIsRouteBoss ? "the route's next boss on patrol: his own fight [dm32]"
+                                               : "the patrol first: its own pull";
                     patrol = nullptr;
                 }
                 // [lead50] b99 rfc-h 109.2 s: a patrol 84.9 yd off was "taken along" (into the PullPack, exempt from
