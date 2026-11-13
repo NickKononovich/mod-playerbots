@@ -1059,6 +1059,11 @@ std::string GuildCoordinator::StatusName(Player* bot, PlayerbotAI* botAI) const
         return std::string(bot->HasPlayerFlag(PLAYER_FLAGS_GHOST) ? "ghost" : "dead") +
                (owner.empty() ? "" : " / " + owner);
     std::string text = owner.empty() ? RpgName(uint32(botAI->rpgInfo.GetStatus())) : owner;
+    // [status40] a bare IDLE says nothing: the status carries what the bot waits for ([status41] NO_DECISION when
+    // nothing was decided for it at all)
+    if (owner.empty() && botAI->rpgInfo.GetStatus() == RPG_IDLE)
+        text = std::string(botAI->rpgInfo.idleUndecided ? "NO_DECISION" : "IDLE") + "(" +
+               (botAI->rpgInfo.idleReason.empty() ? "no reason recorded" : botAI->rpgInfo.idleReason) + ")";
     if (bot->IsInCombat())
         text = "combat/" + text;
     if (!owner.empty())
@@ -3200,7 +3205,7 @@ void GuildCoordinator::UpdateOrders()
                     {
                         LOG_INFO("playerbots", "[tasks] {} {} interrupted by URGENT {}: {}", Who(row.low),
                                  coopTask ? "COOP" : RpgName(st.rpgStatus), OrderName(o.type), o.details);
-                        ai->rpgInfo.ChangeToIdle();
+                        ai->rpgInfo.ChangeToIdle("an urgent order of the guild leader takes over");
                     }
                 break;  // the first executable order decides
             }
@@ -3223,7 +3228,7 @@ void GuildCoordinator::UpdateOrders()
                 {
                     LOG_INFO("playerbots", "[tasks] {} DO_GATHER ends: its gather task {} is no longer first ({})",
                              Who(row.low), before->details, first ? OrderName(first->type) : "none");
-                    ai->rpgInfo.ChangeToIdle();
+                    ai->rpgInfo.ChangeToIdle("its gather task is no longer the guild leader's first");
                 }
         }
         // [regress10] the REPAIR call the map threads read (StartVendorRun, the grind target)
@@ -4253,7 +4258,7 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
             st.questDropped[offId] = why;
             auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data);
             if (doing && doing->questId == offId)
-                ai->rpgInfo.ChangeToIdle();
+                ai->rpgInfo.ChangeToIdle("the quest it was on was abandoned");
             WorldPacket offPacket(CMSG_QUESTLOG_REMOVE_QUEST);
             offPacket << uint8(r.slot);
             WorldPackets::Quest::QuestLogRemoveQuest offRemove(std::move(offPacket));
@@ -4295,7 +4300,7 @@ void GuildCoordinator::RevalueQuests(BotState& st, Player* p)
         st.questDropped[questId] = Acore::StringFormat("{:.0f} XP/min < route rate {:.0f} XP/min when it was dropped",
                                                        value, routeRate);
         if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data); doing && doing->questId == questId)
-            ai->rpgInfo.ChangeToIdle();
+            ai->rpgInfo.ChangeToIdle("the quest it was on was abandoned");
         WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
         packet << uint8(r.slot);
         WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));

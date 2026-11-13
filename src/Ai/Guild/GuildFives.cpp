@@ -2601,7 +2601,7 @@ void GuildCoordinator::PlanRoles()
         // now, New RPG's IDLE takes the trainer walk first (StartRoleSpec)
         if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p); ai && !p->IsInCombat() && SpecRoleNow(p) != role &&
             ai->rpgInfo.GetStatus() != RPG_IDLE && !inFive(row->low) && !NewRpgCoop::InParty(row->low))
-            ai->rpgInfo.ChangeToIdle();
+            ai->rpgInfo.ChangeToIdle("it leaves its quest for the role spec its guild leader planned");
         LOG_INFO("playerbots", "[roles59] {} L{} → {} ({}): band {}-{} has {} fives and {} {}s (target {}); {}; plan "
                  "role {}, {} points in its tree, talents now {}",
                  p->GetName(), p->GetLevel(), role, SpecName(p->getClass(), a.spec), band.lo, band.hi, band.fives,
@@ -3226,7 +3226,7 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
         // the five's order comes first: the member leaves its quest now (New RPG takes the order at IDLE)
         if (PlayerbotAI* ai = p ? GET_PLAYERBOT_AI(p) : nullptr)
             if (!IsHuman(p) && !p->IsInCombat())
-                ai->rpgInfo.ChangeToIdle();
+                ai->rpgInfo.ChangeToIdle("it joined a five, the five's order comes first");
     }
 
     // [loot13] the five's goals: what its members need here and the mobs its route must kill for them
@@ -3391,7 +3391,7 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
             if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low)))
                 if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p))
                     if (ai->rpgInfo.GetStatus() == RPG_GO_CAMP)
-                        ai->rpgInfo.ChangeToIdle();
+                        ai->rpgInfo.ChangeToIdle("its five is disbanded, back to its own plan");
         }
     }
     Decision("five " + std::to_string(fiveId) + " (" + itr->second.dungeon + ") disbanded" +
@@ -3479,7 +3479,7 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
                 st.run = false;
                 if (Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(refusedLow)))
                     if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p); ai && ai->rpgInfo.GetStatus() == RPG_GO_CAMP)
-                        ai->rpgInfo.ChangeToIdle();
+                        ai->rpgInfo.ChangeToIdle("it was left out of the five, back to its own plan");
             }
         }
         std::replace(five.members.begin(), five.members.end(), refusedLow, c.low);
@@ -3499,7 +3499,7 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
             st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
             st.fiveRefused.clear();
             if (PlayerbotAI* ai = GET_PLAYERBOT_AI(c.player); ai && !c.player->IsInCombat())
-                ai->rpgInfo.ChangeToIdle();
+                ai->rpgInfo.ChangeToIdle("it joined a five, the five's order comes first");
         }
         // [dun194] its drinks for the run, priced as the five's were at its forming
         if (c.player->GetMaxPower(POWER_MANA))
@@ -4109,7 +4109,7 @@ void GuildCoordinator::UpdateFives()
                 // its walk to the entrance ends: the five-leader takes it in now
                 if (Player* p = ObjectAccessor::FindPlayer(members.back()))
                     if (PlayerbotAI* ai = GET_PLAYERBOT_AI(p); ai && ai->rpgInfo.GetStatus() == RPG_GO_CAMP)
-                        ai->rpgInfo.ChangeToIdle();
+                        ai->rpgInfo.ChangeToIdle("its five's leader takes it into the dungeon");
             }
         }
         // a fresh instance as a player gets one: each bot resets its own instances ("Reset all instances", solo

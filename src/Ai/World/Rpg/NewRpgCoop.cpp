@@ -655,6 +655,16 @@ char const* StatusName(NewRpgStatus status)
     return status < RPG_STATUS_END ? names[status] : "?";
 }
 
+// [status40] the same name, with what an IDLE waits for ([status41] NO_DECISION: nothing was decided for it)
+std::string StatusText(NewRpgInfo const& info)
+{
+    NewRpgStatus const status = const_cast<NewRpgInfo&>(info).GetStatus();
+    if (status != RPG_IDLE)
+        return StatusName(status);
+    return std::string(info.idleUndecided ? "NO_DECISION" : "IDLE") + "(" +
+           (info.idleReason.empty() ? "no reason recorded" : info.idleReason) + ")";
+}
+
 // why the bot is not free for co-op now ("" = free): the global leader's work comes first (a call, a walk of its
 // own errand), a fight, another group
 // why the bot cannot be in a co-op party now ("" = it can). Only game facts (dead, in flight, another group, an
@@ -1743,7 +1753,7 @@ NewRpgCoop::Order PartyTickLocked(PlayerbotAI* botAI, Player* bot, Posting& me, 
     else if (!quest || quest->questId != me.partyObj.questId)
         exit = std::string(leader ? "its own plan moved on: "
                                   : "its state left the quest (the global leader, a refused walk): ") +
-               StatusName(botAI->rpgInfo.GetStatus()) + (quest ? " q" + std::to_string(quest->questId) : "");
+               StatusText(botAI->rpgInfo) + (quest ? " q" + std::to_string(quest->questId) : "");  // [status40]
     Player* lead = leader ? bot : SameMapPlayer(bot, party.leader);
     // [death402] a fight the party judge priced for the party is fought by the party: a member whose counter closed
     // or whose state moved on stays until the fight is over. b453 Kylantino L19 left Lanbuzz L19 at its "party

@@ -1018,7 +1018,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         return false;
     if (bot->GetMapId() != data->pos.GetMapId())
     {
-        info.ChangeToIdle();
+        info.ChangeToIdle("its profession errand lies on another map");
         return true;
     }
     if (data->kind == NewRpgCraft::TASK_CRAFT)  // [guild70]
@@ -1051,7 +1051,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         {
             LOG_INFO("playerbots", "[guild20] {} finds no npc {} at its spawn", bot->GetName(), data->npcEntry);
             MarkFailed(bot, data->npcEntry, id);
-            info.ChangeToIdle();
+            info.ChangeToIdle("the trainer or vendor it walked to is gone from its spawn");
             return true;
         }
         data->npc = npc->GetGUID();
@@ -1061,7 +1061,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
     if (!npc || !npc->IsAlive())
     {
         MarkFailed(bot, data->npcEntry, id);
-        info.ChangeToIdle();
+        info.ChangeToIdle("the trainer or vendor it came for is gone");
         return true;
     }
     if (!IsWithinInteractionDist(npc))
@@ -1097,7 +1097,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
                      "off (z {:.1f}, the npc's z {:.1f}), no nearer than before; the next trainer / vendor",
                      bot->GetName(), bot->GetLevel(), npc->GetName(), gap, bot->GetPositionZ(), npc->GetPositionZ());
             MarkFailed(bot, data->npcEntry, id);
-            info.ChangeToIdle();
+            info.ChangeToIdle("its walk to the trainer or vendor ended no nearer than it stood");
             return true;
         }
         data->walkGap = gap;
@@ -1107,14 +1107,14 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         if (NpcOutOfWalk(npc))  // [guild15]
         {
             MarkFailed(bot, data->npcEntry, id);
-            info.ChangeToIdle();
+            info.ChangeToIdle("no walk to the trainer or vendor it came for");
             return true;
         }
         LOG_INFO("playerbots", "[guild20] {} L{} PROFESSION_FAIL cannot walk to {} {:.1f} yd off: the walk refused "
                  "({})",
                  bot->GetName(), bot->GetLevel(), npc->GetName(), gap, refusal.empty() ? "no reason" : refusal);
         MarkFailed(bot, data->npcEntry, id);
-        info.ChangeToIdle();
+        info.ChangeToIdle("its walk to the trainer or vendor was refused");
         return true;
     }
 
@@ -1180,7 +1180,7 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
         QuestStats::TownDone(bot->GetGUID().GetCounter(), bot->GetName(), "role spec");  // [log28]
         if (failed)
             MarkFailed(bot, data->npcEntry, ROLESPEC_FAIL_ID);
-        info.ChangeToIdle();
+        info.ChangeToIdle("its role spec at the trainer is done");
         return true;
     }
     if (data->kind == NewRpgCraft::TASK_RECIPES)  // [guild70] recipes only
@@ -1278,6 +1278,6 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
             MarkFailed(bot, data->npcEntry, id);
         }
     }
-    info.ChangeToIdle();
+    info.ChangeToIdle("its errand at the trainer or vendor is done");
     return true;
 }

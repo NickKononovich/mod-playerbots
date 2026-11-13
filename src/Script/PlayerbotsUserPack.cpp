@@ -1463,12 +1463,12 @@ namespace
                 // While the user plays, the bots wait where they arrived until he says "follow".
                 botAI->ChangeStrategy("-new rpg,-rpg,-instance portal," + std::string(arrived ? "+stay" : "+follow"),
                                       BOT_STATE_NON_COMBAT);
-                botAI->rpgInfo.ChangeToIdle();
+                botAI->rpgInfo.ChangeToIdle("waits where it arrived until the user says follow");
                 return;
             }
             botAI->ChangeStrategy("-instance portal", BOT_STATE_NON_COMBAT);
             if (bot->GetGUID() != _leader)
-                botAI->rpgInfo.ChangeToIdle();
+                botAI->rpgInfo.ChangeToIdle("waits for the user pack's leader");
             // Autonomous: EnsureAutonomousStrategies puts the usual play back on the next tick.
         }
 
@@ -1669,6 +1669,9 @@ namespace
             else if (botAI && botAI->HasStrategy(RpgStrategy(), BOT_STATE_NON_COMBAT))
             {
                 out << "rpg " << RpgStatusName(botAI->rpgInfo.GetStatus());
+                if (botAI->rpgInfo.GetStatus() == RPG_IDLE)  // [status40] what it waits for, never a bare IDLE
+                    out << "(" << (botAI->rpgInfo.idleReason.empty() ? "no reason recorded"
+                                                                     : botAI->rpgInfo.idleReason) << ")";
                 if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data))
                     out << " q" << quest->questId;
             }

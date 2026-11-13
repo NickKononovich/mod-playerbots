@@ -120,6 +120,16 @@ struct NewRpgInfo
     {
     };
 
+    // [status40] why the status is IDLE: the thing it waits for, written where the status changed ("waits for its
+    // five to form", "its plan postponed q1234", "Hearthstone cooldown 412 s"). A bot is never simply "idle" - it
+    // waits for something nameable, or nothing was decided for it, and those two are not the same word.
+    std::string idleReason{"its first look has not run yet"};
+    // [status41] ... and nothing was decided at all: no wait behind it, the decision pass produced no plan. Its own
+    // status word in every line (NO_DECISION), because it is a defect to fix, not a state to display. No timer reads
+    // it: it is observed and logged, never acted on.
+    bool idleUndecided{false};
+    std::string loggedIdleReason;  // [status40] the reason last written to the log (logged again when it changes)
+
     uint32 startT{0};  // start timestamp of the current status
     uint8 lastQuestLevel{0};  // level when the abandoned-quest list was last cleared
     uint32 townCheckArea{0};  // [tasks] the area DO_QUEST last asked the global leader's town tasks in
@@ -342,7 +352,11 @@ struct NewRpgInfo
     void ChangeToDoGather();
     void ChangeToDoProfession(DoProfession const& task);
     void ChangeToRest();
-    void ChangeToIdle();
+    // [status40] every caller names what the bot now waits for (the parameter has no default on purpose: an IDLE
+    // without a reason is the bug this was written for)
+    void ChangeToIdle(std::string reason);
+    // [status41] ... and this one says nothing was decided at all: a defect, logged as NO_DECISION
+    void ChangeToNoDecision(std::string reason);
     bool CanChangeTo(NewRpgStatus status);
     void Reset();
     void SetMoveFarTo(WorldPosition pos);

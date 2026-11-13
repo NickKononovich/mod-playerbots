@@ -12,7 +12,7 @@ bool NewRpgOutdoorPvpAction::Execute(Event)
 {
     if (!bot->IsPvP())
     {
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("it is not flagged for pvp");
         return false;
     }
     if (IsWaitingForLastMove(MovementPriority::MOVEMENT_NORMAL) || !bot->IsOutdoorPvPActive())
@@ -22,7 +22,7 @@ bool NewRpgOutdoorPvpAction::Execute(Event)
     OutdoorPvP* outdoorPvP = sOutdoorPvPMgr->GetOutdoorPvPToZoneId(zoneId);
     if (!outdoorPvP || zoneId == AREA_NAGRAND)
     {
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("no outdoor pvp runs in this zone");
         return false;
     }
 
@@ -61,7 +61,7 @@ bool NewRpgOutdoorPvpAction::Execute(Event)
         objective = SelectNewObjective(capturePointMap);
         if (!objective)
         {
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("no outdoor pvp objective left to take");
             return true;
         }
         data.capturePointSpawnId = objective->m_capturePointSpawnId;
@@ -90,7 +90,7 @@ OPvPCapturePoint* NewRpgOutdoorPvpAction::SelectNewObjective(OutdoorPvP::OPvPCap
 
     if (capturePointMap.empty())
     {
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("this zone has no capture point");
         return objective;
     }
     for (auto const& [guid, point] : capturePointMap)
@@ -109,7 +109,7 @@ OPvPCapturePoint* NewRpgOutdoorPvpAction::SelectNewObjective(OutdoorPvP::OPvPCap
     if (candidateObjectives.empty())
     {
         LOG_DEBUG("playerbots", "[New RPG] Bot {} found no valid outdoor PVP objectives to capture", bot->GetName());
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("no capture point of its faction to take");
         return objective;
     }
     int randomIndex = urand(0, candidateObjectives.size() - 1);

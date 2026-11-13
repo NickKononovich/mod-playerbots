@@ -1358,7 +1358,7 @@ bool TellRpgStatusAction::Execute(Event event)
 
     if (status == RPG_IDLE)
     {
-        info.ChangeToIdle();
+        info.ChangeToIdle("its owner set it idle");
         WhisperStatusChange(owner, "IDLE");
         return true;
     }
@@ -1680,14 +1680,26 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     }
 
     // [guild7] one line per status change for the guild stats (tools/guild_stats.py "activity")
-    if (info.loggedStatus != uint8(status))
+    // [status40] ... and one line per reason behind an IDLE: the status alone says nothing, and the wait it names
+    // changes while the status does not (a five forming, a Hearthstone cooldown, a postponed plan)
+    bool const idleReasonChanged = status == RPG_IDLE && info.loggedIdleReason != info.idleReason;
+    if (info.loggedStatus != uint8(status) || idleReasonChanged)
     {
         static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC",
                                              "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER", "DO_PROFESSION"};
-        info.loggedStatus = uint8(status);
-        sGuildCoordinator.OnRpgStatus(bot, uint8(status));  // [guild30] LOOP alert
-        if (status != RPG_DO_QUEST)
-            ClaimSpot(bot, 0, WorldPosition());  // [guild90] off questing: its camp is free for other bots
+        if (info.loggedStatus != uint8(status))
+        {
+            info.loggedStatus = uint8(status);
+            sGuildCoordinator.OnRpgStatus(bot, uint8(status));  // [guild30] LOOP alert
+            if (status != RPG_DO_QUEST)
+                ClaimSpot(bot, 0, WorldPosition());  // [guild90] off questing: its camp is free for other bots
+        }
+        info.loggedIdleReason = info.idleReason;  // [status40]
+        // [status40] IDLE(<what it waits for>), [status41] NO_DECISION(<what was being decided>): never a bare word
+        std::string word = status < RPG_STATUS_END ? names[status] : "?";
+        if (status == RPG_IDLE)
+            word = std::string(info.idleUndecided ? "NO_DECISION" : "IDLE") + "(" +
+                   (info.idleReason.empty() ? "no reason recorded" : info.idleReason) + ")";
         std::string detail;
         if (auto const* quest = std::get_if<NewRpgInfo::DoQuest>(&info.data))
             detail = " q" + std::to_string(quest->questId) + (quest->quest ? " " + quest->quest->GetTitle() : "");
@@ -1697,8 +1709,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             detail = " " + std::to_string(uint32(bot->GetExactDist(camp->pos))) + " yd";
         if (info.vendorRunEntry)
             detail += " vendor: " + info.vendorRunReason;
-        LOG_INFO("playerbots", "[rpg] {} L{} {}{} t={}", bot->GetName(), bot->GetLevel(),
-                 status < RPG_STATUS_END ? names[status] : "?", detail, QuestStats::NowMs());  // [log28] t=
+        LOG_INFO("playerbots", "[rpg] {} L{} {}{} t={}", bot->GetName(), bot->GetLevel(), word, detail,
+                 QuestStats::NowMs());  // [log28] t=
         if (status == RPG_DO_PROFESSION)
             QuestStats::TownStart(bot, "DO_PROFESSION");  // [log28]
     }
@@ -1835,7 +1847,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 LOG_INFO("playerbots", "[rpg] {} L{} RECOVER reason: waits out Resurrection Sickness ({} s)",
                          bot->GetName(), bot->GetLevel(), std::max(0, sickness->GetDuration()) / IN_MILLISECONDS);
             if (status != RPG_IDLE)
-                info.ChangeToIdle();
+                info.ChangeToIdle("waits out Resurrection Sickness");
             // [sick37] it waits at a safe spot: a rise in an idle mob's reach (a wanderer's area, a patrol's beat)
             // steps out of every reach first, as the login escape does
             {
@@ -2066,13 +2078,19 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     {
         LOG_ERROR("playerbots", "[build148] {} L{} status switch: case {} but the state is {} - back to IDLE",
                   bot->GetName(), bot->GetLevel(), expected, uint32(info.GetStatus()));
-        info.ChangeToIdle();
+        info.ChangeToNoDecision(std::string("the status switch expected ") + expected + ", the state held another");
         return true;
     };
     switch (status)
     {
         case RPG_IDLE:
         {
+            // [status41] the look before this one decided nothing and left the bot with no plan: a defect, reported
+            // where it is seen. Nothing acts on it - no timer, no give-up: the look below runs as it always does
+            if (info.idleUndecided)
+                LOG_INFO("playerbots", "[status41] {} L{} comes back to the choice with nothing decided: {}",
+                         bot->GetName(), bot->GetLevel(),
+                         info.idleReason.empty() ? "no reason recorded" : info.idleReason);
             if (BindAtInnHere())  // [regress10] its home is the town it quests from ([lag322] a walk up to it)
                 return true;
             // [night305] the town's flight master whose node it has not discovered: it learns it in passing
@@ -2413,12 +2431,12 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 if (uint8 const bank = sGuildCoordinator.OnCampReached(bot))
                 {
                     if (bank == 1)
-                        info.ChangeToIdle();
+                        info.ChangeToIdle("its guild bank errand at the vault is done");
                     return true;
                 }
                 if (!info.vendorRunEntry)
                 {
-                    info.ChangeToIdle();
+                    info.ChangeToIdle("its camp walk ended, the next stop not chosen yet");
                     return true;
                 }
                 LOG_INFO("playerbots", "[rpg] {} L{} WANDER reason: vendor visit ({})", bot->GetName(),
@@ -2447,7 +2465,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                 {
                     LOG_INFO("playerbots", "[help13] {} L{} IDLE reason: its camp help party is over, the choice runs "
                              "again", bot->GetName(), bot->GetLevel());
-                    info.ChangeToIdle();
+                    info.ChangeToIdle("its camp help party is over");
                     return true;
                 }
                 if (camp.GetMapId() == bot->GetMapId() && bot->GetExactDist(camp) > sPlayerbotAIConfig.SightDistance)
@@ -2465,7 +2483,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             {
                 LOG_INFO("playerbots", "[rpg] {} L{} IDLE reason: level-up while grinding, the choice runs again",
                          bot->GetName(), bot->GetLevel());
-                info.ChangeToIdle();
+                info.ChangeToIdle("it levelled up while grinding, the choice runs again");
                 return true;
             }
             break;
@@ -2512,7 +2530,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             if (data.inFlight && !bot->IsInFlight())
             {
                 // flight arrival
-                info.ChangeToIdle();
+                info.ChangeToIdle("its flight landed, the next stop not chosen yet");
                 return true;
             }
             break;
@@ -2523,7 +2541,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             // at while nothing is to do; IDLE decides from the facts alone and the same facts give REST again
             if (info.HasStatusPersisted(statusRestDuration))
             {
-                info.ChangeToIdle();
+                info.ChangeToIdle("it rested its fill, the choice runs again");
                 return true;
             }
             break;
@@ -2548,7 +2566,7 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             {
                 LOG_INFO("playerbots", "[rpg] {} L{} IDLE reason: level-up while gathering, the choice runs again",
                          bot->GetName(), bot->GetLevel());
-                info.ChangeToIdle();
+                info.ChangeToIdle("it levelled up while gathering, the choice runs again");
                 return true;
             }
             break;
@@ -2726,7 +2744,7 @@ bool NewRpgWanderRandomAction::Execute(Event /*event*/)
     }
     LOG_INFO("playerbots", "[rpg] {} L{} grind spot cleared: no mob of its level in reach", bot->GetName(),
              bot->GetLevel());
-    botAI->rpgInfo.ChangeToIdle();
+    botAI->rpgInfo.ChangeToIdle("its grind spot is cleared of mobs of its level");
     return true;
 }
 
@@ -2767,7 +2785,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         ObjectGuid npcOrGo = NewRpgHelpers::FindQuestGiver(botAI);
         if (npcOrGo.IsEmpty())
         {
-            info.ChangeToIdle();
+            info.ChangeToIdle("no quest giver here with anything to give or take");
             return true;
         }
         data.npcOrGo = npcOrGo;
@@ -2918,7 +2936,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         }
 
         // [guild10] the job at this npc is done: on to the next purposeful target, no next random npc
-        info.ChangeToIdle();
+        info.ChangeToIdle("its errand at the npc is done");
         return true;
     }
     else
@@ -2952,7 +2970,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                 info.vendorVisitMoney = bot->GetMoney();
             }
-            info.ChangeToIdle();
+            info.ChangeToIdle("its vendor visit is over");
             return true;
         }
         // [vendor23] a walk to the npc that ended no nearer than the nearest it stood after an earlier walk of this
@@ -3025,7 +3043,7 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
                 info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
                 info.vendorVisitMoney = bot->GetMoney();
             }
-            info.ChangeToIdle();
+            info.ChangeToIdle("its vendor visit is over");
             return true;
         }
         // NPC pathing failed (random offset in a wall, mmap hiccup, etc).
@@ -3067,14 +3085,14 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
             return true;
         // reached the giver but it did not offer the quest (despawned, phased, wrong spawn)
         botAI->lowPriorityQuest.insert(questId);
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("the giver did not offer q" + std::to_string(questId));
         return true;
     }
     // [questroute] the pickup is done (the giver search took its quests): the route, built again with them, says
     // which stop comes next - not this quest's objective by default
     if (data.giverPos != WorldPosition() && questStatus != QUEST_STATUS_NONE)
     {
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("it picked up q" + std::to_string(questId) + ", the route says which stop is next");
         return true;
     }
 
@@ -3101,7 +3119,7 @@ bool NewRpgDoQuestAction::Execute(Event /*event*/)
         default:
             break;
     }
-    info.ChangeToIdle();
+    info.ChangeToNoDecision("q" + std::to_string(questId) + " is in a state it has no step for");
     return true;
 }
 
@@ -3139,7 +3157,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                  questId, why);
         NotePostpone(bot, questId, "unsupported: " + why);
         botAI->lowPriorityQuest.insert(questId);
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("its plan postponed q" + std::to_string(questId));
         return true;
     }
     // [fish14] an item only fishing gives: fished at the nearest water that yields it (the core's own fishing,
@@ -3175,7 +3193,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                      why);
             NotePostpone(bot, questId, why);
             botAI->lowPriorityQuest.insert(questId);
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("its plan postponed q" + std::to_string(questId));
             return true;
         }
         else if (_fishLogged == questId)
@@ -3240,7 +3258,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             // wait again at Stone Cairn Lake for 10 min, 3 STUCK)
             if (botAI->lowPriorityQuest.count(questId))
             {
-                botAI->rpgInfo.ChangeToIdle();
+                botAI->rpgInfo.ChangeToIdle("q" + std::to_string(questId) + " is postponed, the choice runs again");
                 return true;
             }
             if (uint32 const wait = EarliestRespawn(bot, questId))
@@ -3279,7 +3297,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
             // can't find a poi pos to go, stop doing quest for now
             // [questroute] the route leaves it out until its camps' respawn (or the next change of the log)
             InvalidateRoute(bot, questId, "no unspent objective spot");
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("q" + std::to_string(questId) + " has no unspent objective spot left");
             return true;
         }
         // [guild12] the nearest objective spot the bot can walk to (the leader's route search finds a walk)
@@ -3469,7 +3487,7 @@ bool NewRpgDoQuestAction::DoIncompleteQuest(NewRpgInfo::DoQuest& data)
                      why);
             NotePostpone(bot, questId, why);
             botAI->lowPriorityQuest.insert(questId);
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("its plan postponed q" + std::to_string(questId));
             return true;
         }
 
@@ -3696,7 +3714,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         // batches the turn-ins of the quests done on the way); else the route's next stop
         if (!RouteHandsInNow(questId))
         {
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("q" + std::to_string(questId) + " is done, its route hands it in later");
             return true;
         }
         // if quest is completed, back to poi with -1 idx to reward
@@ -3707,7 +3725,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
         {
             // can't find a poi pos to reward, stop doing quest for now
             InvalidateRoute(bot, questId, "no hand-in spot");
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("no hand-in spot for q" + std::to_string(questId));
             return false;
         }
         assert(poiInfo.size() > 0);
@@ -3746,7 +3764,7 @@ bool NewRpgDoQuestAction::DoCompletedQuest(NewRpgInfo::DoQuest& data)
                  "route is built again here",
                  bot->GetName(), bot->GetLevel(), questId);
         CurrentRoute();  // built now (its key the bot's again): the IDLE choice reads it, no second pass here
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("its route is built again on this landmass");
         return true;
     }
 
@@ -3865,7 +3883,7 @@ bool NewRpgDoQuestAction::BuyQuestVendorItem(uint32 questId)
                          bot->GetName(), bot->GetLevel(), questId, why);
                 NotePostpone(bot, questId, why);
                 botAI->lowPriorityQuest.insert(questId);
-                botAI->rpgInfo.ChangeToIdle();
+                botAI->rpgInfo.ChangeToIdle("its plan postponed q" + std::to_string(questId));
                 return true;
             }
             LOG_INFO("playerbots", "[rpg] {} L{} QUEST_BUY q{}: {} from {} ({}c)", bot->GetName(), bot->GetLevel(),
@@ -3892,7 +3910,7 @@ bool NewRpgDoQuestAction::BuyQuestVendorItem(uint32 questId)
                      bot->GetName(), bot->GetLevel(), questId, why);
             NotePostpone(bot, questId, why);
             botAI->lowPriorityQuest.insert(questId);
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("its plan postponed q" + std::to_string(questId));
             return true;
         }
         CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(npcEntry);
@@ -3918,7 +3936,7 @@ bool NewRpgDoQuestAction::HandInBlocked(NewRpgInfo::DoQuest& data)
         NotePostpone(bot, questId, why);
         botAI->lowPriorityQuest.insert(questId);
         botAI->RecordQuestAbandoned(questId, QuestAbandonReason::CannotTurnIn);
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("q" + std::to_string(questId) + " cannot be handed in");
         return true;
     };
     // the core's reward checks (Player::CanRewardQuest): the quest items, the money it takes, the daily limit
@@ -4043,7 +4061,7 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
     Creature* flightMaster = bot->FindNearestCreature(data.flightMasterEntry, INTERACTION_DISTANCE * 3);
     if (!flightMaster || !flightMaster->IsAlive())
     {
-        info.ChangeToIdle();
+        info.ChangeToIdle("its flight master is gone from its spawn");
         return true;
     }
     if (bot->GetDistance(flightMaster) > INTERACTION_DISTANCE)
@@ -4068,7 +4086,7 @@ bool NewRpgTravelFlightAction::Execute(Event /*event*/)
     {
         LOG_DEBUG("playerbots", "[New RPG] {} active taxi path {} (from {} to {}) failed", bot->GetName(),
                   flightMaster->GetEntry(), nodes.empty() ? 0 : nodes.front(), nodes.empty() ? 0 : nodes.back());
-        info.ChangeToIdle();
+        info.ChangeToIdle("its flight could not be started");
         return true;
     }
     return true;

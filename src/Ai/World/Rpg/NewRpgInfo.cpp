@@ -79,12 +79,21 @@ void NewRpgInfo::ChangeToRest()
     data = Rest{};
 }
 
-void NewRpgInfo::ChangeToIdle()
+void NewRpgInfo::ChangeToIdle(std::string reason)
 {
     startT = getMSTime();
     data = Idle{};
+    idleReason = std::move(reason);  // [status40] what it waits for, in the words of the step that stopped
+    idleUndecided = false;
     questGiver.Clear();
     ignoredQuestGivers.clear();
+}
+
+// [status41] no wait behind this one: the step produced no plan at all
+void NewRpgInfo::ChangeToNoDecision(std::string reason)
+{
+    ChangeToIdle(std::move(reason));
+    idleUndecided = true;
 }
 
 bool NewRpgInfo::CanChangeTo(NewRpgStatus)
@@ -96,6 +105,8 @@ void NewRpgInfo::Reset()
 {
     data = Idle{};
     startT = getMSTime();
+    idleReason = "its New RPG state was reset, the next look chooses";  // [status40]
+    idleUndecided = false;
     questGiver.Clear();
     ignoredQuestGivers.clear();
 }
@@ -183,7 +194,9 @@ std::string NewRpgInfo::ToString()
         }
         else if constexpr (std::is_same_v<T, Idle>)
         {
-            out << "IDLE";
+            // [status40] never a bare IDLE: what it waits for, or [status41] that nothing was decided
+            out << (idleUndecided ? "NO_DECISION" : "IDLE") << "("
+                << (idleReason.empty() ? "no reason recorded" : idleReason) << ")";
         }
         else if constexpr (std::is_same_v<T, Rest>)
         {

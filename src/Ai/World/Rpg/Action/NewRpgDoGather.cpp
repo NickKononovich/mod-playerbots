@@ -120,7 +120,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
     // farming and let the maintenance logic (sell/destroy) catch up.
     if (AI_VALUE(uint8, "bag space") > 80)
     {
-        info.ChangeToIdle();
+        info.ChangeToIdle("its bags are too full to gather into");
         return true;
     }
 
@@ -209,7 +209,7 @@ bool NewRpgDoGatherAction::Execute(Event /*event*/)
                 std::lock_guard<std::mutex> guard(unreachableLock);
                 exhausted[bot->GetGUID().GetCounter()] = {bot->GetZoneId(), bot->GetLevel()};  // [guild14]
             }
-            info.ChangeToIdle();
+            info.ChangeToIdle("nothing left to gather in this zone");
             return true;
         }
         // [guild14] a node whose walk passes mobs of orange / red con (b303 Laaral L10 among the L15-16 mobs of

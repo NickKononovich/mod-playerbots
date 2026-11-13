@@ -178,7 +178,7 @@ bool NewRpgBaseAction::SoloSafetyStep()
         {
             LOG_INFO("playerbots", "[rpg] {} L{} RECOVER after a death: risen at the graveyard, rests to full, plans "
                      "again", bot->GetName(), bot->GetLevel());
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("it rose at the graveyard, rests to full and plans again");
             return true;
         }
         WorldPosition const hub = NearestHub(bot);
@@ -861,7 +861,7 @@ bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const&
     if (status == RPG_DO_QUEST || status == RPG_GO_CAMP || status == RPG_GO_GRIND || status == RPG_DO_GATHER ||
         status == RPG_DO_PROFESSION)
     {
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("its walk was given up: " + why);
         return true;
     }
     return false;
@@ -3699,7 +3699,7 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
             // for the choices (TripRefused) until the next level, and the state change uses the tick
             NoteWalkGivenUp(bot, dest, "no walk from here gets it closer (MOVE_FAR_LOOP)");
             GiveUpWalkTargets(dest, "no walk from here gets it closer (MOVE_FAR_LOOP)");  // [grind25]
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("no walk from here gets it closer, the choice runs again");
             // [travel23] it stands where the navmesh has no polygon: no walk from here goes anywhere, every
             // destination is given up in turn. b372 Januel L12 at (0,1551,-69) on map 369, 26 yd over the tunnel floor
             // (the tram walked, not ridden: [tram23]). [navgap] user 2026-11-09: the alarm first (the gap is repaired
@@ -4374,7 +4374,7 @@ void NewRpgBaseAction::AbandonGreyQuest(uint8 slot, Quest const* quest, std::str
     GuildCoordinator::LogGrey(bot, "abandons", quest, reason);
     if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
         doing && doing->questId == quest->GetQuestId())
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("it abandoned the grey quest it was on");
     WorldPacket packet(CMSG_QUESTLOG_REMOVE_QUEST);
     packet << uint8(slot);
     WorldPackets::Quest::QuestLogRemoveQuest removeQuest(std::move(packet));
@@ -6489,7 +6489,7 @@ void NewRpgBaseAction::RecordDeath(Player* bot, Creature* killer)
     // the quest it was on goes back to the planner: its spots there are now judged dangerous
     if (PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot))
         if (botAI->rpgInfo.GetStatus() == RPG_DO_QUEST)
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("the spot it quested on is now remembered as dangerous");
     SoloSafety::OnDeath(bot);  // [guild13] back to the hub and rest to full after the revive
 }
 
@@ -10393,7 +10393,7 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
         }
         case RPG_IDLE:
         {
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle("a command set its status to idle");
             return true;
         }
         case RPG_REST:

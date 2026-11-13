@@ -444,7 +444,8 @@ bool NewRpgDoQuestAction::SettleQuestUse()
                  why);
         NotePostpone(bot, cast.questId, why);
         botAI->lowPriorityQuest.insert(cast.questId);
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle(
+            "its plan postponed q" + std::to_string(cast.questId) + ": its quest tool gave no credit");
     }
     return true;
 }
@@ -488,7 +489,8 @@ bool NewRpgDoQuestAction::UseQuestTool(uint32 questId)
                      why);
             NotePostpone(bot, questId, why);
             botAI->lowPriorityQuest.insert(questId);
-            botAI->rpgInfo.ChangeToIdle();
+            botAI->rpgInfo.ChangeToIdle(
+                "its plan postponed q" + std::to_string(questId) + ": it cannot use its quest tool");
             return true;
         }
         std::string const tool = ToolText(plan->itemId, spellId);

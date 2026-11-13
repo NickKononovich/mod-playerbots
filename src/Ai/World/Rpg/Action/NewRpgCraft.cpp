@@ -1094,7 +1094,7 @@ bool NewRpgDoProfessionAction::ExecuteCraft(NewRpgInfo::DoProfession& data)
             {
                 LOG_INFO("playerbots", "[guild70] {} finds no reagent vendor {} at its spawn", bot->GetName(),
                          data.npcEntry);
-                info.ChangeToIdle();
+                info.ChangeToIdle("its reagent vendor is gone from its spawn");
                 return true;
             }
             data.npc = npc->GetGUID();
@@ -1102,7 +1102,7 @@ bool NewRpgDoProfessionAction::ExecuteCraft(NewRpgInfo::DoProfession& data)
         Creature* npc = ObjectAccessor::GetCreature(*bot, data.npc);
         if (!npc || !npc->IsAlive())
         {
-            info.ChangeToIdle();
+            info.ChangeToIdle("the reagent vendor it walked to is gone");
             return true;
         }
         if (!IsWithinInteractionDist(npc))
@@ -1111,7 +1111,7 @@ bool NewRpgDoProfessionAction::ExecuteCraft(NewRpgInfo::DoProfession& data)
                 return true;
             if (NpcOutOfWalk(npc))  // [guild15]
             {
-                info.ChangeToIdle();
+                info.ChangeToIdle("no walk to the reagent vendor it came for");
                 return true;
             }
             return MoveRandomNear(15.0f);
@@ -1150,12 +1150,13 @@ bool NewRpgDoProfessionAction::ExecuteCraft(NewRpgInfo::DoProfession& data)
         if (uint32 const focus = NewRpgCraft::RecipeFocus(data.spellId))
             if (!NewRpgCraft::FocusNear(bot, focus))
             {
-                info.ChangeToIdle();  // the next look plans the walk to it
+                info.ChangeToIdle(
+                    "its craft needs a forge or anvil that is not in reach");  // the next look plans the walk to it
                 return true;
             }
         if (!got)
         {
-            info.ChangeToIdle();
+            info.ChangeToIdle("it could not buy the reagents its craft needs");
             return true;
         }
     }
@@ -1219,7 +1220,7 @@ bool NewRpgDoProfessionAction::ExecuteCraft(NewRpgInfo::DoProfession& data)
                 entry = {fp, {}};
             entry.second.insert(data.spellId);
         }
-        info.ChangeToIdle();
+        info.ChangeToIdle("its craft here is over");
         return true;
     }
     // [supply113] no fire here for a cooking recipe: the cook lights its own first (the next tick crafts)

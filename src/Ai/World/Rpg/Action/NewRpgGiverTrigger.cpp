@@ -709,7 +709,7 @@ bool NewRpgDoQuestAction::TriggerQuestGiver(uint32 questId)
                  questId, why);
         NotePostpone(bot, questId, "giver trigger: " + why);
         botAI->lowPriorityQuest.insert(questId);
-        botAI->rpgInfo.ChangeToIdle();
+        botAI->rpgInfo.ChangeToIdle("its plan postponed q" + std::to_string(questId) + ": the giver's trigger");
         run = GiverRun();
         return true;
     };
