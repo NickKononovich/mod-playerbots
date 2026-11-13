@@ -266,7 +266,8 @@ namespace FiveGate
         std::string name;
         uint8 level = 1;
         float health = 0.0f;
-        float melee = 0.0f;  // damage per second before the tank's armor and avoidance
+        float melee = 0.0f;     // damage per second before the tank's armor and its attack table
+        float weaponHit = 0.0f;  // [gate20] its average swing, before armor: the shield blocks a flat amount of it
         bool boss = false;
         // [dun244] the planner's spell model of its template (PullPlanning::TemplateSpellDps): its spells per second,
         // the share of the fight it casts (no swing meanwhile), its weapon specials; a caster that keeps its range
@@ -310,6 +311,7 @@ namespace FiveGate
         std::vector<uint32> patrols;               // the spawns on a waypoint patrol
         std::vector<std::vector<uint32>> calls;    // [dun191] per standing spawn: the standing spawns its call reaches
         uint8 topLevel = 0;
+        float meanHit = 0.0f;  // [gate20] the mean swing of its spawns, before armor (the shield's flat block)
     };
 
     std::map<uint32, MapSpawns> spawnsByMap;  // world thread (AutoFive, PreviewFive)
@@ -436,6 +438,8 @@ namespace FiveGate
                 s.mob.boss = credits.count(tmpl->Entry) || tmpl->rank == CREATURE_ELITE_WORLDBOSS;
                 float const weaponHit =
                     ((base + base * 1.5f) / 2.0f + float(stats->AttackPower) / 14.0f * swing) * tmpl->DamageModifier;
+                s.mob.weaponHit = weaponHit;  // [gate20]
+                data.meanHit += weaponHit;
                 PullPlanning::TemplateSpellDps(tmpl->Entry, weaponHit, s.mob.spellDps, s.mob.castShare,
                                                s.mob.weaponDps);  // [dun244]
                 s.callRadius = PullPlanning::ScriptedCallRadius(tmpl->Entry);
@@ -447,6 +451,8 @@ namespace FiveGate
             } while (result->NextRow());
         }
 
+        if (!spawns.empty())
+            data.meanHit /= float(spawns.size());  // [gate20] the mean swing of the map
         // a formation whose leader walks no path stands: its members stand with it
         for (Spawn& s : spawns)
             if (s.leader && s.leader != s.guid && !pathOf.count(s.leader))
@@ -537,20 +543,25 @@ namespace FiveGate
         return std::clamp(armor / (armor + 85.0f * lvl + 400.0f), 0.0f, 0.75f);
     }
 
-    // [order368] the gate's own tank term: the health a mob of `level` has to take off it for the drop the gate
-    // prices (its armor and its dodge / parry, as Judge reads them; a druid tank as the bear the planner plans with).
-    // Not the gate's whole verdict - the pull's mobs and the healer set that - but the one term the tank changes
-    float TankEffectiveHealth(Player* tank, uint8 level)
+    // [order368] [gate20] the tank term of the drop on this map: the health a mob of the map's top level has to take
+    // off the tank for the drop the gate prices - its armor and the whole attack table (miss, dodge, parry, the
+    // shield's flat block against the map's mean swing, crushing blows, crits), a druid tank as the bear the planner
+    // plans with. Higher is a lower drop: the carrier order of a first-clear five reads it. Not the whole verdict -
+    // the pull's mobs and the healer set that - but the one term the tank changes
+    float TankDropIndex(uint32 mapId, Player* tank, std::string* parts = nullptr)
     {
         if (!tank)
             return 0.0f;
+        MapSpawns const& map = Spawns(mapId);
         float health = float(tank->GetMaxHealth());
         float armor = float(tank->GetArmor());
         float dodge = tank->GetUnitDodgeChance();
         float parry = tank->GetUnitParryChance();
         PullPlanning::BearStatsSeen(tank, health, armor, dodge, parry);
-        float const avoid = std::clamp((dodge + parry) / 100.0f, 0.0f, 0.75f);
-        return health / std::max(0.01f, (1.0f - ArmorReduction(armor, level)) * (1.0f - avoid));
+        uint8 const level = map.topLevel ? map.topLevel : uint8(tank->GetLevel());
+        float const armorKeeps = 1.0f - ArmorReduction(armor, level);
+        float const share = PullPlanning::TemplateTakenShare(0, level, tank, map.meanHit * armorKeeps, parts);
+        return share > 0.0f ? health / (armorKeeps * share) : health * 100.0f;
     }
 
     struct Verdict
@@ -688,6 +699,7 @@ namespace FiveGate
             float sec = 0.0f;
             float deepest = 0.0f;
             float gapDrop = 0.0f;
+            std::string parts;  // [gate20] the attack table of its heaviest mob, logged
             float dropShare = 0.0f;
             float manaNeeded = 0.0f;
             float fightMana = 0.0f;
@@ -699,6 +711,19 @@ namespace FiveGate
             std::string name;
             bool boss = false;
         };
+        // [gate20] the attack table of a template against this tank, once per entry (the pulls read it again and again)
+        std::map<uint32, std::pair<float, std::string>> shareOf;
+        auto const takenShare = [&](Mob const& m, float armorKeeps) -> float
+        {
+            auto const found = shareOf.find(m.entry);
+            if (found != shareOf.end())
+                return found->second.first;
+            std::string parts;
+            float const share =
+                PullPlanning::TemplateTakenShare(m.entry, m.level, tank, m.weaponHit * armorKeeps, &parts);
+            shareOf[m.entry] = {share, m.name + ": " + parts};
+            return share;
+        };
         auto const judge = [&](std::vector<Mob>& mobs, bool boss) -> PullLoad
         {
             std::sort(mobs.begin(), mobs.end(), [](Mob const& a, Mob const& b) { return a.health < b.health; });
@@ -708,8 +733,10 @@ namespace FiveGate
             {
                 if (m.keepsRange && m.spellDps > 0.0f)
                     return m.spellDps;
-                return (m.melee * (1.0f - m.castShare) + m.weaponDps) * (1.0f - ArmorReduction(armor, m.level)) *
-                           (1.0f - avoid) +
+                // [gate20] user rule: the game's own mitigation - its armor, then the attack table the core rolls
+                // (a blocked swing loses the shield's flat value, a crushing blow lands 150 %, a crit 200 %)
+                float const armorKeeps = 1.0f - ArmorReduction(armor, m.level);
+                return (m.melee * (1.0f - m.castShare) + m.weaponDps) * armorKeeps * takenShare(m, armorKeeps) +
                        m.spellDps;
             };
             PullLoad result;
@@ -782,6 +809,15 @@ namespace FiveGate
             result.boss = boss;
             if (!mobs.empty())
                 result.name = mobs.front().name;
+            // [gate20] the drop's terms for the log: the attack table of the mob landing the most on the tank
+            float heaviest = 0.0f;
+            for (Mob const& m : mobs)
+                if (float const rate = landed(m); rate >= heaviest)
+                {
+                    heaviest = rate;
+                    if (auto const found = shareOf.find(m.entry); found != shareOf.end())
+                        result.parts = found->second.second;
+                }
             return result;
         };
 
@@ -1359,14 +1395,16 @@ namespace FiveGate
             "{} of {} pulls over capacity ([dun170] as the leader splits them, {} patrols pulled apart, each from full "
             "after a rest; [split263] {} round a corner{}; [split254] {} with crowd control, {} with the tank's "
             "defensive, {} defensives not back for a boss); worst {:.2f}: {}; group burst dps {:.0f}, healer {} "
-            "{:.0f} hps (gap {:.1f} s, {:.1f} hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{} [mob melee "
+            "{:.0f} hps (gap {:.1f} s, {:.1f} hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{}; [gate20] "
+            "drop terms: armor keeps {:.2f}, {} [mob melee "
             "and [dun244] spells from templates, the healer's rate capped by its pool; [dun233] calls for help from "
             "the fight; area damage not counted]{}{}",
             failed, judged, apart, cornerPulls, losOn ? "" : " (no: the tank has no ranged pull and pull back)",
             heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
             healer->GetName() + (healer2 ? " + " + healer2->GetName() : std::string()), heal.hps, gap,
             heal.healPerMana, tank->GetName(), tankHealth, armor, avoid, bear ? " (the bear seen in form)" : "",
-            optionsNote,
+            1.0f - ArmorReduction(armor, worst.hi ? worst.hi : uint8(tank->GetLevel())),
+            worst.parts.empty() ? std::string("-") : worst.parts, optionsNote,
             overList.empty()
                 ? std::string()
                 : Acore::StringFormat("; [dun263] over: {}{}", overList,
@@ -4274,8 +4312,8 @@ void GuildCoordinator::AutoFive()
                 }
             }
             // [order368] user point 2026-11-13: a first-clear five takes its carriers by the terms the gate prices,
-            // not by level - the tank by the gate's own drop term (TankEffectiveHealth: its armor and avoidance
-            // against a mob of the band's top), the dps by their formula dps (the group dps sets the fight length, and
+            // not by level - the tank by the gate's own drop term ([gate20] TankDropIndex: its armor and the whole
+            // attack table of a mob of the map's top level), the dps by their formula dps (the fight length, and
             // a shorter fight is less damage taken and less healing). b472 wc-n, the same Deviate Guardian x6 pull:
             // Thelengyl tank 1.09, Irorm 1.23 - the tank alone moved the load 14 %
             if (!verdict.clears && helpers)
@@ -4283,10 +4321,10 @@ void GuildCoordinator::AutoFive()
                 std::vector<FiveCandidate const*> wTanks, wHealers, wDps;
                 for (FiveCandidate const& c : walkPool)
                     (c.role == "tank" ? wTanks : c.role == "healer" ? wHealers : wDps).push_back(&c);
-                uint8 const mobLevel = uint8(d->maxLevel);
                 std::map<uint32, float> ehp, formulaDps;
+                std::map<uint32, std::string> dropParts;
                 for (FiveCandidate const* c : wTanks)
-                    ehp[c->low] = FiveGate::TankEffectiveHealth(c->player, mobLevel);
+                    ehp[c->low] = FiveGate::TankDropIndex(d->mapId, c->player, &dropParts[c->low]);
                 for (FiveCandidate const* c : wDps)
                     formulaDps[c->low] =
                         DpsEstimate::Estimate(c->player, nullptr, DpsEstimate::BuffContext::Group).burstDps;
@@ -4336,10 +4374,10 @@ void GuildCoordinator::AutoFive()
                             names += (names.empty() ? "" : "/") + c->player->GetName();
                         }
                         std::string const line = Acore::StringFormat(
-                            "tank {} (drop {:.2f}, effective hp {:.0f}, the highest of {}), healer {}, dps {} (group "
-                            "dps {:.0f}) -> load {:.2f}",
-                            t->player->GetName(), v.worstDrop, ehp[t->low], wTanks.size(), h->player->GetName(), names,
-                            groupDps, v.worstLoad);
+                            "tank {} (drop {:.2f}, takes {:.0f} hp of a mob's hits before it falls [{}], the highest "
+                            "of {}), healer {}, dps {} (group dps {:.0f}) -> load {:.2f}",
+                            t->player->GetName(), v.worstDrop, ehp[t->low], dropParts[t->low], wTanks.size(),
+                            h->player->GetName(), names, groupDps, v.worstLoad);
                         if (v.clears)
                         {
                             best368 = line + ": passes the gate";

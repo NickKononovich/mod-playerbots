@@ -86,6 +86,12 @@ namespace PullPlanning
     // seconds a lone healer is expected controlled by the mobs' control casts (dun258) by their templates (`lifeSec`
     // per entry, `members` living in the group)
     float DropOver(std::vector<std::pair<float, float>> lives, float healHps, float gapSec);
+    // [gate20] the drop's other half, shared with the five gate: the share of one armored swing the tank takes from a
+    // mob of this template (its entry for the no-crit / no-crushing-blow flags, its level for the skill difference) by
+    // the game's attack table - miss, dodge, parry, block (the shield's flat value against `armoredHit`), a crushing
+    // blow, a crit. `parts`: the table's terms, for the gate's log
+    float TemplateTakenShare(uint32 entry, uint8 mobLevel, Player* tank, float armoredHit,
+                             std::string* parts = nullptr);
     float TemplateHealerControlSec(std::vector<uint32> const& entries, std::vector<float> const& lifeSec,
                                    uint32 members, float fightSec);
 }

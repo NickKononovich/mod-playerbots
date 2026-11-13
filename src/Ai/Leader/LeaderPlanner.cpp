@@ -4327,39 +4327,29 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return mitigation;
     }
 
-    // [lead257] The share of a swing's armored damage the tank takes from this mob: the game's attack table
-    // (Unit::RollMeleeOutcomeAgainst, one roll over miss, dodge, parry, block, crushing, crit, hit in that order,
-    // each chance moved by the weapon skill against the tank's defense, 0.04 % a point; the table ends at 100 %),
-    // a blocked hit less the shield's block value, a crushing blow at 150 %, a crit at 200 % (melee crit damage).
-    // `outcome` (optional): the table, logged.
-    float MeleeTakenShare(Unit* mob, Player* tank, TankMitigation const& mitigation, float armoredHit,
-                          std::string* outcome = nullptr, float* landedShare = nullptr)
+    // [gate20] The chances of one swing's outcomes against the tank, in percent, each already moved by the weapon
+    // skill against the tank's defense; `blockValue` is the shield's flat absorb per blocked hit (the game blocks an
+    // amount, not a share)
+    struct MeleeTable
     {
-        Creature const* creature = mob->ToCreature();
-        int32 const weaponSkill = int32(mob->GetWeaponSkillValue(BASE_ATTACK, tank));
-        int32 const tankMaxSkill = int32(static_cast<Unit const*>(tank)->GetMaxSkillValueForLevel(mob));
-        float const skillBonus = 0.04f * float(weaponSkill - tankMaxSkill);  // percent
-        // the core's miss chance with the skill difference (Unit::MeleeSpellMissChance), from the plan's base miss
-        float const miss = std::max(mob->MeleeSpellMissChance(tank, BASE_ATTACK, weaponSkill - tankMaxSkill, 0) -
-                                        tank->GetUnitMissChance(BASE_ATTACK) + mitigation.miss,
-                                    0.0f);
-        float const expertise = float(mob->GetTotalAuraModifier(SPELL_AURA_MOD_EXPERTISE)) * 0.25f;
-        float const dodge = std::max(mitigation.dodge - expertise - skillBonus, 0.0f);
-        float const parry = std::max(mitigation.parry - expertise - skillBonus, 0.0f);
-        float const block = std::max(mitigation.block - skillBonus, 0.0f);
+        float miss = 0.0f;
+        float dodge = 0.0f;
+        float parry = 0.0f;
+        float block = 0.0f;
         float crush = 0.0f;
-        if (int32(mob->getLevelForTarget(tank)) >= int32(tank->getLevelForTarget(mob)) + 4 &&
-            !(creature && creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_CRUSHING_BLOWS)))
-        {
-            int32 const lacking = int32(mob->GetMaxSkillValueForLevel(tank)) -
-                                  std::min(int32(tank->GetDefenseSkillValue(mob)), tankMaxSkill);
-            if (lacking >= 15)
-                crush = float(lacking) * 2.0f - 15.0f;
-        }
-        float crit = std::max(mob->GetUnitCriticalChance(BASE_ATTACK, tank), 0.0f);
-        if (creature && creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_CRIT))
-            crit = 0.0f;
+        float crit = 0.0f;
+        float blockValue = 0.0f;
+    };
 
+    // [lead257] The share of a swing's armored damage the tank takes: the game's attack table
+    // (Unit::RollMeleeOutcomeAgainst, one roll over miss, dodge, parry, block, crushing, crit, hit in that order;
+    // the table ends at 100 %), a blocked hit less the shield's block value, a crushing blow at 150 %, a crit at
+    // 200 % (melee crit damage). `outcome` (optional): the table, logged.
+    // [gate20] one definition for the live mob (MeleeTakenShare) and the five gate's templates
+    // (TemplateTakenShare): the planner's drop term and the gate's are the same numbers
+    float MeleeTableShare(MeleeTable const& table, float armoredHit, std::string* outcome = nullptr,
+                          float* landedShare = nullptr)
+    {
         float left = 100.0f;  // the attack table: each outcome takes what the ones before it left
         auto const take = [&left](float chance)
         {
@@ -4367,23 +4357,92 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             left -= taken;
             return taken / 100.0f;
         };
-        take(miss);
-        take(dodge);
-        take(parry);
+        take(table.miss);
+        take(table.dodge);
+        take(table.parry);
         if (landedShare)  // [lead1311] the swings that land (blocked, crushing and critical ones too)
             *landedShare = left / 100.0f;
-        float const blocked = take(block);
-        float const crushing = take(crush);
-        float const crits = take(crit);
+        float const blocked = take(table.block);
+        float const crushing = take(table.crush);
+        float const crits = take(table.crit);
         float const hits = left / 100.0f;
-        float const blockKeeps = armoredHit > 0.0f ? 1.0f - std::min(mitigation.blockValue / armoredHit, 1.0f) : 1.0f;
+        float const blockKeeps = armoredHit > 0.0f ? 1.0f - std::min(table.blockValue / armoredHit, 1.0f) : 1.0f;
         float const share = hits + blocked * blockKeeps + 1.5f * crushing + 2.0f * crits;
         if (outcome)
             *outcome = Acore::StringFormat(
-                "miss {:.1f} dodge {:.1f} parry {:.1f} block {:.1f} crush {:.1f} crit "
-                "{:.1f} %: {:.2f} of a hit",
-                miss, dodge, parry, block, crush, crit, share);
+                "miss {:.1f} dodge {:.1f} parry {:.1f} block {:.1f} (keeps {:.2f} of a {:.0f} hit, value {:.0f}) "
+                "crush {:.1f} crit {:.1f} %: {:.2f} of a hit",
+                table.miss, table.dodge, table.parry, table.block, blockKeeps, armoredHit, table.blockValue,
+                table.crush, table.crit, share);
         return share;
+    }
+
+    float MeleeTakenShare(Unit* mob, Player* tank, TankMitigation const& mitigation, float armoredHit,
+                          std::string* outcome = nullptr, float* landedShare = nullptr)
+    {
+        Creature const* creature = mob->ToCreature();
+        int32 const weaponSkill = int32(mob->GetWeaponSkillValue(BASE_ATTACK, tank));
+        int32 const tankMaxSkill = int32(static_cast<Unit const*>(tank)->GetMaxSkillValueForLevel(mob));
+        float const skillBonus = 0.04f * float(weaponSkill - tankMaxSkill);  // percent
+        MeleeTable table;
+        // the core's miss chance with the skill difference (Unit::MeleeSpellMissChance), from the plan's base miss
+        table.miss = std::max(mob->MeleeSpellMissChance(tank, BASE_ATTACK, weaponSkill - tankMaxSkill, 0) -
+                                  tank->GetUnitMissChance(BASE_ATTACK) + mitigation.miss,
+                              0.0f);
+        float const expertise = float(mob->GetTotalAuraModifier(SPELL_AURA_MOD_EXPERTISE)) * 0.25f;
+        table.dodge = std::max(mitigation.dodge - expertise - skillBonus, 0.0f);
+        table.parry = std::max(mitigation.parry - expertise - skillBonus, 0.0f);
+        table.block = std::max(mitigation.block - skillBonus, 0.0f);
+        table.blockValue = mitigation.blockValue;
+        if (int32(mob->getLevelForTarget(tank)) >= int32(tank->getLevelForTarget(mob)) + 4 &&
+            !(creature && creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_CRUSHING_BLOWS)))
+        {
+            int32 const lacking = int32(mob->GetMaxSkillValueForLevel(tank)) -
+                                  std::min(int32(tank->GetDefenseSkillValue(mob)), tankMaxSkill);
+            if (lacking >= 15)
+                table.crush = float(lacking) * 2.0f - 15.0f;
+        }
+        table.crit = std::max(mob->GetUnitCriticalChance(BASE_ATTACK, tank), 0.0f);
+        if (creature && creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_NO_CRIT))
+            table.crit = 0.0f;
+        return MeleeTableShare(table, armoredHit, outcome, landedShare);
+    }
+
+    // [gate20] The same share from a creature's template alone (its entry and level), for the five gate's pulls:
+    // they are judged before the dungeon exists, so there is no live creature to read. The core's own terms for a
+    // creature attacking a player: its weapon skill and max skill are its level x 5 (Unit::GetMaxSkillValueForLevel,
+    // GetUnitMeleeSkill), the miss moves by the skill difference at 0.04 % a point over it and 0.02 % under
+    // (Unit::MeleeSpellMissChance with a player victim), dodge / parry / block by 0.04 % a point
+    // (Unit::RollMeleeOutcomeAgainst), a crushing blow comes only from a mob 4 levels over the tank whose skill is
+    // 15 or more above its defense, and the crit is a creature's 5 % plus the defense difference at 0.04 % a point
+    // (Unit::GetUnitCriticalChance, GetCritChanceFromSkillDiff). Not in a template, so left out: an expertise or
+    // hit / crit aura on the mob, a dual-wield miss penalty, and the tank's resilience
+    float TemplateTakenShare(uint32 entry, uint8 mobLevel, Player* tank, float armoredHit, std::string* parts)
+    {
+        if (!tank || !mobLevel)
+            return 1.0f;
+        TankMitigation const mitigation = GetTankMitigation(tank);
+        CreatureTemplate const* tmpl = entry ? sObjectMgr->GetCreatureTemplate(entry) : nullptr;
+        int32 const weaponSkill = int32(mobLevel) * 5;
+        int32 const tankMaxSkill = int32(tank->GetLevel()) * 5;
+        float const skillBonus = 0.04f * float(weaponSkill - tankMaxSkill);  // percent
+        int32 const skillShort = tankMaxSkill - weaponSkill;  // MeleeSpellMissChance's own `diff`
+        int32 const defense = int32(tank->GetDefenseSkillValue());
+        MeleeTable table;
+        table.miss = std::clamp(mitigation.miss + (skillShort > 0 ? float(skillShort) * 0.04f
+                                                                  : float(skillShort) * 0.02f),
+                                0.0f, 60.0f);
+        table.dodge = std::max(mitigation.dodge - skillBonus, 0.0f);
+        table.parry = std::max(mitigation.parry - skillBonus, 0.0f);
+        table.block = std::max(mitigation.block - skillBonus, 0.0f);
+        table.blockValue = mitigation.blockValue;
+        if (int32(mobLevel) >= int32(tank->GetLevel()) + 4 &&
+            !(tmpl && (tmpl->flags_extra & CREATURE_FLAG_EXTRA_NO_CRUSHING_BLOWS)))
+            if (int32 const lacking = weaponSkill - std::min(defense, tankMaxSkill); lacking >= 15)
+                table.crush = float(lacking) * 2.0f - 15.0f;
+        if (!(tmpl && (tmpl->flags_extra & CREATURE_FLAG_EXTRA_NO_CRIT)))
+            table.crit = std::max(5.0f + float(weaponSkill - defense) * 0.04f, 0.0f);
+        return MeleeTableShare(table, armoredHit, parts);
     }
 
     // [lead257] The armor reduction of this mob's melee on the tank: the core's (Unit::CalcArmorReducedDamage, with
