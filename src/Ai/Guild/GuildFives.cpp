@@ -15,6 +15,7 @@
 
 #include "BuyAction.h"  // [supply27] CountBagFood, RESTOCK_*
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <cmath>
@@ -56,7 +57,10 @@
 #include "LeaderDungeonRun.h"  // [guild70] the five-leader runs the dungeon (no test harness)
 #include "RouteTargets.h"  // [loot13] the route's goal hooks
 #include "LeaderOrders.h"  // [run80] Leader::LedBot
+#include "Creature.h"             // [pack1] CREATURE_Z_ATTACK_RANGE, the core's aggro height gate
+#include "LeaderPackModel.h"      // [pack1] the one pull-pack model, shared with the leader's planner
 #include "LeaderPlannerShared.h"  // [dun172] the bear the planner plans with
+#include "PullActions.h"          // [pack1] FightHold: how far the melee stand from the fight spot
 #include "LeaderTankSaves.h"      // [split254] the tank's defensives, as the planner prices them
 #include "RtiValue.h"             // [split254] the members' crowd control
 #include "World.h"
@@ -331,6 +335,18 @@ namespace FiveGate
         float callRadius = 0.0f;         // [dun191] its scripted call for help (the planner's ScriptedCallRadius)
         bool keepsRange = false;         // [dun205] it stands and casts where it is (the planner's KeepsRange)
         float detection = 0.0f;          // [dun205] its template's detection range (Creature::GetAggroRange's base)
+        // [pack1] what the one pack model (LeaderPackModel.h) asks of a mob, read from its template instead of a
+        // live creature: its model's sizes, its run speed, whether it is rooted or flies (the core's aggro Z gate),
+        // whether it flees for assistance, whether it answers a call (Creature::CanAssistTo's own gates), and the
+        // spawns its own script calls in
+        float size = 0.0f;  // WorldObject::GetObjectSize: its model's combat reach, scaled
+        float runSpeed = 0.0f;
+        bool rooted = false;
+        bool canFly = false;
+        bool flees = false;
+        bool respondsToCall = false;
+        bool mayAssist = false;
+        std::vector<uint32> adds;
     };
 
     // [dun170] what one pull of a spawn brings as the core brings it: its formation (CreatureGroup: every member
@@ -341,12 +357,11 @@ namespace FiveGate
     {
         std::vector<Spawn> spawns;
         std::vector<std::vector<uint32>> formation;  // per spawn: the other members of its formation
-        std::vector<std::vector<uint32>> assists;    // per standing spawn: the standing spawns its call reaches
         std::vector<std::vector<std::vector<uint32>>> pathNear;  // per patrol, per path point: the standing spawns
                                                                  // its call reaches there
-        std::vector<std::vector<uint32>> pathAny;  // per patrol: the standing spawns whose call reaches it somewhere
         std::vector<uint32> patrols;               // the spawns on a waypoint patrol
-        std::vector<std::vector<uint32>> calls;    // [dun191] per standing spawn: the standing spawns its call reaches
+        std::map<uint32, uint32> indexOfGuid;      // [pack1] creature.guid -> its spawn (a script's called adds)
+        std::vector<uint32> all;                   // [pack1] every spawn, the pack model's candidate list
         uint8 topLevel = 0;
         float meanHit = 0.0f;  // [gate20] the mean swing of its spawns, before armor (the shield's flat block)
     };
@@ -471,6 +486,21 @@ namespace FiveGate
                 s.callRadius = PullPlanning::ScriptedCallRadius(tmpl->Entry);
                 s.keepsRange = s.mob.keepsRange;
                 s.detection = tmpl->detection_range;
+                // [pack1] the template's reading of what the one pack model asks of a live creature
+                CreatureModel const* model = tmpl->GetModelByIdx(0);
+                CreatureModelInfo const* info =
+                    model ? sObjectMgr->GetCreatureModelInfo(model->CreatureDisplayID) : nullptr;
+                float const scale = model && model->DisplayScale > 0.0f ? model->DisplayScale : 1.0f;
+                s.size = info ? info->combat_reach * scale : DEFAULT_WORLD_OBJECT_SIZE * scale;
+                s.runSpeed = std::max(tmpl->speed_run * baseMoveSpeed[MOVE_RUN], 0.1f);
+                s.rooted = tmpl->Movement.IsRooted();
+                s.canFly = tmpl->Movement.IsFlightAllowed();
+                s.flees = PullPlanning::FleesForHelpEntry(tmpl->Entry);
+                s.respondsToCall = ft->FactionRespondsToCallForHelp();
+                s.mayAssist = !(tmpl->flags_extra & (CREATURE_FLAG_EXTRA_CIVILIAN |
+                                                     CREATURE_FLAG_EXTRA_IGNORE_ALL_ASSISTANCE_CALLS)) &&
+                              !(tmpl->unit_flags & UNIT_FLAG_IMMUNE_TO_NPC);
+                PullPlanning::ScriptedAddSpawns(tmpl->Entry, s.guid, s.adds);
                 data.topLevel = std::max(data.topLevel, s.mob.level);
                 spawns.push_back(std::move(s));
             } while (result->NextRow());
@@ -484,13 +514,21 @@ namespace FiveGate
                 s.path.clear();
 
         // [dun191] the planner's social radius (CollectPack: the core's assistance radius plus the fight's drift)
+        // [pack1] what one pull brings is no longer precomputed here: the one pack model (LeaderPackModel.h) counts
+        // it per pull, over these spawns. Only the formations (the core engages a group as one) and a patrol's
+        // reach along its path stay - the latter is the gate's own route question (where a patrol can be taken on
+        // its own), not a term of the pack.
         float const radius = PullPlanning::PackSocialRadius();
         size_t const n = spawns.size();
         data.formation.assign(n, {});
-        data.assists.assign(n, {});
-        data.calls.assign(n, {});
         data.pathNear.assign(n, {});
-        data.pathAny.assign(n, {});
+        data.all.reserve(n);
+        for (size_t i = 0; i < n; ++i)
+        {
+            data.all.push_back(uint32(i));
+            data.indexOfGuid[spawns[i].guid] = uint32(i);
+        }
+
         for (size_t i = 0; i < n; ++i)
         {
             Spawn const& s = spawns[i];
@@ -499,26 +537,12 @@ namespace FiveGate
                 if (i == j)
                     continue;
                 Spawn const& o = spawns[j];
-                bool const formation = (s.leader && (o.leader == s.leader || o.guid == s.leader)) ||
-                                       (o.leader && o.leader == s.guid);
-                if (formation)
+                if ((s.leader && (o.leader == s.leader || o.guid == s.leader)) || (o.leader && o.leader == s.guid))
                     data.formation[i].push_back(uint32(j));
-                else if (!Patrols(s) && !Patrols(o) && Answers(s, s.pos, o, o.pos, radius))
-                    data.assists[i].push_back(uint32(j));
-                // [dun191] its scripted call for help (Creature::CallForHelp: CanAssistTo within the radius, no
-                // assistance flag read) from where it stands - the planner's "call for help" of the pull
-                if (!formation && s.callRadius > 0.0f && !Patrols(s) && !Patrols(o))
-                {
-                    Spawn caller = s;
-                    caller.noAssist = false;
-                    if (Answers(caller, s.pos, o, o.pos, s.callRadius))
-                        data.calls[i].push_back(uint32(j));
-                }
             }
             if (!Patrols(s))
                 continue;
             data.patrols.push_back(uint32(i));
-            std::set<uint32> any;
             for (G3D::Vector3 const& point : s.path)
             {
                 std::vector<uint32>& inReach = data.pathNear[i].emplace_back();
@@ -531,11 +555,8 @@ namespace FiveGate
                         continue;
                     if (Answers(s, point, o, o.pos, radius))
                         inReach.push_back(uint32(j));
-                    if (Answers(o, o.pos, s, point, radius))
-                        any.insert(uint32(j));
                 }
             }
-            data.pathAny[i].assign(any.begin(), any.end());
         }
         size_t callers = 0;
         for (Spawn const& s : spawns)
@@ -550,6 +571,358 @@ namespace FiveGate
     }
 
     uint8 TopLevel(uint32 mapId) { return Spawns(mapId).topLevel; }
+
+    // [pack1] The five gate's reading of the one pull-pack model (LeaderPackModel.h): the map's spawn rows, before a
+    // five is anywhere near the instance. Every term the model asks for - the formations, the engage call, what the
+    // spot and the walk in wake, the scripted calls for help, the assistance chain with its hops, the fight a mob
+    // that keeps its range draws, the flee-for-assistance race - is answered from the `creature` table and the
+    // templates, so the gate and the leader count the same pull. Two terms need a live world and get the closest
+    // spawn reading instead, named on the gate's own why line:
+    //  - Sight: there is no instance to ray-cast against. The static vmap tiles load with an instance's grids, and
+    //    loading them from the world thread would race every map thread reading the same shared tree, so sight is
+    //    read as the core's own aggro height gate (Creature::CanStartAttack: CREATURE_Z_ATTACK_RANGE over the two
+    //    object sizes). The floors of a room are separated; a wall inside one floor is not, so a link the geometry
+    //    blocks is still counted - the gate stays on the safe side of the planner there.
+    //  - The walk round a corner (the planner's navmesh legs, [b34_est]) and the Scarlet Monastery chapel's scripted
+    //    call: no navmesh query and no live script run here, so neither adds to a gate count. The straight walk in
+    //    is counted (OnPullPath).
+    class SpawnPackWorld
+    {
+    public:
+        using Mob = uint32;
+
+        // the core's aggro radius terms (Creature::GetAggroRange) and its Z gate
+        static constexpr int32 AGGRO_MIN_LEVEL_DIFF = -25;  // the 45 yd cap's level difference
+        static constexpr float AGGRO_MIN_RANGE = 5.0f;      // a mob's aggro radius is never below combat range
+
+        SpawnPackWorld(MapSpawns const& map, std::vector<char> const& left, std::vector<char> const& apart,
+                       G3D::Vector3 const& from, bool const& walked, uint8 lowestLevel, float memberSize,
+                       float groupDps)
+            : _map(map), _left(left), _apart(apart), _from(from), _walked(walked), _lowestLevel(lowestLevel),
+              _memberSize(memberSize), _groupDps(std::max(groupDps, 1.0f)),
+              _aggroRate(sWorld->getRate(RATE_CREATURE_AGGRO)),
+              _assistRadius(sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS)),
+              _fleeRadius(sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS))
+        {
+        }
+
+        // one pull: the spawns crowd control holds out of it, and a fresh count by cause for its why line
+        void Take(std::vector<char> const* held)
+        {
+            _held = held;
+            _counts.fill(0);
+        }
+
+        static Mob NoMob() { return std::numeric_limits<Mob>::max(); }
+
+        std::vector<Mob> const& Possible() const { return _map.all; }
+        bool IsIdle(Mob mob) const { return _left[mob] != 0; }
+        bool IsHeld(Mob mob) const { return _held && (*_held)[mob] != 0; }
+        // the spawn loader already left out every creature the five cannot fight ([sfk246])
+        bool IsSealed(Mob /*mob*/) const { return false; }
+        bool IsBoss(Mob mob) const { return _map.spawns[mob].mob.boss; }
+        bool Chains(Mob /*mob*/) const { return true; }  // every row of `creature` is a creature
+
+        Position At(Mob mob) const
+        {
+            G3D::Vector3 const& at = _map.spawns[mob].pos;
+            return Position(at.x, at.y, at.z);
+        }
+
+        float Dist(Mob mob, Position const& at) const { return At(mob).GetExactDist(at); }
+        float Dist(Mob mob, Mob other) const { return At(mob).GetExactDist(At(other)); }
+
+        // WorldObject::IsWithinDistInMap: both object sizes count toward the radius
+        bool WithinDist(Mob mob, Mob other, float dist) const
+        {
+            return Dist(mob, other) <= dist + _map.spawns[mob].size + _map.spawns[other].size;
+        }
+
+        float Size(Mob mob) const { return _map.spawns[mob].size; }
+
+        // the sight stand-in: the core's aggro height gate against a member standing at `at` (the eye height a real
+        // line of sight would add is no part of a height gate)
+        bool Sees(Mob mob, Position const& at, float /*eye*/) const
+        {
+            return HeightGate(_map.spawns[mob], _map.spawns[mob].pos.z, at.GetPositionZ(), _memberSize);
+        }
+
+        bool SeesMob(Mob from, Mob to) const
+        {
+            return HeightGate(_map.spawns[to], _map.spawns[to].pos.z, _map.spawns[from].pos.z,
+                              _map.spawns[from].size);
+        }
+
+        bool CallsOnEngage(Mob mob) const { return !_map.spawns[mob].noAssist; }
+
+        // Creature::CanAssistTo with its faction check: the same faction exactly, a faction template that answers a
+        // call for help, and none of the flags that keep a mob out of one (civilian, immune to NPCs, ignores every
+        // assistance call). Its sight of the enemy is the height gate above, where the model asks for it.
+        bool CanAssist(Mob helper, Mob caller) const
+        {
+            Spawn const& h = _map.spawns[helper];
+            return h.mayAssist && h.respondsToCall && h.faction == _map.spawns[caller].faction;
+        }
+
+        // [lead1331] with a wanderer on either side, the gap between the wander discs; otherwise the gap between the
+        // two mobs (Unit::GetDistance: both object sizes off the straight line)
+        void SocialLink(Mob mob, Mob target, float /*radius*/, float& gap, bool& sees) const
+        {
+            Spawn const& m = _map.spawns[mob];
+            Spawn const& t = _map.spawns[target];
+            float const straight = Dist(mob, target);
+            gap = m.wander > 0.0f || t.wander > 0.0f ? std::max(0.0f, straight - m.wander - t.wander)
+                                                     : std::max(0.0f, straight - m.size - t.size);
+            sees = HeightGate(m, m.pos.z, t.pos.z, t.size);
+        }
+
+        void Formation(Mob mob, std::vector<Mob>& out) const { out = _map.formation[mob]; }
+
+        // the leader walks in from the pull before this one: a mob whose aggro reach comes within that straight walk
+        // is pulled on the way and comes back with the pack (the planner's IsOnPullPath)
+        bool OnPullPath(Position const& to, Mob mob) const
+        {
+            if (!_walked)
+                return false;  // the run's first pull: the gate knows no walk in to it
+
+            Spawn const& s = _map.spawns[mob];
+            float const reach = AggroReach(mob);
+            if (reach <= 0.0f)
+                return false;
+
+            float const dx = to.GetPositionX() - _from.x;
+            float const dy = to.GetPositionY() - _from.y;
+            float const lengthSq = dx * dx + dy * dy;
+            float t = 0.0f;
+            if (lengthSq > 0.0f)
+                t = std::clamp(((s.pos.x - _from.x) * dx + (s.pos.y - _from.y) * dy) / lengthSq, 0.0f, 1.0f);
+
+            float const px = _from.x + dx * t;
+            float const py = _from.y + dy * t;
+            float const pz = _from.z + (to.GetPositionZ() - _from.z) * t;
+            return At(mob).GetExactDist(px, py, pz) <= reach + s.wander &&
+                   HeightGate(s, s.pos.z, pz, _memberSize);
+        }
+
+        // An idle mob whose aggro range reaches the spot the five fights at, a wanderer whose disc brings it there,
+        // or a patrol whose beat walks into it. A patrol the leader takes apart (it has a point on its beat out of
+        // every standing mob's call) is pulled on its own and joins no other pull.
+        bool ReachesSpot(Mob mob, Position const& spot, float drift) const
+        {
+            Spawn const& s = _map.spawns[mob];
+            float const reach = AggroReach(mob);
+            if (reach <= 0.0f)
+                return false;
+
+            if (Patrols(s))
+            {
+                if (_apart[mob])
+                    return false;
+
+                // The planner's forecast of where a patrol walks next needs a live walker. The gate has the whole
+                // beat and the planner's own test for a walk it cannot forecast (PathCrossesSpot): a leg of the beat
+                // within the mob's aggro reach of the spot and at the spot's height, with the spawn no further than
+                // CAREFUL_PATROL_RANGE - the beat alone counted a patrol into every pull anywhere along it.
+                if (Dist(mob, spot) > PullPlanning::CAREFUL_PATROL_RANGE ||
+                    std::fabs(s.pos.z - spot.GetPositionZ()) > PullPlanning::PULL_PATH_HEIGHT)
+                    return false;
+
+                for (size_t p = 0; p < s.path.size(); ++p)
+                {
+                    G3D::Vector3 const& from = s.path[p];
+                    G3D::Vector3 const& to = s.path[(p + 1) % s.path.size()];
+                    if (std::fabs(from.z - spot.GetPositionZ()) > PullPlanning::PULL_PATH_HEIGHT &&
+                        std::fabs(to.z - spot.GetPositionZ()) > PullPlanning::PULL_PATH_HEIGHT)
+                        continue;
+
+                    if (LegDistance2d(spot, from, to) <= reach)
+                        return true;
+                }
+
+                return false;
+            }
+
+            float const extra = s.wander > 0.0f ? s.wander : drift;
+            return Dist(mob, spot) <= reach + extra && HeightGate(s, s.pos.z, spot.GetPositionZ(), _memberSize);
+        }
+
+        PullPlanning::PackWhyKind SpotKind(Mob mob) const
+        {
+            Spawn const& s = _map.spawns[mob];
+            if (Patrols(s))
+                return PullPlanning::PackWhyKind::SpotPatrol;
+
+            return s.wander > 0.0f ? PullPlanning::PackWhyKind::SpotWander : PullPlanning::PackWhyKind::SpotAggro;
+        }
+
+        bool KeepsRange(Mob mob) const { return _map.spawns[mob].keepsRange; }
+        bool IsRooted(Mob mob) const { return _map.spawns[mob].rooted; }
+
+        // a patrol whose beat has not brought it to the fight yet engages (and calls) where it arrives, which the
+        // spot test above counts; not from the pack it passes on the way
+        bool Arriving(Mob mob, Position const& kill) const
+        {
+            Spawn const& s = _map.spawns[mob];
+            if (!Patrols(s) || s.mob.boss)
+                return false;
+
+            return Dist(mob, kill) > AggroReach(mob) + PullPlanning::CAREFUL_PATROL_MARGIN;
+        }
+
+        // the planner's split mode (a group crossing the pack now) is a live question: the gate judges the dungeon
+        // as the leader pulls it, one pull at a time, with nothing walking past
+        bool WalksBy(Mob /*mob*/, Position const& /*spot*/) const { return false; }
+        bool Crossing(Mob /*bringer*/, Position const& /*anchor*/, Mob /*mob*/, float /*radius*/) const
+        {
+            return false;
+        }
+        bool WouldCross(Position const& /*from*/, Mob /*mob*/, float /*radius*/) const { return false; }
+        void NoteCross(Position const& /*from*/, Mob /*mob*/, float /*radius*/) const {}
+
+        float AssistRadius() const { return _assistRadius; }
+        float FleeRadius() const { return _fleeRadius; }
+        float CallRadius(Mob mob) const { return _map.spawns[mob].callRadius; }
+
+        // Creature::CallForHelp of `caller` fighting at `from`: a friendly idle mob within the radius that sees the
+        // fight. The call comes late in the fight, so a wanderer counts anywhere within its disc.
+        bool CalledForHelp(Mob caller, Position const& from, float radius, Mob mob) const
+        {
+            if (radius <= 0.0f)
+                return false;
+
+            Spawn const& m = _map.spawns[mob];
+            Spawn const& c = _map.spawns[caller];
+            if (Dist(mob, from) > radius + m.wander || !m.mayAssist)
+                return false;
+
+            bool friendly = m.faction == c.faction;
+            if (!friendly)
+            {
+                FactionTemplateEntry const* a = sFactionTemplateStore.LookupEntry(m.faction);
+                FactionTemplateEntry const* b = sFactionTemplateStore.LookupEntry(c.faction);
+                friendly = a && b && a->IsFriendlyTo(*b);
+            }
+
+            return friendly && HeightGate(m, m.pos.z, from.GetPositionZ(), _memberSize);
+        }
+
+        void ScriptedAdds(Mob mob, std::vector<Mob>& out) const
+        {
+            for (uint32 guid : _map.spawns[mob].adds)
+            {
+                auto const found = _map.indexOfGuid.find(guid);
+                if (found != _map.indexOfGuid.end() && IsIdle(found->second))
+                    out.push_back(found->second);
+            }
+        }
+
+        bool WalkLegs(Mob /*mob*/, Position const& /*kill*/,
+                      std::vector<std::pair<G3D::Vector3, G3D::Vector3>>& /*legs*/) const
+        {
+            return false;  // no navmesh query here: see the note above the class
+        }
+
+        bool ScriptedCall(Position const& /*spot*/, std::vector<Mob> const& /*pack*/, Mob& /*lead*/,
+                          std::vector<Mob>& /*called*/) const
+        {
+            return false;  // no live script here: see the note above the class
+        }
+
+        bool FleesForHelp(Mob mob) const { return _map.spawns[mob].flees; }
+        float MaxHealth(Mob mob) const { return _map.spawns[mob].mob.health; }
+        float RunSpeed(Mob mob) const { return _map.spawns[mob].runSpeed; }
+        float GroupDps() const { return _groupDps; }
+        float MeleeEdge() const { return FightHold::RADIUS + FightHold::MELEE_SLACK; }
+        bool RecordsWhy() const { return true; }
+
+        void NoteWhy(Mob /*mob*/, Mob /*source*/, PullPlanning::PackWhyKind kind, float /*distance*/,
+                     float /*radius*/, uint8 step, float /*reachSec*/, float /*killSec*/)
+        {
+            if (step)
+                ++_counts[size_t(PullPlanning::PackWhyKind::FleeHelper)];
+            else if (size_t(kind) < _counts.size())
+                ++_counts[size_t(kind)];
+        }
+
+        void NoteSkipped(Mob /*helper*/, Mob /*fleer*/, PullPlanning::PackWhyKind /*kind*/, float /*distance*/,
+                         float /*radius*/, uint8 /*step*/, float /*reachSec*/, float /*killSec*/)
+        {
+        }
+
+        void Done(std::vector<Mob> const& /*pack*/, std::vector<uint8> const& /*hops*/) const {}
+
+        // the pull's count by cause, in the planner's own words ("[pack why]"): the one line that says why the gate
+        // priced this pack the way it did
+        std::string WhyLine() const
+        {
+            static char const* const groups[] = {"start", "social", "pull path", "aggro reaches spot",
+                                                 "wanders to spot", "patrol walks in", "kill spot path", "kill spot",
+                                                 "formation", "assist", "call for help", "draws fight",
+                                                 "scripted add", "scripted call", "flee chain", "flee miss",
+                                                 "patrol forecast"};
+            static_assert(std::size(groups) == size_t(PullPlanning::PackWhyKind::PatrolAdded) + 1);
+            std::string line;
+            for (size_t i = 0; i < std::size(groups); ++i)
+            {
+                if (_counts[i])
+                    line += Acore::StringFormat("{}{} {}", line.empty() ? "" : " + ", _counts[i], groups[i]);
+            }
+
+            return line;
+        }
+
+    private:
+        // the planner's SegmentDistance2d: how close one leg of a beat comes to the spot
+        static float LegDistance2d(Position const& spot, G3D::Vector3 const& from, G3D::Vector3 const& to)
+        {
+            float const dx = to.x - from.x;
+            float const dy = to.y - from.y;
+            float const lengthSq = dx * dx + dy * dy;
+            float t = 0.0f;
+            if (lengthSq > 0.0f)
+                t = std::clamp(((spot.GetPositionX() - from.x) * dx + (spot.GetPositionY() - from.y) * dy) / lengthSq,
+                               0.0f, 1.0f);
+
+            return spot.GetExactDist2d(from.x + dx * t, from.y + dy * t);
+        }
+
+        // MovementAction::PassesAggroZGate: a mob never reaches what stands more than CREATURE_Z_ATTACK_RANGE above
+        // or below it, over the two object sizes (its combat distance is 0 for a spawn no script has changed)
+        static bool HeightGate(Spawn const& s, float fromZ, float toZ, float otherSize)
+        {
+            if (s.canFly)
+                return true;
+
+            return std::max(0.0f, std::fabs(fromZ - toZ) - (s.size + otherSize)) <= float(CREATURE_Z_ATTACK_RANGE);
+        }
+
+        // Creature::GetAggroRange against the five's lowest member, plus the combat distance and the fight's drift
+        // (MovementAction::IdleAggroReach)
+        float AggroReach(Mob mob) const
+        {
+            Spawn const& s = _map.spawns[mob];
+            if (_aggroRate <= 0.0f || s.detection < 1.0f)
+                return 0.0f;
+
+            int32 levelDiff = std::max(int32(_lowestLevel) - int32(s.mob.level), AGGRO_MIN_LEVEL_DIFF);
+            float radius = std::min(s.detection - float(levelDiff), MAX_AGGRO_RADIUS);
+            return std::max(radius, AGGRO_MIN_RANGE) * _aggroRate + PullPlanning::CAREFUL_AGGRO_MARGIN;
+        }
+
+        MapSpawns const& _map;
+        std::vector<char> const& _left;
+        std::vector<char> const& _apart;
+        G3D::Vector3 const& _from;
+        bool const& _walked;
+        std::vector<char> const* _held = nullptr;
+        uint8 _lowestLevel;
+        float _memberSize;
+        float _groupDps;
+        float _aggroRate;
+        float _assistRadius;
+        float _fleeRadius;
+        std::array<uint16, size_t(PullPlanning::PackWhyKind::PatrolAdded) + 1> _counts = {};
+    };
 
     // The core's spell miss chance against a mob `diff` levels above the caster (3.3.5: 4 / 5 / 6 %, then +11 % per
     // level), as a factor on the damage of a mob of its own level (DpsEstimate's target)
@@ -939,7 +1312,8 @@ namespace FiveGate
             return result;
         };
 
-        // [dun170] the leader's pulls: what pulling spawn `i` brings of the spawns still standing (`left`)
+        // [pack1] [dun170] the leader's pulls: what pulling spawn `i` brings of the spawns still standing (`left`),
+        // counted by the one pack model (LeaderPackModel.h) the leader's planner counts with, over these spawn rows
         MapSpawns const& map = Spawns(mapId);
         std::vector<Spawn> const& spawns = map.spawns;
         size_t const n = spawns.size();
@@ -953,143 +1327,40 @@ namespace FiveGate
             return false;
         };
         std::vector<char> apartNow(n, 0);
-        std::vector<uint32> in(n, 0);  // the pull a spawn was last added to
-        uint32 stamp = 0;
-        // [dun205] a caster that keeps its range is fought where it stands: the members on it there wake what reaches
-        // them - each standing mob by the core's aggro radius (Creature::GetAggroRange: its detection range, a yard
-        // for each level it stands above the five's lowest member, at most 45, times the server's aggro rate), its
-        // wander radius on top - with that mob's own engage call (the planner's "reaches #N, which keeps its range")
-        std::vector<std::vector<uint32>> draws(n);
-        {
-            uint8 lowest = 255;
-            for (Damage const& d : dps)
-                lowest = std::min(lowest, d.level);
-            float const aggroRate = sWorld->getRate(RATE_CREATURE_AGGRO);
-            for (size_t i = 0; i < n; ++i)
-            {
-                if (!spawns[i].keepsRange || Patrols(spawns[i]))
-                    continue;
-                for (size_t j = 0; j < n; ++j)
-                {
-                    if (j == i || Patrols(spawns[j]))
-                        continue;
-                    float const aggro =
-                        std::clamp(spawns[j].detection + float(int32(spawns[j].mob.level) - int32(lowest)), 0.0f,
-                                   45.0f) *
-                        aggroRate;
-                    if (aggro > 0.0f && (spawns[j].pos - spawns[i].pos).length() <= aggro + spawns[j].wander)
-                        draws[i].push_back(uint32(j));
-                }
-            }
-        }
-        // [split263] `withDraws` false: the planner's pull round a corner (LosPull) - the casters walk out to the tank,
-        // nobody stands where they cast, so nothing joins by their stand ([dun205]); `held`: spawns crowd control holds
-        // before the pull - never in it, no call or stand of theirs, only their formation engages with them
+        uint8 lowestLevel = 255;
+        for (Damage const& d : dps)
+            lowestLevel = std::min(lowestLevel, d.level);
+        SpawnPackWorld world(map, left, apartNow, lastPull, walked, lowestLevel, tank->GetObjectSize(), groupDps);
+        // [split263] `withDraws` false: the planner's pull round a corner (LosPull) - the casters walk out to the
+        // tank, nobody stands where they cast, so nothing joins by their stand; `held`: spawns crowd control holds
+        // before the pull - never in it, and no call, stand or formation of theirs comes either, as the planner's
+        // count leaves a held mob out whole
         auto const pullOf = [&](size_t i, std::vector<uint32>& members, bool withDraws = true,
                                 std::vector<char> const* held = nullptr)
         {
-            members.clear();
-            ++stamp;
-            auto const add = [&](uint32 j)
+            // Where the pull is fought: every spawn where it stands, a patrol at the point of its beat that brings
+            // the fewest of the standing spawns - the leader waits it out or pulls it first there ([dun170]).
+            G3D::Vector3 at = spawns[i].pos;
+            size_t fewest = std::numeric_limits<size_t>::max();
+            for (size_t p = 0; p < map.pathNear[i].size() && p < spawns[i].path.size(); ++p)
             {
-                if (!left[j] || in[j] == stamp)
-                    return;
-                in[j] = stamp;
-                if (!held || !(*held)[j])
+                std::vector<uint32> const& inReach = map.pathNear[i][p];
+                size_t const count =
+                    size_t(std::count_if(inReach.begin(), inReach.end(), [&](uint32 j) { return left[j]; }));
+                if (count < fewest)
                 {
-                    members.push_back(j);
-                    return;
-                }
-                for (uint32 f : map.formation[j])
-                    if (left[f] && in[f] != stamp && !(*held)[f])
-                    {
-                        in[f] = stamp;
-                        members.push_back(f);
-                    }
-            };
-            // a mob that joins with its own engage call (Creature::CallAssistance); a held one never engages
-            auto const join = [&](uint32 j)
-            {
-                add(j);
-                if (!held || !(*held)[j])
-                    for (uint32 helped : map.assists[j])
-                        add(helped);
-            };
-            add(uint32(i));
-            if (Patrols(spawns[i]))
-            {
-                // taken where its walk brings the fewest
-                if (!apartNow[i])
-                {
-                    std::vector<uint32> const* fewest = nullptr;
-                    size_t fewestCount = std::numeric_limits<size_t>::max();
-                    for (std::vector<uint32> const& inReach : map.pathNear[i])
-                    {
-                        size_t const count =
-                            size_t(std::count_if(inReach.begin(), inReach.end(), [&](uint32 j) { return left[j]; }));
-                        if (count < fewestCount)
-                        {
-                            fewestCount = count;
-                            fewest = &inReach;
-                        }
-                    }
-                    if (fewest)
-                        for (uint32 j : *fewest)
-                            add(j);
+                    fewest = count;
+                    at = spawns[i].path[p];
                 }
             }
-            else
-            {
-                for (uint32 j : map.assists[i])
-                    add(j);
-                // a patrol that cannot be waited out joins every pull its path reaches
-                for (uint32 p : map.patrols)
-                    if (left[p] && !apartNow[p] &&
-                        std::binary_search(map.pathAny[p].begin(), map.pathAny[p].end(), uint32(i)))
-                        add(p);
-            }
-            // every member's formation engages with it; [dun191] a member's scripted call for help brings what it
-            // reaches, and each helper's own engage call where it stands (the planner's chain of the pull)
-            for (size_t k = 0; k < members.size(); ++k)
-            {
-                uint32 const member = members[k];
-                for (uint32 j : map.formation[member])
-                    add(j);
-                // [dun233] a scripted call for help goes out where its caller fights (SmartAI: Deviate Guardian
-                // 3637 "Between 0-15% Health - Call for help" 40 yd): the pull's own spawn and a caster that keeps its
-                // range fight where they stand, every other member comes to the pull's spawn - its call reaches from
-                // there, not from its own spawn. Judged from each member's spawn, the calls chained round the map:
-                // b443 / b444 wc-n's "boss pull Druid of the Fang x13 (18059 hp)" was Lady Anacondra's five
-                // Guardians chained by four calls to the Guardians, Druids and Ravagers 60-130 yd off; called from
-                // the fight, her pull is herself and her five Guardians (8900 hp)
-                Spawn const& caller = spawns[member];
-                if (member == i || caller.keepsRange || Patrols(caller) || Patrols(spawns[i]))
-                {
-                    for (uint32 j : map.calls[member])
-                        if (left[j] && in[j] != stamp)
-                            join(uint32(j));
-                }
-                else if (caller.callRadius > 0.0f)
-                {
-                    Spawn calling = caller;
-                    calling.noAssist = false;
-                    calling.wander = 0.0f;  // it calls from the fight, not from its wander disc
-                    for (size_t j = 0; j < n; ++j)
-                        if (j != member && left[j] && in[j] != stamp && !Patrols(spawns[j]) &&
-                            std::find(map.formation[member].begin(), map.formation[member].end(), uint32(j)) ==
-                                map.formation[member].end() &&
-                            Answers(calling, spawns[i].pos, spawns[j], spawns[j].pos, caller.callRadius))
-                            join(uint32(j));
-                }
-                if (!withDraws)
-                    continue;
-                for (uint32 j : draws[member])  // [dun205]
-                    if (left[j] && in[j] != stamp)
-                        join(uint32(j));
-            }
-        };
 
+            Position const spot(at.x, at.y, at.z);
+            world.Take(held);
+            PullPlanning::CollectPackOn(world, uint32(i), spot, members, PullPlanning::FightHere(spot), true,
+                                        !withDraws);
+        };
         PullLoad worst;
+        std::string worstPack;  // [pack1] the worst pull's count by cause, as the pack model counted it
         uint32 judged = 0, failed = 0, apart = 0;
         std::vector<uint32> bestMembers;
         std::vector<Mob> mobs;
@@ -1101,6 +1372,7 @@ namespace FiveGate
         // per gate (wc-n 132 rounds x 258 spawns), at each five look on the world thread
         std::vector<std::vector<uint32>> pulls(n);
         std::vector<PullLoad> loads(n);
+        std::vector<std::string> whyOf(n);  // [pack1] each kept pull's count by cause, for the worst pull's line
         std::vector<char> kept(n, 0);
         std::vector<std::vector<uint32>> inPulls(n);  // spawn -> the kept pulls it is a member of (stale entries ok)
         std::vector<char> apartBefore(n, 0);
@@ -1324,6 +1596,7 @@ namespace FiveGate
                 {
                     std::vector<uint32>& members = pulls[i];
                     pullOf(i, members);
+                    whyOf[i] = world.WhyLine();  // [pack1]
                     mobs.clear();
                     bool boss = false;
                     for (uint32 j : members)
@@ -1515,7 +1788,10 @@ namespace FiveGate
                                                     spawns[start].guid);
             }
             if (best.load > worst.load)
+            {
                 worst = best;
+                worstPack = whyOf[start];  // [pack1] why the pull as it came was counted the way it was
+            }
             // [dun194] the pull's mana for each mana user; [dun230] less what the walk to it regenerates of the
             // previous pull's (its full rate past the five-second rule after that fight)
             G3D::Vector3 const pullPos = spawns[bestMembers.front()].pos;
@@ -1550,7 +1826,7 @@ namespace FiveGate
             worst.mobs ? Acore::StringFormat(
                              "{}{} x{} (L{}-{}, {:.0f} hp): fight {:.0f} s, tank drop {:.0f} + one gap {:.0f} of "
                              "{:.0f} hp ({:.2f}{}), [dun261] healer controlled {:.1f} s, heal mana {:.0f} of {:.0f} "
-                             "({:.0f} pool + regen) ({:.2f}){}{}",
+                             "({:.0f} pool + regen) ({:.2f}){}{}{}",
                              worst.boss ? "boss pull " : "", worst.name, worst.mobs, worst.lo, worst.hi, worst.health,
                              worst.sec, worst.deepest, worst.gapDrop, tankHealth, worst.dropShare,
                              // [dm5] [dm7] the drop binds a pack of trash only: the number stays in the log either way
@@ -1568,7 +1844,15 @@ namespace FiveGate
                              // [dm3] the stream in the count: which summoner, at what rate, how many over the fight
                              worst.summons.empty() ? std::string()
                                                    : "; [dm3] summons in the x" + std::to_string(worst.mobs) + ": " +
-                                                         worst.summons)
+                                                         worst.summons,
+                             // [pack1] the pack as the one pack model counted it, in the planner's own words
+                             // ("[pack why]"): the pull as it came, before the leader's options below. Sight is read
+                             // as the core's aggro height gate and a corner pull brings no walk calls - no instance
+                             // and no navmesh here (SpawnPackWorld)
+                             worstPack.empty()
+                                 ? std::string()
+                                 : "; [pack1] pack why: " + worstPack +
+                                       " [sight by the aggro height gate, no walk calls round a corner]")
                        : std::string("-");
         out.clears = failed == 0 && judged > 0;
         out.worstLoad = worst.load;  // [assist22]

@@ -86,6 +86,8 @@ namespace PullPlanning
     constexpr float PACK_SOCIAL_RADIUS = 12.0f;  // idle mobs this close to the target join the fight
     constexpr float PACK_SOCIAL_DRIFT = 2.0f;    // CollectPack: the assistance radius plus the fight's drift
     constexpr float CAREFUL_PATROL_MARGIN = 10.0f;  // a patrol this far beyond its aggro range walks in
+    constexpr float CAREFUL_PATROL_RANGE = 40.0f;   // the timeless test, for a patrol whose walk cannot be forecast
+    constexpr float PULL_PATH_HEIGHT = 5.0f;        // a mob this far above/below the way in is on another floor
     // [b47_plan] A pull back is fought round its kill spot, not on it: the tank's fight hold keeps 15 yd round it, the
     // ranged step out of melee and the healer walks for sight. An idle static mob whose aggro reach comes within this
     // much more of the kill spot joins (the measured fight spread). brd-h 20261026-093620-brd-h-5B-6 pull 54: "one

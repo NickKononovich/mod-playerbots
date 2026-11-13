@@ -60,6 +60,11 @@ namespace PullPlanning
     float ScriptedCallRadius(uint32 entry);
     // [dun205] a template that stands and casts once it fights (the planner's KeepsRange by entry)
     bool KeepsRangeEntry(uint32 entry);
+    // [pack1] the same scripts read by template and spawn id, for the five gate's spawn reading of the one pack
+    // model: the entry's SmartAI flees for assistance at low health (the planner's FleesForHelp), and the spawns one
+    // spawn's own script calls in during its fight (the planner's ScriptedAdds), appended to `out`
+    bool FleesForHelpEntry(uint32 entry);
+    void ScriptedAddSpawns(uint32 entry, uint32 spawnId, std::vector<uint32>& out);
     // [dm3] the summons an entry's SmartAI brings into a fight, the planner's own reading (ScriptedHelpOf, [lead260]),
     // so the five gate and the planner price one stream: `once` come once a fight, `perSec` is the repeating in-combat
     // timer's rate per second of the fight, `summonEntry` is what comes while it is a single kind (0: unknown or

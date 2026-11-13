@@ -240,7 +240,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     constexpr float PACK_COMFORT_MOBS_MAX = 7.0f;
     constexpr float PACK_EXTRA_MOB_DANGER = 0.15f;     // the whole pack is this much harder per mob over comfort
     constexpr uint32 PACK_MAX_HELPERS = 4;
-    constexpr float PULL_PATH_HEIGHT = 5.0f;           // a mob this far above/below the way in is on another floor
+    // [pack1] PULL_PATH_HEIGHT: the one pack model's, LeaderPackModel.h
     // Tempo (heroic or max-level 5-man): the healer's mana is a budget of packs, and the tank chains pulls while
     // that budget lasts instead of waiting for everyone to drink up.
     // [lead258] the healer mana kept back for a pull that goes wrong is the config's low mana line (LowMana)
@@ -328,7 +328,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // tank carries the single (TankCarries) and the healer sees its fight; else the CAREFUL_STALL_MS path.
     constexpr uint32 CAREFUL_READY_ONE_MS = 3 * IN_MILLISECONDS;
     // A patrol this close whose path runs through the spot walks into the fight before it is over.
-    constexpr float CAREFUL_PATROL_RANGE = 40.0f;  // the timeless test, for a patrol whose walk cannot be forecast
+    // [pack1] CAREFUL_PATROL_RANGE: the one pack model's, LeaderPackModel.h
     // Patrol forecast (expert rule: a pull waits for the patrol, or takes it first). A patrol's walker (the creature
     // that walks the path: itself, or the formation leader it follows) is followed along its waypoints from where it
     // is now, one sample a second; a pack counts a patrol that comes within its aggro reach of the spot in the next
@@ -2560,6 +2560,50 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                     info && !info->IsPositive())
                     return true;
         return false;
+    }
+
+    // [pack1] the planner's FleesForHelp by template, for the five gate's spawn reading of the one pack model
+    bool FleesForHelpEntry(uint32 entry)
+    {
+        thread_local std::unordered_map<uint32, bool> cache;
+        auto const found = cache.find(entry);
+        if (found != cache.end())
+            return found->second;
+
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        bool flees = false;
+        if (tmpl && tmpl->AIName == "SmartAI")
+        {
+            for (SmartScriptHolder const& holder :
+                 sSmartScriptMgr->GetScript(int32(entry), SMART_SCRIPT_TYPE_CREATURE))
+            {
+                if (holder.action.type == SMART_ACTION_FLEE_FOR_ASSIST)
+                {
+                    flees = true;
+                    break;
+                }
+            }
+        }
+
+        cache.emplace(entry, flees);
+        return flees;
+    }
+
+    // [pack1] the planner's ScriptedAdds by template and spawn id (the spawns `spawnId`'s own script calls in)
+    void ScriptedAddSpawns(uint32 entry, uint32 spawnId, std::vector<uint32>& out)
+    {
+        CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(entry);
+        if (!spawnId || !tmpl || tmpl->AIName != "SmartAI")
+            return;
+
+        for (SmartScriptHolder const& holder :
+             sSmartScriptMgr->GetScript(-int32(spawnId), SMART_SCRIPT_TYPE_CREATURE))
+        {
+            if (holder.GetActionType() == SMART_ACTION_SET_DATA &&
+                holder.GetTargetType() == SMART_TARGET_CREATURE_GUID && holder.target.unitGUID.dbGuid &&
+                std::find(out.begin(), out.end(), uint32(holder.target.unitGUID.dbGuid)) == out.end())
+                out.push_back(uint32(holder.target.unitGUID.dbGuid));
+        }
     }
 
     // [dun191] the planner's pack grouping for the five gate (templates, no live creature): the social radius
