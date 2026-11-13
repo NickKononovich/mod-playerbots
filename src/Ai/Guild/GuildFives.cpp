@@ -908,10 +908,16 @@ namespace FiveGate
             // foundry pull's 9639 hp and its heaviest hitter, so that term alone made the gate refuse a pull the
             // leader takes.
             // `dropShare` is still computed and logged: for a boss pull it is what the trash model would have said
+            // [dm6] the rate term is every pack's, not only a boss's: CarefulOverload computes terms.peak for every
+            // estimate of more than one mob (the healers' best rate together against the pack's average damage per
+            // second), and JudgeMobs adds it for a lone boss on top. The gate had it on neither, so it was laxer
+            // than the leader on trash - it admitted fives the leader then could not carry, which is how b474's
+            // dm-n five4 came to stand in the Deadmines foundry at all.
             result.landedPerSec = t > 0.0f ? intake / t : 0.0f;
-            result.peakShare = boss && heal.hps > 0.0f ? result.landedPerSec / heal.hps : 0.0f;
+            result.peakShare =
+                heal.hps > 0.0f && (mobs.size() > 1 || boss) ? result.landedPerSec / heal.hps : 0.0f;
             result.load = boss ? std::max(result.manaShare, result.peakShare)
-                               : std::max(result.dropShare, result.manaShare);
+                               : std::max({result.dropShare, result.manaShare, result.peakShare});
             result.sec = t;
             result.deepest = deepest;
             result.mobs = mobs.size();
@@ -1547,11 +1553,12 @@ namespace FiveGate
                              // [dm5] a boss is not held to the trash pulls' drop model: the number stays in the log
                              worst.boss ? ", [dm5] stands down: a boss" : "", worst.controlSec,
                              worst.manaNeeded, worst.fightMana, healMana, worst.manaShare,
-                             // [dm5] his own terms instead: what the pack lands per second against the healers' rate
-                             worst.boss ? Acore::StringFormat(", [dm5] lands {:.0f}/s against the healers' {:.0f}/s "
-                                                              "({:.2f})", worst.landedPerSec, heal.hps,
-                                                              worst.peakShare)
-                                        : std::string(),
+                             // [dm5] [dm6] the rate term, every pack's: what it lands per second against the
+                             // healers' rate together (a lone trash mob has none, as the planner has none for it)
+                             worst.peakShare > 0.0f
+                                 ? Acore::StringFormat(", [dm5] lands {:.0f}/s against the healers' {:.0f}/s "
+                                                       "({:.2f})", worst.landedPerSec, heal.hps, worst.peakShare)
+                                 : std::string(),
                              // [dm3] the stream in the count: which summoner, at what rate, how many over the fight
                              worst.summons.empty() ? std::string()
                                                    : "; [dm3] summons in the x" + std::to_string(worst.mobs) + ": " +
@@ -1571,8 +1578,9 @@ namespace FiveGate
             "{:.0f} hps (gap {:.1f} s, {:.1f} hp/mana), tank {} {:.0f} hp, armor {:.0f}, avoid {:.2f}{}; [gate20] "
             "drop terms: armor keeps {:.2f}, {} [mob melee "
             "and [dun244] spells from templates, the healer's rate capped by its pool; [dun233] calls for help from "
-            "the fight; [dm3] the scripts' summons over the fight; [dm5] a boss pull judged on the healers' mana and "
-            "rate, not this drop; area damage not counted]{}{}",
+            "the fight; [dm3] the scripts' summons over the fight; [dm6] every pack of more than one judged on the "
+            "healers' rate too, [dm5] a boss on that and their mana alone, not this drop; area damage not "
+            "counted]{}{}",
             failed, judged, apart, peeledPulls, cornerPulls,
             losOn ? "" : " (no: the tank has no ranged pull and pull back)",
             heldPulls, savedPulls, savesBroken, worst.load, worstWhy, groupDps,
