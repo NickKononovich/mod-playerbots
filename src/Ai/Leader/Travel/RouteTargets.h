@@ -28,6 +28,7 @@
 #include "RouteLegs.h"
 #include "RoutePatrol.h"
 #include "RouteSearch.h"
+#include <functional>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -1059,6 +1060,13 @@ namespace Leader::Travel
     // [sm-wing-done] true while a living boss of the run stands in the wing of Party::entranceIdx (its nearest
     // entrance); nextWing: the entrance of the lowest-order boss left in another wing (-1: none).
     bool WingBossesLeft(LeaderGroup& group, Map* map, Player* leader, int32& nextWing);
+
+    // [loot13] the mobs the group's owner wants killed for their drops (a guild five's goals): member guid low ->
+    // creature entry -> its needed drops; the sink hears the route's state of each ("killed" / its path verdict).
+    // Set once at startup (world thread) by the owner; map threads call them
+    using RouteGoalProvider = std::function<std::map<uint32, std::string>(uint32 memberLow)>;
+    using RouteGoalSink = std::function<void(uint32 memberLow, uint32 entry, std::string const& state)>;
+    void SetRouteGoalHooks(RouteGoalProvider provider, RouteGoalSink sink);
 }
 
 #endif

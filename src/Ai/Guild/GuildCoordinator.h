@@ -794,7 +794,36 @@ private:
                           std::string* error);
     void FiveOrder(BotState const& st, uint32 low, Player* p, std::vector<GuildOrder>& orders) const;  // lock_ held
     void RecordRun(GuildFive const& five, GuildFiveReport const& report);
-    std::string FiveLootOutcome(GuildFive const& five);  // [loot14]  // lock_ held
+    std::string FiveLootOutcome(GuildFive const& five);  // [loot14]
+
+public:
+    // [loot13] one source mob of the five's goals: its needed drops, their expected gain a kill, whether the route
+    // takes it and why; `state`: killed / the route's last verdict on it
+    struct FiveGoalMob
+    {
+        std::string name;
+        std::string items;
+        std::string why;
+        std::string state;
+        float value{0.0f};
+        float health{0.0f};
+        bool boss{false};
+        bool taken{false};
+    };
+    struct FiveGoals
+    {
+        std::map<uint32, FiveGoalMob> mobs;  // creature entry -> goal
+    };
+    static FiveGoals GoalsFor(DungeonOption const& d, std::vector<Player*> const& members);
+    // [loot13] map thread: the goal mobs (entry -> its needed drops) the route of this member's five must kill
+    std::map<uint32, std::string> FiveGoalMobs(uint32 memberLow) const;
+    // [loot13] map thread: the route's state of a goal mob ("killed" stays)
+    void NoteGoalState(uint32 memberLow, uint32 entry, std::string const& state);
+
+private:
+    mutable std::mutex goalLock_;                     // [loot13] goals_ / goalFiveOf_ (map threads read them)
+    std::unordered_map<uint32, uint32> goalFiveOf_;   // member -> its five with goals
+    std::map<uint32, FiveGoals> goals_;               // five id -> its goals  // lock_ held
     // [guild60] hooks of the order flow (lock_ held): the member's walk to the entrance (true: `step` set), its
     // arrival there (OnCampReached), its legitimate wait there, the tab lines, a five's loot (map thread, no lock)
     bool FiveStep(Player* bot, BotState& st, GuildRunStep& step);

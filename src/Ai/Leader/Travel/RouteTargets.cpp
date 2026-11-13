@@ -117,6 +117,18 @@
 
 namespace Leader::Travel
 {
+    namespace
+    {
+        RouteGoalProvider routeGoalProvider;  // [loot13]
+        RouteGoalSink routeGoalSink;
+    }
+
+    void SetRouteGoalHooks(RouteGoalProvider provider, RouteGoalSink sink)
+    {
+        routeGoalProvider = std::move(provider);
+        routeGoalSink = std::move(sink);
+    }
+
     using namespace Leader::Fight;
     using namespace Leader::Knowledge;
     using Leader::Dungeon::PULL_ABORT_HOLD_MS;
@@ -3326,6 +3338,11 @@ namespace Leader::Travel
             RouteCheck check;
         };
         std::unordered_map<ObjectGuid, RouteWhy> routeWhy;
+        // [loot13] user rule 2026-11-13: the five's goal mobs (a needed drop with a real chance) are the route's own
+        // targets wherever they stand - b456-b467: Deviate Faerie Dragon (Firebelcher 50 %, 8 members' need) was
+        // "off the route" in all but one of ~90 Wailing Caverns runs
+        std::map<uint32, std::string> const goalMobs =
+            routeGoalProvider ? routeGoalProvider(leader->GetGUID().GetCounter()) : std::map<uint32, std::string>();
         auto const routeNeeds = [&](Creature* creature) -> char const*
         {
             RouteWhy& why = routeWhy[creature->GetGUID()];
@@ -3357,6 +3374,8 @@ namespace Leader::Travel
                 // key not before the standing next boss (gateKeyHeld): then only the ordinary rules below.
                 if (requiredEntries.count(creature->GetEntry()) && !gateKeyHeld(creature))
                     return "required";
+                if (goalMobs.count(creature->GetEntry()))
+                    return "a goal drop of the group [loot13]";
                 if (blocks)
                     return "blocks route";
                 // In water (swimming or under water at its spot): only what blocks the way, never "nice to have".
@@ -3804,6 +3823,22 @@ namespace Leader::Travel
         }
         // Nothing on the route and no boss to walk to (not targetable yet, held back): the old full clear. Not while
         // the next boss lies over a link: with nothing chosen the group walks to it (WalkToLink), as before.
+        // [loot13] each goal mob's state for its owner: killed, or the route's verdict on it
+        if (!goalMobs.empty() && routeGoalSink)
+            for (Creature* creature : candidates)
+                if (creature && goalMobs.count(creature->GetEntry()))
+                {
+                    std::string state = "killed";
+                    if (creature->IsAlive())
+                    {
+                        auto const verdict = group.Route().pathVerdicts.find(creature->GetGUID());
+                        state = verdict == group.Route().pathVerdicts.end()
+                                    ? "alive, not a route candidate (filtered before the route rules)"
+                                    : std::string(verdict->second.on ? "alive, on the route: " : "alive, off: ") +
+                                          verdict->second.why;
+                    }
+                    routeGoalSink(leader->GetGUID().GetCounter(), creature->GetEntry(), state);
+                }
         bool const routeFallback = hostiles.empty() && !viaLink && !viaStarterLink;
         // [dun250] b458 wc-n five6-4: the Disciple of Naralex died at 3554 s (escort_end "died", rearmed); the
         // fallback cleared trash across the caverns until 3965 s, he respawned at 300 s at his spawn and the run hit
@@ -4164,7 +4199,8 @@ namespace Leader::Travel
                                               [&](auto const& entry)
                                               {
                                                   Creature* creature = entry.second;
-                                                  if (!behindGuids.count(creature->GetGUID()) || creature->IsInCombat())
+                                                  if (!behindGuids.count(creature->GetGUID()) || creature->IsInCombat() ||
+                                                      goalMobs.count(creature->GetEntry()))  // [loot13]
                                                       return false;
                                                   group.Route().pathVerdicts[creature->GetGUID()] = {
                                                       false, "behind the group (the plan's cleared walk)", -1.0f,

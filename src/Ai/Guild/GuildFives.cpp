@@ -53,6 +53,7 @@
 #include "StatsWeightCalculator.h"
 #include "TestHarnessData.h"
 #include "LeaderDungeonRun.h"  // [guild70] the five-leader runs the dungeon (no test harness)
+#include "RouteTargets.h"  // [loot13] the route's goal hooks
 #include "LeaderOrders.h"  // [run80] Leader::LedBot
 #include "LeaderPlannerShared.h"  // [dun172] the bear the planner plans with
 #include "LeaderTankSaves.h"      // [split254] the tank's defensives, as the planner prices them
@@ -1620,6 +1621,10 @@ void GuildCoordinator::LoadRuns()
     }
     LOG_INFO("playerbots", "[guild60] completion table: {} runs", runs_.size());
 
+    // [loot13] the five's goal mobs for its route (the leader's route rules), and their states back
+    Leader::Travel::SetRouteGoalHooks([](uint32 low) { return sGuildCoordinator.FiveGoalMobs(low); },
+                                      [](uint32 low, uint32 entry, std::string const& state)
+                                      { sGuildCoordinator.NoteGoalState(low, entry, state); });
     // [guild70] the five-leader's end of its run (Ai/Leader/Dungeon/LeaderDungeonRun.h) comes back here
     Leader::Dungeon::DungeonRuns::Instance().SetEndHook(
         [](uint32 fiveId, Leader::Dungeon::FiveRunReport const& r)
@@ -1698,19 +1703,97 @@ std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, 
     return "";
 }
 
+// [loot13] user rule 2026-11-13 «обязательно сопоставить цели в данже и маршрут»: the five's goals are its members'
+// needed drops (GuildGear's judge, no copy owned) with their sources and chances. A boss is the route's anyway; another
+// source (a rare, a wanderer) the route takes when its expected gain per run (chance x the slot gain, the best member's)
+// over its kill effort (its template health) is at least the bosses' own: the detour earns what the run earns
+GuildCoordinator::FiveGoals GuildCoordinator::GoalsFor(DungeonOption const& d, std::vector<Player*> const& members)
+{
+    FiveGoals goals;
+    struct Need
+    {
+        float gain{0.0f};
+        std::vector<std::string> who;
+    };
+    std::map<uint32, Need> needs;  // item -> the best gain and the members who need it
+    for (Player* p : members)
+    {
+        if (!p || !GET_PLAYERBOT_AI(p))
+            continue;
+        for (uint32 itemId : d.bossItems)
+        {
+            ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
+            if (!proto || proto->RequiredLevel > d.maxLevel || !d.itemSources.count(itemId))
+                continue;
+            float const gain = UpgradeGain(p, proto, 0);
+            if (gain <= 0.0f)
+                continue;
+            Need& need = needs[itemId];
+            need.gain = std::max(need.gain, gain);
+            need.who.push_back(p->GetName());
+        }
+    }
+    float bossValue = 0.0f;
+    float bossHealth = 0.0f;
+    std::set<uint32> bossSeen;
+    for (auto const& [itemId, need] : needs)
+        for (auto const& [entry, chance] : d.itemSources.at(itemId))
+        {
+            FiveGoalMob& mob = goals.mobs[entry];
+            CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(entry);
+            if (!info)
+                continue;
+            mob.name = info->Name;
+            mob.boss = (info->flags_extra & CREATURE_FLAG_EXTRA_DUNGEON_BOSS) || info->rank == CREATURE_ELITE_WORLDBOSS;
+            if (CreatureBaseStats const* stats = sObjectMgr->GetCreatureBaseStats(info->maxlevel, info->unit_class))
+                mob.health = float(stats->GenerateHealth(info));
+            mob.value += chance * need.gain;
+            std::string who;
+            for (std::string const& name : need.who)
+                who += (who.empty() ? "" : ", ") + name;
+            mob.items += Acore::StringFormat("{}{} {:.0f} % for {}", mob.items.empty() ? "" : "; ",
+                                             ItemName(itemId), chance * 100.0f, who);
+            if (mob.boss)
+            {
+                bossValue += chance * need.gain;
+                if (bossSeen.insert(entry).second)
+                    bossHealth += mob.health;
+            }
+        }
+    for (auto& [entry, mob] : goals.mobs)
+    {
+        if (mob.boss)
+        {
+            mob.taken = true;
+            mob.why = "a boss of the route";
+            continue;
+        }
+        // nothing else to earn on the route: the source is the run's whole value
+        float const perHealth = mob.health > 0.0f ? mob.value / mob.health : mob.value;
+        float const routePerHealth = bossHealth > 0.0f ? bossValue / bossHealth : 0.0f;
+        mob.taken = mob.value > 0.0f && perHealth >= routePerHealth;
+        mob.why = Acore::StringFormat("expected gain {:.3f} a kill over {:.0f} health ({:.2e} a point) {} the bosses' "
+                                      "{:.2e}", mob.value, mob.health, perHealth, mob.taken ? ">=" : "<",
+                                      routePerHealth);
+    }
+    return goals;
+}
+
 // [need106] user rule 2026-11-10: a member goes (again) while the dungeon's boss loot holds an upgrade it needs - its
 // own spec's "item upgrade" (EQUIP / REPLACE) with a gain over its worn piece, one it does not own already (won or
-// bought: in its bags or bank)
+// bought: in its bags or bank). [loot13] only from a source the route takes (GoalsFor), said with its chance
 std::string GuildCoordinator::NeededUpgrade(DungeonOption const& d, Player* p) const
 {
-    for (uint32 itemId : d.bossItems)
-    {
-        ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
-        if (proto && proto->RequiredLevel <= d.maxLevel && !p->HasItemCount(itemId, 1, true) &&
-            UpgradeGain(p, proto, 0) > 0.0f)
-            return proto->Name1;
-    }
-    return "";
+    FiveGoals const goals = GoalsFor(d, {p});
+    std::string best;
+    float bestValue = 0.0f;
+    for (auto const& [entry, mob] : goals.mobs)
+        if (mob.taken && mob.value > bestValue)
+        {
+            bestValue = mob.value;
+            best = mob.items.substr(0, mob.items.find(" for ")) + " (" + mob.name + ")";
+        }
+    return best;
 }
 
 // [roles108] the dungeon's mobs still give the member experience: below the level cap, and its highest spawn (the
@@ -2500,6 +2583,24 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
         if (PlayerbotAI* ai = p ? GET_PLAYERBOT_AI(p) : nullptr)
             if (!IsHuman(p) && !p->IsInCombat())
                 ai->rpgInfo.ChangeToIdle();
+    }
+
+    // [loot13] the five's goals: what its members need here and the mobs its route must kill for them
+    {
+        std::vector<Player*> players;
+        for (uint32 low : members)
+            players.push_back(ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low)));
+        FiveGoals goals = GoalsFor(d, players);
+        std::string text;
+        for (auto const& [entry, mob] : goals.mobs)
+            text += Acore::StringFormat("{}{} ({}{}): {}", text.empty() ? "" : " | ", mob.name, mob.boss ? "boss" : "",
+                                        mob.boss ? "" : (mob.taken ? "the route takes it: " : "not taken: ") + mob.why,
+                                        mob.items);
+        LOG_INFO("playerbots", "[loot13] five {} ({}) goals: {}", five.id, d.contentKey, text.empty() ? "none" : text);
+        std::lock_guard<std::mutex> goalGuard(goalLock_);
+        for (uint32 low : members)
+            goalFiveOf_[low] = five.id;
+        goals_[five.id] = std::move(goals);
     }
 
     // [dun194] the drinks each mana user carries for this run, priced by the five gate's pulls: its mana need over
@@ -4197,6 +4298,32 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
                  report.reason.substr(at, end == std::string::npos ? std::string::npos : end - at);
     }
     std::string const lootLine = FiveLootOutcome(five);  // [loot14]
+    {
+        // [loot13] each goal mob the route had to kill: killed, or why not (its last state the route saw)
+        std::lock_guard<std::mutex> goalGuard(goalLock_);
+        if (auto const goals = goals_.find(fiveId); goals != goals_.end())
+        {
+            std::string text;
+            uint32 missed = 0;
+            for (auto const& [entry, mob] : goals->second.mobs)
+            {
+                if (mob.boss)
+                    continue;
+                std::string const state = mob.state.empty() ? "never seen by the route (not spawned in the instance?)"
+                                                            : mob.state;
+                missed += mob.taken && state != "killed";
+                text += Acore::StringFormat("{}{} ({}): {}", text.empty() ? "" : " | ", mob.name,
+                                            mob.taken ? "a goal" : "not a goal", state);
+            }
+            if (!text.empty())
+                LOG_INFO("playerbots", "[loot13] five {} run {} goal mobs: {}; {} goal(s) not killed", fiveId,
+                         report.runId, text, missed);
+            goals_.erase(goals);
+        }
+        for (uint32 low : five.members)
+            if (auto const of = goalFiveOf_.find(low); of != goalFiveOf_.end() && of->second == fiveId)
+                goalFiveOf_.erase(of);
+    }
     std::string open;
     for (uint32 low : five.members)
         if (PlanRow const* row = Row(low); row && !Cleared(five.contentKey, low))
@@ -4225,6 +4352,36 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         st.fiveRefused.clear();
     }
     fives_.erase(itr);
+}
+
+std::map<uint32, std::string> GuildCoordinator::FiveGoalMobs(uint32 memberLow) const
+{
+    std::map<uint32, std::string> mobs;
+    std::lock_guard<std::mutex> goalGuard(goalLock_);
+    auto const of = goalFiveOf_.find(memberLow);
+    if (of == goalFiveOf_.end())
+        return mobs;
+    if (auto const goals = goals_.find(of->second); goals != goals_.end())
+        for (auto const& [entry, mob] : goals->second.mobs)
+            if (mob.taken && !mob.boss)
+                mobs[entry] = mob.items;
+    return mobs;
+}
+
+void GuildCoordinator::NoteGoalState(uint32 memberLow, uint32 entry, std::string const& state)
+{
+    std::lock_guard<std::mutex> goalGuard(goalLock_);
+    auto const of = goalFiveOf_.find(memberLow);
+    if (of == goalFiveOf_.end())
+        return;
+    auto const goals = goals_.find(of->second);
+    if (goals == goals_.end())
+        return;
+    auto const mob = goals->second.mobs.find(entry);
+    if (mob == goals->second.mobs.end() || mob->second.state == state)
+        return;
+    if (mob->second.state != "killed")  // the instance's copy died: later states are its corpse's
+        mob->second.state = state;
 }
 
 // [loot14] user 2026-11-13: every BoP the five gave, by its end - (a) a need win worn, (b) a need win held for a
