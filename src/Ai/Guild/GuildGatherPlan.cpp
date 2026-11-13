@@ -726,10 +726,22 @@ void GuildGatherPlan::LoadDrops()
                     Expected(LootTemplates_Spell.GetLootFor(uint32(proto->Spells[0].SpellId)), contents, amount);
             for (auto const& [item, amount] : contents)
                 all[item] += amount;
+            // [gather51] a gem is a material here too. The guild treats the two classes as one set already
+            // (GuildCoordinator ~3345 `material = ITEM_CLASS_TRADE_GOODS || ITEM_CLASS_GEM`); this walk was the one
+            // place that admitted trade goods alone, so a gem that mobs drop got no DROP place and fell back to a
+            // chest - which [ui11] / [gather42] say is no supply line at all. b483 paid for it: Iridescent Pearl x80
+            // was planned from the Giant Clam chest at 1.0/h for 80 of the guild's 173 bot-hours, while 171 creature
+            // loot templates over 3493 spawns drop it. All 7 gems the guild is short of have mob sources (Small
+            // Lustrous Pearl 327 templates / 7762 spawns, Iridescent Pearl 171 / 3493, Jade 71 / 215, Lesser
+            // Moonstone 66 / 193, Tigerseye 58 / 26, Malachite 31 / 2, Star Ruby).
+            // The set is these two classes and no more, by the shortfall's own data: of the 66 items the leader was
+            // short of, 59 are trade goods and 7 are gems - no other class has a single need. Measured cost of the
+            // widening: the DROP places keyed (map, zone, entry) grow from 5191 groups to 5297, +106 (+2.0 %),
+            // because nearly every gem-dropping mob already drops a trade good and so already has its place
             for (auto const& [item, amount] : all)
                 if (ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
-                    proto && proto->Class == ITEM_CLASS_TRADE_GOODS && proto->Quality >= ITEM_QUALITY_NORMAL &&
-                    amount > 0.0f)
+                    proto && (proto->Class == ITEM_CLASS_TRADE_GOODS || proto->Class == ITEM_CLASS_GEM) &&
+                    proto->Quality >= ITEM_QUALITY_NORMAL && amount > 0.0f)
                     goods[item] = amount;
             cached = lootCache.emplace(tmpl->lootid, std::move(goods)).first;
         }
