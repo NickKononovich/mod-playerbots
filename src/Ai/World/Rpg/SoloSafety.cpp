@@ -3974,10 +3974,11 @@ namespace SoloSafety
         // the chase of a mob of run speed `vm`, leash timer `leashSec`, melee dps `melee` (its melee reach `reach`):
         // how long it lasts and how long its melee lands
         void ChaseTimes(Player* bot, float vm, float leashSec, float melee, float reach, float& until, float& exposure,
-                        bool withSpeed = true)
+                        bool withSpeed = true, float botSpeed = 0.0f)
         {
             float const leashRadius = sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS);
-            float vb = bot->GetSpeed(bot->IsInWater() ? MOVE_SWIM : MOVE_RUN);
+            // [death460] `botSpeed` > 0: the bot's speed given (a ghost priced as the body it rises into)
+            float vb = botSpeed > 0.0f ? botSpeed : bot->GetSpeed(bot->IsInWater() ? MOVE_SWIM : MOVE_RUN);
             // [lag360] the speed piece the run-past executor casts as the chase starts (SurvivalKit::RunPastSpeed:
             // instant, castable now, lasting the chase, no daze of its own on being struck)
             if (withSpeed)
@@ -4012,7 +4013,7 @@ namespace SoloSafety
         seconds = std::max(seconds, chase.seconds);
     }
 
-    RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed)
+    RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed, float botSpeed)
     {
         RunPast out;
         if (!bot || !mob || sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS) <= 0.0f || mob->isWorldBoss())
@@ -4028,7 +4029,7 @@ namespace SoloSafety
         // speed
         float const chaseSpeed = mob->GetSpeed(bot->IsInWater() ? MOVE_SWIM : MOVE_RUN);
         ChaseTimes(bot, chaseSpeed, float(mob->GetLeashTimer()), melee, mob->GetMeleeRange(bot),
-                   out.seconds, exposure, withSpeed);
+                   out.seconds, exposure, withSpeed, botSpeed);
         float const casts = ChaseSpellDamage(mob, out.seconds);
         out.damage = melee * BehindFactor(bot) * exposure + (casts > 0.0f ? casts : SpellDpsOf(mob) * out.seconds);
         out.variance = variance * BehindFactor(bot) * BehindFactor(bot) * exposure;

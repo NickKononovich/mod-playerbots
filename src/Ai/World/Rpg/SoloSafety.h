@@ -239,7 +239,8 @@ namespace SoloSafety
         void Add(RunPast const& chase);  // one more chaser: damage and variance add, the longest chase
     };
     // [lag360] `withSpeed`: with the speed piece the run-past executor casts first (the price); false: without it
-    RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed = true);
+    // [death460] `botSpeed` > 0: priced at that run speed instead of the bot's own (a ghost's is its ghost speed)
+    RunPast RunPastChase(Player* bot, Creature* mob, bool withSpeed = true, float botSpeed = 0.0f);
     RunPast RunPastTemplate(Player* bot, CreatureTemplate const* tmpl);
     // [death434] a template's melee per main-hand swing: 1, or 1.5 when its default equipment holds an off-hand weapon
     // (the core swings it too at half damage: Creature::HasWeapon, UNIT_MOD_DAMAGE_OFFHAND TOTAL_PCT 0.5)

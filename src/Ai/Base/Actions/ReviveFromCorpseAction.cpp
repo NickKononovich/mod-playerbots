@@ -30,6 +30,7 @@
 #include "RandomPlayerbotMgr.h"
 #include "ServerFacade.h"
 #include "SoloSafety.h"  // [deaths3] alone
+#include "SurvivalKit.h"  // [death460] the heals on the move after the healer
 #include "StringFormat.h"
 #include "Timer.h"
 #include "World.h"  // [guild13] CONFIG_DEATH_SICKNESS_LEVEL
@@ -38,6 +39,7 @@
 #include <array>
 #include <cfloat>
 #include <cmath>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <string>
@@ -258,6 +260,56 @@ namespace
         int32 const start = sWorld->getIntConfig(CONFIG_DEATH_SICKNESS_LEVEL);
         int32 const level = int32(bot->GetLevel());
         return level < start ? 0 : uint32(std::min(10, level - start + 1));
+    }
+
+    // [death460] Resurrection Sickness (spell 15007): every attribute -75 %, so the health / mana its stamina /
+    // intellect give drop by that much; the spirit healer revives at half health and mana (Player::ResurrectPlayer
+    // 0.5), held under the sick maxima
+    constexpr float SICKNESS_STAT_SHARE = 0.75f;
+    constexpr float HEALER_RESTORE = 0.5f;
+
+    // [death460] coordinator 2026-11-13: at its last way back (the healer) with a mob that stays reaching the yard, the
+    // bot rises only when the walk out of their reaches is survivable at the health, mana and run speed it rises with:
+    // each such mob chases it to the leash (SoloSafety::RunPastChase at the base run speed, no speed piece: a ghost's
+    // own speed is its ghost speed), the chases added, judged at their high end against its health after the healer
+    // and its heals on the move from the mana it rises with. `why`: the price, for the log line
+    bool HealerRiseSurvives(PlayerbotAI* botAI, Player* bot, GuidVector const& hostiles, float x, float y, float z,
+                            std::string& why)
+    {
+        SoloSafety::RunPast total;
+        uint32 chasers = 0;
+        for (ObjectGuid const& guid : hostiles)
+        {
+            Unit* unit = botAI->GetUnit(guid);
+            Creature* mob = unit ? unit->ToCreature() : nullptr;
+            if (!mob)
+                continue;
+            GuidVector const one{guid};
+            if (SpotMargin(botAI, bot, one, x, y, z, Reach::Fixed) >= 0.0f)
+                continue;
+            total.Add(SoloSafety::RunPastChase(bot, mob, false, playerBaseMoveSpeed[MOVE_RUN]));
+            ++chasers;
+        }
+        float maxHealth = float(bot->GetMaxHealth());
+        float maxMana = float(bot->GetMaxPower(POWER_MANA));
+        if (HealerSickens(bot))
+        {
+            maxHealth -= SICKNESS_STAT_SHARE * bot->GetHealthBonusFromStamina();
+            maxMana -= SICKNESS_STAT_SHARE * bot->GetManaBonusFromIntellect();
+        }
+        float const health = std::min(HEALER_RESTORE * float(bot->GetMaxHealth()), std::max(maxHealth, 1.0f));
+        float const mana = std::min(HEALER_RESTORE * float(bot->GetMaxPower(POWER_MANA)), std::max(maxMana, 0.0f));
+        float const damage = total.High();
+        float const heals = damage == std::numeric_limits<float>::max()
+                                ? 0.0f
+                                : SurvivalKit::HealPoints(bot, total.seconds, mana, true, true);
+        bool const survives = damage < health + heals;
+        why = damage == std::numeric_limits<float>::max()
+                  ? Acore::StringFormat("{} mob(s) that stay chase it without a leash", chasers)
+                  : Acore::StringFormat("{} mob(s) that stay chase it {:.0f} s for {:.0f} dmg (high end) against hp "
+                                        "{:.0f} + {:.0f} heals after the healer",
+                                        chasers, total.seconds, damage, health, heals);
+        return survives;
     }
 
     // [death425] the margin (yd) the point keeps from the zones where the bot died (NewRpgBaseAction::DangerDiscs): the
@@ -1096,9 +1148,10 @@ bool SpiritHealerAction::Execute(Event /*event*/)
                 }
                 // [death458] the last way back: this healer. It waits while a wanderer / patrol where it is now
                 // reaches the yard and nothing that stays does (the window opens as they walk on: their positions,
-                // no clock); a yard a mob that stays reaches has no window - it rises there all the same (a ghost
-                // for good is no way back). The window of RisesHere also wanted every roamer's whole round out of
-                // reach ([rise33]): at a healer with a patrol round it never opened
+                // no clock); a yard a mob that stays reaches has no window - [death460] it rises there when the walk
+                // out of their reaches is survivable as it rises (HealerRiseSurvives), else it stays a ghost there,
+                // logged each time the price changes. The window of RisesHere also wanted every roamer's whole round
+                // out of reach ([rise33]): at a healer with a patrol round it never opened
                 float const x = bot->GetPositionX();
                 float const y = bot->GetPositionY();
                 float const z = bot->GetPositionZ();
@@ -1112,15 +1165,28 @@ bool SpiritHealerAction::Execute(Event /*event*/)
                                                       ClosestGrave->ID, -now));
                     return true;
                 }
-                LogGhost(bot, fixed >= 0.0f
-                                  ? Acore::StringFormat("[death458] rises at the spirit healer of graveyard {} in a "
-                                                        "window: the wanderers / patrols out of reach where they are "
-                                                        "now",
-                                                        ClosestGrave->ID)
-                                  : Acore::StringFormat("[death458] rises at the spirit healer of graveyard {}, its "
-                                                        "last way back: a mob that stays reaches the yard ({:.0f} yd "
-                                                        "inside), no window can open",
-                                                        ClosestGrave->ID, -fixed));
+                if (fixed >= 0.0f)
+                    LogGhost(bot, Acore::StringFormat("[death458] rises at the spirit healer of graveyard {} in a "
+                                                      "window: the wanderers / patrols out of reach where they are "
+                                                      "now",
+                                                      ClosestGrave->ID));
+                else
+                {
+                    std::string price;
+                    if (!HealerRiseSurvives(botAI, bot, hostiles, x, y, z, price))
+                    {
+                        LogGhost(bot, Acore::StringFormat("[death460] waits as a ghost at the spirit healer of "
+                                                          "graveyard {}, its last way back: a mob that stays reaches "
+                                                          "the yard ({:.0f} yd inside) and the walk out does not "
+                                                          "survive - {}",
+                                                          ClosestGrave->ID, -fixed, price));
+                        return true;
+                    }
+                    LogGhost(bot, Acore::StringFormat("[death460] rises at the spirit healer of graveyard {}, its "
+                                                      "last way back: a mob that stays reaches the yard ({:.0f} yd "
+                                                      "inside), the walk out survives - {}",
+                                                      ClosestGrave->ID, -fixed, price));
+                }
             }
 
             {
