@@ -245,8 +245,19 @@ uint32 FreeMoneyForValue::Calculate()
     // [eco203] coordinator 2026-11-11: a guild-plan bot's food and drink for the rest it needs now come before its
     // travel reserve - kept only from the money left after that restock (a bot that cannot regenerate does not
     // travel safely anyway): the consumables budget does not hold it back
+    // [eco41] coordinator 2026-11-13: ... and before its repair reserve, for the same reason - the repair is paid
+    // from what is left and from the next loot ([broken40]: a bot short of the full cost repairs what it can), while
+    // a bot that cannot drink does not fight at all. b475 Geron L20 held 13s 69c and "may spend 0c of its 1369c
+    // (kept back: repair 1848c (now 1680c + one death))": it stood at a vendor selling Ice Cold Milk and bought
+    // nothing ("[eco204] ... it may spend 13c"), then logged "[supply34] out of drink: no vendor run"
     if (NeedMoneyFor(stoi(getQualifier())) == NeedMoneyFor::consumables && GuildHonest::IsHonestBot(bot))
+    {
         savedMoney -= std::min(savedMoney, AI_VALUE2(uint32, "money needed for", uint32(NeedMoneyFor::travel)));
+        // only as far as its own consumables need: the rest of the repair reserve stays repair money
+        uint32 const fromRepair = std::min(AI_VALUE2(uint32, "money needed for", uint32(NeedMoneyFor::repair)),
+                                           AI_VALUE2(uint32, "money needed for", uint32(NeedMoneyFor::consumables)));
+        savedMoney -= std::min(savedMoney, fromRepair);
+    }
 
     if (savedMoney > money)
         return 0;
