@@ -1474,7 +1474,14 @@ namespace
         if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
         {
             centre = mob->GetHomePosition();
-            radius += mob->GetWanderDistance();
+            // [surv10] a wanderer's disc sits on its home so that the whole area it may wander into is covered, but a
+            // wanderer that is chasing, leashing back or was pulled stands outside that area, and then the home disc
+            // covers neither it nor the ground round it: b484 Kylantino L22 met a Boulderfist Ogre L33 at 5 yd and the
+            // disc read "outside it" because the ogre was 44 yd from a home whose envelope is 40 yd. The envelope is
+            // widened by how far the mob has actually gone, so it holds the area it returns to AND the circle round
+            // where it stands now. A measured distance, not a threshold; the disc never shrinks, so no caller of it
+            // becomes less careful than before.
+            radius += std::max(mob->GetWanderDistance(), mob->GetHomePosition().GetExactDist2d(mob));
         }
         return G3D::Vector4(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
     }
@@ -5186,6 +5193,20 @@ namespace SoloSafety
             state.runPastSec = left.seconds;
             state.runPastHp = hp;
             state.runPastTakenAt = state.taken;
+            // [surv10] the committed run-past, with the margin it was committed on and the widest level gap in the
+            // chase. [runpast87] prices a chase against what it cost only at a fight's close, so a chase that
+            // leashed cleanly is never sampled: 27 samples over b482-b484, one of them a death, far too few to say
+            // the chase model is mis-priced. The committed decisions are the denominator that sample was missing.
+            // b484 Kylantino L22 committed past 5 Boulderfist mobs on "310 dmg vs hp 403" - a 93 hp margin - and
+            // took 403. One line per chase, at the same gate [runpast87] opens on; a log, no decision reads it.
+            int32 gap = std::numeric_limits<int32>::min();
+            for (Creature* mob : chasers)
+                gap = std::max(gap, int32(mob->GetLevel()) - int32(bot->GetLevel()));
+            LOG_INFO("playerbots",
+                     "[surv10] {} L{} commits a run-past: {} chaser(s), widest level gap {:+d}, priced {:.0f} dmg "
+                     "({:.0f} at the high end) over {:.0f} s against hp {:.0f} - a margin of {:.0f}",
+                     bot->GetName(), bot->GetLevel(), chasers.size(), gap, left.damage, left.High(), left.seconds,
+                     hp, hp - left.High());
         }
         for (Creature* mob : chasers)
             if (state.legNamed.insert(mob->GetGUID().GetRawValue()).second)
