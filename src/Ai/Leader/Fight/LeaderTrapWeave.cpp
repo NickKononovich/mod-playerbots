@@ -22,6 +22,7 @@
 #include "LeaderOrders.h"
 #include "Map.h"
 #include "ObjectAccessor.h"
+#include "LeaderGround.h"  // [navz10] LeaderGroundZ
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
@@ -185,7 +186,10 @@ Position TrapSpot(Player* hunter, Unit* target, float triggerRadius)
         return hunter->GetPosition();
     float const x = target->GetPositionX() + dx / apart * triggerRadius;
     float const y = target->GetPositionY() + dy / apart * triggerRadius;
-    float const z = hunter->GetMap()->GetHeight(hunter->GetPhaseMask(), x, y, target->GetPositionZ() + 2.0f);
+    // [navz10] the floor the leader's other spot builders use ([dun206]), not Map::GetHeight raw: this site was
+    // missed by that pass, and a raw answer here is the grid's placeholder in a WMO-only instance (2180 of 5744
+    // .map tiles hold no height at all). A rejected height keeps the old fallback, the target's own z.
+    float const z = Leader::Travel::LeaderGroundZ(hunter, x, y, target->GetPositionZ() + 2.0f);
     return Position(x, y, z > INVALID_HEIGHT ? z : target->GetPositionZ());
 }
 

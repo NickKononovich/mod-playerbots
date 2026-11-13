@@ -55,6 +55,7 @@
 #include "RouteSearch.h"  // [lead99] the leader's route search
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
+#include "LeaderGround.h"       // [navz10] LeaderGroundZ
 #include "LeaderPlan.h"         // [lead107] the leader's planner tick
 #include "Pet.h"  // [lead38] the pet redirect
 #include <source_location>  // [lead76]
@@ -625,9 +626,10 @@ namespace Leader::Dungeon
                     float const step = std::min(DOOR_REOPEN_STEP, len);
                     float const x = cutDoor->GetPositionX() + dx / len * step;
                     float const y = cutDoor->GetPositionY() + dy / len * step;
-                    float const ground = leader->GetMap()->GetHeight(leader->GetPhaseMask(), x, y,
-                                                                     cutDoor->GetPositionZ() + 3.0f, true,
-                                                                     10.0f);
+                    // [navz10] the same floor the other spot builders use ([dun206]); a rejected height keeps the
+                    // old fallback, the leader's own z. This site was missed by that pass.
+                    float const ground = Leader::Travel::LeaderGroundZ(leader, x, y,
+                                                                       cutDoor->GetPositionZ() + 3.0f, 10.0f);
                     if (leader->GetExactDist2d(x, y) > 2.0f)
                         group.SetLeaderWaypoint(leader, x, y,
                                           ground > INVALID_HEIGHT ? ground : leader->GetPositionZ());

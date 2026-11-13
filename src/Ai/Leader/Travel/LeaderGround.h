@@ -7,9 +7,14 @@
 #ifndef _PLAYERBOT_LEADERGROUND_H
 #define _PLAYERBOT_LEADERGROUND_H
 
+#include "Log.h"
 #include "Map.h"
 #include "TerrainHazard.h"
 #include "Unit.h"
+
+#include <source_location>  // [navz10] the builder that got no floor
+#include <string_view>
+#include <unordered_set>
 
 namespace Leader::Travel
 {
@@ -19,7 +24,14 @@ namespace Leader::Travel
     // near the seed, else none (INVALID_HEIGHT). b438 dm-n five 9: GetHeight's grid fallback -0.8 (the cove water
     // under the ship's deck) was taken as the floor, the tank walked a complete 346 yd route into the water under
     // the ship and its engage order on the Goblin Shipbuilder stood orphaned there
-    inline float LeaderGroundZ(Unit* who, float x, float y, float seedZ, float searchDist = DEFAULT_HEIGHT_SEARCH)
+    //
+    // [navz10] A rejection is named, never silent. Before this the three gates could all fail and the builder got
+    // INVALID_HEIGHT with nothing in the log: the spot simply did not exist, and the missing order looked like a
+    // leader that never decided. The line below says which builder asked (file:line), where, and what the map
+    // answered, so the next instance is one grep. It changes no decision - the verdict is the same
+    // INVALID_HEIGHT this function already returned.
+    inline float LeaderGroundZ(Unit* who, float x, float y, float seedZ, float searchDist = DEFAULT_HEIGHT_SEARCH,
+                               std::source_location const where = std::source_location::current())
     {
         Map* map = who ? who->GetMap() : nullptr;
         if (!map)
@@ -35,6 +47,26 @@ namespace Leader::Travel
             return ground;
         if (NavmeshFloorZ(who, x, y, seedZ, DEST_Z_SNAP_HALF_HEIGHT, floor))
             return floor;
+        // [navz10] no honest floor here: say so once per builder and place (the set is bounded like [lag350]'s,
+        // a memory bound on a log, not a rule any decision reads)
+        thread_local std::unordered_set<uint64> saidNoFloor;
+        if (saidNoFloor.size() > 512)
+            saidNoFloor.clear();
+        uint64 const place = uint64(uint32(where.line())) * 1000003ull
+                             + uint64(uint32(int32(x)) * 7919u) + uint64(uint32(int32(y)) * 104729u);
+        if (saidNoFloor.insert(place).second)
+        {
+            std::string_view file = where.file_name();
+            if (size_t const slash = file.find_last_of("/\\"); slash != std::string_view::npos)
+                file.remove_prefix(slash + 1);
+            LOG_INFO("playerbots",
+                     "[navz10] {}: no honest floor at ({:.1f},{:.1f}) for a spot seeded at {:.1f} on map {}: "
+                     "Map::GetHeight {:.1f}, grid {:.1f} (grid fallback {}), water {:.1f}, and no navmesh floor "
+                     "within {:.1f} yd of either - no spot built, from {}:{}",
+                     who->GetName(), x, y, seedZ, map->GetId(), ground, map->GetGridHeight(x, y),
+                     IsGridFallbackZ(who, x, y, ground) ? "true" : "false", water,
+                     DEST_Z_SNAP_HALF_HEIGHT, file, where.line());
+        }
         return INVALID_HEIGHT;
     }
 }
