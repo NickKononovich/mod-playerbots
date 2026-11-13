@@ -248,6 +248,13 @@ namespace
         bool searchRouted = false;  // [pullplan] its walk there searched (not a far forecast)
         G3D::Vector3 searchSpot;
         std::vector<G3D::Vector4> searchAvoid;
+        // [surv10] the fight no judge opened ("no judged pull (attacked)"): 28 of the 32 open-world deaths over b477,
+        // b478, b480 and b482 closed such a fight, and 4241 of the 4245 fights a judge did open were won - so the
+        // deaths carried no prediction to compare a fact against at all. What the first mob was and where the bot
+        // stood against that mob's own aggro disc, held until the fight's first projection prices it (the line is the
+        // judge's inputs for a fight it was never asked about; no decision reads it)
+        bool unjudgedPending = false;
+        std::string unjudgedWhy;
     };
 
     struct EntryDamage
@@ -722,6 +729,21 @@ namespace
                          bot->GetExactDist2d(c), bot->isMoving() ? "moving" : "standing",
                          bot->GetVictim() ? "attacking " + bot->GetVictim()->GetName() : std::string("no target"),
                          ai ? ai->rpgInfo.ToString() : std::string("-"), bot->GetHealthPct());
+                // [surv10] the same mob's aggro disc as the bot's own avoidance builds it (AggroDisc: a wanderer's
+                // disc sits on its home and carries its wander distance, every other mob's on where it stands), and
+                // where the bot stood in it. 55 of the 57 unjudged opens over b477-b482 opened with the bot already
+                // inside that disc, so the geometry is not the unknown: the inputs the line below adds are the
+                // fight's own numbers, which nothing priced
+                G3D::Vector4 const disc = AggroDisc(c, bot);
+                float const into = std::hypot(disc.x - bot->GetPositionX(), disc.y - bot->GetPositionY());
+                state.unjudgedPending = true;
+                state.unjudgedWhy = Acore::StringFormat(
+                    "{} L{} ({}) met at {:.0f} yd, its aggro disc ({:.0f},{:.0f}) r {:.0f} and the bot {:.0f} yd from "
+                    "its centre ({}), the bot {} ({}), hp {:.0f} %, status {}",
+                    c->GetName(), c->GetLevel(), moves, bot->GetExactDist2d(c), disc.x, disc.y, disc.w, into,
+                    into <= disc.w ? "inside it" : "outside it", bot->isMoving() ? "moving" : "standing",
+                    bot->GetVictim() ? "attacking " + bot->GetVictim()->GetName() : std::string("no target"),
+                    bot->GetHealthPct(), ai ? ai->rpgInfo.ToString() : std::string("-"));
             }
         // [pullplan] the pull it made: where it stood when the fight opened (its pull spot, else where it was)
         if (state.pullSpot && !state.pullLogged && mob && mob->GetGUID() == state.pullTarget)
@@ -3784,6 +3806,16 @@ namespace SoloSafety
         if (out.foes.empty() || out.incoming <= 0.0f)
             return out;
 
+        // [surv10] the fight no judge opened is priced here, at its first projection: taken under the lock, logged
+        // below it once the projection is whole
+        std::string unjudged;
+        if (state.unjudgedPending)
+        {
+            unjudged = state.unjudgedWhy;
+            state.unjudgedPending = false;
+            state.unjudgedWhy.clear();
+        }
+
         DpsEstimate::Result const own = OwnDamage(bot, bot->GetVictim());
         float const botDps = own.dps;
         out.botDps = std::max(botDps, 1.0f);
@@ -3822,6 +3854,21 @@ namespace SoloSafety
                                             out.damage / std::max(out.seconds, 1.0f), true,
                                             &interrupters);  // [death442]
         out.lost = out.damage >= out.health + out.heals;
+        // [surv10] the verdict the fight never had: the damage to come on the bot over the seconds its own damage
+        // needs for the mobs now on it, against its health and the heals the kit counts - the four numbers the pull
+        // judge logs at an engage ([deaths14]), for the fight that opened without one. A log, no decision reads it:
+        // without it a death from an unjudged fight carries no prediction to compare the fact against, and 28 of the
+        // 32 deaths over b477-b482 were such deaths
+        if (!unjudged.empty())
+            LOG_INFO("playerbots",
+                     "[surv10] {} L{} the fight no judge opened, priced at its first projection: {}; {} attacker(s) "
+                     "{:.1f} dps, {:.0f} dmg to come over {:.0f} s at its {:.1f} dps, hp {:.0f} + {:.0f} heals => {}",
+                     bot->GetName(), bot->GetLevel(), unjudged, out.foes.size(), out.incoming, out.damage,
+                     out.seconds, out.botDps, out.health, out.heals,
+                     out.lost ? Acore::StringFormat("LOST at the open, {:.0f} short",
+                                                    out.damage - out.health - out.heals)
+                              : Acore::StringFormat("won with {:.0f} hp of margin",
+                                                    out.health + out.heals - out.damage));
         return out;
     }
 
