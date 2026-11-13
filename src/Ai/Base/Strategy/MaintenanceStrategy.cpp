@@ -67,6 +67,17 @@ void MaintenanceStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
             }
         )
     );
+    // [inv380] a quest-starter item is never held open: the one it will not open, and a quest item no quest of its
+    // log needs, go (the leader's rule, GuildCoordinator::QuestDeadWeight). Below "use start quest item": a starter
+    // it can open is opened, never dropped
+    triggers.push_back(
+        new TriggerNode(
+            "random",
+            {
+                NextAction("drop dead weight", 0.89f)
+            }
+        )
+    );
     triggers.push_back(
         new TriggerNode(
             "random",

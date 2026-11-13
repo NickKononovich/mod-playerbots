@@ -64,6 +64,7 @@
 #include "PlayerbotAIConfig.h"  // [questrate] sight / loot distance
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
+#include "QuestAction.h"  // [inv380] the grey rule a quest-starter item gets (CanAcceptQuest)
 #include "QuestDef.h"
 #include "QuestPackets.h"  // [questvalue] the abandon
 #include "QuestStats.h"    // [questvalue] t= stamps
@@ -2470,6 +2471,10 @@ void GuildCoordinator::UpdateOrders()
         TransferOrders(row.low, p, orders);       // [guild81] trade / mail to a member, gold for the bank tab
         if (!HumanCharacter(p) && p->HasSkill(SKILL_ENCHANTING) && p->HasSpell(SPELL_DISENCHANT))
             AddOwnDisenchants(st, p);  // [ench155]
+        // [inv380] the junk it carries for nothing onto its SELL task, whatever its bag pressure is: a vendor pays
+        // for it and nothing in the guild wants it, so a slot spent on it is a slot lost for loot
+        if (!HumanCharacter(p))
+            AddDeadWeight(st, row.low, p);
         if (!st.disenchant.empty())
         {
             GuildOrder o;
@@ -3014,12 +3019,17 @@ void GuildCoordinator::UpdateOrders()
             for (HeldItem const& h : st.held)
                 if (!h.forLow && h.purpose != "pending")
                     ++heldBank;
-            if (cls != st.bagClass)
+            // [inv380] ... and what the bags carry for nothing, per bot, for the triage's bag metric: the grey junk
+            // slots marked for sale, the quest starters held unopened, the quest items of no quest of its log
+            uint32 const deadKey = st.junkSlots * 10000 + st.startersOpen * 100 + st.questDeadSlots;
+            if (cls != st.bagClass || deadKey != st.bagDeadKey)
             {
                 st.bagClass = cls;
-                LOG_INFO("playerbots", "[tasks] {} bags free={}/{} pressure={} held_for_bank={} sell_marked={} bank={}",
+                st.bagDeadKey = deadKey;
+                LOG_INFO("playerbots", "[tasks] {} bags free={}/{} pressure={} held_for_bank={} sell_marked={} "
+                         "bank={} dead_junk={} starters_open={} quest_dead={} [inv380]",
                          Who(row.low), freeSlots, total, cls == 0 ? "full" : (cls == 1 ? "low" : "ok"), heldBank,
-                         st.sell.size(), noBank ? "no tab" : "yes");
+                         st.sell.size(), noBank ? "no tab" : "yes", st.junkSlots, st.startersOpen, st.questDeadSlots);
             }
             // full bags and no bank: a held item goes to the vendor (sold, never destroyed) unless a transfer moves
             // it. [econ1] b350: a wanted reagent stayed in full bags (Thamesh 100 % -> 100 % at the vendor) because
@@ -6623,7 +6633,25 @@ namespace
         std::unordered_map<uint32, TeamId> attuneQuests;            // dungeon_access_requirements quests
         std::unordered_set<uint32> attuneItems;                     // dungeon_access_requirements items
         std::unordered_set<uint32> keyItems;                        // Lock.dbc item keys
+        // [inv380] item -> the quests that use it (an objective item, a source drop, the item the quest hands out):
+        // a quest item in the bags belongs to one of them or to none at all
+        std::unordered_map<uint32, std::vector<uint32>> itemQuests;
     };
+
+    // [inv380] the items one quest ties to the bags: its objective items, its source drops and the item it handed out
+    void QuestItems(Quest const* quest, std::set<uint32>& out)
+    {
+        if (!quest)
+            return;
+        if (uint32 const src = quest->GetSrcItemId())
+            out.insert(src);
+        for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
+            if (quest->RequiredItemId[i])
+                out.insert(quest->RequiredItemId[i]);
+        for (uint8 i = 0; i < QUEST_SOURCE_ITEM_IDS_COUNT; ++i)
+            if (quest->ItemDrop[i])
+                out.insert(quest->ItemDrop[i]);
+    }
 
     GreyStatic const& GreyTables()
     {
@@ -6648,6 +6676,10 @@ namespace
                 link(questId, quest->GetNextQuestId());
                 link(questId, quest->GetNextQuestInChain());
                 link(questId, quest->GetBreadcrumbForQuestId());  // a breadcrumb leads to its target
+                std::set<uint32> items;  // [inv380] the item -> quest index
+                QuestItems(quest, items);
+                for (uint32 const item : items)
+                    t.itemQuests[item].push_back(questId);
             }
             for (auto& [questId, list] : t.followers)
             {
@@ -6675,8 +6707,10 @@ namespace
                         if (lock->Type[j] == LOCK_KEY_ITEM && lock->Index[j])
                             t.keyItems.insert(lock->Index[j]);
             LOG_INFO("playerbots",
-                     "[quest14] grey tables: {} chain links, {} attunement quests, {} attunement items, {} key items",
-                     t.followers.size(), t.attuneQuests.size(), t.attuneItems.size(), t.keyItems.size());
+                     "[quest14] grey tables: {} chain links, {} attunement quests, {} attunement items, {} key items, "
+                     "{} quest items [inv380]",
+                     t.followers.size(), t.attuneQuests.size(), t.attuneItems.size(), t.keyItems.size(),
+                     t.itemQuests.size());
             return t;
         }();
         return tables;
@@ -6839,6 +6873,159 @@ std::string GuildCoordinator::GreyQuestNeed(Player* bot, Quest const* quest) con
         }
     }
     return std::string();
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [inv380] user 2026-11-13: a member carries nothing it holds for nothing. Three kinds filled its bags -
+//  1 grey junk with a vendor price: OnLoot never saw it (it returns for ITEM_QUALITY_POOR), so the leader marked
+//    none of it, no SELL task named it and the bags only emptied when a sell run crossed its own line
+//    ([vendor15]: free slots down to the working quest's item objectives). AddDeadWeight marks it: sold at the next
+//    vendor on the way, never a trip of its own;
+//  2 a quest-starter item the bot refuses to open: its usage falls to ITEM_USAGE_QUEST while it can take the quest
+//    and to ITEM_USAGE_NONE when the grey rule refuses it ([quest14]), and nothing removed it below 90 % bags
+//    (SmartDestroyItemAction). Held open for days;
+//  3 a quest item of no quest of its log (abandoned, handed in, or a branch it never took): no vendor buys it
+//    (SellPrice 0, BIND_QUEST_ITEM), so only the same 90 % destroy could free the slot.
+// 2 and 3 need the grey rule, which reads lock_ itself, so they are decided on the bot's own thread here and the
+// bot destroys them (DropDeadWeightAction); 1 is the leader's SELL task (AddDeadWeight, lock_ held).
+// ---------------------------------------------------------------------------------------------------------------------
+std::vector<GuildCoordinator::DeadItem> GuildCoordinator::QuestDeadWeight(Player* bot) const
+{
+    std::vector<DeadItem> dead;
+    // a full quest log refuses every accept, so a starter it would open looks refused: no verdict this pass
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()) || HumanCharacter(bot) || !bot->SatisfyQuestLog(false))
+        return dead;
+    // what its log ties to its bags: an objective item, a source drop, the item a quest handed it (StartItem - the
+    // hand-in item of q968 The Powers Below, of the Learn to Ride quests). Those never go
+    std::set<uint32> questNeeds;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        QuestItems(sObjectMgr->GetQuestTemplate(bot->GetQuestSlotQuestId(slot)), questNeeds);
+    GreyStatic const& tables = GreyTables();
+    // a quest the bot will never take: it is done with it, its class or race is wrong, or the grey rule refuses it
+    auto const refused = [&](Quest const* quest) -> std::string
+    {
+        if (!quest)
+            return "it is no quest of this server";
+        uint32 const id = quest->GetQuestId();
+        if (bot->GetQuestRewardStatus(id))
+            return "q" + std::to_string(id) + " " + quest->GetTitle() + " is handed in";
+        if (!bot->SatisfyQuestClass(quest, false) || !bot->SatisfyQuestRace(quest, false))
+            return "q" + std::to_string(id) + " " + quest->GetTitle() + " is for another class or race";
+        if (IsGreyQuest(bot, quest))
+            if (std::string const need = GreyQuestNeed(bot, quest); need.empty())
+                return "it refuses grey q" + std::to_string(id) + " " + quest->GetTitle() +
+                       " (no chain step, upgrade, recipe, skill, attunement, key or wanted item)";
+        return std::string();
+    };
+    auto const look = [&](Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || questNeeds.count(proto->ItemId))
+            return;
+        uint32 const guid = item->GetGUID().GetCounter();
+        if (uint32 const startId = proto->StartQuest)
+        {
+            Quest const* quest = sObjectMgr->GetQuestTemplate(startId);
+            if (quest && bot->GetQuestStatus(startId) != QUEST_STATUS_NONE)
+                return;  // it is on the quest; the hand-in item case went out above
+            if (quest && QuestAction::CanAcceptQuest(bot, quest))
+                return;  // it opens the quest from the bags (UseStartQuestItem)
+            // not at this level yet: the quest still comes
+            if (quest && bot->GetLevel() < quest->GetMinLevel() && !bot->GetQuestRewardStatus(startId))
+                return;
+            if (std::string why = refused(quest); !why.empty())
+                dead.push_back({guid, proto->ItemId, why});
+            return;
+        }
+        if (proto->Class != ITEM_CLASS_QUEST && proto->Bonding != BIND_QUEST_ITEM)
+            return;
+        auto const uses = tables.itemQuests.find(proto->ItemId);
+        if (uses == tables.itemQuests.end())
+        {
+            dead.push_back({guid, proto->ItemId, "no quest of this server uses it"});
+            return;
+        }
+        std::string why;
+        for (uint32 const id : uses->second)
+        {
+            Quest const* quest = sObjectMgr->GetQuestTemplate(id);
+            std::string const no = refused(quest);
+            if (no.empty())
+                return;  // it may still take this one: the item waits for it
+            if (why.empty())
+                why = no;
+        }
+        dead.push_back({guid, proto->ItemId, why + ", and no other quest of its wants it"});
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        look(bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+        if (Bag* bag = bot->GetBagByPos(b))
+            for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                look(bag->GetItemByPos(uint8(j)));
+    return dead;
+}
+
+// [inv380] lock_ held. The grey junk a member carries onto its SELL task, and the bag counts for the bags line: the
+// quest-starter items it holds unopened and the quest items no quest of its log needs (their verdict is the bot's
+// own thread, QuestDeadWeight).
+void GuildCoordinator::AddDeadWeight(BotState& st, uint32 low, Player* p)
+{
+    std::set<uint32> known;
+    for (HeldItem const& h : st.held)
+        known.insert(h.itemGuidLow);
+    for (uint32 guid : st.sell)
+        known.insert(guid);
+    for (uint32 guid : st.disenchant)
+        known.insert(guid);
+    std::set<uint32> questNeeds;
+    for (uint16 slot = 0; slot < MAX_QUEST_LOG_SIZE; ++slot)
+        QuestItems(sObjectMgr->GetQuestTemplate(p->GetQuestSlotQuestId(slot)), questNeeds);
+    auto const own = crafterNeed_.find(low);
+    uint32 junk = 0, starters = 0, questDead = 0;
+    auto const look = [&](Item* item)
+    {
+        ItemTemplate const* proto = item ? item->GetTemplate() : nullptr;
+        if (!proto || questNeeds.count(proto->ItemId))
+            return;
+        if (proto->StartQuest)
+        {
+            uint32 const startId = proto->StartQuest;
+            if (p->GetQuestStatus(startId) == QUEST_STATUS_NONE && !p->GetQuestRewardStatus(startId))
+                ++starters;
+            return;  // the bot's own thread decides it (the grey rule)
+        }
+        if (proto->Class == ITEM_CLASS_QUEST || proto->Bonding == BIND_QUEST_ITEM)
+        {
+            ++questDead;
+            return;
+        }
+        uint32 const guid = item->GetGUID().GetCounter();
+        if (proto->Quality != ITEM_QUALITY_POOR || !proto->SellPrice || TransferHolds(guid))
+            return;
+        // what the guild still does with it: the wanted list, this member's own called skill-ups, a guild cook
+        if (CookNeeds(proto->ItemId) || (own != crafterNeed_.end() && own->second.count(proto->ItemId)) ||
+            std::any_of(wanted_.begin(), wanted_.end(),
+                        [&](WantedItem const& w) { return w.itemId == proto->ItemId && (w.need || w.optional); }))
+            return;
+        ++junk;  // the slot it costs, whether this pass marked it or an earlier one did
+        if (known.count(guid))
+            return;
+        st.sell.push_back(guid);
+        LOG_INFO("playerbots", "[inv380] {} L{} junk {}{} → sell: grey, a vendor pays {}, no quest of its log, no "
+                 "crafter and no cook wants it", p->GetName(), p->GetLevel(), proto->Name1,
+                 item->GetCount() > 1 ? " ×" + std::to_string(item->GetCount()) : "",
+                 MoneyText(proto->SellPrice * item->GetCount()));
+    };
+    for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+        look(p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot));
+    for (uint8 b = INVENTORY_SLOT_BAG_START; b < INVENTORY_SLOT_BAG_END; ++b)
+        if (Bag* bag = p->GetBagByPos(b))
+            for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+                look(bag->GetItemByPos(uint8(j)));
+    st.junkSlots = junk;
+    st.startersOpen = starters;
+    st.questDeadSlots = questDead;
 }
 
 GuildCoordinator::RepairCall GuildCoordinator::Repair(Player* bot) const

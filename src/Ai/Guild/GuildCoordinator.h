@@ -349,6 +349,19 @@ public:
     // [vendor20] the global leader marked items of the bot for sale (its bag relief, unwanted gear): a vendor visit
     // has something to sell whatever its own sale keeps
     bool HasMarkedSale(Player* bot) const;
+    // [inv380] an item the member holds for nothing and no vendor buys: the bot destroys it (DropDeadWeightAction)
+    struct DeadItem
+    {
+        uint32 itemGuidLow{0};
+        uint32 itemId{0};
+        std::string why;
+    };
+    // [inv380] map thread (never with lock_ held: the grey rule reads it): the quest-starter items and quest items
+    // the member carries for nothing. A starter is never held open - the leader's rule for a quest a giver offers
+    // ([quest14], QuestAction::CanAcceptQuest) decides it here too, so the bot either opens the quest
+    // (UseStartQuestItem) or the item goes; a quest item no quest of its log needs and no quest it may still take
+    // wants goes with it. What a quest of its log needs for its hand-in or was handed (StartItem) always stays.
+    std::vector<DeadItem> QuestDeadWeight(Player* bot) const;
     // [supply27] map thread: the bot's five waits for its supplies (New RPG's vendor run restocks below the line)
     bool SupplyWanted(Player* bot) const;
     void SetOrderStatus(Player* bot, std::string const& status);
@@ -573,6 +586,12 @@ private:
         std::vector<HeldItem> held;
         std::vector<uint32> sell;        // item guid lows to sell at the next vendor
         std::vector<uint32> disenchant;  // item guid lows to disenchant itself
+        // [inv380] what its bags carry for nothing at the last look: the grey junk slots the leader marked for sale,
+        // the quest-starter items it holds unopened, the quest items no quest of its log needs (the bags line)
+        uint32 junkSlots{0};
+        uint32 startersOpen{0};
+        uint32 questDeadSlots{0};
+        uint32 bagDeadKey{0};  // the three above as one key: the bags line is logged when it changes
         uint32 raidLeaderLow{0};
         uint32 fiveId{0};
         std::string fiveRefused;  // [guild60] map thread: no safe walk to the five's entrance (the five is called off)
@@ -1045,6 +1064,9 @@ private:
     uint32 PlannedFor(uint32 itemId) const;
     // [ench155] the enchanter's own soulbound greens / blues nobody can take: onto its disenchant list (lock_ held)
     void AddOwnDisenchants(BotState& st, Player* p);
+    // [inv380] the grey junk a member carries for nothing (a vendor pays for it, no quest of its log, no crafter and
+    // no cook wants it) onto its SELL task, and the bag counts for the bags line (lock_ held)
+    void AddDeadWeight(BotState& st, uint32 low, Player* p);
     // [ench161] the members' spare greens / blues (unbound, no member's gear plan takes the copy, the holder does not
     // wear it better) go to an enchanter whose skill disenchants them: its own list, else held for the transfer
     void RouteSpareGreens();
