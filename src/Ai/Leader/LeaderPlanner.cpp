@@ -31,6 +31,7 @@
 #include "LeaderFightChecks.h"  // [lead1240] LeaderCastsFrom
 #include "LeaderHazardVerdict.h"  // [lead1362] InstanceDamageFactor
 #include "LeaderKnowledge.h"  // [lead107 final] the door-cut registry
+#include "LeaderPackModel.h"  // [pack1] the one pull-pack model, shared with the guild's five gate
 #include "LeaderTankSaves.h"  // [split251]
 #include "LeaderOrders.h"  // [lead1] the tank's commit as a pull order (C:/WoW/LEADER_REFACTOR_PLAN.md step 1)
 #include "RouteLegs.h"  // [dun197] RoutePath from a route link's far end
@@ -224,8 +225,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     constexpr float PULL_MANA_PER_DANGER = 8.0f;
     constexpr float PULL_MANA_MIN = 25.0f;
     constexpr float PULL_MANA_MAX = 80.0f;
-    constexpr float PACK_SOCIAL_RADIUS = 12.0f;        // idle mobs this close to the target join the fight
-    constexpr float PACK_SOCIAL_DRIFT = 2.0f;          // CollectPack: the assistance radius plus the fight's drift
+    // [pack1] PACK_SOCIAL_RADIUS / PACK_SOCIAL_DRIFT and the rest of the pack count's own terms: LeaderPackModel.h
     constexpr float PACK_LEVEL_STEP = 0.15f;           // extra danger per level the mob has over the tank
     constexpr float PACK_BASE_CAPACITY = 1.5f;         // what a tank and no one else can take
     constexpr float PACK_CAPACITY_PER_MEMBER = 0.75f;
@@ -258,38 +258,10 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // Careful pulls (a levelling 5-man, outside tempo). Wave 4 (levels 15-58): tanks died under 8-15 mobs that came
     // from the whole room. Everything whose aggro range reaches the fight counts, the pack is capped by what the
     // tank's spells hold and by the melee the group can heal, and a crowded spot is pulled at range instead.
-    constexpr float CAREFUL_AGGRO_MARGIN = 3.0f;         // the fight drifts a few yards around the mob
-    constexpr float CAREFUL_PATROL_MARGIN = 10.0f;       // a patrol this far beyond its aggro range walks in
-    // [b47_plan] A pull back is fought round its kill spot, not on it: the tank's fight hold keeps 15 yd round it, the
-    // ranged step out of melee and the healer walks for sight. An idle static mob whose aggro reach comes within this
-    // much more of the kill spot joins (the measured fight spread). brd-h 20261026-093620-brd-h-5B-6 pull 54: "one
-    // ... Anvilrage Soldier, 6 mobs, cost 1.75" fought at (612.7,46.4), 25.6 yd from the idle Anvilrage Officer
-    // 45845 (reach 24 = aggro 21 + 3): its pack (2 Medics, 2 Soldiers) joined, 11 engaged, the wipe at 2196-2210 s.
-    constexpr float KILL_SPOT_DRIFT = 5.0f;
-    constexpr float CAREFUL_EYE_HEIGHT = 2.0f;
-    constexpr size_t FLEE_CHAIN_MAX_MOBS = 16;  // CollectPack stops following a flee-for-assistance chain here
-    // User, 2026-10-24 («на склоне стояло 3 моба ... почему они считаются одним паком?»): a mob that flees for
-    // assistance (SMART_ACTION_FLEE_FOR_ASSIST, mostly at 15 % health) brings its helper only if it runs there before
-    // the group kills the health it has left: the run (distance / its run speed) under FLEE_REACH_MARGIN times the
-    // kill (FLEE_HEALTH_SHARE of its maximum health at the group's estimated dps). A Ragefire Shaman (759-903 hp) has
-    // 1.1-1.4 s left at 100 dps, so a helper counts within 14-16 yd (run 8 yd/s), a Defias Miner (386-417 hp) within
-    // 7 yd; the 30 yd flee radius alone brought every pack within 30 yd of the fight (RFC: 12 mobs for 3 on a slope).
-    constexpr float FLEE_HEALTH_SHARE = 0.15f;
-    constexpr float FLEE_REACH_MARGIN = 1.5f;
-    // [plan29_audit] 24 -> 16 (PULL_ESTIMATE_AUDIT 2026-10-25: estimates of 23-29 ran into the bound, 1-10 came)
-    constexpr size_t PACK_CHAIN_MAX_MOBS = 16;  // and an assistance chain here (far over any cap: refused anyway)
-    // A pack mob that stands and casts or shoots this far from the spot draws the fight to it: the tank and the
-    // melee go to it, and what sees them there joins (wave 13 Shattered Halls, Magisters' Terrace, Razorfen Kraul).
-    constexpr float CAREFUL_DRIFT_MIN_DISTANCE = 8.0f;
-    // RFC 5B-1 2026-10-24 20:24:37 (wave 44): a Voidwalker Minion was counted as 22 mobs, the whole room and Jergosh
-    // 79 yd away, through a chain "reaches #N, which keeps its range" -> "assist of #N" -> ...; 1 came. A mob that
-    // keeps its range stands at most CASTER_KEEP_RANGE from the real fight spot (the kill spot) - one spawned
-    // further walks in to that range - and draws the fight to where it stands then, not to its spawn (with the
-    // core's Z gate, ReachesSpot). Every mob that really enters the fight calls its assistance in turn, as the core
-    // does (Creature::CallAssistance on engage: Deadmines foundry, 12 counted, 20 came), so the chain stays
-    // transitive; PACK_MAX_ASSIST_HOPS only bounds it (assist / draws-fight links from a mob that came by itself).
-    constexpr float CASTER_KEEP_RANGE = 30.0f;
-    constexpr uint8 PACK_MAX_ASSIST_HOPS = 6;
+    // [pack1] The pack count's own terms moved to the one pack model, LeaderPackModel.h (shared with the
+    // five gate): CAREFUL_AGGRO_MARGIN, CAREFUL_PATROL_MARGIN, KILL_SPOT_DRIFT, CAREFUL_EYE_HEIGHT,
+    // CAREFUL_DRIFT_MIN_DISTANCE, CASTER_KEEP_RANGE, PACK_CHAIN_MAX_MOBS, PACK_MAX_ASSIST_HOPS,
+    // FLEE_CHAIN_MAX_MOBS, FLEE_HEALTH_SHARE, FLEE_REACH_MARGIN.
     // [lead260] a pack mob's summons are counted over the estimated fight (its scripted rate x the pack's kill time);
     // a summon the group kills within one global cooldown at its damage dies as it comes: it lands its melee over
     // its own kill time, not in the queue of the pack's kills (EstimatePack)
@@ -437,7 +409,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     // No pick in range this long with the group topped up: the tank walks toward the nearest possible target until
     // it is this far from it (inside the dungeon pick range of AggressiveTargetValue).
     constexpr uint32 APPROACH_STALL_MS = 20 * IN_MILLISECONDS;
-    constexpr float APPROACH_DISTANCE = 30.0f;
+    // [pack1] APPROACH_DISTANCE: LeaderPlannerShared.h, which this file now reads (the tank's execution shares it)
     constexpr float APPROACH_MAX_HEIGHT = 12.0f;
     // No ask for this long (a fight, a target in range): the stall is counted anew.
     constexpr uint32 APPROACH_CALL_GAP_MS = 5 * IN_MILLISECONDS;
@@ -470,7 +442,7 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
     constexpr float SIDE_PULL_MAX_WALK = 60.0f;
     constexpr float SIDE_PULL_AGGRO_MARGIN = 5.0f;
     constexpr float SIDE_PULL_SAMPLE_STEP = 2.0f;
-    constexpr float SIDE_PULL_ARRIVED = 2.0f;
+    // [pack1] SIDE_PULL_ARRIVED: LeaderPlannerShared.h
     constexpr uint32 SIDE_PULL_RETRY_MS = 5 * IN_MILLISECONDS;
     constexpr uint32 SIDE_PULL_WALK_MS = 15 * IN_MILLISECONDS;  // the walk to a side spot is given up after this
     // A pack that cannot be split is still pulled, at its edge or at range, once the group is topped up, if it is
@@ -2871,30 +2843,8 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return cache.emplace(spawnId, std::move(adds)).first->second;
     }
 
-    // User, 2026-10-24: «как считается количество мобов в паке? ... почему они считаются одним паком?» Why each mob
-    // is in a CollectPack pack ("[pack why]"): diagnostics only, recorded while the careful planner runs with the
-    // playerbots log at info (PackWhyScope), one record per mob, parallel to the pack.
-    enum class PackWhyKind : uint8
-    {
-        Start,       // the candidate
-        Social,      // within PACK_SOCIAL_RADIUS of the candidate
-        PullPath,    // on the tank's way to the spot
-        SpotAggro,   // its aggro range reaches the spot
-        SpotWander,  // its wander radius brings it to the spot
-        SpotPatrol,  // a patrol that walks into the spot
-        KillPath,    // on the tank's way back to the kill spot
-        KillSpot,    // reaches the kill spot
-        Formation,   // a formation member of the source
-        Assist,      // the source's assistance call (in its radius, in its sight)
-        CallForHelp, // the source's scripted call for help
-        DrawsFight,  // reaches the source, a mob that keeps its range
-        ScriptedAdd, // an add the source's script calls
-        Scripted,    // a scripted call (Scarlet Monastery Cathedral)
-        FleeHelper,  // the source flees to it at low health
-        FleeTooFar,  // the source would flee to it, but dies before it gets there (not in the pack)
-        PatrolAdded  // counted by the plan's patrol forecast after the pack
-    };
-
+    // [pack1] PackWhyKind (why each mob is in a pack) is the one pack model's, LeaderPackModel.h; the
+    // planner's own record of it, for the "[pack why]" line, is below.
     struct PackWhy
     {
         ObjectGuid mob;
@@ -3108,77 +3058,109 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
         return !creature || !creature->HasFlagsExtra(CREATURE_FLAG_EXTRA_DONT_CALL_ASSISTANCE);
     }
 
-    // [lead8] LEADER_REFACTOR_PLAN.md step 8 / 2.5: where the pack's fight is, a required argument of every count.
-    // FightHere: the fight is at `spot` itself (an engage at the mob, a stand where the tank pulls and fights);
-    // FightAt: a separate fight spot (a pull back's kill spot, a line-of-sight corner, a sight fight spot), from which
-    // the calls for help, the social / formation links and the "draws the fight" chains are counted (KILL_SPOT_DRIFT
-    // round it), the walk's own aggro along the way to `spot`.
-    struct PackFight
+    // [pack1] The planner's reading of the one pull-pack model (LeaderPackModel.h): the live units round the tank.
+    // Every method is the call the planner always made for that term; the guild's five gate answers the same
+    // questions from the map's spawn rows (SpawnPackWorld, Ai/Guild/GuildFives.cpp), so a term added to the model
+    // lands in both. The split-mode overlap notes, the "[pack why]" record and the chain's hops stay here: they are
+    // the planner's own diagnostics, not part of the count.
+    class LivePackWorld
     {
-        Position at;
-        bool separate = false;
-    };
-    PackFight FightHere(Position const& spot) { return PackFight{spot, false}; }
-    PackFight FightAt(Position const& kill) { return PackFight{kill, true}; }
+    public:
+        using Mob = Unit*;
 
-    void CollectPack(PlayerbotAI* botAI, Player* bot, Unit* target, Position const& spot, GuidVector const& possible,
-                     std::vector<Unit*>& pack, PackFight const& fight, bool assistChain = false, bool losPull = false,
-                     std::vector<PackOverlap>* overlaps = nullptr)
-    {
-        Position const* const killSpot = fight.separate ? &fight.at : nullptr;  // [lead8]
-        Position const kill = killSpot ? *killSpot : spot;
-        bool const killApart = killSpot && kill.GetExactDist(spot) > CAREFUL_AGGRO_MARGIN;
-        // [b47_plan] the fight's spread round a pull back's kill spot (the spot itself when they coincide)
-        float const killDrift = killSpot ? KILL_SPOT_DRIFT : 0.0f;
-        pack.clear();
-        pack.push_back(target);
-        // parallel to `pack`: how a mob joins - 0 by itself (the target, its neighbours, what reaches the spot, a
-        // flee helper), n a mob n assist / draws-fight links away from those
-        std::vector<uint8> hops = {0};
-        // [chain_fight_position] parallel to `pack`: 1 for a mob an assistance call brought (AssistDelayEvent: it
-        // engages with its own call switched off and calls next from where it fights, not from its spawn)
-        std::vector<uint8> assisted = {0};
-        // [chain_step_weight] on every way out: the hops of this pack for EstimatePack
-        struct NoteHops
+        LivePackWorld(PlayerbotAI* botAI, Player* bot, GuidVector const& possible,
+                      std::vector<PackOverlap>* overlaps, PackWhyRecord* why)
+            : _botAI(botAI), _bot(bot), _overlaps(overlaps), _why(why)
         {
-            std::vector<Unit*> const& pack;
-            std::vector<uint8> const& hops;
-
-            ~NoteHops()
+            _possible.reserve(possible.size());
+            for (ObjectGuid const& guid : possible)
             {
-                lastPackHops.clear();
-                for (size_t i = 0; i < pack.size() && i < hops.size(); ++i)
-                {
-                    if (pack[i])
-                        lastPackHops.emplace_back(pack[i]->GetGUID(), hops[i]);
-                }
-            }
-        } const noteHops{pack, hops};
-        auto const hopOf = [&](Unit* mob) -> uint8
-        {
-            for (size_t i = 0; i < pack.size(); ++i)
-            {
-                if (pack[i] == mob)
-                    return hops[i];
+                if (Unit* mob = botAI->GetUnit(guid))
+                    _possible.push_back(mob);
             }
 
-            return 0;
-        };
-        if (overlaps)
-            overlaps->clear();
-
-        // "[pack why]": why each mob joins, parallel to `pack` (only while the planner records).
-        PackWhyRecord* why = nullptr;
-        if (packWhyRecorder.on && packWhyRecorder.packs.size() < PACK_WHY_MAX_PACKS)
-        {
-            why = &packWhyRecorder.packs.emplace_back();
-            why->mobs.push_back({target->GetGUID(), ObjectGuid::Empty, PackWhyKind::Start});
+            if (_overlaps)
+                _overlaps->clear();
         }
 
-        // Where a mob that reaches `at` comes from: its aggro range, its wander radius, or its patrol.
-        auto const spotKind = [](Unit* mob) -> PackWhyKind
+        static Mob NoMob() { return nullptr; }
+
+        std::vector<Mob> const& Possible() const { return _possible; }
+        bool IsIdle(Mob mob) const { return IsIdleEnemy(_bot, mob); }
+        bool IsHeld(Mob mob) const { return IsCrowdControlled(mob) || IsSapClaimed(mob); }
+        bool IsSealed(Mob mob) const { return IsSealedFromFight(mob); }
+        bool IsBoss(Mob mob) const { return IsBossMob(mob); }
+        // the chain's links (a call, a drawn fight, a flight) are a creature's: the planner's own loops read
+        // PlayerbotAI::GetCreature where this model asks Chains
+        bool Chains(Mob mob) const { return mob->ToCreature() != nullptr; }
+        Position At(Mob mob) const { return mob->GetPosition(); }
+        float Dist(Mob mob, Position const& at) const { return mob->GetExactDist(at); }
+        float Dist(Mob mob, Mob other) const { return mob->GetExactDist(other); }
+        bool WithinDist(Mob mob, Mob other, float dist) const { return mob->IsWithinDistInMap(other, dist); }
+        float Size(Mob mob) const { return mob->GetObjectSize(); }
+
+        bool Sees(Mob mob, Position const& at, float eye) const
         {
-            Creature* creature = mob->ToCreature();
+            return mob->IsWithinLOS(at.GetPositionX(), at.GetPositionY(), at.GetPositionZ() + eye);
+        }
+
+        bool SeesMob(Mob from, Mob to) const { return from->IsWithinLOSInMap(to); }
+        bool CallsOnEngage(Mob mob) const { return PullPlanning::CallsOnEngage(mob); }
+
+        bool CanAssist(Mob helper, Mob caller) const
+        {
+            Creature* const helperCreature = helper->ToCreature();
+            Creature* const callerCreature = caller->ToCreature();
+            return !helperCreature || !callerCreature || helperCreature->CanAssistTo(callerCreature, _bot);
+        }
+
+        // [lead1331] user 2026-11-05 (Q69): with a wanderer on either side, the neighbours by their wander areas
+        // (the gap between the areas, the sight between the spawn points), not by where they stand at the tick
+        void SocialLink(Mob mob, Mob target, float radius, float& gap, bool& sees) const
+        {
+            Creature* const mobCreature = mob->ToCreature();
+            Creature* const targetCreature = target->ToCreature();
+            Leader::Fight::WanderArea mobArea;
+            Leader::Fight::WanderArea targetArea;
+            bool const mobWanders = Leader::Fight::WanderAreaOf(mobCreature, mobArea);
+            bool const targetWanders = Leader::Fight::WanderAreaOf(targetCreature, targetArea);
+            bool const byArea = mobWanders || targetWanders;
+            Position const mobAt = mobWanders ? mobArea.center : mob->GetPosition();
+            Position const targetAt = targetWanders ? targetArea.center : target->GetPosition();
+            gap = byArea ? std::max(0.0f, mobAt.GetExactDist(targetAt) - mobArea.radius - targetArea.radius)
+                         : mob->GetDistance(target);
+            sees = byArea ? _bot->GetMap()->isInLineOfSight(
+                                targetAt.GetPositionX(), targetAt.GetPositionY(),
+                                targetAt.GetPositionZ() + target->GetCollisionHeight(), mobAt.GetPositionX(),
+                                mobAt.GetPositionY(), mobAt.GetPositionZ() + mob->GetCollisionHeight(),
+                                _bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing)
+                          : target->IsWithinLOSInMap(mob);
+            if (byArea && gap <= radius)
+                Leader::Fight::NoteWanderJudged(mobWanders ? mobCreature : targetCreature, "social");
+        }
+
+        void Formation(Mob mob, std::vector<Mob>& out) const
+        {
+            out.clear();
+            Creature* const creature = mob->ToCreature();
+            CreatureGroup const* formation = creature ? creature->GetFormation() : nullptr;
+            if (!formation || !FormationBrings(creature, formation))
+                return;
+
+            for (auto const& member : formation->GetMembers())
+                out.push_back(member.first);
+        }
+
+        bool OnPullPath(Position const& to, Mob mob) const { return IsOnPullPath(_bot, to, mob); }
+
+        bool ReachesSpot(Mob mob, Position const& spot, float drift) const
+        {
+            return PullPlanning::ReachesSpot(_bot, mob, spot, drift);
+        }
+
+        PackWhyKind SpotKind(Mob mob) const
+        {
+            Creature* const creature = mob->ToCreature();
             if (creature && IsPatrolling(creature))
                 return PackWhyKind::SpotPatrol;
 
@@ -3186,58 +3168,38 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
                 return PackWhyKind::SpotWander;
 
             return PackWhyKind::SpotAggro;
-        };
+        }
 
-        auto const note = [overlaps](PackOverlap const& overlap)
+        bool KeepsRange(Mob mob) const
         {
-            if (std::none_of(overlaps->begin(), overlaps->end(),
-                             [&overlap](PackOverlap const& seen) { return seen.outside == overlap.outside; }))
-                overlaps->push_back(overlap);
-        };
+            Creature* const creature = mob->ToCreature();
+            return creature && PullPlanning::KeepsRange(creature);
+        }
 
-        // Split mode: `mob`, near `bringer` (nullptr: the spot) within `radius` now, is a crossing group (noted).
-        auto const crossing = [&](Unit* bringer, Position const& anchor, Unit* mob, float radius) -> bool
+        bool IsRooted(Mob mob) const { return mob->IsRooted(); }
+
+        // Stratholme wave 6: a patrol that is not at the fight yet engages (and calls) where it arrives, which the
+        // spot tests count; not from the pack it passes on the way.
+        bool Arriving(Mob mob, Position const& kill) const
         {
-            PackOverlap overlap;
-            if (!overlaps || !SeparateAtSpawn(bringer, anchor, mob, radius, overlap))
+            Creature* const caller = mob->ToCreature();
+            if (!caller || !IsPatrolling(caller) || IsBossMob(caller))
                 return false;
 
-            note(overlap);
-            return true;
-        };
+            Creature* walker = nullptr;
+            WaypointPath const* path = PatrolPath(caller, &walker);
+            std::vector<G3D::Vector3> const* track = PatrolTrack(walker, path);
+            float const reach = MovementAction::IdleAggroReach(caller, _bot, CAREFUL_AGGRO_MARGIN);
+            return track && !IsPacer(*track) && caller->GetExactDist(kill) > reach + CAREFUL_PATROL_MARGIN;
+        }
 
-        // On the way out: a crossing group that came in another way after all (it reaches the spot) is in the
-        // pack, and one noted against a mob that is not in it (a skipped helper) crosses nothing that fights.
-        struct DropMerged
+        // Split mode: a patrol of another spawn group that the spot test counts for where it walks is left to the
+        // plan's patrol forecast (waited out, pulled first, or counted: PlanCarefulPull), and one within its aggro
+        // reach of the spot now is noted as crossing it.
+        bool WalksBy(Mob mob, Position const& spot)
         {
-            std::vector<PackOverlap>* overlaps;
-            std::vector<Unit*> const& pack;
-
-            bool InPack(Unit* mob) const { return std::find(pack.begin(), pack.end(), mob) != pack.end(); }
-
-            ~DropMerged()
-            {
-                if (!overlaps)
-                    return;
-
-                overlaps->erase(std::remove_if(overlaps->begin(), overlaps->end(),
-                                               [this](PackOverlap const& overlap)
-                                               {
-                                                   return InPack(overlap.outside) ||
-                                                          (overlap.member && !InPack(overlap.member));
-                                               }),
-                                overlaps->end());
-            }
-        } const dropMerged{overlaps, pack};
-
-        // Split mode: a patrol of another spawn group that the spot test counts for where it walks (near the spot
-        // now, or forecast to come) is left to the plan's patrol forecast (waited out, pulled first, or counted:
-        // PlanCarefulPull), and one within its aggro reach of the spot now is noted as crossing it. A patrol whose
-        // walk cannot be forecast, or that paces beside its pack, is counted as before.
-        auto const walksBy = [&](Unit* mob) -> bool
-        {
-            Creature* creature = mob->ToCreature();
-            if (!overlaps || !creature || IsBossMob(creature))
+            Creature* const creature = mob->ToCreature();
+            if (!_overlaps || !creature || IsBossMob(creature))
                 return false;
 
             Creature* walker = nullptr;
@@ -3246,578 +3208,227 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
             if (!track || IsPacer(*track))
                 return false;
 
-            float const reach = MovementAction::IdleAggroReach(creature, bot, CAREFUL_AGGRO_MARGIN);
+            float const reach = MovementAction::IdleAggroReach(creature, _bot, CAREFUL_AGGRO_MARGIN);
             PackOverlap overlap;
             if (!SeparateAtSpawn(nullptr, spot, mob, reach, overlap))
                 return false;
 
-            if (InCoreAggroReach(mob, bot, spot, CAREFUL_AGGRO_MARGIN))
-                note(overlap);
+            if (InCoreAggroReach(mob, _bot, spot, CAREFUL_AGGRO_MARGIN))
+                Note(overlap);
 
             return true;
-        };
-        // Mobs that engage by themselves (the target, its neighbours, what sees the spot): they call for assistance
-        // where they stand the moment they engage (Unit::Attack -> CallAssistance).
-        std::vector<Unit*> direct = {target};
-        // A mob brings its formation (a linked pack, the rest of a patrol group) with it, and each member its own.
-        std::function<void(Unit*)> addFormation;
-        // A mob held by crowd control (a Sap before the pull) stays where it is while the rest fights.
-        // `kind`, `source`, `distance` (below 0: to `source`) and `radius`: why it comes ("[pack why]" only).
-        auto const add = [&](Unit* mob, PackWhyKind kind, Unit* source, float distance = -1.0f, float radius = 0.0f)
+        }
+
+        bool Crossing(Mob bringer, Position const& anchor, Mob mob, float radius)
         {
-            if (IsCrowdControlled(mob) || IsSapClaimed(mob) || std::find(pack.begin(), pack.end(), mob) != pack.end())
-                return;
+            PackOverlap overlap;
+            if (!_overlaps || !SeparateAtSpawn(bringer, anchor, mob, radius, overlap))
+                return false;
 
-            // [pack_skip_sealed_mob] a banished / immune idle mob joins no fight
-            if (mob != target && IsSealedFromFight(mob))
-                return;
+            Note(overlap);
+            return true;
+        }
 
-            // an assistant, or a mob a ranged mob's fight draws, is one link further than its source; a formation
-            // member and a called or scripted add come as their source does
-            uint8 const sourceHop = source ? hopOf(source) : 0;
-            uint8 hop = 0;
-            if (kind == PackWhyKind::Assist || kind == PackWhyKind::DrawsFight)
-                hop = uint8(std::min<uint32>(sourceHop + 1u, 255u));
-            else if (kind == PackWhyKind::Formation || kind == PackWhyKind::CallForHelp ||
-                     kind == PackWhyKind::ScriptedAdd)
-                hop = sourceHop;
-
-            pack.push_back(mob);
-            hops.push_back(hop);
-            // [b35_lbrs2] round a corner a social neighbour came by the target's engage call (AssistDelayEvent:
-            // SetNoCallAssistance), so it makes no engage call of its own at its spawn: only the periodic one, on its
-            // walk and at the kill spot (brs-h 20261026-024524-brs-h-5D-8: a Firebrand Invoker's phantom spawn call
-            // chained the Firebrand hall pair to pair)
-            assisted.push_back(kind == PackWhyKind::Assist || (losPull && kind == PackWhyKind::Social) ? 1 : 0);
-            if (why)
-            {
-                uint8 step = 0;
-                if (source)
-                {
-                    for (PackWhy const& record : why->mobs)
-                    {
-                        if (record.mob == source->GetGUID())
-                        {
-                            step = record.step;
-                            break;
-                        }
-                    }
-                }
-
-                if (kind == PackWhyKind::FleeHelper && step < 255)
-                    ++step;
-
-                if (distance < 0.0f)
-                    distance = source ? mob->GetExactDist(source) : 0.0f;
-
-                why->mobs.push_back({mob->GetGUID(), source ? source->GetGUID() : ObjectGuid::Empty, kind,
-                                     distance, radius, step});
-            }
-
-            // [b51_strat] A formation member engages by itself where it stands: CreatureGroup::MemberEngagingTarget
-            // -> EngageWithTarget -> AtEngage -> AttackStart -> Unit::Attack -> CallAssistance, with no
-            // SetNoCallAssistance (only AssistDelayEvent sets that). Round a corner its spawn call was dropped (not in
-            // `direct`), so a split of one linked formation counted 7 while its engage calls woke the next one:
-            // strat-h 20261026-130307-5H-2 pull 2 (Mangled Cadaver of formation 52157, "7 come", 19 engaged: 52157 +
-            // formation 52158 + Mangled Cadaver 52189), strat-n 122322-5B-3 (7 -> 17), strat-h 093620-5E-2 (7 -> 32).
-            if (kind == PackWhyKind::Formation && std::find(direct.begin(), direct.end(), mob) == direct.end())
-                direct.push_back(mob);
-
-            addFormation(mob);
-        };
-
-        addFormation = [&](Unit* mob)
+        bool WouldCross(Position const& from, Mob mob, float radius) const
         {
-            Creature* creature = mob->ToCreature();
-            CreatureGroup const* formation = creature ? creature->GetFormation() : nullptr;
-            if (!formation || !FormationBrings(creature, formation))
-                return;
+            PackOverlap overlap;
+            return _overlaps && SeparateAtSpawn(nullptr, from, mob, radius, overlap);
+        }
 
-            for (auto const& member : formation->GetMembers())
-            {
-                if (member.first != creature && IsIdleEnemy(bot, member.first))
-                    add(member.first, PackWhyKind::Formation, mob);
-            }
-        };
-
-        addFormation(target);
-        // The target's engage call (Creature::CallAssistance, AnyAssistCreatureInRangeCheck): an idle mob that may
-        // assist it (CanAssistTo: its faction, it answers calls, aggressive, sees the enemy) within the assistance
-        // radius, plus the drift of the fight, that the target sees. A mob that only stands near is no neighbour:
-        // it comes if it sees the spot (ReachesSpot) or another member calls it.
-        float const socialAssistRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
-        float const socialRadius =
-            socialAssistRadius > 0.0f ? std::min(PACK_SOCIAL_RADIUS, socialAssistRadius + PACK_SOCIAL_DRIFT) : 0.0f;
-        Creature* const targetCreature = target->ToCreature();
-        for (ObjectGuid const& guid : possible)
+        void NoteCross(Position const& from, Mob mob, float radius)
         {
-            Unit* mob = botAI->GetUnit(guid);
-            if (!mob || mob == target || !IsIdleEnemy(bot, mob))
-                continue;
+            PackOverlap overlap;
+            if (_overlaps && SeparateAtSpawn(nullptr, from, mob, radius, overlap))
+                Note(overlap);
+        }
 
+        float AssistRadius() const { return sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS); }
+        float FleeRadius() const { return sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS); }
+
+        float CallRadius(Mob mob) const
+        {
+            Creature* const creature = mob->ToCreature();
+            return creature ? GetScriptedHelp(creature).callRadius : 0.0f;
+        }
+
+        bool CalledForHelp(Mob caller, Position const& from, float radius, Mob mob) const
+        {
+            Creature* const callerCreature = caller->ToCreature();
             Creature* const mobCreature = mob->ToCreature();
-            // [lead1331] user 2026-11-05 (Q69): with a wanderer on either side, the neighbours by their wander areas
-            // (the gap between the areas, the sight between the spawn points), not by where they stand at the tick
-            Leader::Fight::WanderArea mobArea;
-            Leader::Fight::WanderArea targetArea;
-            bool const mobWanders = Leader::Fight::WanderAreaOf(mobCreature, mobArea);
-            bool const targetWanders = Leader::Fight::WanderAreaOf(targetCreature, targetArea);
-            bool const byArea = mobWanders || targetWanders;
-            Position const mobAt = mobWanders ? mobArea.center : mob->GetPosition();
-            Position const targetAt = targetWanders ? targetArea.center : target->GetPosition();
-            float const neighbourGap =
-                byArea ? std::max(0.0f, mobAt.GetExactDist(targetAt) - mobArea.radius - targetArea.radius)
-                       : mob->GetDistance(target);
-            bool const neighbourSees =
-                byArea ? bot->GetMap()->isInLineOfSight(
-                             targetAt.GetPositionX(), targetAt.GetPositionY(),
-                             targetAt.GetPositionZ() + target->GetCollisionHeight(), mobAt.GetPositionX(),
-                             mobAt.GetPositionY(), mobAt.GetPositionZ() + mob->GetCollisionHeight(),
-                             bot->GetPhaseMask(), LINEOFSIGHT_ALL_CHECKS, VMAP::ModelIgnoreFlags::Nothing)
-                       : target->IsWithinLOSInMap(mob);
-            if (byArea && neighbourGap <= socialRadius)
-                Leader::Fight::NoteWanderJudged(mobWanders ? mobCreature : targetCreature, "social");
-            bool const social = socialRadius > 0.0f && CallsOnEngage(target) &&  // [b33_brs]
-                                neighbourGap <= socialRadius &&
-                                (!mobCreature || !targetCreature || mobCreature->CanAssistTo(targetCreature, bot)) &&
-                                neighbourSees && !crossing(target, target->GetPosition(), mob, socialRadius);
-            // the same tests in the same order as one condition, the first that holds named for "[pack why]"
-            bool joins = true;
-            PackWhyKind kind = PackWhyKind::Social;
-            Position const* from = target;
-            if (social)
-                kind = PackWhyKind::Social;
-            else if (IsOnPullPath(bot, spot, mob))
-            {
-                kind = PackWhyKind::PullPath;
-                from = &spot;
-            }
-            else if (ReachesSpot(bot, mob, spot, killApart ? 0.0f : killDrift) && !walksBy(mob))
-            {
-                kind = why ? spotKind(mob) : PackWhyKind::SpotAggro;
-                from = &spot;
-            }
-            else if (killApart && IsOnPullPath(bot, kill, mob))
-            {
-                kind = PackWhyKind::KillPath;
-                from = &kill;
-            }
-            else if (killApart && ReachesSpot(bot, mob, kill, killDrift) && !walksBy(mob))
-            {
-                kind = PackWhyKind::KillSpot;
-                from = &kill;
-            }
-            else
-                joins = false;
+            return callerCreature && mobCreature &&
+                   PullPlanning::CalledForHelp(callerCreature, from, radius, mobCreature, _bot);
+        }
 
-            if (joins)
+        void ScriptedAdds(Mob mob, std::vector<Mob>& out) const
+        {
+            Creature* const creature = mob->ToCreature();
+            Map* const map = _bot->GetMap();
+            if (!creature || !map)
+                return;
+
+            for (ObjectGuid::LowType const spawnId : PullPlanning::ScriptedAdds(creature))
             {
-                add(mob, kind, kind == PackWhyKind::Social ? target : nullptr, why ? mob->GetExactDist(*from) : 0.0f);
-                direct.push_back(mob);
+                auto const range = map->GetCreatureBySpawnIdStore().equal_range(spawnId);
+                for (auto itr = range.first; itr != range.second; ++itr)
+                {
+                    // a called add may wait at a neutral faction until its script sets it hostile
+                    Creature* called = itr->second;
+                    if (called && called->IsInWorld() && called->IsAlive() && !called->IsInCombat())
+                        out.push_back(called);
+                }
             }
         }
 
-        float const assistRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_RADIUS);
-        Map* map = bot->GetMap();
-        // Where a mob that keeps its range fights from: where it stands, if that is within CASTER_KEEP_RANGE of the
-        // real fight spot (the kill spot), else at that range from it on the line to where it stands (it walks in).
-        auto const standPoint = [&kill](Unit* caller) -> Position
+        // [b34_est] The periodic call (Creature::Update, every CreatureFamilyAssistancePeriod) comes from where the
+        // mob is then, so also on its walk to the fight spot round the corner. [b35_lbrs2] Only where a call can come
+        // from: the first periodic call fires a whole period after the mob engaged (Unit::Attack ->
+        // SetAssistanceTimer), so the first LOS_WALK_CALL_FREE_SHARE of that period's run is call-free (its spawn
+        // call, if any, is the engage call). Then every stretch of the walk, not only its navmesh corners (a 20 yd
+        // straight leg passed a pack between two corners unseen).
+        bool WalkLegs(Mob mob, Position const& kill, std::vector<std::pair<G3D::Vector3, G3D::Vector3>>& legs) const
         {
-            float const toKill = caller->GetExactDist(kill);
-            if (toKill <= CASTER_KEEP_RANGE || toKill <= 0.0f)
-                return caller->GetPosition();
+            legs.clear();
+            Creature* const caller = mob->ToCreature();
+            if (!caller)
+                return false;
 
-            float const share = CASTER_KEEP_RANGE / toKill;
-            return Position(kill.GetPositionX() + (caller->GetPositionX() - kill.GetPositionX()) * share,
-                            kill.GetPositionY() + (caller->GetPositionY() - kill.GetPositionY()) * share,
-                            kill.GetPositionZ() + (caller->GetPositionZ() - kill.GetPositionZ()) * share);
-        };
-        // What each pack mob from `from` on brings (and what that brings in turn), in measured careful pulls.
-        auto const spread = [&](size_t from)
-        {
-            if (!assistChain)
-                return;
+            LeaderPath walk(caller);  // [lead99]
+            walk.CalculatePath(kill.GetPositionX(), kill.GetPositionY(), kill.GetPositionZ(), false);
+            if (!(walk.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE)))
+                return false;
 
-            for (size_t i = from; i < pack.size() && pack.size() < PACK_CHAIN_MAX_MOBS; ++i)
+            constexpr float LOS_WALK_CALL_FREE_SHARE = 0.5f;
+            float const periodMs = float(sWorld->getIntConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD));
+            float const callFree =
+                LOS_WALK_CALL_FREE_SHARE * periodMs / float(IN_MILLISECONDS) * caller->GetSpeed(MOVE_RUN);
+            Movement::PointsArray const& points = walk.GetPath();
+            float walked = 0.0f;
+            for (size_t p = 1; p < points.size(); ++p)
             {
-                Creature* caller = pack[i]->ToCreature();
-                // the safety bound of the chain (PACK_MAX_ASSIST_HOPS links from a mob that came by itself)
-                if (!caller || hops[i] >= PACK_MAX_ASSIST_HOPS)
-                    continue;
-
-                // Round a corner a caster comes too: only a rooted mob stays and keeps calling from its spawn,
-                // and a mob that walks to the tank calls only once it engages by itself.
-                bool const rooted = caller->IsRooted();
-                bool const stays = rooted || (!losPull && KeepsRange(caller));
-                // Stratholme wave 6 (Rlpalbh, 15 mobs for a 7-mob formation): a Plague Ghoul patrol forecast to walk
-                // into the fight was counted with the assistance of the pack it passed 60 yd away. A patrol that is not
-                // at the fight yet engages (and calls) where it arrives, which the spot tests count; not from here.
-                bool const arriving = [&]()
+                G3D::Vector3 const& from = points[p - 1];
+                G3D::Vector3 const& to = points[p];
+                float const length = (to - from).length();
+                if (length > 0.0f && walked + length > callFree)
                 {
-                    if (!IsPatrolling(caller) || IsBossMob(caller))
-                        return false;
-
-                    Creature* walker = nullptr;
-                    WaypointPath const* path = PatrolPath(caller, &walker);
-                    std::vector<G3D::Vector3> const* track = PatrolTrack(walker, path);
-                    float const reach = MovementAction::IdleAggroReach(caller, bot, CAREFUL_AGGRO_MARGIN);
-                    return track && !IsPacer(*track) && caller->GetExactDist(kill) > reach + CAREFUL_PATROL_MARGIN;
-                }();
-                bool const callsHere = !arriving && (!losPull || stays ||
-                                                     std::find(direct.begin(), direct.end(), caller) != direct.end());
-                // where it fights: a rooted mob where it stands, a ranged one within its range of the fight spot
-                Position const stand = rooted ? caller->GetPosition() : standPoint(caller);
-                // apart from where the fight is (the kill spot; default: the spot), the tank and the melee go to it
-                // Only a mob that came by itself draws the fight (hop 0): the group fights at the kill spot and goes to
-                // the casters there, not on from caster to caster across a hall. Build 20 counted chains of them
-                // (Scholomance upper hall 20, Sethekk 13, a Stratholme Cadaver formation 26) where the passing waves
-                // pulled 2-16 there without a death; the DB groups are 2-7.
-                bool const drawsFight = !arriving && stays && hops[i] == 0 &&
-                                        stand.GetExactDist(kill) > CAREFUL_DRIFT_MIN_DISTANCE;
-                // [chain_melee_edge] the melee that go to it stand no further from the fight spot than the fight
-                // hold lets them (FightHold: RADIUS + MELEE_SLACK, PATCH_pets_rally 7), so what sees them there is
-                // looked for at that edge, on the line to the caster.
-                Position drawAt = stand;
-                if (float const toStand = stand.GetExactDist(kill);
-                    toStand > FightHold::RADIUS + FightHold::MELEE_SLACK && toStand > 0.0f)
-                {
-                    float const share = (FightHold::RADIUS + FightHold::MELEE_SLACK) / toStand;
-                    drawAt.Relocate(kill.GetPositionX() + (stand.GetPositionX() - kill.GetPositionX()) * share,
-                                    kill.GetPositionY() + (stand.GetPositionY() - kill.GetPositionY()) * share,
-                                    kill.GetPositionZ() + (stand.GetPositionZ() - kill.GetPositionZ()) * share);
-                }
-                // [chain_fight_position] User 2026-10-25 (PATCH_pets_rally 5): the engage call (Unit::Attack ->
-                // Creature::CallAssistance) comes from where the mob stands when it engages, but only from a mob
-                // that engaged by itself; an assistant engages with its call off (AssistDelayEvent:
-                // SetNoCallAssistance) and calls next by the periodic call (Creature::Update, every
-                // CreatureFamilyAssistancePeriod, CanPeriodicallyCallForAssistance) from where it FIGHTS then: a
-                // melee mob by the tank (the kill spot), a mob that keeps its range where it stands and casts. The
-                // chain counted every assistant's call from its spawn, pack to pack (scholo-h 153805: "16 mobs,
-                // hopeless" -> 1 came, "lone Adept brings 10").
-                bool const engageCall = callsHere && !assisted[i] && CallsOnEngage(caller);  // [b33_brs]
-                Position const fightAt = stays ? stand : kill;
-                float const callerSize = caller->GetObjectSize();
-                float const callRadius = GetScriptedHelp(caller).callRadius;
-                // It calls at low health where it fights then: the kill spot, or where it stands and casts.
-                Position const callFrom = stays ? stand : kill;
-                for (ObjectGuid const& guid : possible)
-                {
-                    Creature* mob = botAI->GetCreature(guid);
-                    if (!mob || mob == caller || !IsIdleEnemy(bot, mob) ||
-                        std::find(pack.begin(), pack.end(), mob) != pack.end())
-                        continue;
-
-                    // its engage call reaches from where it stands when it engages (CallAssistance), its periodic
-                    // call from where it fights ([chain_fight_position])
-                    bool const engageAssists = engageCall && assistRadius > 0.0f &&
-                                               caller->IsWithinDistInMap(mob, assistRadius) &&
-                                               mob->CanAssistTo(caller, bot) && caller->IsWithinLOSInMap(mob) &&
-                                               !crossing(caller, caller->GetPosition(), mob, assistRadius);
-                    bool const fightAssists =
-                        !engageAssists && !arriving && assistRadius > 0.0f &&
-                        mob->GetExactDist(fightAt) <= assistRadius + callerSize + mob->GetObjectSize() &&
-                        mob->CanAssistTo(caller, bot) &&
-                        mob->IsWithinLOS(fightAt.GetPositionX(), fightAt.GetPositionY(),
-                                         fightAt.GetPositionZ() + CAREFUL_EYE_HEIGHT) &&
-                        !crossing(nullptr, fightAt, mob, assistRadius);
-                    bool const assists = engageAssists || fightAssists;
-                    // Creature::CallForHelp: any friendly idle mob in the radius that sees the fight
-                    bool const called = CalledForHelp(caller, callFrom, callRadius, mob, bot) &&
-                                        !crossing(nullptr, callFrom, mob, callRadius);
-                    // the core's aggro of the mob on the tank and melee where the ranged mob fights (ReachesSpot)
-                    // a patrol of another spawn group that walks by is left to the plan's patrol forecast, as at the
-                    // spot (walksBy)
-                    if (assists || called || (drawsFight && ReachesSpot(bot, mob, drawAt) && !walksBy(mob)))
-                    {
-                        if (assists)
-                            add(mob, PackWhyKind::Assist, caller, -1.0f, assistRadius);
-                        else if (called)
-                            add(mob, PackWhyKind::CallForHelp, caller, why ? mob->GetExactDist(callFrom) : 0.0f,
-                                callRadius);
-                        else
-                            add(mob, PackWhyKind::DrawsFight, caller);
-
-                        addFormation(mob);
-                    }
+                    float const skip = std::max(callFree - walked, 0.0f);
+                    legs.emplace_back(from + (to - from) * (skip / length), to);
                 }
 
-                // [b34_est] The periodic call (Creature::Update, every CreatureFamilyAssistancePeriod) comes from
-                // where the mob is then, so also on its walk to the fight spot round the corner. ohb-h
-                // 20261026-014521-ohb-h-5F-19 pull 25 (wipe): a los pull counted at 3 brought 13, three Durnholde
-                // formations (4 + 5 + 4); the tank's spot stood 11.6 yd up a ramp, the walk to it ran 5.7 yd past
-                // the next formation's Sentry (it engaged at once), and that one's walk past the third. A mob that
-                // walks round the corner calls along its navmesh walk there, at the assistance radius (an assist).
-                if (losPull && !stays && !arriving && assistRadius > 0.0f && caller->GetExactDist(kill) > assistRadius)
-                {
-                    LeaderPath walk(caller);  // [lead99]
-                    walk.CalculatePath(kill.GetPositionX(), kill.GetPositionY(), kill.GetPositionZ(), false);
-                    if (walk.GetPathType() & (PATHFIND_NORMAL | PATHFIND_INCOMPLETE))
-                    {
-                        Movement::PointsArray const& points = walk.GetPath();
-                        // [b35_lbrs2] Only where a call can come from: the first periodic call fires a whole
-                        // CreatureFamilyAssistancePeriod after the mob engaged (Unit::Attack -> SetAssistanceTimer),
-                        // so the first LOS_WALK_CALL_FREE_SHARE of that period's run is call-free (its spawn call, if
-                        // any, is the engage call above). Then every stretch of the walk, not only its navmesh corners
-                        // (a 20 yd straight leg passed a pack between two corners unseen). brs-h
-                        // 20261026-024524-brs-h-5D-8: the walk's first point is the mob's own spawn, so every Firebrand
-                        // pair 8-12 yd from the next joined "on the walk" and the hall chained whole (15 mobs, cost
-                        // 30.16) where real players peel it pair by pair round the corner.
-                        constexpr float LOS_WALK_CALL_FREE_SHARE = 0.5f;
-                        float const periodMs = float(sWorld->getIntConfig(CONFIG_CREATURE_FAMILY_ASSISTANCE_PERIOD));
-                        float const callFree =
-                            LOS_WALK_CALL_FREE_SHARE * periodMs / float(IN_MILLISECONDS) * caller->GetSpeed(MOVE_RUN);
-                        std::vector<std::pair<G3D::Vector3, G3D::Vector3>> legs;
-                        float walked = 0.0f;
-                        for (size_t p = 1; p < points.size(); ++p)
-                        {
-                            G3D::Vector3 const& a = points[p - 1];
-                            G3D::Vector3 const& b = points[p];
-                            float const length = (b - a).length();
-                            if (length > 0.0f && walked + length > callFree)
-                            {
-                                float const skip = std::max(callFree - walked, 0.0f);
-                                legs.emplace_back(a + (b - a) * (skip / length), b);
-                            }
-                            walked += length;
-                        }
-
-                        for (ObjectGuid const& guid : possible)
-                        {
-                            if (legs.empty())
-                                break;  // it reaches the kill spot before its first call: the kill spot's call only
-
-                            Creature* mob = botAI->GetCreature(guid);
-                            if (!mob || mob == caller || !IsIdleEnemy(bot, mob) ||
-                                std::find(pack.begin(), pack.end(), mob) != pack.end() ||
-                                !mob->CanAssistTo(caller, bot))
-                                continue;
-
-                            float const reach = assistRadius + callerSize + mob->GetObjectSize();
-                            G3D::Vector3 const at(mob->GetPositionX(), mob->GetPositionY(), mob->GetPositionZ());
-                            for (auto const& [from, to] : legs)
-                            {
-                                // the leg's point nearest the mob
-                                G3D::Vector3 const leg = to - from;
-                                float const squared = leg.dot(leg);
-                                float const share =
-                                    squared > 0.0f ? std::clamp((at - from).dot(leg) / squared, 0.0f, 1.0f) : 0.0f;
-                                G3D::Vector3 const point = from + leg * share;
-                                Position const closest(point.x, point.y, point.z);
-                                if (mob->GetExactDist(closest) <= reach &&
-                                    mob->IsWithinLOS(point.x, point.y, point.z + CAREFUL_EYE_HEIGHT) &&
-                                    !crossing(nullptr, closest, mob, assistRadius))
-                                {
-                                    add(mob, PackWhyKind::Assist, caller, -1.0f, assistRadius);
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if (!map)
-                    continue;
-
-                for (ObjectGuid::LowType const spawnId : ScriptedAdds(caller))
-                {
-                    auto const range = map->GetCreatureBySpawnIdStore().equal_range(spawnId);
-                    for (auto itr = range.first; itr != range.second; ++itr)
-                    {
-                        // a called add may wait at a neutral faction until its script sets it hostile
-                        Creature* called = itr->second;
-                        if (called && called->IsInWorld() && called->IsAlive() && !called->IsInCombat())
-                            add(called, PackWhyKind::ScriptedAdd, caller);
-                    }
-                }
+                walked += length;
             }
-        };
 
-        spread(0);
+            return true;
+        }
 
-        // Call for help in every careful mode (measured: in the chain above). A pack mob whose script calls at low
-        // health brings every mob CalledForHelp finds round the spot where it fights then (the kill spot; a rooted
-        // mob: where it stands), not round its spawn, each with its formation and the neighbours its engage calls
-        // (CallAssistance); a called mob that calls in turn does so from there too.
-        auto const callForHelp = [&](size_t from)
+        // A scripted call (Scarlet Monastery Cathedral, ClassicShared.h): Commander Mograine's engage sends his whole
+        // chapel at his victim, wherever its mobs stand and whatever sees what. Wave 34: a fight 34 yd from him drew a
+        // hunter to 12 yd of him, and the rest of the chapel came at once.
+        bool ScriptedCall(Position const& spot, std::vector<Mob> const& pack, Mob& lead, std::vector<Mob>& called) const
         {
-            if (assistChain)
-                return;
+            Unit* const mograine = ScarletMonastery::IdleMograineWithChapel(_bot);
+            if (!mograine)
+                return false;
 
-            for (size_t i = from; i < pack.size() && pack.size() < PACK_CHAIN_MAX_MOBS; ++i)
-            {
-                Creature* caller = pack[i]->ToCreature();
-                float const callRadius = caller ? GetScriptedHelp(caller).callRadius : 0.0f;
-                if (callRadius <= 0.0f)
-                    continue;
-
-                Position const callFrom = caller->IsRooted() ? caller->GetPosition() : kill;
-                for (ObjectGuid const& guid : possible)
-                {
-                    Creature* mob = botAI->GetCreature(guid);
-                    if (!mob || mob == caller || !IsIdleEnemy(bot, mob) ||
-                        std::find(pack.begin(), pack.end(), mob) != pack.end() ||
-                        !CalledForHelp(caller, callFrom, callRadius, mob, bot) ||
-                        crossing(nullptr, callFrom, mob, callRadius))
-                        continue;
-
-                    add(mob, PackWhyKind::CallForHelp, caller, why ? mob->GetExactDist(callFrom) : 0.0f, callRadius);
-                    if (assistRadius <= 0.0f || !CallsOnEngage(mob))  // [b33_brs]
-                        continue;
-
-                    for (ObjectGuid const& other : possible)
-                    {
-                        Creature* neighbour = botAI->GetCreature(other);
-                        if (neighbour && neighbour != mob && IsIdleEnemy(bot, neighbour) &&
-                            mob->IsWithinDistInMap(neighbour, assistRadius) && neighbour->CanAssistTo(mob, bot) &&
-                            mob->IsWithinLOSInMap(neighbour) &&
-                            !crossing(mob, mob->GetPosition(), neighbour, assistRadius))
-                            add(neighbour, PackWhyKind::Assist, mob, -1.0f, assistRadius);
-                    }
-                }
-            }
-        };
-
-        callForHelp(0);
-
-        // A scripted call (Scarlet Monastery Cathedral, ClassicShared.h): Commander Mograine's engage sends his
-        // whole chapel at his victim, wherever its mobs stand and whatever sees what. Wave 34: a fight 34 yd from him
-        // drew a hunter to 12 yd of him, and the rest of the chapel came at once.
-        if (Unit* mograine = ScarletMonastery::IdleMograineWithChapel(bot))
-        {
             bool const engaged = std::find(pack.begin(), pack.end(), mograine) != pack.end() ||
-                                 (IsIdleEnemy(bot, mograine) &&
-                                  (ReachesSpot(bot, mograine, spot) ||
+                                 (IsIdleEnemy(_bot, mograine) &&
+                                  (PullPlanning::ReachesSpot(_bot, mograine, spot) ||
                                    mograine->GetExactDist2d(spot.GetPositionX(), spot.GetPositionY()) <
                                        ScarletMonastery::MOGRAINE_KEEP_AWAY));
-            if (engaged)
-            {
-                add(mograine, PackWhyKind::Scripted, nullptr, why ? mograine->GetExactDist(spot) : 0.0f);
-                std::vector<Unit*> called;
-                ScarletMonastery::CollectMograineCall(mograine, called);
-                for (Unit* mob : called)
-                {
-                    if (IsIdleEnemy(bot, mob))
-                        add(mob, PackWhyKind::Scripted, mograine);
-                }
-            }
+            if (!engaged)
+                return false;
+
+            lead = mograine;
+            ScarletMonastery::CollectMograineCall(mograine, called);
+            return true;
         }
 
-        // Flee for assistance (Creature::DoFleeToGetAssistance), in every careful mode: a pack mob that flees at low
-        // health runs to the nearest idle mob within the flee radius that sees it, which comes with its formation and
-        // calls its neighbours (CallAssistance); a helper that flees fetches the next. Counted from the spot, where
-        // the fight stays, or (measured) from a mob that keeps its range, where the tank goes to fight it. Wave 11b
-        // Scarlet Monastery Library: a 2-mob plan, the next pack 27 yd away, 13 came.
-        float const fleeRadius = sWorld->getFloatConfig(CONFIG_CREATURE_FAMILY_FLEE_ASSISTANCE_RADIUS);
-        if (fleeRadius <= 0.0f)
-            return;
-
-        float fleeDps = -1.0f;  // the group's estimated dps, read at the first flight
-        for (size_t i = 0; i < pack.size() && pack.size() < FLEE_CHAIN_MAX_MOBS; ++i)
+        bool FleesForHelp(Mob mob) const
         {
-            Creature* fleer = pack[i]->ToCreature();
-            if (!fleer || IsBossMob(fleer) || !FleesForHelp(fleer))
-                continue;
-
-            Position const from = assistChain && !losPull && KeepsRange(fleer) ? standPoint(fleer) : kill;
-            Creature* helper = nullptr;
-            float nearest = fleeRadius;
-            // Split mode: a crossing group nearer than the helper is where the fleer would run now (noted); once it
-            // has walked on, the fleer runs to the helper.
-            PackOverlap passing;
-            float passingAt = fleeRadius;
-            for (ObjectGuid const& guid : possible)
-            {
-                Creature* mob = botAI->GetCreature(guid);
-                if (!mob || !IsIdleEnemy(bot, mob) || IsCrowdControlled(mob) || IsSapClaimed(mob) ||
-                    std::find(pack.begin(), pack.end(), mob) != pack.end())
-                    continue;
-
-                float const distance = mob->GetExactDist(from);
-                if (distance > nearest || !mob->CanAssistTo(fleer, bot) ||
-                    !mob->IsWithinLOS(from.GetPositionX(), from.GetPositionY(),
-                                      from.GetPositionZ() + CAREFUL_EYE_HEIGHT))
-                    continue;
-
-                PackOverlap overlap;
-                if (overlaps && SeparateAtSpawn(nullptr, from, mob, fleeRadius, overlap))
-                {
-                    if (!passing.outside || distance < passingAt)
-                    {
-                        passing = overlap;
-                        passingAt = distance;
-                    }
-
-                    continue;
-                }
-
-                helper = mob;
-                nearest = distance;
-            }
-
-            if (passing.outside && (!helper || passingAt < nearest))
-                note(passing);
-
-            if (!helper)
-                continue;
-
-            // It dies on the way: the helper never hears of the fight.
-            if (fleeDps < 0.0f)
-                fleeDps = std::max(botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get(),
-                                   GroupWeaponDps(bot));  // [lead259]
-
-            float const reachSec = nearest / std::max(fleer->GetSpeed(MOVE_RUN), 0.1f);
-            float const killSec = float(fleer->GetMaxHealth()) * FLEE_HEALTH_SHARE / fleeDps;
-            if (reachSec >= killSec * FLEE_REACH_MARGIN)
-            {
-                if (why)
-                {
-                    uint8 step = 0;
-                    for (PackWhy const& record : why->mobs)
-                    {
-                        if (record.mob == fleer->GetGUID())
-                        {
-                            step = record.step;
-                            break;
-                        }
-                    }
-
-                    why->skipped.push_back({helper->GetGUID(), fleer->GetGUID(), PackWhyKind::FleeTooFar, nearest,
-                                            fleeRadius, step, reachSec, killSec});
-                }
-
-                continue;
-            }
-
-            size_t const before = pack.size();
-            add(helper, PackWhyKind::FleeHelper, fleer, nearest, fleeRadius);
-            if (why && why->mobs.size() > before)
-            {
-                why->mobs[before].reachSec = reachSec;
-                why->mobs[before].killSec = killSec;
-            }
-
-            addFormation(helper);
-            direct.push_back(helper);  // the fleeing mob's call brings it, and it calls its neighbours where it stands
-            if (assistChain)
-            {
-                spread(before);
-                continue;
-            }
-
-            if (assistRadius <= 0.0f || !CallsOnEngage(helper))  // [b33_brs]
-                continue;
-
-            for (ObjectGuid const& guid : possible)
-            {
-                Creature* mob = botAI->GetCreature(guid);
-                if (mob && mob != helper && IsIdleEnemy(bot, mob) && helper->IsWithinDistInMap(mob, assistRadius) &&
-                    mob->CanAssistTo(helper, bot) && helper->IsWithinLOSInMap(mob) &&
-                    !crossing(helper, helper->GetPosition(), mob, assistRadius))
-                    add(mob, PackWhyKind::Assist, helper, -1.0f, assistRadius);
-            }
-
-            callForHelp(before);
+            Creature* const creature = mob->ToCreature();
+            return creature && PullPlanning::FleesForHelp(creature);
         }
+
+        float MaxHealth(Mob mob) const { return float(mob->GetMaxHealth()); }
+        float RunSpeed(Mob mob) const { return mob->GetSpeed(MOVE_RUN); }
+
+        float GroupDps()
+        {
+            return std::max(_botAI->GetAiObjectContext()->GetValue<float>("estimated group dps")->Get(),
+                            GroupWeaponDps(_bot));  // [lead259]
+        }
+
+        // [chain_melee_edge] how far from the fight spot the melee that go to a caster's stand may stand
+        float MeleeEdge() const { return FightHold::RADIUS + FightHold::MELEE_SLACK; }
+        bool RecordsWhy() const { return _why != nullptr; }
+
+        void NoteWhy(Mob mob, Mob source, PackWhyKind kind, float distance, float radius, uint8 step, float reachSec,
+                     float killSec)
+        {
+            if (_why)
+                _why->mobs.push_back({mob->GetGUID(), source ? source->GetGUID() : ObjectGuid::Empty, kind, distance,
+                                      radius, step, reachSec, killSec});
+        }
+
+        void NoteSkipped(Mob helper, Mob fleer, PackWhyKind kind, float distance, float radius, uint8 step,
+                         float reachSec, float killSec)
+        {
+            if (_why)
+                _why->skipped.push_back(
+                    {helper->GetGUID(), fleer->GetGUID(), kind, distance, radius, step, reachSec, killSec});
+        }
+
+        // [chain_step_weight] on every way out: the hops of this pack for EstimatePack, and the crossing groups that
+        // came in another way after all (they reach the spot: in the pack) or were noted against a mob that is not
+        // in it (a skipped helper: they cross nothing that fights)
+        void Done(std::vector<Mob> const& pack, std::vector<uint8> const& hops)
+        {
+            lastPackHops.clear();
+            for (size_t i = 0; i < pack.size() && i < hops.size(); ++i)
+            {
+                if (pack[i])
+                    lastPackHops.emplace_back(pack[i]->GetGUID(), hops[i]);
+            }
+
+            if (!_overlaps)
+                return;
+
+            auto const inPack = [&pack](Unit* mob)
+            { return std::find(pack.begin(), pack.end(), mob) != pack.end(); };
+            _overlaps->erase(std::remove_if(_overlaps->begin(), _overlaps->end(),
+                                            [&inPack](PackOverlap const& overlap)
+                                            {
+                                                return inPack(overlap.outside) ||
+                                                       (overlap.member && !inPack(overlap.member));
+                                            }),
+                             _overlaps->end());
+        }
+
+    private:
+        void Note(PackOverlap const& overlap)
+        {
+            if (std::none_of(_overlaps->begin(), _overlaps->end(),
+                             [&overlap](PackOverlap const& seen) { return seen.outside == overlap.outside; }))
+                _overlaps->push_back(overlap);
+        }
+
+        PlayerbotAI* _botAI;
+        Player* _bot;
+        std::vector<Unit*> _possible;
+        std::vector<PackOverlap>* _overlaps;
+        PackWhyRecord* _why;
+    };
+
+    void CollectPack(PlayerbotAI* botAI, Player* bot, Unit* target, Position const& spot, GuidVector const& possible,
+                     std::vector<Unit*>& pack, PackFight const& fight, bool assistChain = false, bool losPull = false,
+                     std::vector<PackOverlap>* overlaps = nullptr)
+    {
+        // "[pack why]": why each mob joins, parallel to `pack` (only while the planner records).
+        PackWhyRecord* why = nullptr;
+        if (packWhyRecorder.on && packWhyRecorder.packs.size() < PACK_WHY_MAX_PACKS)
+            why = &packWhyRecorder.packs.emplace_back();
+
+        LivePackWorld world(botAI, bot, possible, overlaps, why);
+        CollectPackOn(world, target, spot, pack, fight, assistChain, losPull);
     }
 
     // [raid3] what really joins a pull of `target` where it stands: the planner's own pack count (CollectPack: its
