@@ -17,6 +17,7 @@
 #include <sstream>
 #include <tuple>
 
+#include "AiFactory.h"  // [roster3] the talent tree in the gear key
 #include "AiObjectContext.h"
 #include "Bag.h"
 #include "BudgetValues.h"  // [guild50] free money for gear
@@ -7199,6 +7200,9 @@ void GuildCoordinator::UpdateGear()
         // [craft402] ... its stat weights (spec, talents spent, known spells), broken pieces, guild, letters,
         // reputation ranks (the reputation vendors) and the vendor picks its gold now pays for
         key = key * 131ull + p->GetActiveSpec() * 7ull + p->GetFreeTalentPoints() + (p->GetSpellMap().size() << 8);
+        // [roster3] its talent tree: a respec re-spends every point (free points and spell count can stay the same),
+        // and its stat weights change with the tree
+        key = key * 131ull + AiFactory::GetPlayerSpecTab(p);
         for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
             if (Item* item = p->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
                 item && item->GetUInt32Value(ITEM_FIELD_MAXDURABILITY) && !item->GetUInt32Value(ITEM_FIELD_DURABILITY))

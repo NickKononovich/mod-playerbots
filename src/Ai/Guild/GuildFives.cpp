@@ -2231,6 +2231,12 @@ void GuildCoordinator::PlanRoles()
     // One line per member when its facts change; the guild's totals against the raid roster
     uint32 total = 0;
     std::map<std::string, uint32> guildRoles;
+    // [roster1] the guild's roster against the raid targets: who holds each role, who still respecs for it (the
+    // core's unlearn price at its class trainer now)
+    std::map<std::string, std::vector<std::string>> holders;
+    std::vector<std::string> respecPlan;
+    auto gold = [](uint32 copper)
+    { return Acore::StringFormat("{}g {}s {}c", copper / 10000, (copper / 100) % 100, copper % 100); };
     for (PlanRow const& row : plan_)
     {
         if (row.grp < 'A' || row.grp > 'C')
@@ -2242,6 +2248,19 @@ void GuildCoordinator::PlanRoles()
         std::string const role = roleNow(row.low, p);
         ++guildRoles[role];
         uint8 const cls = p->getClass();
+        if (role != "dps")
+        {
+            holders[role].push_back(p->GetName() + " L" + std::to_string(p->GetLevel()));
+            if (int8 const spec = RoleSpecIndex(cls, role); spec >= 0 && SpecRoleNow(p) != role)
+            {
+                uint32 const cost = NewRpgProfession::NeedsRespec(p, uint32(spec) + 1) ? p->resetTalentsCost() : 0;
+                respecPlan.push_back(Acore::StringFormat("{} (class {} tree {} {} -> {}, unlearn {} at its class "
+                                                         "trainer)",
+                                                         p->GetName(), uint32(cls),
+                                                         uint32(AiFactory::GetPlayerSpecTab(p)), SpecRoleNow(p),
+                                                         SpecName(cls, uint8(spec)), gold(cost)));
+            }
+        }
         std::map<uint8, uint32> tabs = AiFactory::GetPlayerSpecTabs(p);
         std::string const planned = RoleOf(row.low);
         std::string line = Acore::StringFormat(
@@ -2272,6 +2291,23 @@ void GuildCoordinator::PlanRoles()
     {
         rolesWhy_["guild"] = guildText;
         LOG_INFO("playerbots", "[roles59] guild: {}", guildText);
+    }
+    auto joinNames = [](std::vector<std::string> const& v)
+    {
+        std::string out;
+        for (std::string const& s : v)
+            out += (out.empty() ? "" : ", ") + s;
+        return out.empty() ? std::string("none") : out;
+    };
+    std::string const rosterText = Acore::StringFormat(
+        "guild roles: healers {} -> target {} ({}), tanks {} -> target {} ({}), dps {}; respec plan: {}",
+        guildRoles["healer"], (total * RAID_HEALERS_PER_25 + 24) / 25, joinNames(holders["healer"]),
+        guildRoles["tank"], (total * RAID_TANKS_PER_25 + 24) / 25, joinNames(holders["tank"]), guildRoles["dps"],
+        joinNames(respecPlan));
+    if (rolesWhy_["roster1"] != rosterText)
+    {
+        rolesWhy_["roster1"] = rosterText;
+        LOG_INFO("playerbots", "[roster1] {}", rosterText);
     }
 }
 

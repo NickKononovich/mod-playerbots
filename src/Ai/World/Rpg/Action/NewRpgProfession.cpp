@@ -1143,6 +1143,11 @@ bool NewRpgDoProfessionAction::Execute(Event /*event*/)
                     botAI->ResetStrategies();
                     result = "unlearned its talents (tree " + std::to_string(before) + " -> " +
                              std::to_string(AiFactory::GetPlayerSpecTab(bot)) + ")";
+                    LOG_INFO("playerbots", "[roster2] {} resets talents at {} ({}c) -> {} (tree {} -> {}, role {})",
+                             bot->GetName(), npc->GetName(), moneyBefore - bot->GetMoney(),
+                             sPlayerbotAIConfig.PremadeSpecName[bot->getClass()][roleSpec - 1], uint32(before),
+                             uint32(AiFactory::GetPlayerSpecTab(bot)),
+                             sGuildCoordinator.RoleOf(bot->GetGUID().GetCounter()));
                 }
                 else
                 {
