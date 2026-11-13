@@ -461,6 +461,11 @@ public:
     {
         uint16 map{0};
         float killSeconds{0.0f}, tourYd{0.0f};
+        // [quest131] the experience the kills this objective needs give by themselves (Acore::XP::BaseGain over the
+        // creatures' own levels, their entries from the quest): the route's plan promises it beside the quest's
+        // reward, because those kills are work the plan has already priced the seconds of
+        float killXp{0.0f};
+        uint32 killCount{0};  // the kills behind that experience (0: no creature objective left)
         float areaX{0.0f}, areaY{0.0f};
         bool ender{false};
         float enderX{0.0f}, enderY{0.0f};

@@ -495,7 +495,10 @@ float QuestRoute::LegTable::Yards(uint32 a, uint32 b) const
     if (a == b)
         return 0.0f;
     auto const found = known_.find(Key(a, b));
-    return found != known_.end() ? found->second.walkYd : Straight(a, b) * WalkRatio();
+    // [quest131] a leg nobody searched a corridor for is its straight line, not that line times a measured
+    // path-over-straight average: such an average is a rate measured from history, the thing that disqualified the
+    // reach measure. Straight line under-states the walk, and the plan line says how many legs it under-states
+    return found != known_.end() ? found->second.walkYd : Straight(a, b);
 }
 
 float QuestRoute::LegTable::Seconds(uint32 a, uint32 b) const
@@ -505,8 +508,9 @@ float QuestRoute::LegTable::Seconds(uint32 a, uint32 b) const
     auto const found = known_.find(Key(a, b));
     if (found != known_.end())
         return found->second.walkYd / speed_ + found->second.fightSec;
-    float const straight = Straight(a, b);
-    return straight * WalkRatio() / speed_ + straight * FightPerYd();
+    // [quest131] the straight line over the bot's speed, and no fight term: a fight-seconds-per-yard average is a
+    // measured rate. An estimate honest about what it leaves out beats one that is confidently wrong
+    return Straight(a, b) / speed_;
 }
 
 size_t QuestRoute::LegTable::Measure(std::vector<std::pair<uint32, uint32>> const& legs)
@@ -522,9 +526,10 @@ size_t QuestRoute::LegTable::Measure(std::vector<std::pair<uint32, uint32>> cons
         float const straight = Straight(a, b);
         if (!measure_(points_[a], points_[b], fact.walkYd, fact.fightSec))
         {
-            // no corridor (no polygon at an end): the straight line as the build's other legs show it
-            fact.walkYd = straight * WalkRatio();
-            fact.fightSec = straight * FightPerYd();
+            // [quest131] no corridor (no polygon at an end): the straight line, and no fight time it cannot know
+            fact.walkYd = straight;
+            fact.fightSec = 0.0f;
+            ++estimated_;
         }
         else
         {
@@ -663,10 +668,13 @@ std::string QuestRoute::Describe(Stop const& stop)
 float QuestRoute::EstimateLeg(Plan const& plan, float ax, float ay, float bx, float by, float* walkYd)
 {
     float const straight = Dist(ax, ay, bx, by);
-    float const yd = straight * plan.walkRatio;
+    // [quest131] the straight line over the bot's speed. It used to be that line times the build's measured
+    // path-over-straight average plus its measured fight seconds per yard - a rate measured from history deciding
+    // where the bot goes next, which the user's rule reserves for formulas. It under-states a walk; the plan's
+    // legs_straight count says by how many legs
     if (walkYd)
-        *walkYd = yd;
-    return yd / std::max(plan.speed, 1.0f) + straight * plan.fightPerYd;
+        *walkYd = straight;
+    return straight / std::max(plan.speed, 1.0f);
 }
 
 QuestRoute::Plan QuestRoute::Solve(Input const& in)
@@ -788,9 +796,14 @@ QuestRoute::Plan QuestRoute::Solve(Input const& in)
         prev = s.node;
         if (s.kind == StopKind::Ender && !s.ready)
             plan.openXp += s.xp;  // [help21]
+        plan.killXp += s.killXp;  // [quest131] the kills its objectives need, worth their own experience
+        plan.killCount += s.killCount;
+        ++plan.totalLegs;
         plan.stops.push_back(std::move(s));
     }
-    plan.xp = xp;
+    plan.questXp = xp;
+    plan.xp = xp + plan.killXp;
+    plan.estimatedLegs = uint32(legs.EstimatedCount());
     plan.walkRatio = legs.WalkRatio();
     plan.fightPerYd = legs.FightPerYd();
     plan.speed = legs.Speed();
@@ -1280,11 +1293,14 @@ QuestRoute::BotRoute& NewRpgBaseAction::CurrentRoute()
         LOG_INFO("playerbots",
                  "{} stops={} eta={} walk={} xp={} open={} takes={} left_out={} offers={} legs={} walk_ratio={:.2f} "
                  "fight_s_per_100yd={:.1f} handins_sooner={} would_reach={:.2f} exp_xp={} plans={} reached={} "
-                 "lost={} why={} |{}",  // [quest15] handins_sooner, [quest122] [quest130] would_reach / exp_xp
+                 "lost={} xp_quest={} xp_kill={} kills={} legs_straight={}/{} why={} |{}",
+                 // [quest15] handins_sooner, [quest122] [quest130] would_reach / exp_xp, [quest131] the two terms
+                 // of the promise apart (a 20x must not hide inside one number) and the legs it under-states
                  RouteHead(bot, "plan"), r.plan.stops.size(), uint32(r.plan.eta), uint32(r.plan.walkYd),
                  uint32(r.plan.xp), logQuests, r.plan.takes, in.leftOut, in.offers.size(), r.plan.measured,
                  r.plan.walkRatio, r.plan.fightPerYd * 100.0f, r.plan.earlierHandIns, reach, uint32(expectedXp),
-                 r.builds, r.stopsDone, r.stopsLeft, why, stops);
+                 r.builds, r.stopsDone, r.stopsLeft, uint32(r.plan.questXp), uint32(r.plan.killXp),
+                 r.plan.killCount, r.plan.estimatedLegs, r.plan.totalLegs, why, stops);
         // [walk68] the plan's next stop is a walk priced before it is walked (TripRefused: an orange / red or elite
         // roamer's round at the stop, a walk through a reach it must never fight - the route search with the static
         // spawns beyond sight; its answer kept per stop and level): a refused one is postponed now and the route built

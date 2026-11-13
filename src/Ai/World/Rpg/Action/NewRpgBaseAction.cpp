@@ -1017,9 +1017,12 @@ bool NewRpgBaseAction::GraphStage(WorldPosition const& dest, float disToDest)
         if (last == key)
             return false;
         last = key;
-        LOG_INFO("playerbots", "[nav181] {} L{} graph walk to ({:.0f},{:.0f}) {:.0f} yd: no plan ({} node(s) banned, "
-                 "{} us), the whole walk searched",
-                 bot->GetName(), bot->GetLevel(), goal.x, goal.y, disToDest, info.graphBans.size(), plan.us);
+        // [nav230] ... and which of PlanWalk's lookups said so: "no plan ... 0 us" named none of them, and the 0 us
+        // was the timer never taken rather than an instant search
+        LOG_INFO("playerbots", "[nav181] {} L{} graph walk to ({:.0f},{:.0f}) {:.0f} yd: no plan - {} ({} node(s) "
+                 "banned, {} us), the whole walk searched",
+                 bot->GetName(), bot->GetLevel(), goal.x, goal.y, disToDest, plan.why, info.graphBans.size(),
+                 plan.us);
         return false;
     }
     // the stage: the plan's first node beyond two sights (the last one when all lie nearer), back to the last whose
@@ -8750,7 +8753,10 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         objective.y = middle->pos.y;
         objective.z = middle->z;
         objective.quests.push_back(questId);
-        objective.work = workOf(quest, nullptr);
+        GuildCoordinator::QuestWork objWork;
+        objective.work = workOf(quest, &objWork);
+        objective.killXp = objWork.killXp;  // [quest131] what the kills this objective needs are worth themselves
+        objective.killCount = objWork.killCount;
         in.stops.push_back(objective);
         if (hasEnder && onLandmass(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ()))
             addToHub(ender.GetPositionX(), ender.GetPositionY(), ender.GetPositionZ(), questId, xp, false);
@@ -8834,6 +8840,8 @@ void NewRpgBaseAction::CollectRouteStops(QuestRoute::Input& in,
         take.objective.kind = StopKind::Objective;
         take.objective.quests.push_back(start.questId);
         take.objective.work = workOf(quest, &work) + triggerSec;
+        take.objective.killXp = work.killXp;  // [quest131]
+        take.objective.killCount = work.killCount;
         take.objective.x = start.x;
         take.objective.y = start.y;
         take.objective.z = INVALID_HEIGHT;

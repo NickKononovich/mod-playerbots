@@ -54,6 +54,10 @@ namespace QuestRoute
         // every quest it hands in is complete already (no objective stop before it)
         float xp{0.0f};
         bool ready{false};
+        // [quest131] an objective stop: the experience its own kills give (QuestWork::killXp). It is not part of
+        // `xp`, so the hand-in weighting still orders by what a hand-in pays; the plan counts it in its promise
+        float killXp{0.0f};
+        uint32 killCount{0};
     };
 
     // a giver the route may pass: the quests the bot would take there, each with its area and ender
@@ -89,10 +93,13 @@ namespace QuestRoute
         float Yards(uint32 a, uint32 b) const;
         // the legs not measured yet are measured now; how many were new
         size_t Measure(std::vector<std::pair<uint32, uint32>> const& legs);
+        // [quest131] kept for the plan's own report only (EstimateLeg's caller and the [route] line): never used to
+        // estimate a leg, because a rate measured from history may not decide a route
         float WalkRatio() const { return straightYd_ > 0.0f ? walkYd_ / straightYd_ : 1.0f; }
         float FightPerYd() const { return straightYd_ > 0.0f ? fightSec_ / straightYd_ : 0.0f; }
         float Speed() const { return speed_; }
         size_t MeasuredCount() const { return known_.size(); }
+        size_t EstimatedCount() const { return estimated_; }  // [quest131] legs with no corridor: straight line
 
     private:
         struct Fact
@@ -106,6 +113,7 @@ namespace QuestRoute
         std::vector<Point> points_;
         std::unordered_map<uint64, Fact> known_;
         float straightYd_{0.0f}, walkYd_{0.0f}, fightSec_{0.0f};  // the measured legs' sums
+        size_t estimated_{0};  // [quest131] legs a corridor search could not answer
     };
 
     struct Input
@@ -137,7 +145,12 @@ namespace QuestRoute
         std::vector<Stop> stops;  // in order
         float eta{0.0f};          // seconds: walks + the fights on them + work
         float walkYd{0.0f};
-        float xp{0.0f};
+        float xp{0.0f};           // [quest131] the promise: questXp + killXp
+        float questXp{0.0f};      // [quest131] the quests' own rewards
+        float killXp{0.0f};       // [quest131] the experience of the kills its objectives need
+        uint32 killCount{0};
+        uint32 estimatedLegs{0};  // [quest131] legs with no corridor searched: straight line, no fight time
+        uint32 totalLegs{0};
         uint32 takes{0};          // quests it plans to take on the way
         uint32 earlierHandIns{0};  // [quest15] enders moved sooner by the hand-in weighting (HandInsEarlier)
         // [help21] the experience of the open quests' hand-ins only (no ready hub: a complete quest's hand-in comes

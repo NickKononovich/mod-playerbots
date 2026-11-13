@@ -7440,6 +7440,19 @@ bool GuildCoordinator::QuestWorkOf(Player* bot, uint32 questId, float dps, Quest
                 return false;
             seconds += double(need - done) * s.npcHp[i] / dps;
         }
+        // [quest131] what those kills are worth on their own, by the core's own experience formula over the
+        // creature's level. A quest objective's kills were priced in seconds and promised nothing, so a plan full
+        // of them looked worth only its quest rewards (b478: the plan promised 198 XP/min while the bots earned
+        // 7 XP/min of quest experience and 46 XP/min of kills the plan never counted)
+        if (need > done && quest->RequiredNpcOrGo[i] > 0)
+            if (CreatureTemplate const* npc = sObjectMgr->GetCreatureTemplate(uint32(quest->RequiredNpcOrGo[i])))
+            {
+                uint8 const npcLevel = uint8(std::max<uint32>(1, (npc->minlevel + npc->maxlevel) / 2));
+                out.killCount += need - done;
+                ContentLevels const content = GetContentLevelsForMapAndZone(s.map, 0);
+                out.killXp += float(need - done) *
+                              float(Acore::XP::BaseGain(bot->GetLevel(), npcLevel, content));
+            }
     }
     for (uint8 i = 0; i < QUEST_ITEM_OBJECTIVES_COUNT; ++i)
     {
