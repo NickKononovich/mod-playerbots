@@ -572,6 +572,35 @@ namespace FiveGate
 
     uint8 TopLevel(uint32 mapId) { return Spawns(mapId).topLevel; }
 
+    // [gate100] The dungeon's own level band per map, as LoadDungeons reads it from the finder's entry
+    // (DungeonOption::minLevel / maxLevel) and the instance's own access requirement (walkMinLevel, the game's own
+    // entry level from dungeon_access_template). This is the one term the gate still decides on, so it is kept here
+    // where Judge can reach it from a mapId alone. Several wings share one map (Scarlet Monastery, Dire Maul) with
+    // bands of their own, so the map keeps the LOWEST walk-in floor and the HIGHEST band top among them: the most
+    // permissive of the wings, which is the only honest answer when all Judge is given is the map.
+    // Written once by LoadDungeons on the world thread before any five exists, read by Judge on the world thread.
+    std::map<uint32, std::pair<uint32, uint32>> g_bands;
+
+    void NoteBand(uint32 mapId, uint32 walkMinLevel, uint32 maxLevel)
+    {
+        auto const it = g_bands.find(mapId);
+        if (it == g_bands.end())
+            g_bands[mapId] = {walkMinLevel, maxLevel};
+        else
+        {
+            it->second.first = std::min(it->second.first, walkMinLevel);
+            it->second.second = std::max(it->second.second, maxLevel);
+        }
+    }
+
+    // the map's band, {0, 0} when the map is no five's dungeon (no level term to read: Judge admits on its own count
+    // of the map's pulls then, as it did before)
+    std::pair<uint32, uint32> Band(uint32 mapId)
+    {
+        auto const it = g_bands.find(mapId);
+        return it == g_bands.end() ? std::pair<uint32, uint32>{0, 0} : it->second;
+    }
+
     // [pack1] The five gate's reading of the one pull-pack model (LeaderPackModel.h): the map's spawn rows, before a
     // five is anywhere near the instance. Every term the model asks for - the formations, the engage call, what the
     // spot and the walk in wake, the scripted calls for help, the assistance chain with its hops, the fight a mob
@@ -979,6 +1008,12 @@ namespace FiveGate
         float worstMana = 0.0f;
         uint32 over = 0;
         uint32 judged = 0;
+        // [gate100] the admission, the one thing the gate still decides: the five is roughly on level for the
+        // dungeon, so it will kill something in there. `clears` above (every pull taken) is a MEASUREMENT from here
+        // on - it ranks the carriers the five is assembled from and is reported per five, it refuses nobody.
+        bool admits = false;
+        std::string levelWhy;   // the level term in its own words, for the [gate100] line
+        std::string overList;   // [dun263] the pulls over capacity, as the why line lists them
     };
 
     // The five: the tank first, the healer second (PickFive's order). [dun170] The dungeon is pulled as its leader
@@ -1002,7 +1037,8 @@ namespace FiveGate
         if (five.size() < 2 || !five[0] || !five[1])
         {
             out.clears = false;
-            out.why = "no tank / healer";
+            out.admits = false;  // [gate100] no five to be on level
+            out.why = out.levelWhy = "no tank / healer";
             return out;
         }
         Player* tank = five[0];
@@ -1903,7 +1939,44 @@ namespace FiveGate
                                        " [+ the [dm3] summons above = the xN judged; sight by the aggro height gate,"
                                        " no walk calls round a corner, no walk-in term]")
                        : std::string("-");
-        out.clears = failed == 0 && judged > 0;
+        // [gate100] User decision 2026-11-14: a dungeon is LEARNING, not an exam. The five walks in, kills the first
+        // boss, takes its gear, grows, kills the second. A five that cannot take two pulls out of a hundred is a
+        // dungeon nearly cleared, not a reason to keep it outside - a gate in that shape has no place. So the
+        // admission is the level term and nothing else: that the five is roughly on level for the dungeon, i.e. that
+        // it will kill something in there. No new number is introduced for it - the term is the dungeon's own band,
+        // which LoadDungeons already reads (the finder's L{min}-{max} and the instance's own entry level, the game's
+        // own rule a five below the floor cannot even enter), against the members' own levels. Above the band a
+        // member only overkills the place, so there is no ceiling here (the band's top is reported, not enforced;
+        // who may go above it at all is the finder's and [cert20]'s decision, made long before the gate).
+        // The capacity count below is kept whole and measured on every look - `clears`, `over`, `judged`,
+        // `worstLoad`, `overList` and the whole why line - and it still ranks the carriers a five is assembled from
+        // ([gate93] [gate94] [order368] [gate98]). It refuses nobody. What it costs is reported per five that enters,
+        // on the [gate100] line in FormFiveLocked, and counted by batch_triage.py.
+        auto const [bandFloor, bandTop] = Band(mapId);
+        std::string belowFloor;
+        uint32 lowLevel = 0, highLevel = 0;
+        for (Player* p : five)
+        {
+            if (!p)
+                continue;
+            uint32 const level = p->GetLevel();
+            lowLevel = lowLevel ? std::min(lowLevel, level) : level;
+            highLevel = std::max(highLevel, level);
+            if (bandFloor && level < bandFloor)
+                belowFloor += Acore::StringFormat("{}{} L{}", belowFloor.empty() ? "" : ", ", p->GetName(), level);
+        }
+        out.admits = judged > 0 && belowFloor.empty();
+        out.levelWhy = Acore::StringFormat(
+            "[gate100] level: the five L{}-{}, the dungeon's own band L{}-{} (floor = the instance's own entry "
+            "level); {}; {} pull(s) of the map judged",
+            lowLevel, highLevel,
+            bandFloor ? std::to_string(bandFloor) : std::string("-"),
+            bandTop ? std::to_string(bandTop) : std::string("-"),
+            !bandFloor  ? "no band read for this map: no level term to read, admitted on the map's own pulls"
+            : belowFloor.empty() ? "every member at or above the floor: it will kill something in there"
+                                 : "below the floor, it gets in nowhere: " + belowFloor,
+            judged);
+        out.clears = out.admits && failed == 0;
         out.worstLoad = worst.load;  // [assist22]
         out.worstDrop = worst.dropShare;
         out.worstMana = worst.manaShare;
@@ -1957,6 +2030,15 @@ namespace FiveGate
                                       overCount > OVER_LISTED
                                           ? Acore::StringFormat(" +{} more", overCount - OVER_LISTED)
                                           : std::string()));
+        // [gate100] the measured pulls over capacity, kept on the verdict so the five's own entry line can carry
+        // them without re-reading the why line, and the level term the admission was decided on appended to the why
+        // every caller already prints
+        out.overList =
+            overList.empty()
+                ? std::string()
+                : overList + (overCount > OVER_LISTED ? Acore::StringFormat(" +{} more", overCount - OVER_LISTED)
+                                                      : std::string());
+        out.why += "; " + out.levelWhy;
         return out;
     }
 }
@@ -2057,6 +2139,9 @@ void GuildCoordinator::LoadDungeons()
             continue;
         }
         byMap[d.mapId].push_back(dungeons_.size());
+        // [gate100] the band the five gate admits on: the instance's own entry level as its floor and the finder's
+        // band top, per map (FiveGate::NoteBand keeps the most permissive of the wings that share a map)
+        FiveGate::NoteBand(d.mapId, d.walkMinLevel, d.maxLevel);
         dungeons_.push_back(d);
     }
 
@@ -3554,6 +3639,10 @@ void GuildCoordinator::CertifyBatch()
                 walkPool.push_back(c);
         }
         float bestLoad = 99.0f;
+        // [gate100] the best five the pool offers by the capacity measurement (the lowest worst-pull load among the
+        // pairs judged), kept so the batch can go in with it when no pair takes every pull: the count no longer
+        // refuses a five, it only ranks the carriers (user decision 2026-11-14)
+        std::vector<FiveCandidate> bestFive;
         for (std::vector<FiveCandidate> const& sub : {finderPool, walkPool})
         {
             if (sub.size() < 5)
@@ -3570,9 +3659,10 @@ void GuildCoordinator::CertifyBatch()
                     why = v.why;
                     return true;
                 }
-                else if (v.worstLoad < bestLoad)
+                else if (v.admits && v.worstLoad < bestLoad)
                 {
                     bestLoad = v.worstLoad;
+                    bestFive = five;  // [gate100] on level: it may go in if nothing clears
                     why = v.why;
                 }
             }
@@ -3609,12 +3699,23 @@ void GuildCoordinator::CertifyBatch()
                         why = v.why;
                         return true;
                     }
-                    if (v.worstLoad < bestLoad)
+                    if (v.admits && v.worstLoad < bestLoad)
                     {
                         bestLoad = v.worstLoad;
+                        bestFive = {*tanks[ti], *healers[hi], *dps[0], *dps[1], *dps[2]};  // [gate100]
                         why = v.why;
                     }
                 }
+        }
+        // [gate100] no pair of the pool takes every pull of the map: the batch goes in with the best five it has,
+        // the one with the lowest worst-pull load, because a dungeon is learning and not an exam (user decision
+        // 2026-11-14). What that five is short of is on its own [gate100] line when it enters
+        if (!bestFive.empty())
+        {
+            out = bestFive;
+            why = Acore::StringFormat("[gate100] no pair takes every pull: the best of the pool goes in (worst pull "
+                                      "{:.2f}); {}", bestLoad, why);
+            return true;
         }
         if (why.empty())
             why = "no tank, healer and 3 dps left in the pool that can get in";
@@ -4163,9 +4264,25 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
                 players.push_back(p);
             }
         }
+        // [gate100] Every five that enters is judged once here, on its final members, and what the capacity count
+        // costs it is printed on one line of its own - the measurement the user asked to be tracked instead of
+        // enforced (decision 2026-11-14). This is the only place every five passes through: the look's own five
+        // (AutoFive), the free five, the [cert10] certification batch and the forced `guild formfive` all form here.
+        // The drink pricing below reads the same verdict, so the five is judged once, not twice.
+        FiveGate::Verdict const gateVerdict =
+            players[0] && players[1] ? FiveGate::Judge(d.mapId, players, healer2) : FiveGate::Verdict{};
+        LOG_INFO("playerbots",
+                 // "worst-pull load", not the gate's own "worst {load}:", and "pull(s)" against the gate's "pulls
+                 // over capacity": this line is the five's own measurement, and neither the [dm8] gate parser nor a
+                 // grep for the gate's refusals must read it as one of them
+                 "[gate100] five {} enters {}: {} of {} pull(s) over capacity (measured, no longer a gate - "
+                 "worst-pull load {:.2f}){}; admitted on level: {}",
+                 five.id, d.contentKey, gateVerdict.over, gateVerdict.judged, gateVerdict.worstLoad,
+                 gateVerdict.overList.empty() ? std::string() : "; over: " + gateVerdict.overList,
+                 gateVerdict.levelWhy.empty() ? "no tank / healer read from the roles" : gateVerdict.levelWhy);
         if (players[0] && players[1] && drinkMana > 0.0f)
         {
-            FiveGate::Verdict const priced = FiveGate::Judge(d.mapId, players, healer2);
+            FiveGate::Verdict const& priced = gateVerdict;
             std::string line;
             for (Player* p : players)
             {
@@ -4354,7 +4471,10 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
         if (!everyone)
             return false;
         FiveGate::Verdict const verdict = FiveGate::Judge(d->mapId, players, healer2);
-        if (!verdict.clears)
+        // [gate100] the replacement is taken on level, not on capacity (the candidates are already offered in the
+        // five's own order: an open clear first, then the highest level). Its capacity count goes on the five's
+        // [gate100] line when it enters
+        if (!verdict.admits)
             continue;
 
         // the refused member goes back to its own plan (as DisbandFive does for each member)
@@ -5099,7 +5219,10 @@ bool GuildCoordinator::PreviewFive(std::string const& contentKey, std::vector<st
         players.push_back(c.player);
     }
     FiveGate::Verdict const v = FiveGate::Judge(mapId, players);
-    verdict = std::string(v.clears ? "clears: " : "does not clear: ") + v.why;
+    // [gate100] the gate's own answer first (the level term, the only thing it decides), then the capacity
+    // measurement: "clears" means it takes every pull of the map, not that it is let in
+    verdict = std::string(v.admits ? "goes in" : "does not go in (level)") +
+              std::string(v.clears ? ", takes every pull: " : ", pulls over capacity (measured, no bar): ") + v.why;
     return true;
 }
 
@@ -6016,7 +6139,14 @@ void GuildCoordinator::AutoFive()
                                                          : " -> [order367] two healers: no pair passes";
                 }
             }
-            if (!verdict.clears)
+            // [gate100] the gate's own decision, and the only one it still makes: the five is roughly on level for
+            // the dungeon (FiveGate::Verdict::admits - the dungeon's own band against the members' levels). The
+            // capacity count above has already chosen the carriers ([gate93] [gate94] [order368]) and says what the
+            // five is short of; it does not hold the five outside any more (user decision 2026-11-14: a dungeon is
+            // learning - the five goes in, kills the first boss, gears up and takes the next; two pulls of a hundred
+            // it cannot take is a dungeon nearly cleared). Every five that enters prints its count on a [gate100]
+            // line in FormFiveLocked, and batch_triage.py counts them
+            if (!verdict.admits)
             {
                 if (guardCount == 0)
                 {
