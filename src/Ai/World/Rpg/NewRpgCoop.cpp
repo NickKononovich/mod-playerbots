@@ -52,6 +52,7 @@
 #include "QuestDef.h"
 #include "SoloSafety.h"  // [deaths23]
 #include "QuestStats.h"
+#include "TravelMgr.h"  // [help60] the route across maps a helper's trip is priced by
 #include "ScriptMgr.h"
 #include "StringFormat.h"
 #include "SurvivalKit.h"
@@ -2509,15 +2510,51 @@ struct WalkNeed
 {
     ObjectGuid helper;
     Position camp;
+    uint32 campMap = 0;  // [help60] the camp's map: a helper standing on another one travels there (its route)
 };
 std::vector<WalkNeed> walkNeeds;
-std::map<std::pair<uint32, std::tuple<int32, int32, int32>>, float> walkCache;  // (helper, camp to a yard) -> yd
+// [help60] the trip searched for a (helper, camp): its yards where the whole trip is a walk (0 where a ride or a
+// portal carries it: the route's own legs are no walk of its) and its seconds, the one price the help is judged at
+struct Walked
+{
+    float yd = 0.0f;
+    float sec = 0.0f;
+    bool found = false;  // a trip there was found at all (no route: the camp is no help of that member)
+};
+std::map<std::pair<uint32, std::tuple<int32, int32, int32>>, Walked> walkCache;  // (helper, camp to a yard) -> trip
 bool walkMissing = false;  // pass 1: a walk was asked for that is not in the cache
 
 std::pair<uint32, std::tuple<int32, int32, int32>> WalkKey(Player* p, Position const& camp)
 {
     return {p->GetGUID().GetCounter(),
             {int32(camp.GetPositionX()), int32(camp.GetPositionY()), int32(camp.GetPositionZ())}};
+}
+
+// [help60] the one judge of a helper's trip to the camp: its searched walk where the camp is on its own map, else the
+// route there (TravelRouteMgr: the boats, zeppelins and portals that member may use, each leg's own time - the same
+// search the gather plan prices a place on another continent with, and the same ways MoveFarTo then takes it by).
+// `found` false: no route at all from where it stands
+Walked TripTo(Player* p, Position const& camp, uint32 campMap)
+{
+    Walked w;
+    if (!p)
+        return w;
+    if (p->GetMapId() == campMap)
+    {
+        w.yd = Leader::WalkYd(p, camp);
+        w.sec = w.yd / std::max(p->GetSpeed(MOVE_RUN), 1.0f);
+        w.found = true;
+        return w;
+    }
+    TravelRouteMgr::Leg leg;
+    float seconds = 0.0f;
+    WorldPosition const dest(campMap, camp.GetPositionX(), camp.GetPositionY(), camp.GetPositionZ());
+    if (sTravelRouteMgr.FindRoute(p, dest, leg, seconds))
+    {
+        w.sec = seconds;  // the whole trip: its walks to and from the piers, the waits, the rides
+        w.found = true;
+    }
+    return w;
 }
 
 bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
@@ -2551,6 +2588,8 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         float eta;
         float walkYd;
         bool exact = false;  // [help34] eta / walkYd from its searched walk (else the straight line's lower bound)
+        bool offMap = false;  // [help60] it stands on another map: its trip is the route's (rides, portals), not a walk
+        bool noRoute = false;  // [help60] no trip there was found from where it stands
     };
     std::vector<Candidate> pool;
     std::vector<Candidate> holding;  // [lag368] the members the guild's open dungeon waits on (their levels)
@@ -2565,11 +2604,13 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             ++skipped["human"];
             continue;
         }
-        if (p->GetMapId() != req->GetMapId())
-        {
-            ++skipped["another continent"];
-            continue;
-        }
+        // [help60] user 2026-11-14: another continent is a trip, not a wall - an unpriced activity is never chosen,
+        // so the map it stands on turns into the minutes of its route (TravelRouteMgr::FindRoute: the boats,
+        // zeppelins and portals it may use, the same judge the gather plan prices a far place with) and is weighed
+        // against the help like any walk. Before, every member off the requester's map was dropped unpriced: b486
+        // refused all 25 open requests "no free member fits", "another continent" the biggest count in every one of
+        // them (up to 74 members), 5 helpers assigned for 53 requests
+        bool const offMap = p->GetMapId() != req->GetMapId();
         if (auto const post = postings.find(low); post != postings.end() && post->second.party)
         {
             ++skipped["in a co-op / help party"];
@@ -2617,10 +2658,10 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         if (sGuildCoordinator.HoldsGuildDungeon(low))
         {
             ++skipped["the guild's open dungeon waits on its level"];
-            holding.push_back({p, 0.0f, 0.0f, false});
+            holding.push_back({p, 0.0f, 0.0f, false, offMap});  // [help60] the map it stands on travels with it
             continue;
         }
-        pool.push_back({p, 0.0f, 0.0f, false});
+        pool.push_back({p, 0.0f, 0.0f, false, offMap});
     }
     if (pool.empty())
         pool.swap(holding);  // [lag368] the only fits
@@ -2628,18 +2669,24 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
     // [help28] ... read before the walks are searched: the candidates' walks (a long route each, every update, for
     // every open request) were the help update's cost - b377: 253 updates, 87 ms each, max 811 ms
     uint64 priceKey = (uint64(req->GetLevel()) << 56) ^ (uint64(r.obj.questId) << 24) ^ uint64(pool.size());
+    // [help60] ... and the map it stands on: the same cell on another map is another trip
     for (Candidate const& c : pool)  // each one and the 100-yd cell it stands in (a walk changes with it)
-        priceKey = (priceKey * 1000003ull + c.p->GetGUID().GetCounter()) * 31ull +
-                   uint64(int64(c.p->GetPositionX() / 100.0f) * 7919 + int64(c.p->GetPositionY() / 100.0f));
+        priceKey = ((priceKey * 1000003ull + c.p->GetGUID().GetCounter()) * 31ull +
+                    uint64(int64(c.p->GetPositionX() / 100.0f) * 7919 + int64(c.p->GetPositionY() / 100.0f))) *
+                       131ull +
+                   uint64(c.p->GetMapId());
     if (!r.human && r.refusedKey && r.refusedKey == priceKey)
         return false;
     // [help34] the walks are searched only where they can decide: each candidate starts with the straight line to
     // the camp (a walk is never shorter), its walk is searched when its lower bound could still beat the best found
     // (the winner's cost, the healer's eta) and for every member chosen. b386: help update median 128 ms, max 879 -
     // every candidate's walk (a long route each) for every priced request
-    auto const campOf = [&](Player* p)
+    // [help60] the camp lies where the requester stands: its own map, for every candidate (before, a candidate off
+    // that map was given the requester's position without it - no trip could be priced from there)
+    uint32 const campMap = req->GetMapId();
+    auto const campOf = [&]()
     {
-        return r.at != WorldPosition() && r.at.GetMapId() == p->GetMapId()
+        return r.at != WorldPosition() && r.at.GetMapId() == campMap
                    ? Position(r.at.GetPositionX(), r.at.GetPositionY(), r.at.GetPositionZ())
                    : req->GetPosition();
     };
@@ -2648,25 +2695,44 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         if (c.exact)
             return;
         // [help53] the walk searched outside the lock, else (planning) asked for, else searched here
-        Position const camp = campOf(c.p);
+        Position const camp = campOf();
         if (auto const cached = walkCache.find(WalkKey(c.p, camp)); cached != walkCache.end())
-            c.walkYd = cached->second;
+        {
+            c.walkYd = cached->second.yd;
+            c.eta = cached->second.sec;
+            c.noRoute = !cached->second.found;
+        }
         else if (helpPlanning)
         {
-            walkNeeds.push_back({c.p->GetGUID(), camp});
+            walkNeeds.push_back({c.p->GetGUID(), camp, campMap});
             walkMissing = true;
             return;  // its lower bound stays (pass 2 prices it)
         }
         else
-            c.walkYd = Leader::WalkYd(c.p, camp);
-        c.eta = c.walkYd / std::max(c.p->GetSpeed(MOVE_RUN), 1.0f);
+        {
+            Walked const trip = TripTo(c.p, camp, campMap);
+            c.walkYd = trip.yd;
+            c.eta = trip.sec;
+            c.noRoute = !trip.found;
+        }
         c.exact = true;
     };
     for (Candidate& c : pool)
     {
-        c.walkYd = c.p->GetExactDist(campOf(c.p));
+        if (c.offMap)
+        {
+            // [help60] across maps there is no straight line to bound a trip with: its route is its only price, so
+            // every off-map candidate's is searched (pass 1 asks for it, pass 2 reads it)
+            exactWalk(c);
+            continue;
+        }
+        c.walkYd = c.p->GetExactDist(campOf());
         c.eta = c.walkYd / std::max(c.p->GetSpeed(MOVE_RUN), 1.0f);
     }
+    for (Candidate const& c : pool)
+        if (c.noRoute)
+            ++skipped["no trip to the camp from where it stands"];  // [help60] a named refusal, not a dropped member
+    pool.erase(std::remove_if(pool.begin(), pool.end(), [](Candidate const& c) { return c.noRoute; }), pool.end());
     std::sort(pool.begin(), pool.end(), [](Candidate const& a, Candidate const& b) { return a.eta < b.eta; });
 
     std::vector<Player*> party{req};
@@ -2738,6 +2804,12 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             }
         }
         exactWalk(*pick);  // [help34] every member chosen walks its searched walk in the price
+        if (pick->noRoute)  // [help60] its trip was searched only now and there is none: no member of the party
+        {
+            ++skipped["no trip to the camp from where it stands"];
+            pool.erase(pick);
+            continue;
+        }
         party.push_back(pick->p);
         chosen.push_back(*pick);
         pool.erase(pick);
@@ -2750,11 +2822,22 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
         return false;  // [help53] planned: its walks are searched outside the lock, priced in pass 2
     if (!v.win || chosen.empty())
     {
+        // [help60] a party that loses names what stopped it growing: the free members it had (all of them in it
+        // already) or the group the game allows. b486: "a party of 2 loses the camp too" for Kylantino read as a
+        // party size rule - it was the one free member on its map, every other one dropped unpriced as "another
+        // continent"
         std::string const why =
             chosen.empty()
                 ? "no free member fits (" + (skippedText.empty() ? std::string("nobody online") : skippedText) + ")"
-                : Acore::StringFormat("a party of {} loses the camp too: {:.0f} dmg on {} over {:.0f} s, ehp {:.0f}",
-                                      party.size(), v.damage, v.taker->GetName(), v.seconds, v.ehp);
+                : Acore::StringFormat(
+                      "a party of {} loses the camp too: {:.0f} dmg on {} over {:.0f} s, ehp {:.0f} - {}{}",
+                      party.size(), v.damage, v.taker->GetName(), v.seconds, v.ehp,
+                      pool.empty() ? Acore::StringFormat("every one of the {} free member(s) is in it already",
+                                                         chosen.size())
+                                   : Acore::StringFormat("the group the game allows is full at {} ({} free member(s) "
+                                                         "left over)",
+                                                         uint32(MAXGROUPSIZE), pool.size()),
+                      skippedText.empty() ? std::string() : " (not free: " + skippedText + ")");
         if (why != r.lastRefusal)
         {
             r.lastRefusal = why;
@@ -2955,9 +3038,12 @@ bool AssignLocked(HelpRequest& r, Out& out, std::string& reply)
             MarkParty(low, true);
         out.logs.push_back(Acore::StringFormat(
             "[help] assign {} to={} group={} request={} quest=q{} role={} level={} camp_top=L{} eta={:.0f} walk={:.0f} "
-            "party={} dmg={:.0f} ehp={:.0f} fight={:.0f}{} reason={}",
+            "trip={} party={} dmg={:.0f} ehp={:.0f} fight={:.0f}{} reason={}",
             c.p->GetName(), r.name, id, r.id, r.obj.questId, RoleName(c.p), c.p->GetLevel(), r.topLevel, c.eta,
-            c.walkYd, party.size(), v.damage, v.ehp, v.seconds, HelpStamp(),
+            c.walkYd,
+            // [help60] the kind of trip its eta is: its own walk, or the route from the map it stands on
+            c.offMap ? Acore::StringFormat("route from map {}", c.p->GetMapId()) : std::string("walk"),
+            party.size(), v.damage, v.ehp, v.seconds, HelpStamp(),
             aloneWins ? "the human asked; alone wins by the judge, one helper anyway"
                       : "the smallest party the judge says wins the camp"));
         coming += (coming.empty() ? "" : ", ") +
@@ -4313,15 +4399,32 @@ void UpdateHelp()
     }
     // the walks without the lock (a long route each): Leader::WalkYd may take the board's lock itself (RouteCosts ->
     // JudgesPulls), so none of it runs while this update holds it
-    std::vector<std::pair<std::pair<uint32, std::tuple<int32, int32, int32>>, float>> walked;
+    std::map<std::pair<uint32, std::tuple<int32, int32, int32>>, Walked> walked;
     uint32 const walkStart = getMSTime();
+    uint32 crossed = 0;  // [help60] of them, the trips across maps, and those with no route at all
+    uint32 noRoute = 0;
     for (WalkNeed const& need : needs)
         if (Player* helper = ObjectAccessor::FindPlayer(need.helper); helper && helper->IsInWorld())
-            walked.emplace_back(WalkKey(helper, need.camp), Leader::WalkYd(helper, need.camp));
+        {
+            // [help60] one search per (helper, camp): the same pair asked for by two requests is searched once, and
+            // a helper off the camp's map is priced by its route there, not dropped
+            auto const key = WalkKey(helper, need.camp);
+            if (walked.find(key) != walked.end())
+                continue;
+            bool const cross = helper->GetMapId() != need.campMap;
+            Walked const trip = TripTo(helper, need.camp, need.campMap);
+            walked.emplace(key, trip);
+            if (cross)
+                ++crossed;
+            if (!trip.found)
+                ++noRoute;
+        }
     if (!needs.empty())  // [help53] its own line: the walks searched outside the lock
         out.logs.push_back(Acore::StringFormat("[help53] {} request(s) planned, {} walk(s) searched outside the "
-                                               "board's lock in {} ms",
-                                               assignNow.size(), walked.size(), getMSTimeDiff(walkStart, getMSTime())));
+                                               "board's lock in {} ms; [help60] {} of them across maps, {} with no "
+                                               "trip at all",
+                                               assignNow.size(), walked.size(),
+                                               getMSTimeDiff(walkStart, getMSTime()), crossed, noRoute));
     {
         std::lock_guard<std::recursive_mutex> guard(lock);
         uint32 const now = getMSTime();
@@ -4352,8 +4455,9 @@ void UpdateHelp()
         // [help32] the pricing (AssignLocked: every candidate's walk) runs for a few requests per update, in turn by
         // request id from where the last update stopped - a queue, no clock; the cheap drop checks run for all.
         // b385: help update 145 ms avg, 1209 ms max over 246 updates, every open request priced every update
-        for (auto const& [key, yd] : walked)  // [help53] pass 2 prices with the walks searched outside the lock
-            walkCache[key] = yd;
+        // [help53] pass 2 prices with the walks searched outside the lock; [help60] a trip, walk or route
+        for (auto const& [key, trip] : walked)
+            walkCache[key] = trip;
         uint32 deferred = 0;
         for (auto itr = helpRequests.begin(); itr != helpRequests.end();)
         {
