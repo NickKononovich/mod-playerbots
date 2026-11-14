@@ -633,10 +633,28 @@ namespace
     }
 
     // The harness's live route target of this dungeon tank out of combat, empty when none.
+    // [wc80] The mob of the tank's own OPEN pull order is this pick's route target too. The engage of a mob out of
+    // sight opens its order on the promise that the walk-in goes on ("engage: the tank walks its route in", "its next
+    // look goes on once it stands": ChooseTargetActions). That next look asks this value, and the pick dropped the
+    // very mob the order names - "possible targets: no line of sight from the bot's eyes" for anything that is not
+    // the route target - so no walk and no attack was ever issued again, while the leader stopped looking at all
+    // (an open order is the one owner of the tank's movement: LEADER_ONE_TANK_MOVER) and with LEADER_ONE_PICKER the
+    // RouteTarget registry is cleared for a led tank, so the route-target exemption could never match.
+    // wc-n, 8 runs of 216 ended exactly there: Evolving Ectoplasm 3.0-4.5 yd from the tank, "tank view: possible
+    // targets: no line of sight from the bot's eyes", "harness_hold no walk / not arrived" and "order_orphan: engage
+    // Evolving Ectoplasm 248 s without a state change (Issued)" to the 4-minute stall, no death and no wipe
+    // (20261114-081143-wc-n-five2-2 / -five4-4, 20261114-081213-wc-n-five7-7, 20261113-114654-wc-n-five6-6,
+    // 20261111-220103-wc-n-five6-7, -111901-wc-n-five7-6, -130557-wc-n-five8-6, -185555-wc-n-five2-2).
+    // No threshold changes value here: the sight rule and DUNGEON_TANK_PULL_RANGE stay as they are, they just stop
+    // being applied to a mob the leader has already ordered this tank onto. No elapsed time enters it either - the
+    // condition is an open order of this tank, and it ends when the order does.
     ObjectGuid DungeonRouteTarget(Player* bot)
     {
         if (!LedRouteMap(bot) || !PlayerbotAI::IsTank(bot) || bot->IsInCombat())
             return ObjectGuid::Empty;
+
+        if (Leader::PullOrder order; Leader::Orders::GetOpen(bot->GetGUID(), order) && !order.target.IsEmpty())
+            return order.target;
 
         return RouteTarget::Get(bot->GetGUID());
     }
