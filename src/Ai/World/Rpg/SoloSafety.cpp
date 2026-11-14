@@ -744,6 +744,14 @@ namespace
                 // fight's own numbers, which nothing priced
                 G3D::Vector4 const disc = AggroDisc(c, bot);
                 float const into = std::hypot(disc.x - bot->GetPositionX(), disc.y - bot->GetPositionY());
+                // [surv10] rpgInfo.ToString() is several lines (questId, objectiveIdx, poiPos, lastReachPOI), and
+                // this record carries the fight's numbers AFTER it: b485 wrote 203 of its 213 price lines as five
+                // physical lines each, with the projection - the whole point of the record - orphaned on the last of
+                // them, where no line-based reader finds it. One record is one line, so the status is flattened.
+                std::string status = ai ? ai->rpgInfo.ToString() : std::string("-");
+                for (char& ch : status)
+                    if (ch == '\n' || ch == '\r')
+                        ch = ' ';
                 state.unjudgedPending = true;
                 state.unjudgedWhy = Acore::StringFormat(
                     "{} L{} ({}) met at {:.0f} yd, its aggro disc ({:.0f},{:.0f}) r {:.0f} and the bot {:.0f} yd from "
@@ -751,7 +759,7 @@ namespace
                     c->GetName(), c->GetLevel(), moves, bot->GetExactDist2d(c), disc.x, disc.y, disc.w, into,
                     into <= disc.w ? "inside it" : "outside it", bot->isMoving() ? "moving" : "standing",
                     bot->GetVictim() ? "attacking " + bot->GetVictim()->GetName() : std::string("no target"),
-                    bot->GetHealthPct(), ai ? ai->rpgInfo.ToString() : std::string("-"));
+                    bot->GetHealthPct(), status);
             }
         // [pullplan] the pull it made: where it stood when the fight opened (its pull spot, else where it was)
         if (state.pullSpot && !state.pullLogged && mob && mob->GetGUID() == state.pullTarget)
@@ -3923,7 +3931,22 @@ namespace SoloSafety
         {
             std::vector<uint64> grown;
             std::string named;
-            if (Unit* const victim = bot->GetVictim())
+            // [surv10] the pack is grown round the mob this fight is against. The bot's victim names it once the bot
+            // has struck back, but a fight nobody judged opens with the mob striking first, and then the bot has no
+            // victim at all: 129 of b485's 220 priced opens read "no target", so the pack was grown for none of them
+            // and the projection stayed at the one attacker it could see. Tuihgrelfim L22 died at Lake Everstill out
+            // of exactly that case - met a wanderer at 2 yd with no target, priced "won with 164 hp of margin" on 2
+            // attackers, and 4 mobs hit it. Without a victim the fight's own first attacker names the pack, which is
+            // the same mob the judge would have been asked about.
+            Unit* seed = bot->GetVictim();
+            if (!seed)
+                for (Projection::Foe const& foe : out.foes)
+                    if (foe.unit && foe.unit->ToCreature())
+                    {
+                        seed = foe.unit;
+                        break;
+                    }
+            if (Unit* const victim = seed)
                 if (Creature* const target = victim->ToCreature())
                 {
                     G3D::Vector3 const at(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
