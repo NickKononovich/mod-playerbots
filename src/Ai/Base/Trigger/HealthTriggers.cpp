@@ -3038,7 +3038,9 @@ static bool FoodLines(Player* bot, std::string* why)
 // [deaths14] out of every reach first (RestEscape) - [death452] for every rest of a solo bot, not only the one its
 // pull asked for: b467 Blahadrin L23 ate at hp 48 % ("no healer close by") at its fight spot inside a Rabid Shadowhide
 // Gnoll's reach in Galardell Valley; the Gnoll and its camp came while it sat
-static bool RestsInReach(Player* bot) { return !Leader::LedGroup(bot) && SoloSafety::RestSpotInReach(bot); }
+// [rest20] the led-five gate moved into RestSpotInReach, with the judge and its log line: repeated here it
+// let the line print a refusal this caller then discarded
+static bool RestsInReach(Player* bot) { return SoloSafety::RestSpotInReach(bot); }
 
 bool WantsDrink(Player* bot, std::string* why, std::string* skip)
 {

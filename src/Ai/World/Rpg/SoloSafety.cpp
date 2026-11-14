@@ -4387,6 +4387,17 @@ namespace SoloSafety
         // reach only before a rest; the eat / drink sat it down where it stood first
         if (!bot || bot->IsInCombat() || !Applies(bot))
             return false;
+        // [rest20] A member of a led five answers to its leader's Rest, not to this one: RestsInReach, the only
+        // caller, has always thrown this verdict away for it (`!Leader::LedGroup(bot) && RestSpotInReach(bot)`).
+        // The gate belongs here, with the judge, because the line below was printed BEFORE it and so claimed a
+        // refusal that never bound. That is what it cost: of the 57 "rests not here" lines of the 2026-11-15
+        // window, 21 (7 bots of 23 - Namwe, Geron, Bhogagnuth, Bierya, Geefeelli, Nelaeleas, Sylaenas) belong to
+        // five members strung out on the walk to the Wailing Caverns entrance. SoloPlayerBot calls them solo
+        // (their fellows are out of group-reward distance), nothing refused their rest, nothing had to replace
+        // it - and read from the log those 21 lines looked like "refused with no replacement". One judge, one
+        // answer, and the line can no longer disagree with it.
+        if (Leader::LedGroup(bot))
+            return false;
         std::string who;
         std::vector<G3D::Vector3> spots;
         if (!StandsInReach(bot, who, spots) || spots.empty())
