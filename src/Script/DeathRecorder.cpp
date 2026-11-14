@@ -12,6 +12,7 @@
 #include "EstimatedLifetimeValue.h"
 #include "Group.h"
 #include "HealthTriggers.h"
+#include "LeaderOrders.h"  // [loop11] Leader::LedBot: whether the drink was under the leader's Rest
 #include "Log.h"
 #include "Map.h"
 #include "ObjectMgr.h"
@@ -653,14 +654,27 @@ public:
             if (SpellSpecificType const kind = aura->GetSpellInfo()->GetSpellSpecific();
                 (kind == SPELL_SPECIFIC_DRINK || kind == SPELL_SPECIFIC_FOOD_AND_DRINK) && unit->GetMaxPower(POWER_MANA) &&
                 unit->GetPower(POWER_MANA) < unit->GetMaxPower(POWER_MANA))
-                LOG_INFO("playerbots", "[lead1544] {}: drink {} ({}) ends at {:.1f} % mana: {} with {} ms of {} ms left{}",
+                // [loop11] ... and WHO ended it, because the line could not tell: of the 367 broken drinks of the
+                // 2026-11-14 hour only 268 had a matching "[rest] ... stands up" of the rest code, so about a
+                // hundred were stood up by something that never printed a word. All 386 interrupted removals were
+                // "standing" and all 14 expired ones "seated", so the aura always goes with the stand - the open
+                // question is only what stood the bot. These three facts answer it on the line itself: whether it is
+                // moving (a movement order stood it), whether the leader's Rest it drank under is still open (then
+                // nobody withdrew the rest - the fight simply started under it), and whether it is led at all.
+                LOG_INFO("playerbots", "[lead1544] {}: drink {} ({}) ends at {:.1f} % mana: {} with {} ms of {} ms "
+                         "left{}{}{}",
                          unit->GetName(), aura->GetSpellInfo()->SpellName[0], aura->GetId(), unit->GetPowerPct(POWER_MANA),
                          mode == AURA_REMOVE_BY_EXPIRE    ? "expired"
                          : mode == AURA_REMOVE_BY_CANCEL  ? "cancelled"
                          : mode == AURA_REMOVE_BY_DEFAULT ? "removed (interrupt / stand up / replaced)"
                                                           : "removed (other)",
                          aura->GetDuration(), aura->GetMaxDuration(),
-                         unit->IsStandState() ? ", standing" : ", seated");
+                         unit->IsStandState() ? ", standing" : ", seated",
+                         unit->isMoving() ? ", moving" : ", still",  // [loop11]
+                         Leader::LedBot(unit->ToPlayer())
+                             ? (RestState::LeaderRests(unit->ToPlayer()) ? ", the leader's Rest still open"
+                                                                        : ", no leader Rest open")
+                             : ", not led");  // [loop11]
         if (!unit || !aura || !aura->GetSpellInfo()->HasAura(SPELL_AURA_SCHOOL_ABSORB) ||
             !aura->GetCasterGUID().IsPlayer())
             return;
