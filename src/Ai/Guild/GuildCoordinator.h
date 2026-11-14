@@ -849,8 +849,6 @@ private:
         std::vector<std::pair<uint32, std::string>> verdicts;
         uint32 lastBatch{0};   // the batch `verdicts` belongs to
         std::string dispatchLogged;  // world thread: the log cadence of "why no batch forms"
-        // [gate98] world thread: the log cadence of the tank order (both orders, side by side)
-        std::string tankOrderLogged;
     };
 
     void LoadPlan();
@@ -939,7 +937,8 @@ public:
     std::string FiveWanted(uint32 low) const;
     void SetFiveWanted(std::unordered_map<uint32, std::string>&& wanted);  // UpdateFives' look
     // [assist22] the five look's gate verdict on the open dungeon: no five the gate passes carries the member's first
-    // clear ([order364]'s carriers, [gate93]'s pairs) - its role there, its level then and the best five's margin
+    // clear ([order364]'s carriers; [gate100] the gate passes on level now, and the load / over / judged figures
+    // below are the capacity measurement of the five that was tried, debug information that decides nothing)
     struct GateHold
     {
         std::string contentKey;

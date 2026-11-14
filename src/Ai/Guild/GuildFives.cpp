@@ -972,29 +972,18 @@ namespace FiveGate
         return std::clamp(armor / (armor + 85.0f * lvl + 400.0f), 0.0f, 0.75f);
     }
 
-    // [order368] [gate20] the tank term of the drop on this map: the health a mob of the map's top level has to take
-    // off the tank for the drop the gate prices - its armor and the whole attack table (miss, dodge, parry, the
-    // shield's flat block against the map's mean swing, crushing blows, crits), a druid tank as the bear the planner
-    // plans with. Higher is a lower drop: the carrier order of a first-clear five reads it. Not the whole verdict -
-    // the pull's mobs and the healer set that - but the one term the tank changes
-    float TankDropIndex(uint32 mapId, Player* tank, std::string* parts = nullptr)
-    {
-        if (!tank)
-            return 0.0f;
-        MapSpawns const& map = Spawns(mapId);
-        float health = float(tank->GetMaxHealth());
-        float armor = float(tank->GetArmor());
-        float dodge = tank->GetUnitDodgeChance();
-        float parry = tank->GetUnitParryChance();
-        PullPlanning::BearStatsSeen(tank, health, armor, dodge, parry);
-        uint8 const level = map.topLevel ? map.topLevel : uint8(tank->GetLevel());
-        float const armorKeeps = 1.0f - ArmorReduction(armor, level);
-        float const share = PullPlanning::TemplateTakenShare(0, level, tank, map.meanHit * armorKeeps, parts);
-        return share > 0.0f ? health / (armorKeeps * share) : health * 100.0f;
-    }
+    // [gate100] The tank term of the drop on this map ([order368] [gate20] TankDropIndex: the health a mob of the
+    // map's top level had to take off the tank for the drop the gate prices, its armor and the whole attack table in
+    // it) stood here and ordered the carriers of a first-clear five and of a certification batch. It is removed with
+    // every other use of the capacity count in a decision (user decision 2026-11-14): the gate's own why line still
+    // prints the drop it measures for the five that goes ("[gate20] drop terms: armor keeps ..."), so nothing
+    // measured is lost - only the choosing by it.
 
     struct Verdict
     {
+        // [gate100] the measurement: the five takes every pull of the map. It is printed and nothing else - no
+        // decision of the guild reads it any more (user decision 2026-11-14), so that the run's own result can be
+        // held against this forecast later
         bool clears = true;
         std::string why;
         // [dun194] each mana user's net mana over the dungeon's pulls (the healer's healing mana less its regen in
@@ -1953,9 +1942,12 @@ namespace FiveGate
         // member only overkills the place, so there is no ceiling here (the band's top is reported, not enforced;
         // who may go above it at all is the finder's and [cert20]'s decision, made long before the gate).
         // The capacity count below is kept whole and measured on every look - `clears`, `over`, `judged`,
-        // `worstLoad`, `overList` and the whole why line - and it still ranks the carriers a five is assembled from
-        // ([gate93] [gate94] [order368] [gate98]). It refuses nobody. What it costs is reported per five that enters,
-        // on the [gate100] line in FormFiveLocked, and counted by batch_triage.py.
+        // `worstLoad`, `overList` and the whole why line - and it is DEBUG INFORMATION ONLY (the user's own words of
+        // 2026-11-14): it takes part in no logic at all. It refuses nobody and it picks nobody: the pair searches
+        // and carrier orders that read it ([gate93] [gate94] [order368] [gate98], and the healers' mana pool with
+        // them) are gone, and the five is the one PickFive takes by need, repeats and level. The count is printed
+        // per five that enters, on the [gate100] line in FormFiveLocked, and counted by batch_triage.py, so the
+        // user can hold the run's own result against this forecast and decide later where it may be used.
         auto const [bandFloor, bandTop] = Band(mapId);
         std::string belowFloor;
         uint32 lowLevel = 0, highLevel = 0;
@@ -1980,7 +1972,9 @@ namespace FiveGate
             : belowFloor.empty() ? "every member at or above the floor: it will kill something in there"
                                  : "below the floor, it gets in nowhere: " + belowFloor,
             judged);
-        out.clears = out.admits && failed == 0;
+        // [gate100] the measurement on its own, with no level term folded into it: whether the five takes every pull
+        // of the map, which is what will be held against the run's own result later
+        out.clears = failed == 0 && judged > 0;
         out.worstLoad = worst.load;  // [assist22]
         out.worstDrop = worst.dropShare;
         out.worstMana = worst.manaShare;
@@ -3608,62 +3602,14 @@ void GuildCoordinator::CertifyBatch()
                                  CERT_MEMBERS, CertPoolAudit(*d)));
         return;
     }
-    // [gate98] The batch ranks its candidates by the terms the gate prices, not by level - [order368], the user's
-    // point of 2026-11-13 ("a first-clear five takes its carriers by the terms the gate prices, not by level - the
-    // tank by the gate's own drop term"), which the ordinary five's carriers and [gate94]'s healers already read and
-    // the batch did not. Both terms are the gate's own, read through the gate's own functions, so no formula is
-    // introduced and no second judge of capacity exists: FiveGate::Judge still decides every five and this only
-    // ranks the candidates offered to it.
-    //   tank: FiveGate::TankDropIndex ([gate20]) - the health a mob of the map's top level must take off it for the
-    //         drop the gate prices, its armor and the whole attack table in it, a druid as the bear.
-    //   dps:  DpsEstimate burst dps, the very term the gate sums into its group dps (Judge's own groupDps loop).
-    // Computed once for the pool and shared by all CERT_FIVES assemblies: the terms do not change between them, and
-    // a per-assembly pass would price the same members five times over on the world thread.
-    std::map<uint32, float> tankIndex, dpsIndex;
-    for (FiveCandidate const& c : pool)
-    {
-        if (c.role == "tank")
-            tankIndex[c.low] = FiveGate::TankDropIndex(d->mapId, c.player);
-        else if (c.role != "healer")
-            dpsIndex[c.low] = DpsEstimate::Estimate(c.player, nullptr, DpsEstimate::BuffContext::Group).burstDps;
-    }
-    {
-        // both orders side by side, the one in use and the one it replaced, so the change is visible and neither can
-        // be read for the other - the defect was that one of the two stood in the code while the rule in the comment
-        // beside it named the other
-        auto const order = [this, &pool](std::map<uint32, float> const& index, bool byTerm, char const* unit)
-        {
-            std::vector<FiveCandidate const*> list;
-            for (FiveCandidate const& c : pool)
-                if (index.count(c.low))
-                    list.push_back(&c);
-            std::stable_sort(list.begin(), list.end(),
-                             [&](FiveCandidate const* a, FiveCandidate const* b)
-                             {
-                                 return byTerm ? index.at(a->low) > index.at(b->low)
-                                               : a->player->GetLevel() > b->player->GetLevel();
-                             });
-            std::string text;
-            for (FiveCandidate const* c : list)
-                text += Acore::StringFormat("{}{} L{} ({:.0f} {})", text.empty() ? "" : ", ", Who(c->low),
-                                            c->player->GetLevel(), index.at(c->low), unit);
-            return text;
-        };
-        std::string const both = Acore::StringFormat(
-            "batch {} candidate order, by the gate's own terms (used) against by level (what it was): tanks {} | by "
-            "level {}; dps {} | by level {}", cs.batches + 1, order(tankIndex, true, "ehp"),
-            order(tankIndex, false, "ehp"), order(dpsIndex, true, "dps"), order(dpsIndex, false, "dps"));
-        if (cs.tankOrderLogged != both)
-        {
-            cs.tankOrderLogged = both;
-            LOG_INFO("playerbots", "[gate98] {}: {}", d->contentKey, both);
-        }
-    }
-    // one five out of what is left of the pool: the finder's band first, else a five that walks in (as the look
-    // does), and the gate's own pairs ([gate93]: the four highest tanks x the four largest healer pools)
-    auto const assemble = [this, d, &tankIndex, &dpsIndex](std::vector<FiveCandidate> const& avail,
-                                                           std::vector<FiveCandidate>& out,
-                                                           std::string& why) -> bool
+    // [gate100] The batch used to price every candidate here by the gate's own terms ([gate98]: the tank by
+    // TankDropIndex, the dps by their formula dps) and log the two orders side by side, because [order368] had the
+    // ordinary five's carriers chosen that way. Both are gone with the capacity count's part in any decision (user
+    // decision 2026-11-14): the batch takes PickFive's five, by need, repeats and level, and what the count makes of
+    // that five is printed on its [gate100] line when it enters.
+    // one five out of what is left of the pool: the finder's band first, else a five that walks in (as the look does)
+    auto const assemble = [this, d](std::vector<FiveCandidate> const& avail, std::vector<FiveCandidate>& out,
+                                    std::string& why) -> bool
     {
         std::vector<FiveCandidate> finderPool, walkPool;
         for (FiveCandidate const& c : avail)
@@ -3678,84 +3624,31 @@ void GuildCoordinator::CertifyBatch()
             if ((!c.overMax || c.needsClear) && DungeonRefusal(*d, c.player, true, c.overMax).empty())
                 walkPool.push_back(c);
         }
-        float bestLoad = 99.0f;
-        // [gate100] the best five the pool offers by the capacity measurement (the lowest worst-pull load among the
-        // pairs judged), kept so the batch can go in with it when no pair takes every pull: the count no longer
-        // refuses a five, it only ranks the carriers (user decision 2026-11-14)
-        std::vector<FiveCandidate> bestFive;
+        // [gate100] The batch's five is PickFive's five of the pool that is left: the finder's band first, else a
+        // five that walks in, and inside each the five's own order ([need106] the need, then the fewest repeats,
+        // then the highest level). The capacity count picks nobody (user decision 2026-11-14: it is debug
+        // information and takes part in no logic). What stood here ranked the tanks by the gate's own drop term and
+        // the dps by their formula dps ([gate98]), ordered the healers by their mana pool ([gate94]) and judged 16
+        // pairs until one took every pull of the map - the whole of it was the count choosing the batch, and it is
+        // gone. The gate is asked one thing per five: does it admit it on level
         for (std::vector<FiveCandidate> const& sub : {finderPool, walkPool})
         {
             if (sub.size() < 5)
                 continue;
             std::vector<FiveCandidate> five;
-            if (PickFive(sub, five))
-            {
-                std::vector<Player*> players;
-                for (FiveCandidate const& c : five)
-                    players.push_back(c.player);
-                if (FiveGate::Verdict const v = FiveGate::Judge(d->mapId, players); v.clears)
-                {
-                    out = five;
-                    why = v.why;
-                    return true;
-                }
-                else if (v.admits && v.worstLoad < bestLoad)
-                {
-                    bestLoad = v.worstLoad;
-                    bestFive = five;  // [gate100] on level: it may go in if nothing clears
-                    why = v.why;
-                }
-            }
-            std::vector<FiveCandidate const*> tanks, healers, dps;
-            for (FiveCandidate const& c : sub)
-                (c.role == "tank" ? tanks : c.role == "healer" ? healers : dps).push_back(&c);
-            // [gate98] the gate's own terms, not level - the indexes built once for the pool above. The batch used
-            // to order both of these by level while the gate prices the tank on dropShare = (drop + gapDrop) /
-            // tankHealth and sums the dps's burst dps into its group dps: among the guild's L25 tanks the health
-            // spread is 869 to 1008 hp (+16 %) while the one pull that held wc-n's batch 1 turned on 42 hp, and with
-            // PAIRS_SIDE pairs tried the level order put Ganna (869) among the tries and left Nelaeleas (1008) out
-            std::stable_sort(tanks.begin(), tanks.end(),
-                             [&tankIndex](FiveCandidate const* a, FiveCandidate const* b)
-                             { return tankIndex.at(a->low) > tankIndex.at(b->low); });
-            // [gate94] healers by their mana pool (the gate's binding term), not by level
-            std::stable_sort(healers.begin(), healers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
-                             { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
-            // [gate98] a need is no requirement of the batch ([cert10]), so unlike [order368]'s first-clear five
-            // there is no uncleared-member preference here: the batch ranks its dps on the gate's term alone
-            std::stable_sort(dps.begin(), dps.end(), [&dpsIndex](FiveCandidate const* a, FiveCandidate const* b)
-                             { return dpsIndex.at(a->low) > dpsIndex.at(b->low); });
-            if (dps.size() < 3)
+            if (!PickFive(sub, five))
                 continue;
-            constexpr size_t PAIRS_SIDE = 4;  // the look's own cost bound ([gate93]): 16 judges a five
-            for (size_t ti = 0; ti < tanks.size() && ti < PAIRS_SIDE; ++ti)
-                for (size_t hi = 0; hi < healers.size() && hi < PAIRS_SIDE; ++hi)
-                {
-                    std::vector<Player*> players{tanks[ti]->player, healers[hi]->player, dps[0]->player,
-                                                 dps[1]->player, dps[2]->player};
-                    FiveGate::Verdict const v = FiveGate::Judge(d->mapId, players);
-                    if (v.clears)
-                    {
-                        out = {*tanks[ti], *healers[hi], *dps[0], *dps[1], *dps[2]};
-                        why = v.why;
-                        return true;
-                    }
-                    if (v.admits && v.worstLoad < bestLoad)
-                    {
-                        bestLoad = v.worstLoad;
-                        bestFive = {*tanks[ti], *healers[hi], *dps[0], *dps[1], *dps[2]};  // [gate100]
-                        why = v.why;
-                    }
-                }
-        }
-        // [gate100] no pair of the pool takes every pull of the map: the batch goes in with the best five it has,
-        // the one with the lowest worst-pull load, because a dungeon is learning and not an exam (user decision
-        // 2026-11-14). What that five is short of is on its own [gate100] line when it enters
-        if (!bestFive.empty())
-        {
-            out = bestFive;
-            why = Acore::StringFormat("[gate100] no pair takes every pull: the best of the pool goes in (worst pull "
-                                      "{:.2f}); {}", bestLoad, why);
-            return true;
+            std::vector<Player*> players;
+            for (FiveCandidate const& c : five)
+                players.push_back(c.player);
+            FiveGate::Verdict const v = FiveGate::Judge(d->mapId, players);
+            if (v.admits)
+            {
+                out = five;
+                why = v.why;
+                return true;
+            }
+            why = v.why;  // the level term that refused it, for the batch's own note
         }
         if (why.empty())
             why = "no tank, healer and 3 dps left in the pool that can get in";
@@ -4477,7 +4370,7 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
                              return a.needsClear;
                          return a.player->GetLevel() > b.player->GetLevel();
                      });
-    constexpr size_t TRIES = 4;  // AutoFive's gate cost bound (PAIRS_SIDE): the first four of the role
+    constexpr size_t TRIES = 4;  // [gate100] the look's own cost bound: the first four of the role, in that order
     if (fits.size() > TRIES)
         fits.resize(TRIES);
     for (FiveCandidate const& c : fits)
@@ -5454,9 +5347,10 @@ void GuildCoordinator::AutoFive()
     bool gateJudged = false;
     auto const noteHeld = [&gateHeld](std::string const& key, FiveCandidate const& c, FiveGate::Verdict const& v)
     {
+        // [gate100] the record is the last look's, not the one with the lowest load: the capacity count is debug
+        // information and is compared for nothing, not even for which of two records to show (user decision
+        // 2026-11-14). A member is held by the level term now, and its figures are the same at every look
         GateHold& h = gateHeld[c.low];
-        if (h.judged && h.load <= v.worstLoad)
-            return;
         h = {key, c.role, uint8(c.player->GetLevel()), v.worstLoad, v.worstDrop, v.worstMana, v.over, v.judged};
     };
     for (uint32 guardCount = 0; guardCount < 10; ++guardCount)  // one five per dungeon look, at most ten a look
@@ -5762,8 +5656,9 @@ void GuildCoordinator::AutoFive()
                 auto const byLevel = [](FiveCandidate const* a, FiveCandidate const* b)
                 { return a->player->GetLevel() > b->player->GetLevel(); };
                 std::stable_sort(tanks.begin(), tanks.end(), byLevel);
-                std::stable_sort(healers.begin(), healers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
-                                 { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
+                // [gate100] by level, as every other role here: the healers were ordered by their mana pool because
+                // that was the capacity count's binding term ([gate94]), and that count picks nobody any more
+                std::stable_sort(healers.begin(), healers.end(), byLevel);
                 std::stable_sort(others.begin(), others.end(), byLevel);
                 std::vector<FiveCandidate const*> carriers(tanks.begin(),
                                                            tanks.begin() + std::min(tanks.size(), CARRIERS_SIDE));
@@ -5806,7 +5701,9 @@ void GuildCoordinator::AutoFive()
                     trial.insert(trial.end(), dpsSlots.begin(), dpsSlots.end());
                     FiveGate::Verdict trialVerdict = FiveGate::Judge(d->mapId, trial);
                     gateJudged |= guardCount == 0;  // [assist22]
-                    if (!trialVerdict.clears)
+                    // [gate100] "the gate passes a first-clear five with it" is the gate's own answer, which is the
+                    // level term alone now - the capacity count this judge also measured decides nothing
+                    if (!trialVerdict.admits)
                     {
                         for (FiveCandidate const* c : carried)
                             refused.emplace_back(c, trialVerdict);
@@ -5897,295 +5794,31 @@ void GuildCoordinator::AutoFive()
                     lookWhy[d->contentKey] += " -> another dungeon's five is more urgent";
                 continue;
             }
-            // [next1] the five clears the dungeon by the game's numbers (FiveGate::Judge), else it waits - no level
-            // floor
+            // [gate100] The five is the one PickFive took, in its own order ([need106] an open clear first, then a
+            // needed upgrade, then a healer the dungeon still gives experience, then the fewest repeats of it, then
+            // the highest level). Nothing about the strength of the map's packs picks a member any more: user
+            // decision 2026-11-14 - the capacity count is debug information and takes part in no logic, so that the
+            // run's own result can be compared against it later. What stood here judged the five and then searched
+            // for another tank / healer pair ([gate93], healers by their mana pool [gate94]), for carriers by the
+            // gate's own drop and dps terms ([order368]) and for a second healer ([order367]), each time until the
+            // capacity count came out clean - every one of them was a choice made by that count, and all of it goes
+            // with it. The gate is judged once now: for its level term, and for the measurement printed on the
+            // five's own [gate100] line when it enters
             std::vector<Player*> players;
             for (FiveCandidate const& c : five)
                 players.push_back(c.player);
-            FiveGate::Verdict verdict = FiveGate::Judge(d->mapId, players);
-            // [assist22] the open dungeon's fives refused here: each uncleared member's best margin among them
+            FiveGate::Verdict const verdict = FiveGate::Judge(d->mapId, players);
+            // [assist22] the open dungeon's fives the gate held: each uncleared member and the gate's own figures
             bool const openFive = guardCount == 0 && d->contentKey == orderOpenKey_ &&
                                   !sPlayerbotAIConfig.GuildDungeonOrderPerMember;
             std::vector<std::pair<FiveCandidate const*, FiveGate::Verdict>> refusedFives;
             gateJudged |= openFive;
-            if (openFive && !verdict.clears)
+            if (openFive && !verdict.admits)
                 for (FiveCandidate const& c : five)
                     if (c.needsClear)
                         refusedFives.emplace_back(&c, verdict);
-            // [gate93] the gate judges the five PickFive took (its tank and healer by level); another tank / healer of
-            // the same pool may carry the dungeon (a healer's mana pool, a tank's armor): each pair is judged, the
-            // first that clears is the five. b411: dm-n "13 of 167 pulls over capacity; worst 2.35: ... heal mana 993
-            // of 422" on Aestymro (paladin, 422 mana) with Ganna, sfk-n "14 of 103 ... heal mana 3824 of 422" -
-            // the healer and tank PickFive happened to put first
-            if (!verdict.clears)
-            {
-                std::vector<FiveCandidate> const& usedPool = fromFinder ? finderPool : walkPool;
-                std::vector<FiveCandidate const*> tanks, healers;
-                for (FiveCandidate const& c : usedPool)
-                {
-                    if (c.role == "tank")
-                        tanks.push_back(&c);
-                    else if (c.role == "healer")
-                        healers.push_back(&c);
-                }
-                auto const byLevel = [](FiveCandidate const* a, FiveCandidate const* b)
-                { return a->player->GetLevel() > b->player->GetLevel(); };
-                std::stable_sort(tanks.begin(), tanks.end(), byLevel);
-                // [gate94] healers by their mana pool (the gate's binding term), not by level
-                std::stable_sort(healers.begin(), healers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
-                                 { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
-                // [order364] a tank / healer with its first clear here is judged with every partner before its swap
-                // out: b468 wc-n, Rollothan L16 (healer, the guild's last uncleared) was judged with one tank only, the
-                // lowest mana of 8 healers, never in the top 4
-                auto const clearFirst = [](FiveCandidate const* c) { return c->needsClear; };
-                std::stable_partition(tanks.begin(), tanks.end(), clearFirst);
-                std::stable_partition(healers.begin(), healers.end(), clearFirst);
-                constexpr size_t PAIRS_SIDE = 4;  // the look's cost bound: the 4 highest of each role (16 judges)
-                if (tanks.size() > PAIRS_SIDE)
-                    tanks.resize(PAIRS_SIDE);
-                if (healers.size() > PAIRS_SIDE)
-                    healers.resize(PAIRS_SIDE);
-                bool found = false;
-                for (FiveCandidate const* t : tanks)
-                {
-                    for (FiveCandidate const* h : healers)
-                    {
-                        if (t->low == five[0].low && h->low == five[1].low)
-                            continue;  // the pair judged above
-                        std::vector<Player*> alt = players;
-                        alt[0] = t->player;
-                        alt[1] = h->player;
-                        FiveGate::Verdict const altVerdict = FiveGate::Judge(d->mapId, alt);
-                        if (!altVerdict.clears)
-                        {
-                            if (openFive)  // [assist22] its uncleared members: the pair's and the dps slots'
-                            {
-                                for (FiveCandidate const* c : {t, h})
-                                    if (c->needsClear)
-                                        refusedFives.emplace_back(c, altVerdict);
-                                for (size_t i = 2; i < five.size(); ++i)
-                                    if (five[i].needsClear)
-                                        refusedFives.emplace_back(&five[i], altVerdict);
-                            }
-                            continue;
-                        }
-                        LOG_INFO("playerbots", "[gate93] five for {}: {} / {} did not clear ({}); {} tank, {} healer "
-                                 "clear: {}",
-                                 d->contentKey, five[0].player->GetName(), five[1].player->GetName(), verdict.why,
-                                 t->player->GetName(), h->player->GetName(), altVerdict.why);
-                        five[0] = *t;
-                        five[1] = *h;
-                        players = alt;
-                        verdict = altVerdict;
-                        found = true;
-                        break;
-                    }
-                    if (found)
-                        break;
-                }
-            }
-            // [order368] user point 2026-11-13: a first-clear five takes its carriers by the terms the gate prices,
-            // not by level - the tank by the gate's own drop term ([gate20] TankDropIndex: its armor and the whole
-            // attack table of a mob of the map's top level), the dps by their formula dps (the fight length, and
-            // a shorter fight is less damage taken and less healing). b472 wc-n, the same Deviate Guardian x6 pull:
-            // Thelengyl tank 1.09, Irorm 1.23 - the tank alone moved the load 14 %
-            if (!verdict.clears && helpers)
-            {
-                std::vector<FiveCandidate const*> wTanks, wHealers, wDps;
-                for (FiveCandidate const& c : walkPool)
-                    (c.role == "tank" ? wTanks : c.role == "healer" ? wHealers : wDps).push_back(&c);
-                std::map<uint32, float> ehp, formulaDps;
-                std::map<uint32, std::string> dropParts;
-                for (FiveCandidate const* c : wTanks)
-                    ehp[c->low] = FiveGate::TankDropIndex(d->mapId, c->player, &dropParts[c->low]);
-                for (FiveCandidate const* c : wDps)
-                    formulaDps[c->low] =
-                        DpsEstimate::Estimate(c->player, nullptr, DpsEstimate::BuffContext::Group).burstDps;
-                std::stable_sort(wTanks.begin(), wTanks.end(), [&ehp](FiveCandidate const* a, FiveCandidate const* b)
-                                 { return ehp[a->low] > ehp[b->low]; });
-                std::stable_sort(wHealers.begin(), wHealers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
-                                 { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
-                // [order368] an uncleared member keeps its slot; among equals the highest formula dps
-                std::stable_sort(wDps.begin(), wDps.end(),
-                                 [&formulaDps](FiveCandidate const* a, FiveCandidate const* b)
-                                 {
-                                     if (a->needsClear != b->needsClear)
-                                         return a->needsClear;
-                                     return formulaDps[a->low] > formulaDps[b->low];
-                                 });
-                // the uncleared members of each role take their slots: the carriers fill the rest
-                std::vector<FiveCandidate const*> tankTries, healerTries;
-                for (FiveCandidate const* c : wTanks)
-                    if (c->needsClear)
-                        tankTries.assign(1, c);
-                for (FiveCandidate const* c : wHealers)
-                    if (c->needsClear)
-                        healerTries.assign(1, c);
-                constexpr size_t CARRIER_SIDE = 4;  // the look's cost bound, as [gate93]
-                if (tankTries.empty())
-                    tankTries.assign(wTanks.begin(), wTanks.begin() + std::min(wTanks.size(), CARRIER_SIDE));
-                if (healerTries.empty())
-                    healerTries.assign(wHealers.begin(), wHealers.begin() + std::min(wHealers.size(), CARRIER_SIDE));
-                std::vector<FiveCandidate const*> dpsSlots(wDps.begin(),
-                                                           wDps.begin() + std::min(wDps.size(), size_t(3)));
-                std::string best368;
-                float bestLoad368 = 99.0f;
-                for (FiveCandidate const* t : tankTries)
-                {
-                    if (verdict.clears || dpsSlots.size() < 3)
-                        break;
-                    for (FiveCandidate const* h : healerTries)
-                    {
-                        std::vector<Player*> trial{t->player, h->player, dpsSlots[0]->player, dpsSlots[1]->player,
-                                                   dpsSlots[2]->player};
-                        FiveGate::Verdict const v = FiveGate::Judge(d->mapId, trial);
-                        float groupDps = 0.0f;
-                        std::string names;
-                        for (FiveCandidate const* c : dpsSlots)
-                        {
-                            groupDps += formulaDps[c->low];
-                            names += (names.empty() ? "" : "/") + c->player->GetName();
-                        }
-                        std::string const line = Acore::StringFormat(
-                            "tank {} (drop {:.2f}, takes {:.0f} hp of a mob's hits before it falls [{}], the highest "
-                            "of {}), healer {}, dps {} (group dps {:.0f}) -> load {:.2f}",
-                            t->player->GetName(), v.worstDrop, ehp[t->low], dropParts[t->low], wTanks.size(),
-                            h->player->GetName(), names, groupDps, v.worstLoad);
-                        if (v.clears)
-                        {
-                            best368 = line + ": passes the gate";
-                            five = {*t, *h, *dpsSlots[0], *dpsSlots[1], *dpsSlots[2]};
-                            players = trial;
-                            verdict = v;
-                            break;
-                        }
-                        if (v.worstLoad < bestLoad368)
-                        {
-                            bestLoad368 = v.worstLoad;
-                            best368 = line;
-                        }
-                    }
-                }
-                if (!best368.empty())
-                {
-                    std::string clears;
-                    for (FiveCandidate const& c : five)
-                        if (c.needsClear)
-                            clears += (clears.empty() ? "" : ", ") + c.player->GetName();
-                    std::string const line = Acore::StringFormat("first clear for {}: {}",
-                                                                 clears.empty() ? "its uncleared members" : clears,
-                                                                 best368);
-                    static std::map<std::string, std::string> order368Logged;  // world thread: a log cadence
-                    if (std::string& logged = order368Logged[d->contentKey]; logged != line)
-                    {
-                        logged = line;
-                        LOG_INFO("playerbots", "[order368] {} {}", d->contentKey, line);
-                    }
-                    if (guardCount == 0)
-                        lookWhy[d->contentKey] +=
-                            verdict.clears ? " -> [order368] the carriers the gate prices pass it"
-                                           : Acore::StringFormat(" -> [order368] the best carriers still load {:.2f}",
-                                                                 bestLoad368);
-                }
-            }
-            // [order367] coordinator decision 2026-11-13: an uncleared healer of the guild's open dungeon whose heal
-            // carries no five alone goes with a second, stronger free healer (a tank, two healers, two dps) when the
-            // gate passes that five by both healers' rates. b470 wc-n: Rollothan L17 at 103 hps failed the Deviate
-            // Guardian x6 boss pull (worst 1.09-1.34) with every tank. A walk-in five: the finder takes one healer
-            Player* secondHealer = nullptr;
-            if (!verdict.clears && helpers)
-            {
-                std::vector<FiveCandidate const*> wTanks, wHealers, wDps;
-                for (FiveCandidate const& c : walkPool)
-                    (c.role == "tank" ? wTanks : c.role == "healer" ? wHealers : wDps).push_back(&c);
-                std::stable_sort(wTanks.begin(), wTanks.end(), [](FiveCandidate const* a, FiveCandidate const* b)
-                                 { return a->player->GetLevel() > b->player->GetLevel(); });
-                std::stable_sort(wHealers.begin(), wHealers.end(), [](FiveCandidate const* a, FiveCandidate const* b)
-                                 { return a->player->GetMaxPower(POWER_MANA) > b->player->GetMaxPower(POWER_MANA); });
-                std::stable_sort(wDps.begin(), wDps.end(),
-                                 [](FiveCandidate const* a, FiveCandidate const* b)
-                                 {
-                                     if (a->needsClear != b->needsClear)
-                                         return a->needsClear;
-                                     return a->player->GetLevel() > b->player->GetLevel();
-                                 });
-                FiveCandidate const* weak = nullptr;
-                for (FiveCandidate const* h : wHealers)
-                    if (h->needsClear)
-                    {
-                        weak = h;
-                        break;
-                    }
-                if (weak)
-                {
-                    constexpr size_t TWO_HEALER_SIDE = 4;  // the look's cost bound, as [gate93]: 4 tanks x 4 healers
-                    std::string twoWhy;
-                    float bestLoad = 99.0f;
-                    bool passed = false;
-                    if (wDps.size() < 2)
-                        twoWhy = "fewer than 2 dps who can walk in";
-                    for (size_t ti = 0; ti < wTanks.size() && ti < TWO_HEALER_SIDE && !passed && wDps.size() >= 2;
-                         ++ti)
-                    {
-                        size_t tried = 0;
-                        for (FiveCandidate const* h : wHealers)
-                        {
-                            if (h == weak)
-                                continue;
-                            if (++tried > TWO_HEALER_SIDE)
-                                break;
-                            std::vector<Player*> trial{wTanks[ti]->player, weak->player, h->player, wDps[0]->player,
-                                                       wDps[1]->player};
-                            FiveGate::Verdict const v = FiveGate::Judge(d->mapId, trial, h->player);
-                            if (!v.clears)
-                            {
-                                if (v.worstLoad < bestLoad || twoWhy.empty())
-                                {
-                                    bestLoad = v.worstLoad;
-                                    twoWhy = Acore::StringFormat("tank {}, healers {} + {}: {}",
-                                                                 wTanks[ti]->player->GetName(),
-                                                                 weak->player->GetName(), h->player->GetName(), v.why);
-                                }
-                                continue;
-                            }
-                            twoWhy = Acore::StringFormat("tank {}, healers {} + {}, dps {}, {} -> passes the gate: {}",
-                                                         wTanks[ti]->player->GetName(), weak->player->GetName(),
-                                                         h->player->GetName(), wDps[0]->player->GetName(),
-                                                         wDps[1]->player->GetName(), v.why);
-                            five = {*wTanks[ti], *weak, *h, *wDps[0], *wDps[1]};
-                            players = trial;
-                            verdict = v;
-                            secondHealer = h->player;
-                            passed = true;
-                            break;
-                        }
-                    }
-                    if (wTanks.empty())
-                        twoWhy = "no tank who can walk in";
-                    else if (twoWhy.empty())
-                        twoWhy = "no second healer who can walk in";
-                    static std::map<std::string, std::string> order367Logged;  // world thread: a log cadence
-                    std::string const line =
-                        Acore::StringFormat("two-healer first-clear five for {}: {}", weak->player->GetName(),
-                                            passed ? twoWhy : "no pair passes, the closest " + twoWhy);
-                    if (std::string& logged = order367Logged[d->contentKey]; logged != line)
-                    {
-                        logged = line;
-                        LOG_INFO("playerbots", "[order367] {}: {}", d->contentKey, line);
-                    }
-                    if (guardCount == 0)
-                        lookWhy[d->contentKey] += passed ? " -> [order367] two healers (" + weak->player->GetName() +
-                                                               " + " + secondHealer->GetName() + ") pass the gate"
-                                                         : " -> [order367] two healers: no pair passes";
-                }
-            }
-            // [gate100] the gate's own decision, and the only one it still makes: the five is roughly on level for
-            // the dungeon (FiveGate::Verdict::admits - the dungeon's own band against the members' levels). The
-            // capacity count above has already chosen the carriers ([gate93] [gate94] [order368]) and says what the
-            // five is short of; it does not hold the five outside any more (user decision 2026-11-14: a dungeon is
-            // learning - the five goes in, kills the first boss, gears up and takes the next; two pulls of a hundred
-            // it cannot take is a dungeon nearly cleared). Every five that enters prints its count on a [gate100]
-            // line in FormFiveLocked, and batch_triage.py counts them
+            // [gate100] the gate's own decision, and the only one it makes: the five is roughly on level for the
+            // dungeon (Verdict::admits - the dungeon's own band against the members' levels)
             if (!verdict.admits)
             {
                 if (guardCount == 0)
