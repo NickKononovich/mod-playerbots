@@ -1154,8 +1154,11 @@ public:
     // when walking straight there is best). False when dest cannot be reached at all.
     // [guild15] lastExit (optional): where the route's last ride or portal sets the bot down for its final walk
     // (the start spot when the whole route is a walk)
+    // [five71] why (optional): on false, the search's own reason - the dock / portal spots it had to route without
+    // because this bot gave up its walk there ([travel57]), else that nothing of its landmass reaches the
+    // destination. A caller that refuses a walk over this says that reason, it does not guess one
     bool FindRoute(Player* bot, WorldPosition const& dest, Leg& firstLeg, float& seconds,
-                   WorldPosition* lastExit = nullptr);
+                   WorldPosition* lastExit = nullptr, std::string* why = nullptr);
     // Seconds to every dock or portal exit on mapId: the quest planner prices quests on other continents with it.
     void GetArrivalCosts(Player* bot, uint32 mapId, std::vector<std::pair<WorldPosition, float>>& out);
 
@@ -1180,8 +1183,12 @@ private:
 
     struct Node;
     void Build();
+    // [five71] skippedGivenUp (optional): the dock / portal spots the search had to route without because the bot's
+    // own walk there is given up at this level ([travel57]) - what FindRoute's `why` tells a caller that found no
+    // route, instead of leaving it to guess
     void Solve(Player* bot, WorldPosition const* dest, std::vector<Node>& nodes, std::vector<float>& cost,
-               std::vector<int32>& prev, std::vector<LegKind>& prevKind);
+               std::vector<int32>& prev, std::vector<LegKind>& prevKind,
+               std::vector<WorldPosition>* skippedGivenUp = nullptr);
 
     std::once_flag _built;
     std::vector<Line> _lines;

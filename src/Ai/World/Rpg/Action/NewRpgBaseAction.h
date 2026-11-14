@@ -230,6 +230,11 @@ public:
     // of the choices (TripRefused, the grind spot choice) until the bot's next level; one GIVE_UP line per spot
     static void NoteWalkGivenUp(Player* bot, WorldPosition const& dest, std::string const& why);
     static bool WalkGivenUp(Player* bot, float x, float y);
+    // [five71] how many walks this bot has given up (the record WalkGivenUp reads): a stamp of that record, not a
+    // count anybody decides on. A judge that kept an answer of its own which this record can change (the guild's
+    // "is there a route to the dungeon entrance", whose search routes without a given-up dock: [travel57]) keeps the
+    // stamp beside it and asks again as soon as it moves
+    static uint32 WalkGivenUpStamp(Player* bot);
     // [qeff31] the triage's wait and use lines: "[quest] wait <bot> q<N>: <why>" / "... ends after N s: <why>"
     // (questId 0 ends the wait), "[quest] use <bot> q<N> object <entry> starts" / "... ends" (questId 0 checks the
     // use under way for its end); log state only

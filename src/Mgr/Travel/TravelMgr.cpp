@@ -33,6 +33,7 @@
 #include "TravelNode.h"
 #include "VMapFactory.h"
 #include "VMapMgr2.h"
+#include "StringFormat.h"  // [five71] the search's own reason for finding no route (FindRoute's `why`)
 #include "Timer.h"
 #include <algorithm>
 #include <cmath>
@@ -5674,7 +5675,8 @@ bool TravelRouteMgr::CanLeaveDalaran(Player* bot)
 }
 
 void TravelRouteMgr::Solve(Player* bot, WorldPosition const* dest, std::vector<Node>& nodes,
-                           std::vector<float>& cost, std::vector<int32>& prev, std::vector<LegKind>& prevKind)
+                           std::vector<float>& cost, std::vector<int32>& prev, std::vector<LegKind>& prevKind,
+                           std::vector<WorldPosition>* skippedGivenUp)
 {
     std::vector<Line> const& lines = GetLines();
 
@@ -5799,6 +5801,10 @@ void TravelRouteMgr::Solve(Player* bot, WorldPosition const* dest, std::vector<N
                              "there is given up at this level",
                              bot->GetName(), bot->GetLevel(), nodes[v].portal >= 0 ? "portal" : "dock",
                              nodes[v].pos.GetPositionX(), nodes[v].pos.GetPositionY());
+                // [five71] the fact a caller with no route needs to name, every time and not once per level
+                if (skippedGivenUp &&
+                    std::find(skippedGivenUp->begin(), skippedGivenUp->end(), nodes[v].pos) == skippedGivenUp->end())
+                    skippedGivenUp->push_back(nodes[v].pos);
                 continue;
             }
 
@@ -5837,16 +5843,33 @@ void TravelRouteMgr::Solve(Player* bot, WorldPosition const* dest, std::vector<N
 }
 
 bool TravelRouteMgr::FindRoute(Player* bot, WorldPosition const& dest, Leg& firstLeg, float& seconds,
-                               WorldPosition* lastExit)
+                               WorldPosition* lastExit, std::string* why)
 {
     std::vector<Node> nodes;
     std::vector<float> cost;
     std::vector<int32> prev;
     std::vector<LegKind> prevKind;
-    Solve(bot, &dest, nodes, cost, prev, prevKind);
+    std::vector<WorldPosition> skipped;
+    Solve(bot, &dest, nodes, cost, prev, prevKind, why ? &skipped : nullptr);
 
     if (cost[1] == std::numeric_limits<float>::max())
+    {
+        // [five71] the search says why it found nothing: the spots it had to leave out (this bot gave up its walk
+        // there at this level), else that no line, dock or portal of its landmass reaches the destination at all
+        if (why)
+        {
+            if (skipped.empty())
+                *why = "no line, dock or portal of its landmass reaches it";
+            else
+            {
+                *why = Acore::StringFormat("it routes without {} spot(s) whose walk this bot gave up at this level:",
+                                           skipped.size());
+                for (WorldPosition const& spot : skipped)
+                    *why += Acore::StringFormat(" ({:.0f},{:.0f})", spot.GetPositionX(), spot.GetPositionY());
+            }
+        }
         return false;
+    }
 
     seconds = cost[1];
     std::vector<int32> path;

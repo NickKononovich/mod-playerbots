@@ -2504,28 +2504,43 @@ static char const* EnemyCapital(uint32 entranceZone, TeamId team)
 // conditions (CanUseLine / CanUsePortal), and whose leg the member's own walk then rides (MoveFarTo -> TravelTrip ->
 // TravelByTransport / TravelByPortal: the "TRAVEL boat / zeppelin / tram" lines a solo bot already travels by). No
 // second search of our own: only its yes or no is read here.
-// The answer is kept per member, level and pair of landmasses, because nothing else the search reads can change while
-// those four hold (its team, the pier factions, a portal's spell conditions) - and the question is asked for every
-// planned member against every dungeon option on the world thread (CertAdmits, Candidates, UpdateDungeonOrder)
+// The answer is kept per member, level, pair of landmasses and the stamp of its given-up-walk record
+// ([five71] WalkGivenUpStamp): those are everything the search reads that can turn its answer over - its team, the
+// pier factions and a portal's conditions hold while they do, and the record is what drops a dock out of the search
+// ([travel57]). The question is asked for every planned member against every dungeon option on the world thread
+// (CertAdmits, Candidates, UpdateDungeonOrder), so it is not asked twice for one unchanged fact.
+// [five71] b491: without the stamp the memo outlived the fact. Baridrol L26 gave up the 235 yd walk to the Valaar's
+// Berth pier (-4270,-11333) on map 530 (MOVE_FAR_LOOP), the search then routed without that dock - its only way off
+// Azuremyst - and five 8 was still formed with it on a "yes" cached before the give-up: the four others sailed, it
+// stood on the island repeating "no trip there starts"
 static bool RouteToEntrance(Player* p, WorldPosition const& entrance)
 {
     if (!p || !p->IsInWorld())
         return false;
+    struct Answer
+    {
+        uint8 level{0};
+        uint32 stamp{0};
+        bool found{false};
+    };
     static std::mutex knownLock;
-    static std::map<std::tuple<uint32, uint8, uint32, uint32>, bool> known;
-    auto const key =
-        std::make_tuple(p->GetGUID().GetCounter(), uint8(p->GetLevel()),
-                        TravelRouteMgr::Landmass(WorldPosition(p)), TravelRouteMgr::Landmass(entrance));
+    // one answer per member and pair of landmasses, replaced as soon as any fact under it moves
+    static std::map<std::tuple<uint32, uint32, uint32>, Answer> known;
+    std::tuple<uint32, uint32, uint32> const key{p->GetGUID().GetCounter(),
+                                                 TravelRouteMgr::Landmass(WorldPosition(p)),
+                                                 TravelRouteMgr::Landmass(entrance)};
+    uint32 const stamp = NewRpgBaseAction::WalkGivenUpStamp(p);
     {
         std::lock_guard<std::mutex> guard(knownLock);
-        if (auto const itr = known.find(key); itr != known.end())
-            return itr->second;
+        if (auto const itr = known.find(key);
+            itr != known.end() && itr->second.level == p->GetLevel() && itr->second.stamp == stamp)
+            return itr->second.found;
     }
     TravelRouteMgr::Leg leg;
     float seconds = 0.0f;
     bool const found = sTravelRouteMgr.FindRoute(p, entrance, leg, seconds);
     std::lock_guard<std::mutex> guard(knownLock);
-    known[key] = found;
+    known[key] = {uint8(p->GetLevel()), stamp, found};
     return found;
 }
 
@@ -5035,8 +5050,19 @@ void GuildCoordinator::UpdateFives()
             else if (std::string& logged = fiveLfgWhy[id]; logged != lfgWhy)
             {
                 logged = lfgWhy;
-                LOG_INFO("playerbots", "[guild70] five {} ({}): no Dungeon Finder ({}), the five walks to the entrance",
-                         id, five.contentKey, lfgWhy);
+                // [five70] its own tag, not [guild70]: that one is also printed by the craft index
+                // (NewRpgCraft.cpp "craft index: N recipes"), so a grep for the five's way in caught the wrong lines
+                // and counted "the five walks" where there was none
+                LOG_INFO("playerbots", "[five70] five {} ({}): no Dungeon Finder ({}), the five goes to the entrance "
+                         "itself ({} member(s) off the entrance's map: on foot, by ship, by zeppelin)",
+                         id, five.contentKey, lfgWhy,
+                         std::count_if(five.members.begin(), five.members.end(),
+                                       [&five](uint32 low)
+                                       {
+                                           Player* m = ObjectAccessor::FindConnectedPlayer(
+                                               ObjectGuid::Create<HighGuid::Player>(low));
+                                           return m && m->GetMapId() != five.entrance.GetMapId();
+                                       }));
             }
         }
     }

@@ -1594,14 +1594,38 @@ bool NewRpgBaseAction::TravelTrip(WorldPosition const& dest)
             return false;
 
         if (trip.dest == dest && trip.plannedAt && GetMSTimeDiffToNow(trip.plannedAt) < TRIP_REPLAN_MS)
+        {
+            // [five71] the three ways no leg starts are three different facts, and the walk that is given up over
+            // this says which one it was: the plan is not asked again yet, the search found no route (its own
+            // reason), or the route it found is a walk with no ride or portal on it. b491 Baridrol L26 stood on
+            // Azuremyst with "no trip there starts" 225 ticks running and no line said which
+            if (otherMap)
+                s_moveRefusal = Acore::StringFormat(
+                    "its trip to map {} was planned {} ms ago and is not searched again yet", dest.GetMapId(),
+                    GetMSTimeDiffToNow(trip.plannedAt));
             return false;
+        }
 
         trip.dest = dest;
         trip.plannedAt = getMSTime();
         TravelRouteMgr::Leg leg;
         float seconds = 0.0f;
-        if (!sTravelRouteMgr.FindRoute(bot, dest, leg, seconds) || leg.kind == TravelRouteMgr::LegKind::Walk)
+        std::string why;
+        if (!sTravelRouteMgr.FindRoute(bot, dest, leg, seconds, nullptr, otherMap ? &why : nullptr))
+        {
+            if (otherMap)
+                s_moveRefusal = Acore::StringFormat("no route to ({:.0f},{:.0f}) on map {}: {}",
+                                                    dest.GetPositionX(), dest.GetPositionY(), dest.GetMapId(), why);
             return false;
+        }
+        if (leg.kind == TravelRouteMgr::LegKind::Walk)
+        {
+            if (otherMap)
+                s_moveRefusal = Acore::StringFormat(
+                    "its route to map {} ({:.0f}s) has no ride or portal leg to start - a walk only",
+                    dest.GetMapId(), seconds);
+            return false;
+        }
 
         trip.leg = leg;
         info.SetTripPhase(Phase::ToStart);
@@ -6151,6 +6175,9 @@ namespace
     std::mutex givenUpLock;
     // [craft387] (map, x, y) -> (the level, the zone it stood in) of the give-up
     std::unordered_map<uint32, std::map<std::tuple<uint32, int32, int32>, std::pair<uint8, uint32>>> givenUp;
+    // [five71] how many times this bot's record above has changed (a give-up recorded, a spot retried or forgotten):
+    // the stamp WalkGivenUpStamp hands out, under givenUpLock with the record itself
+    std::unordered_map<uint32, uint32> givenUpChanges;
 }
 
 void NewRpgBaseAction::NoteWalkGivenUp(Player* bot, WorldPosition const& dest, std::string const& why)
@@ -6173,6 +6200,7 @@ void NewRpgBaseAction::NoteWalkGivenUp(Player* bot, WorldPosition const& dest, s
         if (found != spots.end() && found->second.first == bot->GetLevel() && found->second.second == bot->GetZoneId())
             return;
         spots[key] = {bot->GetLevel(), bot->GetZoneId()};
+        ++givenUpChanges[bot->GetGUID().GetCounter()];  // [five71] the record turned over
     }
     LOG_INFO("playerbots", "[rpg] {} L{} GIVE_UP walk to ({:.0f},{:.0f},{:.0f}) {:.0f} yd reason: {}; out of its "
              "choices until L{}",
@@ -6191,10 +6219,24 @@ void NewRpgBaseAction::ForgetWalkGivenUp(Player* bot, WorldPosition const& dest)
         if (spots != givenUp.end())
             erased = spots->second.erase(
                          {dest.GetMapId(), int32(dest.GetPositionX()), int32(dest.GetPositionY())}) != 0;
+        if (erased)
+            ++givenUpChanges[bot->GetGUID().GetCounter()];  // [five71] the record turned over
     }
     if (erased)
         LOG_INFO("playerbots", "[rpg] {} L{} WALK_RETRY ({:.0f},{:.0f}): the camp that walled it is cleared (help)",
                  bot->GetName(), bot->GetLevel(), dest.GetPositionX(), dest.GetPositionY());
+}
+
+// [five71] the stamp of this bot's given-up-walk record: every give-up and every retry changes it. A judge whose own
+// answer this record can change (TravelRouteMgr::Solve routes without a dock whose walk is given up, so "is there a
+// route there" turns over with it) keeps the stamp beside its answer and asks again the moment it moves
+uint32 NewRpgBaseAction::WalkGivenUpStamp(Player* bot)
+{
+    if (!bot)
+        return 0;
+    std::lock_guard<std::mutex> guard(givenUpLock);
+    auto const changes = givenUpChanges.find(bot->GetGUID().GetCounter());
+    return changes == givenUpChanges.end() ? 0 : changes->second;
 }
 
 bool NewRpgBaseAction::WalkGivenUp(Player* bot, float x, float y)
@@ -6218,6 +6260,7 @@ bool NewRpgBaseAction::WalkGivenUp(Player* bot, float x, float y)
             return true;
         zone = found->second.second;
         spots->second.erase(found);
+        ++givenUpChanges[bot->GetGUID().GetCounter()];  // [five71] the record turned over
     }
     LOG_INFO("playerbots", "[craft387] {} L{} WALK_RETRY ({:.0f},{:.0f}): given up from zone {}, it stands in zone {} "
              "now", bot->GetName(), bot->GetLevel(), x, y, zone, bot->GetZoneId());
@@ -6604,7 +6647,8 @@ void NewRpgBaseAction::ForgetRefusals(Player* bot)
     }
     {
         std::lock_guard<std::mutex> guard(givenUpLock);  // [regress10] the walks given up among them too
-        givenUp.erase(bot->GetGUID().GetCounter());
+        if (givenUp.erase(bot->GetGUID().GetCounter()))
+            ++givenUpChanges[bot->GetGUID().GetCounter()];  // [five71] the record turned over
     }
     std::lock_guard<std::mutex> guard(deathZonesLock);
     auto const found = deathZones.find(bot->GetGUID().GetCounter());
