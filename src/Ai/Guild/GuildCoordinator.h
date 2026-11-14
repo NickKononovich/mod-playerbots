@@ -392,6 +392,10 @@ public:
     void OnKilledByCreature(Player* killed, Creature* killer);
     void OnJustDied(Player* killed);
     void OnRpgStatus(Player* bot, uint8 status);
+    // [feed20] the `[rpg]` line the bot is about to log, word for word: the cause the LOOP / STUCK alerts print as
+    // their reason=. Called from the one place that composes that line, before OnRpgStatus, so the LOOP alert the
+    // status change raises already knows the words.
+    void OnRpgLine(Player* bot, std::string line);
     // [loop10] an outside owner (a five it joined, an URGENT order of the global leader) takes the bot off the
     // RPG status it chose: neither the spell it cuts short nor the IDLE it forces is a baseline for the LOOP
     // verdict of OnRpgStatus. Called before the status change itself reaches OnRpgStatus.
@@ -710,6 +714,11 @@ private:
         std::vector<uint32> questAvail;
         uint8 rpgStatus{0};       // the last New RPG status (gathering time)
         uint32 rpgStatusAt{0};
+        // [feed20] the last `[rpg]` line this bot logged, word for word ("IDLE(it joined a five, the five's order
+        // comes first)", "DO_QUEST q1093 ...", "GRIND reason: ..."). It is the CAUSE the LOOP / STUCK alerts print
+        // in their reason= field: batch_triage.py's loop_stuck_alerts reads exactly this line out of the log to name
+        // the cause, and the server now names it itself, in one place, so there is no second judge of "why".
+        std::string rpgLine;
         std::map<uint32, std::string> profDecision;  // skill line -> the last [guild] decision (logged on change)
         // [gather] the last walk NextStep issued to its gathering place: the place and how far it was (yards on the
         // same map, else route seconds); a new walk from no nearer means the last one gave the place up
@@ -1626,11 +1635,27 @@ private:
     uint32 deathsTotal_{0};
     std::deque<std::pair<uint32, std::string>> decisions_;
     std::deque<std::pair<uint32, std::string>> alerts_;
+    // [feed20] one entry per alert raised, for the count over the window (alerts_ itself keeps only the last 20
+    // lines, so it can hold no count). Pruned in UpdateHealth against the health row's own sliding hour.
+    struct AlertCount
+    {
+        uint32 at{0};
+        uint32 num{0};         // the member's plan number (#N in the alert), 0 = none
+        std::string kind;      // the alert's first word: LOOP, STUCK, STUCK_COMBAT, DEATH, PERF, ...
+        std::string reason;    // what its reason= field said ("" = the alert carries none)
+    };
+    std::deque<AlertCount> alertCounts_;
+    std::string alertRow_;     // the counters as one line (OAC;)
     std::vector<LootReport> lootQueue_;
     std::vector<DeathReport> deathQueue_;
     std::vector<std::pair<uint32, DeathReport>> envPending_;  // (update number, report)
     uint32 deathCall_{0};
+    // [feed20] the health row in the two pieces it is sent as: healthRow_ the rate section (tick, online, per hour,
+    // the window it declares), healthTasks_ the tail (the task counts, the worn grey / white pieces). The whole row
+    // is 334 characters and an addon line holds 240, so one line could never carry it: the log prints the two
+    // concatenated, byte for byte the line [health] always printed.
     std::string healthRow_;
+    std::string healthTasks_;
     std::string guildState_;
     // [guild80] the founding of the project guild (lock_)
     std::vector<GuildMasterSpot> guildMasters_;  // read-only after Load

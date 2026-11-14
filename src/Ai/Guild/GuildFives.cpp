@@ -132,6 +132,22 @@ namespace
         text = out;
     }
 
+    // [feed20] ONE definition of a clean run, for the completion log, the metrics window and anything that asks
+    // later: the run is done, every boss of the dungeon died, nobody died and the five never wiped. The guard on
+    // bossesTotal keeps a "done" with no boss count out of the clean share (no such row exists today, and a run
+    // whose boss total is unknown is not a proven clear)
+    bool IsCleanRun(GuildRunRecord const& rec)
+    {
+        return rec.result == "done" && rec.bossesTotal && rec.bossesKilled >= rec.bossesTotal && !rec.deaths &&
+               !rec.wipes;
+    }
+
+    // [feed20] the budget a line's text really has: SendLine cuts the whole line, prefix included, at ADDON_LINE_MAX
+    size_t LineBudget(std::string const& prefix)
+    {
+        return prefix.size() < ADDON_LINE_MAX ? ADDON_LINE_MAX - prefix.size() : 0;
+    }
+
     std::string FiveCell(std::string text, size_t max)
     {
         std::replace(text.begin(), text.end(), ';', ',');
@@ -2401,7 +2417,7 @@ void GuildCoordinator::LoadRuns()
             if (rec.result != "done")
                 continue;
             ++t.done;
-            if (rec.bossesTotal && rec.bossesKilled >= rec.bossesTotal && !rec.deaths && !rec.wipes)
+            if (IsCleanRun(rec))  // [feed20] the one definition, shared with the OC; line of the metrics window
                 ++t.clean;
         }
         std::string line;
@@ -6670,25 +6686,41 @@ void GuildCoordinator::SendFives(Player* player) const
         SendLine(player, "OF;" + std::to_string(id) + ";" + FiveCell(five.dungeon, 30) + ";" + FiveCell(status, 30) + ";" +
                              FiveCell(Who(five.leaderLow), 20) + ";" + FiveCell(members, 60) + ";" + FiveCell(five.why, 80));
     }
-    // OC;dungeon;band;cleared/total planned members (A, B, C);runs;last run (result bosses #members)
+    // OC;dungeon;band;cleared/total planned members (A, B, C);runs;last run (result bosses #members);clean of the
+    //    last 30 runs;clean of all runs;the outcomes of those last 30 by result word
     uint32 totalA = 0;
     for (PlanRow const& row : plan_)
         totalA += row.grp >= 'A' && row.grp <= 'C' ? 1 : 0;
-    for (DungeonOption const& d : dungeons_)
+    // [feed20] user 2026-11-15: the success share is the one of the LAST 30 RUNS, not the one of all time - rfc-n
+    // reads 78.8 % over 297 runs and 83.3 % over its last 30, wc-n 53.9 % over 204 and 36.7 % over its last 30, and
+    // the number that says whether the fixes work is the second one. The 30 are taken in id order (runs_ is loaded
+    // ORDER BY id and appended to), NEVER by time: `at` is the run's START, so a run begun 23:16 and ended 00:09
+    // falls out of a time filter and stays in an id one. The clean verdict is IsCleanRun, the same one the
+    // completion log prints
+    auto const sendContent = [&](std::string const& name, std::string const& band, std::string const& key)
     {
-        auto const cleared = cleared_.find(d.contentKey);
+        auto const cleared = cleared_.find(key);
         uint32 clearedA = 0;
         if (cleared != cleared_.end())
             for (uint32 low : cleared->second)
                 if (PlanRow const* row = Row(low); row && row->grp >= 'A' && row->grp <= 'C')
                     ++clearedA;
-        uint32 runs = 0;
+        uint32 runs = 0, cleanAll = 0, last30 = 0, clean30 = 0;
         GuildRunRecord const* last = nullptr;
         for (GuildRunRecord const& rec : runs_)
-            if (rec.contentKey == d.contentKey)
+            if (rec.contentKey == key)
             {
                 ++runs;
+                cleanAll += IsCleanRun(rec) ? 1 : 0;
                 last = &rec;
+            }
+        std::map<std::string, uint32> outcomes;
+        for (auto itr = runs_.rbegin(); itr != runs_.rend() && last30 < 30; ++itr)
+            if (itr->contentKey == key)
+            {
+                ++last30;
+                clean30 += IsCleanRun(*itr) ? 1 : 0;
+                ++outcomes[itr->result];  // done / failed / partial / stalled / stopped / timeout, never "clear"
             }
         std::string lastText = "-";
         if (last)
@@ -6698,10 +6730,28 @@ void GuildCoordinator::SendFives(Player* player) const
                 if (PlanRow const* row = Row(low))
                     lastText += " #" + std::to_string(row->num);
         }
-        SendLine(player, "OC;" + FiveCell(d.name, 30) + ";" + std::to_string(d.minLevel) + "-" + std::to_string(d.maxLevel) +
-                             ";" + std::to_string(clearedA) + "/" + std::to_string(totalA) + ";" + std::to_string(runs) +
-                             ";" + FiveCell(lastText, 60));
+        std::string outcomeText;
+        for (auto const& [word, count] : outcomes)
+            outcomeText += (outcomeText.empty() ? "" : ", ") + word + " " + std::to_string(count);
+        std::string const head = "OC;" + FiveCell(name, 30) + ";" + band + ";" + std::to_string(clearedA) + "/" +
+                                 std::to_string(totalA) + ";" + std::to_string(runs) + ";" + FiveCell(lastText, 60) +
+                                 ";" + std::to_string(clean30) + "/" + std::to_string(last30) + ";" +
+                                 std::to_string(cleanAll) + "/" + std::to_string(runs) + ";";
+        SendLine(player, head + FiveCell(outcomeText.empty() ? "-" : outcomeText, LineBudget(head)));
+    };
+    std::set<std::string> sent;
+    for (DungeonOption const& d : dungeons_)
+    {
+        sent.insert(d.contentKey);
+        sendContent(d.name, std::to_string(d.minLevel) + "-" + std::to_string(d.maxLevel), d.contentKey);
     }
+    // [feed20] ... and the content the option list does not hold: a raid (kind "raid"), and a dungeon that has left
+    // the band list. SendFives walked dungeons_ alone, so such a run was in the completion table and nowhere in the
+    // window - a raid could not appear in it at all. The band column names the kind, since there is no option to
+    // read a level band from
+    for (GuildRunRecord const& rec : runs_)
+        if (sent.insert(rec.contentKey).second)
+            sendContent(rec.contentKey, rec.kind.empty() ? "?" : rec.kind, rec.contentKey);
 }
 
 void GuildCoordinator::SetDrain(bool on)

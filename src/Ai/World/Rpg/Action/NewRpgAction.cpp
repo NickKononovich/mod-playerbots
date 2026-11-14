@@ -1740,15 +1740,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     {
         static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC",
                                              "DO_QUEST", "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER", "DO_PROFESSION"};
-        if (info.loggedStatus != uint8(status))
-        {
-            info.loggedStatus = uint8(status);
-            sGuildCoordinator.OnRpgStatus(bot, uint8(status));  // [guild30] LOOP alert
-            if (status != RPG_DO_QUEST)
-                ClaimSpot(bot, 0, WorldPosition());  // [guild90] off questing: its camp is free for other bots
-        }
-        info.loggedIdleReason = info.idleReason;  // [status40]
         // [status40] IDLE(<what it waits for>), [status41] NO_DECISION(<what was being decided>): never a bare word
+        // [feed20] composed first, then handed to the coordinator, then logged: see below
         std::string word = status < RPG_STATUS_END ? names[status] : "?";
         if (status == RPG_IDLE)
             word = std::string(info.idleUndecided ? "NO_DECISION" : "IDLE") + "(" +
@@ -1762,6 +1755,18 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             detail = " " + std::to_string(uint32(bot->GetExactDist(camp->pos))) + " yd";
         if (info.vendorRunEntry)
             detail += " vendor: " + info.vendorRunReason;
+        // [feed20] the line is composed BEFORE the status change is handed over, because the LOOP alert OnRpgStatus
+        // raises prints this very text as its reason= - the words the triage reads out of the log beside an alert.
+        // The composition above only reads info and the bot's position, so moving it ahead changes no behaviour.
+        sGuildCoordinator.OnRpgLine(bot, word + detail);
+        if (info.loggedStatus != uint8(status))
+        {
+            info.loggedStatus = uint8(status);
+            sGuildCoordinator.OnRpgStatus(bot, uint8(status));  // [guild30] LOOP alert
+            if (status != RPG_DO_QUEST)
+                ClaimSpot(bot, 0, WorldPosition());  // [guild90] off questing: its camp is free for other bots
+        }
+        info.loggedIdleReason = info.idleReason;  // [status40]
         LOG_INFO("playerbots", "[rpg] {} L{} {}{} t={}", bot->GetName(), bot->GetLevel(), word, detail,
                  QuestStats::NowMs());  // [log28] t=
         if (status == RPG_DO_PROFESSION)

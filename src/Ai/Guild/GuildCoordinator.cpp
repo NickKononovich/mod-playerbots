@@ -388,6 +388,31 @@ namespace
         return text.substr(0, max);
     }
 
+    // [feed20] the budget a line's TEXT really has. SendLine cuts the whole line at ADDON_LINE_MAX, prefix included,
+    // so a text limit picked without the prefix is a guess: OrdersText(healthRow_, 220) left 17 characters of the 240
+    // unused and cut the row inside "(window N min)", so the window the row declares never reached the client. The
+    // budget is the limit minus the prefix the line is sent with, and nothing else.
+    size_t LineBudget(std::string const& prefix)
+    {
+        return prefix.size() < ADDON_LINE_MAX ? ADDON_LINE_MAX - prefix.size() : 0;
+    }
+
+    // [feed20] the key the alerts are grouped by in the counters. An alert's reason= is the bot's `[rpg]` line, whose
+    // first word is the state it stands in - except IDLE / NO_DECISION, where the words in the brackets ARE the cause
+    // ("it joined a five, the five's order comes first"), so there the bracket is kept. No word list and no threshold:
+    // the key is cut out of the text the log already writes.
+    std::string ReasonKey(std::string const& reason)
+    {
+        if (reason.empty())
+            return "none recorded";
+        if (reason.compare(0, 5, "IDLE(") == 0 || reason.compare(0, 12, "NO_DECISION(") == 0)
+        {
+            size_t const close = reason.find(')');
+            return reason.substr(0, close == std::string::npos ? reason.size() : close + 1).substr(0, 70);
+        }
+        return reason.substr(0, reason.find(' '));
+    }
+
     void SendLine(Player* player, std::string const& line)
     {
         std::string text = std::string(SelfBotControl::ADDON_PREFIX) + "\t" + line.substr(0, ADDON_LINE_MAX);
@@ -1046,6 +1071,17 @@ void GuildCoordinator::Decision(std::string text)
 void GuildCoordinator::Alert(std::string text)
 {
     LOG_INFO("playerbots", "[alert] {}", text);
+    // [feed20] the count over the window. alerts_ keeps the last 20 lines, so "LOOP 44 in the hour" was not a number
+    // the window could ever hold: of 44 lines it saw 20. The count is taken here, where every alert already passes,
+    // and the window is the health row's own sliding hour (UpdateHealth prunes it against rates_), not a second one.
+    AlertCount c;
+    c.at = Now();
+    c.kind = text.substr(0, text.find(' '));
+    if (size_t const hash = text.find('#'); hash != std::string::npos)
+        c.num = uint32(std::strtoul(text.c_str() + hash + 1, nullptr, 10));
+    if (size_t const why = text.rfind("reason="); why != std::string::npos)
+        c.reason = text.substr(why + 7);
+    alertCounts_.push_back(std::move(c));
     alerts_.emplace_front(Now(), std::move(text));
     while (alerts_.size() > 20)
         alerts_.pop_back();
@@ -11273,6 +11309,20 @@ void GuildCoordinator::OnRpgForcedIdle(Player* bot)
     st.statusForced = true;
 }
 
+// [feed20] the cause in words, kept where the alerts are raised. The log already names it: NewRpgAction composes one
+// `[rpg] <bot> L<n> <word><detail>` line per status change and per changed IDLE reason, and that line is what
+// batch_triage.py's loop_stuck_alerts reads beside an alert to say why the bot stands ("it joined a five, the five's
+// order comes first", "an urgent order of the guild leader takes over", "its walk was given up ...", "no walk from
+// here gets it closer ..."). So the server keeps the same line and prints it as reason=; it does not judge the cause
+// a second time, and the window, the log and the triage all read one text.
+void GuildCoordinator::OnRpgLine(Player* bot, std::string line)
+{
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+        return;
+    CoordLock guard(lock_, __func__);
+    bots_[bot->GetGUID().GetCounter()].rpgLine = std::move(line);
+}
+
 void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
@@ -11329,7 +11379,10 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
               " re-entered without progress (no XP, no quest progress, same place) at map " +
               std::to_string(bot->GetMapId()) + " (" + std::to_string(int32(bot->GetPositionX())) + "," +
               std::to_string(int32(bot->GetPositionY())) + "), last action=" +
-              LastAction(ai, "new rpg status update"));  // [loop10] not its own PREREQ line
+              LastAction(ai, "new rpg status update") +  // [loop10] not its own PREREQ line
+              // [feed20] ... and the cause in words: the `[rpg]` line of this very status change (OnRpgLine runs
+              // before this call), which is the line the triage reads beside the alert
+              ", reason=" + (st.rpgLine.empty() ? "none recorded" : st.rpgLine));
     }
     else if (!noProgress)
         st.loopAlerted.erase(status);
@@ -11512,7 +11565,9 @@ void GuildCoordinator::UpdateHealth()
                     << foes.size() << " (" << (foes.empty() ? "none: in combat with no attacker or target"
                                                             : foesText.str())
                     << "), engine " << (ai && ai->GetState() == BOT_STATE_COMBAT ? "combat" : "non-combat")
-                    << ", status=" << StatusName(p, ai) << ", last action=" << LastAction(ai);
+                    << ", status=" << StatusName(p, ai) << ", last action=" << LastAction(ai)
+                    // [feed20] the same reason= field the other two alerts carry: its last `[rpg]` line
+                    << ", reason=" << (st.rpgLine.empty() ? "none recorded" : st.rpgLine);
                 Alert(out.str());
             }
         }
@@ -11578,7 +11633,10 @@ void GuildCoordinator::UpdateHealth()
             << (zone ? zone->area_name[0] : "?") << ": " << (now - st.anchorAt) << " s, status=" << status
             << ", order=" << order << ", last action="
             << LastAction(ai)
-            << ", reason=none";
+            // [feed20] the cause in words. A STUCK is seen from outside, with no status change beside it, so the
+            // line that names the cause is the bot's LAST `[rpg]` line - the state it is standing in - which is the
+            // same line the triage takes for a STUCK. The field printed "none" since it was added
+            << ", reason=" << (st.rpgLine.empty() ? "none recorded" : st.rpgLine);
         Alert(out.str());
     }
     sample.deaths = deathsTotal_;
@@ -11626,13 +11684,46 @@ void GuildCoordinator::UpdateHealth()
              "; tasks: %u, waiting for town %u, town tasks started %u (avg wait %u min, %.1f per visit)", waiting,
              waitingTown, townStarted_, townStarted_ ? uint32(townWaitSum_ / townStarted_ / MINUTE) : 0,
              townVisits_ ? float(townStarted_) / townVisits_ : 0.0f);
-    healthRow_ += tasks;
+    healthTasks_ = tasks;  // [feed20] the tail is its own line (OHB;): 334 characters never fit one addon line
     // [craft401] the grey / white pieces the members wear (the upgrade check's count)
-    healthRow_ += Acore::StringFormat("; worn grey {}, white {}", wornGrey_, wornLow_ - wornGrey_);
+    healthTasks_ += Acore::StringFormat("; worn grey {}, white {}", wornGrey_, wornLow_ - wornGrey_);
+    // [feed20] the alerts over the SAME window the rates above use: alertCounts_ is pruned against rates_' own front,
+    // so the two cannot disagree about what "the last hour" is. The counters answer what the 20-line snapshot could
+    // not: how many LOOP / STUCK lines the window really held, over how many members, and for which reasons
+    {
+        uint32 const since = rates_.empty() ? now - HOUR : rates_.front().at;
+        while (!alertCounts_.empty() && alertCounts_.front().at < since)
+            alertCounts_.pop_front();
+        std::map<std::string, uint32> byKind;
+        std::map<std::string, std::set<uint32>> botsByKind;
+        std::map<std::string, std::map<std::string, uint32>> byReason;
+        for (AlertCount const& c : alertCounts_)
+        {
+            ++byKind[c.kind];
+            if (c.num)
+                botsByKind[c.kind].insert(c.num);
+            if (c.kind == "LOOP" || c.kind == "STUCK" || c.kind == "STUCK_COMBAT")
+                ++byReason[c.kind][ReasonKey(c.reason)];
+        }
+        std::string line = Acore::StringFormat("alerts over the last {} min: {}", window / MINUTE,
+                                               alertCounts_.size());
+        for (auto const& [kind, count] : byKind)
+            line += Acore::StringFormat("; {} {} ({} member(s))", kind, count, botsByKind[kind].size());
+        for (auto const& [kind, reasons] : byReason)
+        {
+            std::vector<std::pair<std::string, uint32>> top(reasons.begin(), reasons.end());
+            std::sort(top.begin(), top.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+            line += "; " + kind + " by reason:";
+            for (size_t i = 0; i < top.size() && i < 3; ++i)
+                line += Acore::StringFormat("{} {} x {}", i ? "," : "", top[i].second, top[i].first);
+        }
+        alertRow_ = line;
+    }
     if (now - lastHealthLog_ >= MINUTE)
     {
         lastHealthLog_ = now;
-        LOG_INFO("playerbots", "[health] {}", healthRow_);
+        LOG_INFO("playerbots", "[health] {}{}", healthRow_, healthTasks_);
+        LOG_INFO("playerbots", "[feed20] {}", alertRow_);
         for (PlanRow const& row : plan_)
         {
             auto const st = bots_.find(row.low);
@@ -11706,9 +11797,25 @@ void GuildCoordinator::SendOrders(Player* player)
         if (w.optional && w.have && ++optionalShown <= 4)
             SendLine(player, "OW;" + OrdersText(ItemName(w.itemId), 30) + ";0;" + std::to_string(w.have) + "/0;bank;" +
                                  OrdersText(w.forWhom, 130) + ";O");
-    SendLine(player, "OH;" + OrdersText(healthRow_, 220));
+    // [feed20] the health row over two lines, each cut at its own real budget (LineBudget) instead of a guessed one:
+    // OH; the rate section with the window it declares, OHB; the tail (task counts, worn grey / white). 220 of a
+    // 240-character line left the row cut inside "(window N min)", so the window never arrived and no number in the
+    // metrics window could be confirmed. OAC; the alert counters over that same window
+    SendLine(player, "OH;" + OrdersText(healthRow_, LineBudget("OH;")));
+    SendLine(player, "OHB;" + OrdersText(healthTasks_, LineBudget("OHB;")));
+    SendLine(player, "OAC;" + OrdersText(alertRow_, LineBudget("OAC;")));
     for (auto const& [at, text] : alerts_)
-        SendLine(player, "OA;" + std::to_string(now - at) + ";" + OrdersText(text, 200));
+    {
+        // [feed20] 16 of 18 STUCK lines were longer than 208 characters, so the tail never arrived; the budget is now
+        // the line's real one. The cause in words gets its own line (OAW;) too: with reason= filled the alert text
+        // alone no longer fits 240 characters, and the cause is the one field the window had no instrument for
+        std::string const age = std::to_string(now - at);
+        SendLine(player, "OA;" + age + ";" + OrdersText(text, LineBudget("OA;" + age + ";")));
+        size_t const why = text.rfind("reason=");
+        if (why != std::string::npos)
+            SendLine(player, "OAW;" + age + ";" +
+                                 OrdersText(text.substr(why + 7), LineBudget("OAW;" + age + ";")));
+    }
     for (PlanRow const& row : plan_)
     {
         Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(row.low));
