@@ -4162,7 +4162,10 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
         // the five's order comes first: the member leaves its quest now (New RPG takes the order at IDLE)
         if (PlayerbotAI* ai = p ? GET_PLAYERBOT_AI(p) : nullptr)
             if (!IsHuman(p) && !p->IsInCombat())
+            {
+                OnRpgForcedIdle(p);  // [loop10] not its own choice: no LOOP baseline
                 ai->rpgInfo.ChangeToIdle("it joined a five, the five's order comes first");
+            }
     }
 
     // [loot13] the five's goals: what its members need here and the mobs its route must kill for them
@@ -4457,7 +4460,10 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
             st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
             st.fiveRefused.clear();
             if (PlayerbotAI* ai = GET_PLAYERBOT_AI(c.player); ai && !c.player->IsInCombat())
+            {
+                OnRpgForcedIdle(c.player);  // [loop10] not its own choice: no LOOP baseline
                 ai->rpgInfo.ChangeToIdle("it joined a five, the five's order comes first");
+            }
         }
         // [dun194] its drinks for the run, priced as the five's were at its forming
         if (c.player->GetMaxPower(POWER_MANA))

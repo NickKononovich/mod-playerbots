@@ -392,6 +392,10 @@ public:
     void OnKilledByCreature(Player* killed, Creature* killer);
     void OnJustDied(Player* killed);
     void OnRpgStatus(Player* bot, uint8 status);
+    // [loop10] an outside owner (a five it joined, an URGENT order of the global leader) takes the bot off the
+    // RPG status it chose: neither the spell it cuts short nor the IDLE it forces is a baseline for the LOOP
+    // verdict of OnRpgStatus. Called before the status change itself reaches OnRpgStatus.
+    void OnRpgForcedIdle(Player* bot);
     void SetWait(Player* bot, std::string const& reason);  // a legitimate wait the bot sets itself ("" clears)
     void AddAiTime(Player* bot, uint64 microseconds);
     // [guild50] the choice reward the global leader picked for this quest (-1 = none: the bot picks itself)
@@ -679,6 +683,8 @@ private:
         // xp, progress, pos, map, [econ2] work (money, profession skills, smelt casts)
         std::map<uint8, std::tuple<uint64, uint32, float, float, float, uint32, uint64>> statusEntry;
         std::unordered_set<uint8> loopAlerted;
+        // [loop10] the status it is about to enter was forced from outside, it is not its own choice
+        bool statusForced{false};
         // [guild50] gear through the global leader
         std::vector<GearPick> gearNow;   // per slot group: the best upgrade reachable now (bank, reward, craft, buy)
         std::vector<GearPick> gearPlan;  // per slot group: the best reachable upgrade of any source

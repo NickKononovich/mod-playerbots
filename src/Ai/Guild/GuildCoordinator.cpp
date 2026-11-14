@@ -398,12 +398,24 @@ namespace
 
     uint32 Now() { return uint32(GameTime::GetGameTime().count()); }
 
-    // the engine's last-action trail, newest part only
-    std::string LastAction(PlayerbotAI* ai)
+    // the engine's last-action trail, newest part only.
+    // [loop10] "running" is the action whose Execute this call is made from, if any. Engine::Update prints
+    // "A:<name> - PREREQ" before it runs the action - after isUseful, the multipliers and isPossible all
+    // PASSED, as the line that pushes its prerequisites - and prints OK or FAILED only once Execute returns.
+    // So an alert raised from inside Execute always ends on its own "A:<itself> - PREREQ", which says nothing
+    // about the bot and hid the real trail: 15 of the 16 LOOP lines of the 2026-11-14 hour ended on
+    // "A:new rpg status update - PREREQ" for that reason alone. That self-entry is cut here.
+    std::string LastAction(PlayerbotAI* ai, char const* running = nullptr)
     {
         if (!ai || !ai->GetCurrentEngine())
             return "-";
-        std::string const all = ai->GetCurrentEngine()->GetLastAction();
+        std::string all = ai->GetCurrentEngine()->GetLastAction();
+        if (running)
+        {
+            std::string const self = std::string("A:") + running + " - PREREQ";
+            if (size_t const at = all.rfind(self); at != std::string::npos)
+                all.erase(at);
+        }
         return all.size() > 140 ? "..." + all.substr(all.size() - 140) : all;
     }
 
@@ -3622,6 +3634,7 @@ void GuildCoordinator::UpdateOrders()
                     {
                         LOG_INFO("playerbots", "[tasks] {} {} interrupted by URGENT {}: {}", Who(row.low),
                                  coopTask ? "COOP" : RpgName(st.rpgStatus), OrderName(o.type), o.details);
+                        OnRpgForcedIdle(p);  // [loop10] not its own choice: no LOOP baseline
                         ai->rpgInfo.ChangeToIdle("an urgent order of the guild leader takes over");
                     }
                 break;  // the first executable order decides
@@ -11140,6 +11153,25 @@ void GuildCoordinator::ProcessDeaths()
     }
 }
 
+// [loop10] An outside owner takes the bot off the RPG status it chose: a five it just joined, or an URGENT order of
+// the global leader (the two ChangeToIdle sites that are not the bot's own New RPG decision). The LOOP verdict in
+// OnRpgStatus asks "did it re-enter this status at the same spot with nothing earned" and has no notion of who ended
+// the previous spell, so such a bounce reads as a loop although the bot never had the chance to progress: of the 16
+// LOOP lines of the 2026-11-14 hour, 9 were this - DO_QUEST -> IDLE(the five's order comes first) -> the same
+// DO_QUEST 0.2 s later at the same spot (Lyleria q1093, Tuihgrelfim q305, Zharet WANDER_RANDOM, and the forced IDLE
+// itself for Feeli, Idunk, Lyleria, Tuihgrelfim, Zharet, Geron). So: the spell the order cuts short is no baseline,
+// and the forced status it puts the bot into is no baseline either.
+void GuildCoordinator::OnRpgForcedIdle(Player* bot)
+{
+    if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
+        return;
+    CoordLock guard(lock_, __func__);
+    BotState& st = bots_[bot->GetGUID().GetCounter()];
+    st.statusEntry.erase(st.rpgStatus);
+    st.loopAlerted.erase(st.rpgStatus);
+    st.statusForced = true;
+}
+
 void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
 {
     if (!bot || !IsPlanned(bot->GetGUID().GetCounter()))
@@ -11170,6 +11202,14 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
             }
     st.rpgStatus = status;
     st.rpgStatusAt = now;
+    // [loop10] the status an outside order forced is not its own choice: no baseline kept, no verdict given
+    if (st.statusForced)
+    {
+        st.statusForced = false;
+        st.statusEntry.erase(status);
+        st.loopAlerted.erase(status);
+        return;
+    }
     auto const itr = st.statusEntry.find(status);
     bool noProgress = false;
     if (itr != st.statusEntry.end())
@@ -11188,7 +11228,7 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
               " re-entered without progress (no XP, no quest progress, same place) at map " +
               std::to_string(bot->GetMapId()) + " (" + std::to_string(int32(bot->GetPositionX())) + "," +
               std::to_string(int32(bot->GetPositionY())) + "), last action=" +
-              LastAction(ai));
+              LastAction(ai, "new rpg status update"));  // [loop10] not its own PREREQ line
     }
     else if (!noProgress)
         st.loopAlerted.erase(status);
