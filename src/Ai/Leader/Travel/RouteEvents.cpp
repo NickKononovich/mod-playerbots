@@ -1684,13 +1684,26 @@ namespace Leader::Travel
         else if (starter.def->kind == StarterKind::Gossip || starter.def->kind == StarterKind::Escort)
         {
             Creature* creature = object->ToCreature();
+            // [boss20] both of these returns were silent: a run that stopped on the chain said nothing between
+            // "target <starter> (event starter) 0.1 yd" and its stall (wc-n 20261114-231715-wc-n-five3-5, 295 s).
             if (!creature)
+            {
+                group.LogEvent("boss20_use_refused",
+                               JsonObject().Str("note", starter.def->note).Str("why", "the object is no creature")
+                                   .Num("entry", object->GetEntry()).Str("tag", "[boss20]"));
                 return false;
+            }
             // It set off on a scripted walk while the leader came (WalksScriptedPath): no click, no use counted.
             if (ROUTE_STARTER_NOT_WALKING && WalksScriptedPath(creature))
             {
                 --starter.uses;
                 starter.nextAllowedMs = now + STARTER_WALKING_RETRY_MS;
+                LOG_INFO("playerbots", "[boss20] {}: {}: {} walks its scripted path, no talk", group.Run().runId,
+                         starter.def->note, creature->GetName());
+                group.LogEvent("boss20_use_refused",
+                               JsonObject().Str("note", starter.def->note)
+                                   .Str("why", "it walks its scripted path").Str("name", creature->GetName())
+                                   .Num("entry", creature->GetEntry()).Str("tag", "[boss20]"));
                 return false;
             }
 
@@ -1766,6 +1779,13 @@ namespace Leader::Travel
                     group.LogEvent("escort_start", JsonObject().Str("note", starter.def->note)
                                                         .Str("name", escorted->GetName())
                                                         .Num("entry", escorted->GetEntry()));
+                    // [boss20] the step the chain reached, in the log the next run is judged by: the creatures the
+                    // step waited for are dead, the talk went through, the escort walks. Its waves and its boss come
+                    // after it (escort_end, boss_engaged, boss_attempt).
+                    LOG_INFO("playerbots",
+                             "[boss20] {}: {}: talked ({} of {} uses), the escort of {} {} walks: its waves and its "
+                             "boss come with it", group.Run().runId, starter.def->note, starter.uses,
+                             starter.def->maxUses, escorted->GetName(), escorted->GetEntry());
                 }
             }
         }

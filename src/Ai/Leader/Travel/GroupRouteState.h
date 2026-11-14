@@ -57,6 +57,10 @@ namespace Leader
         uint32 lastUseMs = 0;          // [dme-ironbark-door] when this starter was last used (UseStarter)
         bool clearLogged = false;      // [ulda-altar-clear] starter_wait_clear logged for the current wait
         uint32 escortDeathRearms = 0;  // [ohb-escort-death-rearm] uses given back after the escort died
+        // [boss20] the steps of an event chain that left no line before: the object the leader stood in reach of
+        // without "arriving" at, and the last reason a use of it was refused without a word (logged on change).
+        ObjectGuid boss20NoArrive;
+        std::string boss20NotUsed;
     };
 
     struct TriggerTrack

@@ -2588,15 +2588,44 @@ namespace Leader::Travel
             if (Unit const* walkedTo = object->ToUnit())
                 range = std::max(range, leader->GetMeleeRange(walkedTo) + BODY_PULL_MELEE_SLACK);
 
-        // A game object starter is used from within reach, as a client clicks it: no line of sight to its centre (UBRS
-        // wave 8: the leader stood on the Blackrock Altar 175706 for 8 minutes, the ray to the object's own origin
-        // runs into its model, the altar was never used and the run stalled "traveling").
-        bool const starterObject = routeState.targetIsStarter && object->ToGameObject();
+        // An event starter is used from within reach, as a client uses it: no line of sight to its centre. A game
+        // object (UBRS wave 8: the leader stood on the Blackrock Altar 175706 for 8 minutes, the ray to the object's
+        // own origin runs into its model, the altar was never used and the run stalled "traveling").
+        // [boss20] ...and a creature by the same rule, because the core's own interact check is distance and nothing
+        // else: Player::GetNPCIfCanInteractWith ends at IsWithinDistInMap(INTERACTION_DISTANCE) - it has no
+        // line-of-sight condition, so a client gossips an NPC it stands on. wc-n 20261114-231715-wc-n-five3-5
+        // (stalled 7/8, 0 deaths, 0 wipes): Cobrahn, Pythas, Anacondra and Serpentis all dead, the leader standing on
+        // the Disciple of Naralex 3678 at (-135.0,125.4,-78.0) against its spawn (-135.0,125.4,-78.1) - "target
+        // Disciple of Naralex (event starter) 0.1 yd for 295 s" - and not one gossip sent: no escort_wave_ready, no
+        // escort_start, no event_start, Mutanus "event not started". The ray from the leader's eye to the NPC it
+        // stands in is the altar's ray; the four fives of the same wave that killed Mutanus stood beside the
+        // Disciple, and each sent the gossip within 6 s of arriving.
+        bool const starterInReach = routeState.targetIsStarter;
         // A creature starter counts as the core's gossip check does (object sizes included): CoS-n wave 11 stood 4.9
         // yd from Chromie, in her talk range, never "arrived" at 4.0 and never used her.
         bool const inRange = distance <= range || (routeState.targetIsStarter && object->ToCreature() &&
                                                    leader->IsWithinDistInMap(object, STARTER_RANGE));
-        bool arrived = inRange && (starterObject || leader->IsWithinLOSInMap(object));
+        bool arrived = inRange && (starterInReach || leader->IsWithinLOSInMap(object));
+        // [boss20] the step the event chain stopped at, said once per starter object per reason: a starter the leader
+        // stands in reach of but does not "arrive" at left no line at all before this (the whole wc-n five3-5 stand
+        // is 0 lines between "target ... (event starter) 0.1 yd" and the stall).
+        if (routeState.targetIsStarter && inRange && !arrived &&
+            routeState.starterIdx < routeState.starters.size())
+        {
+            StarterTrack& starter = routeState.starters[routeState.starterIdx];
+            if (starter.boss20NoArrive != routeState.target)
+            {
+                starter.boss20NoArrive = routeState.target;
+                LOG_INFO("playerbots", "[boss20] {}: {}: in reach of {} ({:.1f} yd, dz {:.1f}) and not arrived",
+                         group.Run().runId, starter.def->note, object->GetName(), distance,
+                         object->GetPositionZ() - leader->GetPositionZ());
+                group.LogEvent("boss20_starter_no_arrive",
+                               JsonObject().Str("note", starter.def->note).Str("name", object->GetName())
+                                   .Num("entry", object->GetEntry()).Real("distance", distance)
+                                   .Real("dz", object->GetPositionZ() - leader->GetPositionZ())
+                                   .Bool("los", leader->IsWithinLOSInMap(object)).Str("tag", "[boss20]"));
+            }
+        }
         if (!routeState.targetIsStarter && !routeState.approach)
         {
             // Same floor as the target (a stairwell under its room is "in range" but sees nothing): keep walking the
@@ -4015,7 +4044,29 @@ namespace Leader::Travel
             {
                 StarterTrack& starter = routeState.starters[routeState.starterIdx];
                 // Used up meanwhile (MarkStartersDoneByGroup): nothing to click any more.
-                bool const used = starter.uses < starter.def->maxUses && UseStarter(group, leader, starter, object);
+                bool const left = starter.uses < starter.def->maxUses;
+                bool const used = left && UseStarter(group, leader, starter, object);
+                // [boss20] the arrival that used nothing says so: a starter already used up, or a use refused
+                // without a word of its own (the Gossip / Escort branch of UseStarter returns silently when its
+                // creature walks a scripted path). Logged on change, so a retry loop is one line.
+                if (!used)
+                {
+                    std::string const why = left ? "the use was refused" : "used up";
+                    if (starter.boss20NotUsed != why)
+                    {
+                        starter.boss20NotUsed = why;
+                        LOG_INFO("playerbots", "[boss20] {}: {}: stands at {} and starts nothing: {} ({} of {} uses)",
+                                 group.Run().runId, starter.def->note, object->GetName(), why, starter.uses,
+                                 starter.def->maxUses);
+                        group.LogEvent("boss20_starter_not_used",
+                                       JsonObject().Str("note", starter.def->note).Str("name", object->GetName())
+                                           .Num("entry", object->GetEntry()).Str("why", why)
+                                           .Num("uses", starter.uses).Num("maxUses", starter.def->maxUses)
+                                           .Str("tag", "[boss20]"));
+                    }
+                }
+                else
+                    starter.boss20NotUsed.clear();
                 // [lead130] the target is used: no target is the retarget's fact (RetargetDue) - no 3 s ask
                 routeState.target.Clear();
                 // [ulda-ritual-hold] a summoning ritual casts its spell after the click only while the user still
