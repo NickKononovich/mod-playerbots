@@ -1297,8 +1297,13 @@ void LeaderCommandMultiplier::Log(Action* action, char const* why)
     botAI->NoteIdleDiagLeaderHold();
     uint32 const now = getMSTime();
     std::string const key = action->getName() + '\n' + (why ? why : "");
-    for (auto it = _logged.begin(); it != _logged.end();)
-        it = it->first != key && getMSTimeDiff(it->second, now) >= LOG_MS ? _logged.erase(it) : std::next(it);
+    for (auto it = _logged.begin(); it != _logged.end();)  // [chat20]
+    {
+        if (it->first != key && getMSTimeDiff(it->second, now) >= LOG_MS)
+            it = _logged.erase(it);
+        else
+            ++it;
+    }
 
     auto const seen = _logged.find(key);
     if (seen != _logged.end() && getMSTimeDiff(seen->second, now) < LOG_MS)
