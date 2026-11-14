@@ -661,6 +661,8 @@ public:
     // Temporary combat idle diagnostics (LOG_DEBUG "[idle diag]"): the engine executed `action` this tick, fired by
     // the trigger `source` (the event's source; empty for a default action).
     void NoteIdleDiagAction(Action* action, std::string const& source);
+    // [chat20] the leader's command held one of this tick's actions (LeaderCommandMultiplier::Log)
+    void NoteIdleDiagLeaderHold() { idleDiag.tickLeaderHold = true; }
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();
@@ -813,7 +815,8 @@ protected:
         uint32 rangeLos = 0;
         uint32 moving = 0;
         uint32 gcd = 0;
-        uint32 threat = 0;
+        uint32 threat = 0;      // the bot's OWN threat on the target, not the leader's Stop
+        uint32 leaderHold = 0;  // [chat20] the leader's command zeroed the bot's actions this tick
         uint32 other = 0;
         uint32 nonCast = 0;
         uint32 gapCount = 0;
@@ -823,6 +826,7 @@ protected:
         uint32 gapOver400 = 0;
         uint32 busyEndMs = 0;
         bool tickCast = false;
+        bool tickLeaderHold = false;  // [chat20] set by LeaderCommandMultiplier::Log, cleared with tickAction
         std::string tickAction;
         std::map<std::string, uint32> actions;
     } idleDiag;

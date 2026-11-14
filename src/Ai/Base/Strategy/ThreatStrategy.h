@@ -93,8 +93,9 @@ private:
     bool _hasCommand = false;
     Leader::MemberEvents _command;
     std::deque<std::pair<uint32, float>> _health;  // [rot3] (ms, health %) samples
-    uint32 _loggedMs = 0;
-    std::string _loggedAction;
+    // [chat20] when each (action, reason) pair was last printed: one slot for the last action throttled nothing,
+    // because the engine asks this multiplier about every held ability of the tick in turn
+    std::unordered_map<std::string, uint32> _logged;
 };
 
 class ThreatStrategy : public Strategy

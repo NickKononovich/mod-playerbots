@@ -1284,15 +1284,30 @@ bool LeaderCommandMultiplier::Emergency()
     return peak - hp >= EMERGENCY_DROP_PCT;
 }
 
+// [chat20] One slot for the last action could not throttle this line at all: GetValue runs for every candidate
+// action of the tick, so a rotation alternating its 6-16 held abilities overwrote the slot on every call and the
+// LOG_MS gate never closed (b486, 58 min: 14 138 lines of 633 distinct, two identical 0.31 s apart, the gate
+// bypassed in 96 % of pairs). The same key dropped `why`, so a hold whose reason changed within the gate was
+// swallowed. The key is the pair (action, reason), each with its own clock; an entry past the gate is erased so the
+// map stays the size of the abilities held. Printing only: no bot decision reads it
 void LeaderCommandMultiplier::Log(Action* action, char const* why)
 {
+    // [chat20] the tick's idle bucket, before the print gate below: Log runs at every hold site, on every held
+    // action of the tick, while the print itself is throttled - counting ticks off the print would count the gate
+    botAI->NoteIdleDiagLeaderHold();
     uint32 const now = getMSTime();
-    if (_loggedMs && getMSTimeDiff(_loggedMs, now) < LOG_MS && _loggedAction == action->getName())
+    std::string const key = action->getName() + '\n' + (why ? why : "");
+    for (auto it = _logged.begin(); it != _logged.end();)
+        it = it->first != key && getMSTimeDiff(it->second, now) >= LOG_MS ? _logged.erase(it) : std::next(it);
+
+    auto const seen = _logged.find(key);
+    if (seen != _logged.end() && getMSTimeDiff(seen->second, now) < LOG_MS)
         return;
 
-    _loggedMs = now ? now : 1;
-    _loggedAction = action->getName();
-    LOG_INFO("playerbots", "[rot2] [leader command] {} holds {}: {}", bot->GetName(), action->getName(), why);
+    _logged[key] = now ? now : 1;
+    // [chat20] LOG_DEBUG, as [idle diag] is: a standing rule repeating, not an event. The External's cast line
+    // ([leader external]) stays LOG_INFO - that one is a line per real cast
+    LOG_DEBUG("playerbots", "[rot2] [leader command] {} holds {}: {}", bot->GetName(), action->getName(), why);
 }
 
 // [rot650] Two different leader states reached this wording as one, and the one word cost a night of reading: a

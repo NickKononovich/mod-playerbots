@@ -1260,6 +1260,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     // Update internal AI
     idleDiag.tickCast = false;
     idleDiag.tickAction.clear();
+    idleDiag.tickLeaderHold = false;  // [chat20]
     UpdateAIInternal(elapsed, minimal);
     MapWorkerTrace::SetStage("after ai", nullptr);
     SlowUpdate::Stage("after ai");  // [perf212]
@@ -8764,6 +8765,12 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
             ++idleDiag.moving;
         else if (GetGlobalCooldownRemaining())
             ++idleDiag.gcd;
+        // [chat20] the leader's command (Stop, DontAttack, a spared mob in the area, an unassigned external) zeroed
+        // the bot's actions this tick. Its own bucket because `threat` below is the bot's OWN threat on the target
+        // and nothing else: reading one for the other made the leader's Stop invisible, and its ticks fell into
+        // `other` - 24 % of the ticks of a 58 min log, our largest unexplained figure
+        else if (idleDiag.tickLeaderHold)
+            ++idleDiag.leaderHold;
         else if (aiObjectContext->GetValue<uint8>("threat", "current target")->Get() >= IDLE_DIAG_THREAT_HOLD)
             ++idleDiag.threat;
         else
@@ -8779,12 +8786,13 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     for (size_t i = 0; i < top.size() && i < 6; ++i)
         actions += Acore::StringFormat(" {}:{}", top[i].first, top[i].second);
 
+    // [chat20] `threat` is the bot's own threat, `leaderHold` the leader's command: separate buckets on purpose
     LOG_DEBUG("playerbots",
               "[idle diag] {} {}s ticks {} cast {} castWait {} nonCast {} | idle: noTarget {} rangeLos {} moving {} "
-              "gcd {} threat {} other {} | gap n {} avg {} max {} >150 {} >400 {} | actions{}",
+              "gcd {} threat {} leaderHold {} other {} | gap n {} avg {} max {} >150 {} >400 {} | actions{}",
               bot->GetName(), getMSTimeDiff(idleDiag.windowStartMs, now) / IN_MILLISECONDS, idleDiag.ticks,
               idleDiag.casts, idleDiag.castWait, idleDiag.nonCast, idleDiag.noTarget, idleDiag.rangeLos,
-              idleDiag.moving, idleDiag.gcd, idleDiag.threat, idleDiag.other, idleDiag.gapCount,
+              idleDiag.moving, idleDiag.gcd, idleDiag.threat, idleDiag.leaderHold, idleDiag.other, idleDiag.gapCount,
               idleDiag.gapCount ? idleDiag.gapSumMs / idleDiag.gapCount : 0, idleDiag.gapMaxMs, idleDiag.gapOver150,
               idleDiag.gapOver400, actions);
 
