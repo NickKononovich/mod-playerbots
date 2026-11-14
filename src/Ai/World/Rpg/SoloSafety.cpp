@@ -5270,7 +5270,27 @@ namespace SoloSafety
                 counted.insert(mob->GetGUID().GetRawValue());
             uint32 joiners = 0;
             G3D::Vector3 const fight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-            std::vector<G3D::Vector3> const stands{fight};
+            // [surv22] the chase's mobs are the ones its RUN counts, not the ones standing where the bot is at this
+            // tick. The route search counts every mob whose reach the stretch ahead crosses (RouteCosts' chaseCovers
+            // walks it at the route's own sample spacing, "its own aggro on the running bot"); the executor counted
+            // the spot alone, so the same leg was priced twice over, and the cheaper judge is the one that keeps the
+            // bot walking. b486 Ellosera L25 past a Stonetalon Grunt L40: the search had both Grunts ("run-past
+            // priced 623 hp vs hp 1182 (14 s of chase): Stonetalon Grunt L40 pack 1 +1 assisting on the chase,
+            // Stonetalon Grunt L40 pack 1", and its death line "Stonetalon Grunt priced, Stonetalon Grunt priced"),
+            // the commit had one ("1 chaser(s) ... priced 145 dmg"); the second stood 7 yd off the walk AHEAD with
+            // an aggro reach of 33 (L40 against L25) and hit it: "hit by 2 this fight", took 879, dead.
+            // The leg's own points are the walk's samples, so the stretch is the leg from here on as far as this
+            // chase's seconds carry the bot at its run speed - the chase model's own seconds, no number of mine
+            std::vector<G3D::Vector3> stands{fight};
+            {
+                float const runs = std::max(left.seconds, 0.0f) * bot->GetSpeed(MOVE_RUN);
+                float along = 0.0f;
+                for (size_t i = nearest; i + 1 < points.size() && along <= runs; ++i)
+                {
+                    along += (points[i + 1] - points[i]).length();
+                    stands.push_back(points[i + 1]);
+                }
+            }
             for (Creature* mob : std::vector<Creature*>(chasers))
                 for (Creature* join : PackAt(bot, mob, fight, stands))
                 {
