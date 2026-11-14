@@ -97,6 +97,7 @@ public:
             {"fives", HandleGuildFivesCommand, SEC_ADMINISTRATOR, Console::Yes},
             {"dungeons", HandleGuildDungeonsCommand, SEC_ADMINISTRATOR, Console::Yes},
             {"autofives", HandleGuildAutoFivesCommand, SEC_ADMINISTRATOR, Console::Yes},
+            {"need", HandleGuildNeedCommand, SEC_ADMINISTRATOR, Console::Yes},  // [ord10]
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -495,6 +496,51 @@ public:
         if (!tokens.empty())
             sGuildCoordinator.SetAutoFives(tokens[0] == "on" || tokens[0] == "1");
         handler->PSendSysMessage("guild auto fives: {}", sGuildCoordinator.AutoFives() ? "on" : "off");
+        return true;
+    }
+
+    // [ord10] playerbots guild need [<item name|id> <count> [urgent]]: the user's own order into the guild leader's
+    // wanted list - what, how many, and how urgent (the existing GuildTaskPriority levels: "urgent" may interrupt
+    // questing, anything else is taken on the way). A count of 0 withdraws the order. With no arguments it prints the
+    // leader's report, one line per standing order (the same lines he logs himself). There is no quoting in a command
+    // line here, so a multi-word item name is read as every word before the count and joined back together
+    static bool HandleGuildNeedCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> tokens = SplitArgs(args);
+        if (tokens.empty())
+        {
+            std::vector<std::pair<uint32, std::string>> const lines = sGuildCoordinator.UserNeedLines();
+            if (lines.empty())
+                handler->PSendSysMessage("no standing order. Usage: playerbots guild need <item name|id> <count> "
+                                         "[urgent]");
+            for (auto const& [item, line] : lines)
+                handler->PSendSysMessage("{}", line);
+            return true;
+        }
+        bool urgent = false;
+        if (tokens.back() == "urgent" || tokens.back() == "u")
+        {
+            urgent = true;
+            tokens.pop_back();
+        }
+        if (tokens.size() < 2)
+        {
+            handler->PSendSysMessage("Usage: playerbots guild need <item name|id> <count> [urgent]");
+            return false;
+        }
+        std::string const countText = tokens.back();
+        if (countText.find_first_not_of("0123456789") != std::string::npos)
+        {
+            handler->PSendSysMessage("the count must be a number: playerbots guild need <item name|id> <count> "
+                                     "[urgent]");
+            return false;
+        }
+        tokens.pop_back();
+        std::string name = tokens[0];  // the item name as the words before the count (no quoting in a command line)
+        for (size_t i = 1; i < tokens.size(); ++i)
+            name += " " + tokens[i];
+        handler->PSendSysMessage("{}", sGuildCoordinator.UserNeedCommand(
+                                           name, uint32(std::strtoul(countText.c_str(), nullptr, 10)), urgent));
         return true;
     }
 

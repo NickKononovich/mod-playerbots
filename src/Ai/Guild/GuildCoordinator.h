@@ -306,6 +306,18 @@ public:
     bool PreviewFive(std::string const& contentKey, std::vector<std::pair<uint32, std::string>>& members,
                      std::string& verdict, std::string& error);
     bool AutoFives() const { return autoFives_; }
+    // [ord10] the user's own order into the leader's wanted list ("playerbots guild need <item|id> <count> [urgent]").
+    // `count` is how many of the item the guild is to hold; 0 withdraws the order. `urgent` is the existing
+    // GuildTaskPriority::URGENT (the level that may interrupt questing), anything else CONVENIENT (on the way only).
+    // The order is added to the same `need` map UpdateWanted builds every other want from, so the stock line, the
+    // shortfall, the gathering plan and the crafters' / buyers' walks read it with no second path of their own.
+    // It is withdrawn by the fact alone - the guild holds `count` - never by elapsed time ([no-forcing-timers]).
+    // Returns the answer text for the issuer. Any thread.
+    std::string UserNeedCommand(std::string const& item, uint32 count, bool urgent);
+    // [ord10] the report back, one parseable line per standing order (what was ordered, what the guild holds, what
+    // is short, who is on it, the pace they bring it at, the hours it takes by the guild's own hands, and where the
+    // leader cannot manage). The leader logs these lines himself on change; the command prints the same text.
+    std::vector<std::pair<uint32, std::string>> UserNeedLines() const;  // (item, its line)
     // [drain114] before a server switch: no new five forms and no formed five starts (queues / walks in); the fives
     // already started run to their result
     void SetDrain(bool on);
@@ -1552,6 +1564,16 @@ private:
     uint32 gatherStockCalls_{0};  // [gather] UpdateOrders calls: the stock line every GATHER_STOCK_LOG_EVERY
     static constexpr uint32 GATHER_STOCK_LOG_EVERY = 10;
     std::vector<WantedItem> wanted_;
+    // [ord10] the user's standing orders: item -> how many he asked the guild to hold, at which existing priority
+    struct UserNeed
+    {
+        uint32 count{0};
+        GuildTaskPriority priority{GuildTaskPriority::URGENT};
+        uint32 have{0};   // what the guild held at the last UpdateWanted (the report's number, display only)
+        uint32 since{0};  // game time seconds of the order: display only, never a decision input
+    };
+    std::map<uint32, UserNeed> userNeeds_;
+    std::map<uint32, std::string> userNeedLogged_;  // [ord10] item -> its report line as last logged (on change)
     // [fish110] the guild's two fishers (user 2026-11-10) and the raw fish the fives' cooked supplies need
     std::set<uint32> fishers_;
     std::map<uint32, uint32> fishShort_;

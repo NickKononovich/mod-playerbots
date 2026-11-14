@@ -140,7 +140,12 @@ public:
                                          // [fish110] the guild's fishers: their fishing is their guild role
                                          std::set<uint32> const& roleFishers = {},
                                          // [craft432] the gathering tiers the crafters' walks wait for
-                                         std::vector<GatherClimb> const& climbs = {});
+                                         std::vector<GatherClimb> const& climbs = {},
+                                         // [ord10] the items the user ordered at GuildTaskPriority::URGENT
+                                         // ("playerbots guild need <item> <count> urgent"): his own priority stands
+                                         // in for the copper comparison, the same way [fish110] a guild fisher's
+                                         // role does - the leader does not re-judge an order the user already ranked
+                                         std::set<uint32> const& userUrgent = {});
     // map thread: the bot's walk to its place was refused by the solo judge (TripRefused) or ended no nearer than the
     // last one (the walk gave the place up): the place is off for this bot until its next level, Assign picks again
     void Refuse(Player* bot, uint32 placeId, std::string const& why);

@@ -8,6 +8,7 @@
 #include "GuildCoordinator.h"
 
 #include <algorithm>
+#include <cctype>  // [ord10] the item name of "playerbots guild need", case-insensitive
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -1559,7 +1560,8 @@ void GuildCoordinator::UpdateWanted()
         WHY_SKILL,
         WHY_QUEST,
         WHY_UPGRADE,
-        WHY_BAG
+        WHY_BAG,
+        WHY_USER  // [ord10] the user's own order
     };
     struct Part
     {
@@ -1848,6 +1850,26 @@ void GuildCoordinator::UpdateWanted()
             n += m->GetItemCount(item, false);
         return n;
     };
+    // [ord10] the user's own orders ("playerbots guild need <item> <count> [urgent]"): what he asked the guild to
+    // hold, less what it holds already, added to the very same `need` map every other want goes through - so the
+    // [econ1] wanted line, the [gather] stock line, UpdateOrders' shortfall, the gathering plan, the crafters' and
+    // the buyers' walks all read the order off the one list, with no second path of their own ([one-judge])
+    std::map<uint32, UserNeed> userNeeds;
+    {
+        CoordLock guard(lock_, __func__);
+        userNeeds = userNeeds_;
+    }
+    for (auto& [item, order] : userNeeds)
+    {
+        order.have = held(item);
+        if (order.count > order.have)
+            addPart(item, double(order.count - order.have),
+                    "the user's order ×" + std::to_string(order.count) +
+                        (order.priority == GuildTaskPriority::URGENT ? " (urgent)" : " (when convenient)") +
+                        " [ord10]",
+                    WHY_USER, 0, 0);
+    }
+
     auto const num = [&](uint32 low)
     {
         PlanRow const* r = Row(low);
@@ -1887,6 +1909,8 @@ void GuildCoordinator::UpdateWanted()
                         std::to_string(amount);
             else if (part->kind == WHY_BAG)
                 piece = label + " for " + std::to_string(part->who.size()) + " bots ×" + std::to_string(amount);
+            else if (part->kind == WHY_USER)  // [ord10] nobody it is "for": the user asked the guild for it
+                piece = label + " ×" + std::to_string(amount);
             else
             {
                 piece = label + " for";
@@ -1995,10 +2019,131 @@ void GuildCoordinator::UpdateWanted()
 
     CoordLock guard(lock_, __func__);
     wanted_ = std::move(list);
+    for (auto const& [item, order] : userNeeds)  // [ord10] the report's "held", read where the stock was counted
+        if (auto const mine = userNeeds_.find(item); mine != userNeeds_.end())
+            mine->second.have = order.have;
     crafterLack_ = std::move(crafterLack);
     crafterNeed_ = std::move(crafterNeedUnits);  // [econ2]
     guildState_ = guild ? "guild «" + guild->GetName() + "», bank tabs " + std::to_string(guild->GetPurchasedTabsSize())
                         : "no guild: the bank sleeps";
+}
+
+// [ord10] ------------------------------------------------------------------------------------------------------------
+// the user's own orders: "playerbots guild need <item|id> <count> [urgent]" in, one report line per order out
+// ---------------------------------------------------------------------------------------------------------------------
+std::string GuildCoordinator::UserNeedCommand(std::string const& item, uint32 count, bool urgent)
+{
+    auto const lower = [](std::string const& text)
+    {
+        std::string out = text;
+        std::transform(out.begin(), out.end(), out.begin(),
+                       [](unsigned char c) { return char(std::tolower(c)); });
+        return out;
+    };
+    uint32 id = uint32(std::strtoul(item.c_str(), nullptr, 10));
+    if (id && !sObjectMgr->GetItemTemplate(id))
+        return "no item " + std::to_string(id) + " in item_template";
+    if (!id)
+    {
+        // the name is resolved against the core's own item_template store (ObjectMgr loads it from the world DB at
+        // startup): an exact name first, then a single substring match - two of either is a question, not a guess
+        std::string const want = lower(item);
+        std::vector<uint32> exact, part;
+        for (auto const& [entry, proto] : *sObjectMgr->GetItemTemplateStore())
+        {
+            std::string const name = lower(proto.Name1);
+            if (name == want)
+                exact.push_back(entry);
+            else if (!want.empty() && name.find(want) != std::string::npos)
+                part.push_back(entry);
+        }
+        std::vector<uint32> const& hits = !exact.empty() ? exact : part;
+        if (hits.empty())
+            return "no item named «" + item + "» in item_template";
+        if (hits.size() > 1)
+        {
+            std::string list;
+            for (size_t i = 0; i < hits.size() && i < 6; ++i)
+                list += (i ? ", " : "") + std::to_string(hits[i]) + " " + ItemName(hits[i]);
+            return std::to_string(hits.size()) + " items match «" + item + "»: " + list +
+                   (hits.size() > 6 ? ", …" : "") + " - name one exactly or give its id";
+        }
+        id = hits.front();
+    }
+
+    CoordLock guard(lock_, __func__);
+    if (!count)
+    {
+        bool const had = userNeeds_.erase(id) != 0;
+        userNeedLogged_.erase(id);
+        return had ? "[ord10] order withdrawn: " + ItemName(id)
+                   : "[ord10] no standing order for " + ItemName(id);
+    }
+    UserNeed& order = userNeeds_[id];
+    order.count = count;
+    order.priority = urgent ? GuildTaskPriority::URGENT : GuildTaskPriority::CONVENIENT;
+    order.since = Now();
+    userNeedLogged_.erase(id);  // the next pass says how it goes, whatever it said about the last order
+    return Acore::StringFormat("[ord10] order taken: item {} {} ×{} ({}) - it enters the leader's wanted list on his "
+                               "next pass, and he picks who brings it and from where himself",
+                               id, ItemName(id), count, PriorityRu(order.priority));
+}
+
+std::vector<std::pair<uint32, std::string>> GuildCoordinator::UserNeedLines() const
+{
+    std::vector<std::pair<uint32, std::string>> out;
+    std::map<uint32, UserNeed> orders;
+    std::vector<uint32> lows;
+    {
+        CoordLock guard(lock_, __func__);
+        orders = userNeeds_;
+        if (orders.empty())
+            return out;
+        for (PlanRow const& row : plan_)
+            lows.push_back(row.low);
+    }
+    for (auto const& [item, order] : orders)
+    {
+        uint32 const shortBy = order.count > order.have ? order.count - order.have : 0;
+        // who is on it and at what pace: the gathering plan's own assignments and its own rate per hour, the same
+        // numbers the [gather] plan lines print - this report measures nothing of its own
+        float rate = 0.0f;
+        uint32 bots = 0;
+        std::string who;
+        for (uint32 low : lows)
+        {
+            GatherAssignment a;
+            if (!sGuildGatherPlan.Assigned(low, a) || a.itemId != item)
+                continue;
+            ++bots;
+            rate += a.ratePerHour;
+            Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+            if (who.size() < 140)
+                who += (who.empty() ? "" : ", ") + std::string(p ? p->GetName() : std::to_string(low)) + " at " +
+                       a.placeName + (a.worth ? "" : " (on its quests' way)");
+        }
+        // where the leader cannot manage it himself - said out loud, not left in the numbers
+        std::string cannot;
+        if (!shortBy)
+            cannot = "done: the guild holds what was ordered";
+        else if (!bots)
+            cannot = sGuildGatherPlan.Gatherable(item)
+                         ? "NOBODY TO HELP: not one member is on it"
+                         : "NOT GATHERABLE: craft / vendor / drop only - the crafters' and buyers' walks carry it, no "
+                           "gatherer can be sent";
+        else if (rate <= 0.0f)
+            cannot = "NOBODY TO HELP: the members on it bring 0/h";
+        out.emplace_back(
+            item, Acore::StringFormat("[ord10] order item {} {} ×{} ({}): held {}, short {}, {} bot(s) on it at "
+                                      "{:.1f}/h together, {} by the guild's own hands{}{}",
+                                      item, ItemName(item), order.count, PriorityRu(order.priority), order.have,
+                                      shortBy, bots, rate,
+                                      rate > 0.0f && shortBy
+                                          ? Acore::StringFormat("{:.1f} h", float(shortBy) / rate)
+                                          : std::string("- h"),
+                                      who.empty() ? "" : "; " + who, cannot.empty() ? "" : "; " + cannot));
+    }
+    return out;
 }
 
 bool GuildCoordinator::GlyphNeeded(uint32 itemId) const
@@ -2282,9 +2427,32 @@ void GuildCoordinator::UpdateOrders()
                      caps.empty() ? "none read" : caps, reachDropped, reachUnits,
                      reachText.empty() ? "none" : reachText);
         }
-        sGuildGatherPlan.Assign(shortfall, gatherers, questPace, unitValue, questWhy, fishers, climbs);
+        std::set<uint32> userUrgent;  // [ord10]
+        {
+            CoordLock guard(lock_, __func__);
+            for (auto const& [item, order] : userNeeds_)
+                if (order.count && order.priority == GuildTaskPriority::URGENT)
+                    userUrgent.insert(item);
+        }
+        sGuildGatherPlan.Assign(shortfall, gatherers, questPace, unitValue, questWhy, fishers, climbs, userUrgent);
         if (gatherStockCalls_++ % GATHER_STOCK_LOG_EVERY == 0)  // a log cadence, no decision
             sGuildGatherPlan.LogStock(stock);
+        // [ord10] the leader says of his own accord how each of the user's orders is going - and above all where he
+        // cannot manage it. One line per order, the text "playerbots guild need" prints, logged when it changes
+        for (auto const& [item, line] : UserNeedLines())
+        {
+            bool changed = false;
+            {
+                CoordLock guard(lock_, __func__);
+                if (userNeedLogged_[item] != line)
+                {
+                    userNeedLogged_[item] = line;
+                    changed = true;
+                }
+            }
+            if (changed)
+                LOG_INFO("playerbots", "{}", line);
+        }
     }
     CoordLock guard(lock_, __func__);
     uint32 const now = Now();

@@ -1275,7 +1275,8 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                                                       std::map<uint32, float> const& unitValue,
                                                       std::map<uint32, std::string> const& questWhy,
                                                       std::set<uint32> const& roleFishers,
-                                                      std::vector<GatherClimb> const& climbs)
+                                                      std::vector<GatherClimb> const& climbs,
+                                                      std::set<uint32> const& userUrgent)  // [ord10]
 {
     std::vector<GatherAssignment> out;
     if (!loaded_)
@@ -1449,7 +1450,9 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
             float const effective = left->second / (left->second / rate + o->travel / 3600.0f);
             float const value = effective * valueOf(a.itemId) / 60.0f;
             bool const fisher = place.kind == GatherKind::FISH && roleFishers.count(a.botLow);
-            if (!fisher && (quest < 0.0f || value <= quest))
+            // [ord10] an item the user ordered urgently keeps its gatherer the same way a fisher's role does
+            bool const ordered = userUrgent.count(a.itemId) != 0;
+            if (!fisher && !ordered && (quest < 0.0f || value <= quest))
                 continue;
             a.need = uint32(std::ceil(left->second));
             a.ratePerHour = effective;
@@ -1653,7 +1656,11 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                     // brings the fives' cooked supplies their fish
                     bool const fisher =
                         place.kind == GatherKind::FISH && roleFishers.count(bot->GetGUID().GetCounter());
-                    bool const worth = fisher || (quest >= 0.0f && value > quest);
+                    // [ord10] the user ordered this item urgently: GuildTaskPriority::URGENT is by its own
+                    // definition "may interrupt questing", so the order is worth doing without a second judge of
+                    // the same question in copper. Which bot and which place still come from the makespan below -
+                    // the order competes with the guild's other urgent gathers on equal terms, it does not jump them
+                    bool const worth = fisher || userUrgent.count(item) || (quest >= 0.0f && value > quest);
                     if (worthPhase && !worth)
                         continue;
                     float const before = already > 0.0f ? left / already : FLT_MAX;
@@ -1720,7 +1727,9 @@ std::vector<GatherAssignment> GuildGatherPlan::Assign(std::map<uint32, uint32> c
                                     a.worth ? placeLoad[a.placeId - 1] : 0, pace,
                                     a.kind == GatherKind::FISH && roleFishers.count(a.botLow)
                                         ? "; [fish110] a guild fisher: its role"
-                                        : "");
+                                        : userUrgent.count(a.itemId) ? "; [ord10] the user's urgent order: his own "
+                                                                       "priority, not a copper comparison"
+                                                                     : "");
     }
 
     std::lock_guard<std::mutex> guard(lock_);
