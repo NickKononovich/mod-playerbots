@@ -5524,6 +5524,28 @@ namespace SoloSafety
                             .first;
             return found->second;
         };
+        // [surv10] coordinator 2026-11-14: the same budget at full health and mana. The fight judge already answers
+        // "rest first" where a fight is lost now and won at full (Verdict::Kind::RestFirst, "wins only at full", and
+        // RestBeforeWalk acts on it); the chase had no such answer, so a wall the bot's own rest would clear stayed a
+        // wall for ever. b486 Kylantino L22 stood in Boulder'gor with all four of its exits priced 410, 412, 419 and
+        // 429 against hp 403 - short by 7, 9, 16 and 26 - while its full health is 493, +90. It logged 106 MAZE lines
+        // and never rested. Idunk L22 was short by 3 of 483, Jurdogs L19 by 39 of 582: 6 of the 11 distinct walls of
+        // that window were within 40 hp of passing. The same comparison the judge makes, no number of mine.
+        std::unordered_map<int32, float> budgetFullOf;
+        auto const budgetFull = [&](float seconds)
+        {
+            int32 const key = int32(std::floor(std::max(seconds, 0.0f)));
+            auto found = budgetFullOf.find(key);
+            if (found == budgetFullOf.end())
+                found = budgetFullOf
+                            .emplace(key, float(bot->GetMaxHealth()) +
+                                              SurvivalKit::HealPoints(bot, float(key),
+                                                                      float(bot->GetMaxPower(POWER_MANA)), true, true))
+                            .first;
+            return found->second;
+        };
+        // [surv10] a chase this walk cannot take now and could take at full: the walk rests first instead of walling
+        std::string restForChase;
         auto const tryRunPast = [&](Creature* mob, PullModel const& model, float& price, float& hp)
         {
             RunPast with = runPast;
@@ -5733,6 +5755,13 @@ namespace SoloSafety
                 {
                     price = with.High();
                     hp = budget(with.seconds);
+                    // [surv10] the same answer where the sum of the chasers passes its health only at full
+                    if (restForChase.empty() && with.High() < budgetFull(with.seconds))
+                        restForChase = Acore::StringFormat(
+                            "before running past {} L{}: the chase of its {} chaser(s) is priced {:.0f} against "
+                            "{:.0f} now and {:.0f} at full health and mana - short by {:.0f}",
+                            mob->GetName(), mob->GetLevel(), chasers.size(), with.High(), hp,
+                            budgetFull(with.seconds), with.High() - hp);
                     return false;
                 }
                 // [runpast61] the chase's assistance calls only when the chaser makes them; a mob whose aggro reach the
@@ -5748,7 +5777,16 @@ namespace SoloSafety
             price = with.High();
             hp = budget(with.seconds);
             if (with.High() >= hp)
+            {
+                // [surv10] short of the chase now, inside it at full: the answer is "rest first", not "never"
+                if (restForChase.empty() && with.High() < budgetFull(with.seconds))
+                    restForChase = Acore::StringFormat(
+                        "before running past {} L{}: its chase is priced {:.0f} against {:.0f} now and "
+                        "{:.0f} at full health and mana - short by {:.0f}",
+                        mob->GetName(), mob->GetLevel(), with.High(), hp, budgetFull(with.seconds),
+                        with.High() - hp);
                 return false;
+            }
             runPast = with;
             for (auto const& [key, damage] : added)
             {
@@ -6158,6 +6196,29 @@ namespace SoloSafety
                          unpriceable ? Acore::StringFormat("; {} zone(s) left unpriced (no creature template)",
                                                            unpriceable)
                                      : std::string());
+        }
+        // [surv10] a chase that walled this walk only because the bot is not at full: the walk rests first, the same
+        // answer the fight judge gives through RestBeforeWalk. The mob stays a wall for THIS search - the bot is not
+        // at full yet - and the search after the rest prices it against the full budget. Outside every lock here
+        // (RequestRest takes the solo lock); one line per bot and reason, no decision reads the line.
+        if (!restForChase.empty() && !bot->IsInCombat())
+        {
+            static std::mutex restLogLock;
+            static std::unordered_map<uint32, std::string> restLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(restLogLock);
+                if (restLogged.size() > 4096)
+                    restLogged.clear();
+                std::string& last = restLogged[bot->GetGUID().GetCounter()];
+                fresh = last != restForChase;
+                if (fresh)
+                    last = restForChase;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[surv10] {} L{} rests before its walk instead of walling it: {}",
+                         bot->GetName(), bot->GetLevel(), restForChase);
+            RequestRest(bot, restForChase);
         }
         if (!ungrown.empty())  // [death431] what GrowOnWalk needs (`around` was built for them)
         {
