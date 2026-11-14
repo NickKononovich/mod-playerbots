@@ -90,6 +90,7 @@ namespace
 #include "MotionMaster.h"
 #include "GuildCoordinator.h"  // [guild30]
 #include "GuildHonest.h"       // [group115]
+#include "GuildRiding.h"       // [red140] NoteDismount
 #include "MoveSpline.h"
 #include "NewRpgHelpers.h"
 #include "NewRpgInfo.h"
@@ -692,15 +693,34 @@ bool NewRpgBaseAction::HearthOut(std::string const& why, WorldPosition const* ca
             bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
             leftForm = true;
         }
+    // [red140] the same class as [hearth31], one state further: Spell::CheckCast's "not let players cast spells at
+    // mount" answers SPELL_FAILED_NOT_MOUNTED to a mounted caster of a spell without SPELL_ATTR0_ALLOW_WHILE_MOUNTED,
+    // which the Hearthstone is. The name reads like "it must be mounted" and is the opposite: it IS mounted. There is
+    // no second judge here - CheckCastNow runs the core's own Spell::CheckCast (PlayerbotAI::RunCheckCast) and nothing
+    // else answers - so the refusal is honest and the bot's own decision to use the stone is unchanged; what was
+    // missing is the client's own step before the use. b486: Kylantino, Ginde, Bhogagnuth, Lanbuzz, Uraela and
+    // Rumanatol were held this way, every one of them with a [mount5] walk behind it, each re-issuing the use every
+    // 10 s with no cast and no cooldown. It gets off first, as a player's client does, and the same call casts
+    bool leftMount = false;
+    if (bot->IsMounted())
+    {
+        GuildRiding::NoteDismount(bot, "its Hearthstone");  // [mount7]
+        bot->Dismount();
+        leftMount = true;
+    }
     // [hearth32] the game's own answer for the use is named in the line, and one line stands for one decision: the
     // same reason with the same answer is not logged again (the cooldown branch's hearthNote does the same)
     // [cap70] a bind point on another map has no distance from here: the line said "0 yd" for it
     PlayerbotAI::CastCheck const check =
         botAI->CheckCastNow(SPELL_HEARTHSTONE, bot, bot->GetItemByEntry(ITEM_HEARTHSTONE));
-    note = std::string("use|") + (leftForm ? "form|" : "") + PlayerbotAI::CastResultName(check.result) + "|" + why;
+    note = std::string("use|") + (leftForm ? "form|" : "") + (leftMount ? "mount|" : "") +
+           PlayerbotAI::CastResultName(check.result) + "|" + why;
     if (info.hearthNote != note)
     {
         info.hearthNote = note;
+        if (leftMount)
+            LOG_INFO("playerbots", "[red140] {} L{} gets off its mount for its Hearthstone (a mounted caster is "
+                     "refused SPELL_FAILED_NOT_MOUNTED): {}", bot->GetName(), bot->GetLevel(), why);
         if (leftForm)
             LOG_INFO("playerbots", "[hearth31] {} L{} leaves its animal form for its Hearthstone (the form forbids "
                      "its use): {}", bot->GetName(), bot->GetLevel(), why);
