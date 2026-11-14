@@ -20,7 +20,9 @@
 #include <cstring>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <sstream>
+#include <tuple>
 
 #include "AiFactory.h"  // [roles59] talent trees
 #include "AiObjectContext.h"
@@ -78,7 +80,9 @@ namespace
     constexpr size_t FIVE_DROPS_KEPT = 40;
     // [guild70] markers in the five-leader's report reason (FiveRunReport -> GuildFiveReport)
     constexpr char const* FIVE_LFG_REFUSED = "lfg refused: ";
-    constexpr char const* REFUSAL_OTHER_CONTINENT = "entrance on another continent (map ";
+    // [five70] user 2026-11-14: the entrance on another continent is a journey, not a bar - the five goes there
+    // itself (on foot, by ship, by zeppelin) and walks in by hand. Only a member with no way there at all is refused
+    constexpr char const* REFUSAL_NO_ROUTE = "no route to the entrance (map ";
     constexpr char const* FIVE_ITEM_NEED = "item needed: ";
     // [guild70] the last "no Dungeon Finder" reason logged per five (world thread)
     std::map<uint32, std::string> fiveLfgWhy;
@@ -2500,6 +2504,37 @@ static char const* EnemyCapital(uint32 entranceZone, TeamId team)
     return nullptr;
 }
 
+// [five70] user 2026-11-14 «пятёрка должна идти ко входу сама - пешком, на корабле, на зеппелине - и заходить
+// руками»: can this member reach the entrance at all? The judge is the one route search its walk itself takes -
+// TravelRouteMgr::FindRoute, which prices the boats, the zeppelins, the portals, the wait at the pier and their own
+// conditions (CanUseLine / CanUsePortal), and whose leg the member's own walk then rides (MoveFarTo -> TravelTrip ->
+// TravelByTransport / TravelByPortal: the "TRAVEL boat / zeppelin / tram" lines a solo bot already travels by). No
+// second search of our own: only its yes or no is read here.
+// The answer is kept per member, level and pair of landmasses, because nothing else the search reads can change while
+// those four hold (its team, the pier factions, a portal's spell conditions) - and the question is asked for every
+// planned member against every dungeon option on the world thread (CertAdmits, Candidates, UpdateDungeonOrder)
+static bool RouteToEntrance(Player* p, WorldPosition const& entrance)
+{
+    if (!p || !p->IsInWorld())
+        return false;
+    static std::mutex knownLock;
+    static std::map<std::tuple<uint32, uint8, uint32, uint32>, bool> known;
+    auto const key =
+        std::make_tuple(p->GetGUID().GetCounter(), uint8(p->GetLevel()),
+                        TravelRouteMgr::Landmass(WorldPosition(p)), TravelRouteMgr::Landmass(entrance));
+    {
+        std::lock_guard<std::mutex> guard(knownLock);
+        if (auto const itr = known.find(key); itr != known.end())
+            return itr->second;
+    }
+    TravelRouteMgr::Leg leg;
+    float seconds = 0.0f;
+    bool const found = sTravelRouteMgr.FindRoute(p, entrance, leg, seconds);
+    std::lock_guard<std::mutex> guard(knownLock);
+    known[key] = found;
+    return found;
+}
+
 std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, bool walk, bool overMax) const
 {
     bool const belowEntry = p->GetLevel() < d.walkMinLevel;
@@ -2524,9 +2559,14 @@ std::string GuildCoordinator::DungeonRefusal(DungeonOption const& d, Player* p, 
     // the member's level is: Alliance members do not walk into Orgrimmar, and nobody walks across an ocean
     if (!finderPorts)
     {
-        // a walk across continents has no solo safety check yet (TripRefused judges the bot's own map)
-        if (p->GetMapId() != d.entrance.GetMapId())
-            return REFUSAL_OTHER_CONTINENT + std::to_string(d.entrance.GetMapId()) + ")";
+        // [five70] user 2026-11-14: the five travels to the entrance itself - on foot, by ship, by zeppelin - so the
+        // entrance on another continent is a journey the route search prices (RouteToEntrance: TravelRouteMgr's own
+        // search, the one MoveFarTo rides), and only a member it finds no way for at all is refused. Before this a
+        // whole night of fives that had outlevelled the Dungeon Finder's band (Wailing Caverns 15-25, the guild at
+        // 19-27) was disbanded on "entrance on another continent" alone, with the ships to Kalimdor standing right
+        // there
+        if (p->GetMapId() != d.entrance.GetMapId() && !RouteToEntrance(p, d.entrance))
+            return REFUSAL_NO_ROUTE + std::to_string(d.entrance.GetMapId()) + ")";
         if (char const* capital = EnemyCapital(d.entranceZone, p->GetTeamId()))
             return std::string("entrance in an enemy capital ") + capital;
     }
@@ -3292,11 +3332,11 @@ void GuildCoordinator::UpdateDungeonOrder()
             if (p && IsHuman(p))
                 continue;
             // [order362] outlevelled it uncleared: it still clears it by the walk in ([order362] Candidates) - only one
-            // that cannot enter at all (the instance's own entry ceiling, the entrance in an enemy capital) is not
-            // counted; another continent is only a journey
+            // that cannot enter at all (the instance's own entry ceiling, the entrance in an enemy capital, no route
+            // to the entrance at all) is not counted; [five70] another continent is only a journey, and that judge
+            // now sits in DungeonRefusal itself (the route search), so nothing is filtered out of its answer here
             if (p && p->GetLevel() > keyMax)
-                if (std::string const why = DungeonRefusal(d, p, true, true);
-                    !why.empty() && why.rfind(REFUSAL_OTHER_CONTINENT, 0) != 0)
+                if (std::string const why = DungeonRefusal(d, p, true, true); !why.empty())
                 {
                     ++goneCount;
                     gone += Acore::StringFormat(" {} L{} ({}),", Who(row.low), p->GetLevel(), why);
@@ -6709,9 +6749,9 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
     if (bot->GetGUID().GetCounter() == five.leaderLow && needGoldOnWay_.count(five.leaderLow))
         return false;
     WorldPosition const& pos = five.entrance;
-    // [lfg68] a five the walk in refuses (a member on another continent, the entrance in an enemy capital: Ragefire
-    // Chasm for the Alliance) goes in by the Dungeon Finder only - no member walks to its entrance; it stands by out
-    // of combat where it is until the finder ports it. b402 five 2 (rfc-n, Alliance): "Brelir L16 GUILD reason:
+    // [lfg68] a five the walk in refuses (the entrance in an enemy capital: Ragefire Chasm for the Alliance; [five70]
+    // no route to the entrance at all) goes in by the Dungeon Finder only - no member walks to its entrance; it stands
+    // by out of combat where it is until the finder ports it. b402 five 2 (rfc-n, Alliance): "Brelir L16 GUILD reason:
     // DUNGEON five 2 -> Ragefire Chasm entrance, 8416 yd" - its members' gather walk went to Orgrimmar while the five
     // waited for two members' drink
     // [lfg69] ... and every five the finder can take (each member in its level range) waits for it: the finder
@@ -6756,8 +6796,13 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
     st.runApproached = false;
     step.kind = GuildRunStep::WALK;
     step.pos = pos;
+    // [five70] the distance is a distance only on the entrance's own map: a member travelling there (its ship, its
+    // zeppelin, its portal - MoveFarTo takes the route search's leg) says the map it is going to instead, because
+    // GetExactDist over two maps is coordinates subtracted, not a way
     step.reason = "DUNGEON five " + std::to_string(five.id) + " -> " + five.dungeon + " entrance, " +
-                  std::to_string(uint32(bot->GetExactDist(pos))) + " yd";
+                  (bot->GetMapId() == pos.GetMapId()
+                       ? std::to_string(uint32(bot->GetExactDist(pos))) + " yd"
+                       : "map " + std::to_string(pos.GetMapId()) + " (ship / zeppelin / portal)");
     return true;
 }
 
