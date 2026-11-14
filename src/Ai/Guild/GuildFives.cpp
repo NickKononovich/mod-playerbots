@@ -6370,6 +6370,17 @@ void GuildCoordinator::FiveOrder(BotState const& st, uint32 low, Player* p, std:
             o.status = "walks to the entrance " + std::to_string(uint32(p->GetExactDist(five.entrance))) + " yd";
         else
             o.status = "walks to the entrance (map " + std::to_string(five.entrance.GetMapId()) + ")";
+        // [town20] the words follow the feet: a member whose five step is not given is not walking to the entrance.
+        // FiveStep yields to its supply run ([supply27]) and to the leader's pickup of the members' gold ([eco199]),
+        // and every task line kept saying "walks to the entrance" through all of it - b476 five 8 (wc-n) "held at
+        // the gate for supply, 2916 s", its leader #9 Bierya 228 such lines while he walked Darkshore
+        if (!five.arrived.count(low))
+        {
+            if (st.supplyAsked && !st.supplyDone)
+                o.status = "waits for its supply run before the entrance";
+            else if (low == five.leaderLow && needGoldOnWay_.count(low))
+                o.status = "collects the members' gold at its mailbox before the entrance";
+        }
         if (!st.fiveRefused.empty())
             o.status = st.fiveRefused;
         o.executable = !IsHuman(p);
@@ -6539,7 +6550,13 @@ std::string GuildCoordinator::FiveLabel(BotState const& st, uint32 low) const
     if (five.stage == GuildFive::Stage::Gather)
         doing = five.arrived.count(low) ? "waits at the entrance " + std::to_string(five.arrived.size()) + "/" +
                                               std::to_string(five.members.size())
-                                        : "walks to the entrance";
+                // [town20] the same honesty as FiveOrder's status: the label said "walks to the entrance" for a
+                // member FiveStep gives no step to (its supply run, the leader's gold pickup)
+                : st.supplyAsked && !st.supplyDone
+                      ? "waits for its supply run before the entrance"
+                      : low == five.leaderLow && needGoldOnWay_.count(low)
+                            ? "collects the members' gold at its mailbox before the entrance"
+                            : "walks to the entrance";
     else
     {
         std::string const phase = Leader::Dungeon::DungeonRuns::Instance().Phase(five.id);

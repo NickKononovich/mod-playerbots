@@ -1165,9 +1165,23 @@ private:
     // [econ1] member -> (level, town task spots (x, y)) its own trip judge refused or its walk gave up on
     // (NewRpgBaseAction::TripRefused, judged in TownStops on the map thread): no mailbox / forge there is planned
     // for it until its next level (lock_; mutable: TownStops is const)
-    // [craft387] ... and while it stands in the zone of the refusal: spot -> that zone
+    // [town20] spot -> the zone it was judged in, for the log only: the judge's verdict holds per (bot, spot, level),
+    // so this memory no longer asks whether the bot still stands in that zone ([craft387] did, and that second
+    // question handed the same unreachable town back to the picker as soon as the bot walked out of it)
     mutable std::map<uint32, std::pair<uint8, std::map<std::pair<int32, int32>, uint32>>> townRefused_;
     bool TownRefused(uint32 low, WorldPosition const& pos) const;  // lock_ held
+    // [town20] lock_ held. The one reader of that verdict every town picker shares (the mailbox picker, the npc spot
+    // picker, the craft inn, and now the vault picker): its walk there was refused by its own trip judge or given up
+    // at this level. Handed to GuildBankRun::NearestVault so the vault pick is the nearest *reachable* vault
+    std::function<bool(WorldPosition const&)> TownUnreachable(Player* bot) const;
+    // [town20] lock_ held. The refusal its own judge answered where the walk is actually taken (NextStep): remembered
+    // like the one TownStops records, so the next order build picks another town instead of carrying the refused one
+    void NoteTownRefused(Player* bot, WorldPosition const& pos, std::string const& what) const;
+    // [town20] lock_ held. A member of a formed five does not leave to run a town errand - neither leader nor
+    // member (user rule 2026-11-14). True: this order waits until the five is done with him. The one exception is
+    // the errand the five itself waits for (the members' gold in its leader's mailbox, [eco199]), which is exactly
+    // the one FiveStep yields to
+    bool FiveHoldsTownTask(uint32 low, GuildOrder const& o) const;
     std::string CampText(uint32 requesterLow, uint32 helperLow) const;  // [econ1] "camp <area>, <zone>"
     std::string donationState_;  // the pooling for the first bank tab (lock_)
     // member -> (food count last seen, (game time, food that left its bags)) over the last hour: the SUPPLY need

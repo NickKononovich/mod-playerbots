@@ -2884,8 +2884,11 @@ void GuildCoordinator::UpdateOrders()
             float dist = 0;
             if (!st.vaultFail.empty())
                 o.status = st.vaultFail;
-            else if (!GuildBankRun::NearestVault(p, pos, dist))
-                o.status = "no vault on this continent";
+            // [town20] the nearest vault whose walk is not refused for it, not the nearest by the straight line
+            else if (!GuildBankRun::NearestVault(p, pos, dist, TownUnreachable(p)))
+                o.status = GuildBankRun::NearestVault(p, pos, dist)
+                               ? "postponed: every guild vault's walk on this continent is refused for it"
+                               : "no vault on this continent";
             else
             {
                 o.executable = true;
@@ -2905,8 +2908,11 @@ void GuildCoordinator::UpdateOrders()
             o.reason = "an upgrade for it lies in the bank";
             WorldPosition pos;
             float dist = 0;
-            if (!GuildBankRun::NearestVault(p, pos, dist))
-                o.status = "no vault on this continent";
+            // [town20] the nearest vault whose walk is not refused for it (the withdrawal's side of the same pick)
+            if (!GuildBankRun::NearestVault(p, pos, dist, TownUnreachable(p)))
+                o.status = GuildBankRun::NearestVault(p, pos, dist)
+                               ? "postponed: every guild vault's walk on this continent is refused for it"
+                               : "no vault on this continent";
             else
             {
                 o.executable = true;
@@ -4102,8 +4108,11 @@ void GuildCoordinator::ClaimBankItems()
         float dist = 0;
         uint32 const queued = EnchanterInbound(row.low, p);  // [craft409] letters, held items, claims: bag slots
         uint32 const free = FreeBagSlots(p);
-        if (!GuildBankRun::BankState(p, false).empty() || free <= queued || !GuildBankRun::NearestVault(p, pos, dist))
-            continue;  // no rights / bag room / withdraw slots, or in an instance
+        // [town20] ... and no vault it could reach: a claim handed to a bot whose every vault walk is refused is a
+        // withdrawal that never happens (the pick is the same one the order uses)
+        if (!GuildBankRun::BankState(p, false).empty() || free <= queued ||
+            !GuildBankRun::NearestVault(p, pos, dist, TownUnreachable(p)))
+            continue;  // no rights / bag room / withdraw slots, no reachable vault, or in an instance
         bool const enchanter = p->HasSkill(SKILL_ENCHANTING) && p->HasSpell(SPELL_DISENCHANT);
         takers.push_back({row.low, free - queued, dist, enchanter ? uint32(p->GetPureSkillValue(SKILL_ENCHANTING)) : 0u});
     }
@@ -8604,27 +8613,36 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
         // ([prof272], 12 TRAIN calls "until its next level"). The five's own life says where a stop fits: in
         // Stage::Run the member is in the dungeon and keeps none, but in Stage::Gather it is walking to the entrance
         // or waiting for the finder's proposal - and [lfg89] already rules that such a member "quests (and restocks)
-        // on until the proposal comes". The five is not delayed by this: its DUNGEON order is URGENT, so NextStep
-        // returns FiveStep's walk to the entrance before any convenient town task, and the route's town stop is read
-        // only after NextStep yields nothing (NewRpgAction IDLE). The members' gold pickup keeps its own place: it
-        // is one of these stops now, not the single exception
+        // on until the proposal comes". [town20] the five is not delayed by this because FiveHoldsTownTask holds
+        // every one of those errands while the five has him - NOT, as this said before, because "its DUNGEON order is
+        // URGENT, so NextStep returns FiveStep's walk to the entrance before any convenient town task": FiveStep
+        // answers false in four cases and NextStep then ran the errand. The members' gold pickup keeps its own
+        // place: it is one of these stops still, the one exception both the hold and FiveStep make
         bool const inFive = itr->second.fiveId != 0;
         if (inFive)
         {
             auto const five = fives_.find(itr->second.fiveId);
             if (five == fives_.end() || five->second.stage != GuildFive::Stage::Gather)
                 return;
+            // [town20] the claim above - "the five's walk to the entrance still outranks them" - was not true: it
+            // held only while FiveStep yields a step, and FiveStep answers false for a five held at the gate for
+            // supply, for one the Dungeon Finder will port, and for a leader whose mailbox holds the members' gold.
+            // The route then carried the errand's stop and walked the member away from its five. The one gate decides
+            // here too (FiveHoldsTownTask), so the route offers no stop a held errand asked for
             // [town40] one line per member and five: which stops its gathering five leaves it
             static std::map<uint32, uint32> gatherLogged;  // member -> the five whose gather stage was logged
             if (uint32& logged = gatherLogged[low]; logged != itr->second.fiveId)
             {
                 logged = itr->second.fiveId;
-                uint32 waiting = 0;
+                uint32 waiting = 0, held = 0;
                 for (GuildOrder const& o : itr->second.orders)
+                {
                     waiting += o.executable && o.waitsTown ? 1 : 0;
-                LOG_INFO("playerbots", "[town40] {} L{} gathers for five {}: its {} waiting town task(s) stay on its "
-                         "route (the five's walk to the entrance still outranks them)", bot->GetName(),
-                         bot->GetLevel(), itr->second.fiveId, waiting);
+                    held += o.executable && FiveHoldsTownTask(low, o) ? 1 : 0;
+                }
+                LOG_INFO("playerbots", "[town20] {} L{} gathers for five {}: of its {} waiting town task(s) {} are "
+                         "held until the five is done with him, the rest stay on its route", bot->GetName(),
+                         bot->GetLevel(), itr->second.fiveId, waiting, held);
             }
         }
         // [econ2] world2 [town12]: the mail pickup (MAIL_TO without a transfer, GuildTransfer TransferOrders) is a
@@ -8633,6 +8651,7 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
         for (GuildOrder const& o : itr->second.orders)
             if (o.executable && o.priority == GuildTaskPriority::CONVENIENT && o.pos != WorldPosition() &&
                 o.pos.GetMapId() == bot->GetMapId() &&
+                !FiveHoldsTownTask(low, o) &&  // [town20] a formed five outranks it: no stop for it on the route
                 (o.waitsTown || (o.type == GuildOrderType::MAIL_TO && !o.transferId &&
                                  (!o.townArea || !TownReady(bot, o)))))
                 stops.emplace_back(o.pos,
@@ -8695,9 +8714,67 @@ bool GuildCoordinator::TownRefused(uint32 low, WorldPosition const& pos) const
     Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
     if (!p || p->GetLevel() != itr->second.first)
         return false;
-    // [craft387] a refusal judged in another zone than the one it stands in now: the way there is another way
+    // [town20] [craft387] the zone the refusal was judged in is kept for the log only, it is not a second judge:
+    // NewRpgBaseAction::TripRefused caches its verdict per (bot, destination, level), so within one level it answers
+    // the same wherever the bot stands - and this memory, which asked "and are you still in that zone?", disagreed
+    // with its own judge every time the bot walked out of it. The town was then picked again, the judge refused it
+    // again from its cache (no new log line), and the task carried the same unreachable town for good: b476 29 of 41
+    // refused town tasks kept it, 516 later task lines, median 15 repeats, up to 47 (Baridrol's BANK_DEPOSIT
+    // Everlook). The refusal now lasts exactly as long as the judge's own verdict: until the bot's next level
     auto const spot = itr->second.second.find({int32(pos.GetPositionX()), int32(pos.GetPositionY())});
-    return spot != itr->second.second.end() && spot->second == p->GetZoneId();
+    return spot != itr->second.second.end();
+}
+
+std::function<bool(WorldPosition const&)> GuildCoordinator::TownUnreachable(Player* bot) const
+{
+    // [town20] the same expression the craft inn's own `off` reader uses ([craft383]): one judge, read in one way
+    uint32 const low = bot->GetGUID().GetCounter();
+    return [this, bot, low](WorldPosition const& at)
+    {
+        return at.GetMapId() == bot->GetMapId() &&
+               (NewRpgBaseAction::WalkGivenUp(bot, at.GetPositionX(), at.GetPositionY()) || TownRefused(low, at));
+    };
+}
+
+void GuildCoordinator::NoteTownRefused(Player* bot, WorldPosition const& pos, std::string const& what) const
+{
+    // [town20] TownStops is not the only place the trip judge speaks: NextStep judges the walk again where it would
+    // actually start it, and there a refusal only made it `continue` - the order kept its town and the bot carried it
+    // for ever ("BANK_DEPOSIT waits town Everlook", never walked, never re-planned). The verdict is remembered here
+    // too, so the next order build hands the picker another town (or none, honestly)
+    uint32 const low = bot->GetGUID().GetCounter();
+    auto& entry = townRefused_[low];
+    if (entry.first != bot->GetLevel())
+        entry = {bot->GetLevel(), {}};
+    std::pair<int32, int32> const xy{int32(pos.GetPositionX()), int32(pos.GetPositionY())};
+    if (entry.second.insert_or_assign(xy, bot->GetZoneId()).second)
+        LOG_INFO("playerbots", "[town20] {} L{} {} refused at ({},{}): its walk there is refused or given up - the "
+                 "task is planned to another town, or postponed with its reason", bot->GetName(), bot->GetLevel(),
+                 what, xy.first, xy.second);
+}
+
+bool GuildCoordinator::FiveHoldsTownTask(uint32 low, GuildOrder const& o) const
+{
+    // [town20] user rule 2026-11-14: a formed five outranks a town errand. b476 five 8 (wc-n) stood 48 min "held at
+    // the gate for supply" while #56 Aestymro waited 26 min at the entrance and its tank and leader #9 Bierya,
+    // "walks to the entrance" in every task line, walked Darkshore with "BANK_DEPOSIT waits town Everlook".
+    // The DUNGEON order is first and URGENT, which bought nothing: FiveStep answers false for a five held for
+    // supply ([supply27]), for one the Dungeon Finder will port ([lfg89]), for a leader whose mailbox holds the
+    // members' gold ([eco199]) and for a refused entrance walk - and NextStep then simply fell through the switch
+    // into the next order, the errand. The words and the feet were two judges; this is the one gate both read
+    auto const itr = bots_.find(low);
+    if (itr == bots_.end() || !itr->second.fiveId)
+        return false;
+    auto const five = fives_.find(itr->second.fiveId);
+    if (five == fives_.end() ||
+        (five->second.stage != GuildFive::Stage::Gather && five->second.stage != GuildFive::Stage::Run))
+        return false;
+    if (o.type == GuildOrderType::DUNGEON || o.place == GuildTaskPlace::FIELD || !o.townArea)
+        return false;  // the five's own step, and the field work that takes the bot to no town
+    // [eco199] the pickup the five itself waits for: the very one FiveStep yields to, so it is no errand
+    if (o.type == GuildOrderType::MAIL_TO && !o.transferId && needGoldOnWay_.count(low))
+        return false;
+    return o.priority != GuildTaskPriority::URGENT;
 }
 
 bool GuildCoordinator::QuestWorkOf(Player* bot, uint32 questId, float dps, QuestWork& out) const
@@ -10344,6 +10421,23 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
         order.waitsTown = !TownReady(bot, order);
         if (order.waitsTown)
             continue;
+        // [town20] a formed five outranks a town errand, whatever FiveStep answered above (user rule 2026-11-14):
+        // its member, leader or not, does not start one while the five has him. Before, FiveStep's false fell
+        // straight through into the next order and the errand ran, while every task line kept saying "walks to the
+        // entrance" - two judges for one bot's feet
+        if (FiveHoldsTownTask(low, order))
+        {
+            order.status = "the five has him first: " + FiveWait(st);
+            static std::map<uint32, uint32> heldLogged;  // member -> the five its hold was logged for (a log cadence)
+            if (uint32& logged = heldLogged[low]; logged != st.fiveId)
+            {
+                logged = st.fiveId;
+                LOG_INFO("playerbots", "[town20] {} L{} holds its town task {}{}: {}", bot->GetName(),
+                         bot->GetLevel(), OrderName(order.type),
+                         order.townName.empty() ? "" : " " + order.townName, FiveWait(st));
+            }
+            continue;
+        }
         switch (order.type)
         {
             case GuildOrderType::DISENCHANT:
@@ -10403,10 +10497,17 @@ GuildRunStep GuildCoordinator::NextStep(Player* bot, PlayerbotAI* botAI)
                 float dist = 0;
                 // [guild14] a solo bot walks to the vault only on a safe walk (b303 Laaral L10 died twice on its bank
                 // run across Bloodmyst): else the order waits
-                if (!GuildBankRun::NearestVault(bot, pos, dist) ||
-                    NewRpgBaseAction::TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
-                                                  "guild vault"))
+                // [town20] ... and the refusal is remembered, so the next order build picks another vault instead of
+                // the order carrying the refused town for ever (b476 Baridrol's "BANK_DEPOSIT waits town Everlook"
+                // over 47 task lines after its own refusal)
+                if (!GuildBankRun::NearestVault(bot, pos, dist, TownUnreachable(bot)))
                     continue;
+                if (NewRpgBaseAction::TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
+                                                  "guild vault"))
+                {
+                    NoteTownRefused(bot, pos, std::string(OrderName(order.type)) + " vault");
+                    continue;
+                }
                 st.run = true;
                 st.runType = order.type;
                 st.runPos = pos;

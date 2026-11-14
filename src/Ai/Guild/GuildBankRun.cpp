@@ -151,12 +151,19 @@ namespace GuildBankRun
         return why;
     }
 
-    bool NearestVault(Player* bot, WorldPosition& pos, float& dist)
+    bool NearestVault(Player* bot, WorldPosition& pos, float& dist,
+                      std::function<bool(WorldPosition const&)> const& refused)
     {
         dist = FLT_MAX;
         for (Vault const& vault : vaults)
         {
             if (vault.pos.GetMapId() != bot->GetMapId() || !Friendly(bot, vault))
+                continue;
+            // [town20] a vault whose walk the bot's own trip judge already refused is no candidate: the nearest
+            // *reachable* one is the pick, as every other town picker does it (TownRefused). The straight line alone
+            // sent L22-26 bots to Everlook (Winterspring, 55+) and Gadgetzan (Tanaris, 40+) because those vaults are
+            // geometrically nearer Ashenvale / Stonetalon than Darnassus' is
+            if (refused && refused(vault.pos))
                 continue;
             float const d = bot->GetExactDist(vault.pos.GetPositionX(), vault.pos.GetPositionY(),
                                               vault.pos.GetPositionZ());

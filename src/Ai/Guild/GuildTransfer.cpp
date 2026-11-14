@@ -788,7 +788,9 @@ void GuildCoordinator::UpdateTransfers()
     {
         WorldPosition pos;
         float dist = 0;
-        return GuildBankRun::NearestVault(p, pos, dist) ? Detour(p, pos) : NONE;
+        // [town20] the vault the channel choice weighs is the nearest *reachable* one, as the mailbox side already
+        // was (TownRefused): else the bank channel won with a vault the bot is never allowed to walk to
+        return GuildBankRun::NearestVault(p, pos, dist, TownUnreachable(p)) ? Detour(p, pos) : NONE;
     };
 
     // 0. food use: what left the bags since the last update (eaten; sold or traded food counts too), last hour
