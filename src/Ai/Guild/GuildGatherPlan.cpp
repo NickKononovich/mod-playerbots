@@ -1859,8 +1859,41 @@ void GuildGatherPlan::LogStock(std::map<uint32, std::pair<uint32, uint32>> const
         // silent assertion that cost us [ui11]'s chest case; pulling VendorSource into the gathering plan for a log
         // line is not worth the coupling, so the line states its own evidence instead
         if (Gatherable(item, &skill, &req))
-            source = "gather skill " + std::to_string(skill) + " >= " + std::to_string(req) +
-                     (Supplied(item) ? "" : ", chests only") + "; vendor not checked here, the walk buys first";
+        {
+            // [gather52] skill 0 is not a gathering tier anybody reaches: Gatherable returns the place of the lowest
+            // reqSkill, and a skill of 0 means that place asks no gathering skill at all - a mob's own drop (LoadDrops'
+            // DROP places, [ench164] / [gather51]) or a chest. The two are not the same thing to any reader of this
+            // line: a DROP is a supply line the plan works (b486 sent Laaral to "Silk Cloth ×4903 @ drop Dragonmaw
+            // Bonewarder @ Wetlands/Angerfang Encampment, here 92.0/h"), a chest is none at all ([gather42]). b486's
+            // block printed "gather skill 0 >= 0" for all six - Silk Cloth 4903, Spider's Silk 321, Mageweave Cloth
+            // 128, Iridescent Pearl 77, Buzzard Wing 48, Elemental Earth 3, 69 % of the whole shortfall - and so read
+            // as one gathering tier of skill 0 that no herbalist, miner, skinner or fisher could ever serve. The kind
+            // is what Assign and the crafters' walks branch on, so the line states it, and names the mobs the item
+            // drops best from - the user's rule "need silk, look where silk drops most", which is the same yield per
+            // kill that Rate multiplies the visits by, so no second judge of the drop's size
+            std::string best;
+            float bestYield = 0.0f;
+            uint32 dropPlaces = 0;
+            if (!skill)
+                for (GatherPlace const* place : PlacesFor(item))
+                    if (place && !place->instance && place->kind == GatherKind::DROP)
+                    {
+                        ++dropPlaces;
+                        auto const y = place->yield.find(item);
+                        if (y != place->yield.end() && y->second > bestYield)
+                        {
+                            bestYield = y->second;
+                            best = PlaceName(*place);
+                        }
+                    }
+            source = dropPlaces ? Acore::StringFormat(
+                                      "drop from mobs, no gathering skill: {} place(s), best {} "
+                                      "at {:.3f} a kill [gather52]",
+                                      dropPlaces, best, bestYield)
+                                : "gather skill " + std::to_string(skill) + " >= " + std::to_string(req) +
+                                      (Supplied(item) ? "" : ", chests only");
+            source += "; vendor not checked here, the walk buys first";
+        }
         else if (GatherConversion const* c = ConversionFor(item))
             source = c->raw ? "convert " + ItemName(c->raw) + " x" + std::to_string(c->rawPerUnit) : "disenchant";
         LOG_INFO("playerbots", "[gather] stock item {} {} need {} have {} short {} source {}", item, ItemName(item),
