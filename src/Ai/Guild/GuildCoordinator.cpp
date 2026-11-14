@@ -12819,8 +12819,14 @@ uint32 GuildCoordinator::FiveDrinkTarget(Player* bot) const
     if (st == bots_.end() || !st->second.fiveId)
         return 0;
     auto const five = fives_.find(st->second.fiveId);
-    if (five == fives_.end() || five->second.stage != GuildFive::Stage::Gather)
+    if (five == fives_.end() || five->second.stage == GuildFive::Stage::Done)
         return 0;
+    // [supply20] one judge for one quantity (the user's rule on duplicate judges): the drinks the run needs this
+    // member to carry is [dun194]'s priced drinkNeed, and it is its line for the whole run - that is already what
+    // GuildTransfer's RunLine ([dun208] the in-run share) and GuildFives' drinkLine (the gate) read. This reader
+    // cut it off at Stage::Gather, so the same member's line was 17 at the door and RESTOCK_FOOD_MIN (or, through
+    // SupplyWanted, 1) a step later: the purchase and the trip were deciding on a second value of a figure the
+    // leader had already priced
     auto const need = five->second.drinkNeed.find(bot->GetGUID().GetCounter());
     return need != five->second.drinkNeed.end() ? need->second : 0;
 }

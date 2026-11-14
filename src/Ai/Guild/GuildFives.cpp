@@ -48,6 +48,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
+#include "PlayerbotAIConfig.h"  // [supply20] NewRpgStatus: a vendor run still on its way
 #include "Playerbots.h"
 #include "PlayerbotsDatabase.h"
 #include "SelfBotControl.h"
@@ -90,6 +91,20 @@ namespace
     std::map<std::string, std::string> gateWhy;
 
     uint32 Now() { return uint32(GameTime::GetGameTime().count()); }
+
+    // [supply20] the member is on its way to a vendor for the drink its five is about to require of it: its vendor
+    // run is live (StartVendorRun's own test for a run still going) and buying drink, and it is still below the
+    // restock line the run was armed on. Nothing new is counted here - the run's own reason and CountBagFood
+    bool OnRestockRun(Player* p, PlayerbotAI& ai)
+    {
+        if (!p || !p->GetMaxPower(POWER_MANA) || !ai.rpgInfo.vendorRunEntry)
+            return false;
+        if (ai.rpgInfo.GetStatus() != RPG_GO_CAMP && ai.rpgInfo.GetStatus() != RPG_WANDER_NPC)
+            return false;
+        if (ai.rpgInfo.vendorRunReason.find("drink") == std::string::npos)
+            return false;
+        return CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK) < RESTOCK_FOOD_MIN;
+    }
 
     std::string ItemName(uint32 itemId)
     {
@@ -4160,11 +4175,28 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
         st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
         st.fiveRefused.clear();
         // the five's order comes first: the member leaves its quest now (New RPG takes the order at IDLE)
+        // [supply20] ... but a restock run already on its way is not another errand the order outranks: it is the
+        // five's own prerequisite ([supply27] is about to ask for exactly that run), and dropping it costs the run
+        // itself. The drop re-plans "after its next loot or money gain" (StartVendorRun) and a mana user resting dry
+        // loots no coin, so the run never came back: b477 wc-n, the tank Namwe walked 1502 yd to vendor Jazzik for
+        // drink with 95786c in hand, the forming of five 5 dropped it ("vendor run (buy drink) dropped by another
+        // state"), the re-plan was refused for its route ("TRIP_REFUSED ... its walk passes Horde Elite L65-65") and
+        // Namwe went in at "drink 0 of 17" - 1139 [regen] "no drink in the bags" lines after it. The tank Bami, the
+        // same: its run to Innkeeper Firebrew dropped on joining, five 4 entered at "drink 10 of 15"
         if (PlayerbotAI* ai = p ? GET_PLAYERBOT_AI(p) : nullptr)
             if (!IsHuman(p) && !p->IsInCombat())
             {
-                OnRpgForcedIdle(p);  // [loop10] not its own choice: no LOOP baseline
-                ai->rpgInfo.ChangeToIdle("it joined a five, the five's order comes first");
+                if (OnRestockRun(p, *ai))
+                    LOG_INFO("playerbots",
+                             "[supply20] five {} ({}): {} keeps its vendor run ({}) - it holds {} drink(s) and the "
+                             "five's own supply check is about to ask for that run; the five's order takes it after",
+                             five.id, d.contentKey, Who(low), ai->rpgInfo.vendorRunReason,
+                             CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK));
+                else
+                {
+                    OnRpgForcedIdle(p);  // [loop10] not its own choice: no LOOP baseline
+                    ai->rpgInfo.ChangeToIdle("it joined a five, the five's order comes first");
+                }
             }
     }
 
@@ -4823,6 +4855,32 @@ void GuildCoordinator::UpdateFives()
                     }
                     for (uint32 low : five.members)
                         bots_[low].supplyDone = true;  // no member's own restock holds it
+                    // [supply20] what the pooled verdict leaves open, measured: the members the pool carries that
+                    // still hold less than their own priced line. Their restock stays armed (SupplyWanted) and does
+                    // not hold the five; a tank among them is the costly case - it walks in on the share alone
+                    std::string carried;
+                    for (uint32 low : five.members)
+                    {
+                        Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+                        if (!p || !p->IsInWorld() || !p->GetMaxPower(POWER_MANA))
+                            continue;
+                        uint32 const held = CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
+                        if (held >= drinkLine(low))
+                            continue;
+                        auto const role = five.roles.find(low);
+                        carried += (carried.empty() ? "" : ", ") +
+                                   Acore::StringFormat("{} {}/{} ({})", p->GetName(), held, drinkLine(low),
+                                                       role != five.roles.end() ? role->second : "dps");
+                    }
+                    if (!carried.empty())
+                        if (std::string& logged = fiveLfgWhy[id + 3000000]; logged != carried)
+                        {
+                            logged = carried;
+                            LOG_INFO("playerbots",
+                                     "[supply20] five {} ({}): the pool carries it, these are still under their own "
+                                     "[dun194] line and keep restocking: {}",
+                                     id, five.contentKey, carried);
+                        }
                 }
                 // [dun280] coordinator 2026-11-13: the pool is read again every pass until the five is in, and a
                 // five whose pool has fallen back below the lines' total does not go: the verdict was latched, so a
@@ -6488,7 +6546,26 @@ bool GuildCoordinator::SupplyWanted(Player* bot) const
         return false;
     CoordLock guard(lock_, __func__);
     auto const itr = bots_.find(bot->GetGUID().GetCounter());
-    return itr != bots_.end() && itr->second.fiveId && itr->second.supplyAsked && !itr->second.supplyDone;
+    if (itr == bots_.end() || !itr->second.fiveId)
+        return false;
+    if (itr->second.supplyAsked && !itr->second.supplyDone)
+        return true;
+    // [supply20] ... and a member still below its priced drink line ([dun194]) while its five gathers wants supply
+    // whatever the pool's verdict said. [supply100]'s pooled verdict sets supplyDone on every member the moment the
+    // five's drinks summed cover the lines summed, and it runs before the per-member check, so a member holding
+    // nothing never has supplyAsked set at all. That latch is the right answer to "does this member hold the five
+    // up" - it is not an answer to "does this member still have to buy", and it was being read as both: through
+    // this reader it switched off [eco206]'s priced drink line (the trip then judged on 1 drink, not 17) and
+    // [five43]'s fiveRetry, the one gate that lets a five member past "one run per money gain". b477 wc-n: five 5
+    // latched at pool 54 of the lines' 51 and the tank Namwe walked in at 0 of 17, five 4 at pool 53 of 36 with
+    // Bami at 10 of 15; the in-run share ([dun208]) handed Namwe 11 of its 17 out of the healer Thyllyn's 16.
+    // Nothing here holds the five: the gate below reads the supplyDone field, which this does not touch
+    auto const five = fives_.find(itr->second.fiveId);
+    if (five == fives_.end() || five->second.stage != GuildFive::Stage::Gather)
+        return false;
+    auto const need = five->second.drinkNeed.find(bot->GetGUID().GetCounter());
+    return need != five->second.drinkNeed.end() && bot->GetMaxPower(POWER_MANA) &&
+           CountBagFood(bot, RESTOCK_SPELL_CATEGORY_DRINK) < need->second;
 }
 
 bool GuildCoordinator::InSameActiveFive(uint32 a, uint32 b) const
