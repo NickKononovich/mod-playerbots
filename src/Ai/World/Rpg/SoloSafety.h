@@ -210,8 +210,9 @@ namespace SoloSafety
     // or more of those reaching it roam (a wander area, a patrol beat): between its pulls the roamers walk into it one
     // after another - a camp for a party, not a solo bot (`why`: the roamers)
     bool DenseCamp(Player* bot, std::string& why);
-    // the death line's context: attackers now, the fight's start
-    std::string DeathContext(Player* bot);
+    // the death line's context: attackers now, the fight's start. [surv20] `killer` names the mob that dealt the
+    // killing blow, so a run-past chase priced of other mobs is not read as its price
+    std::string DeathContext(Player* bot, Creature* killer = nullptr);
 
     // Leader::Route for a solo bot: the idle mobs round the walk, refused (`refuse`: x, y, z, radius) or priced
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,

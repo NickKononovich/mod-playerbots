@@ -172,7 +172,9 @@ public:
         LOG_INFO("playerbots", "[death] {} L{} killed by {} (entry {}, L{}, {}% hp) at map {} ({:.1f},{:.1f}) {} | {}{}",
                  killed->GetName(), killed->GetLevel(), killer->GetName(), killer->GetEntry(), killer->GetLevel(),
                  uint32(killer->GetHealthPct()), killed->GetMapId(), killed->GetPositionX(), killed->GetPositionY(),
-                 area ? area->area_name[0] : "?", SoloSafety::DeathContext(killed),  // [guild13] its fight
+                 // [surv20] the killer goes in: its run-past chase line is this death's only when the killer (or a
+                 // mob that hit it) is one of that chase's own chasers
+                 area ? area->area_name[0] : "?", SoloSafety::DeathContext(killed, killer),  // [guild13] its fight
                  threat.empty() ? std::string() : "; [deaths14] the killer's threat list: " + threat);
         SelfBotControl::RecordGuildDeath(killed, killer);  // [live1]
         NewRpgBaseAction::RecordDeath(killed, killer);       // [guild12]

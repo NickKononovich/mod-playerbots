@@ -200,6 +200,11 @@ namespace
         // and what the search gave (DeathContext: how a killer met on a walk had been seen)
         uint32 routeMs = 0;
         std::unordered_map<uint64, bool> routeMobs;
+        // [surv21] the mobs that search had in range and left out because their fight was not the bot's (RouteCosts
+        // skips a mob in combat): they are priced at nothing, and the death line said "unseen" of them - the same
+        // word it says of a mob 1340 yd away. b486 Geron L22's two Addled Lepers were the far kind, Bami L24's
+        // killer the near one
+        std::unordered_set<uint64> routeOthersFight;
         std::vector<RouteWall> routeWalls;  // [pull9]
         std::string runPastLogged;          // [runpast11] the last run-past line (one line per change)
         // [runpast11] the run-past set of the last route search from where the bot stood (mob -> its chase damage) and
@@ -227,6 +232,9 @@ namespace
         float runPastSec = 0.0f;
         float runPastHp = 0.0f;
         uint64 runPastTakenAt = 0;
+        // [surv20] the mobs that chase in it (the chasers it was priced on and the pack their fight brings): a
+        // sample of the chase model is a sample only of the fight those mobs are in
+        std::unordered_set<uint64> runPastChasers;
         std::vector<G3D::Vector3> legPoints;
         std::vector<G3D::Vector3> legSearched;  // [runpast15] the searched walk the leg was cut from
         std::unordered_set<uint64> legNamed;
@@ -369,11 +377,22 @@ namespace
         // data; no decision reads it)
         if (state.runPastPriced > 0.0f)
         {
+            // [surv20] ... of the fight its own chasers are in, and of no other. b486 Bami L24 committed a run past
+            // one Leper Gnome L10 ("priced 3 dmg (10 at the high end) over 12 s against hp 1137 - a margin of 1127",
+            // honest for a L10) and was then killed by an Addled Leper L24 that was in Geron's fight (the killer's
+            // threat list "Geron 3223", Bami on neither it nor its own attacker list). The sample read "priced 3 dmg:
+            // took 0 (died)" and says the chase model is out by orders of magnitude; it is the Gnome's chase beside
+            // another mob's fight. The chase is sampled only where one of its mobs hit the bot
+            bool ofItsChase = false;
+            for (auto const& [guid, track] : state.attackers)
+                ofItsChase = ofItsChase || state.runPastChasers.count(guid) > 0;
             LOG_INFO("playerbots", "[runpast87] {} L{} run-past chase priced {:.0f} dmg over {:.0f} s against hp {:.0f}: "
-                     "took {} ({})",
+                     "took {} ({}{})",
                      bot->GetName(), bot->GetLevel(), state.runPastPriced, state.runPastSec, state.runPastHp,
-                     state.taken - std::min(state.taken, state.runPastTakenAt), died ? "died" : "lived");
+                     state.taken - std::min(state.taken, state.runPastTakenAt), died ? "died" : "lived",
+                     ofItsChase ? "" : "; [surv20] no sample of the chase: none of its own chasers hit the bot");
             state.runPastPriced = 0.0f;
+            state.runPastChasers.clear();
         }
         float const seconds =
             float(getMSTimeDiff(state.firstMs, state.lastMs)) / float(IN_MILLISECONDS) + SwingSec(bot);
@@ -4403,7 +4422,7 @@ namespace SoloSafety
                                                                  getMSTime()};
     }
 
-    std::string DeathContext(Player* bot)
+    std::string DeathContext(Player* bot, Creature* killer)  // [surv20] the killer, for the chase line's context
 
     {
         std::string out = Acore::StringFormat("hp {:.0f}/{:.0f}", float(bot->GetHealth()), float(bot->GetMaxHealth()));
@@ -4455,13 +4474,26 @@ namespace SoloSafety
             out += "; no judged pull (attacked)";
 
         // [runpast87] the chase it kept walking under: priced against what it took since
+        // [surv20] ... named as this death's price only where the killer or a mob that hit the bot is one of the
+        // chase's own chasers (CloseFight's note): Bami's b486 line put a Leper Gnome L10's 3 dmg beside a death to
+        // an Addled Leper L24 in another bot's fight, and read as the killer's price it says the chase model is out
+        // by orders of magnitude
         if (found != states.end() && found->second.runPastPriced > 0.0f)
+        {
+            SoloBotState const& state = found->second;
+            bool ofItsChase = killer && state.runPastChasers.count(killer->GetGUID().GetRawValue()) > 0;
+            for (auto const& [guid, track] : state.attackers)
+                ofItsChase = ofItsChase || state.runPastChasers.count(guid) > 0;
             out += Acore::StringFormat("; [runpast87] its run-past chase priced {:.0f} dmg over {:.0f} s against hp {:.0f}, "
-                                       "took {} since",
-                                       found->second.runPastPriced, found->second.runPastSec, found->second.runPastHp,
-                                       found->second.taken - found->second.runPastTakenAt);
+                                       "took {} since{}",
+                                       state.runPastPriced, state.runPastSec, state.runPastHp,
+                                       state.taken - state.runPastTakenAt,
+                                       ofItsChase ? ""
+                                                  : " - [surv20] of other mobs, none of its chasers in this fight");
+        }
         // [deaths] how its last route search saw the mobs that hit it: refused (a walk round them was searched),
-        // priced (the walk may pass their reach), unseen (out of the search's range or not idle then)
+        // priced (the walk may pass their reach), unseen (out of the search's range), in a fight of its own
+        // ([surv21]: a mob whose fight is not the bot's is left out of the pricing altogether)
         if (found != states.end() && found->second.routeMs && !found->second.attackers.empty())
         {
             SoloBotState const& state = found->second;
@@ -4470,7 +4502,9 @@ namespace SoloSafety
             {
                 auto const mob = state.routeMobs.find(guid);
                 seen += (seen.empty() ? "" : ", ") + track.name + " " +
-                        (mob == state.routeMobs.end() ? "unseen" : mob->second ? "refused" : "priced");
+                        (mob != state.routeMobs.end() ? (mob->second ? "refused" : "priced")
+                         : state.routeOthersFight.count(guid) ? "in a fight of its own"  // [surv21]
+                                                              : "unseen");
             }
             out += Acore::StringFormat("; last route search {:.0f} s before ({}{}): {}",
                                        float(getMSTimeDiff(state.routeMs, getMSTime())) / IN_MILLISECONDS,
@@ -5200,9 +5234,11 @@ namespace SoloSafety
             state.legPoints.clear();
             state.legNamed.clear();
             state.runPastPriced = 0.0f;  // [runpast87]
+            state.runPastChasers.clear();  // [surv20]
             return false;
         }
         // every attacker one the leg priced; their chases still to come survived
+        std::unordered_set<uint64> counted;  // [surv20] the chase's own mobs: its chasers and the pack they bring
         std::vector<Creature*> chasers;
         std::vector<Creature*> unpriced;
         RunPast left;
@@ -5230,8 +5266,7 @@ namespace SoloSafety
         // counted as 5 (4 above); the patrol and its fleeing friends came, dead
         if (!chasers.empty() && left.damage != std::numeric_limits<float>::max())
         {
-            std::unordered_set<uint64> counted;
-            for (Creature* mob : chasers)
+            for (Creature* mob : chasers)  // [surv20] `counted` is declared above: the commit below keeps it
                 counted.insert(mob->GetGUID().GetRawValue());
             uint32 joiners = 0;
             G3D::Vector3 const fight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
@@ -5290,6 +5325,11 @@ namespace SoloSafety
             state.runPastSec = left.seconds;
             state.runPastHp = hp;
             state.runPastTakenAt = state.taken;
+            // [surv20] the mobs this price is of: whatever hits the bot outside them is another fight, and the
+            // sample of the chase model says so instead of pricing that fight at this chase's damage
+            state.runPastChasers = counted;
+            for (Creature* mob : chasers)
+                state.runPastChasers.insert(mob->GetGUID().GetRawValue());
             // [surv10] the committed run-past, with the margin it was committed on and the widest level gap in the
             // chase. [runpast87] prices a chase against what it cost only at a fight's close, so a chase that
             // leashed cleanly is never sampled: 27 samples over b482-b484, one of them a death, far too few to say
@@ -5439,6 +5479,7 @@ namespace SoloSafety
         float const wander = std::min(MaxWanderDistance(bot->GetMapId()), bot->GetMap()->GetVisibilityRange());
         float const range = sPlayerbotAIConfig.SightDistance + MAX_AGGRO_RADIUS + wander;
         std::unordered_map<uint64, bool> seen;  // [deaths] mob -> refused (DeathContext)
+        std::unordered_set<uint64> othersFight;  // [surv21] in range, left out for being in a fight not the bot's
         std::list<Unit*> units;
         Acore::AnyUnitInObjectRangeCheck check(bot, range);
         Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
@@ -5804,11 +5845,19 @@ namespace SoloSafety
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
-            if (!mob || !mob->IsAlive() || mob->IsInCombat() || mob->IsCivilian() || mob->IsTotem() ||
+            if (!mob || !mob->IsAlive() || mob->IsCivilian() || mob->IsTotem() ||
                 mob->GetGUID() == target || !mob->IsHostileTo(bot) || !mob->HasReactState(REACT_AGGRESSIVE) ||
                 mob->HasUnitFlag(UNIT_FLAG_NON_ATTACKABLE | UNIT_FLAG_NOT_SELECTABLE) ||
                 mob->GetCharmerOrOwnerGUID())
                 continue;
+            // [surv21] a mob in a fight already is left out as before - but noted, so the death line can tell it
+            // from a mob the search never had in range (both read "unseen" before). Its reach is priced at nothing
+            // either way, and the note says so: no decision reads it
+            if (mob->IsInCombat())
+            {
+                othersFight.insert(mob->GetGUID().GetRawValue());
+                continue;
+            }
             float const aggro = mob->GetAggroRange(bot);
             if (aggro <= 0.0f)
                 continue;
@@ -6261,6 +6310,7 @@ namespace SoloSafety
             state.searchRunPast.erase(state.searchRunPast.begin());
         state.routeMs = getMSTime();
         state.routeMobs = std::move(seen);
+        state.routeOthersFight = std::move(othersFight);  // [surv21]
         state.routeWalls = std::move(walls);
         state.routeComplete = false;
         state.routeThroughRefused = false;
