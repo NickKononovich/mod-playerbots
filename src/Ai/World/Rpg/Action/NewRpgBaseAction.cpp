@@ -993,6 +993,27 @@ static void CommitLeg(Player* bot, Movement::PointsArray const& points, G3D::Vec
     SoloSafety::CommitRunPast(bot, leg, std::vector<G3D::Vector3>(points.begin(), points.end()));  // [runpast15]
 }
 
+// [spot10] user 2026-11-14: the leg's stop out of the reaches of the mobs the bot does not mean to meet. The leg's
+// end was picked by its length alone, so it could land inside a wanderer's area and the bot stood there, between its
+// looks, until the wanderer walked over and opened a fight no judge priced
+G3D::Vector3 NewRpgBaseAction::LegStopAt(std::vector<G3D::Vector3> const& points, G3D::Vector3 const& end)
+{
+    G3D::Vector3 stop = end;
+    std::string who;
+    if (!SoloSafety::LegStop(bot, points, MOVE_FAR_PROGRESS, stop, who))
+        return end;
+    thread_local std::unordered_map<uint32, std::pair<int32, int32>> logged;  // a log cadence only, no decision
+    std::pair<int32, int32> const key{int32(stop.x), int32(stop.y)};
+    if (auto& last = logged[bot->GetGUID().GetCounter()]; last != key)
+    {
+        last = key;
+        LOG_INFO("playerbots", "[spot10] {} L{} stops its leg at ({:.0f},{:.0f}) instead of ({:.0f},{:.0f}), out of "
+                 "the reach of {} ({:.0f} yd of the leg left for the next one)",
+                 bot->GetName(), bot->GetLevel(), stop.x, stop.y, end.x, end.y, who, (end - stop).length());
+    }
+    return stop;
+}
+
 bool NewRpgBaseAction::GraphStage(WorldPosition const& dest, float disToDest)
 {
     float const sight = sPlayerbotAIConfig.SightDistance;
@@ -1062,7 +1083,8 @@ bool NewRpgBaseAction::GraphStage(WorldPosition const& dest, float disToDest)
         return false;
     }
     info.farRoute.assign(leg.points.begin(), leg.points.end());  // [guild15] its legs two sights ahead on it
-    G3D::Vector3 const end = leg.length > sight ? Leader::Travel::PointOnPath(leg.points, sight) : leg.actualEnd;
+    G3D::Vector3 const end = LegStopAt(  // [spot10]
+        leg.points, leg.length > sight ? Leader::Travel::PointOnPath(leg.points, sight) : leg.actualEnd);
     if (!MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
     {
         info.farRoute.clear();
@@ -1101,7 +1123,8 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
     {
         if (leg.points.size() < 2)
             return false;
-        G3D::Vector3 const end = leg.length > sight ? Leader::Travel::PointOnPath(leg.points, sight) : leg.actualEnd;
+        G3D::Vector3 const end = LegStopAt(  // [spot10]
+            leg.points, leg.length > sight ? Leader::Travel::PointOnPath(leg.points, sight) : leg.actualEnd);
         if (!MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
             return false;
         CommitLeg(bot, leg.points, end);  // [runpast11]
@@ -1193,8 +1216,9 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
             }
             if (path.points.size() >= 2)
             {
-                G3D::Vector3 const end =
-                    path.length > sight ? Leader::Travel::PointOnPath(path.points, sight) : path.actualEnd;
+                G3D::Vector3 const end = LegStopAt(  // [spot10]
+                    path.points, path.length > sight ? Leader::Travel::PointOnPath(path.points, sight)
+                                                     : path.actualEnd);
                 LOG_INFO("playerbots", "[solo] {} L{} MAZE walks now: {} clear of its walk to ({:.0f},{:.0f})",
                          bot->GetName(), bot->GetLevel(), who, goal.x, goal.y);
                 if (MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
@@ -2844,8 +2868,9 @@ bool NewRpgBaseAction::PocketRescue()
     if (local.type == PATHFIND_NORMAL && !local.throughRefused && local.points.size() >= 2 &&
         (local.actualEnd - target).length() < 5.0f)
     {
-        G3D::Vector3 const leg =
-            local.length > sight ? Leader::Travel::PointOnPath(local.points, sight) : local.actualEnd;
+        G3D::Vector3 const leg = LegStopAt(  // [spot10]
+            local.points, local.length > sight ? Leader::Travel::PointOnPath(local.points, sight)
+                                               : local.actualEnd);
         if (MoveTo(bot->GetMapId(), leg.x, leg.y, leg.z, false, false, false, true))
         {
             CommitLeg(bot, local.points, leg);  // [runpast11]
@@ -3875,9 +3900,10 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                                     : BotPath();
             if (leg.type == PATHFIND_NORMAL && !leg.throughRefused && leg.points.size() >= 2)
             {
-                G3D::Vector3 const end = leg.length > sPlayerbotAIConfig.SightDistance
-                                             ? Leader::Travel::PointOnPath(leg.points, sPlayerbotAIConfig.SightDistance)
-                                             : leg.actualEnd;
+                G3D::Vector3 const end = LegStopAt(  // [spot10]
+                    leg.points, leg.length > sPlayerbotAIConfig.SightDistance
+                                    ? Leader::Travel::PointOnPath(leg.points, sPlayerbotAIConfig.SightDistance)
+                                    : leg.actualEnd);
                 if (MoveTo(bot->GetMapId(), end.x, end.y, end.z, false, false, false, true))
                 {
                     CommitLeg(bot, leg.points, end);  // [runpast11]
@@ -3924,9 +3950,11 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 if (local.type == PATHFIND_NORMAL && !local.throughRefused &&
                     (local.actualEnd - target).length() < 5.0f && local.points.size() >= 2)
                 {
-                    G3D::Vector3 leg = local.length > sPlayerbotAIConfig.SightDistance
-                                           ? Leader::Travel::PointOnPath(local.points, sPlayerbotAIConfig.SightDistance)
-                                           : local.actualEnd;
+                    G3D::Vector3 leg = LegStopAt(  // [spot10]
+                        local.points, local.length > sPlayerbotAIConfig.SightDistance
+                                          ? Leader::Travel::PointOnPath(local.points,
+                                                                        sPlayerbotAIConfig.SightDistance)
+                                          : local.actualEnd);
                     if (MoveTo(bot->GetMapId(), leg.x, leg.y, leg.z, false, false, false, true))
                     {
                         CommitLeg(bot, local.points, leg);  // [runpast11]
@@ -3994,7 +4022,8 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
                 bool const inSight = PricesWalkInSight(bot);  // [death461]
                 if (inSight && path.length > sPlayerbotAIConfig.SightDistance && path.points.size() >= 2)
                 {
-                    leg = Leader::Travel::PointOnPath(path.points, sPlayerbotAIConfig.SightDistance);
+                    leg = LegStopAt(  // [spot10]
+                        path.points, Leader::Travel::PointOnPath(path.points, sPlayerbotAIConfig.SightDistance));
                     if (!SoloSafety::Applies(bot))
                     {
                         static std::mutex legLogLock;  // one line per bot (a log line, no decision)

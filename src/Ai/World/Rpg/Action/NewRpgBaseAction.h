@@ -63,6 +63,10 @@ public:
     // reach discs (x, y, z, radius), each spawn once
     static std::vector<G3D::Vector4> StaticDangerDiscs(Player* bot, std::vector<G3D::Vector3> const& points,
                                                        size_t fromIndex);
+    // [spot10] the stop of the leg about to be walked: `end` is the point the leg's length picked on `points`, and
+    // this is that point or, when an aggro disc of a mob the bot does not mean to meet covers it, the point of the
+    // same walk nearest it that no such disc covers (SoloSafety::LegStop; logged once per bot and place)
+    G3D::Vector3 LegStopAt(std::vector<G3D::Vector3> const& points, G3D::Vector3 const& end);
     static CreatureTemplate const* DangerOnWay(Player* bot, float fromX, float fromY, float toX, float toY,
                                                float fromZ = NO_WAY_HEIGHT, float toZ = NO_WAY_HEIGHT);
     static constexpr float NO_WAY_HEIGHT = -200000.0f;

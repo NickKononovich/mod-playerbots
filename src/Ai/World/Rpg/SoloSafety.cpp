@@ -5055,6 +5055,105 @@ namespace SoloSafety
         walkStop = previous;
     }
 
+    // [spot10] user 2026-11-14: "a player must not walk into a mob's zone and hit it when he has no desire to". A
+    // walk is walked in legs, and a leg ends where its LENGTH puts it - the bot's sight along the path, else the
+    // path's own end (MoveFarToDirect / GraphStage / WalkAround: Leader::Travel::PointOnPath). Nobody asked whether
+    // that spot lies inside an idle hostile's aggro disc. There the bot stands until its next look while the
+    // wanderer whose area it is walks over and opens a fight no judge priced: of the 498 such opens of b491 (one per
+    // bot and mob place, not per line), 487 had the bot already inside the disc, the median 10 yd into a median
+    // reach of 22 (only 10 of those 487 within 2 yd of the rim, where a mis-measured radius would have put them),
+    // the mob met at a median of 5 yd, 398 of them wanderers - and 367 of the 383
+    // that printed a destination stood more than 40 yd from it. The stop of a leg, not the end of a walk.
+    // The stop is moved back along the SAME walk to the point nearest the one its length picked that no such disc
+    // covers. Nothing new is measured: the discs are AggroDisc's (the fight judge's own), the floor on the step is
+    // the walker's MOVE_FAR_PROGRESS (`progress` - the margin its loop detector asks of a leg, so a moved stop still
+    // closes the gap by as much as that detector needs), and no point past the leg's end is taken (the [guild13]
+    // rule: a solo bot commits only as far as it sees). The mobs it means to meet are left out - the one it has
+    // targeted, and any whose reach covers the walk's own stop (its objective, its camp: it goes there on purpose),
+    // so a bot that wants the fight is not held back by this. Every point of the leg covered -> false, and the leg's
+    // end stands as it was: the answer there is to walk on through, never to stand still.
+    bool LegStop(Player* bot, std::vector<G3D::Vector3> const& points, float progress, G3D::Vector3& end,
+                 std::string& who)
+    {
+        SlowScope slow("leg stop", bot ? &bot->GetName() : nullptr);  // [perf26] a unit scan, as WorkSpot's is
+        who.clear();
+        if (!bot || !bot->IsAlive() || bot->IsInCombat() || !Applies(bot) || points.size() < 2)
+            return false;
+        G3D::Vector3 const asked = end;
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        // the walk's own stop: the destination its searches are measured to (WalkStopScope), else this path's end
+        G3D::Vector3 const stop = walkStopSet ? walkStop : points.back();
+        float const look = std::min(sPlayerbotAIConfig.SightDistance +
+                                        std::min(MaxWanderDistance(bot->GetMapId()),
+                                                 bot->GetMap()->GetVisibilityRange()),
+                                    bot->GetMap()->GetVisibilityRange());
+        std::list<Unit*> units;
+        Acore::AnyUnitInObjectRangeCheck check(bot, look);
+        Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
+        Cell::VisitObjects(bot, searcher, look);
+        ObjectGuid const target = bot->GetTarget();
+        std::vector<G3D::Vector4> discs;
+        for (Unit* unit : units)
+        {
+            Creature* mob = unit->ToCreature();
+            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() || mob->GetGUID() == target)
+                continue;
+            G3D::Vector4 const disc = AggroDisc(mob, bot);
+            if (InDisc(disc, stop))
+                continue;  // the walk ends in that reach: the bot means to stand there
+            discs.push_back(disc);
+            if (InDisc(disc, asked))
+                who += Acore::StringFormat("{}{} L{}", who.empty() ? "" : ", ", mob->GetName(), mob->GetLevel());
+        }
+        if (who.empty())
+            return false;  // the stop its length picked is out of every reach already
+        auto const clear = [&discs](G3D::Vector3 const& at)
+        { return std::none_of(discs.begin(), discs.end(), [&at](G3D::Vector4 const& d) { return InDisc(d, at); }); };
+        // the yards along the walk of every point of it, and of the leg's end on it (the stretch it lies on)
+        std::vector<float> along(points.size(), 0.0f);
+        for (size_t i = 1; i < points.size(); ++i)
+            along[i] = along[i - 1] + (points[i] - points[i - 1]).length();
+        float alongEnd = along.back();
+        float nearest = std::numeric_limits<float>::max();
+        for (size_t i = 1; i < points.size(); ++i)
+        {
+            G3D::Vector3 const leg = points[i] - points[i - 1];
+            float const len = leg.length();
+            float const dot = (asked.x - points[i - 1].x) * leg.x + (asked.y - points[i - 1].y) * leg.y +
+                              (asked.z - points[i - 1].z) * leg.z;
+            float const t = len > 0.0f ? std::clamp(dot / (len * len), 0.0f, 1.0f) : 0.0f;
+            G3D::Vector3 const on = points[i - 1] + leg * t;
+            if (float const d = (on - asked).length(); d < nearest)
+            {
+                nearest = d;
+                alongEnd = along[i - 1] + len * t;
+            }
+        }
+        // the gap to the walk's stop, measured as the walker's own loop detector measures it (bot->GetDistance to
+        // the destination, in three dimensions), so the margin below is the very one that detector asks of a leg
+        float const gapNow = (here - stop).length();
+        bool found = false;
+        float best = 0.0f;
+        for (size_t i = 0; i < points.size(); ++i)
+        {
+            if (along[i] > alongEnd || (points[i] - here).length() <= progress || !clear(points[i]))
+                continue;
+            // a moved stop still closes the gap to the walk's stop by the margin the loop detector asks of a leg
+            if (gapNow - (points[i] - stop).length() <= progress)
+                continue;
+            if (float const off = alongEnd - along[i]; !found || off < best)
+            {
+                found = true;
+                best = off;
+                end = points[i];
+            }
+        }
+        if (!found)
+            who.clear();
+        return found;
+    }
+
     bool HasRunPastLeg(Player* bot)
     {
         if (!bot)

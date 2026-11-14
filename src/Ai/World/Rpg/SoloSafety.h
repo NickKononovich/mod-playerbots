@@ -200,6 +200,15 @@ namespace SoloSafety
     // wanderer's reach, the nearest to the bot (its own spot when it is one); false: no such spot (the objective
     // leaves none). `who`: the mobs whose reach covers the bot's own spot ("" when none)
     bool WorkSpot(Player* bot, WorldObject* target, float range, bool sight, G3D::Vector3& at, std::string& who);
+    // [spot10] user 2026-11-14 ("a player must not walk into a mob's zone and hit it when he has no desire to"):
+    // the stop of a walk's leg. `end` (the point its length picked: the bot's sight along `points`, else their end)
+    // is moved back to the point of the same walk nearest it that no aggro disc of a mob the bot does not mean to
+    // meet covers - its targeted mob and any whose reach covers the walk's own stop are left out, so a wanted fight
+    // is never held back. `progress`: the walker's own floor on a leg (MOVE_FAR_PROGRESS), so a moved stop closes
+    // the gap by as much as its loop detector asks. False (and `end` untouched): the stop is clear already, or every
+    // point of the leg is covered - the walk goes on through it as before, nothing stands still
+    bool LegStop(Player* bot, std::vector<G3D::Vector3> const& points, float progress, G3D::Vector3& end,
+                 std::string& who);
     // [spot35] user 2026-11-09: an orange / red or elite roamer (a wanderer's home + wander distance + aggro reach,
     // a patrol's path + aggro reach) idle and hostile whose round covers `at`: true, `who` its name and level
     bool RoamerReaches(Player* bot, G3D::Vector3 const& at, std::string& who);
