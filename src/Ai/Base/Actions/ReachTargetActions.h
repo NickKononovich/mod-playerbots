@@ -76,6 +76,8 @@ private:
     // [b32_arc] A refused far target that holds the tank in combat but fights nobody (a combat-only reference: no
     // threat, no victim, it never comes) is pulled from range instead: Execute casts the taunt / ranged threat spell
     // from here, or steps into its range on a spot no idle mob reaches. Empty: the ordinary walk.
+    // [reach20] The same pull is what replaces the refusal of a mob that already fights the group - that refusal used
+    // to leave the tank standing in its combat engine with nothing at all (the drop clock reset every tick).
     bool PullPhantomFromRange(Unit* target);
     // [lead1171] the leader's meeting verdict for the incoming mob is a gap closer or a grip: Execute casts it
     std::string _meetSpell;

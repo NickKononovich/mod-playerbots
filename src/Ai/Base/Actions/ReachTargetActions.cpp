@@ -282,6 +282,8 @@ bool ReachMeleeAction::PullPhantomFromRange(Unit* target)
     bool const logDue = !_phantomLogMs || getMSTimeDiff(_phantomLogMs, now) >= TANK_REACH_LOG_MS;
     float const distance = bot->GetExactDist(target);
     TauntReactionAction::Spells const* spells = TauntReactionAction::ClassSpells(bot);
+    // [reach20] the same pull also serves a mob that already fights the group: the lines say which of the two it is
+    char const* const why = IsPhantomCombatTarget(bot, target) ? "in combat on nobody" : "already fighting the group";
 
     // [b33_arc] A taunt that landed and brought nothing: arc-n 20261026-000434-arc-n-5B-24 (00:16-00:19), a Defender
     // Corpse (rooted trap) in combat on nobody, "pulls Defender Corpse 21303 from range with taunt" 16 times in
@@ -324,8 +326,8 @@ bool ReachMeleeAction::PullPhantomFromRange(Unit* target)
             _phantomTaunted = target->GetGUID();
             _phantomTauntedMs = now ? now : 1;
         }
-        LOG_INFO("playerbots", "[b32_arc] {}: pulls {} {} from range with {} ({:.1f} yd, in combat on nobody){}",
-                 bot->GetName(), target->GetName(), target->GetEntry(), ready, distance,
+        LOG_INFO("playerbots", "[b32_arc] {}: pulls {} {} from range with {} ({:.1f} yd, {}){}", bot->GetName(),
+                 target->GetName(), target->GetEntry(), ready, distance, why,
                  taunted ? " [b33_arc] the taunt brought nothing" : "");
         return true;
     }
@@ -369,8 +371,8 @@ bool ReachMeleeAction::PullPhantomFromRange(Unit* target)
     if (logDue)
     {
         _phantomLogMs = now ? now : 1;
-        LOG_INFO("playerbots", "[b32_arc] {}: steps into pull range of {} {} ({:.1f} -> {:.1f} yd, in combat on "
-                 "nobody)", bot->GetName(), target->GetName(), target->GetEntry(), distance, want);
+        LOG_INFO("playerbots", "[b32_arc] {}: steps into pull range of {} {} ({:.1f} -> {:.1f} yd, {})",
+                 bot->GetName(), target->GetName(), target->GetEntry(), distance, want, why);
     }
     return MoveTo(bot->GetMapId(), x, y, z);
 }
@@ -774,6 +776,35 @@ bool ReachMeleeAction::isUseful()
         }
         else
             _shooter.Clear();
+
+        // [reach20] The refusal of a mob that already fights this group puts nothing in its place. `onGroup` resets
+        // the clock below every tick (the [b46_ohb] comment above says so of its own case), so neither the drop nor
+        // the ranged pull is ever reached: a tank whose mob hits it from inside the idle reach stands in its combat
+        // engine doing nothing for as long as the fight lasts. wc-n 2026-11-14/15: 285 "[tank reach] no walk" lines
+        // on 8 tanks, 149 of them "on <the tank itself>", the five of Shalaeth 7 fights against 68 of Relara's; the
+        // [intent] beside them reads "tick nothing ran | going idle, stopped" with the mob on the tank. The guard's
+        // own rule is what runs instead, at once and with no clock: the taunt / ranged threat spell brings the mob to
+        // where the tank stands, away from the idle pack (PullPhantomFromRange - "the taunts take it from where the
+        // tank stands", this file's header). No wait is right here: the fight is already open, so nothing is spared
+        // by standing, and the walk itself stays refused. The standing shooter nobody sees keeps its own substitute
+        // ([b46_ohb] above), which moves the fight spot instead.
+        if (onGroup && !ShooterOutOfGroupSight(bot, target))
+        {
+            thread_local std::unordered_map<ObjectGuid, uint32> pullLog;
+            uint32& lastPull = pullLog[bot->GetGUID()];
+            if (!lastPull || getMSTimeDiff(lastPull, now) >= TANK_REACH_LOG_MS)
+            {
+                lastPull = now ? now : 1;
+                LOG_INFO("playerbots",
+                         "[reach20] {}: no walk to {} ({:.1f} yd, on {}, aggro reach of idle {}): it already fights "
+                         "the group, so the taunt / ranged threat spell brings it here instead of a stand",
+                         bot->GetName(), target->GetName(), bot->GetExactDist(target),
+                         victim ? victim->GetName() : "nobody", idle->GetName());
+            }
+            TankReachRefusals().erase(bot->GetGUID());
+            _phantomPull = target->GetGUID();
+            return true;
+        }
 
         auto& refusal = TankReachRefusals()[bot->GetGUID()];
         if (refusal.target != target->GetGUID() || onGroup)
