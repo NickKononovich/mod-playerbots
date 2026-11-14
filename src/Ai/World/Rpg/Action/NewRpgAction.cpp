@@ -292,6 +292,42 @@ namespace
         if (entry)
             info.restockRefused[entry] = budget;
     }
+    // [vend20] the vendor spawn a bot's errand walks to, and the spawns where it stood and met no vendor there. A
+    // vendor errand's verdict is the vendor's own (bought, nothing it sells, no money, nobody there) - never the quest
+    // giver's. b493 Geron L22 walked Thomas Miller, Khole Jinglepocket and Guchie Jinglepocket in 15 s, each one
+    // "finds no vendor N at its spawn", each ending "IDLE(no quest giver here with anything to give or take)" and
+    // each followed by the next vendor at once: the first is a waypoint walker who had walked off, the other two are
+    // game-event spawns (Winter Veil) that stand in `creature` and never in the world. Nobody there is the vendor's
+    // own fact, not the budget's ([eco205] restockRefused keeps the budget ones, and only for a restock run), so the
+    // spawn the bot looked at is no place for it to meet that vendor again
+    std::mutex vendorLookLock;
+    std::unordered_map<uint32, ObjectGuid::LowType> vendorRunSpawn;
+    std::unordered_map<uint32, std::unordered_set<ObjectGuid::LowType>> vendorNotThere;
+
+    void NoteVendorRunSpawn(Player* bot, ObjectGuid::LowType spawnId)
+    {
+        std::lock_guard<std::mutex> guard(vendorLookLock);
+        vendorRunSpawn[bot->GetGUID().GetCounter()] = spawnId;
+    }
+
+    // the bot stood at its errand's vendor spawn and no vendor was there: that spawn is marked for its later choices
+    ObjectGuid::LowType NoteVendorNotThere(Player* bot)
+    {
+        std::lock_guard<std::mutex> guard(vendorLookLock);
+        auto const found = vendorRunSpawn.find(bot->GetGUID().GetCounter());
+        if (found == vendorRunSpawn.end() || !found->second)
+            return 0;
+        vendorNotThere[bot->GetGUID().GetCounter()].insert(found->second);
+        return found->second;
+    }
+
+    bool VendorNotThere(Player* bot, ObjectGuid::LowType spawnId)
+    {
+        std::lock_guard<std::mutex> guard(vendorLookLock);
+        auto const found = vendorNotThere.find(bot->GetGUID().GetCounter());
+        return found != vendorNotThere.end() && found->second.count(spawnId) != 0;
+    }
+
     thread_local std::vector<uint32> const* reagentsWanted = nullptr;  // [supply27] the vendor sells one of them  // [pace25] the spell categories the vendor choice needs (bit 0 food, 1 drink)
 
     // The nearest vendor spawn on the bot's map that is not hostile to it (and sells its ammo when it needs some).
@@ -330,6 +366,8 @@ namespace
                 at = &walkingNow.back();
             }
             VendorSpawn const& spawn = *at;
+            if (VendorNotThere(bot, spawn.spawnId))  // [vend20] it stood there and met no vendor
+                continue;
             CreatureTemplate const* info = sObjectMgr->GetCreatureTemplate(spawn.entry);
             if (!info || (repair && !(info->npcflag & UNIT_NPC_FLAG_REPAIR)))
                 continue;
@@ -1302,6 +1340,7 @@ bool NewRpgBaseAction::StartVendorRun()
     info.ChangeToGoCamp(WorldPosition(vendor->mapId, vendor->x, vendor->y, vendor->z));
     info.vendorRunEntry = vendor->entry;
     info.vendorRunLast = vendor->entry;  // [eco205]
+    NoteVendorRunSpawn(bot, vendor->spawnId);  // [vend20] the spawn this errand walks to
     info.vendorRunReason = reason;
     CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(vendor->entry);
     QuestStats::TownStart(bot, "vendor run");  // [log28]
@@ -2800,6 +2839,13 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
             return true;
         }
         LOG_INFO("playerbots", "[New RPG] {} finds no vendor {} at its spawn", bot->GetName(), info.vendorRunEntry);
+        // [vend20] the errand's own verdict: nobody there. The spawn is marked so the next choice does not send it
+        // back, and the state ends on the vendor's fact instead of falling through to the quest giver's judge below
+        ObjectGuid::LowType const marked = NoteVendorNotThere(bot);
+        LOG_INFO("playerbots", "[vend20] {} L{} vendor errand ({}) ends: no vendor {} at its spawn {} - that spawn is "
+                 "no place for it to meet that vendor",
+                 bot->GetName(), bot->GetLevel(), info.vendorRunReason.empty() ? "-" : info.vendorRunReason,
+                 info.vendorRunEntry, marked);
         info.vendorRunEntry = 0;
         info.vendorVisited = true;
         info.vendorVisitStocked = false;  // [eco193]
@@ -2809,6 +2855,10 @@ bool NewRpgWanderNpcAction::Execute(Event /*event*/)
         info.vendorMissed = true;  // [vendor23]
         info.vendorVisitBagUsed = AI_VALUE(uint8, "bag space");
         info.vendorVisitMoney = bot->GetMoney();
+        // [vend20] the errand ends on its own fact. The quest giver's judge below is for a WANDER_NPC that came for
+        // a giver, and it answered this errand "no quest giver here with anything to give or take" every time
+        info.ChangeToIdle("its vendor errand met no vendor at that spawn");
+        return true;
     }
     if (!data.npcOrGo)
     {

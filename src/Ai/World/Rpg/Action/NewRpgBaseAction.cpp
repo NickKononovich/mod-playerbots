@@ -813,9 +813,48 @@ bool NewRpgBaseAction::TramTrackStep()
     return HoldPosition(IN_MILLISECONDS);
 }
 
+namespace
+{
+    // [walk20] the spot a bot stood at when a grind walk of its own choice was given up for mobs it does not pull.
+    // The refusal belongs to the walls, not to the point: every next grind spot behind the same walls is refused the
+    // same way, and the choice holds no memory of that - b493 Irorm L26 at (-3375,-2369) burned eight spots
+    // (-3306,-2294) ... (-3430,-2257) in 1.8 s, one maze search each (97 ms), Manue L22 four at (-5729,-3820). While
+    // the bot stands where the search answered, the answer is the same: its route keeps the turn
+    std::mutex grindWalledLock;
+    std::unordered_map<uint32, std::pair<uint32, G3D::Vector3>> grindWalled;  // bot -> (map, the spot it stood at)
+
+    void NoteGrindWalled(Player* bot)
+    {
+        std::lock_guard<std::mutex> guard(grindWalledLock);
+        grindWalled[bot->GetGUID().GetCounter()] = {
+            bot->GetMapId(), G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ())};
+    }
+
+    // true: the bot still stands where its grind walk was walled, so the maze search's answer still holds. Standing
+    // elsewhere forgets it - the walls are judged from where the bot stands
+    bool GrindWalledHere(Player* bot, float progress)
+    {
+        std::lock_guard<std::mutex> guard(grindWalledLock);
+        auto const found = grindWalled.find(bot->GetGUID().GetCounter());
+        if (found == grindWalled.end())
+            return false;
+        if (found->second.first == bot->GetMapId() &&
+            (found->second.second - G3D::Vector3(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()))
+                    .length() <= progress)
+            return true;
+        grindWalled.erase(found);
+        return false;
+    }
+}
+
 bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const& why)
 {
     NewRpgStatus const status = botAI->rpgInfo.GetStatus();
+    // [walk20] a grind walk of the bot's own choice walled by mobs it does not pull: the walls answered for the spot
+    // the bot stands on, not for that one point (see NoteGrindWalled)
+    if (status == RPG_GO_GRIND && (why.find("mobs it does not pull") != std::string::npos ||
+                                   why.find("among mobs") != std::string::npos))
+        NoteGrindWalled(bot);
     GiveUpWalkTargets(dest, why);  // [grind25]
     // [holds9] b345 Ellosera: "MAZE no way to (-2050,-12000)" -> IDLE -> the same grind spot chosen again (its
     // TripRefused look had judged it safe at this level): the refused spot is out of the choices until the next level
@@ -3695,6 +3734,15 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
     // live node it passes, or a quest POI change) skips this gate:
     // letting the old spline finish would keep walking the bot
     // toward a target it no longer has.
+    //
+    // [nav250] and the gate holds on the fact that the spline walks, not on the moving flag alone. The sentence above
+    // - "the stuck counter below continues to track real progress" - was never true: that counter sits past this
+    // return, so a spline that claims to move and covers nothing held the whole walk with no line in the log. b493
+    // Jurdogs L20 stood 95 s at (-8489,671) with its bank walk to (-8902,621) "route complete (60 yd)" and its stage
+    // node 45 yd off, gave the destination up as unreachable, then walked 1366 yd out of that very spot. So: while
+    // the bot either closes the gap to its committed point or is anywhere else than it was at the last look, the
+    // spline walks and the gate holds; standing in the same place no nearer than its best is the proof it does not,
+    // and the walk is planned again from here (never a timer: the fact is the displacement)
     if (!newDest)
     {
         LastMovement& lastMove = AI_VALUE(LastMovement&, "last movement");
@@ -3702,7 +3750,36 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         {
             float remaining = bot->GetExactDist(lastMove.lastMoveToX, lastMove.lastMoveToY, lastMove.lastMoveToZ);
             if (remaining > 10.0f)
-                return true;
+            {
+                // per bot: the committed point, the nearest it came to it and where it stood at the last look
+                struct Committed
+                {
+                    G3D::Vector3 to;
+                    G3D::Vector3 at;
+                    float nearest;
+                    bool said;  // a log cadence only, one line per leg that stood
+                };
+                thread_local std::unordered_map<uint32, Committed> committed;
+                G3D::Vector3 const to(lastMove.lastMoveToX, lastMove.lastMoveToY, lastMove.lastMoveToZ);
+                G3D::Vector3 const at(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+                auto const found = committed.find(bot->GetGUID().GetCounter());
+                bool const sameLeg = found != committed.end() && (found->second.to - to).length() <= 0.0f;
+                if (!sameLeg || remaining < found->second.nearest || (found->second.at - at).length() > 0.0f)
+                {
+                    committed[bot->GetGUID().GetCounter()] = {
+                        to, at, sameLeg ? std::min(found->second.nearest, remaining) : remaining, false};
+                    return true;
+                }
+                if (!found->second.said)
+                {
+                    found->second.said = true;
+                    LOG_INFO("playerbots", "[nav250] {} L{} its committed walk to ({:.0f},{:.0f},{:.0f}) does not "
+                             "walk: it stands at ({:.0f},{:.0f},{:.0f}) where its last look left it, {:.0f} yd left "
+                             "and {:.0f} yd its nearest - the walk is planned again from here",
+                             bot->GetName(), bot->GetLevel(), to.x, to.y, to.z, at.x, at.y, at.z, remaining,
+                             found->second.nearest);
+                }
+            }
         }
     }
 
@@ -9511,6 +9588,22 @@ bool NewRpgBaseAction::GrindBeatsRoute(WorldPosition& grindPos, std::string& why
 {
     if (!SoloSafety::Applies(bot))
         return false;
+    // [walk20] the maze search already answered for this spot: the walls, not the point, refused the last grind walk
+    // from here, so the next nearest spot behind them is refused the same way. The route keeps the turn until the bot
+    // stands elsewhere - one more spot a tick cost a 97 ms search each and bought nothing (b493 Irorm, Manue, Geron)
+    if (GrindWalledHere(bot, MOVE_FAR_PROGRESS))
+    {
+        thread_local std::unordered_map<uint32, std::pair<int32, int32>> saidFor;  // a log cadence, no decision
+        std::pair<int32, int32> const here{int32(bot->GetPositionX()), int32(bot->GetPositionY())};
+        if (auto& last = saidFor[bot->GetGUID().GetCounter()]; last != here)
+        {
+            last = here;
+            LOG_INFO("playerbots", "[walk20] {} L{} no grind instead of its route: its last grind walk from "
+                     "({:.0f},{:.0f}) was walled by mobs it does not pull, and it stands there still",
+                     bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY());
+        }
+        return false;
+    }
     QuestRoute::BotRoute const& route = QuestRoute::Of(bot->GetGUID().GetCounter());
     if (!route.built || route.plan.eta <= 0.0f)
         return false;
