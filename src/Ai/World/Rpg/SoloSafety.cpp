@@ -1997,17 +1997,53 @@ namespace SoloSafety
                      bot->GetMap()->GetVisibilityRange());
         std::vector<Creature*> idle;
         {
-            std::list<Unit*> units;
-            Acore::AnyUnitInObjectRangeCheck check(target, range);
-            Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, units, check);
-            Cell::VisitObjects(target, searcher, range);
-            for (Unit* unit : units)
+            std::unordered_set<uint64> taken;
+            // [surv22] ... round every spot the pack is counted at, not round the target alone. A `stands` list that
+            // is a run ([surv22] in RunPastStep: the leg from the bot on, the chase's seconds at its run speed) is
+            // longer than this one look: the chase runs 134 yd and more, the look reaches the visibility range at
+            // most, so the mobs on the far part of the run were never candidates at all and no number of stands
+            // could bring them in. One look per spot no earlier look covers - the same `range`, nothing new
+            std::vector<G3D::Vector3> centres;
+            for (G3D::Vector3 const& at : stands)
             {
-                Creature* mob = unit->ToCreature();
-                if (!mob || mob == target || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
-                    !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
-                    continue;
-                idle.push_back(mob);
+                bool covered = std::hypot(at.x - target->GetPositionX(), at.y - target->GetPositionY()) <= range;
+                for (size_t i = 0; !covered && i < centres.size(); ++i)
+                    covered = std::hypot(at.x - centres[i].x, at.y - centres[i].y) <= range;
+                if (!covered)
+                    centres.push_back(at);
+            }
+            // (the check measures from the target, so a look round a spot takes that spot's own distance on top and
+            // the spot's own range is told apart here)
+            auto const keep = [&](std::list<Unit*> const& units, G3D::Vector3 const* at)
+            {
+                for (Unit* unit : units)
+                {
+                    Creature* mob = unit->ToCreature();
+                    if (!mob || mob == target || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                        !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID())
+                        continue;
+                    if (at && std::hypot(mob->GetPositionX() - at->x, mob->GetPositionY() - at->y) > range)
+                        continue;
+                    if (taken.insert(mob->GetGUID().GetRawValue()).second)
+                        idle.push_back(mob);
+                }
+            };
+            {
+                std::list<Unit*> units;
+                Acore::AnyUnitInObjectRangeCheck check(target, range);
+                Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, units, check);
+                Cell::VisitObjects(target, searcher, range);
+                keep(units, nullptr);
+            }
+            for (G3D::Vector3 const& at : centres)
+            {
+                float const reach =
+                    range + std::hypot(at.x - target->GetPositionX(), at.y - target->GetPositionY());
+                std::list<Unit*> units;
+                Acore::AnyUnitInObjectRangeCheck check(target, reach);
+                Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(target, units, check);
+                Cell::VisitObjects(at.x, at.y, bot->GetMap(), searcher, range);
+                keep(units, &at);
             }
         }
         PullModel model(bot, target, idle);
@@ -5264,11 +5300,18 @@ namespace SoloSafety
         // pack chase it does not live through is no run-past (the fight from its spot, or the kit's escape). b406
         // Rollothan L11 kept walking past a Defias Smuggler priced alone ("chase priced 157, hp 496") that its judge had
         // counted as 5 (4 above); the patrol and its fleeing friends came, dead
+        // [surv23] what the commit line could not say: it printed `chasers.size()` alone - the bot's attackers at
+        // that tick - so "1 chaser(s)" read the same whether the chase's run met no other mob or whether no run was
+        // looked at at all. b488 gave eleven commits, every one of them "1 chaser(s)", with the pack and the stretch
+        // invisible. The pack the chase was priced on, the yards of run it was counted over and the leg points
+        // sampled on them go on the same line now; no decision reads them
+        uint32 joiners = 0;
+        float stretch = 0.0f;
+        size_t sampled = 0;
         if (!chasers.empty() && left.damage != std::numeric_limits<float>::max())
         {
             for (Creature* mob : chasers)  // [surv20] `counted` is declared above: the commit below keeps it
                 counted.insert(mob->GetGUID().GetRawValue());
-            uint32 joiners = 0;
             G3D::Vector3 const fight(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
             // [surv22] the chase's mobs are the ones its RUN counts, not the ones standing where the bot is at this
             // tick. The route search counts every mob whose reach the stretch ahead crosses (RouteCosts' chaseCovers
@@ -5284,12 +5327,12 @@ namespace SoloSafety
             std::vector<G3D::Vector3> stands{fight};
             {
                 float const runs = std::max(left.seconds, 0.0f) * bot->GetSpeed(MOVE_RUN);
-                float along = 0.0f;
-                for (size_t i = nearest; i + 1 < points.size() && along <= runs; ++i)
+                for (size_t i = nearest; i + 1 < points.size() && stretch <= runs; ++i)
                 {
-                    along += (points[i + 1] - points[i]).length();
+                    stretch += (points[i + 1] - points[i]).length();
                     stands.push_back(points[i + 1]);
                 }
+                sampled = stands.size();  // [surv23] the stretch and its spots go on the commit line
             }
             for (Creature* mob : std::vector<Creature*>(chasers))
                 for (Creature* join : PackAt(bot, mob, fight, stands))
@@ -5359,11 +5402,15 @@ namespace SoloSafety
             int32 gap = std::numeric_limits<int32>::min();
             for (Creature* mob : chasers)
                 gap = std::max(gap, int32(mob->GetLevel()) - int32(bot->GetLevel()));
+            // [surv23] ... and the pack behind that number: the mobs the chase's own run meets ([surv22]), the yards
+            // of run they were counted over and the leg points sampled on them. "1 chaser(s), 0 met over 0 yd (1
+            // spot)" is a run nobody looked at; "1 chaser(s), 0 met over 134 yd (34 spots)" is a clear run
             LOG_INFO("playerbots",
                      "[surv10] {} L{} commits a run-past: {} chaser(s), widest level gap {:+d}, priced {:.0f} dmg "
-                     "({:.0f} at the high end) over {:.0f} s against hp {:.0f} - a margin of {:.0f}",
+                     "({:.0f} at the high end) over {:.0f} s against hp {:.0f} - a margin of {:.0f}; [surv23] {} "
+                     "mob(s) its run meets over {:.0f} yd ({} spot(s) of the leg sampled)",
                      bot->GetName(), bot->GetLevel(), chasers.size(), gap, left.damage, left.High(), left.seconds,
-                     hp, hp - left.High());
+                     hp, hp - left.High(), joiners, stretch, sampled);
         }
         for (Creature* mob : chasers)
             if (state.legNamed.insert(mob->GetGUID().GetRawValue()).second)
