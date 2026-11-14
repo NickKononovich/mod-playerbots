@@ -363,6 +363,22 @@ bool PlayerbotAI::StraightLineSupported(WorldObject const* object, float fromX, 
 
 float PlayerbotAI::GroundSampleStep() { return GROUND_SAMPLE_STEP; }
 
+bool PlayerbotAI::UnderTerrain(WorldObject const* object, float x, float y, float z)
+{
+    // [nav240] 2026-11-14, Azuremyst Isle (map 530): Baridrol L26 stood at (-4128.0,-11463.5,-130.6) and Irrua L24 at
+    // (-4118.5,-11460.6,-128.3) - 130 yd under the beach, on the main navmesh region's deep polygons (the models'
+    // undersides under the dropped sea bed). The quad they stood under reads terrain z +1.0, just over the waterline,
+    // so UnderLakeBed answered false for their own spot while answering true 4 yd on, where the terrain reads -0.9
+    // and the sea stands over it: nav256 cut every walk at its first point and nav257 never took them up. 235 yd of
+    // the 236 the log reported to the Valaar's Berth pier were the 136 yd of depth. This is the test without the
+    // water: the point is under the ground, whatever stands over that ground
+    Map* map = object->GetMap();
+    if (!map)
+        return false;
+    float const terrain = map->GetGridHeight(x, y);  // a hole in the terrain (a cave's mouth) reads INVALID
+    return terrain > INVALID_HEIGHT && terrain - z > CLIMB_SUPPORT;
+}
+
 bool PlayerbotAI::UnderLakeBed(WorldObject const* object, float x, float y, float z, float* surface)
 {
     // [nav256] b428 Peny L17 stood 5 h at (-9403,-2432,7) in Lake Everstill (Redridge), 36 yd under the lake bed
@@ -374,9 +390,9 @@ bool PlayerbotAI::UnderLakeBed(WorldObject const* object, float x, float y, floa
     Map* map = object->GetMap();
     if (!map)
         return false;
-    float const terrain = map->GetGridHeight(x, y);  // a hole in the terrain (a cave's mouth) reads INVALID
-    if (terrain <= INVALID_HEIGHT || terrain - z <= CLIMB_SUPPORT)
+    if (!UnderTerrain(object, x, y, z))  // [nav240] under the ground is the first half of being under its bed
         return false;
+    float const terrain = map->GetGridHeight(x, y);  // a hole in the terrain (a cave's mouth) reads INVALID
     LiquidData const liquid =
         map->GetLiquidData(object->GetPhaseMask(), x, y, terrain + 0.5f, object->GetCollisionHeight(), {});
     if (liquid.Status == LIQUID_MAP_NO_WATER || liquid.Level <= INVALID_HEIGHT || liquid.Level <= terrain)
@@ -550,29 +566,45 @@ void PlayerbotAI::GuardAirborneSpline()
     // [nav256] a walk down into the ground under a lake's bed: the generator's polygons there are a model's underside
     // under the terrain (UnderLakeBed), so every point of the path is looked at - the path is cut at its last point
     // above the bed. A walk that starts under the bed is its way out (MoveFarTo's LakeBedStep swims it up)
-    if (!UnderLakeBed(bot, start.x, start.y, start.z))
-        for (uint32 i = path.first() + 1; i <= uint32(path.last()); ++i)
+    // [nav240] ... and a bot that already stands under the ground is not walking into it: the cut takes every walk
+    // it has away (Baridrol and Irrua, 130 yd under the Azuremyst beach: MOVE_FAR_LOOP, the Valaar's Berth pier
+    // given up, the island their whole world - and LakeBedStep never fires for them, because the quad they are
+    // under reads just over the waterline, so no water stands over their own spot). The navmesh region they stand
+    // on is the way out - the Azuremyst one climbs the 130 yd to the shore inside one component (126 polygons to
+    // the pier, measured offline) - so the walk runs and this guard stands aside until the bot is back over the
+    // ground, where it guards the descent again
+    bool const buried = UnderTerrain(bot, start.x, start.y, start.z);
+    for (uint32 i = path.first() + 1; i <= uint32(path.last()); ++i)
+    {
+        G3D::Vector3 const point = path.getPoint(i);
+        if (!UnderLakeBed(bot, point.x, point.y, point.z))
+            continue;
+        G3D::Vector3 const keep = path.getPoint(i - 1);
+        uint32 const now = getMSTime();
+        if (!lastAirborneLogMs || getMSTimeDiff(lastAirborneLogMs, now) > AIRBORNE_LOG_INTERVAL_MS)
         {
-            G3D::Vector3 const point = path.getPoint(i);
-            if (!UnderLakeBed(bot, point.x, point.y, point.z))
-                continue;
-            G3D::Vector3 const keep = path.getPoint(i - 1);
-            uint32 const now = getMSTime();
-            if (!lastAirborneLogMs || getMSTimeDiff(lastAirborneLogMs, now) > AIRBORNE_LOG_INTERVAL_MS)
-            {
-                lastAirborneLogMs = now;
+            lastAirborneLogMs = now;
+            if (buried)
+                LOG_INFO("playerbots", "[nav240] {} walks out from under the ground on map {} at ({:.1f},{:.1f},"
+                         "{:.1f}) (terrain z {:.1f}): its own walk is its way out, so the bed guard stands aside "
+                         "(it would have cut the walk at the bed point ({:.1f},{:.1f},{:.1f}))",
+                         bot->GetName(), bot->GetMapId(), start.x, start.y, start.z,
+                         bot->GetMap()->GetGridHeight(start.x, start.y), point.x, point.y, point.z);
+            else
                 LOG_INFO("playerbots", "[nav256] {} refused a walk under a lake's bed on map {} at ({:.1f},{:.1f},"
                          "{:.1f}) (terrain z {:.1f}): cut at ({:.1f},{:.1f},{:.1f})",
                          bot->GetName(), bot->GetMapId(), point.x, point.y, point.z,
                          bot->GetMap()->GetGridHeight(point.x, point.y), keep.x, keep.y, keep.z);
-            }
-            bot->GetMotionMaster()->Clear();
-            bot->StopMoving();
-            if ((keep - start).length() >= GROUND_MIN_TRUNCATED_MOVE)
-                bot->GetMotionMaster()->MovePoint(0, keep.x, keep.y, keep.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false,
-                                                  true);
-            return;
         }
+        if (buried)
+            break;
+        bot->GetMotionMaster()->Clear();
+        bot->StopMoving();
+        if ((keep - start).length() >= GROUND_MIN_TRUNCATED_MOVE)
+            bot->GetMotionMaster()->MovePoint(0, keep.x, keep.y, keep.z, FORCED_MOVEMENT_NONE, 0.0f, 0.0f, false,
+                                              true);
+        return;
+    }
     // [nav29] a straight leg under the surface: the server spline has no collision, so a straight leg that keeps
     // its height where the ground rises (a slope, a cliff, a floor up a step) runs inside the terrain or under the
     // floor - b377 Aestymro L13 7 yd inside a Westfall cliff ("ground -200000"), b378 Relara L10 2.5-3.5 yd under the

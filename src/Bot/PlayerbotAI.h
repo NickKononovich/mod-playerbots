@@ -697,6 +697,11 @@ public:
     // navmesh generator keeps only the water's surface over deep water and drops the bed, so a polygon there is a
     // model's underside under the ground. `surface`: that water's level (the way up is a swim)
     static bool UnderLakeBed(WorldObject const* object, float x, float y, float z, float* surface = nullptr);
+    // [nav240] the point lies more than a step under the grid's terrain, whatever stands over it (water or dry
+    // ground). Says nothing about why - a model's underside under a dropped sea bed, a cave, a WMO floor sunk into
+    // its hillside - only that the grid's surface is overhead. UnderLakeBed is this plus water over that same quad;
+    // a bot buried under a quad just over the waterline is in the same place with no water over its own feet
+    static bool UnderTerrain(WorldObject const* object, float x, float y, float z);
     // Gravity applies to the bot: alive, outside any vehicle, transport or taxi, and without a way to fly.
     bool IsSubjectToGravity() const;
     // Next tick, a bot that lost its mount or seat in the air falls and takes the damage where it lands.
