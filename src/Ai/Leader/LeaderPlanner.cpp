@@ -9024,7 +9024,17 @@ bool AggressiveTargetAction::DecideLook()
                 // the distance its pick is measured over. The same facts the planner's own approach walk waits on
                 // still hold it back (a fight, a walk already running, a member below its line), and no elapsed
                 // time enters it: the condition is a route target the tank is not standing at.
-                if (ObjectGuid const routeGoal = RouteTarget::Get(bot->GetGUID()); !routeGoal.IsEmpty())
+                // [pull20] ...and this walk never ran: RouteTarget::Get is empty for every group the leader picks
+                // for - RouteSteer clears the registry under LeaderPicksFor (LEADER_ONE_PICKER with a leader that
+                // decides), which is every guild five and every harness party. b32 wc-n 2026-11-14: 3209 holds of
+                // "no aggressive target of N possible (N range 40)" against 0 lines of this walk and 0 of the
+                // tank's own approach ("[pull hold] no aggressive target"), the fives standing with mobs in sight.
+                // The leader's route target now comes with its other inputs (LeaderInputs::routeTarget) and the
+                // registry stays the fallback for a tank no leader picks for. The walk's own facts are unchanged.
+                ObjectGuid routeGoal = RouteTarget::Get(bot->GetGUID());
+                if (routeGoal.IsEmpty())
+                    routeGoal = leaderInputs->routeTarget;
+                if (!routeGoal.IsEmpty())
                     if (Unit* goal = botAI->GetUnit(routeGoal);
                         goal && goal->IsAlive() && goal->IsInWorld() && !goal->IsInCombat() &&
                         bot->GetExactDist(goal) > APPROACH_DISTANCE + 1.0f &&
@@ -9034,17 +9044,20 @@ bool AggressiveTargetAction::DecideLook()
                     {
                         _approach = routeGoal;
                         _lookWhy += " - walks toward its route target " + std::string(goal->GetName()) +
-                                    Acore::StringFormat(" ({:.0f} yd) [pull85]", bot->GetExactDist(goal));
+                                    Acore::StringFormat(" ({:.0f} yd) [pull85] [pull20]", bot->GetExactDist(goal));
                         static thread_local uint32 goalWalkMs = 0;  // per map thread, a log cadence only
                         if (!goalWalkMs || getMSTimeDiff(goalWalkMs, getMSTime()) > 5 * IN_MILLISECONDS)
                         {
                             goalWalkMs = getMSTime();
                             if (!goalWalkMs)
                                 goalWalkMs = 1;
-                            LOG_INFO("playerbots", "[pull85] {}: the leader picks no mob ({}) and its route target "
-                                     "{} stands {:.0f} yd off: walks toward it instead of standing", bot->GetName(),
+                            LOG_INFO("playerbots", "[pull85] [pull20] {}: the leader picks no mob ({}) and its route "
+                                     "target {} stands {:.0f} yd off ({}): walks toward it instead of standing",
+                                     bot->GetName(),
                                      leaderInputs->pickWhy.empty() ? "no reason given" : leaderInputs->pickWhy,
-                                     goal->GetName(), bot->GetExactDist(goal));
+                                     goal->GetName(), bot->GetExactDist(goal),
+                                     RouteTarget::Get(bot->GetGUID()).IsEmpty() ? "the leader's own route target"
+                                                                                : "the route registry");
                         }
                         return true;
                     }

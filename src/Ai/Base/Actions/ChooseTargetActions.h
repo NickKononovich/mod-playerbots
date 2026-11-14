@@ -75,6 +75,12 @@ namespace PullPlanner
         std::vector<Position> cleared;
         // [lead253] the mobs the leader judged off its path (its path verdicts): never the planner's one mob
         GuidVector offPath;
+        // [pull20] the leader's own route target (its decision about where this group goes), empty when it has none
+        // or it is a starter. The RouteTarget registry the [pull85] approach walk reads is cleared for exactly the
+        // groups the leader picks for (RouteSteer: LeaderPicksFor -> RouteTarget::Clear), so that walk could never
+        // match and a tank whose pick drops its route target for range stood instead of closing the distance. The
+        // leader's route target travels with its other inputs; no rule of the walk changes with it.
+        ObjectGuid routeTarget;
     };
 
     // [lead3] The leader inputs of the library look running on this thread (nullptr: none, the tank's own look).

@@ -691,6 +691,18 @@ namespace
     std::mutex routePreferLock;
     std::unordered_map<uint64, std::pair<uint64, uint32>> routePrefer;  // tank -> route target, since
 
+    // [pull20] The route target over the height rule stays a candidate when a complete walk reaches it - the walk
+    // test [pull98] makes for a mob that cannot come down to the tank. TargetReachability cannot judge a swimmer or
+    // a flier (it passes a unit in water without a path: "the height filter of the caller covers them"), so this
+    // walk is what replaces the height veto on the leader's own route target, and nothing else.
+    bool RouteTargetWalkReaches(Player* bot, Unit* unit)
+    {
+        Leader::RouteResult const walk = Leader::Route(bot, unit->GetPosition());
+        return walk.found && walk.complete && !walk.points.empty() &&
+               unit->GetExactDist(walk.points.back().x, walk.points.back().y, walk.points.back().z) <=
+                   bot->GetMeleeRange(unit) + 1.0f;
+    }
+
     bool RoutePreferred(Player* bot, ObjectGuid routeTarget)
     {
         std::lock_guard<std::mutex> lock(routePreferLock);
@@ -831,11 +843,35 @@ Unit* AggressiveTargetValue::PickFor(PlayerbotAI* botAI, ObjectGuid pickRoute, T
         bool const tall = std::fabs(bot->GetPositionZ() - unit->GetPositionZ()) > MAX_PULL_HEIGHT_DIFF;
         if (tall && !walkers)
         {
-            ++dropHeight;
-            if (!heightDropped)
-                heightDropped = unit;
-            rejected.push_back(guid);
-            continue;
+            // [pull20] A route target the height rule leaves out ends the run standing: wc-n 2026-11-14, 79 holds of
+            // "height rule left out Deviate Crocolisk (dz -18.0 .. -20.0, 32-97 yd, the route target)" on 6 tanks,
+            // with no pull and no fight after a single one of them. The route target is the leader's own decision
+            // about where this group goes, and a unit in water is exactly the candidate TargetReachability cannot
+            // judge - it passes a swimmer or a flier without a path ("the height filter of the caller covers them"),
+            // which is why the rule drops them here in the first place. So the veto is replaced, not removed: the
+            // route target stays a candidate when a complete walk to it exists - the same walk test [pull98] makes
+            // below - and is left out as before when none does. MAX_PULL_HEIGHT_DIFF is unchanged, and every mob
+            // that is not the route target is left out exactly as before.
+            bool exempt = false;
+            if (guid == routeTarget)
+            {
+                exempt = RouteTargetWalkReaches(bot, unit);
+                thread_local std::set<std::pair<uint64, uint64>> loggedTall;  // a log cadence only
+                if (loggedTall.insert({bot->GetGUID().GetRawValue(), guid.GetRawValue()}).second)
+                    LOG_INFO("playerbots", "[pull20] {}: route target {} is over the height rule (dz {:.1f}, {:.1f} "
+                             "yd, mob in water {}, tank in water {}): {}", bot->GetName(), unit->GetName(),
+                             unit->GetPositionZ() - bot->GetPositionZ(), bot->GetDistance(unit),
+                             uint32(unit->IsInWater()), uint32(bot->IsInWater()),
+                             exempt ? "a complete walk reaches it: a candidate" : "no complete walk to it: left out");
+            }
+            if (!exempt)
+            {
+                ++dropHeight;
+                if (!heightDropped)
+                    heightDropped = unit;
+                rejected.push_back(guid);
+                continue;
+            }
         }
 
         if (!bot->InBattleground() && master && botAI->HasStrategy("follow", BotState::BOT_STATE_NON_COMBAT) &&
@@ -1084,9 +1120,14 @@ std::string AggressiveTargetValue::Explain(Player* bot, Unit* unit, ObjectGuid r
         verdict = "aggressive target: not hostile, no loot";
     else if (!bot->IsHostileTo(unit) && unit->GetNpcFlags() != UNIT_NPC_FLAG_NONE)
         verdict = "aggressive target: npc flags";
+    // [pull20] the route target over the height rule is left out only when no complete walk reaches it (the pick's
+    // own rule): the explanation says which of the two it was
     else if (std::fabs(bot->GetPositionZ() - unit->GetPositionZ()) > MAX_PULL_HEIGHT_DIFF &&
-             (unit->IsInWater() || unit->IsFlying() || bot->IsInWater() || bot->IsFlying()))
-        verdict = "aggressive target: height (a swimmer or a flier)";
+             (unit->IsInWater() || unit->IsFlying() || bot->IsInWater() || bot->IsFlying()) &&
+             (unit->GetGUID() != routeTarget || !RouteTargetWalkReaches(bot, unit)))
+        verdict = unit->GetGUID() == routeTarget
+                      ? "aggressive target: height (a swimmer or a flier) - no complete walk to the route target"
+                      : "aggressive target: height (a swimmer or a flier)";
     else if (bot->GetDistance(unit) > aggroRange &&
              (unit->GetGUID() != routeTarget || bot->GetDistance(unit) > ROUTE_TARGET_PICK_RANGE))
         verdict = "aggressive target: beyond pull range";

@@ -2157,6 +2157,11 @@ namespace Leader::Dungeon
             PullPlanner::LeaderInputs inputs;
             inputs.ready = !Leader::Leads(Leader::LEADER_ONE_READINESS) || lead.ready;
             inputs.notReadyWhy = lead.notReadyWhy;
+            // [pull20] the leader's own route target travels with its inputs: the planner's approach walk reads it
+            // there instead of the RouteTarget registry, which is cleared for every group the leader picks for
+            // (RouteSteer: LeaderPicksFor). A starter is no pull and no walk of the planner's.
+            if (!group.RouteTargetIsStarter())
+                inputs.routeTarget = group.RouteTarget();
             if (Leader::Leads(Leader::LEADER_DOOR_INPUTS) && group.DoorCutHold() && !group.DoorCutMember().IsEmpty())
                 inputs.doorCut.push_back(group.DoorCutMember());
             if (Leader::Leads(Leader::LEADER_FIGHT_SPOT_COUNT))
