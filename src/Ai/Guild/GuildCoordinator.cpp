@@ -11797,12 +11797,16 @@ void GuildCoordinator::SendOrders(Player* player)
         if (w.optional && w.have && ++optionalShown <= 4)
             SendLine(player, "OW;" + OrdersText(ItemName(w.itemId), 30) + ";0;" + std::to_string(w.have) + "/0;bank;" +
                                  OrdersText(w.forWhom, 130) + ";O");
-    // [feed20] the health row over two lines, each cut at its own real budget (LineBudget) instead of a guessed one:
-    // OH; the rate section with the window it declares, OHB; the tail (task counts, worn grey / white). 220 of a
-    // 240-character line left the row cut inside "(window N min)", so the window never arrived and no number in the
-    // metrics window could be confirmed. OAC; the alert counters over that same window
-    SendLine(player, "OH;" + OrdersText(healthRow_, LineBudget("OH;")));
-    SendLine(player, "OHB;" + OrdersText(healthTasks_, LineBudget("OHB;")));
+    // [feed20] the health row over two lines, each cut at its own real budget (LineBudget) instead of a guessed one.
+    // 220 of a 240-character line left the row cut inside "(window N min)", so the window never arrived and no number
+    // in the metrics window could be confirmed. OHB; is a plain CONTINUATION of OH;, not a second meaning: the row is
+    // 334 characters, no addon line holds that, and a split by meaning would lose the gold-per-hour tail again the
+    // day a value grows a digit. OH; still carries the whole rate section at today's lengths, so a reader that knows
+    // only OH; sees the window it declares. OAC; the alert counters over that same window
+    std::string const row = healthRow_ + healthTasks_;
+    std::string const head = OrdersText(row, LineBudget("OH;"));
+    SendLine(player, "OH;" + head);
+    SendLine(player, "OHB;" + OrdersText(row.substr(head.size()), LineBudget("OHB;")));
     SendLine(player, "OAC;" + OrdersText(alertRow_, LineBudget("OAC;")));
     for (auto const& [at, text] : alerts_)
     {

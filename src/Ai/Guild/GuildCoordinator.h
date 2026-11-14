@@ -1650,10 +1650,10 @@ private:
     std::vector<DeathReport> deathQueue_;
     std::vector<std::pair<uint32, DeathReport>> envPending_;  // (update number, report)
     uint32 deathCall_{0};
-    // [feed20] the health row in the two pieces it is sent as: healthRow_ the rate section (tick, online, per hour,
-    // the window it declares), healthTasks_ the tail (the task counts, the worn grey / white pieces). The whole row
-    // is 334 characters and an addon line holds 240, so one line could never carry it: the log prints the two
-    // concatenated, byte for byte the line [health] always printed.
+    // [feed20] the health row in two parts: healthRow_ the rate section (tick, online, per hour, the window it
+    // declares), healthTasks_ the tail (the task counts, the worn grey / white pieces). The whole row is 334
+    // characters and an addon line holds 240, so one line could never carry it - it goes out as OH; plus its
+    // continuation OHB;. The log prints the two concatenated, byte for byte the line [health] always printed.
     std::string healthRow_;
     std::string healthTasks_;
     std::string guildState_;
