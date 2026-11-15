@@ -4401,12 +4401,11 @@ namespace SoloSafety
                                            mob->GetName(), mob->GetLevel(), verdict.mobs, verdict.damage,
                                            verdict.ehpFull);
         }
-        if (!out.lostReaches)
-        {
-            out.spots.clear();
-            return false;
-        }
-        return true;
+        // [dpszero3] false, and `everyWho` / `spots` / `covered` STAY FILLED: they are the answer to a different
+        // question ("which reaches cover the stand at all"), the caller that steps out of every reach needs exactly
+        // them, and clearing them would make it look at the world a second time in the same tick for a set it has
+        // already got. `lostReaches` is what the verdict here is about
+        return out.lostReaches > 0;
     }
 
     void NoteStandNoGround(Player* bot, LostStand const& stand)
@@ -4497,7 +4496,7 @@ namespace SoloSafety
         spots.clear();
         LostStand stand;
         if (!StandsOnLostGround(bot, stand))
-            return false;
+            return false;  // [dpszero3] the filled `spots` of a no-lost stand are not this question's answer
         who = stand.who;
         spots = stand.spots;
         return true;

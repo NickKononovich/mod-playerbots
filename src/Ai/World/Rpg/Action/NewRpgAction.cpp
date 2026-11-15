@@ -1852,9 +1852,13 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // and is not softened by a threshold here. No clock: every input is a state.
     SoloSafety::LostStand lost;
     bool onLostGround = false;
+    bool lookTaken = false;
     if (!bot->IsInCombat() && !bot->isMoving() &&
         (SoloSafety::Applies(bot) || NewRpgCoop::InParty(bot->GetGUID().GetCounter())))
+    {
         onLostGround = SoloSafety::StandsOnLostGround(bot, lost);
+        lookTaken = true;  // [dpszero3] one look per tick: `lost` holds every reach over the stand either way
+    }
     std::string const refusedWho = lost.who;
     bool const anyStatus = status != RPG_IDLE && status != RPG_REST && onLostGround;
     if ((anyStatus || status == RPG_IDLE || status == RPG_REST) && !bot->IsInCombat() && !bot->isMoving() &&
@@ -1864,8 +1868,8 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
         std::string who = lost.everyWho;
         std::vector<G3D::Vector3> spots = lost.spots;
         // an IDLE / REST bot steps out of EVERY reach as it always has, lost fight or not: that is approved
-        // behaviour and nothing here narrows it. The look is made once either way
-        if (!onLostGround)
+        // behaviour and nothing here narrows it. [dpszero3] the look above already holds that set: not taken again
+        if (!lookTaken)
             SoloSafety::StandsInReach(bot, who, spots);
         if (!who.empty())
         {

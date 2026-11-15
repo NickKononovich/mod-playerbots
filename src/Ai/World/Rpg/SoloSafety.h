@@ -245,7 +245,9 @@ namespace SoloSafety
         uint32 lostReaches = 0;
     };
     // false: no reach over the stand is a fight the judge refuses - which is NOT the same value as no reach at all,
-    // and `out.covered.reachesHere` tells the two apart
+    // and `out.covered.reachesHere` tells the two apart. `everyWho`, `spots` and `covered` are filled EITHER WAY
+    // (they answer "which reaches cover the stand", a different question), so a caller that steps out of every
+    // reach whether or not a fight is lost reads them here instead of looking at the world a second time
     bool StandsOnLostGround(Player* bot, LostStand& out);
     // [dpszero3] it has to leave and there is nowhere to leave to: a RECORDED problem (`stand_no_ground`), never a
     // reason to stay. Keyed on the facts (which reaches and how many), so it is one row per fact, never one per tick
