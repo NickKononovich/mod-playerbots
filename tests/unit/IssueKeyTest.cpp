@@ -221,6 +221,31 @@ TEST(IssueKeyStuckTarget, NoKeyClaimsAnActionRan)
             << " - the detector only fires when the engine executed nothing";
 }
 
+// [jrn52] THE ENGINE'S OWN WORDS FOR "I NAMED NOTHING" WERE KEYED AS "IT NAMED ACTIONS". The trail is not a
+// property of this event at all: Engine::LogAction (src/Bot/Engine/Engine.cpp:932-939) never clears lastAction, so
+// it is a cross-tick trail of up to 512 characters, and it is empty only when the engine has logged nothing since
+// the bot logged in. Measured on b503's 199 live rows of this kind: 5 rows carry an empty trail, and bot 1814 is
+// among them with 3 empty-trail rows beside 24 rows of its own with a full trail - so emptiness is a fact about
+// that bot's login, not about this stuck target. Meanwhile 10 rows (5 dps, 5 healer) carry a trail that is exactly
+// Engine's own sentence for having named nothing - "no actions executed", src/Bot/Engine/Engine.cpp:367 - and the
+// key filed all ten under "its engine named actions and none ran". One fact, two keys, and the label on the larger
+// of the two says the opposite of the row it labels.
+//
+// WHAT IS NOT CLAIMED HERE: a trail of "|A:reach spell - USELESS|no actions executed" DID name an action, and it
+// keeps the label it has. Only Engine's bare sentence, alone, means no action was named.
+TEST(IssueKeyStuckTarget, TheEnginesOwnWordForNamingNothingIsNotNamingActions)
+{
+    EXPECT_EQ(Journal::Key::StuckTarget("dps", "|no actions executed"), Journal::Key::StuckTarget("dps", ""))
+        << "the engine named nothing and the key says it named actions: "
+        << Journal::Key::StuckTarget("dps", "|no actions executed");
+    EXPECT_EQ(Journal::Key::StuckTarget("healer", "no actions executed"), Journal::Key::StuckTarget("healer", ""))
+        << "the same sentence without the leading separator must read the same";
+    // and the other direction stays: a trail that does name an action is a different key
+    EXPECT_NE(Journal::Key::StuckTarget("dps", "|A:reach spell - USELESS|no actions executed"),
+              Journal::Key::StuckTarget("dps", ""))
+        << "a named action was folded into the label for naming none";
+}
+
 // [jrn43] `wait_behind`: THE CAUSE FIELD COULD NOT DIFFER. The emitter's guard requires the member to be on the
 // bot's own map, so "same map" was the answer in all 43 live rows and in every row the kind could ever write,
 // which left 84 yd behind in one zone and 6 894 yd behind across the map sharing one row.

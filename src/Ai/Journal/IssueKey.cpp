@@ -45,8 +45,21 @@ namespace Journal::Key
         // kind ever writes, and the row's own sentence says so ("with no action that runs"). What the trace being
         // empty or not really tells apart is whether the engine NAMED anything at all, which is the fact this
         // problem is about, so the two labels now say that and nothing more.
+        // [jrn52] AND THE ENGINE'S OWN WORDS FOR "I NAMED NOTHING" ARE NOT "IT NAMED ACTIONS". Engine::LogAction
+        // never clears lastAction (src/Bot/Engine/Engine.cpp:932-939), so what arrives here is a cross-tick trail
+        // of up to 512 characters, empty only when the engine has logged nothing since the bot logged in - a fact
+        // about that login, not about this stuck target: on b503 bot 1814 wrote 3 empty-trail rows beside 24 of
+        // its own with a full trail. The fact the label is about is written into the trail in words by the engine
+        // itself - "no actions executed", Engine.cpp:367 - and 10 of b503's 199 rows (5 dps, 5 healer) carry that
+        // sentence ALONE and were filed as "named actions and none ran", the opposite of what they say. A trail
+        // that does name an action ("|A:reach spell - USELESS|no actions executed") named one and keeps its label:
+        // only the bare sentence is stripped, so every key measured before this still means what it meant.
+        std::string named = actionRunning;
+        for (char const* const word : {"|no actions executed", "no actions executed"})
+            for (size_t at = named.find(word); at != std::string::npos; at = named.find(word))
+                named.erase(at, std::string(word).size());
         return "stuck_target|" + role + "|" +
-               (actionRunning.empty() ? "its engine named no action" : "its engine named actions and none ran");
+               (named.empty() ? "its engine named no action" : "its engine named actions and none ran");
     }
 
     std::string Idle(std::string const& role, IdleBuckets const& buckets, bool inDungeon)

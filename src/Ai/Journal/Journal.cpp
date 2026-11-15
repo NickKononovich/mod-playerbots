@@ -118,6 +118,19 @@ namespace Journal
             return out;
         }
 
+        // [jrn53] PROSE IS NOT CUT. The twelve columns a human reads with their eyes - every `why`, the
+        // option's and the alert's `reason`, the issue's `real_why` - are TEXT, because nothing filters on
+        // them (iron rule 1: what is sliced on is a column with an index, and prose is not sliced on). They
+        // used to be VARCHAR, and WIDENING THE COLUMN ALONE WOULD HAVE CHANGED NOTHING: Quoted cuts at its
+        // `max` BYTES before the value ever reaches the column, so real_why was clipped at 512 of the 2048
+        // the column held - and cut by BYTES, which splits a UTF-8 character in half and leaves a broken
+        // byte in the middle of a Russian sentence. A reason cut off lies about why a row was closed, and
+        // that row is read later by whoever was not in the conversation. This helper escapes and never cuts.
+        //
+        // NOT FOR CODES: pb_journal_aggro.reason (came/path/estimate/add) and pb_journal_spot_reject.reason
+        // keep VARCHAR and their indexes - those ARE filtered on, and a code has a known width.
+        std::string Prose(std::string const& text) { return Quoted(text, std::string::npos); }
+
         std::string Real(double value)
         {
             if (!(value > -1e15 && value < 1e15))  // NaN and the infinities included
@@ -784,7 +797,7 @@ namespace Journal
                      "CREATE TABLE IF NOT EXISTS pb_journal_decision ("
                      "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, at_ms BIGINT UNSIGNED NOT NULL, "
                      "hour_bucket INT UNSIGNED NOT NULL, topic VARCHAR(48) NOT NULL, choice VARCHAR(255) NOT NULL, "
-                     "verdict VARCHAR(16) NOT NULL, why VARCHAR(1024) NOT NULL, judge VARCHAR(16) NOT NULL, "
+                     "verdict VARCHAR(16) NOT NULL, why TEXT NULL, judge VARCHAR(16) NOT NULL, "
                      "judge_name VARCHAR(32) NOT NULL, judge_low INT UNSIGNED NOT NULL DEFAULT 0, "
                      "subject VARCHAR(96) NOT NULL, subject_kind VARCHAR(16) NOT NULL, "
                      "subject_entry INT UNSIGNED NOT NULL DEFAULT 0, subject_low INT UNSIGNED NOT NULL DEFAULT 0, "
@@ -826,7 +839,7 @@ namespace Journal
                      "decision_id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
                      "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
                      "idx SMALLINT UNSIGNED NOT NULL, name VARCHAR(255) NOT NULL, kind VARCHAR(24) NOT NULL, "
-                     "reason VARCHAR(1024) NOT NULL, source_kind VARCHAR(16) NOT NULL DEFAULT '', "
+                     "reason TEXT NULL, source_kind VARCHAR(16) NOT NULL DEFAULT '', "
                      "cost DOUBLE NOT NULL DEFAULT 0, value DOUBLE NOT NULL DEFAULT 0, "
                      "taken TINYINT UNSIGNED NOT NULL DEFAULT 0, fields TEXT, "
                      "build VARCHAR(16) NOT NULL DEFAULT '', "
@@ -889,7 +902,7 @@ namespace Journal
                      "from_kind VARCHAR(16) NOT NULL DEFAULT '', from_name VARCHAR(96) NOT NULL DEFAULT '', "
                      "from_entry INT UNSIGNED NOT NULL DEFAULT 0, to_name VARCHAR(32) NOT NULL DEFAULT '', "
                      "to_low INT UNSIGNED NOT NULL DEFAULT 0, verdict VARCHAR(16) NOT NULL DEFAULT '', "
-                     "why VARCHAR(512) NOT NULL DEFAULT '', worth DOUBLE NOT NULL DEFAULT 0, "
+                     "why TEXT NULL, worth DOUBLE NOT NULL DEFAULT 0, "
                      "worth_unit VARCHAR(16) NOT NULL DEFAULT '', run_id VARCHAR(48) NOT NULL DEFAULT '', "
                      "decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
                      "build VARCHAR(16) NOT NULL DEFAULT '', "
@@ -953,7 +966,7 @@ namespace Journal
                              "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
                              "event VARCHAR(12) NOT NULL, purpose VARCHAR(48) NOT NULL DEFAULT '', "
                              "target VARCHAR(96) NOT NULL DEFAULT '', target_entry INT UNSIGNED NOT NULL DEFAULT 0, "
-                             "target_low INT UNSIGNED NOT NULL DEFAULT 0, why VARCHAR(512) NOT NULL DEFAULT '', "
+                             "target_low INT UNSIGNED NOT NULL DEFAULT 0, why TEXT NULL, "
                              "verdict VARCHAR(16) NOT NULL DEFAULT '', bot_name VARCHAR(32) NOT NULL DEFAULT '', "
                              "bot_low INT UNSIGNED NOT NULL DEFAULT 0, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
                              "zone_id INT UNSIGNED NOT NULL DEFAULT 0, from_x FLOAT NOT NULL DEFAULT 0, "
@@ -964,7 +977,7 @@ namespace Journal
                              "to_x FLOAT NULL, to_y FLOAT NULL, "
                              "to_z FLOAT NULL, path_yd FLOAT NOT NULL DEFAULT 0, "
                              "straight_yd FLOAT NOT NULL DEFAULT 0, stop_count SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
-                             "changed_stop SMALLINT UNSIGNED NULL, changed_why VARCHAR(255) NOT NULL DEFAULT '', "
+                             "changed_stop SMALLINT UNSIGNED NULL, changed_why TEXT NULL, "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', "
                              "decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
                              "build VARCHAR(16) NOT NULL DEFAULT '', "
@@ -986,7 +999,7 @@ namespace Journal
                              "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
                              "kind VARCHAR(16) NOT NULL DEFAULT '', what VARCHAR(96) NOT NULL DEFAULT '', "
                              "entry INT UNSIGNED NOT NULL DEFAULT 0, low INT UNSIGNED NOT NULL DEFAULT 0, "
-                             "verdict VARCHAR(16) NOT NULL DEFAULT '', why VARCHAR(512) NOT NULL DEFAULT '', "
+                             "verdict VARCHAR(16) NOT NULL DEFAULT '', why TEXT NULL, "
                              "build VARCHAR(16) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (route_id, seq, hour_bucket), KEY at_ms (at_ms), "
                              "KEY kind_at (kind, at_ms), KEY verdict_at (verdict, at_ms), "
@@ -1094,7 +1107,7 @@ namespace Journal
                              "mob_level SMALLINT UNSIGNED NULL, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
                              "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
                              "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
-                             "reason VARCHAR(16) NOT NULL DEFAULT '', why VARCHAR(512) NOT NULL DEFAULT '', "
+                             "reason VARCHAR(16) NOT NULL DEFAULT '', why TEXT NULL, "
                              "tank_name VARCHAR(32) NOT NULL DEFAULT '', tank_low INT UNSIGNED NOT NULL DEFAULT 0, "
                              "expected TINYINT UNSIGNED NULL, order_target_entry INT UNSIGNED NOT NULL DEFAULT 0, "
                              "order_target_low INT UNSIGNED NOT NULL DEFAULT 0, "
@@ -1188,7 +1201,7 @@ namespace Journal
                 "kind VARCHAR(32) NOT NULL DEFAULT '', severity VARCHAR(8) NOT NULL DEFAULT '', "
                 "repro_class VARCHAR(16) NOT NULL DEFAULT '', status VARCHAR(12) NOT NULL DEFAULT 'open', "
                 "dedup_key VARCHAR(512) NOT NULL DEFAULT '', dedup_hash CHAR(32) NOT NULL, "
-                "why VARCHAR(1024) NOT NULL DEFAULT '', real_when VARCHAR(255) NOT NULL DEFAULT '', "
+                "why TEXT NULL, real_when VARCHAR(255) NOT NULL DEFAULT '', "
                 "first_seen_ms BIGINT UNSIGNED NOT NULL, last_seen_ms BIGINT UNSIGNED NOT NULL, "
                 "occurrences BIGINT UNSIGNED NOT NULL DEFAULT 1, value_min DOUBLE NULL, value_max DOUBLE NULL, "
                 "value_unit VARCHAR(16) NOT NULL DEFAULT '', bot_name VARCHAR(32) NOT NULL DEFAULT '', "
@@ -1204,7 +1217,7 @@ namespace Journal
                 "fixed_ms BIGINT UNSIGNED NOT NULL DEFAULT 0, merged_into BIGINT UNSIGNED NOT NULL DEFAULT 0, "
                 "fixture_path VARCHAR(255) NOT NULL DEFAULT '', "
                 "last_progress_ms BIGINT UNSIGNED NOT NULL DEFAULT 0, "
-                "is_real VARCHAR(8) NOT NULL DEFAULT 'unknown', real_why VARCHAR(2048) NOT NULL DEFAULT '', "
+                "is_real VARCHAR(8) NOT NULL DEFAULT 'unknown', real_why TEXT NULL, "
                 "real_source VARCHAR(48) NOT NULL DEFAULT 'emitter', fixture TEXT, "
                 "checked_state VARCHAR(12) GENERATED ALWAYS AS (CASE WHEN checked = 0 THEN 'unchecked' "
                 "  WHEN repro_class IN ('decision', 'instrument') AND test_name <> '' THEN 'by_test' "
@@ -1249,7 +1262,7 @@ namespace Journal
                              "gap_over_400 SMALLINT UNSIGNED NULL, top_actions VARCHAR(255) NOT NULL DEFAULT '', "
                              "stood_sec FLOAT NULL, stood_yd FLOAT NULL, doing VARCHAR(96) NOT NULL DEFAULT '', "
                              "held_by VARCHAR(48) NOT NULL DEFAULT '', "
-                             "why VARCHAR(512) NOT NULL DEFAULT '', run_id VARCHAR(48) NOT NULL DEFAULT '', "
+                             "why TEXT NULL, run_id VARCHAR(48) NOT NULL DEFAULT '', "
                              "build VARCHAR(16) NOT NULL DEFAULT '', "
                              // [jrn45] the two facts this instrument's old gate used to DECIDE on instead of
                              // recording: whether the bot was in a group, and which engine it was running. The
@@ -1312,7 +1325,7 @@ namespace Journal
                              // [jrn43] the target's zone, the cause field of `wait_behind`'s key
                              "target_level SMALLINT UNSIGNED NULL, target_zone_id INT UNSIGNED NULL, "
                              "in_combat TINYINT UNSIGNED NULL, "
-                             "action_running VARCHAR(96) NOT NULL DEFAULT '', why VARCHAR(512) NOT NULL DEFAULT '', "
+                             "action_running VARCHAR(96) NOT NULL DEFAULT '', why TEXT NULL, "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY kind_at (kind, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY target_at (target_entry, target_low, at_ms), "
@@ -1398,7 +1411,7 @@ namespace Journal
                              "loop_n INT UNSIGNED NULL, activity VARCHAR(32) NOT NULL DEFAULT '', "
                              "no_progress_xp TINYINT UNSIGNED NULL, no_progress_quest TINYINT UNSIGNED NULL, "
                              "same_place TINYINT UNSIGNED NULL, last_action VARCHAR(512) NOT NULL DEFAULT '', "
-                             "reason VARCHAR(512) NOT NULL DEFAULT '', text TEXT, "
+                             "reason TEXT NULL, text TEXT, "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY kind_at (kind, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY activity_at (activity, at_ms), "
@@ -1530,7 +1543,7 @@ namespace Journal
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
                                 "{},{},{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, hour, Quoted(decision.topic, 48), Quoted(decision.choice, 255),
-                                Quoted(decision.verdict, 16), Quoted(decision.why, 1024),
+                                Quoted(decision.verdict, 16), Prose(decision.why),
                                 Quoted(JudgeName(decision.judge), 16), Quoted(decision.judgeName, 32),
                                 decision.judgeLow, Quoted(decision.subject, 96), Quoted(decision.subjectKind, 16),
                                 decision.subjectEntry, decision.subjectLow, Real(decision.cost),
@@ -1551,7 +1564,7 @@ namespace Journal
                 Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
                                     "{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
                                     id, BootId(), nowMs, hour, idx++, Quoted(option.name, 255),
-                                    Quoted(option.kind, 24), Quoted(option.reason, 1024),
+                                    Quoted(option.kind, 24), Prose(option.reason),
                                     Quoted(option.sourceKind, 16), Real(option.cost), Real(option.value),
                                     option.taken ? 1 : 0,
                                     option.fields.empty() ? std::string("NULL")
@@ -1606,7 +1619,7 @@ namespace Journal
                 "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", Writer::Instance().NextId(), BootId(),
                 nowMs, nowMs / MS_PER_HOUR, loot.itemEntry, Quoted(loot.itemName, 96), loot.count, loot.quality,
                 Quoted(loot.fromKind, 16), Quoted(loot.fromName, 96), loot.fromEntry, Quoted(loot.toName, 32),
-                loot.toLow, Quoted(loot.verdict, 16), Quoted(loot.why, 512), Real(loot.worth),
+                loot.toLow, Quoted(loot.verdict, 16), Prose(loot.why), Real(loot.worth),
                 Quoted(loot.worthUnit, 16), Quoted(loot.runId, 48), loot.decisionId, Quoted(Config().build, 16)));
     }
 
@@ -1622,12 +1635,12 @@ namespace Journal
             Acore::StringFormat(
                 "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
                 BootId(), nowMs, hour, Quoted(route.event, 12), Quoted(route.purpose, 48), Quoted(route.target, 96),
-                route.targetEntry, route.targetLow, Quoted(route.why, 512), Quoted(route.verdict, 16),
+                route.targetEntry, route.targetLow, Prose(route.why), Quoted(route.verdict, 16),
                 Quoted(route.botName, 32), route.botLow, route.mapId, route.zoneId, Real(route.fromX),
                 Real(route.fromY), Real(route.fromZ), OrNull(route.toX), OrNull(route.toY), OrNull(route.toZ),
                 Real(route.pathYd), Real(route.straightYd), route.stopCount,
                 route.changedStop ? std::to_string(*route.changedStop) : std::string("NULL"),
-                Quoted(route.changedWhy, 255), Quoted(route.runId, 48), route.decisionId,
+                Prose(route.changedWhy), Quoted(route.runId, 48), route.decisionId,
                 Quoted(Config().build, 16)));
         for (RouteStop const& stop : route.stops)
             Writer::Instance().Push(
@@ -1635,7 +1648,7 @@ namespace Journal
                 Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id, BootId(), nowMs, hour,
                                     stop.seq, Real(stop.x), Real(stop.y), Real(stop.z), Quoted(stop.kind, 16),
                                     Quoted(stop.what, 96), stop.entry, stop.low, Quoted(stop.verdict, 16),
-                                    Quoted(stop.why, 512), Quoted(Config().build, 16)));
+                                    Prose(stop.why), Quoted(Config().build, 16)));
         return id;
     }
 
@@ -1720,7 +1733,7 @@ namespace Journal
                                 OrNull(aggro.botHealthPct), OrNull(aggro.botInCombat), OrNull(aggro.botMoving),
                                 Quoted(aggro.mobName, 48), aggro.mobEntry, aggro.mobLow, OrNull(aggro.mobLevel),
                                 aggro.mapId, aggro.zoneId, Real(aggro.x), Real(aggro.y), Real(aggro.z),
-                                Quoted(aggro.reason, 16), Quoted(aggro.why, 512), Quoted(aggro.tankName, 32),
+                                Quoted(aggro.reason, 16), Prose(aggro.why), Quoted(aggro.tankName, 32),
                                 aggro.tankLow, OrNull(aggro.expected), aggro.orderTargetEntry, aggro.orderTargetLow,
                                 Quoted(aggro.runId, 48), aggro.decisionId, Quoted(Config().build, 16),
                                 OrNull(aggro.inCombatOther)));
@@ -1778,7 +1791,7 @@ namespace Journal
                 "{},{},{},{},{},{},{},{},{},{},{},{})",
                 Writer::Instance().NextId(), BootId(), Quoted(issue.kind, 32), Quoted(issue.severity, 8),
                 Quoted(issue.reproClass, 16), Quoted(issue.status.empty() ? "open" : issue.status, 12),
-                Quoted(issue.dedupKey, 512), Quoted(issue.dedupKey, 512), Quoted(issue.why, 1024),
+                Quoted(issue.dedupKey, 512), Quoted(issue.dedupKey, 512), Prose(issue.why),
                 Quoted(issue.realWhen, 255), nowMs, nowMs, OrNull(issue.value), OrNull(issue.value),
                 Quoted(issue.valueUnit, 16), Quoted(issue.botName, 32), issue.botLow, issue.mapId, issue.zoneId,
                 Real(issue.x), Real(issue.y), Real(issue.z), Quoted(issue.runId, 48),
@@ -1790,7 +1803,7 @@ namespace Journal
                 // themselves travel in `fixture` below, from the emitter.
                 Quoted(issue.fixedInBuild, 16), 0, issue.mergedInto, Quoted(std::string(), 255),
                 issue.lastProgressMs,
-                Quoted(issue.real.empty() ? "unknown" : issue.real, 8), Quoted(issue.realWhy, 512),
+                Quoted(issue.real.empty() ? "unknown" : issue.real, 8), Prose(issue.realWhy),
                 Quoted(issue.realSource.empty() ? "emitter" : issue.realSource, 8),
                 issue.fixture.empty() ? std::string("NULL") : Quoted(issue.fixture, 16000)));
     }
@@ -1819,7 +1832,7 @@ namespace Journal
                                 OrNull(idle.refNoCandidate), OrNull(idle.gapN), OrNull(idle.gapAvgMs),
                                 OrNull(idle.gapMaxMs), OrNull(idle.gapOver150), OrNull(idle.gapOver400),
                                 Quoted(idle.topActions, 255), OrNull(idle.stoodSec), OrNull(idle.stoodYd),
-                                Quoted(idle.doing, 96), Quoted(idle.heldBy, 48), Quoted(idle.why, 512),
+                                Quoted(idle.doing, 96), Quoted(idle.heldBy, 48), Prose(idle.why),
                                 Quoted(idle.runId, 48), Quoted(Config().build, 16), OrNull(idle.inGroup),
                                 OrNull(idle.engineState), OrNull(idle.refTopAction, 64),
                                 OrNull(idle.refTopCause, 12), OrNull(idle.refTopTicks),
@@ -1843,7 +1856,7 @@ namespace Journal
                                 OrNull(stuck.targetYd), OrNull(stuck.targetLevel),
                                 OrNull(stuck.targetZoneId),  // [jrn43]
                                 OrNull(stuck.inCombat),
-                                Quoted(stuck.actionRunning, 96), Quoted(stuck.why, 512), Quoted(stuck.runId, 48),
+                                Quoted(stuck.actionRunning, 96), Prose(stuck.why), Quoted(stuck.runId, 48),
                                 Quoted(Config().build, 16)));
         return id;
     }
@@ -1891,7 +1904,7 @@ namespace Journal
                                 alert.zoneId, Real(alert.x), Real(alert.y), Real(alert.z), OrNull(alert.loopN),
                                 Quoted(alert.activity, 32), OrNull(alert.noProgressXp),
                                 OrNull(alert.noProgressQuest), OrNull(alert.samePlace),
-                                Quoted(alert.lastAction, 512), Quoted(alert.reason, 512),
+                                Quoted(alert.lastAction, 512), Prose(alert.reason),
                                 alert.text.empty() ? std::string("NULL") : Quoted(alert.text, 16000),
                                 Quoted(alert.runId, 48), Quoted(Config().build, 16)));
         return id;
