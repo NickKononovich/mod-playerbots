@@ -65,6 +65,7 @@ add_executable(pb_unit_tests
     unit/AggroReachTest.cpp
     unit/ItemUseTest.cpp
     unit/GoToInstanceTest.cpp  # [tele20] which copy of the dungeon a "go to him" lands in
+    unit/HealerPlaceTest.cpp  # [spot91] whether a healer's fight place can exist at all
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight/ChainPullJudge.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IssueKey.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/ActorFacts.cpp"
