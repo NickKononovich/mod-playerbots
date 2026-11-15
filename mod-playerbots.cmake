@@ -47,8 +47,11 @@ if (BUILD_TESTING)
     # [death470] the ground one mob's aggro covers: its seam compiles into the module from src, so only the test here
     "${PB_TESTS_DIR}/unit/AggroReachTest.cpp"
     # [death475] was the item use accepted by the core: a header-only seam, so only the test here
-    "${PB_TESTS_DIR}/unit/ItemUseTest.cpp")
+    "${PB_TESTS_DIR}/unit/ItemUseTest.cpp"
+    # [tele20] which copy of the dungeon a "go to him" lands in: a header-only seam, so only the test here
+    "${PB_TESTS_DIR}/unit/GoToInstanceTest.cpp")
   set_property(GLOBAL APPEND PROPERTY ACORE_MODULE_TEST_INCLUDES
     "${PB_TESTS_DIR}/unit"
+    "${CMAKE_CURRENT_LIST_DIR}/src/Script"  # [tele20] GoToInstance.h, the header-only seam of "go to him"
     "${CMAKE_BINARY_DIR}/pb_tests")
 endif()

@@ -63,6 +63,7 @@ add_executable(pb_unit_tests
     unit/IdleWindowTest.cpp
     unit/AggroReachTest.cpp
     unit/ItemUseTest.cpp
+    unit/GoToInstanceTest.cpp  # [tele20] which copy of the dungeon a "go to him" lands in
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight/ChainPullJudge.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IssueKey.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/ActorFacts.cpp"
@@ -85,7 +86,8 @@ target_include_directories(pb_unit_tests PRIVATE
     "${PB_MODULE_ROOT}/src/Bot/Engine"
     "${PB_MODULE_ROOT}/src/Ai/Base/Actions"
     "${PB_MODULE_ROOT}/src/Ai/World/Rpg"
-    "${PB_MODULE_ROOT}/src/Ai/Base/Trigger")
+    "${PB_MODULE_ROOT}/src/Ai/Base/Trigger"
+    "${PB_MODULE_ROOT}/src/Script")  # [tele20] GoToInstance.h
 
 # the fixtures are files in the source tree, committed next to the tests; PB_FIXTURE_DIR overrides it
 target_compile_definitions(pb_unit_tests PRIVATE

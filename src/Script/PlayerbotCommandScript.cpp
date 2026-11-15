@@ -13,6 +13,7 @@
 #include "DBCStores.h"
 #include "DatabaseEnv.h"
 #include "Engine.h"
+#include "GoToInstance.h"  // [tele20] which copy of the dungeon a "go to him" lands in, as a seam
 #include "Group.h"
 #include "GuildTaskMgr.h"
 #include "InstanceSaveMgr.h"
@@ -120,6 +121,7 @@ public:
             {"pack", playerbotsPackCommandTable},
             {"watcher", playerbotsWatcherCommandTable},
             {"watch", HandleWatchCommand, SEC_ADMINISTRATOR, Console::Yes},
+            {"goto", HandleGoToCommand, SEC_ADMINISTRATOR, Console::Yes},  // [tele20] into HIS copy of the dungeon
             {"route", playerbotsRouteCommandTable},
         };
 
@@ -867,9 +869,202 @@ public:
         return true;
     }
 
+    enum class GoToOutcome
+    {
+        Done,         // he is on his way into the target's own copy
+        LeftDungeon,  // he stood in another copy of that dungeon and was sent out of it: run the command again
+        Refused       // nothing was done, and the reason was said out loud
+    };
+
+    // [tele20] THE ONE WAY A REAL PLAYER GOES TO A BOT, map AND instance. Every five runs its own copy of the
+    // dungeon, so a destination is a map and an instance id; a teleport that names only the map lands the player in
+    // whatever copy his own bind points at, and in a brand new empty one when he has no bind
+    // (InstanceSaveMgr::PlayerGetDestinationInstanceId, MapInstanced::CreateInstanceForPlayer). That is what the user
+    // met: "I teleport into dungeons to the people, but I do not see them. I am in some other mirror."
+    //
+    // `.appear` (cs_misc.cpp HandleAppearCommand) binds the GM to the target's instance only when he has NO bind for
+    // that map and difficulty yet, by its own comment "if the GM is bound to another instance, he will not be bound
+    // to another one" - so a bind to an older copy survives it, and it still reports "Appearing at ...". Which copy
+    // the bind has to point at is decided in GoToInstance::PlanGoTo (src/Script/GoToInstance.h), asserted by a test
+    // over the real binds of 2026-11-15; this function only carries the plan out. It is the whole module's single
+    // place for it: "playerbots goto" and "playerbots watch" both come through here.
+    static GoToOutcome GoToPlayer(ChatHandler* handler, Player* mover, Player* target, std::string const& retry)
+    {
+        if (!mover->IsInWorld() || mover->IsBeingTeleported())
+        {
+            handler->PSendSysMessage("GoTo: {} is loading, try again", mover->GetName());
+            return GoToOutcome::Refused;
+        }
+
+        if (!target->IsInWorld() || target->IsBeingTeleported())
+        {
+            handler->PSendSysMessage("GoTo: {} is loading, try again", target->GetName());
+            return GoToOutcome::Refused;
+        }
+
+        // In a group the destination instance is the group leader's bind, not his own
+        // (InstanceSaveMgr::PlayerGetDestinationInstanceId). In the target's OWN group that is the right instance
+        // anyway and the core needs no help; in any other group nothing done here would decide where he lands.
+        Group* const group = mover->GetGroup();
+        if (group && group != target->GetGroup())
+        {
+            handler->PSendSysMessage("GoTo: {} is in another group - its leader's bind decides where he lands, so "
+                                     "leave that group first",
+                                     mover->GetName());
+            return GoToOutcome::Refused;
+        }
+
+        if (mover->GetMap()->IsBattlegroundOrArena() || target->GetMap()->IsBattlegroundOrArena())
+        {
+            handler->PSendSysMessage("GoTo: a battleground or arena is not entered this way ({} -> {})",
+                                     mover->GetName(), target->GetName());
+            return GoToOutcome::Refused;
+        }
+
+        Map* map = target->GetMap();
+        GoToInstance::Facts facts;
+        facts.targetInDungeon = map->IsDungeon();
+        facts.targetMap = map->GetId();
+        facts.targetInstance = target->GetInstanceId();
+        facts.moverMap = mover->GetMapId();
+        facts.moverInstance = mover->GetInstanceId();
+        facts.moverGroupedWithTarget = group != nullptr;  // checked above: the only group left here is the target's
+
+        InstanceSave* save = nullptr;
+        InstancePlayerBind* bind = nullptr;
+        Difficulty const difficulty = Difficulty(map->GetSpawnMode());
+        if (facts.targetInDungeon)
+        {
+            save = sInstanceSaveMgr->GetInstanceSave(facts.targetInstance);
+            if (!save)
+            {
+                handler->PSendSysMessage("GoTo: instance {} of {} has no instance save", facts.targetInstance,
+                                         map->GetMapName());
+                return GoToOutcome::Refused;
+            }
+
+            bind = sInstanceSaveMgr->PlayerGetBoundInstance(mover->GetGUID(), facts.targetMap, difficulty);
+            facts.boundInstance = bind ? bind->save->GetInstanceId() : 0;
+        }
+
+        GoToInstance::Plan const plan = GoToInstance::PlanGoTo(facts);
+
+        if (plan.leaveFirst)
+        {
+            // Inside an older copy of this very dungeon: its bind cannot go while he stands in it. Out first.
+            handler->PSendSysMessage("GoTo: {} is inside instance {} of {}, while {} is in instance {}: sent to his "
+                                     "homebind, run '{}' again once he is there",
+                                     mover->GetName(), facts.moverInstance, map->GetMapName(), target->GetName(),
+                                     facts.targetInstance, retry);
+            mover->TeleportTo(mover->m_homebindMapId, mover->m_homebindX, mover->m_homebindY, mover->m_homebindZ,
+                              mover->GetOrientation());
+            return GoToOutcome::LeftDungeon;
+        }
+
+        if (facts.targetInDungeon && facts.moverMap != facts.targetMap)
+        {
+            if (map->IsRaid())
+                mover->SetRaidDifficulty(difficulty);
+            else
+                mover->SetDungeonDifficulty(difficulty);
+        }
+
+        if (plan.unbind)
+        {
+            handler->PSendSysMessage("GoTo: {} unbound from instance {} of {} ({}), it is not the copy {} is in",
+                                     mover->GetName(), bind->save->GetInstanceId(), map->GetMapName(),
+                                     bind->perm ? "permanent" : "temporary", target->GetName());
+            sInstanceSaveMgr->PlayerUnbindInstance(mover->GetGUID(), facts.targetMap, bind->save->GetDifficulty(),
+                                                   true, mover);
+        }
+        if (plan.bind)
+            sInstanceSaveMgr->PlayerBindToInstance(mover->GetGUID(), save, !save->CanReset(), mover);
+
+        if (mover->IsInFlight())
+        {
+            mover->GetMotionMaster()->MovementExpired();
+            mover->CleanupAfterTaxiFlight();
+        }
+        else
+            mover->SaveRecallPosition();
+
+        if (!mover->TeleportTo(facts.targetMap, target->GetPositionX(), target->GetPositionY(),
+                               target->GetPositionZ() + 0.25f, target->GetOrientation(), TELE_TO_GM_MODE, target))
+        {
+            handler->PSendSysMessage("GoTo: the teleport of {} was refused", mover->GetName());
+            return GoToOutcome::Refused;
+        }
+        mover->SetPhaseMask(target->GetPhaseMask() | 1, false);
+
+        return GoToOutcome::Done;
+    }
+
+    // [tele20] playerbots goto <name> [spectator]: the bot-control panel's "go to him". The spectator defaults to the
+    // player who typed it (from the console, to WATCHER_DEFAULT_NAME). It is the panel's only teleport, because a
+    // coordinate teleport (and ".appear" on a stale bind) puts the user in an empty copy of the dungeon.
+    static bool HandleGoToCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const tokens = SplitArgs(args);
+        if (tokens.empty())
+        {
+            handler->SendSysMessage("Usage: playerbots goto <name> [spectator]");
+            return false;
+        }
+
+        std::string targetName = tokens[0];
+        Player* target = normalizePlayerName(targetName) ? ObjectAccessor::FindPlayerByName(targetName) : nullptr;
+        if (!target)
+        {
+            handler->PSendSysMessage("GoTo: {} is not online", tokens[0]);
+            return false;
+        }
+
+        Player* mover = nullptr;
+        if (tokens.size() > 1)
+        {
+            std::string moverName = tokens[1];
+            mover = normalizePlayerName(moverName) ? ObjectAccessor::FindPlayerByName(moverName) : nullptr;
+        }
+        else if (handler->GetSession())
+            mover = handler->GetSession()->GetPlayer();
+        else
+        {
+            std::string moverName = WATCHER_DEFAULT_NAME;
+            mover = normalizePlayerName(moverName) ? ObjectAccessor::FindPlayerByName(moverName) : nullptr;
+        }
+
+        if (!mover || !mover->GetSession())
+        {
+            handler->SendSysMessage("GoTo: the spectator is not online");
+            return false;
+        }
+
+        if (!IsRealPlayer(mover) || mover->GetSession()->IsHeadless())
+        {
+            handler->PSendSysMessage("GoTo: {} is a bot, not a spectator", mover->GetName());
+            return false;
+        }
+
+        if (mover->GetGUID() == target->GetGUID())
+        {
+            handler->PSendSysMessage("GoTo: {} is himself", mover->GetName());
+            return false;
+        }
+
+        GoToOutcome const outcome =
+            GoToPlayer(handler, mover, target, Acore::StringFormat("playerbots goto {}", target->GetName()));
+        if (outcome == GoToOutcome::Done)
+        {
+            Map* map = target->GetMap();
+            handler->PSendSysMessage("GoTo: {} -> {} ({}, map {}, instance {})", mover->GetName(), target->GetName(),
+                                     map->GetMapName(), map->GetId(), target->GetInstanceId());
+        }
+        return outcome != GoToOutcome::Refused;
+    }
+
     // playerbots watch list | playerbots watch <run id|number|content key> [name]: the named real player goes into
-    // GM mode, invisible (".gm on", ".gm visible off"), and next to the run's tank inside its instance, as ".appear"
-    // takes a GM into a dungeon. He is not added to the group.
+    // GM mode, invisible (".gm on", ".gm visible off"), and next to the run's tank inside its instance. He is not
+    // added to the group. The teleport itself is GoToPlayer, shared with "playerbots goto".
     static bool HandleWatchCommand(ChatHandler* handler, char const* args)
     {
         std::vector<std::string> const tokens = SplitArgs(args);
@@ -920,25 +1115,6 @@ public:
             return false;
         }
 
-        if (!watcher->IsInWorld() || watcher->IsBeingTeleported())
-        {
-            handler->PSendSysMessage("Watch: {} is loading, try again", watcher->GetName());
-            return false;
-        }
-
-        // In a group the instance would be the group leader's bind (InstanceSaveMgr::PlayerGetDestinationInstanceId).
-        if (watcher->GetGroup())
-        {
-            handler->PSendSysMessage("Watch: {} is in a group, leave it first", watcher->GetName());
-            return false;
-        }
-
-        if (watcher->GetMap()->IsBattlegroundOrArena())
-        {
-            handler->PSendSysMessage("Watch: {} is in a battleground", watcher->GetName());
-            return false;
-        }
-
         // ".gm on" and ".gm visible off" (cs_gm.cpp)
         watcher->SetGameMaster(true);
         watcher->UpdateTriggerVisibility();
@@ -952,74 +1128,15 @@ public:
         watcher->SetSpeed(MOVE_FLIGHT, 5.0f, true);
         watcher->UpdateObjectVisibility();
 
+        GoToOutcome const outcome =
+            GoToPlayer(handler, watcher, tank, Acore::StringFormat("playerbots watch {}", party->id));
+        if (outcome != GoToOutcome::Done)
+            return outcome == GoToOutcome::LeftDungeon;
+
         Map* map = tank->GetMap();
-        bool const sameMap = watcher->GetMapId() == tank->GetMapId();
-        bool const sameInstance = sameMap && watcher->GetInstanceId() == tank->GetInstanceId();
-        std::string const distance = sameInstance ? Acore::StringFormat("{:.1f} yd", watcher->GetDistance(tank))
-                                                  : std::string("other map");
-
-        if (!sameInstance)
-        {
-            if (sameMap)
-            {
-                // Inside an older instance of this dungeon: its bind cannot go while he is in it. Out first.
-                handler->PSendSysMessage("Watch: {} is inside instance {} of {}, not the run's {}: sent to his "
-                                         "homebind, run 'playerbots watch {}' again once he is there",
-                                         watcher->GetName(), watcher->GetInstanceId(), map->GetMapName(),
-                                         tank->GetInstanceId(), party->id);
-                watcher->TeleportTo(watcher->m_homebindMapId, watcher->m_homebindX, watcher->m_homebindY,
-                                    watcher->m_homebindZ, watcher->GetOrientation());
-                return true;
-            }
-
-            InstanceSave* save = sInstanceSaveMgr->GetInstanceSave(tank->GetInstanceId());
-            if (!save)
-            {
-                handler->PSendSysMessage("Watch: instance {} has no instance save", tank->GetInstanceId());
-                return false;
-            }
-
-            Difficulty const difficulty = Difficulty(map->GetSpawnMode());
-            if (map->IsRaid())
-                watcher->SetRaidDifficulty(difficulty);
-            else
-                watcher->SetDungeonDifficulty(difficulty);
-
-            // ".appear" keeps an existing bind; a bind to an older run's instance would take him there instead.
-            InstancePlayerBind* bind = sInstanceSaveMgr->PlayerGetBoundInstance(watcher->GetGUID(), map->GetId(),
-                                                                                difficulty);
-            if (bind && bind->save != save)
-            {
-                handler->PSendSysMessage("Watch: {} unbound from instance {} ({})", watcher->GetName(),
-                                         bind->save->GetInstanceId(), bind->perm ? "permanent" : "temporary");
-                sInstanceSaveMgr->PlayerUnbindInstance(watcher->GetGUID(), map->GetId(), bind->save->GetDifficulty(),
-                                                       true, watcher);
-                bind = nullptr;
-            }
-            if (!bind)
-                sInstanceSaveMgr->PlayerBindToInstance(watcher->GetGUID(), save, !save->CanReset(), watcher);
-        }
-
-        if (watcher->IsInFlight())
-        {
-            watcher->GetMotionMaster()->MovementExpired();
-            watcher->CleanupAfterTaxiFlight();
-        }
-        else
-            watcher->SaveRecallPosition();
-
-        if (!watcher->TeleportTo(tank->GetMapId(), tank->GetPositionX(), tank->GetPositionY(),
-                                 tank->GetPositionZ() + 0.25f, tank->GetOrientation(), TELE_TO_GM_MODE, tank))
-        {
-            handler->PSendSysMessage("Watch: the teleport of {} was refused", watcher->GetName());
-            return false;
-        }
-        watcher->SetPhaseMask(tank->GetPhaseMask() | 1, false);
-
-        handler->PSendSysMessage("Watch: {} (GM, invisible) -> {} (map {}, instance {}), run {} [{}] {}, tank {}, "
-                                 "distance before {}",
+        handler->PSendSysMessage("Watch: {} (GM, invisible) -> {} (map {}, instance {}), run {} [{}] {}, tank {}",
                                  watcher->GetName(), map->GetMapName(), map->GetId(), tank->GetInstanceId(),
-                                 party->seq, party->id, party->content->key, tank->GetName(), distance);
+                                 party->seq, party->id, party->content->key, tank->GetName());
         ChatHandler(watcher->GetSession())
             .PSendSysMessage("Watching run {} ({}) next to {}. GM mode on, invisible; '.gm off' and "
                              "'.gm visible on' undo it.",
