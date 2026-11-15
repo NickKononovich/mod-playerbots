@@ -1787,9 +1787,28 @@ namespace Leader::Travel
             };
             for (auto pack = packs.begin(); pack != packs.end();)
             {
+                // [route20] `isOld` used to stand here too, and it was the hole: the test below cannot run on a
+                // fresh plan or before a single stop is done (both conditions are right next to it), so a pack that
+                // entered the plan then was never judged once for the rest of the run - it was "old" from its
+                // second plan onwards. wc-n 2026-11-15 five6-4 (failed, 1 boss of 8, 0 deaths, 0 wipes): the lone
+                // Deviate Faerie Dragon 5912 of this map stands at its spawn (0.0,-55.9,-67.0) while the way to the
+                // first Fanglord runs through y 398..524, so it sat 452 yd from the leader and 468 yd from the next
+                // stop; it was a stop of 40 of the run's 51 plans and appears in neither the behind nor the
+                // notBehind record of a single one of them - judged zero times. The plan to Lord Cobrahn came out
+                // 3197 yd against 1037-1107 for the eight fives whose plan never took it, with the straight sum
+                // 1366 against 774-947: one leg, paid on every re-plan. Of the five runs with such a plan four
+                // ended on one boss (the fifth, five4-1, cleared 8/8 - the detour is a cost, not a wall).
+                // Nothing else changes: the verdict is the same positional one, re-derived from the same facts
+                // every plan, with no number of its own; its "behind" answer is already a one-way latch
+                // (route.planBehind), so a stop cannot flap in and out; and a pack the group is actually walking to
+                // has a small `forward`, which this test requires to be large (out of its own aggro reach of the
+                // walk ahead) before it calls anything behind. The order of a plan is kept by `insertOnly`, which
+                // is what [lead1283] meant by not re-solving the tour on a join - not by shielding a stop from the
+                // test. `isOld` stays in use for the log, so a run says how many of its skips were old stops.
                 bool behind = std::all_of(pack->mobs.begin(), pack->mobs.end(), [&route](ObjectGuid const& guid)
                                           { return route.planBehind.count(guid) != 0; });
-                if (!behind && !fresh && !isOld(*pack) && !route.routePlanDone.empty())
+                bool const wasOld = isOld(*pack);
+                if (!behind && !fresh && !route.routePlanDone.empty())
                 {
                     Creature* anchor = map->GetCreature(pack->anchor);
                     float const back = nearestTo(pack->spot, route.routePlanDone);
@@ -1820,6 +1839,7 @@ namespace Leader::Travel
                                           .Bool("bossWalks", bossWalks)
                                           .Real("bossFromTank", toBoss ? start.GetExactDist(bossSpot) : -1.0f)
                                           .Bool("pastBoss", pastBoss)  // [lead1341]
+                                          .Bool("wasOld", wasOld)  // [route20] judged although already a stop
                                           .Build());
                     if (behind)
                     {
@@ -1831,11 +1851,13 @@ namespace Leader::Travel
                                           .Real("reach", AggroReach(anchor, leader))
                                           .Real("fromTank", farYd)
                                           .Bool("pastBoss", pastBoss && back >= forward)  // [lead1341]
+                                          .Bool("wasOld", wasOld)  // [route20]
                                           .Build());
                         LOG_INFO("playerbots", "[lead1283] {}: {} is behind the group ({:.0f} yd from the cleared "
-                                 "walk, {:.0f} yd from the walk ahead{}): no stop",
+                                 "walk, {:.0f} yd from the walk ahead{}): no stop{}",
                                  group.Run().runId, PlanStopName(map, *pack), back, forward,
-                                 pastBoss && back >= forward ? ", past the boss off the way [lead1341]" : "");
+                                 pastBoss && back >= forward ? ", past the boss off the way [lead1341]" : "",
+                                 wasOld ? " [route20] - a stop of the plan until now, never judged before" : "");
                     }
                 }
                 pack = behind ? packs.erase(pack) : std::next(pack);
