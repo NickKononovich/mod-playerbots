@@ -15,6 +15,8 @@
 #include "LeaderGroup.h"
 #include "LeaderLog.h"
 
+#include "Optional.h"
+
 #include <string>
 #include <vector>
 
@@ -43,6 +45,28 @@ namespace Leader::Dungeon
     // [lead7] the leader plans the tank's pull (PullPlanner::Decide on the world thread, every world update, when the
     // tank asked) and issues the decision; a hopeless refusal is the planner_no_option bug event.
     void TickLeaderPlanner(LeaderGroup& group);
+
+    // [jrn50] THE STATE OF EVERY PARTICIPANT OF A DECISION, for the journal's participant rows (pb_journal_actor,
+    // which had the columns and no values: not one bot row, and NULL for every mob's level, health and mana - so
+    // "put the same conditions back and run the judge again" had nothing to put back).
+    //
+    // They are shared rather than private to LeaderPlan.cpp because three emitters write the same participants and
+    // one shape of row is the point: the planner's answer, the issued order, and the chain pull's verdict.
+    // Everything is read in the EMITTER'S OWN PASS, under the same lock as the rest of the decision; the journal
+    // never looks a unit up, because that would be a second reading of the world at a second moment.
+    //
+    // `tankOpenerReady` is handed in by whoever holds that fact (JudgeChainPull's ChainPull::openerReady) and is
+    // left empty by whoever does not: an empty one writes NO key, so the column stays NULL - "at that moment the
+    // quantity did not exist", which is not "its opener was not ready". The planner's own answer runs out of
+    // combat, where no opener gate has run, so it passes nothing.
+    // `note` says why these participants are in the record, and it is what keeps two instants apart: one decision
+    // is written from several lines (the answer, the order, a chain pull's verdict), the journal keeps one row per
+    // distinct participant plus note, and merging a fight's reading into an out-of-combat answer's row would splice
+    // two moments into one state. Pass nullptr to take the journal's default ("five" / "look target").
+    std::string FiveFacts(LeaderGroup& group, Player* tank, Unit* look, Optional<bool> tankOpenerReady,
+                          char const* note = nullptr);
+    // One creature as the judge saw it: identity, place, level, health beside its pool, combat, wanderer.
+    std::string MobFacts(Creature* mob, Player* tank, char const* note = nullptr);
     // [lead6] the leader's one readiness verdict ("" = ready): the group here and topped up, nobody buffing,
     // sitting or preparing (PullReadiness::GroupPreparing)
     std::string LeaderReadyWhy(LeaderGroup& group, Player* leader);

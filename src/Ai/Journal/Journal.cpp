@@ -956,8 +956,11 @@ namespace Journal
                              "bot_low INT UNSIGNED NOT NULL DEFAULT 0, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
                              "zone_id INT UNSIGNED NOT NULL DEFAULT 0, from_x FLOAT NOT NULL DEFAULT 0, "
                              "from_y FLOAT NOT NULL DEFAULT 0, from_z FLOAT NOT NULL DEFAULT 0, "
-                             "to_x FLOAT NOT NULL DEFAULT 0, to_y FLOAT NOT NULL DEFAULT 0, "
-                             "to_z FLOAT NOT NULL DEFAULT 0, path_yd FLOAT NOT NULL DEFAULT 0, "
+                             // [jrn50] NULLABLE: a leg can end with its target gone from the world, and then
+                             // there is no place to write. 0 would read as the point (0, 0, 0) - trap 7 in a new
+                             // column - so "no place left" is NULL and nothing else.
+                             "to_x FLOAT NULL, to_y FLOAT NULL, "
+                             "to_z FLOAT NULL, path_yd FLOAT NOT NULL DEFAULT 0, "
                              "straight_yd FLOAT NOT NULL DEFAULT 0, stop_count SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
                              "changed_stop SMALLINT UNSIGNED NULL, changed_why VARCHAR(255) NOT NULL DEFAULT '', "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', "
@@ -1597,7 +1600,7 @@ namespace Journal
                 BootId(), nowMs, hour, Quoted(route.event, 12), Quoted(route.purpose, 48), Quoted(route.target, 96),
                 route.targetEntry, route.targetLow, Quoted(route.why, 512), Quoted(route.verdict, 16),
                 Quoted(route.botName, 32), route.botLow, route.mapId, route.zoneId, Real(route.fromX),
-                Real(route.fromY), Real(route.fromZ), Real(route.toX), Real(route.toY), Real(route.toZ),
+                Real(route.fromY), Real(route.fromZ), OrNull(route.toX), OrNull(route.toY), OrNull(route.toZ),
                 Real(route.pathYd), Real(route.straightYd), route.stopCount,
                 route.changedStop ? std::to_string(*route.changedStop) : std::string("NULL"),
                 Quoted(route.changedWhy, 255), Quoted(route.runId, 48), route.decisionId,

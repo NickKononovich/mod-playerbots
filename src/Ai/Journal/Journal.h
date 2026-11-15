@@ -1057,7 +1057,12 @@ namespace Journal
         uint32 mapId = 0;
         uint32 zoneId = 0;
         float fromX = 0.f, fromY = 0.f, fromZ = 0.f;
-        float toX = 0.f, toY = 0.f, toZ = 0.f;
+        // [jrn50] WHERE THE ROUTE WAS HEADED, and it is NULLABLE because a leg can end with the target gone from
+        // the world (killed, despawned): there is then no place left to write, and 0 would not say that - it would
+        // say "the point (0, 0, 0)". This is the journal's own trap (absence is not zero) in a new column, and
+        // telling it apart by a negative straight_yd is indirect: that works only until somebody tidies that up
+        // too. An empty one writes NULL.
+        Optional<float> toX, toY, toZ;
         float pathYd = 0.f;          // the length along the path
         float straightYd = 0.f;      // and in a straight line: the detour is the ratio, not either number
         uint32 stopCount = 0;

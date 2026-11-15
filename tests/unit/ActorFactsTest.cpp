@@ -158,6 +158,57 @@ TEST(ActorFacts, MobHealthAndLevelReachTheirColumns)
     ASSERT_TRUE(mob->z.has_value()) << "a pull is judged in three dimensions";
 }
 
+// [jrn50] the opener gate's own reading, and the three answers it can give. 121 pulls were refused on this fact
+// with the column empty beside them; now it travels on the verdict that computed it (ChainPull::openerReady ->
+// the chain_pull line's `five`), and the three states must stay three.
+TEST(ActorFacts, TheOpenerFactKeepsItsThreeAnswers)
+{
+    // the gate ran and said yes
+    ActorFact const* ready = Find(ActorsFromFields(FIELDS), "five", 157);
+    ASSERT_NE(ready, nullptr);
+    ASSERT_TRUE(ready->openerReady.has_value());
+    EXPECT_TRUE(*ready->openerReady);
+
+    // the gate ran and said no: every opener cooling down, or none known - one fact to the gate, and it is a
+    // MEASURED false. A reader that turned absent into false would make this indistinguishable from the third case.
+    char const* const refused = "{\"five\":[{\"name\":\"Bierya\",\"low\":157,\"openerReady\":false}]}";
+    ActorFact const* cooling = Find(ActorsFromFields(refused), "five", 157);
+    ASSERT_NE(cooling, nullptr);
+    ASSERT_TRUE(cooling->openerReady.has_value()) << "a refusal on the opener is a measured false, not a gap";
+    EXPECT_FALSE(*cooling->openerReady);
+
+    // the gate never ran: out of combat no chain pull is judged at all, so the quantity did not exist. That is
+    // NULL - "it did not exist then" - and never "its opener was not ready".
+    char const* const never = "{\"five\":[{\"name\":\"Bierya\",\"low\":157,\"hp\":1820,\"hpMax\":2040}]}";
+    ActorFact const* unasked = Find(ActorsFromFields(never), "five", 157);
+    ASSERT_NE(unasked, nullptr);
+    EXPECT_FALSE(unasked->openerReady.has_value())
+        << "the opener gate was never reached: that is not a tank whose opener was not ready";
+}
+
+// [jrn50] TWO INSTANTS MUST NOT COLLAPSE INTO ONE ROW. One decision is written from several lines and they are not
+// the same moment: the planner answers out of combat, the chain pull is judged in the fight. The journal keeps one
+// row per distinct participant of a decision, so without a note of its own the fight's reading would be merged
+// into - in practice, dropped in favour of - the row written first, and the opener fact would be lost exactly
+// where it exists. The note is what keeps them two rows.
+TEST(ActorFacts, AnEmittersOwnInstantGetsItsOwnRow)
+{
+    char const* const both =
+        "{\"five\":[{\"name\":\"Bierya\",\"low\":157,\"hp\":1820,\"hpMax\":2040}],"
+        "\"packAt\":[{\"note\":\"five at chain pull\",\"low\":157,\"hp\":900,\"hpMax\":2040,"
+        "\"openerReady\":false}]}";
+    std::vector<ActorFact> const actors = ActorsFromFields(both);
+    ActorFact const* answer = Find(actors, "five", 157);
+    ActorFact const* chain = Find(actors, "five at chain pull", 157);
+    ASSERT_NE(answer, nullptr);
+    ASSERT_NE(chain, nullptr) << "the emitter named its own instant and must get a row of its own";
+    // the same bot, two moments, two different healths - and neither overwrote the other
+    ASSERT_TRUE(answer->health.has_value());
+    ASSERT_TRUE(chain->health.has_value());
+    EXPECT_EQ(*answer->health, 1820u);
+    EXPECT_EQ(*chain->health, 900u);
+}
+
 // what the judge did NOT write must stay NULL: the wanderers are named by their spawn, with no health at all
 TEST(ActorFacts, AbsentIsNotZero)
 {

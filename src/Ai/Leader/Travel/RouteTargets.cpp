@@ -1594,8 +1594,9 @@ namespace Leader::Travel
             leg.fromY = leader->GetPositionY();
             leg.fromZ = leader->GetPositionZ();
             // no walk is measured at the end of a leg, and a target that has left the world (killed, despawned) has
-            // no place left to measure to: both lengths stay NEGATIVE rather than being called 0 yd. to_x/y/z keep
-            // the column's own default in that case, because the route table has no NULL there.
+            // no place left to measure to: both lengths stay NEGATIVE rather than being called 0 yd, and
+            // [jrn50] to_x/y/z are left EMPTY so the columns hold NULL. They used to take the column's default,
+            // which reads as the point (0, 0, 0) - a different statement from "there is no place left".
             leg.pathYd = -1.0f;
             leg.straightYd = left ? leader->GetExactDist(left) : -1.0f;
             if (left)
@@ -6031,6 +6032,9 @@ namespace Leader::Travel
         // [jrn20] THE LEG THAT STARTS HERE, written where the route's choice and its reason are both in hand: the
         // target, the rule that chose it, and where the leader stood when it set off. `why` is the route's own rule
         // (targetRouteRule), which is what "where was it going and why did it turn" has to be answered out of.
+        //
+        // [jrn50] to_x/y/z are written only when the target is still in the world; otherwise they stay empty and
+        // the columns hold NULL, never (0, 0, 0).
         //
         // path_yd stays NEGATIVE on purpose. The search measured a walk for the candidate that scored best, and
         // `chosen` is not always that candidate (a near target replaces a far one, a lift, a bridge, a room mob, an

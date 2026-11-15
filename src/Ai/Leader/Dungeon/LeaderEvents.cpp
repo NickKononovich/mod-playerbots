@@ -56,6 +56,7 @@
 #include "LeaderCommand.h"  // [lead410] SPELL_MASTER_OF_GHOULS
 #include "LeaderOrders.h"  // [lead1] the tank's pull orders
 #include "LeaderPlannerShared.h"  // [lead1091] TankEngageOpeners
+#include "LeaderPlan.h"  // [jrn50] FiveFacts / MobFacts: the decision's participants, one shape of row
 #include "LeaderTankSaves.h"     // [split251] PlannedPullSave
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -3426,6 +3427,19 @@ namespace Leader::Dungeon
                     gate("gateHolds", chain.tankHolds);
                     gate("gateWakes", chain.wayInQuiet);
                     chainFields.Str("tag", chain.walk ? "[lead1190]" : "[lead1170]");
+                    // [jrn50] THE PARTICIPANTS OF THIS VERDICT, so the candidate can be put back and judged again:
+                    // the five as it stood (health, mana beside its pool, places, what it carries) and the anchor
+                    // with its own level and health. This is also the ONE place the opener fact exists - the gate
+                    // that reads it runs here, in the fight - so `openerReady` is handed over from the verdict that
+                    // just computed it rather than asked of the cooldowns again at another moment. It turned 121
+                    // pulls down with pb_journal_actor.opener_ready empty beside them.
+                    chainFields
+                        .Raw("five", FiveFacts(group, tank, chain.anchor,
+                                               chain.openerReady == Leader::Judge::Tri::Unknown
+                                                   ? Optional<bool>()
+                                                   : Optional<bool>(chain.openerReady == Leader::Judge::Tri::Yes),
+                                               "five at chain pull"))
+                        .Raw("lookAt", MobFacts(chain.anchor, tank, "chain pull anchor"));
                     Decisions().Write(run, "leader", "chain_pull", chain.anchor->GetGUID(),
                                       chain.anchor->GetName(), true, chainFields);
                 }

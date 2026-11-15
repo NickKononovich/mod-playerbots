@@ -83,6 +83,22 @@ namespace Journal
                 return std::nullopt;
             }
 
+            // [jrn50] WHY THE PARTICIPANT IS IN THE RECORD, and why the emitter may name it.
+            //
+            // The note is what tells one participant row from another, and the journal keeps ONE row per distinct
+            // participant of a decision (identity plus note) rather than one per line that mentioned it. One
+            // decision is written from several lines - the planner's answer, the issued order, and a chain pull's
+            // verdict - and those are DIFFERENT INSTANTS: the planner answers out of combat, the chain pull is
+            // judged during a fight. Merging them into one row would splice two moments into one state, and the
+            // facts that exist at only one of them (the opener gate's reading) would be lost to the row written
+            // first. So an emitter that is looking at its own instant says so, and gets its own row.
+            std::string Note(std::string const& o, char const* fallback)
+            {
+                if (std::optional<std::string> const own = Text(o, "note"); own)
+                    return *own;
+                return fallback;
+            }
+
             // [jrn50] the mob fields shared by packAt and lookAt
             void ReadMob(ActorFact& a, std::string const& o)
             {
@@ -163,7 +179,7 @@ namespace Journal
                         {
                             ActorFact a;
                             ReadMob(a, o);
-                            a.note = "pack member";
+                            a.note = Note(o, "pack member");
                             out.push_back(a);
                         });
 
@@ -172,7 +188,7 @@ namespace Journal
                         {
                             ActorFact a;
                             a.mob = true;
-                            a.note = "wander area";
+                            a.note = Note(o, "wander area");
                             a.spawnId = UInt(o, "spawn").value_or(0);
                             std::optional<std::string> const checks = Text(o, "checks");
                             a.checks = checks;
@@ -200,7 +216,7 @@ namespace Journal
             {
                 ActorFact a;
                 ReadMob(a, *look);
-                a.note = "look target";
+                a.note = Note(*look, "look target");
                 out.push_back(a);
             }
 
@@ -212,7 +228,7 @@ namespace Journal
                         {
                             ActorFact a;
                             a.mob = false;
-                            a.note = "five";
+                            a.note = Note(o, "five");
                             a.name = Text(o, "name").value_or(std::string());
                             a.low = UInt(o, "low").value_or(0);
                             a.level = UInt(o, "level");

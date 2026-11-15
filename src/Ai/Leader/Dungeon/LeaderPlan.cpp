@@ -126,85 +126,94 @@ namespace Leader::Dungeon
     using namespace Leader::Fight;
     using Leader::Travel::PointOnPath;
 
+    // [jrn50] THE STATE OF EVERY PARTICIPANT OF THE DECISION, written by the judge in its own pass.
+    //
+    // Why it is here and not in the journal. pb_journal_actor had the columns and no values: no bot row at all,
+    // and NULL for every mob's level, health and mana - so "put the same conditions back and run the judge
+    // again" had nothing to put back, and the two DeathReplay tests skip for exactly that. The journal will not
+    // fill them by looking a unit up itself: that is a second reading of the world at a second moment, a second
+    // judge of one quantity. So the numbers are taken HERE, in the same pass and under the same lock as the
+    // rest of the decision, and whatever the judge does not hold stays absent (the key is simply not written,
+    // and the column stays NULL - "not supplied", which is not 0).
+    //
+    // The wc-n failure is the measure of what this costs: a five gave 58 % of its run to resting because its
+    // paladin tank had run out of water, and the only way to establish that afterwards was a LIKE over the
+    // text. `drinks` / `foods` are what the member carries at this instant, counted by the one counter of that
+    // quantity (CountRestItems). What the run was PRICED at ([dun194] drinkNeed) is deliberately not read here:
+    // it belongs to the five's own owner (GuildFives writes it on the five_enter row), and reading it in two
+    // places is how a figure gets two judges.
+    //
+    // `mana` / `manaMax` are written only for a member that HAS a mana pool: a rogue has no mana percentage, it
+    // does not have 0 %.
+    std::string MobFacts(Creature* mob, Player* tank, char const* note)
+    {
+        JsonObject o;
+        if (note)
+            o.Str("note", note);
+        o.Str("name", mob->GetName())
+            .Num("low", int64(mob->GetGUID().GetCounter()))
+            .Num("entry", int64(mob->GetEntry()))
+            .Real("x", mob->GetPositionX())
+            .Real("y", mob->GetPositionY())
+            .Real("z", mob->GetPositionZ())
+            .Real("tankYd", tank->GetExactDist(mob))
+            .Bool("wanders", mob->GetDefaultMovementType() != IDLE_MOTION_TYPE)
+            .Num("level", int64(mob->GetLevel()))
+            .Num("hp", int64(mob->GetHealth()))
+            .Num("hpMax", int64(mob->GetMaxHealth()))
+            .Bool("combat", mob->IsInCombat());
+        return o.Build();
+    }
+
+    std::string FiveFacts(LeaderGroup& group, Player* tank, Unit* look, Optional<bool> tankOpenerReady,
+                          char const* note)
+    {
+        JsonArray five;
+        for (LeaderGroup::MemberInfo const& member : group.Members())
+        {
+            Player* bot = ObjectAccessor::FindPlayer(member.guid);
+            if (!bot)
+                continue;
+            JsonObject o;
+            if (note)
+                o.Str("note", note);
+            o.Str("name", bot->GetName())
+                .Num("low", int64(bot->GetGUID().GetCounter()))
+                .Num("level", int64(bot->GetLevel()))
+                .Str("role", PlayerbotAI::IsTank(bot) ? "tank" : (PlayerbotAI::IsHeal(bot) ? "healer" : "dps"))
+                .Str("spec", AiFactory::GetPlayerSpecName(bot))
+                .Num("hp", int64(bot->GetHealth()))
+                .Num("hpMax", int64(bot->GetMaxHealth()))
+                .Real("x", bot->GetPositionX())
+                .Real("y", bot->GetPositionY())
+                .Real("z", bot->GetPositionZ())
+                .Real("tankYd", bot->GetExactDist(tank))
+                .Bool("combat", bot->IsInCombat())
+                // what it carries, by the one counter of that quantity ([rest75] CountRestItems)
+                .Num("drinks", int64(CountRestItems(bot, 59)))
+                .Num("foods", int64(CountRestItems(bot, 11)));
+            if (bot->GetMaxPower(POWER_MANA))
+                o.Num("mana", int64(bot->GetPower(POWER_MANA)))
+                    .Num("manaMax", int64(bot->GetMaxPower(POWER_MANA)));
+            if (look)
+                o.Real("targetYd", bot->GetExactDist(look));
+            // [jrn50] the opener fact, and ONLY for the tank, whose opener it is - and only when the caller held
+            // it. An empty one writes no key at all, so the column stays NULL rather than claiming "not ready".
+            if (tankOpenerReady && bot == tank)
+                o.Bool("openerReady", *tankOpenerReady);
+            // what it was doing at that instant, read off its own flags and nothing else - no status it
+            // declared, because TRAVEL and DUNGEON hide a hang (the user's rule on measuring idleness by fact)
+            o.Str("doing", bot->IsSitState()      ? "sits"
+                           : bot->IsInCombat()    ? "fights"
+                           : bot->isMoving()      ? "moves"
+                                                  : "stands");
+            five.Raw(o.Build());
+        }
+        return five.Build();
+    }
+
     namespace
     {
-        // [jrn50] THE STATE OF EVERY PARTICIPANT OF THE DECISION, written by the judge in its own pass.
-        //
-        // Why it is here and not in the journal. pb_journal_actor had the columns and no values: no bot row at all,
-        // and NULL for every mob's level, health and mana - so "put the same conditions back and run the judge
-        // again" had nothing to put back, and the two DeathReplay tests skip for exactly that. The journal will not
-        // fill them by looking a unit up itself: that is a second reading of the world at a second moment, a second
-        // judge of one quantity. So the numbers are taken HERE, in the same pass and under the same lock as the
-        // rest of the decision, and whatever the judge does not hold stays absent (the key is simply not written,
-        // and the column stays NULL - "not supplied", which is not 0).
-        //
-        // The wc-n failure is the measure of what this costs: a five gave 58 % of its run to resting because its
-        // paladin tank had run out of water, and the only way to establish that afterwards was a LIKE over the
-        // text. `drinks` / `foods` are what the member carries at this instant, counted by the one counter of that
-        // quantity (CountRestItems). What the run was PRICED at ([dun194] drinkNeed) is deliberately not read here:
-        // it belongs to the five's own owner (GuildFives writes it on the five_enter row), and reading it in two
-        // places is how a figure gets two judges.
-        //
-        // `mana` / `manaMax` are written only for a member that HAS a mana pool: a rogue has no mana percentage, it
-        // does not have 0 %.
-        std::string MobFacts(Creature* mob, Player* tank)
-        {
-            JsonObject o;
-            o.Str("name", mob->GetName())
-                .Num("low", int64(mob->GetGUID().GetCounter()))
-                .Num("entry", int64(mob->GetEntry()))
-                .Real("x", mob->GetPositionX())
-                .Real("y", mob->GetPositionY())
-                .Real("z", mob->GetPositionZ())
-                .Real("tankYd", tank->GetExactDist(mob))
-                .Bool("wanders", mob->GetDefaultMovementType() != IDLE_MOTION_TYPE)
-                .Num("level", int64(mob->GetLevel()))
-                .Num("hp", int64(mob->GetHealth()))
-                .Num("hpMax", int64(mob->GetMaxHealth()))
-                .Bool("combat", mob->IsInCombat());
-            return o.Build();
-        }
-
-        std::string FiveFacts(LeaderGroup& group, Player* tank, Unit* look)
-        {
-            JsonArray five;
-            for (LeaderGroup::MemberInfo const& member : group.Members())
-            {
-                Player* bot = ObjectAccessor::FindPlayer(member.guid);
-                if (!bot)
-                    continue;
-                JsonObject o;
-                o.Str("name", bot->GetName())
-                    .Num("low", int64(bot->GetGUID().GetCounter()))
-                    .Num("level", int64(bot->GetLevel()))
-                    .Str("role", PlayerbotAI::IsTank(bot) ? "tank" : (PlayerbotAI::IsHeal(bot) ? "healer" : "dps"))
-                    .Str("spec", AiFactory::GetPlayerSpecName(bot))
-                    .Num("hp", int64(bot->GetHealth()))
-                    .Num("hpMax", int64(bot->GetMaxHealth()))
-                    .Real("x", bot->GetPositionX())
-                    .Real("y", bot->GetPositionY())
-                    .Real("z", bot->GetPositionZ())
-                    .Real("tankYd", bot->GetExactDist(tank))
-                    .Bool("combat", bot->IsInCombat())
-                    // what it carries, by the one counter of that quantity ([rest75] CountRestItems)
-                    .Num("drinks", int64(CountRestItems(bot, 59)))
-                    .Num("foods", int64(CountRestItems(bot, 11)));
-                if (bot->GetMaxPower(POWER_MANA))
-                    o.Num("mana", int64(bot->GetPower(POWER_MANA)))
-                        .Num("manaMax", int64(bot->GetMaxPower(POWER_MANA)));
-                if (look)
-                    o.Real("targetYd", bot->GetExactDist(look));
-                // what it was doing at that instant, read off its own flags and nothing else - no status it
-                // declared, because TRAVEL and DUNGEON hide a hang (the user's rule on measuring idleness by fact)
-                o.Str("doing", bot->IsSitState()      ? "sits"
-                               : bot->IsInCombat()    ? "fights"
-                               : bot->isMoving()      ? "moves"
-                                                      : "stands");
-                five.Raw(o.Build());
-            }
-            return five.Build();
-        }
-
         // [lead221] the mana line a held answer names for `who` ("<who> at 46 % mana (needs 77 % = ...)",
         // "(needs 51 %)"), -1 when it names none (a health gap, "the tank rests")
         float NamedManaLine(std::string const& why, std::string const& who)
@@ -1299,7 +1308,7 @@ namespace Leader::Dungeon
             fields.Raw("packAt", packAt.Build());
             // [jrn50] and the five that is being sent in, member by member: health, mana beside its pool, level,
             // role, where it stands and what it carries to rest with
-            fields.Raw("five", FiveFacts(group, tank, mob));
+            fields.Raw("five", FiveFacts(group, tank, mob, Optional<bool>()));
             // [lead1331] the wanderers this plan judged by their wander area (spawn point + wander distance), and
             // by which checks
             std::map<uint32, std::string>& judged = Leader::Fight::WanderJudged();
@@ -2787,7 +2796,7 @@ namespace Leader::Dungeon
                     .Str("routeTarget", group.RouteTarget().IsEmpty() ? "-" : group.RouteTarget().ToString())
                     // [jrn50] the state of every participant at the instant the answer was given: the five's bots
                     // (pb_journal_actor held no bot row at all) and, below, the mob the answer is about
-                    .Raw("five", FiveFacts(group, tank, answered));
+                    .Raw("five", FiveFacts(group, tank, answered, Optional<bool>()));
                 // written only when there IS a creature answered about: an empty object would become a participant
                 // row with no identity, and a row that says nothing still gets counted
                 if (Creature* lookCreature = answered ? answered->ToCreature() : nullptr)

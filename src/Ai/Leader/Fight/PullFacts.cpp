@@ -622,6 +622,10 @@ namespace Leader::Fight
             opener = info;
             chain.opener = name;
         }
+        // [jrn50] the gate's own reading, kept on the verdict so the journal's participant row can carry it
+        // without asking the cooldowns a second time. `walkOpener` is set only by an opener the tank knows and that
+        // is not cooling down, so this IS the fact the opener refusal below is made of.
+        chain.openerReady = walkOpener ? Leader::Judge::Tri::Yes : Leader::Judge::Tri::No;
         // [lead1190] the walk's end: the nearest point on the tank's line to the anchor from which `walkOpener`
         // reaches every mob of `pack` (the centres' gap within its range less the arrival tolerance) in sight
         float const tankSpeed = std::max(tank->GetSpeed(MOVE_RUN), 0.1f);

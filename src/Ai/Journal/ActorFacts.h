@@ -86,7 +86,11 @@ namespace Journal
         //   "packAt":    [{low, entry, x, y, z, tankYd, wanders, level, hp, hpMax, combat}]  - the pack aimed at
         //   "wanderArea":[{spawn, checks}]                                  - every wandering spawn judged
         //   "lookAt":     {low, entry, ...}                                 - the single mob the answer is about
-        // Keys the emitter left out come back as empty optionals.
+        // Every object may also carry "note": why that participant is in the record. It is what tells one row from
+        // another, so an emitter looking at its own instant (a chain pull is judged in a fight, the planner answers
+        // out of combat) names itself and gets a row of its own instead of being merged into the row that was
+        // written first. Left out, the array's own default is used ("five", "pack member", "wander area",
+        // "look target"). Keys the emitter left out come back as empty optionals.
         std::vector<ActorFact> ActorsFromFields(std::string const& json);
 
         // A share, and only ever beside its own denominator: empty when either side is absent, and empty when the

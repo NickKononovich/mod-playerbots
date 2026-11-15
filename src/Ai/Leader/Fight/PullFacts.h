@@ -154,6 +154,14 @@ namespace Leader::Fight
         Leader::Judge::Tri everyoneAlive = Leader::Judge::Tri::Unknown;
         Leader::Judge::Tri tankHolds = Leader::Judge::Tri::Unknown;
         Leader::Judge::Tri wayInQuiet = Leader::Judge::Tri::Unknown;
+        // [jrn50] WHETHER A RANGED ENGAGE OPENER OF THE TANK WAS READY, as THIS judgement read it - the same fact
+        // the opener gate's refusal is made of ("no ranged opener of the tank is ready"), which turned 121 pulls
+        // down while pb_journal_actor.opener_ready stood empty beside them. It travels on the verdict instead of
+        // being asked of the cooldowns again by whoever writes the row: a second reading at a second moment is a
+        // second judge of one quantity.
+        // Tri::No covers both "every one of them is cooling down" and "the tank knows none at all", because that
+        // is one fact to the gate; Tri::Unknown is the usual "the judgement did not get this far".
+        Leader::Judge::Tri openerReady = Leader::Judge::Tri::Unknown;
     };
     ChainPull JudgeChainPull(LeaderGroup& group, Player* tank, std::vector<Unit*> const& fightMobs, float fightSecLeft,
                              std::function<std::vector<ObjectGuid>(Creature*)> const& packOf, float walkArriveYd);
