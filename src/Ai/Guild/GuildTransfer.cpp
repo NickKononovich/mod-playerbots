@@ -1457,7 +1457,7 @@ void GuildCoordinator::UpdateTransfers()
         // to a dps priced at 11 while the tank Bami held 0 of its 7 - the tank then rested on spirit regen
         // (measured 0.31 %/s) and the leader held the pull "the tank rests" 1762 s of the 3033 s run (58 %), 3 of
         // 8 bosses, no death and no wipe. The whole allocation now lives in the seam the stand asserts over these
-        // very rows (Guild::Supply::ShortPoolTargets, SupplyShare.h)
+        // very rows (GuildSupply::ShortPoolTargets, SupplyShare.h)
         size_t healerFill = fills.size();
         size_t tankFill = fills.size();
         if (kind == DRINK)
@@ -1472,14 +1472,14 @@ void GuildCoordinator::UpdateTransfers()
                 }
         if (!covered)
         {
-            std::vector<Guild::Supply::Member> share;
+            std::vector<GuildSupply::Member> share;
             share.reserve(fills.size());
             for (size_t n = 0; n < fills.size(); ++n)
                 share.push_back({fills[n].held, fills[n].line,
-                                 n == healerFill   ? Guild::Supply::Role::Healer
-                                 : n == tankFill   ? Guild::Supply::Role::Tank
-                                                   : Guild::Supply::Role::Other});
-            std::vector<uint32_t> const targets = Guild::Supply::ShortPoolTargets(share, uint32_t(pool));
+                                 n == healerFill   ? GuildSupply::Role::Healer
+                                 : n == tankFill   ? GuildSupply::Role::Tank
+                                                   : GuildSupply::Role::Other});
+            std::vector<uint32_t> const targets = GuildSupply::ShortPoolTargets(share, uint32_t(pool));
             for (size_t n = 0; n < fills.size() && n < targets.size(); ++n)
                 target[n] = targets[n];
         }

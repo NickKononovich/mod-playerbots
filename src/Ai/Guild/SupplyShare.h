@@ -39,7 +39,10 @@
 #include <utility>
 #include <vector>
 
-namespace Guild::Supply
+// ИМЯ: НЕ `Guild::Supply`. У ядра есть `class Guild`, и тогда компилятор ищет `Supply` ВНУТРИ
+// класса, а не в пространстве имён: шов собирается отдельно и падает в сервере
+// (error C2641 на `std::vector<Guild::Supply::Member>`). Поймано первой же серверной сборкой b503.
+namespace GuildSupply
 {
     enum class Role : uint8_t
     {

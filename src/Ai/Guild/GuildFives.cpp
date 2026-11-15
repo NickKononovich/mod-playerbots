@@ -4858,7 +4858,7 @@ void GuildCoordinator::UpdateFives()
                 // [supply130] the five's mana users as the seam reads them (SupplyShare.h): the pool, the
                 // requirement and the verdict are COUNTED THERE, by the same functions the stand asserts over
                 // the recorded rows of five 1, so this place cannot drift away from them
-                std::vector<Guild::Supply::Member> pool;
+                std::vector<GuildSupply::Member> pool;
                 // [supply130] the [dun281] measurement that stood here is gone with the thing it measured: it
                 // priced the gap the mage exemption opened ("of the pool N drink(s) are a conjuring mage's own,
                 // its excused line M"), and there is no exemption left to price. One requirement, counted once.
@@ -4882,9 +4882,9 @@ void GuildCoordinator::UpdateFives()
                         auto const memberRole = five.roles.find(low);
                         std::string const roleName = memberRole != five.roles.end() ? memberRole->second : "dps";
                         pool.push_back({own, drinkLine(low),
-                                        roleName == "tank"     ? Guild::Supply::Role::Tank
-                                        : roleName == "healer" ? Guild::Supply::Role::Healer
-                                                               : Guild::Supply::Role::Other,
+                                        roleName == "tank"     ? GuildSupply::Role::Tank
+                                        : roleName == "healer" ? GuildSupply::Role::Healer
+                                                               : GuildSupply::Role::Other,
                                         p->getClass() == CLASS_MAGE && p->HasSpell(5504)});
                         // [supply104] the hand-over must be possible: a member below the line takes a stack only
                         // into a free slot (the giver's side: share103 hands the whole stack when it cannot split)
@@ -4941,9 +4941,9 @@ void GuildCoordinator::UpdateFives()
                 }
                 // [supply130] ONE JUDGE FOR THE FIVE'S DRINK: the seam counts the pool and the requirement and
                 // gives the verdict; the figures below are the ones it counted, printed, never recomputed here
-                drinks = Guild::Supply::PoolDrinks(pool);
-                drinksNeeded = Guild::Supply::PoolNeed(pool);
-                bool const pooled = Guild::Supply::Pooled(pool, noRoom.empty());
+                drinks = GuildSupply::PoolDrinks(pool);
+                drinksNeeded = GuildSupply::PoolNeed(pool);
+                bool const pooled = GuildSupply::Pooled(pool, noRoom.empty());
                 if (!noRoom.empty() && !five.poolGoesIn)
                     if (std::string& logged = fiveLfgWhy[id + 1000000]; logged != noRoom)
                     {

@@ -324,7 +324,7 @@ TEST(IssueKeyRunFailed, TheRangedValueCanComeOutDifferentUnderItsOwnKey)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// [supply130] THE FIVE'S DRINK: THE GATE AND THE SHARE OF A SHORT POOL (Guild::Supply, SupplyShare.h).
+// [supply130] THE FIVE'S DRINK: THE GATE AND THE SHARE OF A SHORT POOL (GuildSupply, SupplyShare.h).
 //
 // THESE TESTS LIVE IN THIS FILE AND NOT IN A SUPPLYSHARE TEST OF THEIR OWN because tests/CMakeLists.txt was being
 // edited by another agent at the time and two agents may not touch one file here; the stand registers this file
@@ -338,8 +338,8 @@ TEST(IssueKeyRunFailed, TheRangedValueCanComeOutDifferentUnderItsOwnKey)
 
 namespace
 {
-    using Guild::Supply::Member;
-    using Guild::Supply::Role;
+    using GuildSupply::Member;
+    using GuildSupply::Role;
 
     // "pool 29 of the lines' 36, short, [dun230] the healer Rumanatol first: Bami 6/7, Rumanatol 3/2, Orton 4/11,
     // Thamesh 10/10, Arrengyl 6/6". Orton and Thamesh are mages of level 26 and 25: both conjure water.
@@ -361,27 +361,27 @@ namespace
 // user, its full priced line, the conjurers among them.
 TEST(SupplyShareGate, AConjurerIsNotExcusedFromTheFivesOwnRequirement)
 {
-    EXPECT_EQ(Guild::Supply::PoolNeed(WC_FIVE1_AT_THE_GATE), 36u)
+    EXPECT_EQ(GuildSupply::PoolNeed(WC_FIVE1_AT_THE_GATE), 36u)
         << "the gate asked for less than the run needs, by exactly the conjuring mages' lines";
-    EXPECT_EQ(Guild::Supply::PoolDrinks(WC_FIVE1_AT_THE_GATE), 29u)
+    EXPECT_EQ(GuildSupply::PoolDrinks(WC_FIVE1_AT_THE_GATE), 29u)
         << "a drink the pool does not count is a drink it cannot hand to anybody";
     // 29 of 36: the five waits, its mages conjure into their bags, and the pool the gate reads rises
-    EXPECT_FALSE(Guild::Supply::Pooled(WC_FIVE1_AT_THE_GATE, true))
+    EXPECT_FALSE(GuildSupply::Pooled(WC_FIVE1_AT_THE_GATE, true))
         << "five 1 was let in on 15 against 15 and its tank ran dry 8 min in";
     // and the same five once the water is actually held: both mages conjured up to their lines
     std::vector<Member> conjured = WC_FIVE1_AT_THE_GATE;
     conjured[0].held = 7;
     conjured[2].held = 11;
     conjured[3].held = 10;
-    EXPECT_TRUE(Guild::Supply::Pooled(conjured, true));
+    EXPECT_TRUE(GuildSupply::Pooled(conjured, true));
     // no free bag slot for a stack is the hand-over's own fact and holds the five on its own ([supply104])
-    EXPECT_FALSE(Guild::Supply::Pooled(conjured, false));
+    EXPECT_FALSE(GuildSupply::Pooled(conjured, false));
 }
 
 // THE SHARE OF A SHORT POOL GOES TO THE TANK BEFORE THE DPS: the leader holds the pull on the tank's mana.
 TEST(SupplyShareShortPool, TheTankIsFilledBeforeTheDps)
 {
-    std::vector<uint32_t> const three = Guild::Supply::ShortPoolTargets(WC_FIVE1_POOL_THREE, 3);
+    std::vector<uint32_t> const three = GuildSupply::ShortPoolTargets(WC_FIVE1_POOL_THREE, 3);
     ASSERT_EQ(three.size(), 5u);
     EXPECT_EQ(three[1], 2u) << "the healer keeps its line first ([dun230])";
     EXPECT_EQ(three[0], 1u) << "the last drink of the pool went to a dps while the tank held 0 of its 7";
@@ -395,7 +395,7 @@ TEST(SupplyShareShortPool, TheTankIsFilledBeforeTheDps)
     EXPECT_EQ(sum, 3u);
 
     // a bigger short pool: the healer's 2 and the tank's 7 first, the remaining 20 in proportion to 11, 10 and 6
-    std::vector<uint32_t> const twentyNine = Guild::Supply::ShortPoolTargets(WC_FIVE1_AT_THE_GATE, 29);
+    std::vector<uint32_t> const twentyNine = GuildSupply::ShortPoolTargets(WC_FIVE1_AT_THE_GATE, 29);
     EXPECT_EQ(twentyNine[1], 2u);
     EXPECT_EQ(twentyNine[0], 7u) << "the tank is filled to its line while the pool can still do it";
     uint32_t rest = 0;
