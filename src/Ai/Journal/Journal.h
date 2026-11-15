@@ -165,6 +165,9 @@ namespace Journal
         float x = 0.f;
         float y = 0.f;
         float z = 0.f;
+        // the wall clock in ms when the line was WRITTEN, 0 for "now". The log appender passes its own stamp rather
+        // than letting the row take one later: the order of two things inside one second is the point.
+        uint64 atMs = 0;
     };
 
     void RecordLine(Line const& line);

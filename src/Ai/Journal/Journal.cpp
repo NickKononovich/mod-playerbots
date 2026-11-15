@@ -627,7 +627,7 @@ namespace Journal
     {
         if (!Config().stream || !Ready())
             return;
-        uint64 const nowMs = NowMs();
+        uint64 const nowMs = line.atMs ? line.atMs : NowMs();
         Writer::Instance().Push(
             "pb_journal_line",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{})", Writer::Instance().NextId(), BootId(),
