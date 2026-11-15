@@ -392,6 +392,12 @@ namespace Leader
         std::optional<Position> planAhead;
         ObjectGuid planAheadMob;
         std::map<ObjectGuid, ObjectGuid> groupBlockedBy;  // [lead77] member -> the idle mob its walk cannot pass
+        // [pick90] target -> the idle mob whose aggro reach left a MELEE member of this fight no place at all
+        // (the place search's own verdict, written where it is reached - LeaderEvents' melee places). The pull
+        // gate reads it and picks another mob while the blocker is still idle and its pack is not joined; the
+        // record is dropped the moment any of those facts changes, and never by a clock
+        std::map<ObjectGuid, ObjectGuid> noMeleePlace;
+        std::set<std::pair<ObjectGuid, ObjectGuid>> noMeleePlaceLogged;  // [pick90] one row per (target, blocker)
         float fightSecLeft = 0.0f;                        // [lead80] the fight's expected seconds
         float groupDps = 0.0f;  // [lead700] the estimated group dps the fight's seconds were judged by
         float bossWalkSec = -1.0f;                        // [lead80] the walk to the nearest standing boss

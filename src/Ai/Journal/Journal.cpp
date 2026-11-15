@@ -224,6 +224,8 @@ namespace Journal
         char const* const COLUMNS_STUCK =
             "(id, boot_id, at_ms, hour_bucket, kind, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
             "pos_y, pos_z, target_name, target_entry, target_low, target_yd, target_level, target_zone_id, "
+            // [wait20] where the other one is, whether it walks, where to, and the status it runs
+            "target_x, target_y, target_z, target_moving, target_to_x, target_to_y, target_to_z, target_doing, "
             "in_combat, action_running, why, run_id, build)";
         // [jrn47] one search for a combat place that found none, and its refusals as rows
         char const* const COLUMNS_SPOT =
@@ -245,7 +247,8 @@ namespace Journal
         char const* const COLUMNS_ROUTE =
             "(id, boot_id, at_ms, hour_bucket, event, purpose, target, target_entry, target_low, why, verdict, "
             "bot_name, bot_low, map_id, zone_id, from_x, from_y, from_z, to_x, to_y, to_z, path_yd, straight_yd, "
-            "stop_count, changed_stop, changed_why, run_id, decision_id, build)";
+            // [maze20] the search's own cost: the vias in reach and the ones an earlier look had searched
+            "stop_count, candidates, tries_skipped, changed_stop, changed_why, run_id, decision_id, build)";
         char const* const COLUMNS_ROUTE_STOP =
             "(route_id, boot_id, at_ms, hour_bucket, seq, pos_x, pos_y, pos_z, kind, what, entry, low, verdict, why, "
             "build)";
@@ -977,6 +980,10 @@ namespace Journal
                              "to_x FLOAT NULL, to_y FLOAT NULL, "
                              "to_z FLOAT NULL, path_yd FLOAT NOT NULL DEFAULT 0, "
                              "straight_yd FLOAT NOT NULL DEFAULT 0, stop_count SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             // [maze20] how many ways round there were to try and how many an earlier look had
+                             // already tried: "the bound cut the search short" is a cut and so it is a column.
+                             // NULL = the emitter does not count vias (every route event but the maze give-up)
+                             "candidates INT UNSIGNED NULL, tries_skipped INT UNSIGNED NULL, "
                              "changed_stop SMALLINT UNSIGNED NULL, changed_why TEXT NULL, "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', "
                              "decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
@@ -985,6 +992,7 @@ namespace Journal
                              "KEY event_at (event, at_ms), KEY run_at (run_id, at_ms), "
                              "KEY purpose_at (purpose, at_ms), KEY verdict_at (verdict, at_ms), "
                              "KEY target_at (target_entry, target_low, at_ms), KEY decision (decision_id), "
+                             "KEY candidates_at (candidates, at_ms), "  // [maze20]
                              "KEY build_at (build, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn20] a route as events: planned, changed, leg started, leg ended'")
@@ -1324,6 +1332,11 @@ namespace Journal
                              "target_low INT UNSIGNED NOT NULL DEFAULT 0, target_yd FLOAT NULL, "
                              // [jrn43] the target's zone, the cause field of `wait_behind`'s key
                              "target_level SMALLINT UNSIGNED NULL, target_zone_id INT UNSIGNED NULL, "
+                             // [wait20] the member's own place, walk and status: a row about a gap that cannot
+                             // say where the other end of it is names no cause. NULL = not passed, not (0,0,0)
+                             "target_x FLOAT NULL, target_y FLOAT NULL, target_z FLOAT NULL, "
+                             "target_moving TINYINT UNSIGNED NULL, target_to_x FLOAT NULL, "
+                             "target_to_y FLOAT NULL, target_to_z FLOAT NULL, target_doing VARCHAR(32) NULL, "
                              "in_combat TINYINT UNSIGNED NULL, "
                              "action_running VARCHAR(96) NOT NULL DEFAULT '', why TEXT NULL, "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
@@ -1331,7 +1344,11 @@ namespace Journal
                              "KEY bot_at (bot_low, at_ms), KEY target_at (target_entry, target_low, at_ms), "
                              "KEY where_at (map_id, zone_id, at_ms), KEY yd_at (target_yd, at_ms), "
                              "KEY role_at (role, at_ms), KEY build_at (build, at_ms), KEY run_at (run_id, at_ms), "
-                             "KEY target_zone_at (target_zone_id, at_ms)) "
+                             // [wait20] "what was it doing" and "was it walking at all" are cuts, so they are
+                             // indexed columns and not words in `why`
+                             "KEY target_zone_at (target_zone_id, at_ms), "
+                             "KEY target_doing_at (target_doing, at_ms), "
+                             "KEY target_moving_at (target_moving, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn40] held or awaited and not progressing: target, distance, what ran'")
                  + parts)
@@ -1633,12 +1650,13 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_route",
             Acore::StringFormat(
-                "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
+                "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
                 BootId(), nowMs, hour, Quoted(route.event, 12), Quoted(route.purpose, 48), Quoted(route.target, 96),
                 route.targetEntry, route.targetLow, Prose(route.why), Quoted(route.verdict, 16),
                 Quoted(route.botName, 32), route.botLow, route.mapId, route.zoneId, Real(route.fromX),
                 Real(route.fromY), Real(route.fromZ), OrNull(route.toX), OrNull(route.toY), OrNull(route.toZ),
                 Real(route.pathYd), Real(route.straightYd), route.stopCount,
+                OrNull(route.candidates), OrNull(route.triesSkipped),  // [maze20]
                 route.changedStop ? std::to_string(*route.changedStop) : std::string("NULL"),
                 Prose(route.changedWhy), Quoted(route.runId, 48), route.decisionId,
                 Quoted(Config().build, 16)));
@@ -1848,13 +1866,19 @@ namespace Journal
         uint64 const id = Writer::Instance().NextId();
         Writer::Instance().Push(
             "pb_journal_stuck",
-            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                "{},{},{},{},{},{})", id,
                                 BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(stuck.kind, 16),
                                 Quoted(stuck.botName, 32), stuck.botLow, OrNull(stuck.botLevel),
                                 OrNull(stuck.role, 8), stuck.mapId, stuck.zoneId, Real(stuck.x), Real(stuck.y),
                                 Real(stuck.z), Quoted(stuck.targetName, 48), stuck.targetEntry, stuck.targetLow,
                                 OrNull(stuck.targetYd), OrNull(stuck.targetLevel),
                                 OrNull(stuck.targetZoneId),  // [jrn43]
+                                // [wait20] the member's place / walk / status (no comma in this comment: the
+                                // format check counts top-level commas and a prose one counts as an argument)
+                                OrNull(stuck.targetX), OrNull(stuck.targetY), OrNull(stuck.targetZ),
+                                OrNull(stuck.targetMoving), OrNull(stuck.targetToX), OrNull(stuck.targetToY),
+                                OrNull(stuck.targetToZ), OrNull(stuck.targetDoing, 32),
                                 OrNull(stuck.inCombat),
                                 Quoted(stuck.actionRunning, 96), Prose(stuck.why), Quoted(stuck.runId, 48),
                                 Quoted(Config().build, 16)));

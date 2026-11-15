@@ -146,7 +146,8 @@ namespace SoloSafety
     // search found no walk to from where the bot stands. The memo is a fact of a place, never a clock - it is asked
     // again only when something that could change the answer changed: the bot moved off the spot it searched from
     // (Leader::Travel::UNREACHABLE_RECHECK_DISTANCE / _HEIGHT, the dungeon side's own rule) or the target itself
-    // moved (Leader::LEADER_COMMIT_MOVED_YD, the same rule's "the object moved"). It is no navmesh workaround: the
+    // left its own area ([stuck259]: its wander area, else the one spot it holds - MobStand.h, and NOT
+    // Leader::LEADER_COMMIT_MOVED_YD, which measures a leader's commitment). It is no navmesh workaround: the
     // failed search still writes its [nav163] line, so the triage's PIT alarm still names the place.
     // [stuck40] the same memo holds a target no action of the bot's combat engine could run on from here: the fact
     // that made it undroppable is the same pair of stands, so the rule that ends it is the same one. `log` false

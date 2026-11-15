@@ -99,3 +99,74 @@ TEST(MoveStep, TransientRefusalKnowsTheWalkThatIsAlreadyOn)
     EXPECT_FALSE(Move::TransientRefusal("ClampToFightZone (the leader's safe zone)"));
     EXPECT_FALSE(Move::TransientRefusal("JudgeWaterDrop (hold)"));
 }
+
+// [stuck260] THE FOLLOW WATCHDOG'S PROGRESS CRITERION, over the live `watchdog` rows of pb_journal_stuck. Of the 7
+// rows 5 carry `still for 0 s` - the bot was moving while the watch counted "no progress". The fixture is Peny
+// following Bami: `reset movement: no progress for 6 s` at 116 yd, then `follow again: no progress for 12 s` at
+// 81 yd. Thirty-five yards closed at 5.8 yd/s, called no progress.
+#include "../../src/Ai/Base/Actions/FollowProgress.h"
+
+namespace
+{
+    using Bot::Follow::ProgressFacts;
+
+    // Peny, 6 s into the episode: it fell behind at 116 yd and has closed 35 of them
+    ProgressFacts PenyClosingOnBami()
+    {
+        ProgressFacts facts;
+        facts.gapYd = 81.0f;
+        facts.gapToBeatYd = 116.0f;  // the gap when the watch armed - this episode's own number
+        facts.toleranceYd = 2.0f;
+        facts.leaderMovedOff = false;  // Bami stood: the gap is the only evidence there is
+        facts.botMovedYd = 35.0f;
+        return facts;
+    }
+}
+
+TEST(FollowProgress, ABotThatClosedThirtyFiveYardsIsMakingProgress)
+{
+    ProgressFacts const peny = PenyClosingOnBami();
+    EXPECT_TRUE(Bot::Follow::MakesProgress(peny));
+    EXPECT_NEAR(Bot::Follow::ClosedYd(peny), 35.0f, 0.01f);
+}
+
+TEST(FollowProgress, TheReferenceIsThisEpisodesGapAndNotOneFromWhenItWasWithTheGroup)
+{
+    // THE RED ONE: the reference the old code held was the gap at the last Restart, and Restart runs on every
+    // sample the bot is with its group - 20 yd. Asked against that, 81 yd is "no progress", and the seconds ran
+    // on through a sprint. Nothing about the bot changed between these two facts; only the number compared with.
+    ProgressFacts stale = PenyClosingOnBami();
+    stale.gapToBeatYd = 20.0f;
+    EXPECT_FALSE(Bot::Follow::MakesProgress(stale));
+    EXPECT_TRUE(Bot::Follow::MakesProgress(PenyClosingOnBami()));
+}
+
+TEST(FollowProgress, StandingStillIsStillNoProgress)
+{
+    // the other direction, without which "make everything progress" would pass: a bot that does not close the gap
+    // and whose leader is not on the move is stuck, and the stages must still fire for it
+    ProgressFacts stuck = PenyClosingOnBami();
+    stuck.gapYd = 116.0f;
+    stuck.botMovedYd = 0.0f;
+    EXPECT_FALSE(Bot::Follow::MakesProgress(stuck));
+    EXPECT_NEAR(Bot::Follow::ClosedYd(stuck), 0.0f, 0.01f);
+
+    // and a gap that GREW is not progress either, however much ground the bot covered, while the leader stands
+    ProgressFacts losing = PenyClosingOnBami();
+    losing.gapYd = 150.0f;
+    EXPECT_FALSE(Bot::Follow::MakesProgress(losing));
+}
+
+TEST(FollowProgress, KeepingUpWithALeaderOnTheMoveIsProgressAsBefore)
+{
+    // unchanged behaviour, pinned so the fix above cannot quietly take it away: the gap does not shrink because
+    // the leader is running, and the bot is running after it
+    ProgressFacts pace = PenyClosingOnBami();
+    pace.gapYd = 116.0f;
+    pace.leaderMovedOff = true;
+    pace.botMovedYd = 30.0f;
+    EXPECT_TRUE(Bot::Follow::MakesProgress(pace));
+
+    pace.botMovedYd = 0.5f;  // the leader runs, the bot does not: that is the episode the watch is for
+    EXPECT_FALSE(Bot::Follow::MakesProgress(pace));
+}

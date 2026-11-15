@@ -176,7 +176,9 @@ struct NewRpgInfo
     // walk until its last two sights; not cleared by a new destination (every walk starts in the pocket)
     std::vector<G3D::Vector3> rescueRoute;
     uint32 rescueMap{0};
-    bool meetWalk = false;  // [wait19] the walk under way is a group leader's walk to meet a member
+    // [wait20] `meetWalk` stood here - the walk under way is a group leader's walk to meet a member. The leader
+    // does not walk to a member behind any more (it records what that member is doing instead), so the flag lost
+    // its only writer and went with the walk: a flag nothing can set makes its readers look like live rules
     // END MOVE_FAR
 
     // [guild15] the way it came: the spots it walked out of combat, one per leash radius of walk (the survival run's
@@ -317,8 +319,9 @@ struct NewRpgInfo
     uint8 loggedStatus{255};  // [guild7] the status last written to the log ([rpg] line)
     // [stuck8] a group leader waits for a member that is not ready (NewRpgGroupNotReadyTrigger, its GROUP_WAIT line)
     bool groupWaiting{false};
-    // [wait14] the member the leader waits for beyond the group reward distance (its follow does not bring it: the
-    // leader walks to meet it, NewRpgWaitForGroupAction)
+    // [wait14] the member the leader waits for beyond the group reward distance (its follow does not bring it).
+    // [wait20] the leader does NOT walk to meet it: NewRpgWaitForGroupAction records where that member is and what
+    // it is doing (pb_journal_stuck, kind `wait_behind`) and waits where it stands
     ObjectGuid groupWaitBehind;
     // [stuck8] the last HOLD reason logged for a walk that gives no move (logged once per change)
     std::string holdNote;
@@ -344,6 +347,10 @@ struct NewRpgInfo
 
     NewRpgStatus GetStatus();
     static NewRpgStatus StatusFromString(std::string const& name);
+    // [wait20] the status's short code ("DO_QUEST", "GO_GRIND"), for a line or a column that groups by it. One
+    // place names them: GuildCoordinator's RpgName reads this, so a status added to the enum cannot be named in
+    // one list and missing from another
+    static char const* StatusName(NewRpgStatus status);
     bool HasStatusPersisted(uint32 maxDuration) { return GetMSTimeDiffToNow(startT) > maxDuration; }
     void ChangeToGoGrind(WorldPosition pos);
     void ChangeToGoCamp(WorldPosition pos);

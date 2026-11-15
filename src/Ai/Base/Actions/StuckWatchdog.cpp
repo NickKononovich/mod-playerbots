@@ -8,6 +8,7 @@
 #include "Journal.h"       // [jrn40] the watchdog step as a stuck row and an issue
 #include "LeaderOrders.h"  // [jrn40] Leader::Runs::OfBot
 #include "BotPath.h"  // [lead109]
+#include "FollowProgress.h"  // [stuck260] whether the follow makes progress, as a seam the stand asserts
 #include "AiObjectContext.h"
 #include "Event.h"
 #include "Formations.h"
@@ -153,14 +154,35 @@ uint8 StuckWatchdogValue::Calculate()
         return uint8(StuckStage::NONE);
     }
 
-    // Getting closer is progress; so is keeping pace with a leader who is on the move.
-    bool progress = distance + PROGRESS_DISTANCE < _bestDistance;
-    if (!progress && leader->GetExactDist2d(&_leaderAnchor) >= LEADER_MOVED_DISTANCE)
+    // [stuck260] THE EPISODE'S OWN REFERENCE. This sample is the first one behind the group since the last restart:
+    // the gap to beat is the gap right now. Before this, the comparison was made against the gap at the last
+    // Restart - and Restart runs on every sample the bot is WITH the group, a dozen yards - so a bot that fell
+    // behind by a hundred yards was asked whether it was nearer than that, which it never is. Peny closed 35 yd at
+    // 5.8 yd/s under the line "no progress for 12 s", and 5 of the 7 recorded watchdog rows say "still for 0 s".
+    if (!_armed)
     {
-        progress = bot->GetExactDist2d(&_botAnchor) >= PROGRESS_DISTANCE;
+        _armed = true;
+        _gapToBeat = distance;
+        _armGap = distance;
+    }
+
+    // Getting closer is progress; so is keeping pace with a leader who is on the move. The criterion itself is the
+    // seam (FollowProgress.h), where the stand asserts it; the stages and their seconds are untouched.
+    Bot::Follow::ProgressFacts facts;
+    facts.gapYd = distance;
+    facts.gapToBeatYd = _gapToBeat;
+    facts.toleranceYd = PROGRESS_DISTANCE;
+    facts.leaderMovedOff = leader->GetExactDist2d(&_leaderAnchor) >= LEADER_MOVED_DISTANCE;
+    facts.botMovedYd = bot->GetExactDist2d(&_botAnchor);
+    bool const progress = Bot::Follow::MakesProgress(facts);
+    if (facts.leaderMovedOff)
+    {
         _leaderAnchor.Relocate(leader);
         _botAnchor.Relocate(bot);
     }
+    // ground gained but short of the tolerance is kept, so that yards closed a metre at a time add up instead of
+    // being thrown away sample by sample
+    _gapToBeat = std::min(_gapToBeat, distance);
 
     if (progress)
     {
@@ -199,7 +221,10 @@ void StuckWatchdogValue::Restart(Player* leader, uint32 now)
     _noCloserSince = now;
     _stillSince = now;
     _lastNow = now;
-    _bestDistance = bot->GetDistance(leader);
+    // [stuck260] the next sample behind the group arms the watch and takes the reference gap there: a gap measured
+    // while the bot is with its leader is no reference for an episode that has not started yet
+    _armed = false;
+    _gapToBeat = bot->GetDistance(leader);
     _botAnchor.Relocate(bot);
     _stillAnchor.Relocate(bot);
     _leaderAnchor.Relocate(leader);
@@ -458,11 +483,17 @@ void StuckRecoveryAction::LogStep(char const* step, Player* leader)
     StuckWatchdogValue* watchdog = GetWatchdog(context);
     uint32 const stuckSeconds = watchdog ? watchdog->GetStuckSeconds() : 0;
     uint32 const stillSeconds = watchdog ? watchdog->GetStillSeconds() : 0;
+    // [stuck260] the line states what the criterion measured, so "no progress" can be refuted by reading it: the
+    // gap this episode armed at and the yards of it closed. A row can only exist while those yards are under the
+    // watch's tolerance - that is what the words now mean
+    float const armGap = watchdog ? watchdog->GetArmGap() : 0.0f;
+    float const closedYd = watchdog ? watchdog->GetClosedYd() : 0.0f;
     LOG_INFO("playerbots",
-             "Bot {} <{}> stuck watchdog: {} (no progress {}s, still {}s, {:.1f} yd from {}, map {} at {:.1f} {:.1f} "
-             "{:.1f})",
+             "Bot {} <{}> stuck watchdog: {} (no progress {}s, still {}s, {:.1f} yd from {}, fell behind at "
+             "{:.1f} yd and closed {:.1f} of them, map {} at {:.1f} {:.1f} {:.1f})",
              bot->GetGUID().ToString(), bot->GetName(), step, stuckSeconds, stillSeconds, bot->GetDistance(leader),
-             leader->GetName(), bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+             leader->GetName(), armGap, closedYd, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
+             bot->GetPositionZ());
 
     // [jrn40] THE WATCHDOG AS A ROW, with `is_real` honestly "unknown" - which is exactly what the third value is
     // for. This line has NO leading tag, so it cannot be found in the journal by tag at all and nobody has ever
@@ -493,7 +524,11 @@ void StuckRecoveryAction::LogStep(char const* step, Player* leader)
     stuck.targetYd = bot->GetDistance(leader);
     stuck.inCombat = bot->IsInCombat();
     stuck.actionRunning = step;  // which recovery step the watchdog took: that IS the event
-    stuck.why = Acore::StringFormat("{}: no progress for {} s, still for {} s", step, stuckSeconds, stillSeconds);
+    // [stuck260] the two durations AND the distance the words are about: a row saying "no progress" beside 35 yd
+    // closed was the defect, and the only way to see it again is to carry both
+    stuck.why = Acore::StringFormat("{}: no progress for {} s, still for {} s (fell behind at {:.1f} yd, closed "
+                                    "{:.1f} of them)",
+                                    step, stuckSeconds, stillSeconds, armGap, closedYd);
     stuck.runId = Leader::Runs::OfBot(bot);
     uint64 const stuckRowId = Journal::RecordStuck(stuck);
 

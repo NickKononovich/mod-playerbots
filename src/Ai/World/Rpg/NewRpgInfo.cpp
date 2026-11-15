@@ -7,6 +7,7 @@
 #include "NewRpgInfo.h"
 #include "Timer.h"
 #include <cmath>
+#include <iterator>  // [wait20] std::size over the status names
 
 void NewRpgInfo::ChangeToGoGrind(WorldPosition pos)
 {
@@ -137,6 +138,17 @@ NewRpgStatus NewRpgInfo::StatusFromString(std::string const& name)
     if (name == "do gather")      return RPG_DO_GATHER;
     if (name == "do profession")  return RPG_DO_PROFESSION;
     return RPG_STATUS_END;
+}
+
+// [wait20] the one list of status codes. It was a static table inside GuildCoordinator.cpp's anonymous namespace,
+// and a second reader (the `wait_behind` row's target_doing column) would have meant a second table of the same
+// names - the kind of duplicate that stays right until somebody adds a status to the enum.
+char const* NewRpgInfo::StatusName(NewRpgStatus status)
+{
+    static char const* const names[] = {"IDLE",          "GO_GRIND",   "GO_CAMP",     "WANDER_RANDOM",
+                                        "WANDER_NPC",    "DO_QUEST",   "TRAVEL_FLIGHT", "REST",
+                                        "OUTDOOR_PVP",   "DO_GATHER",  "DO_PROFESSION"};
+    return status >= 0 && size_t(status) < std::size(names) ? names[status] : "?";
 }
 
 NewRpgStatus NewRpgInfo::GetStatus()

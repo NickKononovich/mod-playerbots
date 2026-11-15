@@ -42,6 +42,9 @@ public:
     void Restart();
     uint32 GetStuckSeconds() const;
     uint32 GetStillSeconds() const;
+    // [stuck260] what the criterion measured: the gap this episode armed at, and the yards of it actually closed
+    float GetArmGap() const { return _armGap; }
+    float GetClosedYd() const { return _armGap - _gapToBeat; }
 
     // Where the leader walked recently on this map, oldest first, a point every few yards.
     std::deque<Position> const& GetLeaderTrail() const { return _leaderTrail; }
@@ -63,7 +66,12 @@ private:
     uint32 _noCloserSince = 0;
     uint32 _stillSince = 0;
     uint32 _lastNow = 0;
-    float _bestDistance = 0.0f;
+    // [stuck260] the gap THIS episode has to beat, and whether the episode has started at all. The watch arms on
+    // the first sample the bot is behind the group and takes the reference there: a gap measured while the bot was
+    // with its leader is not a reference for being left behind (FollowProgress.h holds the criterion itself)
+    bool _armed = false;
+    float _gapToBeat = 0.0f;
+    float _armGap = 0.0f;  // the gap this episode started at, so the row can state what it measured
     Position _botAnchor;
     Position _stillAnchor;
     Position _leaderAnchor;

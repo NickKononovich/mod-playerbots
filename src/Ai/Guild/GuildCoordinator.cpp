@@ -307,12 +307,9 @@ namespace
         return p->HasItemCount(tool, 1, false);
     }
 
-    char const* RpgName(uint32 status)
-    {
-        static char const* const names[] = {"IDLE", "GO_GRIND", "GO_CAMP", "WANDER_RANDOM", "WANDER_NPC", "DO_QUEST",
-                                             "TRAVEL_FLIGHT", "REST", "OUTDOOR_PVP", "DO_GATHER", "DO_PROFESSION"};
-        return status < std::size(names) ? names[status] : "?";
-    }
+    // [wait20] the names live with the enum (NewRpgInfo::StatusName): this used to hold its own copy of the table,
+    // and a second reader of the same codes would have made two lists for one enum
+    char const* RpgName(uint32 status) { return NewRpgInfo::StatusName(NewRpgStatus(status)); }
 
     char const* SkillShort(uint32 line)
     {

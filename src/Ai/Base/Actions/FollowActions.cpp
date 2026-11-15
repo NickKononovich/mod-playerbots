@@ -283,7 +283,8 @@ bool FollowAction::Execute(Event /*event*/)
         }
     }
     // [wait16] coordinator 2026-11-09: a guild follower far from its leader (beyond its sight) and standing - its
-    // follow makes no progress over that distance, the leader walks to meet it ([wait14]) - stands out of every idle
+    // follow makes no progress over that distance, and since [wait20] the leader does NOT walk to meet it (it
+    // records what this one is doing instead), so the gap is this bot's own to close - it stands out of every idle
     // mob's reach (wander area, patrol beat) meanwhile, as a resting bot does (RestEscape). b355 Febineysh L8 stood
     // 437 yd behind Orton for minutes ("stuck watchdog: no progress"), wolves and murlocs walked into it, a Murloc
     // pack killed it
@@ -439,8 +440,8 @@ bool FollowAction::MemberHandIn(bool act)
 // only. b397 Ginde L13 joined Namwe's co-op party 349 yd off from the edge of the Stonesplinter camp its own judge had
 // refused, followed into a Stonesplinter Seer L14 5 yd off at once and died to 3 of them, Namwe in GROUP_WAIT. The walk
 // is the route search's (Leader::Route, RouteCosts' refused reaches and penalties), a leg in sight at a time; a walk
-// that passes a reach it must not fight is not walked: it stands ([wait16] out of every reach) and its leader walks to
-// meet it ([wait14])
+// that passes a reach it must not fight is not walked: it stands ([wait16] out of every reach). Its leader does not
+// come for it ([wait20]: it records the stand instead of walking kilometres), so the stand is what gets fixed
 bool FollowAction::FarFollowWalk(std::string const& target)
 {
     Unit* leader = !target.empty() ? AI_VALUE(Unit*, target)

@@ -555,3 +555,72 @@ TEST(IdlePlaceReach, AReachThatDoesNotCoverThePlaceWasNeverTheQuestion)
                 EXPECT_FALSE(Blocks({false, taken, toOpen, isTank}))
                     << "a mob whose reach does not cover the place refused it";
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// [pick90] AND THE OTHER HALF OF THE SAME EVENT: the target the group cannot stand at must not be CHOSEN.
+//
+// Live numbers (pb_journal_spot and the problems table over the same window): 66 of 107 `combat_spot_none` events
+// are a melee member whose `at target` stage refused all 16 places for an idle mob's aggro reach and for nothing
+// else; 64 of the 71 rows that named the blocker carry `idle_taken = 0` (90 %) - nobody had decided to fight it.
+// Four Deviate Lashers stand 0.3-8.5 yd from the target (acore_world), and in 9 of 9 cases the fallback to the
+// tank's own place was impossible too (the tank was out of melee reach of the target). So the member stands.
+//
+// Both directions are asserted, because "refuse every such pick" is the easy half-fix and it would make a five
+// skip a boss (rule 11) and would also drop a target whose blocking pack the fight has already taken.
+// ---------------------------------------------------------------------------------------------------------------
+namespace
+{
+    using Leader::Fight::IdlePlace::PickRefused;
+    using PickFacts = Leader::Fight::IdlePlace::PickFacts;
+
+    // the Deviate Lasher case: a melee member with no place, the blocker idle, its pack not joined, no boss
+    PickFacts DeviateLasherRoundTheTarget()
+    {
+        PickFacts facts;
+        facts.meleeHasNoPlaceForTheIdleReach = true;
+        facts.blockerStillIdle = true;
+        facts.blockerPackNotJoined = true;
+        facts.targetIsABoss = false;
+        return facts;
+    }
+}  // namespace
+
+TEST(IdlePlacePick, ATargetNoMeleeCanStandAtIsNotChosen)
+{
+    // THE RED ONE: before this the pick stood, the melee member found no place every tick, and the only answer
+    // was the place rule saying "no" over and over - 66 of 107 events
+    EXPECT_TRUE(PickRefused(DeviateLasherRoundTheTarget()))
+        << "the leader kept a target whose every melee place lies in an unfought pack's reach";
+}
+
+TEST(IdlePlacePick, APackTheFightHasTakenLeavesThePickAlone)
+{
+    // the join is the other answer the user named, and it is the mechanism that already exists
+    // (judgeBlockingPack / PullPlanner::JudgePack): once the pack is in the fight, the places exist again and the
+    // pick must NOT be dropped - otherwise the gate would refuse the very targets it has just made reachable
+    PickFacts joined = DeviateLasherRoundTheTarget();
+    joined.blockerPackNotJoined = false;
+    EXPECT_FALSE(PickRefused(joined));
+}
+
+TEST(IdlePlacePick, ABossIsNeverDropped)
+{
+    // rule 11: no five skips a boss. Unreachable means the navmesh or the plan is fixed, never that the boss is
+    // left standing - so every fact above can hold and the pick still stands
+    PickFacts boss = DeviateLasherRoundTheTarget();
+    boss.targetIsABoss = true;
+    EXPECT_FALSE(PickRefused(boss));
+}
+
+TEST(IdlePlacePick, NothingIsRefusedWithoutTheMeasuredRefusal)
+{
+    // the pick stands while the place search has not said "no place at all for the idle reach", and while the
+    // blocker is no longer there to block: a refusal that outlives its own cause is the defect this replaced
+    PickFacts hasPlace = DeviateLasherRoundTheTarget();
+    hasPlace.meleeHasNoPlaceForTheIdleReach = false;
+    EXPECT_FALSE(PickRefused(hasPlace));
+
+    PickFacts gone = DeviateLasherRoundTheTarget();
+    gone.blockerStillIdle = false;
+    EXPECT_FALSE(PickRefused(gone));
+}

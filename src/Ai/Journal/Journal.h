@@ -827,7 +827,8 @@ namespace Journal
     //   "stuck_target" - the combat engine holds an idle mob as its target and no action of it runs ([stuck258])
     //   "stale_victim" - the leader held a target outside a fight whose victim is gone ([queue-stale-idle-victim])
     //   "pet_reach"    - a pet has no spot out of an idle mob's reach, or trails its owner ([pet idle reach])
-    //   "wait_behind"  - a member is beyond the group reward distance and is walked to ([wait14])
+    //   "wait_behind"  - a member is beyond the group reward distance ([wait14]; since [wait20] the leader records
+    //                    where that member is and what it is doing instead of walking to it)
     struct Stuck
     {
         std::string kind;
@@ -849,6 +850,16 @@ namespace Journal
         // in the bot's own zone, and until this column existed the row carried only the bot's zone, so the split
         // could not be verified or faulted. NULL = the emitter did not pass it, which is not zone 0.
         Optional<uint32> targetZoneId;
+        // [wait20] WHERE THE OTHER ONE IS AND WHAT IT IS DOING. For `wait_behind` the row used to carry the gap
+        // and nothing about the member it is a gap to: 17 of 19 live cases were a member more than a kilometre
+        // away (4 038 yd the farthest, one episode 1 073 s), which is not a lag but a cause of its own somewhere
+        // else - and the row could not name it. The leader no longer walks there, so this is what replaces the
+        // walk: the member's own place, whether it is walking at all, where to, and the status it is running.
+        // NULL = the emitter did not pass it (a member off the world, another map), never the point (0,0,0).
+        Optional<float> targetX, targetY, targetZ;
+        Optional<bool> targetMoving;
+        Optional<float> targetToX, targetToY, targetToZ;  // where its own walk was headed, when it had one
+        Optional<std::string> targetDoing;                // its own status (NewRpgStatus), as a code to group by
         Optional<bool> inCombat;
         std::string actionRunning;  // the engine's last action, or "" when it had none to run - which is the point
         std::string why;
@@ -1081,6 +1092,13 @@ namespace Journal
         float pathYd = 0.f;          // the length along the path
         float straightYd = 0.f;      // and in a straight line: the detour is the ratio, not either number
         uint32 stopCount = 0;
+        // [maze20] THE SEARCH'S OWN COST, for the one event that is a search giving up (the maze's "no way
+        // round"): how many ways round were in reach at all, and how many of them an earlier look at this very
+        // destination had already searched. Both are cuts - "was the bound what decided the answer" cannot be
+        // asked of a number living in a sentence - so both are columns, and NULL is "this emitter counts no
+        // vias", which every other route event is.
+        Optional<uint32> candidates;
+        Optional<uint32> triesSkipped;
 
         Optional<uint32> changedStop;  // "changed": which stop appeared or went
         std::string changedWhy;        // and why

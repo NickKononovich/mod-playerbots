@@ -1612,8 +1612,7 @@ namespace
             why = "vendor run: " + info.vendorRunReason;
         else if (info.groupWaiting)
             why = "group wait";
-        else if (info.meetWalk)
-            why = "walks to meet a member";
+        // [wait20] no "walks to meet a member" here any more: that walk is gone and so is the flag it read
         else if (NewRpgCoop::IsMember(bot))
             why = "follows its co-op / help party";
         else
@@ -4222,11 +4221,12 @@ void NewRpgTravelFlightAction::ContinueCrossMapTaxi()
 
 bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
 {
-    // [wait14] a member beyond the group reward distance that comes to the leader (its follow, no plan of its own):
-    // the leader walks to meet it on its own routed walk (MoveFarTo: the route search round the mobs it does not
-    // pull), the two close the gap from both ends. b354: Orton L11 stood 928 s in Elwynn for Febineysh L7 4551 yd
-    // away in Loch Modan - its follow stalled at the graveyard ("stuck watchdog: follow again"), it stood among the
-    // Elder Black Bears L11 and died 3 times; Sycina L11 stood 1074 s for Nelaeleas 3849 yd off
+    // [wait14] a member beyond the group reward distance that comes to the leader (its follow, no plan of its own).
+    // [wait20] THE LEADER NO LONGER WALKS TO MEET IT (user 2026-11-15) - it records what the member is doing at its
+    // own end instead. It used to walk its own routed walk there, and that is how b354's Orton L11 stood 928 s in
+    // Elwynn for Febineysh L7 4 551 yd away in Loch Modan, and Sycina L11 1 074 s for Nelaeleas 3 849 yd off: those
+    // distances are not lags that a walk closes, they are causes at the other end (a stalled follow, a graveyard, a
+    // quest of its own), and the walk only took the group away from its work. The row below names the cause.
     NewRpgInfo& info = botAI->rpgInfo;
     // [wait19] coordinator 2026-11-09: only while the group has a purpose that needs them together - the co-op / help
     // party both stand in, its leader this bot. A group with no such purpose is left by its member ([group18] /
@@ -4263,17 +4263,35 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
                  behind->GetTransport() || bot->GetTransport() ? "a transport carries one of them"
                                                                : "another landmass (only a ride joins them)");
     }
+    // [wait20] USER 2026-11-15: THE GROUP IS NOT WALKED AFTER A MEMBER THAT IS BEHIND. Measured over the live
+    // `wait_behind` rows: 17 of 19 cases were a member more than a KILOMETRE away (4 038 yd the farthest - Rollothan
+    // for Alnia, 16 rows of one episode; Lanbuzz for Nelaeleas 4 037 yd inside one zone; Relara for Dekorhan
+    // 6 894 yd), and one episode ran 1 073 s. Four kilometres is not a lag: it is the other end of the world, and
+    // whatever put the member there is a cause of its own at that end. The leader's walk could never answer it - it
+    // only moved the whole group away from what it was doing - so what used to be a walk is now a RECORD of the
+    // member: where it is, whether it is walking at all, where to, and the status it is running. The wait itself and
+    // every other rule here (the purpose check [wait19], the landmass check [lag320]) are untouched.
     if (Player* member = purpose && walkJoins ? behind : nullptr;
         member && member->IsAlive() && member->IsInWorld() && member->GetMapId() == bot->GetMapId() &&
         !bot->IsInCombat())
     {
-        WorldPosition const meet(member);
         if (_meetLogged != member->GetGUID())
         {
             _meetLogged = member->GetGUID();
-            LOG_INFO("playerbots", "[wait14] {} L{} walks to meet {} L{} {:.0f} yd behind (its follow does not bring it "
-                     "within the group reward distance)",
-                     bot->GetName(), bot->GetLevel(), member->GetName(), member->GetLevel(), bot->GetExactDist(member));
+            PlayerbotAI* memberAI = GET_PLAYERBOT_AI(member);
+            // what the member itself is doing, in its own domain's words, and where its own walk was headed
+            std::string const doing = memberAI ? std::string(NewRpgInfo::StatusName(memberAI->rpgInfo.GetStatus()))
+                                               : std::string("human playing");
+            WorldPosition const headed = memberAI ? memberAI->rpgInfo.moveFarPos : WorldPosition();
+            bool const headedSomewhere = headed != WorldPosition();
+            LOG_INFO("playerbots", "[wait20] {} L{} does NOT walk to meet {} L{} {:.0f} yd behind: its own cause is "
+                     "at its end - {} at ({:.0f},{:.0f}) zone {}, {}{}",
+                     bot->GetName(), bot->GetLevel(), member->GetName(), member->GetLevel(),
+                     bot->GetExactDist(member), doing, member->GetPositionX(), member->GetPositionY(),
+                     member->GetZoneId(), member->isMoving() ? "walking" : "standing",
+                     headedSomewhere ? Acore::StringFormat(" to ({:.0f},{:.0f})", headed.GetPositionX(),
+                                                           headed.GetPositionY())
+                                     : std::string());
 
             // [jrn40] the same event as a row. `_meetLogged` is the criterion and it is the domain's own: one row
             // per member walked to, not one per tick of the walk - b354 had a bot stand 928 s for one member, and a
@@ -4294,9 +4312,25 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
             stuck.targetYd = bot->GetExactDist(member);
             // [jrn43] the member's OWN zone, so that the key's cause field below can be checked by a query
             stuck.targetZoneId = member->GetZoneId();
+            // [wait20] the other end of the gap, in columns: a row about a gap that cannot say where the other one
+            // is and what it is doing names no cause, and naming the cause is now all this row is for
+            stuck.targetX = member->GetPositionX();
+            stuck.targetY = member->GetPositionY();
+            stuck.targetZ = member->GetPositionZ();
+            stuck.targetMoving = member->isMoving();
+            stuck.targetDoing = doing;
+            if (headedSomewhere)
+            {
+                stuck.targetToX = headed.GetPositionX();
+                stuck.targetToY = headed.GetPositionY();
+                stuck.targetToZ = headed.GetPositionZ();
+            }
             stuck.inCombat = false;  // the guard above requires it
-            stuck.why = "a member is beyond the group reward distance and its own follow does not close the gap, so "
-                        "this bot walks to meet it";
+            stuck.why = Acore::StringFormat(
+                "a member is beyond the group reward distance and its own follow does not close the gap; this bot "
+                "does NOT walk to meet it ([wait20]): it is {} at ({:.0f},{:.0f}) in zone {} and {}",
+                doing, member->GetPositionX(), member->GetPositionY(), member->GetZoneId(),
+                member->isMoving() ? "walking" : "standing");
             stuck.runId = Leader::Runs::OfBot(bot);
             uint64 const stuckRowId = Journal::RecordStuck(stuck);
 
@@ -4314,13 +4348,17 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
             // 84 yd behind in the bot's own zone and 6 894 yd behind across the map shared one row (43 rows over 7
             // zones, 14 bots, 16 members). The zone is the same fact one step finer and it does differ.
             issue.dedupKey = Journal::Key::WaitBehind(member->GetZoneId() == bot->GetZoneId());
-            issue.why = Acore::StringFormat("{} walks to meet {} {:.0f} yd behind", bot->GetName(),
-                                            member->GetName(), *stuck.targetYd);
+            issue.why = Acore::StringFormat("{} waits for {} {:.0f} yd behind ({} at ({:.0f},{:.0f}) zone {}, {})",
+                                            bot->GetName(), member->GetName(), *stuck.targetYd, doing,
+                                            member->GetPositionX(), member->GetPositionY(), member->GetZoneId(),
+                                            member->isMoving() ? "walking" : "standing");
             issue.realWhen = "the member is outside the group reward distance, out of combat, and its own follow "
                              "has not closed the gap";
             issue.real = "yes";
-            issue.realWhy = "until the gap closes neither bot earns group credit, and the waiting one stands where "
-                            "it happens to be";
+            // [wait20] and the defect is now at the member's end, which is where it always was: the leader walking
+            // kilometres only moved the group away from its own work
+            issue.realWhy = "until the gap closes neither bot earns group credit; the leader no longer walks to it, "
+                            "so the cause to fix is whatever holds the member where it is";
             issue.realSource = "emitter";
             issue.value = double(*stuck.targetYd);
             issue.valueUnit = "yd";
@@ -4336,12 +4374,9 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
             issue.sourceId = stuckRowId;
             Journal::RecordIssue(issue);
         }
-        // [wait19] the walk is a meet walk, no quest spot's: its give-up postpones no quest and asks no help
-        info.meetWalk = true;
-        bool const walks = MoveFarTo(meet);
-        info.meetWalk = false;
-        if (walks)
-            return true;
+        // [wait20] and no walk follows: the bot waits where it is (out of every idle mob's reach, below), and the
+        // row above is what this action produces. `NewRpgInfo::meetWalk` went with the walk - it had no other
+        // writer, and a flag nothing can set is worse than none, because its readers look like live rules
     }
     else if (!behind)
         _meetLogged.Clear();

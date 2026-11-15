@@ -16,6 +16,7 @@
 #include "ChaseModel.h"  // [runpast88] the chase window, as a seam without the world
 #include "ManaBudget.h"  // [mana90] the seconds of a fight the mana holds, as a seam without the world
 #include "KillRate.h"  // [dpszero1] its own damage in three states - no estimate, deals nothing, deals
+#include "MobStand.h"  // [stuck259] whether the mob left the stand its verdict was given at, as a seam
 #include "ChooseTargetActions.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -3566,6 +3567,30 @@ namespace SoloSafety
         bot->SetTarget(ObjectGuid::Empty);
     }
 
+    // [stuck259] THE MOB IS NO LONGER AT THE STAND ITS VERDICT WAS GIVEN AT - by the mob's OWN area, and not by
+    // Leader::LEADER_COMMIT_MOVED_YD, which measures when a LEADER'S COMMITMENT to a pull stops being about the
+    // same arrangement (one quantity, one judge). Measured: of 199 `stuck_target` cases 25 were the same bot and
+    // the same mob again inside a minute, and in 20 of those 25 the bot had not moved a yard - only the mob had,
+    // inside areas of 10 yd and 3 yd that the 12 yd measure cannot see at all. The rule itself is the seam
+    // (MobStand.h), where the stand asserts it; the facts are read here.
+    bool MobLeftItsStand(Unit* target, Position const& judgedAt)
+    {
+        Rpg::MobStand::Facts facts;
+        facts.bodyYd = target->GetCombatReach();
+        Creature* mob = target->ToCreature();
+        // the wanderer's own area is the pull judge's own model of it ([lead1331]), read from the one place that
+        // has it; a mob that does not roam holds the spot it was judged on, which is that area with no radius
+        if (Leader::Fight::WanderArea area; mob && Leader::Fight::WanderAreaOf(mob, area))
+        {
+            facts.wanders = true;
+            facts.areaRadius = area.radius;
+            facts.fromCenterYd = target->GetExactDist2d(&area.center);
+        }
+        else
+            facts.fromCenterYd = target->GetExactDist2d(&judgedAt);
+        return Rpg::MobStand::LeftItsArea(facts);
+    }
+
     void NoteUnreachable(Player* bot, Unit* target, std::string const& why, bool log)
     {
         if (!bot || !target)
@@ -3582,12 +3607,11 @@ namespace SoloSafety
         LOG_INFO("playerbots",
                  "[nav200] {} L{} leaves {} L{} ({:.0f} yd) at ({:.1f},{:.1f},{:.1f}) map {}: {} from where it "
                  "stands ({:.1f},{:.1f},{:.1f}) - asked again only once the bot moves {:.0f} yd ({:.0f} yd up or "
-                 "down) or the target moves {:.0f} yd",
+                 "down) or the target leaves its own area ([stuck259]: its wander area, else the spot it holds)",
                  bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), bot->GetExactDist(target),
                  target->GetPositionX(), target->GetPositionY(), target->GetPositionZ(), bot->GetMapId(), why,
                  bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(),
-                 Leader::Travel::UNREACHABLE_RECHECK_DISTANCE, Leader::Travel::UNREACHABLE_RECHECK_HEIGHT,
-                 Leader::LEADER_COMMIT_MOVED_YD);
+                 Leader::Travel::UNREACHABLE_RECHECK_DISTANCE, Leader::Travel::UNREACHABLE_RECHECK_HEIGHT);
     }
 
     bool Unreachable(Player* bot, Unit* target)
@@ -3616,8 +3640,9 @@ namespace SoloSafety
             auto const found = mine.find(target->GetGUID());
             if (found != mine.end())
             {
-                // the target moved off where it stood: its walk is another question (the dungeon side's skipFacts)
-                if (target->GetExactDist(&found->second.second) > Leader::LEADER_COMMIT_MOVED_YD)
+                // the target left the stand it was judged at: its walk is another question (the dungeon side's
+                // skipFacts). [stuck259] the mob's own area says that, not the leader's commitment measure
+                if (MobLeftItsStand(target, found->second.second))
                     mine.erase(found);
                 else
                     held = true;

@@ -58,6 +58,48 @@ namespace Leader::Fight::IdlePlace
             return true;
         return facts.tankStillToOpenOnIt && !facts.memberIsTheTank;
     }
+
+    // [pick90] USER 2026-11-15: AND THE DEFECT IS THE CHOICE OF TARGET, NOT THE RULE ABOVE.
+    //
+    // Measured on the live rows: of 107 `combat_spot_none` events 66 (62 %) were a melee member whose every one of
+    // the 16 places round the target was refused for an idle mob's aggro reach AND FOR NOTHING ELSE, and in 64 of
+    // the 71 rows that named the blocker (90 %) `idle_taken = 0` - a mob nobody had decided to fight. The geometry
+    // is from acore_world: four Deviate Lashers stand 0.3-8.5 yd from the target itself, so the places cannot
+    // exist. The retreat to the tank's own place never happened either (9 of 9: the tank itself was out of melee
+    // reach of the target), so there is no fallback behind this: the member simply stands.
+    //
+    // THE RULE ABOVE IS NOT WEAKENED BY ONE YARD. "Do not step into a mob's reach without wanting it" stays, and
+    // so does the one case that must keep blocking ([lead1140]). What changes is that a target the group cannot
+    // stand at IS NOT CHOSEN: the pull gate either takes the blocking pack into the fight (judgeBlockingPack, the
+    // mechanism that already exists and already prices the union) or it picks another mob.
+    //
+    // ONE JUDGE, AND IT IS NOT HERE EITHER. Whether a place exists is decided by the place search and by nothing
+    // else; whether the pack can join is decided by PullPlanner::JudgePack through judgeBlockingPack. Both answers
+    // are READ into these facts. This seam adds no search, no distance and no estimate of its own.
+    //
+    // A BOSS IS NEVER DROPPED (rule 11). For a boss the pick stands whatever this says: an unreachable boss is a
+    // navmesh or a plan problem, and refusing it would be a five skipping a boss.
+    struct PickFacts
+    {
+        // the place search answered "no place at all" for a MELEE member of this fight, and the only refusal it
+        // gave was an idle mob's aggro reach (pb_journal_spot: melee, breaks, idle_low)
+        bool meleeHasNoPlaceForTheIdleReach = false;
+        // and that blocking mob is still there to block: alive, out of any fight, where it was
+        bool blockerStillIdle = false;
+        // the leader's own record says the blocker's pack was NOT taken into this fight - either it did not fit
+        // the fight or no opener of the tank reaches it (joinedPack empty for it, [lead1291])
+        bool blockerPackNotJoined = false;
+        // the pick is a boss (or a boss look): rule 11 - no five skips a boss
+        bool targetIsABoss = false;
+    };
+
+    // The pull gate must leave this target alone and pick another mob
+    inline bool PickRefused(PickFacts const& facts)
+    {
+        if (facts.targetIsABoss)
+            return false;
+        return facts.meleeHasNoPlaceForTheIdleReach && facts.blockerStillIdle && facts.blockerPackNotJoined;
+    }
 }
 
 #endif

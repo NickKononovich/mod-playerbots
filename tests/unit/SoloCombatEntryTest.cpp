@@ -180,3 +180,77 @@ TEST(SoloCombatEntry, TheEntryAndTheReleaseCannotFightOverOneUnit)
     entry.engineOnNonCombatSet = false;
     EXPECT_FALSE(Bot::Combat::TakesTheCombatEngine(entry));
 }
+
+// [stuck259] AND THE MEMO THAT HOLDS THAT RELEASE: by WHAT does the mob stop being at the stand it was judged at.
+//
+// The fixtures are live rows. `pb_journal_stuck`, kind `stuck_target`: 199 cases, 25 of them the same bot and the
+// same mob again inside a minute, and in 20 of those 25 the bot had not moved a yard - only the mob had. The mobs
+// are `acore_world.creature` rows: Giant Moss Creeper 15453 / 15468 and Vicious Gray Bear 15469 (MovementType 1,
+// wander_distance 10), Syndicate Shadow Mage 15584 (wander_distance 3), Rot Hide Savage 18283 (MovementType 0,
+// wander_distance 0). The old measure was Leader::LEADER_COMMIT_MOVED_YD = 12 yd - larger than either whole area.
+#include "../../src/Ai/World/Rpg/MobStand.h"
+
+namespace
+{
+    using Rpg::MobStand::Facts;
+    using Rpg::MobStand::LeftItsArea;
+
+    // Giant Moss Creeper 15453: it roams its 10 yd area, body 1.5 yd, and stands 9 yd from its spawn point
+    Facts CreeperAcrossItsOwnArea()
+    {
+        Facts facts;
+        facts.wanders = true;
+        facts.areaRadius = 10.0f;
+        facts.fromCenterYd = 9.0f;
+        facts.bodyYd = 1.5f;
+        return facts;
+    }
+}
+
+TEST(MobStand, AWandererInsideItsOwnAreaIsStillAtTheStandItWasJudgedAt)
+{
+    EXPECT_FALSE(LeftItsArea(CreeperAcrossItsOwnArea()));
+    // the far side of the same area: 18 yd of walking from the near side, and still the same arrangement
+    Facts far = CreeperAcrossItsOwnArea();
+    far.fromCenterYd = 10.0f;
+    EXPECT_FALSE(LeftItsArea(far));
+}
+
+TEST(MobStand, AWandererOutOfItsAreaHasLeftTheStandEvenShortOfTwelveYards)
+{
+    // THE RED ONE on the old rule: the mob stands 11.6 yd from its center, 1.6 yd outside its own 10 yd area, and
+    // it has moved less than the leader's commitment measure from where the verdict was given - so the memo held
+    // and the same bot picked the same mob again. It is out of its area: the walk to it is another question.
+    Facts out = CreeperAcrossItsOwnArea();
+    out.fromCenterYd = 11.6f;
+    EXPECT_TRUE(LeftItsArea(out));
+    EXPECT_NEAR(Rpg::MobStand::OutsideItsAreaYd(out), 1.6f, 0.01f);
+}
+
+TEST(MobStand, AMobThatHoldsOneSpotLeavesItByItsOwnBodyAndNotByTwelveYards)
+{
+    // Rot Hide Savage 18283: MovementType 0, wander_distance 0 - its area is the spot it holds
+    Facts stander;
+    stander.wanders = false;
+    stander.areaRadius = 0.0f;
+    stander.fromCenterYd = 1.0f;
+    stander.bodyYd = 1.5f;
+    EXPECT_FALSE(LeftItsArea(stander));  // within its own body of its spot: it is standing there
+    stander.fromCenterYd = 4.0f;
+    EXPECT_TRUE(LeftItsArea(stander));   // it walked off: 4 yd, and nothing waits for 12
+}
+
+TEST(MobStand, AWanderDistanceOfItsOwnIsWhatCounted)
+{
+    // Syndicate Shadow Mage 15584 roams 3 yd, so 5 yd from its center is already out - the same 5 yd leaves the
+    // Creeper's 10 yd area untouched. The area is the mob's, not a number shared by every mob.
+    Facts mage;
+    mage.wanders = true;
+    mage.areaRadius = 3.0f;
+    mage.fromCenterYd = 5.0f;
+    mage.bodyYd = 1.0f;
+    EXPECT_TRUE(LeftItsArea(mage));
+    Facts creeper = CreeperAcrossItsOwnArea();
+    creeper.fromCenterYd = 5.0f;
+    EXPECT_FALSE(LeftItsArea(creeper));
+}

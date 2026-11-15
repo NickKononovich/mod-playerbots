@@ -4895,6 +4895,10 @@ namespace Leader::Dungeon
             lead.fightMoveTo.reset();
             lead.joinedPack.clear();
             lead.joinedMobs.clear();
+            // [pick90] the verdict "no melee place here" was given about THIS fight's join records, which have
+            // just gone: with no fight there is nothing it could still be true of
+            lead.noMeleePlace.clear();
+            lead.noMeleePlaceLogged.clear();
             if (!lead.joinedTankOpens.empty() || !lead.joinedHeld.empty())  // [lead1140]
             {
                 lead.joinedTankOpens.clear();
@@ -9610,7 +9614,21 @@ namespace Leader::Dungeon
                                 // takes it, else the fight moves out of its reach (the tank's target and the melee
                                 // places round it included)
                                 if (melee && idleBlocker)
+                                {
                                     judgeBlockingPack(bot, idleBlocker);
+                                    // [pick90] USER 2026-11-15: AND IF THE PACK IS NOT TAKEN, THE TARGET WAS THE
+                                    // WRONG CHOICE. The place search has just answered "no place at all for this
+                                    // melee member, for an idle mob's reach" - 66 of 107 live `combat_spot_none`
+                                    // events, 64 of 71 of them against a mob nobody had decided to fight, and the
+                                    // retreat to the tank's own place was impossible in 9 of 9. judgeBlockingPack
+                                    // above is the join (and the only judge of whether the pack fits); when it did
+                                    // not join, the verdict is recorded against the TARGET and the pull gate picks
+                                    // another mob (IdlePlace::PickRefused, read in LeaderPlan). The place rule
+                                    // itself is untouched, and a boss is never dropped (rule 11, in the seam).
+                                    auto const joined = lead.joinedPack.find(idleBlocker->GetGUID());
+                                    if (joined == lead.joinedPack.end() || joined->second.IsEmpty())
+                                        lead.noMeleePlace[target->GetGUID()] = idleBlocker->GetGUID();
+                                }
                             }
                         }
                         found = lead.combatSpots.find(guid);

@@ -862,7 +862,8 @@ bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const&
     NoteWalkGivenUp(bot, dest, why);
     // a quest whose spot (its objective or its ender: b302 Kianey's q45 hand-in at Rolf's corpse among seven
     // Murlocs, re-chosen every look) lies there is postponed: the planner takes the next one
-    if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data); quest && !botAI->rpgInfo.meetWalk)
+    // [wait20] there is no meet walk to except any more (the leader does not walk to a member behind)
+    if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data); quest)
     {
         if (botAI->lowPriorityQuest.insert(quest->questId).second)
         {
@@ -892,8 +893,8 @@ bool NewRpgBaseAction::RefusedWalk(WorldPosition const& dest, std::string const&
     }
     // [help12] a walk that is no quest spot, refused for mobs it does not pull (the maze search, a spot among them):
     // the camp is its help request to the global leader (NewRpgCoop::OnCampRefused; a quest spot asks above)
-    if (status != RPG_DO_QUEST && SoloSafety::Applies(bot) && !botAI->rpgInfo.meetWalk &&  // [wait19]
-
+    // [wait20] the meet walk that used to be excepted here no longer exists
+    if (status != RPG_DO_QUEST && SoloSafety::Applies(bot) &&
         (why.find("mobs it does not pull") != std::string::npos || why.find("among mobs") != std::string::npos))
         NewRpgCoop::OnCampRefused(botAI, bot, dest, why);
     // [guild14] a gather node / profession npc there: the state ends, its action marks the target failed and
@@ -1270,6 +1271,15 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
         return false;  // the walk goes on as the search gave it (partial, no refused reach on it)
     // 2. another way round: a travel node within the search's reach whose walk and whose walk on to the destination
     // pass no refused reach, the shortest way through it first
+    //
+    // [maze20] WHAT THE SEARCH ACTUALLY SPENT, RECORDED BEFORE THE BOUND WAS RAISED. "There is no way round" was
+    // declared after four tries inside 200 yd, and the number of tries that really went and the reason each one
+    // fell away were written down NOWHERE - 137 `route_zone_lost` cases over 7 zones on 2 maps with no record of
+    // the search behind them. Raising a bound one knows nothing about trades one ignorance for another, so these
+    // rows come first: a route row per give-up, with a child row per via tried and its own verdict and reason.
+    std::vector<Journal::RouteStop> viaTries;  // the vias this look searched, each with why it fell away
+    uint32 viaCandidates = 0;                  // the travel nodes in reach: what the bound was cutting
+    uint32 viaAlreadyTried = 0;                // vias an earlier look at this destination had already searched
     {
         struct Via
         {
@@ -1277,7 +1287,14 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
             float yards;
         };
         std::vector<Via> vias;
-        for (TravelNode* node : sTravelNodeMap.getNodes(WorldPosition(bot), searchReach))
+        // [maze20] user 2026-11-15: 400 yd and 8 tries, up from 200 and 4. THE PRICE, named: each try is TWO route
+        // searches (the leg to the via and the leg on to the goal), so the worst case of one look goes from 8 to 16
+        // searches, and slow searches already show up as [perf26]. It is a cost bound and not a behaviour rule -
+        // the code said so where the four stood - and the rows above are what will say whether the four were ever
+        // the thing that decided the answer: `candidates` is how many vias were in reach at all, and a look whose
+        // candidates never reached the bound was not bounded by it.
+        float const viaReach = 2.0f * searchReach;
+        for (TravelNode* node : sTravelNodeMap.getNodes(WorldPosition(bot), viaReach))
         {
             WorldPosition const* at = node->getPosition();
             G3D::Vector3 const spot(at->GetPositionX(), at->GetPositionY(), at->GetPositionZ());
@@ -1286,26 +1303,56 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
             vias.push_back({spot, (spot - here).length() + (goal - spot).length()});
         }
         std::sort(vias.begin(), vias.end(), [](Via const& a, Via const& b) { return a.yards < b.yards; });
-        constexpr size_t MAZE_VIA_TRIES = 4;  // search cost bound (route searches per look), not a behaviour rule
+        constexpr size_t MAZE_VIA_TRIES = 8;  // search cost bound (route searches per look), not a behaviour rule
+        viaCandidates = uint32(vias.size());
         size_t searched = 0;
+        // [maze20] one child row per via searched: the point, its total yards through, and the check that
+        // turned it down. `verdict` is a code (a cut), `why` is for the eyes
+        auto const noteVia = [&](Via const& via, char const* verdict, std::string const& why)
+        {
+            Journal::RouteStop stop;
+            stop.seq = uint32(viaTries.size());
+            stop.x = via.at.x;
+            stop.y = via.at.y;
+            stop.z = via.at.z;
+            stop.kind = "via";
+            stop.what = Acore::StringFormat("{:.0f} yd through", via.yards);
+            stop.verdict = verdict;
+            stop.why = why;
+            viaTries.push_back(stop);
+        };
         for (Via const& via : vias)
         {
             if (searched >= MAZE_VIA_TRIES)
                 break;
             if (tried(via.at))
+            {
+                ++viaAlreadyTried;
                 continue;
+            }
             ++searched;
             BotPath const leg = FindBotPath(bot, via.at.x, via.at.y, via.at.z);
             if (leg.type != PATHFIND_NORMAL || leg.throughRefused)
+            {
+                noteVia(via, "refused",
+                        leg.throughRefused ? "its own walk passes a reach the bot does not fight"
+                                           : "no walk of its own from where the bot stands");
                 continue;
+            }
             BotPath const on = FindBotPath(bot, via.at.x, via.at.y, via.at.z, goal.x, goal.y, goal.z);
             bool const onward = on.type == PATHFIND_NORMAL ||
                                 (on.type == PATHFIND_INCOMPLETE && (on.actualEnd - goal).length() + MOVE_FAR_PROGRESS <
                                                                        (via.at - goal).length());
             if (!onward || on.throughRefused)
+            {
+                noteVia(via, "refused",
+                        !onward ? "the walk on from it does not come nearer the goal"
+                                : "the walk on from it passes a reach the bot does not fight");
                 continue;
+            }
             if (walkVia(via.at, leg, "another way"))
                 return true;
+            noteVia(via, "abandoned", "the step to it did not start");
         }
     }
     // 3. a refused patrol on the way: its window (the forecast's ETA)
@@ -1339,8 +1386,41 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
     // 4. every way blocked: another task (the quest postponed with the co-op seek for help, the next gather node)
     std::string const why = path.throughRefused ? "every way there passes mobs it does not pull (maze search)"
                                                 : "its walk there ends in a dead end (maze search)";
-    LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {}{}{}", bot->GetName(), bot->GetLevel(),
-             goal.x, goal.y, why, walls.empty() ? "" : "; walls: ", walls);
+    LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {} (vias: {} in reach, {} searched, {} "
+             "already tried before){}{}", bot->GetName(), bot->GetLevel(), goal.x, goal.y, why, viaCandidates,
+             viaTries.size(), viaAlreadyTried, walls.empty() ? "" : "; walls: ", walls);
+    // [maze20] THE GIVE-UP AS A ROUTE EVENT, with the vias as its child rows: the walk's own domain writes it
+    // (pb_journal_route / pb_journal_route_stop were empty, waiting for exactly this call). The counts are
+    // columns because every question about them is a cut: how many tries went, how many vias there were to try,
+    // which check turned each one down, and whether that changed between builds.
+    uint64 routeRowId = 0;
+    {
+        Journal::Route route;
+        route.event = "leg_end";
+        route.verdict = "abandoned";
+        route.purpose = NewRpgInfo::StatusName(botAI->rpgInfo.GetStatus());
+        route.target = Acore::StringFormat("({:.0f},{:.0f})", goal.x, goal.y);
+        route.why = why;
+        route.botName = bot->GetName();
+        route.botLow = bot->GetGUID().GetCounter();
+        route.mapId = bot->GetMapId();
+        route.zoneId = bot->GetZoneId();
+        route.fromX = here.x;
+        route.fromY = here.y;
+        route.fromZ = here.z;
+        route.toX = goal.x;
+        route.toY = goal.y;
+        route.toZ = goal.z;
+        // the search's own numbers: the detour is their ratio, and neither of them alone shows it
+        route.pathYd = path.length;
+        route.straightYd = (goal - here).length();
+        route.candidates = viaCandidates;        // the vias in reach: what the bound was cutting into
+        route.triesSkipped = viaAlreadyTried;    // vias an earlier look at this destination had searched already
+        route.stops = viaTries;
+        route.stopCount = uint32(viaTries.size());
+        route.runId = Leader::Runs::OfBot(bot);
+        routeRowId = Journal::RecordRoute(route);
+    }
     // [dpszero2] THE PRICE OF THE ZONE RULE, as a row and not as a softer rule. The user's rule keeps a bot out of
     // the aggro zone of a mob whose fight is lost; where every way to the goal passes such a zone the bot does
     // exactly what it did before (the next task, or the flight below - never a hearthstone or a teleport), and the
@@ -1382,6 +1462,12 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
             issue.z = bot->GetPositionZ();
             issue.runId = Leader::Runs::OfBot(bot);
             issue.realSource = "emitter";
+            // [maze20] the row now POINTS AT THE SEARCH that gave up: 125 of the 137 live `route_zone_lost` cases
+            // (91.2 %) carried source_table = '' and source_id = 0, so "which parts of the world are cut off" and
+            // "which search said so" could not be joined at all. The route row holds the goal, the bot, the vias
+            // in reach, the tries that went and the check that turned each one down
+            issue.sourceTable = "pb_journal_route";
+            issue.sourceId = routeRowId;
             // the walls' own line is the inputs this row points at, and it goes with the stream's retention: the
             // copy that outlives it is here. It is a JSON string value, so the two characters that would break
             // one are escaped rather than trusted not to appear in a creature name
@@ -3961,9 +4047,9 @@ bool NewRpgBaseAction::MoveFarToDirect(WorldPosition dest)
         {
             LOG_DEBUG("playerbots", "[New RPG] {} gives up an unreachable destination ({},{},{},{})", bot->GetName(),
                       dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ(), dest.GetMapId());
-            // [wait19] a meet walk given up is no quest's walk
-            if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data);
-                quest && !botAI->rpgInfo.meetWalk)
+            // [wait20] there is no meet walk any more (the leader does not walk to a member behind): a walk
+            // given up here is the quest's own
+            if (auto* quest = std::get_if<NewRpgInfo::DoQuest>(&botAI->rpgInfo.data); quest)
             {
                 botAI->lowPriorityQuest.insert(quest->questId);
 

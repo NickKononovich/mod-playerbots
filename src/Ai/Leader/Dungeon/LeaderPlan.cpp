@@ -35,6 +35,7 @@
 #include "HealthTriggers.h"
 #include "RaidLeaderState.h"
 #include "HoRTriggers.h"
+#include "IdlePlace.h"  // [pick90] whether a pick must be left alone for want of a melee place, as a seam
 #include "Item.h"
 #include "Log.h"
 #include "Map.h"
@@ -2323,11 +2324,57 @@ namespace Leader::Dungeon
                     }
                     return on;
                 };
+                // [pick90] USER 2026-11-15: A TARGET THE GROUP CANNOT STAND AT IS NOT CHOSEN. The place search
+                // answered "no place at all for a melee member, for an idle mob's aggro reach" and the blocking
+                // pack was not taken into the fight (judgeBlockingPack, LeaderEvents - the only judge of whether
+                // a pack fits, and it ran first): 66 of 107 live `combat_spot_none` events, 64 of the 71 that
+                // named the blocker against a mob nobody had decided to fight, and no fallback behind it (the
+                // retreat to the tank's own place was impossible in 9 of 9 - the tank was out of melee reach of
+                // the target itself). So the gate takes another mob. The place rule is not weakened by a yard,
+                // and a BOSS is never dropped (rule 11): the seam says so, not this call site.
+                //
+                // THE RECORD IS RELEASED BY FACTS AND NEVER BY A CLOCK: the target gone or in a fight, the
+                // blocker gone or in a fight, or its pack joined since - any of those and the record goes.
+                auto const noPlaceRefuses = [&](ObjectGuid guid)
+                {
+                    auto const found = lead.noMeleePlace.find(guid);
+                    if (found == lead.noMeleePlace.end())
+                        return false;
+                    Creature* picked = map->GetCreature(guid);
+                    Creature* blocker = map->GetCreature(found->second);
+                    Leader::Fight::IdlePlace::PickFacts facts;
+                    // the record IS the place search's verdict; this gate does no search of its own
+                    facts.meleeHasNoPlaceForTheIdleReach = picked && picked->IsAlive() && !picked->IsInCombat();
+                    facts.blockerStillIdle = blocker && blocker->IsAlive() && !blocker->IsInCombat();
+                    auto const joined = lead.joinedPack.find(found->second);
+                    facts.blockerPackNotJoined = joined == lead.joinedPack.end() || joined->second.IsEmpty();
+                    facts.targetIsABoss =
+                        picked && (picked->IsDungeonBoss() || picked->isWorldBoss() || IsBossLook(tank, guid));
+                    if (!Leader::Fight::IdlePlace::PickRefused(facts))
+                    {
+                        lead.noMeleePlace.erase(found);
+                        return false;
+                    }
+                    if (lead.noMeleePlaceLogged.insert({guid, blocker->GetGUID()}).second)
+                        Decisions().Write(run, "leader", "pick_no_melee_place", guid, picked->GetName(), true,
+                                          JsonObject()
+                                              .Str("idle", blocker->GetName())
+                                              .Num("idleLow", int64(blocker->GetGUID().GetCounter()))
+                                              .Num("idleEntry", int64(blocker->GetEntry()))
+                                              .Real("idleGap", picked->GetExactDist(blocker))
+                                              .Real("tankGap", tank->GetExactDist(picked))
+                                              .Str("why", "[pick90] every melee place round this target lies in "
+                                                          "the aggro reach of an idle pack the fight did not take: "
+                                                          "another mob is picked"));
+                    return true;
+                };
                 auto const skipPick = [&](ObjectGuid guid)
                 {
                     if (!onPath(guid))
                         return true;
                     if (lead.refusedPicks.count(guid))
+                        return true;
+                    if (noPlaceRefuses(guid))  // [pick90]
                         return true;
                     auto const found = lead.unreachable.find(guid);
                     if (found == lead.unreachable.end())
