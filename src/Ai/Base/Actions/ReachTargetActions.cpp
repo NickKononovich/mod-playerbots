@@ -22,6 +22,7 @@
 #include "BotPath.h"  // [lead109]
 #include "PathGenerator.h"
 #include "PlayerbotAIConfig.h"
+#include "LeaderFightChecks.h"  // [reach22] Leader::Fight::LeaderMeleePlace
 #include "LeaderOrders.h"  // [lead29] the planned pull's mobs
 #include "PullFacts.h"  // [lead146] MobComesToTank
 #include "Playerbots.h"
@@ -275,6 +276,62 @@ namespace
     }
 }
 
+// [reach22] See the header. True when it walked.
+bool ReachMeleeAction::WalkToMeleePlaceOutsideIdle(Unit* target)
+{
+    GuidVector const possible = AI_VALUE(GuidVector, "possible targets no los");
+    Creature* waker = nullptr;
+    for (float const side : {1.0f, -1.0f})
+    {
+        Position at;
+        if (!Leader::Fight::LeaderMeleePlace(bot, target, side, at))
+            continue;
+
+        float const x = at.GetPositionX();
+        float const y = at.GetPositionY();
+        float const z = at.GetPositionZ();
+        Creature* blocker = nullptr;
+        for (ObjectGuid const guid : possible)
+        {
+            Creature* mob = botAI->GetCreature(guid);
+            if (mob && mob != target && mob->IsAlive() && !mob->IsInCombat() &&
+                mob->HasReactState(REACT_AGGRESSIVE) && bot->IsHostileTo(mob) &&
+                !MovementAction::IdleAggroBlocker(mob, bot, x, y, z, PEEL_WALK_IDLE_MARGIN, false))
+            {
+                blocker = mob;
+                break;
+            }
+        }
+        if (blocker)
+        {
+            waker = blocker;
+            continue;  // the other side of the ring may stand clear of it
+        }
+
+        if (!MoveTo(bot->GetMapId(), x, y, z, false, false, false, false, MovementPriority::MOVEMENT_COMBAT, true))
+            continue;
+
+        LOG_INFO("playerbots", "[reach22] {}: walks to the melee place of {} ({:.1f} yd, on {}) at ({:.1f},{:.1f},"
+                 "{:.1f}): no idle mob's reach covers it, so the refused walk has a place to go after all",
+                 bot->GetName(), target->GetName(), bot->GetExactDist(target),
+                 target->GetVictim() ? target->GetVictim()->GetName() : "nobody", x, y, z);
+        return true;
+    }
+
+    thread_local std::unordered_map<ObjectGuid, uint32> placeLog;
+    uint32 const now = getMSTime();
+    uint32& last = placeLog[bot->GetGUID()];
+    if (!last || getMSTimeDiff(last, now) >= TANK_REACH_LOG_MS)
+    {
+        last = now ? now : 1;
+        LOG_INFO("playerbots", "[reach22] {}: no melee place of {} ({:.1f} yd) out of every idle reach ({}): the "
+                 "taunt is all that is left", bot->GetName(), target->GetName(), bot->GetExactDist(target),
+                 waker ? "idle " + std::string(waker->GetName()) + " reaches both sides of its ring"
+                       : "no place of the ring can be stood on");
+    }
+    return false;
+}
+
 // [b32_arc] See the header. True when it cast or walked.
 bool ReachMeleeAction::PullPhantomFromRange(Unit* target)
 {
@@ -331,6 +388,20 @@ bool ReachMeleeAction::PullPhantomFromRange(Unit* target)
                  taunted ? " [b33_arc] the taunt brought nothing" : "");
         return true;
     }
+
+    // [reach22] For a mob already fighting the group, this is where [reach20] ran out: of its 112 substitutions on
+    // wc-n b495 only 8 reached an act (5 taunts / ranged threat spells, 3 steps into their range) - 7 %. The other
+    // 104 came here with the taunt on cooldown and the mob already inside the spell range, so the step below is not
+    // due either, and the tick ended in the same stand the refusal was meant to replace: the melee place is what was
+    // missing. Namwe b495: "no walk to Deviate Shambler (21.3 yd, on Cassand)" x4 while two hunters killed it from
+    // 7.4 yd, the tank out of its own melee for the whole fight. A place in the target's melee ring that no idle
+    // mob's disc covers wakes nobody, so the disc has nothing to refuse - its own rule is kept, not bent.
+    // The ring, its 18 angles and its "stands on it and hits from it" test are LeaderMeleePlace's own (the melee
+    // follow's), the disc and its margin are this file's own (IdleAggroBlocker, PEEL_WALK_IDLE_MARGIN): no new
+    // number, no new rule. A phantom-combat target keeps the old way exactly - it fights nobody, so walking into
+    // its melee buys the group nothing and the taunt is still the only thing that gives it a victim.
+    if (!IsPhantomCombatTarget(bot, target) && WalkToMeleePlaceOutsideIdle(target))
+        return true;
 
     float range = spells ? PullSpellRange(botAI, spells->ranged) : 0.0f;
     if (spells && !taunted)

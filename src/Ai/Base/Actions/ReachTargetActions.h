@@ -79,6 +79,11 @@ private:
     // [reach20] The same pull is what replaces the refusal of a mob that already fights the group - that refusal used
     // to leave the tank standing in its combat engine with nothing at all (the drop clock reset every tick).
     bool PullPhantomFromRange(Unit* target);
+    // [reach22] The last resort of a refused walk to a mob that already fights the group, when the taunt and the
+    // ranged threat spell are both unavailable (104 of [reach20]'s 112 substitutions ended there, doing nothing): a
+    // place in the target's melee ring (LeaderMeleePlace: stood on, in its reach and sight) that no idle mob's aggro
+    // disc covers. Such a place wakes nobody, so the guard has nothing to refuse. False: none, the taunt waits.
+    bool WalkToMeleePlaceOutsideIdle(Unit* target);
     // [lead1171] the leader's meeting verdict for the incoming mob is a gap closer or a grip: Execute casts it
     std::string _meetSpell;
     ObjectGuid _phantomPull;
