@@ -35,6 +35,7 @@
 
 #include "ChaseModel.h"
 
+#include <cmath>
 #include <cstdio>
 #include <gtest/gtest.h>
 
@@ -50,28 +51,41 @@ namespace
     constexpr float LEASH_SEC_L40 = 13.0f;
 }
 
-TEST(ChaseWindow, ItReproducesTheChaseLanbuzzWasPricedOn)
+TEST(ChaseWindow, TheChaseLanbuzzWasPricedOnHasNoEndAtAll)
 {
-    // the bot has no speed piece, so the guard is the faster of the two and the melee lands for the whole chase
+    // THE NUMBER THIS TEST USED TO DEMAND, and it reproduced the journal line to the unit: until 14.000, exposure
+    // 14.000, and 41.2 dps over it 576.8 against the printed "priced 577 dmg over 14 s". It was the wrong number.
+    // The guard outruns the bot (8.0 against 7.0), it lands hits all the way, and every hit restarts its own leash -
+    // so nothing in the core's rules ends that chase. The chase it was priced for ran 29.4 s and dealt 911.
     Chase::Window const window =
         Chase::Of(BOT_RUN, MOB_RUN, LEASH_SEC_L40, LEASH_RADIUS, DAZED, 41.2f, MELEE_REACH);
-    EXPECT_NEAR(window.until, 14.0f, 0.01f) << "the journal line says 14 s of chase";
-    EXPECT_NEAR(window.exposure, window.until, 0.01f) << "a chaser that outruns the bot lands melee all the way";
-    // 41.2 dps is what the recorded price divided by the recorded seconds gives; the product has to come back to
-    // the printed number, or this seam is not the judge that wrote that line
-    EXPECT_NEAR(41.2f * window.exposure, 577.0f, 1.0f) << "the journal line says 577 dmg";
+    EXPECT_FALSE(window.ends) << "priced at " << window.until << " s, the chase ran 29.4 s and never ended by itself";
+    EXPECT_FALSE(std::isfinite(window.exposure)) << "there is no number of seconds of landed melee to price";
 }
 
-TEST(ChaseWindow, ASpeedPieceCollapsesTheMeleeToATenthOfTheChase)
+TEST(ChaseWindow, ASpeedPieceNoLongerCollapsesTheMeleeToATenthOfTheChase)
 {
-    // the same guard, the same leash, and the only difference is the bot's +30 %: `canDaze` turns false, so the
-    // exposure becomes reach / (botSpeed - mobSpeed) and almost ten of the fourteen seconds go unpriced. This is
-    // Tuihgrelfim's and Irrua's case, and it is why their chases were priced at 69 and 84 against Lanbuzz's 577.
+    // Tuihgrelfim's and Irrua's case: the same guard, the same leash, and the bot's +30 % on top. This test used to
+    // demand the collapse - until 14.000 and exposure 5 / (9.1 - 8.0) = 4.545 s, under a third of the chase, which
+    // is why their chases were priced at 69 and 84 against Lanbuzz's 577 and why they ran. One swing in the back
+    // dazes the bot to 4.55 yd/s, below the guard's 8.0, and from there the chase has no end either.
     Chase::Window const window =
         Chase::Of(BOT_RUN_SPEEDED, MOB_RUN, LEASH_SEC_L40, LEASH_RADIUS, DAZED, 41.2f, MELEE_REACH);
-    EXPECT_NEAR(window.until, 14.0f, 0.01f) << "the chase itself is the same length";
-    EXPECT_NEAR(window.exposure, MELEE_REACH / (BOT_RUN_SPEEDED - MOB_RUN), 0.01f);
-    EXPECT_LT(window.exposure, window.until / 3.0f) << "under a third of the chase is priced as landing";
+    EXPECT_FALSE(window.ends);
+    EXPECT_GT(window.exposure, MELEE_REACH / (BOT_RUN_SPEEDED - MOB_RUN))
+        << "4.545 s of landed melee was the old price of this very chase";
+}
+
+TEST(ChaseWindow, AChaserItOutrunsEvenDazedIsShakenOffAndThenGivesUp)
+{
+    // the other branch, and the only one left with a finite price: a bot fast enough that the daze still leaves it
+    // ahead. The melee lands until it is out of reach, and from that last hit the leash timer the core gives the mob
+    // runs its course - not from the start of the chase, because every hit until then restarted it.
+    constexpr float FAST_BOT = 20.0f;  // dazed 10.0, still 2.0 yd/s clear of the guard's 8.0
+    Chase::Window const window = Chase::Of(FAST_BOT, MOB_RUN, LEASH_SEC_L40, LEASH_RADIUS, DAZED, 41.2f, MELEE_REACH);
+    EXPECT_TRUE(window.ends);
+    EXPECT_NEAR(window.exposure, MELEE_REACH / (FAST_BOT * (1.0f + DAZED) - MOB_RUN), 0.01f);
+    EXPECT_NEAR(window.until, window.exposure + LEASH_SEC_L40 + 1.0f, 0.01f);
 }
 
 TEST(ChaseWindow, TheExposureIsNeverLongerThanTheChaseItBelongsTo)
@@ -106,14 +120,11 @@ TEST(ChaseWindow, ADazingSwingIsPricedWhereItDecidesTheChase)
         Chase::Of(BOT_RUN_SPEEDED, MOB_RUN, LEASH_SEC_L40, LEASH_RADIUS, DAZED, 41.2f, MELEE_REACH);
     Chase::Window const afterOneSwing = Chase::Of(BOT_RUN_SPEEDED * (1.0f + DAZED), MOB_RUN, LEASH_SEC_L40,
                                                   LEASH_RADIUS, DAZED, 41.2f, MELEE_REACH);
-    GTEST_SKIP() << "RED, and the fix is a change of behaviour awaiting the user's word: the chase of a mob whose "
-                    "melee lands is priced over " << priced.exposure << " s while one dazing swing makes it "
-                 << afterOneSwing.exposure << " s - " << afterOneSwing.exposure / priced.exposure
-                 << " x. Measured on it: Tuihgrelfim L24 priced 69 dmg (151 at the high end) and took 414 from one "
-                    "Barrens Guard L40 over 16.3 s at 25.2 dps; Irrua L25 priced 84 (121 high) and died to the "
-                    "same guard entry. Pricing the daze as a consequence of the swing instead of the speeds stops "
-                    "a bot walking past a mob of near its own speed at all, which is the user's call.";
-    EXPECT_GE(priced.exposure, afterOneSwing.exposure);
+    // Measured on it: Tuihgrelfim L24 priced 69 dmg (151 at the high end) and took 414 from one Barrens Guard L40
+    // over 16.3 s at 25.2 dps; Irrua L25 priced 84 (121 high) and died to the same guard entry. 4.545 s of landed
+    // melee instead of 14.187 was a factor of 3.12 off the price of every such run past.
+    EXPECT_GE(priced.exposure, afterOneSwing.exposure)
+        << "the price must already carry the swing that makes the chase what it is";
 }
 
 TEST(ChaseWindow, TheChaseIsNotBoundedByALeashTimerTheCoreKeepsRestarting)
@@ -129,11 +140,94 @@ TEST(ChaseWindow, TheChaseIsNotBoundedByALeashTimerTheCoreKeepsRestarting)
     // Lanbuzz: the chase was committed at at_ms 1794736152960 and the death row is at 1794736182404 - 29.44 s,
     // and the [dps] line of that fight says fight_s=29.0. 911 dmg over it is 30.9 dps, against a measured 32.4.
     constexpr float MEASURED_CHASE_SEC = 29.4f;
-    GTEST_SKIP() << "RED, and the fix is a change of behaviour awaiting the user's word: the chase is priced at "
-                 << window.until << " s and the one it was priced for ran " << MEASURED_CHASE_SEC
-                 << " s (911 dmg against a price of 577, 677 at the high end, at a measured 32.4 dps - the damage "
-                    "per second was right and the window was 2.10 x short). Bounding the chase by the fact the "
-                    "core uses - it ends when the mob stops landing hits - prices a same-speed chaser as unbounded "
-                    "and stops the bot walking past one at all, which is the user's call.";
+    // 911 dmg arrived against a price of 577 (677 at the high end) at a measured 32.4 dps: the damage per second was
+    // right and the window was 2.10 x short. The chase ends when the mob stops landing hits, and a chaser the bot
+    // cannot outrun never stops - so the honest answer here is that the chase has no end at all.
+    EXPECT_FALSE(window.ends) << "a chaser the bot cannot outrun keeps extending its own leash for ever";
     EXPECT_GE(window.until, MEASURED_CHASE_SEC);
+}
+
+// [runpast89] THE HEAL THE PRICE OF A RUN PAST MAY COUNT.
+//
+// `SurvivesRunPast` compares the chase's damage with `bot->GetHealth() + SurvivalKit::HealPoints(bot, seconds, mana,
+// true, true)`, and that second term hands the WHOLE mana pool over as health points to come: as many casts as the
+// mana pays for, each worth its full amount, with `incomingDps` 0 at every run-past call site. Measured against the
+// bots' own bodies in the b502 hour (pb_journal_death.health_max against the "[solo] ... vs hp N" line):
+//   * Irrua L25 (shaman)      judged against 1207, body 797  - +51 %
+//   * Tuihgrelfim L24 (rogue) judged against  956, body 616  - +55 %
+//   * Lanbuzz L26 (warlock)   judged against  924, body 760  - +22 %
+//   * Colian L26 (warrior)    judged against  926, body 926  - exact, and it is the one bot of the four with no mana
+//   * Orenem L26 (priest)     "run-past priced 931 hp vs hp 1683" against a body of 487, and the fight's own measure
+//     says active_s=3.7 of 28.2, why=ran before two swings - it never cast at all.
+// Colian is the proof of the mechanism: the error is the mana, and it is zero for exactly the bot where the judge
+// was right to the point.
+namespace
+{
+    // Orenem's: a free-standing instant heal of 222 points on the global cooldown, 185 mana a cast, 1300 mana in the
+    // pool - seven casts the old rule credits whole, 1554 points on a body of 487
+    constexpr float ORENEM_HEALTH = 487.0f;
+    constexpr float ORENEM_DAMAGE = 931.0f;
+    constexpr float ORENEM_CHASE_SEC = 13.0f;
+
+    Chase::Heal OrenemHeal()
+    {
+        Chase::Heal heal;
+        heal.amount = 222.0f;
+        heal.castSec = 1.5f;  // the global cooldown the spell data gives an instant
+        heal.cost = 185.0f;
+        return heal;
+    }
+}
+
+TEST(ChaseHeal, AHealIsNotCreditedAboveTheHealthTheChaseTookOff)
+{
+    // overheal is not credit: a heal landing on a bot the chase has not hurt yet puts back nothing. At full health
+    // the most that can ever land over the whole chase is what the chase deals, and never one point more.
+    Chase::Survival const under =
+        Chase::Under(OrenemHeal(), ORENEM_CHASE_SEC, ORENEM_DAMAGE, ORENEM_HEALTH, ORENEM_HEALTH, 1300.0f);
+    EXPECT_LE(under.healed, ORENEM_DAMAGE)
+        << "a chase that deals " << ORENEM_DAMAGE << " cannot be met with " << under.healed << " of healing";
+    EXPECT_LE(ORENEM_HEALTH + under.healed, ORENEM_HEALTH + ORENEM_DAMAGE);
+}
+
+TEST(ChaseHeal, NoHealLandsAfterTheChaseHasAlreadyKilledIt)
+{
+    // the same heal and the same chase against a body the first seconds already empty: 931 over 13 s is 71.6 dps, so
+    // a bot of 100 health is dead at 1.4 s - before the first cast's global cooldown is even out. Nothing may be
+    // credited past that moment, and the verdict has to be death.
+    Chase::Survival const under = Chase::Under(OrenemHeal(), ORENEM_CHASE_SEC, ORENEM_DAMAGE, 100.0f, 100.0f, 1300.0f);
+    EXPECT_FALSE(under.lives);
+    EXPECT_LE(under.healed, 100.0f) << "it was dead at " << under.lostAtSec << " s and was credited " << under.healed;
+}
+
+TEST(ChaseHeal, ABotWithNoManaIsPricedAgainstItsBodyAlone)
+{
+    // Colian L26: no mana, no heal piece, and the judge's 926 was its body to the point. The seam has to keep that
+    // one right, or it has traded one error for another.
+    Chase::Heal const none;
+    Chase::Survival const under = Chase::Under(none, 14.0f, 900.0f, 926.0f, 926.0f, 0.0f);
+    EXPECT_FLOAT_EQ(under.healed, 0.0f);
+    EXPECT_TRUE(under.lives) << "900 of damage against a body of 926";
+    EXPECT_FALSE(Chase::Under(none, 14.0f, 950.0f, 926.0f, 926.0f, 0.0f).lives);
+}
+
+TEST(ChaseHeal, TheVerdictAndThePoolAreTheSameAnswer)
+{
+    // one quantity, one judge: the gate (`lives`) and the number the journal line prints (`health + healed`) may
+    // never disagree, whatever the inputs.
+    size_t checked = 0;
+    for (float health : {60.0f, 487.0f, 926.0f})
+        for (float damage : {0.0f, 56.0f, 500.0f, 931.0f, 4000.0f})
+            for (float chaseSec : {1.0f, 12.0f, 14.0f, 29.4f})
+                for (float mana : {0.0f, 185.0f, 1300.0f})
+                {
+                    Chase::Survival const under =
+                        Chase::Under(OrenemHeal(), chaseSec, damage, health, health, mana);
+                    ++checked;
+                    EXPECT_EQ(under.lives, damage < health + under.healed)
+                        << "health " << health << " damage " << damage << " chase " << chaseSec << " mana " << mana
+                        << " healed " << under.healed;
+                }
+    std::printf("[chase] %zu survivals checked\n", checked);
+    EXPECT_GT(checked, 0u);
 }

@@ -22,6 +22,7 @@
 // distance), outside instances.
 
 #include "Define.h"
+#include "ChaseModel.h"  // [runpast89] Chase::Heal, the piece a run past prices its healing on
 #include "G3D/Vector3.h"
 #include "G3D/Vector4.h"
 #include "ObjectGuid.h"  // [build153] Verdict / EngageNote::counted ([death392])
@@ -285,6 +286,16 @@ namespace SoloSafety
     // creatures its trap spell summons are that objective's fight - true when the bot loses it from its health now
     // with the heals its mana holds (`why`: the summons and the price)
     bool QuestObjectSummonsLose(Player* bot, GameObject* go, std::string& why);
+    // [runpast89] ONE JUDGE of the health a run past is priced against: the bot's health plus the healing that
+    // actually LANDS over the chase - the single on-the-move piece its executor casts
+    // (SurvivalKit::RunPastHealPiece), at the pace that piece's own data allows, never above its maximum health and
+    // never after the chase has already killed it (Chase::Under walks the chase forward). Every gate and every
+    // printed line takes the number from here; `atFull`: the same question at full health and mana (the "rest
+    // first" comparison). The overload with a `heal` in hand is for a search that prices many mobs: one kit look,
+    // not one per mob. `damage` of float's max (a boss, no leash radius, a chase with no end) has no chase to walk,
+    // so the answer is the body alone.
+    float RunPastPool(Player* bot, float damage, float seconds, Chase::Heal const& heal, bool atFull);
+    float RunPastPool(Player* bot, float damage, float seconds, bool atFull = false);
     // the bot lives through `damage` over `seconds` from its health now with its heal kit (the flee's test)
     bool SurvivesRunPast(Player* bot, float damage, float seconds);
     // [death400] the walk `points` (from the bot on) out of reaches it stands in: every idle mob whose reach (wander

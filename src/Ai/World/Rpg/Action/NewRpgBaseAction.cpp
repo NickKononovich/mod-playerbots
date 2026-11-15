@@ -6063,13 +6063,17 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
     std::sort(chases.begin(), chases.end(), [](Chase const& a, Chase const& b) { return a.along < b.along; });
     // [lag356] the health a run past may cost, looked up once for the longest chase (SurvivesRunPast's test; the kit
     // look scans its bags), and the sight window walked by two indices: one pass over the reaches
+    // [runpast89] ... and the number comes from the ONE judge of it (SoloSafety::RunPastPool) instead of a second
+    // copy of its arithmetic here. The kit piece is still looked up once; the pool itself depends on the damage of
+    // the window being tested, because a heal puts back only the health the chase has already taken off.
     float longest = 0.0f;
     for (Chase const& c : chases)
         longest = std::max(longest, c.chase.seconds);
-    float const budget = chases.empty() ? 0.0f
-                                        : float(bot->GetHealth()) +
-                                              SurvivalKit::HealPoints(bot, std::floor(longest),
-                                                                      float(bot->GetPower(POWER_MANA)), true, true);
+    ::Chase::Heal runPastHeal;  // the namespace, not the local struct of the same name above
+    if (!chases.empty())
+        SurvivalKit::RunPastHealPiece(bot, runPastHeal);
+    auto const budget = [&](float damage)
+    { return chases.empty() ? 0.0f : SoloSafety::RunPastPool(bot, damage, std::floor(longest), runPastHeal, false); };
     std::vector<bool> refused(chases.size(), false);
     float sum = 0.0f;  // the window's damage, the refused left out
     size_t first = 0;
@@ -6082,7 +6086,7 @@ std::vector<G3D::Vector4> NewRpgBaseAction::StaticDangerDiscs(Player* bot, std::
             ++first;
         }
         float const damage = chases[i].chase.damage;
-        if (damage == std::numeric_limits<float>::max() || sum + damage >= budget)
+        if (damage == std::numeric_limits<float>::max() || sum + damage >= budget(sum + damage))
         {
             refused[i] = true;
             discs.push_back(chases[i].disc);

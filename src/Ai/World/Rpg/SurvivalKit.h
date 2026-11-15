@@ -29,6 +29,7 @@
 
 #include "Define.h"  // [guild15] first: _USE_MATH_DEFINES before G3D pulls in <cmath> (Position.h needs M_PI)
 #include "G3D/Vector3.h"
+#include "ChaseModel.h"  // [runpast89] Chase::Heal, the run-past heal piece as data
 #include "MovementActions.h"
 #include "Trigger.h"
 
@@ -79,6 +80,9 @@ namespace SurvivalKit
     // [death385] the run-past executor's heal: the biggest on-the-move heal HealPoints counts, cast when the chases
     // to come (`damageToCome`) reach its health
     bool RunPastHeal(Player* bot, float damageToCome);
+    // [runpast89] ... and the SAME pick as data, so the price of a run past counts exactly the piece the executor
+    // above will cast and no second one. false: there is none, and the chase is priced against the body alone.
+    bool RunPastHealPiece(Player* bot, Chase::Heal& out);
 }
 
 class SoloSurvivalTrigger : public Trigger

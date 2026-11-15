@@ -31,6 +31,9 @@
 // Nothing here reads the world, the clock or the database. One judge of "how long is this chase": this function.
 
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
 
 namespace Chase
 {
@@ -39,6 +42,11 @@ namespace Chase
     {
         float until = 0.0f;
         float exposure = 0.0f;
+        // [runpast89] false: the chase has no end in the core's own rules, because the mob never stops landing hits
+        // and every hit restarts its leash (Unit::DealDamage -> UpdateLeashExtensionTime, and
+        // Creature::CanCreatureAttack tests that branch BEFORE the distance to its home). `until` and `exposure` are
+        // then infinite, and a run past such a chaser has no price - it has no end.
+        bool ends = true;
     };
 
     // `botSpeed`: the bot's run (or swim) speed WITH whatever instant speed piece the run-past executor casts first
@@ -52,6 +60,32 @@ namespace Chase
     // `reach`: the chaser's melee range against this bot, in yards.
     Window Of(float botSpeed, float mobSpeed, float leashSec, float leashRadius, float dazedShare, float melee,
               float reach);
+
+    // [runpast89] ONE on-the-move heal piece, as the game's own spell or item data gives it - the very piece the
+    // run-past executor casts (SurvivalKit::RunPastHeal picks the biggest of them and nothing else, so the price may
+    // not count a second one: one quantity, one judge).
+    struct Heal
+    {
+        float amount = 0.0f;       // the points one cast puts back (a heal over time: over its whole duration)
+        float castSec = 0.0f;      // its cast, or the global cooldown - the longer, as the data gives it
+        float cooldownSec = 0.0f;  // its own recovery; 0: none
+        float durationSec = 0.0f;  // a heal over time's duration; 0: it lands at once
+        float cost = 0.0f;         // the mana one cast takes; 0: free
+        int32_t uses = -1;         // an item's uses in the bags; -1: a spell, as often as mana and cooldown allow
+    };
+
+    // what a chase leaves of a bot: whether it lives, and how much healing actually landed on it
+    struct Survival
+    {
+        bool lives = false;
+        float healed = 0.0f;     // the points that LANDED: never above its maximum, never after it was already dead
+        float lostAtSec = 0.0f;  // when its health ran out; 0 when it did not
+    };
+
+    // `chaseSec` seconds of chase dealing `damage` in all, against a bot at `health` of `maxHealth` with `mana` that
+    // heals itself with `heal` and nothing else. `health + healed` is the pool the price is compared with, and it is
+    // the SAME answer as the verdict: the bot dies exactly when `damage` is not below that pool.
+    Survival Under(Heal const& heal, float chaseSec, float damage, float health, float maxHealth, float mana);
 }
 
 #endif

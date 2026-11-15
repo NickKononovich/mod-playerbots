@@ -1683,6 +1683,23 @@ namespace SurvivalKit
         return c.spell;
     }
 
+    // [runpast89] THE ONE on-the-move heal of a run past - the piece the executor below casts and the ONLY piece its
+    // price may count. Pulled out of RunPastHeal so the judge of "how much healing lands over this chase"
+    // (SoloSafety's RunPastPool, through Chase::Under) and the executor that does the casting read the same pick
+    // from the same rule: one quantity, one judge. Before, the price counted SurvivalKit::HealPoints - every heal
+    // item of every shared cooldown plus as many casts of the best heal per mana as the whole pool paid for - while
+    // the executor only ever used this single biggest one.
+    Piece const* BestOnTheMove(PlayerbotAI* botAI, Player* bot, std::vector<Piece> const& pieces)
+    {
+        Piece const* best = nullptr;
+        for (Piece const& piece : pieces)
+            if (piece.kind == Kind::Heal && piece.amount > 0.0f && !piece.needsWindow && (piece.item || piece.instant) &&
+                (piece.item || !bot->HasSpellCooldown(piece.spell)) && (!best || piece.amount > best->amount) &&
+                (piece.item ? FindItem(bot, piece.item) != nullptr : Castable(botAI, bot, piece, bot)))
+                best = &piece;
+        return best;
+    }
+
     bool RunPastHeal(Player* bot, float damageToCome)
     {
         PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
@@ -1695,12 +1712,7 @@ namespace SurvivalKit
             ItemPieces(bot, pieces);
         }
         // the pieces HealPoints counts on the move: instant spells and item uses, no channel, castable now
-        Piece const* best = nullptr;
-        for (Piece const& piece : pieces)
-            if (piece.kind == Kind::Heal && piece.amount > 0.0f && !piece.needsWindow && (piece.item || piece.instant) &&
-                (piece.item || !bot->HasSpellCooldown(piece.spell)) && (!best || piece.amount > best->amount) &&
-                (piece.item ? FindItem(bot, piece.item) != nullptr : Castable(botAI, bot, piece, bot)))
-                best = &piece;
+        Piece const* best = BestOnTheMove(botAI, bot, pieces);
         if (!best)
             return false;
         bool cast = false;
@@ -1725,6 +1737,37 @@ namespace SurvivalKit
                      "come at hp {}", bot->GetName(), bot->GetLevel(), best->item ? "item" : "spell",
                      best->item ? best->item : best->spell, best->amount, damageToCome, bot->GetHealth());
         return cast;
+    }
+
+    bool RunPastHealPiece(Player* bot, Chase::Heal& out)
+    {
+        out = Chase::Heal();
+        PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+        if (!botAI)
+            return false;
+        std::vector<Piece> pieces;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            pieces = KitOf(bot).pieces;
+            ItemPieces(bot, pieces);
+        }
+        Piece const* best = BestOnTheMove(botAI, bot, pieces);
+        if (!best)
+            return false;
+        out.amount = best->amount;
+        out.castSec = best->castSec;
+        out.cooldownSec = best->cooldownSec;
+        out.durationSec = best->durationSec;
+        out.cost = best->cost;
+        // an item: its shared cooldown (a potion's is the whole fight and more) means one use in a chase, and only
+        // the uses the bags hold. `uses` of -1 is a spell, as often as its own recovery and the mana allow.
+        if (best->item)
+        {
+            Item* item = FindItem(bot, best->item);
+            out.uses = item ? int32_t(std::max<uint32>(item->GetCount(), 1)) : 0;
+            out.uses = std::min<int32_t>(out.uses, 1);
+        }
+        return out.amount > 0.0f;
     }
 
     bool Evaluate(Player* bot)

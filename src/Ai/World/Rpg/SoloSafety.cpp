@@ -4562,8 +4562,8 @@ namespace SoloSafety
 
         // the chase of a mob of run speed `vm`, leash timer `leashSec`, melee dps `melee` (its melee reach `reach`):
         // how long it lasts and how long its melee lands
-        void ChaseTimes(Player* bot, float vm, float leashSec, float melee, float reach, float& until, float& exposure,
-                        bool withSpeed = true, float botSpeed = 0.0f)
+        Chase::Window ChaseTimes(Player* bot, float vm, float leashSec, float melee, float reach,
+                                 bool withSpeed = true, float botSpeed = 0.0f)
         {
             float const leashRadius = sWorld->getFloatConfig(CONFIG_CREATURE_LEASH_RADIUS);
             // [death460] `botSpeed` > 0: the bot's speed given (a ghost priced as the body it rises into)
@@ -4578,10 +4578,8 @@ namespace SoloSafety
             }
             // [runpast88] the arithmetic itself is a seam now (Chase::Of in ChaseModel.h): the same six numbers in
             // and the same two out, with no world in it, so a chase recorded in a real death can be put back on the
-            // test stand. Nothing about the result changed here.
-            Chase::Window const window = Chase::Of(vb, vm, leashSec, leashRadius, DazedShare(), melee, reach);
-            until = window.until;
-            exposure = window.exposure;
+            // test stand. [runpast89] and the window now also answers whether the chase ENDS at all.
+            return Chase::Of(vb, vm, leashSec, leashRadius, DazedShare(), melee, reach);
         }
     }
 
@@ -4611,16 +4609,25 @@ namespace SoloSafety
         }
         float variance = 0.0f;
         float const melee = MeleeDps(mob, bot, &variance);
-        float exposure = 0.0f;
         // [death401] a chase in the water is at both swim speeds (MoveSplineInit::SelectSpeedType: MOVE_SWIM for a
         // swimming unit): b453 Mytaeleas / Enyssia / Salleas died to Greymist chases off Mist's Edge priced at run
         // speed
         float const chaseSpeed = mob->GetSpeed(bot->IsInWater() ? MOVE_SWIM : MOVE_RUN);
-        ChaseTimes(bot, chaseSpeed, float(mob->GetLeashTimer()), melee, mob->GetMeleeRange(bot),
-                   out.seconds, exposure, withSpeed, botSpeed);
+        Chase::Window const window = ChaseTimes(bot, chaseSpeed, float(mob->GetLeashTimer()), melee,
+                                                mob->GetMeleeRange(bot), withSpeed, botSpeed);
+        // [runpast89] a chase with no end has no price either: the same "no run past" answer a boss or a server
+        // without a leash radius gets, and for the same reason - there is no number of seconds to multiply
+        if (!window.ends)
+        {
+            out.damage = std::numeric_limits<float>::max();
+            out.seconds = 0.0f;
+            return out;
+        }
+        out.seconds = window.until;
         float const casts = ChaseSpellDamage(mob, out.seconds);
-        out.damage = melee * BehindFactor(bot) * exposure + (casts > 0.0f ? casts : SpellDpsOf(mob) * out.seconds);
-        out.variance = variance * BehindFactor(bot) * BehindFactor(bot) * exposure;
+        out.damage =
+            melee * BehindFactor(bot) * window.exposure + (casts > 0.0f ? casts : SpellDpsOf(mob) * out.seconds);
+        out.variance = variance * BehindFactor(bot) * BehindFactor(bot) * window.exposure;
         return out;
     }
 
@@ -4784,21 +4791,46 @@ namespace SoloSafety
         constexpr int32 LEASH_TIMER_OFFSET = 11;
         float const leashSec =
             float(std::max<int32>(LEASH_TIMER_OFFSET, LEASH_TIMER_OFFSET + int32(tmpl->minlevel / 10) - 2));
-        float exposure = 0.0f;
         float const chaseSpeed = bot->IsInWater() ? tmpl->speed_swim * baseMoveSpeed[MOVE_SWIM]  // [death401]
                                                   : tmpl->speed_run * baseMoveSpeed[MOVE_RUN];
-        ChaseTimes(bot, chaseSpeed, leashSec, melee, NOMINAL_MELEE_RANGE, out.seconds,
-                   exposure);
-        out.damage = melee * BehindFactor(bot) * exposure;
+        Chase::Window const window = ChaseTimes(bot, chaseSpeed, leashSec, melee, NOMINAL_MELEE_RANGE);
+        if (!window.ends)  // [runpast89]
+        {
+            out.damage = std::numeric_limits<float>::max();
+            out.seconds = 0.0f;
+            return out;
+        }
+        out.seconds = window.until;
+        out.damage = melee * BehindFactor(bot) * window.exposure;
         return out;
+    }
+
+    float RunPastPool(Player* bot, float damage, float seconds, Chase::Heal const& heal, bool atFull)
+    {
+        if (!bot)
+            return 0.0f;
+        float const health = atFull ? float(bot->GetMaxHealth()) : float(bot->GetHealth());
+        float const mana = atFull ? float(bot->GetMaxPower(POWER_MANA)) : float(bot->GetPower(POWER_MANA));
+        if (damage == std::numeric_limits<float>::max())
+            return health;  // no chase to walk forward: nothing of the kit can be said to land
+        return health + Chase::Under(heal, seconds, damage, health, float(bot->GetMaxHealth()), mana).healed;
+    }
+
+    float RunPastPool(Player* bot, float damage, float seconds, bool atFull)
+    {
+        Chase::Heal heal;
+        if (bot)
+            SurvivalKit::RunPastHealPiece(bot, heal);
+        return RunPastPool(bot, damage, seconds, heal, atFull);
     }
 
     bool SurvivesRunPast(Player* bot, float damage, float seconds)
     {
         if (!bot || damage == std::numeric_limits<float>::max())
             return false;
-        float const mana = float(bot->GetPower(POWER_MANA));
-        return damage < float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, seconds, mana, true, true);
+        // [runpast89] the gate and the number the journal line prints are ONE quantity: the bot dies exactly when the
+        // chase's damage is not below the pool Chase::Under walks out for it
+        return damage < RunPastPool(bot, damage, seconds);
     }
 
     bool RunOutSurvives(Player* bot, std::vector<G3D::Vector3> const& points, std::string& why)
@@ -5461,8 +5493,8 @@ namespace SoloSafety
         }
         rest.push_back(here);
         rest.insert(rest.end(), points.begin() + std::min(nearest + 1, points.size() - 1), points.end());
-        float const mana = float(bot->GetPower(POWER_MANA));
-        float const hp = float(bot->GetHealth()) + SurvivalKit::HealPoints(bot, left.seconds, mana, true, true);
+        // [runpast89] the same number the gate above was asked, from the same judge
+        float const hp = RunPastPool(bot, left.High(), left.seconds);
         for (Creature* mob : unpriced)  // [death439] its chase priced here: on the leg's set from now on
             set[mob->GetGUID().GetRawValue()] = RunPastChase(bot, mob).damage;
         std::lock_guard<std::mutex> guard(lock);
@@ -5706,20 +5738,14 @@ namespace SoloSafety
             return false;
         };
         // [lag356] the health a run past may cost: its health now with the heal kit it uses on the move over the
-        // chase's seconds (SurvivesRunPast's test) - one kit look per whole second for the search, not one per mob
-        std::unordered_map<int32, float> budgetOf;
-        auto const budget = [&](float seconds)
-        {
-            int32 const key = int32(std::floor(std::max(seconds, 0.0f)));
-            auto found = budgetOf.find(key);
-            if (found == budgetOf.end())
-                found = budgetOf
-                            .emplace(key, float(bot->GetHealth()) +
-                                              SurvivalKit::HealPoints(bot, float(key), float(bot->GetPower(POWER_MANA)),
-                                                                      true, true))
-                            .first;
-            return found->second;
-        };
+        // chase's seconds (SurvivesRunPast's test) - one kit look for the whole search, not one per mob
+        // [runpast89] ... and the pool now depends on the chase's damage too (a heal only puts back what the chase
+        // took off), so the number is no longer cacheable by the seconds alone - what IS looked up once is the heal
+        // piece, which is the part that locks and walks the bags. The arithmetic after it is free.
+        Chase::Heal runPastHeal;
+        SurvivalKit::RunPastHealPiece(bot, runPastHeal);
+        auto const budget = [&](float damage, float seconds)
+        { return RunPastPool(bot, damage, seconds, runPastHeal, false); };
         // [surv10] coordinator 2026-11-14: the same budget at full health and mana. The fight judge already answers
         // "rest first" where a fight is lost now and won at full (Verdict::Kind::RestFirst, "wins only at full", and
         // RestBeforeWalk acts on it); the chase had no such answer, so a wall the bot's own rest would clear stayed a
@@ -5727,19 +5753,8 @@ namespace SoloSafety
         // 429 against hp 403 - short by 7, 9, 16 and 26 - while its full health is 493, +90. It logged 106 MAZE lines
         // and never rested. Idunk L22 was short by 3 of 483, Jurdogs L19 by 39 of 582: 6 of the 11 distinct walls of
         // that window were within 40 hp of passing. The same comparison the judge makes, no number of mine.
-        std::unordered_map<int32, float> budgetFullOf;
-        auto const budgetFull = [&](float seconds)
-        {
-            int32 const key = int32(std::floor(std::max(seconds, 0.0f)));
-            auto found = budgetFullOf.find(key);
-            if (found == budgetFullOf.end())
-                found = budgetFullOf
-                            .emplace(key, float(bot->GetMaxHealth()) +
-                                              SurvivalKit::HealPoints(bot, float(key),
-                                                                      float(bot->GetMaxPower(POWER_MANA)), true, true))
-                            .first;
-            return found->second;
-        };
+        auto const budgetFull = [&](float damage, float seconds)
+        { return RunPastPool(bot, damage, seconds, runPastHeal, true); };
         // [surv10] a chase this walk cannot take now and could take at full: the walk rests first instead of walling
         std::string restForChase;
         auto const tryRunPast = [&](Creature* mob, PullModel const& model, float& price, float& hp)
@@ -5824,7 +5839,7 @@ namespace SoloSafety
                                  bot->GetName(), bot->GetLevel(), mob->GetName(), mob->GetLevel(), anyStop.x, anyStop.y,
                                  c->GetName(), c->GetLevel());
                     price = std::numeric_limits<float>::max();
-                    hp = budget(with.seconds);
+                    hp = budget(with.High(), with.seconds);
                     return false;
                 }
             for (size_t i = 0; i < chasers.size(); ++i)
@@ -5861,7 +5876,7 @@ namespace SoloSafety
                                  "({:.0f},{:.0f}) inside its reach", bot->GetName(), bot->GetLevel(), chaser->GetName(),
                                  chaser->GetLevel(), stop.x, stop.y);
                     price = std::numeric_limits<float>::max();
-                    hp = budget(with.seconds);
+                    hp = budget(with.High(), with.seconds);
                     return false;
                 }
                 if (chase.damage != std::numeric_limits<float>::max())
@@ -5937,7 +5952,7 @@ namespace SoloSafety
                                                  bot->GetName(), bot->GetLevel(), chaser->GetName(),
                                                  chaser->GetLevel(), c->GetName(), c->GetLevel(), d);
                                     price = std::numeric_limits<float>::max();
-                                    hp = budget(with.seconds);
+                                    hp = budget(with.High(), with.seconds);
                                     return false;
                                 }
                         }
@@ -5947,17 +5962,17 @@ namespace SoloSafety
                 added.push_back({key, chase.damage});
                 // [lag356] the sum is past its health already: no more chasers to grow (each one's assistance look
                 // samples the whole stretch round every idle mob - b447: route costs 71-76 % of the searches' time)
-                if (with.High() >= budget(with.seconds))
+                if (with.High() >= budget(with.High(), with.seconds))
                 {
                     price = with.High();
-                    hp = budget(with.seconds);
+                    hp = budget(with.High(), with.seconds);
                     // [surv10] the same answer where the sum of the chasers passes its health only at full
-                    if (restForChase.empty() && with.High() < budgetFull(with.seconds))
+                    if (restForChase.empty() && with.High() < budgetFull(with.High(), with.seconds))
                         restForChase = Acore::StringFormat(
                             "before running past {} L{}: the chase of its {} chaser(s) is priced {:.0f} against "
                             "{:.0f} now and {:.0f} at full health and mana - short by {:.0f}",
                             mob->GetName(), mob->GetLevel(), chasers.size(), with.High(), hp,
-                            budgetFull(with.seconds), with.High() - hp);
+                            budgetFull(with.High(), with.seconds), with.High() - hp);
                     return false;
                 }
                 // [runpast61] the chase's assistance calls only when the chaser makes them; a mob whose aggro reach the
@@ -5971,15 +5986,15 @@ namespace SoloSafety
                         chasers.push_back(c);  // its own chase and calls are counted in turn
             }
             price = with.High();
-            hp = budget(with.seconds);
+            hp = budget(with.High(), with.seconds);
             if (with.High() >= hp)
             {
                 // [surv10] short of the chase now, inside it at full: the answer is "rest first", not "never"
-                if (restForChase.empty() && with.High() < budgetFull(with.seconds))
+                if (restForChase.empty() && with.High() < budgetFull(with.High(), with.seconds))
                     restForChase = Acore::StringFormat(
                         "before running past {} L{}: its chase is priced {:.0f} against {:.0f} now and "
                         "{:.0f} at full health and mana - short by {:.0f}",
-                        mob->GetName(), mob->GetLevel(), with.High(), hp, budgetFull(with.seconds),
+                        mob->GetName(), mob->GetLevel(), with.High(), hp, budgetFull(with.High(), with.seconds),
                         with.High() - hp);
                 return false;
             }
@@ -6440,11 +6455,17 @@ namespace SoloSafety
         std::string runPastLine;
         if (!ranPastNames.empty())
         {
-            float const kit = float(bot->GetHealth()) +
-                              SurvivalKit::HealPoints(bot, runPast.seconds, float(bot->GetPower(POWER_MANA)), true,
-                                                      true);
-            runPastLine = Acore::StringFormat("run-past priced {:.0f} hp vs hp {:.0f} ({:.0f} s of chase): ",
-                                              runPast.damage, kit, runPast.seconds);
+            // [runpast88] the gate judges on High(), so the line prints the pool that gate was asked and the high
+            // price beside it - the two numbers that decided, not an average nobody judged on
+            float const kit = RunPastPool(bot, runPast.High(), runPast.seconds);
+            runPastLine =
+                runPast.damage == std::numeric_limits<float>::max()
+                    // [runpast89] a boss, a server with no leash radius, or a chaser the bot cannot outrun: there is
+                    // no end to that chase and so no seconds to price it over
+                    ? Acore::StringFormat("run-past has no price at hp {:.0f} (no end to the chase): ", kit)
+                    : Acore::StringFormat("run-past priced {:.0f} hp ({:.0f} at the high end) vs hp {:.0f} "
+                                          "({:.0f} s of chase): ",
+                                          runPast.damage, runPast.High(), kit, runPast.seconds);
             for (size_t i = 0; i < ranPastNames.size(); ++i)
                 runPastLine += (i ? ", " : "") + ranPastNames[i];
         }
