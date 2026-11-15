@@ -1812,7 +1812,37 @@ namespace Leader::Travel
                 {
                     Creature* anchor = map->GetCreature(pack->anchor);
                     float const back = nearestTo(pack->spot, route.routePlanDone);
-                    float const forward = nearestTo(pack->spot, ahead);
+                    // [route22] The walk ahead is the plan's own stops, so for a pack that IS one of those stops the
+                    // old polyline passed through its own spot and this distance came out 0 - and 0 can never clear
+                    // `forward > AggroReach`, so the verdict was structurally impossible, not merely unlucky. b499,
+                    // six fives of one wave, 1592 notBehind records over 249 plans: ONE behind in all of them, and
+                    // on every far row (fromTank 120-182 yd, pastCleared true, reach 19-26) the walk-ahead distance
+                    // reads 0.0 while wasOld reads true. The handful that read 1.0-3.5 are the packs whose mob had
+                    // drifted a yard or two off the kept stop's spot, and the one wasOld=false row reads 3.5. So
+                    // [route20] opened this test to the plan's own stops and they walked into a room where the
+                    // answer was fixed before any fact was read: the pack was being measured against itself.
+                    // The walk ahead now leaves out the stop that belongs to THIS pack (its own mobs) and keeps
+                    // every other stop, the leader's position and the boss spot exactly as before. Nothing else
+                    // changes: no new number, no new term, the verdict's own line is untouched, and a pack that is
+                    // not a stop of the kept plan is measured against the very same polyline as before.
+                    std::vector<Position> aheadFor{start};
+                    for (PlannedStop const& stop : kept)
+                    {
+                        if (stop.patrol)
+                            continue;
+                        bool const own =
+                            std::any_of(stop.mobs.begin(), stop.mobs.end(), [&pack](ObjectGuid const& guid)
+                                        {
+                                            return std::find(pack->mobs.begin(), pack->mobs.end(), guid) !=
+                                                   pack->mobs.end();
+                                        });
+                        if (!own)
+                            aheadFor.push_back(stop.spot);
+                    }
+                    if (toBoss)
+                        aheadFor.push_back(bossSpot);
+                    float const forwardAll = nearestTo(pack->spot, ahead);  // the old reading, for the log only
+                    float const forward = nearestTo(pack->spot, aheadFor);
                     float const farYd = start.GetExactDist(pack->spot);
                     bool const pastCleared =
                         std::any_of(route.routePlanDone.begin(), route.routePlanDone.end(),
@@ -1827,35 +1857,27 @@ namespace Leader::Travel
                     bool const pastBoss = toBoss && farYd > start.GetExactDist(bossSpot);
                     behind = anchor && back >= 0.0f && forward >= 0.0f && (back < forward || pastBoss) &&
                              pastCleared && forward > AggroReach(anchor, leader);
-                    // [route21] `forward >= 0` is where this verdict now dies, and it dies silently. [route20]
-                    // opened the test to the stops its `isOld` shield had kept out, and b498 answered: five1-1
-                    // judged 282 packs over 47 plans - every one of them wasOld, so every one of them is a stop
-                    // [route20] let through - and called NOT ONE of them behind. In the far rows (fromTank 150-285
-                    // yd) `ahead` reads -1.0, which is `nearestTo`'s no-answer, while `back` reads a sane 114-234
-                    // and pastCleared / pastBoss are true: so the walk-ahead distance is the one input missing, and
-                    // every other input already says "off the way". -1 is what `nearestTo` returns when it has no
-                    // leg to measure against - fewer than two spots in `ahead` - and `ahead` is start, then the
-                    // kept non-patrol stops, then the boss spot only when the next boss is known. The two rows that
-                    // DID read an answer (0.7 and 11.5 yd) were packs on the path, refused for the right reason
-                    // (inside their own aggro reach of it). So the shape of the input decides the verdict, and no
-                    // line said so. These three facts name the case per pack, and nothing about the decision
-                    // changes: no new number, no new term, the verdict above is untouched.
-                    if (!behind && anchor && forward < 0.0f)
+                    // [route22] The reading the pack's own stop was hiding, said once per cadence. [route21] put
+                    // its line behind `forward < 0` on my own misreading of this record (a report script printed a
+                    // 0.0 field as -1.0), so it could never fire - the value was 0, not missing. This says what the
+                    // two readings are, so one run shows how much the self-measurement was worth.
+                    // No number of its own: the line fires when the own stop was really left out and the reading
+                    // grew by it, nothing more.
+                    if (anchor && aheadFor.size() < ahead.size() && forward > forwardAll)
                     {
-                        static thread_local uint32 noAheadMs = 0;  // a log cadence only, per map thread
-                        if (!noAheadMs || getMSTimeDiff(noAheadMs, getMSTime()) > 5 * IN_MILLISECONDS)
+                        static thread_local uint32 selfAheadMs = 0;  // a log cadence only, per map thread
+                        if (!selfAheadMs || getMSTimeDiff(selfAheadMs, getMSTime()) > 5 * IN_MILLISECONDS)
                         {
-                            noAheadMs = getMSTime();
-                            if (!noAheadMs)
-                                noAheadMs = 1;
-                            LOG_INFO("playerbots", "[route21] {}: {} is left a stop with no verdict: the walk ahead "
-                                     "has no distance to it ({} spot(s) ahead, {} done, next boss {}), while it "
-                                     "stands {:.0f} yd from the leader, {:.0f} yd from the cleared walk, "
-                                     "pastCleared {}, pastBoss {}{}",
-                                     group.Run().runId, PlanStopName(map, *pack), uint32(ahead.size()),
-                                     uint32(route.routePlanDone.size()), toBoss ? "known" : "unknown", farYd, back,
-                                     pastCleared, pastBoss,
-                                     wasOld ? " [route20] - a stop of the plan until now" : "");
+                            selfAheadMs = getMSTime();
+                            if (!selfAheadMs)
+                                selfAheadMs = 1;
+                            LOG_INFO("playerbots", "[route22] {}: {} was measured against its own stop: {:.1f} yd "
+                                     "from the walk ahead with it, {:.1f} yd without ({} spot(s) ahead of {}), "
+                                     "{:.0f} yd from the leader, {:.0f} yd from the cleared walk, reach {:.0f}, "
+                                     "pastCleared {}, pastBoss {} -> behind {}",
+                                     group.Run().runId, PlanStopName(map, *pack), forwardAll, forward,
+                                     uint32(aheadFor.size()), uint32(ahead.size()), farYd, back,
+                                     AggroReach(anchor, leader), pastCleared, pastBoss, behind);
                         }
                     }
                     // [lead1324] the verdict's inputs for a pack not judged behind too (the triage compares them)
@@ -1872,9 +1894,11 @@ namespace Leader::Travel
                                           .Bool("pastBoss", pastBoss)  // [lead1341]
                                           .Bool("wasOld", wasOld)  // [route20] judged although already a stop
                                           // [route21] the shape of the input the verdict died on
-                                          .Num("aheadSpots", int64(ahead.size()))
+                                          .Num("aheadSpots", int64(aheadFor.size()))
                                           .Num("doneSpots", int64(route.routePlanDone.size()))
                                           .Bool("toBoss", toBoss)
+                                          // [route22] the same distance measured against the plan's own stop too
+                                          .Real("aheadWithOwn", forwardAll)
                                           .Build());
                     if (behind)
                     {
