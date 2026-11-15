@@ -1068,7 +1068,7 @@ void GuildCoordinator::Decision(std::string text)
         decisions_.pop_back();
 }
 
-void GuildCoordinator::Alert(std::string text)
+void GuildCoordinator::Alert(std::string text, Journal::Alert facts)
 {
     LOG_INFO("playerbots", "[alert] {}", text);
     // [feed20] the count over the window. alerts_ keeps the last 20 lines, so "LOOP 44 in the hour" was not a number
@@ -1081,7 +1081,60 @@ void GuildCoordinator::Alert(std::string text)
         c.num = uint32(std::strtoul(text.c_str() + hash + 1, nullptr, 10));
     if (size_t const why = text.rfind("reason="); why != std::string::npos)
         c.reason = text.substr(why + 7);
-    alertCounts_.push_back(std::move(c));
+    alertCounts_.push_back(c);  // [jrn40] a copy, not a move: the pieces are the journal row's too
+
+    // [jrn40] THE ALERT AS A ROW, written HERE and nowhere else. This function is the single funnel every alert
+    // already passes through, so recording it here AND at the site that raised it would be the double count this
+    // journal exists to prevent - in the log one cause printed three and four times, and a run's report line
+    // printed in five places, inflating counts by up to 7.3x. One event, one row.
+    //
+    // The alert's kind, its "#N" and its "reason=" are not re-parsed: they were taken apart two lines above for
+    // the window counter, and the same pieces go into the row.
+    //
+    // THE DEDUPLICATION KEY IS THE CAUSE AND NOTHING ELSE. Measured on the stream: keying the idle diagnostics on
+    // the whole line gave 757 "causes" over 3 900 rows and keying on the cause alone gave one - the 757 were a
+    // trailing list of action names. Here the same trap is the bot's name, its level and its coordinates, which are
+    // in every alert text: the key is the kind plus the reason with its numbers replaced, and nothing else.
+    Journal::Alert row;
+    // `facts` arrives already filled by the site that HAS the facts (the loop detector fills loop_n, the activity,
+    // the three no-progress flags and the action trail); the funnel only adds what it took apart above. The site
+    // does not write a row of its own - that is the whole point of one funnel.
+    Journal::Alert row = facts;
+    row.kind = c.kind;
+    row.num = c.num ? Optional<uint32>(c.num) : Optional<uint32>();
+    row.reason = c.reason;
+    row.text = text;
+    uint64 const sourceId = Journal::RecordAlert(row);
+
+    Journal::Issue issue;
+    issue.kind = "alert_" + c.kind;
+    issue.severity = "mid";
+    // An alert is raised from facts the coordinator holds, but WHY the activity made no progress is not something
+    // this funnel knows - so the repro class and `real` are honest rather than flattering. Post-analysis fills them.
+    issue.reproClass = "not_offline";
+    issue.real = "unknown";
+    issue.realWhy = "the alert fired on the coordinator's own facts; whether the underlying state is a defect is "
+                    "not established at runtime here";
+    issue.realSource = "emitter";
+    issue.realWhen = "";
+    issue.dedupKey = "alert|" + c.kind + "|" + Journal::WithoutNumbers(c.reason);
+    issue.why = text;
+    issue.botName = row.botName;
+    issue.botLow = row.botLow;
+    issue.mapId = row.mapId;
+    issue.zoneId = row.zoneId;
+    issue.x = row.x;
+    issue.y = row.y;
+    issue.z = row.z;
+    if (c.num)
+    {
+        issue.value = double(c.num);
+        issue.valueUnit = "member";
+    }
+    issue.sourceTable = "pb_journal_alert";
+    issue.sourceId = sourceId;
+    Journal::RecordIssue(issue);
+
     alerts_.emplace_front(Now(), std::move(text));
     while (alerts_.size() > 20)
         alerts_.pop_back();
@@ -11409,6 +11462,25 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
         st.loopAlerted.insert(status);
         PlanRow const* row = Row(bot->GetGUID().GetCounter());
         PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
+        // [jrn40] the loop detector's own facts go to the funnel as COLUMNS instead of only inside the sentence.
+        // The three no-progress flags are `true` here by construction - `noProgress` above is the conjunction of
+        // all three - and they are written rather than implied, because "no XP but the quest did advance" is a
+        // different problem from this one and a query has to be able to tell them apart the day it happens.
+        Journal::Alert facts;
+        facts.loopN = row ? row->num : 0;
+        facts.activity = RpgName(status);
+        facts.noProgressXp = true;
+        facts.noProgressQuest = true;
+        facts.samePlace = true;
+        facts.lastAction = LastAction(ai, "new rpg status update");
+        facts.botName = bot->GetName();
+        facts.botLow = bot->GetGUID().GetCounter();
+        facts.botLevel = bot->GetLevel();
+        facts.mapId = bot->GetMapId();
+        facts.zoneId = bot->GetZoneId();
+        facts.x = bot->GetPositionX();
+        facts.y = bot->GetPositionY();
+        facts.z = bot->GetPositionZ();
         Alert("LOOP #" + std::to_string(row ? row->num : 0) + " " + bot->GetName() + " L" +
               std::to_string(bot->GetLevel()) + ": " + RpgName(status) +
               " re-entered without progress (no XP, no quest progress, same place) at map " +
@@ -11417,7 +11489,8 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
               LastAction(ai, "new rpg status update") +  // [loop10] not its own PREREQ line
               // [feed20] ... and the cause in words: the `[rpg]` line of this very status change (OnRpgLine runs
               // before this call), which is the line the triage reads beside the alert
-              ", reason=" + (st.rpgLine.empty() ? "none recorded" : st.rpgLine));
+              ", reason=" + (st.rpgLine.empty() ? "none recorded" : st.rpgLine),
+              facts);
     }
     else if (!noProgress)
         st.loopAlerted.erase(status);

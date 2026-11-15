@@ -7,6 +7,8 @@
 #ifndef PLAYERBOTS_GUILDCOORDINATOR_H
 #define PLAYERBOTS_GUILDCOORDINATOR_H
 
+#include "Journal.h"  // [jrn40] Journal::Alert: the structured facts a site hands to the alert funnel
+
 #include <array>
 #include <atomic>
 #include <deque>
@@ -1439,7 +1441,10 @@ private:
     void DecideLoot(Player* looter, Item* item, LootReport const& report);
 
     void Decision(std::string text);
-    void Alert(std::string text);
+    // [jrn40] `facts` lets the site that HAS the structured facts (the loop detector) hand them over so the
+    // single funnel below writes the one journal row. A site must never write a row of its own: one event, one row.
+    void Alert(std::string text, Journal::Alert facts);
+    void Alert(std::string text) { Alert(std::move(text), Journal::Alert()); }
     std::string Chain(uint32 low) const;
     std::string Who(uint32 low) const;
     std::string RaidLeaderText(char grp) const;

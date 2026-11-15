@@ -266,6 +266,23 @@ public:
         if (Creature* mob = unit ? unit->ToCreature() : nullptr)
             Journal::NoteAggro(mob, victim);
     }
+
+    // [jrn40] THE STANDING WATCH, by the FACT of position. The user asked for it in these words: "if it stands in
+    // one place for more than a minute, STANDING exactly, then for what reason" - and the project's rule is that
+    // idleness is counted by fact, because a declared TRAVEL or DUNGEON status hides a hang.
+    //
+    // No threshold is compiled in: the row carries the duration and "longer than 30 seconds" is a WHERE clause,
+    // which is also why the user's later "30 seconds was figurative" costs nothing. It writes and decides nothing.
+    //
+    // WHY THIS HOOK AND NOT THE BOT'S OWN TICK: Unit::Update announces every unit on its map thread, this script is
+    // already registered for every unit hook, so the dispatch is already paid and what is added is one branch for a
+    // non-player. The bot's own tick (PlayerbotAI) would be the other candidate, and it is not used because another
+    // owner has uncommitted work across that exact function today - see the report.
+    void OnUnitUpdate(Unit* unit, uint32 /*diff*/) override
+    {
+        if (Player* player = unit && unit->IsPlayer() ? unit->ToPlayer() : nullptr)
+            Journal::NoteStanding(player);
+    }
 };
 
 // [guild15] a guild bot's gear history (GuildGear::History*) and its measured damage reset when its gear, class

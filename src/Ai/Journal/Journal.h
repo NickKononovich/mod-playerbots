@@ -281,6 +281,11 @@ namespace Journal
         float x = 0.f;
         float y = 0.f;
         float z = 0.f;
+        // [jrn40] the run this line belongs to. EMPTY MEANS "outside a run", not "lost": a line out of the
+        // appender has no run to name, and the appender is handed finished text and nothing else. Without this
+        // column all 411 819 stream rows - every alert, idle report and stuck line - could not be joined to a run
+        // by identity at all, only by nearness in time, which is the mistake a fixture must never bake in.
+        std::string runId;
         // the wall clock in ms when the line was WRITTEN, 0 for "now". The log appender passes its own stamp rather
         // than letting the row take one later: the order of two things inside one second is the point.
         uint64 atMs = 0;
@@ -476,6 +481,306 @@ namespace Journal
 
     void RecordDeath(Death const& death);
 
+    // [jrn40] THE LIST OF PROBLEMS: one row per PROBLEM, driven to zero rows.
+    //
+    // The user's own words: "if it stands in one place for more than a minute, standing exactly, then for what
+    // reason... so that we have ready-made tables of problems. Say, an issues table, and we will analyse every
+    // problem there until there are 0 rows."
+    //
+    // WHAT THIS TABLE IS AND IS NOT. It is a THIN, UNIFORM POINTER, the same shape for every kind of problem, and
+    // it is not a copy of anybody's inputs. A death already has pb_journal_death with its killer, its health and
+    // the pool behind it; copying those here would put one quantity in two places, against "do not duplicate
+    // another owner's table, link to it" and against "one quantity, one owner" - and the columns would become the
+    // union of every kind's fields, NULL for all the others, which is the tagged union this project already
+    // rejected once. So the inputs stay with their domain (pb_journal_death, pb_journal_idle, pb_journal_stuck,
+    // pb_journal_alert, guild_project_runs) and this row carries `source_table` + `source_id` to reach them.
+    //
+    // THE FOUR THINGS THAT KEEP IT HONEST, each of which it would otherwise lie about:
+    //
+    //  1. IT IS NOT UNDER RETENTION. Every other journal table lives 24-48 h and is cleaned by dropping hour
+    //     partitions. A list of problems that evaporates every two days is not a list of problems. This table is
+    //     not partitioned and the sweep does not name it.
+    //
+    //  2. A ROW IS A PROBLEM, NOT AN OCCURRENCE. This is trap #1 of this project: in the log one cause printed 3-4
+    //     times and a run's report line printed in five places, inflating counts by up to 7.3x. So the row carries
+    //     `firstSeenMs`, `lastSeenMs`, `occurrences`, and the deduplication key IS a column with a UNIQUE index on
+    //     its hash - a second occurrence updates the row instead of adding one. Without that the table could never
+    //     reach zero and its count would mean nothing.
+    //
+    //  3. NUMBERS COME OUT OF THE REASON, or one cause fans out into a staircase. Trap #2: "177 at 15 %, 158 at
+    //     14 %..." looked like fifteen causes and was ONE cause behind 3 216 holds. So `dedupKey` is the reason
+    //     with its numbers replaced, and the range they spanned is kept beside it in `valueMin` / `valueMax`.
+    //
+    //  4. A ROW CLOSES CHECKABLY AND REOPENS BY ITSELF. `status` and `fixedInBuild`, and the rule is in the SQL:
+    //     an occurrence arriving after the row was marked fixed, on a build not older than the one it was fixed in,
+    //     puts the row back to "returned". Nothing has to be believed.
+    //
+    //     AND THE REAL DANGER OF A TABLE DRIVEN TO ZERO: it rewards closing a row by RECLASSIFYING it instead of
+    //     fixing it. This project already has the example - 20 502 lines tagged as deaths turned out to be deaths
+    //     PREVENTED, and the real ones were 17. Had those become issues, twenty thousand problems would have been
+    //     "solved" by renaming. So every row carries `realWhen`: the emitter's own criterion for this being a real
+    //     problem, written when the row is created and never rewritten by whoever closes it. The audit is a query:
+    //     a row with status other than "open" and an empty `fixedInBuild` was closed by hand with no fix shipped.
+    struct Issue
+    {
+        // [jrn40] HOW REPRODUCIBLE IT IS, as a code in its own indexed column, because it decides what can be
+        // written as a test at all:
+        //   "decision" - the inputs exist and the judge is deterministic: a death, a pull taken with a negative
+        //                margin, an underpriced pack, a healer further off than the judge allowed. A test can put
+        //                the same conditions back and watch the verdict.
+        //   "instrument" - we did not notice: the idle diagnostics that skipped tanks and healers. The world was
+        //                fine; the measurement was not.
+        //   "not_offline" - a property of the world over time: standing for a minute, an order or a walk blocked,
+        //                an activity looping. There is nothing to replay offline, so a test cannot be the proof.
+        std::string kind;        // the problem's kind, taken from the live tags and never invented
+        std::string severity;    // "low" | "mid" | "high" - the emitter's own call
+        std::string reproClass;  // one of the three above
+        std::string status;      // "open" | "fixed" | "returned" | "wontfix"
+
+        // [jrn40] THE USER'S OWN COLUMNS: "say there is a `checked` column, you set checked true, meaning the
+        // problem is checked, solved; a unit test is written there". They are in the schema and so are the three
+        // things that keep the tick from becoming perpetual optimism - these are SCHEMA properties, not discipline:
+        //
+        //  1. THE TICK IS NOT TAKEN ON TRUST. `checked_state` is a GENERATED column, computed by the database from
+        //     what is actually there, so it cannot be set by hand and cannot disagree with the evidence:
+        //       "unchecked"   - checked is 0
+        //       "by_test"     - a repro class of "decision" with `test_name` filled: a test holds it
+        //       "by_run"      - a repro class of "not_offline" with `cleared_in_run` and `fixed_in_build` filled:
+        //                       a run where the sign is gone holds it
+        //       "unconfirmed" - checked is 1 and NEITHER of the above. Visible as a value, not as a comment.
+        //     So "how many problems are really closed" and "how many are closed on someone's word" are two
+        //     different queries over the same column, and neither needs anybody to be believed.
+        //
+        //  2. THE TICK CLEARS ITSELF. An occurrence arriving after the row was marked fixed, on a build not older
+        //     than `fixed_in_build`, sets the row back to "returned" AND zeroes `checked` in the same statement.
+        //
+        //  3. MERGING DOES NOT LOSE THE COUNT. `merged_into` names the row this one was folded into when the cause
+        //     turned out to be the same, and the merged row's `occurrences` must be added to the target's -
+        //     otherwise merging becomes a way to lower the number of problems without lowering the problems.
+        //     The audit for that is a query: SUM(occurrences) over the merged rows against the target's.
+        bool checked = false;
+        std::string checkedBy;      // who or what set it ("" while unchecked)
+        std::string testName;       // the unit test that holds it, when one is written
+        std::string clearedInRun;   // the run_id of a run in which the sign was gone
+        std::string fixedInBuild;   // the build the fix shipped in
+        uint64 mergedInto = 0;      // the issue row this one was folded into (0: none)
+
+        // the key that makes the row a problem instead of a case: the reason with its numbers taken out. The UNIQUE
+        // index is on its hash (computed in SQL from this very string), so the full key stays readable while two
+        // different keys can never be merged by a truncated index.
+        std::string dedupKey;
+
+        std::string why;       // the LAST occurrence's own sentence, numbers and all: for the eyes
+        std::string realWhen;  // the criterion the EMITTER named for this being real, in its own words
+
+        // [jrn40] IS IT A REAL PROBLEM - A COLUMN, NOT A GATE. The user: "better to over-worry than under-worry.
+        // If we add rubbish, we will decide it is rubbish. But decide it gradually, not by filtering first and then
+        // finding we have no data and cannot tell what happened. Better to start wide and narrow later."
+        //
+        // The asymmetry is real and this project has lived it: positions were not written at all, so no question
+        // about where a bot stood had an answer. A surplus row costs one query; a missing one costs the whole
+        // investigation. So every detector writes, and whether it is real is recorded rather than decided at the
+        // door.
+        //
+        // THREE VALUES, AND THE THIRD IS NOT A GAP BY NEGLIGENCE. This is the project's own '' against '?'
+        // distinction - "checked, nobody reads it" against "not established yet" - which has paid for itself more
+        // than once: a query that merges them answers anyway and lies.
+        //   "yes"     - the emitter knows at runtime that this is real, and `realWhen` says by what criterion
+        //   "no"      - judged rubbish, with `realWhy` saying why IN WORDS. The row STAYS: marking it is a case
+        //               analysed, not a case that vanished
+        //   "unknown" - the cause is not known at runtime. An honest value, and the one post-analysis fills in
+        // The count driven to zero is `real IN ('yes','unknown')`.
+        std::string real;        // "yes" | "no" | "unknown"
+        std::string realWhy;     // why it is or is not real, in words
+        std::string realSource;  // "emitter" (measured at runtime) | "post" (post-analysis) - without this, a
+                                 // month later there is no telling the measured from the inferred
+
+        // the number the reason carried, if it had one: its range over every occurrence
+        Optional<double> value;
+        std::string valueUnit;
+
+        std::string botName;
+        uint32 botLow = 0;
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        float x = 0.f, y = 0.f, z = 0.f;
+
+        std::string runId;
+        // WHERE THE INPUTS ARE. The row points at the domain's own record and keeps no copy of it.
+        std::string sourceTable;  // "pb_journal_death" | "pb_journal_idle" | "pb_journal_stuck" | ...
+        uint64 sourceId = 0;
+        uint64 decisionId = 0;  // when the problem hangs off a decision
+
+        // [jrn40] THE WINDOW OF THE SLICE, TAKEN FROM THE DATA AND NOT CHOSEN BY HAND. A fixture built for a test
+        // has to cover some stretch of time, and deciding by eye how many seconds back to look would bake OUR
+        // GUESS into the test. So the window is given by an event: from the last real PROGRESS to the moment of the
+        // problem. `lastProgressMs` is that moment; with `run_id` and the problem's own time the slice is a query.
+        // 0 means the emitter could not name a last progress, which is a gap and not "the run's beginning".
+        uint64 lastProgressMs = 0;
+    };
+
+    // Writes (or updates) one problem. Returns nothing: the row's identity is its dedup key, not an id the caller
+    // could hold - a caller that kept an id would be tempted to count occurrences itself, and the count lives in
+    // the row.
+    void RecordIssue(Issue const& issue);
+
+    // [jrn40] THE CONSEQUENCE THAT MUST NOT BE LOST. The issue row lives for ever; the domain record it points at
+    // is swept after 24-48 h. So a week later `source_id` points at nothing, and the only surviving copy of the
+    // inputs is a FIXTURE FILE taken at the moment the problem was opened. The fixture exporter is another owner's
+    // code; it installs itself here, and RecordIssue calls it for a row it is opening for the first time, storing
+    // whatever path it returns in `fixture_path`. Until something installs one, the column stays empty - which is
+    // a gap a query can see, not a silent loss.
+    using FixtureWriter = std::string (*)(Issue const& issue);
+    void SetFixtureWriter(FixtureWriter writer);
+
+    // [jrn40] One idle-diagnostics record: the 15 s window of why a bot in a fight cast nothing, and the standing
+    // watch. Both belong to PlayerbotAI's own tick, which is the only moment those numbers exist.
+    //
+    // THE EXCLUSION THAT WAS LIFTED, and why it mattered: the window used to return at once for tanks and healers
+    // (`IsTank(bot) || IsHeal(bot)`), so two roles out of three were NEVER measured - and the healer is exactly
+    // where a chain of deaths came from. A quantity that cannot be measured for two thirds of its subjects is not
+    // objective, it is objective-looking. `role` is a column so the roles are read apart rather than mixed.
+    //
+    // `event` says which record this is, because they are two different quantities and nothing may average them:
+    //   "window"   - one IDLE_DIAG window: the tick counts and the gap counts below
+    //   "standing" - the bot has not left a small radius for longer than a minute (the user asked for this one by
+    //                name, "standing exactly"): `stoodSec` and `stoodYd`, and the tick counts are NULL
+    struct Idle
+    {
+        std::string event;  // "window" | "standing"
+        std::string botName;
+        uint32 botLow = 0;
+        Optional<uint32> botLevel;
+        Optional<std::string> role;  // tank / healer / dps - the whole point of lifting the exclusion
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        float x = 0.f, y = 0.f, z = 0.f;
+        Optional<bool> inDungeon;
+        Optional<bool> inCombat;
+
+        Optional<float> windowSec;  // the window the counts below cover: a count without its window is not a count
+        Optional<uint32> ticks;
+        Optional<uint32> casts;
+        Optional<uint32> castWait;
+        Optional<uint32> nonCast;
+        // why a tick produced nothing - each reason its own column, because each is filtered on
+        Optional<uint32> noTarget;
+        Optional<uint32> rangeLos;
+        Optional<uint32> moving;
+        Optional<uint32> gcd;
+        Optional<uint32> threat;     // the bot's OWN threat on the target
+        Optional<uint32> leaderHold;  // the leader's command zeroed its actions
+        Optional<uint32> other;
+        // and `other` split by the engine's own refusal, which is what made 37 % of idle ticks answerable
+        Optional<uint32> refUnsaid;
+        Optional<uint32> refUseless;
+        Optional<uint32> refImpossible;
+        Optional<uint32> refPrereq;
+        Optional<uint32> refFailed;
+        Optional<uint32> refBlocked;
+        Optional<uint32> refNoCandidate;
+        // the gaps between ticks. The two boundaries are the ones the domain already counts; nothing new.
+        Optional<uint32> gapN;
+        Optional<uint32> gapAvgMs;
+        Optional<uint32> gapMaxMs;
+        Optional<uint32> gapOver150;
+        Optional<uint32> gapOver400;
+        std::string topActions;  // the window's busiest actions, printed: read with the eyes
+
+        // the standing watch
+        Optional<float> stoodSec;  // how long it has not left the radius
+        Optional<float> stoodYd;   // the radius it stayed inside - the pair is the fact, neither number alone is
+        std::string doing;         // what the engine's last action was, as the engine already knows it
+        std::string why;           // the reason in words, from what the domain knows at this instant
+
+        std::string runId;
+    };
+
+    // Returns the row's id so the issue row can point at it.
+    uint64 RecordIdle(Idle const& idle);
+
+    // [jrn40] Something is held or awaited and nothing progresses. Four emitters, one shape; each writes its own
+    // row, and `kind` says which of them did:
+    //   "stuck_target" - the combat engine holds an idle mob as its target and no action of it runs ([stuck258])
+    //   "stale_victim" - the leader held a target outside a fight whose victim is gone ([queue-stale-idle-victim])
+    //   "pet_reach"    - a pet has no spot out of an idle mob's reach, or trails its owner ([pet idle reach])
+    //   "wait_behind"  - a member is beyond the group reward distance and is walked to ([wait14])
+    struct Stuck
+    {
+        std::string kind;
+        std::string botName;
+        uint32 botLow = 0;
+        Optional<uint32> botLevel;
+        Optional<std::string> role;
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        float x = 0.f, y = 0.f, z = 0.f;
+
+        std::string targetName;
+        uint32 targetEntry = 0;
+        uint32 targetLow = 0;
+        Optional<float> targetYd;
+        Optional<uint32> targetLevel;
+        Optional<bool> inCombat;
+        std::string actionRunning;  // the engine's last action, or "" when it had none to run - which is the point
+        std::string why;
+        std::string runId;
+    };
+
+    uint64 RecordStuck(Stuck const& stuck);
+
+    // [jrn40] One alert. GuildCoordinator::Alert is the single funnel every alert already passes through, so it is
+    // the one place this is written from: an alert recorded both there and at the site that raised it would be the
+    // double count this journal exists to prevent.
+    struct Alert
+    {
+        std::string kind;  // the alert's first word: LOOP | DEATH | MISSED_DUNGEON | DOUBLE_DECISION | HANDOUT | ...
+        Optional<uint32> num;      // the "#N" the alert prints: the member's number in the plan
+        std::string botName;
+        uint32 botLow = 0;
+        Optional<uint32> botLevel;
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        float x = 0.f, y = 0.f, z = 0.f;
+
+        // the LOOP alert's own facts, filled by the site that has them
+        Optional<uint32> loopN;
+        std::string activity;  // the RPG status that re-entered without progress
+        Optional<bool> noProgressXp;
+        Optional<bool> noProgressQuest;
+        Optional<bool> samePlace;
+        std::string lastAction;
+
+        std::string reason;  // the cause in words, as the alert prints it
+        std::string text;    // the whole printed line: one event, written once
+        std::string runId;
+    };
+
+    uint64 RecordAlert(Alert const& alert);
+
+    // [jrn40] THE DETECTOR THE USER ASKED FOR BY NAME: "if it stands in one place for more than a minute, STANDING
+    // exactly, then for what reason". Standing is judged BY THE FACT OF POSITION and never by a declared status -
+    // the project's rule is that idleness is counted by fact, because TRAVEL and DUNGEON hide a hang.
+    //
+    // IT IS AN INSTRUMENT AND NOTHING ELSE. The minute is the DETECTOR's threshold; it may not reach a single bot
+    // decision, and the user's rule that no elapsed-time rule changes a decision stands untouched. Nothing here
+    // writes to the bot, the engine or any order.
+    //
+    // THE RADIUS IS NOT A NEW NUMBER. It is max(GetCombatReach(), 1.5f) - exactly the expression the loop detector
+    // in GuildCoordinator already uses for "same place". Inventing a second radius for the same idea would be two
+    // judges of one quantity.
+    //
+    // THE REASON COMES FROM WHAT IS ALREADY KNOWN AT THIS INSTANT - the engine's own last action and state, read
+    // through public accessors. The world is NOT asked a second time: a second reading at another moment would be
+    // a second judge, and the reason would then belong to a different instant than the standing it explains.
+    //
+    // Called from the unit-update hook, which already dispatches to this module for every unit, so the cost added
+    // is one branch for a non-player plus, for a bot, two float compares and a stamp under a sharded lock.
+    void NoteStanding(Player* bot);
+
+    // Drops a bot's standing episode (its logout or removal): the state is per bot and must not outlive it.
+    void ForgetStanding(uint32 botLow);
+
     // [jrn30] The three callers that turn a core hook into one of the rows above (JournalFight.cpp). They are
     // separate from Record*() so that the script layer stays a one-line call and the facts of each event are
     // gathered in one place that can be read whole.
@@ -501,6 +806,22 @@ namespace Journal
     // ONE OWNER PER QUANTITY: `DroppedRows()` is monotonic since the process started, and the writer's own error
     // line reports the DELTA it has not yet reported. Two readers of one counter, each resetting it, is the defect
     // this journal exists to prevent.
+    // [jrn40] the journal's ONE wall clock, exposed so an emitter outside this file stamps its rows from the
+    // same source. Two clocks for one quantity is the defect this journal exists to prevent.
+    // [jrn40] A REASON WITH ITS NUMBERS TAKEN OUT, which is what a deduplication key is made of. Trap #2 of this
+    // project in one line: "177 at 15 %, 158 at 14 %..." looked like fifteen causes and was ONE cause behind 3 216
+    // holds. Every run of digits becomes "N", so the staircase collapses and the range it spanned is kept beside
+    // it in the row (value_min / value_max) instead of being spread across fifteen rows.
+    std::string WithoutNumbers(std::string const& text);
+
+    // [jrn40] A REASON WITH ITS NUMBERS TAKEN OUT, which is what a deduplication key is made of. Trap #2 of this
+    // project in one line: "177 at 15 %, 158 at 14 %..." looked like fifteen causes and was ONE cause behind 3 216
+    // holds. Every run of digits becomes "N", so the staircase collapses into one row and the range it spanned is
+    // kept beside it (value_min / value_max) instead of being spread over fifteen rows that each mean nothing.
+    std::string WithoutNumbers(std::string const& text);
+
+    uint64 ClockMs();
+
     uint64 QueuedRows();
     uint64 DroppedRows();
 

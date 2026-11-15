@@ -130,6 +130,9 @@ namespace Journal
         // over them would answer anyway. This is the same rule as '' against '?' on read_by, in numbers.
         std::string OrNull(Optional<uint32> const& v) { return v ? std::to_string(*v) : std::string("NULL"); }
         std::string OrNull(Optional<float> const& v) { return v ? Real(*v) : std::string("NULL"); }
+        // a separate overload and not a conversion: Optional<double> does not convert to Optional<float>, and the
+        // metric rows and an issue's value range are doubles
+        std::string OrNull(Optional<double> const& v) { return v ? Real(*v) : std::string("NULL"); }
         std::string OrNull(Optional<bool> const& v) { return v ? std::string(*v ? "1" : "0") : std::string("NULL"); }
         std::string OrNull(Optional<std::string> const& v, size_t max)
         {
@@ -164,7 +167,7 @@ namespace Journal
         char const* const COLUMNS_READ = "(decision_id, boot_id, at_ms, hour_bucket, reader)";
         char const* const COLUMNS_LINE =
             "(id, boot_id, at_ms, hour_bucket, tag, bot_low, bot_name, map_id, zone_id, pos_x, pos_y, pos_z, text, "
-            "build)";
+            "run_id, build)";
         char const* const COLUMNS_METRIC =
             "(id, boot_id, at_ms, hour_bucket, name, value, unit, from_ms, to_ms, scope, build, value_min, "
             "value_max, value_p95, samples, bots, sessions)";
@@ -182,6 +185,28 @@ namespace Journal
             "area_id, pos_x, pos_y, pos_z, in_dungeon, killer_name, killer_entry, killer_low, killer_level, "
             "killer_health_pct, health_max, damage_from_killer, attackers, judged_pull, expected, pull_expected, "
             "pull_method, context, threat, run_id, decision_id, build)";
+        // [jrn40] the problems table. `checked_state` is NOT here: it is a GENERATED column the database computes,
+        // so it can neither be inserted nor contradicted.
+        char const* const COLUMNS_ISSUE =
+            "(id, boot_id, kind, severity, repro_class, status, dedup_key, dedup_hash, why, real_when, first_seen_ms, "
+            "last_seen_ms, occurrences, value_min, value_max, value_unit, bot_name, bot_low, map_id, zone_id, pos_x, "
+            "pos_y, pos_z, run_id, source_table, source_id, decision_id, build, first_build, checked, checked_at_ms, "
+            "checked_by, test_name, cleared_in_run, fixed_in_build, fixed_ms, merged_into, fixture_path, "
+            "last_progress_ms, is_real, real_why, real_source)";
+        char const* const COLUMNS_IDLE =
+            "(id, boot_id, at_ms, hour_bucket, event, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
+            "pos_y, pos_z, in_dungeon, in_combat, window_sec, ticks, casts, cast_wait, non_cast, no_target, "
+            "range_los, moving, gcd, threat, leader_hold, other, ref_unsaid, ref_useless, ref_impossible, "
+            "ref_prereq, ref_failed, ref_blocked, ref_no_candidate, gap_n, gap_avg_ms, gap_max_ms, gap_over_150, "
+            "gap_over_400, top_actions, stood_sec, stood_yd, doing, why, run_id, build)";
+        char const* const COLUMNS_STUCK =
+            "(id, boot_id, at_ms, hour_bucket, kind, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
+            "pos_y, pos_z, target_name, target_entry, target_low, target_yd, target_level, in_combat, "
+            "action_running, why, run_id, build)";
+        char const* const COLUMNS_ALERT =
+            "(id, boot_id, at_ms, hour_bucket, kind, num, bot_name, bot_low, bot_level, map_id, zone_id, pos_x, "
+            "pos_y, pos_z, loop_n, activity, no_progress_xp, no_progress_quest, same_place, last_action, reason, "
+            "text, run_id, build)";
         char const* const COLUMNS_ACTOR =
             "(decision_id, boot_id, at_ms, hour_bucket, idx, side, name, low, entry, spawn_id, level, spec, role, "
             "health, health_max, health_pct, mana, mana_max, mana_pct, pos_x, pos_y, pos_z, tank_yd, target_yd, "
@@ -213,6 +238,14 @@ namespace Journal
                 return COLUMNS_AGGRO;
             if (!std::strcmp(table, "pb_journal_death"))
                 return COLUMNS_DEATH;
+            if (!std::strcmp(table, "pb_journal_issue"))
+                return COLUMNS_ISSUE;
+            if (!std::strcmp(table, "pb_journal_idle"))
+                return COLUMNS_IDLE;
+            if (!std::strcmp(table, "pb_journal_stuck"))
+                return COLUMNS_STUCK;
+            if (!std::strcmp(table, "pb_journal_alert"))
+                return COLUMNS_ALERT;
             if (!std::strcmp(table, "pb_journal_actor"))
                 return COLUMNS_ACTOR;
             if (!std::strcmp(table, "pb_journal_route"))
@@ -220,6 +253,55 @@ namespace Journal
             if (!std::strcmp(table, "pb_journal_route_stop"))
                 return COLUMNS_ROUTE_STOP;
             return COLUMNS_LINE;
+        }
+
+        // [jrn40] WHAT GOES AFTER THE VALUES LIST, and only one table needs it.
+        //
+        // pb_journal_issue is the one table where a row is a PROBLEM and not an occurrence, so a second occurrence
+        // must UPDATE the row rather than add one - that is requirement 2, and without it the table could never
+        // reach zero and its count would mean nothing. The identity is `dedup_hash` (UNIQUE), and this suffix is
+        // the whole merge rule, in the database rather than in a reader's head:
+        //
+        //   * the window grows: last_seen_ms moves, occurrences rises by one, and first_seen_ms / first_build /
+        //     id / fixture_path are LEFT ALONE - "since when" must not be rewritten by a later sighting;
+        //   * the number's range widens with LEAST / GREATEST, never overwritten: a staircase of fifteen "causes"
+        //     was one cause across a range, and the range is the fact;
+        //   * `why` takes the latest sentence, because it is what is read with the eyes;
+        //   * AND THE ROW REOPENS BY ITSELF. A sighting that arrives after the row was marked fixed, on a build not
+        //     older than the one it was fixed in, flips status to "returned" and ZEROES `checked` in the same
+        //     statement. The build is compared as a number (b499 -> 499), not as text: "b99" against "b100" sorts
+        //     wrongly as text, and a comparison that is right only while the numbers are the same width is a defect
+        //     waiting for build 1000.
+        //
+        // A row the writer has never seen before is inserted as given; everything above only runs on a repeat.
+        char const* SuffixFor(char const* table)
+        {
+            if (std::strcmp(table, "pb_journal_issue"))
+                return "";
+            return " AS inc ON DUPLICATE KEY UPDATE "
+                   "boot_id = inc.boot_id, "
+                   "last_seen_ms = GREATEST(pb_journal_issue.last_seen_ms, inc.last_seen_ms), "
+                   "occurrences = pb_journal_issue.occurrences + 1, "
+                   "value_min = LEAST(IFNULL(pb_journal_issue.value_min, inc.value_min), "
+                   "                  IFNULL(inc.value_min, pb_journal_issue.value_min)), "
+                   "value_max = GREATEST(IFNULL(pb_journal_issue.value_max, inc.value_max), "
+                   "                     IFNULL(inc.value_max, pb_journal_issue.value_max)), "
+                   "why = inc.why, severity = inc.severity, build = inc.build, "
+                   "bot_name = inc.bot_name, bot_low = inc.bot_low, map_id = inc.map_id, zone_id = inc.zone_id, "
+                   "pos_x = inc.pos_x, pos_y = inc.pos_y, pos_z = inc.pos_z, run_id = inc.run_id, "
+                   "source_table = inc.source_table, source_id = inc.source_id, "
+                   "checked = IF(pb_journal_issue.status = 'fixed' "
+                   "             AND inc.last_seen_ms > pb_journal_issue.fixed_ms "
+                   "             AND (pb_journal_issue.fixed_in_build = '' "
+                   "                  OR CAST(SUBSTRING(inc.build, 2) AS UNSIGNED) "
+                   "                     >= CAST(SUBSTRING(pb_journal_issue.fixed_in_build, 2) AS UNSIGNED)), "
+                   "           0, pb_journal_issue.checked), "
+                   "status = IF(pb_journal_issue.status = 'fixed' "
+                   "            AND inc.last_seen_ms > pb_journal_issue.fixed_ms "
+                   "            AND (pb_journal_issue.fixed_in_build = '' "
+                   "                 OR CAST(SUBSTRING(inc.build, 2) AS UNSIGNED) "
+                   "                    >= CAST(SUBSTRING(pb_journal_issue.fixed_in_build, 2) AS UNSIGNED)), "
+                   "          'returned', pb_journal_issue.status)";
         }
 
         // defined below; the writer thread calls it as its first act (see Writer::Loop)
@@ -344,6 +426,9 @@ namespace Journal
                 {
                     if (!table || sql.empty())
                         return;
+                    // [jrn40] the merge rule of pb_journal_issue rides on the end of its own INSERT and on no
+                    // other table's: SuffixFor returns "" for every table whose row is an occurrence
+                    sql += SuffixFor(table);
                     PlayerbotsDatabase.Execute(sql.c_str());
                     sql.clear();
                     rows = 0;
@@ -370,10 +455,16 @@ namespace Journal
             {
                 uint64 const nowHour = nowMs / MS_PER_HOUR;
                 uint64 const keepFrom = nowHour > Config().retentionHours ? nowHour - Config().retentionHours : 0;
+                // [jrn40] pb_journal_issue IS DELIBERATELY ABSENT from this list and must stay absent. Every table
+                // named here keeps 24-48 h and is cleaned by dropping whole hour partitions; the list of problems
+                // lives for ever, is not partitioned at all, and a sweep of it would silently turn "we have no
+                // problems" into "we forgot them". That is also why an issue row must carry a fixture path: the
+                // DOMAIN record it points at does get swept, so a week later source_id reaches nothing.
                 for (char const* table : {"pb_journal_decision", "pb_journal_option", "pb_journal_read",
                                           "pb_journal_loot", "pb_journal_metric", "pb_journal_actor",
                                           "pb_journal_route", "pb_journal_route_stop", "pb_journal_fight",
-                                          "pb_journal_aggro", "pb_journal_death", "pb_journal_line"})
+                                          "pb_journal_aggro", "pb_journal_death", "pb_journal_idle",
+                                          "pb_journal_stuck", "pb_journal_alert", "pb_journal_line"})
                 {
                     // [jrn20] the raw stream keeps its OWN, shorter window, and the number says why: measured on the
                     // live table it is 403 bytes a row at 152 967 rows an hour - 1.5 GB a day at 75 bots, and about
@@ -859,12 +950,14 @@ namespace Journal
                 (std::string("CREATE TABLE IF NOT EXISTS pb_journal_line ("
                              "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
                              "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
-                             "tag VARCHAR(24) NOT NULL DEFAULT '', bot_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "tag VARCHAR(32) NOT NULL DEFAULT '', bot_low INT UNSIGNED NOT NULL DEFAULT 0, "
                              "bot_name VARCHAR(32) NOT NULL DEFAULT '', map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
                              "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
                              "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, text TEXT NOT NULL, "
+                             "run_id VARCHAR(48) NOT NULL DEFAULT '', "
                              "build VARCHAR(16) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (id, hour_bucket), KEY tag_at (tag, at_ms), KEY bot_at (bot_low, at_ms), "
+                             "KEY run_at (run_id, at_ms), "
                              "KEY build_at (build, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn20] the raw stream - the file stays the live stream, this is the history'") +
@@ -1000,6 +1093,147 @@ namespace Journal
                              "KEY decision (decision_id)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn30] a real death with the judges inputs - prevention is never written here'")
+                 + parts)
+                    .c_str());
+
+            // [jrn40] THE LIST OF PROBLEMS, and the ONE table of the journal that is NOT PARTITIONED and that the
+            // sweep does not name. Every other table here lives 24-48 h and is cleaned by dropping hour partitions;
+            // a list of problems that evaporates every two days is not a list of problems. It is also the only
+            // table whose row is a PROBLEM rather than an occurrence: `dedup_hash` is UNIQUE and a repeat updates
+            // the row (see SuffixFor), so the number of rows is the number of problems and can be driven to zero.
+            //
+            // `checked_state` is GENERATED: the database computes it from what is actually in the row, so the tick
+            // cannot be taken on trust. "unconfirmed" is a value a query can count, not a comment somebody has to
+            // read - and that is the difference between a list of solved problems and a list of claims.
+            CreateOrExtend(
+                "CREATE TABLE IF NOT EXISTS pb_journal_issue ("
+                "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                "kind VARCHAR(32) NOT NULL DEFAULT '', severity VARCHAR(8) NOT NULL DEFAULT '', "
+                "repro_class VARCHAR(16) NOT NULL DEFAULT '', status VARCHAR(12) NOT NULL DEFAULT 'open', "
+                "dedup_key VARCHAR(512) NOT NULL DEFAULT '', dedup_hash CHAR(32) NOT NULL, "
+                "why VARCHAR(1024) NOT NULL DEFAULT '', real_when VARCHAR(255) NOT NULL DEFAULT '', "
+                "first_seen_ms BIGINT UNSIGNED NOT NULL, last_seen_ms BIGINT UNSIGNED NOT NULL, "
+                "occurrences BIGINT UNSIGNED NOT NULL DEFAULT 1, value_min DOUBLE NULL, value_max DOUBLE NULL, "
+                "value_unit VARCHAR(16) NOT NULL DEFAULT '', bot_name VARCHAR(32) NOT NULL DEFAULT '', "
+                "bot_low INT UNSIGNED NOT NULL DEFAULT 0, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
+                "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
+                "run_id VARCHAR(48) NOT NULL DEFAULT '', source_table VARCHAR(32) NOT NULL DEFAULT '', "
+                "source_id BIGINT UNSIGNED NOT NULL DEFAULT 0, decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
+                "build VARCHAR(16) NOT NULL DEFAULT '', first_build VARCHAR(16) NOT NULL DEFAULT '', "
+                "checked TINYINT UNSIGNED NOT NULL DEFAULT 0, checked_at_ms BIGINT UNSIGNED NOT NULL DEFAULT 0, "
+                "checked_by VARCHAR(48) NOT NULL DEFAULT '', test_name VARCHAR(128) NOT NULL DEFAULT '', "
+                "cleared_in_run VARCHAR(48) NOT NULL DEFAULT '', fixed_in_build VARCHAR(16) NOT NULL DEFAULT '', "
+                "fixed_ms BIGINT UNSIGNED NOT NULL DEFAULT 0, merged_into BIGINT UNSIGNED NOT NULL DEFAULT 0, "
+                "fixture_path VARCHAR(255) NOT NULL DEFAULT '', "
+                "last_progress_ms BIGINT UNSIGNED NOT NULL DEFAULT 0, "
+                "is_real VARCHAR(8) NOT NULL DEFAULT 'unknown', real_why VARCHAR(512) NOT NULL DEFAULT '', "
+                "real_source VARCHAR(8) NOT NULL DEFAULT 'emitter', "
+                "checked_state VARCHAR(12) GENERATED ALWAYS AS (CASE WHEN checked = 0 THEN 'unchecked' "
+                "  WHEN repro_class = 'decision' AND test_name <> '' THEN 'by_test' "
+                "  WHEN repro_class = 'not_offline' AND cleared_in_run <> '' AND fixed_in_build <> '' THEN 'by_run' "
+                "  ELSE 'unconfirmed' END) STORED, "
+                "PRIMARY KEY (id), UNIQUE KEY dedup (dedup_hash), "
+                "KEY kind_last (kind, last_seen_ms), KEY status_kind (status, kind, last_seen_ms), "
+                "KEY repro_status (repro_class, status, last_seen_ms), KEY checked_state_at (checked_state, "
+                "last_seen_ms), KEY severity_at (severity, last_seen_ms), KEY bot_at (bot_low, last_seen_ms), "
+                "KEY where_at (map_id, zone_id, last_seen_ms), KEY build_at (build, last_seen_ms), "
+                "KEY first_at (first_seen_ms), KEY occurrences_at (occurrences, last_seen_ms), "
+                "KEY source (source_table, source_id), KEY merged (merged_into), "
+                "KEY run_at (run_id, last_seen_ms), KEY test (test_name), "
+                "KEY real_at (is_real, kind, last_seen_ms), KEY real_source_at (real_source, last_seen_ms)) "
+                "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                "COMMENT='[jrn40] one row per PROBLEM, driven to zero rows - NOT under retention, never swept'");
+
+            // [jrn40] the idle domain's own record: the 15 s diagnostics window and the standing watch. The inputs
+            // live HERE and not in pb_journal_issue, which only points at them - a thin uniform pointer cannot also
+            // be the union of every kind's fields.
+            CreateOrExtend(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_idle ("
+                             "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "event VARCHAR(12) NOT NULL DEFAULT '', bot_name VARCHAR(32) NOT NULL DEFAULT '', "
+                             "bot_low INT UNSIGNED NOT NULL DEFAULT 0, bot_level SMALLINT UNSIGNED NULL, "
+                             "role VARCHAR(8) NULL, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
+                             "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
+                             "in_dungeon TINYINT UNSIGNED NULL, in_combat TINYINT UNSIGNED NULL, "
+                             "window_sec FLOAT NULL, ticks SMALLINT UNSIGNED NULL, casts SMALLINT UNSIGNED NULL, "
+                             "cast_wait SMALLINT UNSIGNED NULL, non_cast SMALLINT UNSIGNED NULL, "
+                             "no_target SMALLINT UNSIGNED NULL, range_los SMALLINT UNSIGNED NULL, "
+                             "moving SMALLINT UNSIGNED NULL, gcd SMALLINT UNSIGNED NULL, "
+                             "threat SMALLINT UNSIGNED NULL, leader_hold SMALLINT UNSIGNED NULL, "
+                             "other SMALLINT UNSIGNED NULL, ref_unsaid SMALLINT UNSIGNED NULL, "
+                             "ref_useless SMALLINT UNSIGNED NULL, ref_impossible SMALLINT UNSIGNED NULL, "
+                             "ref_prereq SMALLINT UNSIGNED NULL, ref_failed SMALLINT UNSIGNED NULL, "
+                             "ref_blocked SMALLINT UNSIGNED NULL, ref_no_candidate SMALLINT UNSIGNED NULL, "
+                             "gap_n SMALLINT UNSIGNED NULL, gap_avg_ms INT UNSIGNED NULL, "
+                             "gap_max_ms INT UNSIGNED NULL, gap_over_150 SMALLINT UNSIGNED NULL, "
+                             "gap_over_400 SMALLINT UNSIGNED NULL, top_actions VARCHAR(255) NOT NULL DEFAULT '', "
+                             "stood_sec FLOAT NULL, stood_yd FLOAT NULL, doing VARCHAR(96) NOT NULL DEFAULT '', "
+                             "why VARCHAR(512) NOT NULL DEFAULT '', run_id VARCHAR(48) NOT NULL DEFAULT '', "
+                             "build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY event_at (event, at_ms), "
+                             "KEY bot_at (bot_low, at_ms), KEY role_at (role, at_ms), "
+                             "KEY where_at (map_id, zone_id, at_ms), KEY other_at (other, at_ms), "
+                             "KEY stood_at (stood_sec, at_ms), KEY gap_at (gap_max_ms, at_ms), "
+                             "KEY casts_at (casts, at_ms), KEY build_at (build, at_ms), "
+                             "KEY run_at (run_id, at_ms)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn40] idleness measured by fact: the diagnostics window and the standing "
+                             "watch, for EVERY role'")
+                 + parts)
+                    .c_str());
+
+            // [jrn40] something is held or awaited and nothing progresses. Four emitters, one shape; `kind` names
+            // which of them wrote the row, and each writes only its own.
+            CreateOrExtend(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_stuck ("
+                             "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "kind VARCHAR(16) NOT NULL DEFAULT '', bot_name VARCHAR(32) NOT NULL DEFAULT '', "
+                             "bot_low INT UNSIGNED NOT NULL DEFAULT 0, bot_level SMALLINT UNSIGNED NULL, "
+                             "role VARCHAR(8) NULL, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
+                             "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
+                             "target_name VARCHAR(48) NOT NULL DEFAULT '', "
+                             "target_entry INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "target_low INT UNSIGNED NOT NULL DEFAULT 0, target_yd FLOAT NULL, "
+                             "target_level SMALLINT UNSIGNED NULL, in_combat TINYINT UNSIGNED NULL, "
+                             "action_running VARCHAR(96) NOT NULL DEFAULT '', why VARCHAR(512) NOT NULL DEFAULT '', "
+                             "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY kind_at (kind, at_ms), "
+                             "KEY bot_at (bot_low, at_ms), KEY target_at (target_entry, target_low, at_ms), "
+                             "KEY where_at (map_id, zone_id, at_ms), KEY yd_at (target_yd, at_ms), "
+                             "KEY role_at (role, at_ms), KEY build_at (build, at_ms), KEY run_at (run_id, at_ms)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn40] held or awaited and not progressing: target, distance, what ran'")
+                 + parts)
+                    .c_str());
+
+            // [jrn40] one alert. Written ONLY from GuildCoordinator::Alert, the funnel every alert already passes:
+            // recording it there and again at the site that raised it would be the double count this journal exists
+            // to prevent.
+            CreateOrExtend(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_alert ("
+                             "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "kind VARCHAR(24) NOT NULL DEFAULT '', num INT UNSIGNED NULL, "
+                             "bot_name VARCHAR(32) NOT NULL DEFAULT '', bot_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "bot_level SMALLINT UNSIGNED NULL, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
+                             "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
+                             "loop_n INT UNSIGNED NULL, activity VARCHAR(32) NOT NULL DEFAULT '', "
+                             "no_progress_xp TINYINT UNSIGNED NULL, no_progress_quest TINYINT UNSIGNED NULL, "
+                             "same_place TINYINT UNSIGNED NULL, last_action VARCHAR(512) NOT NULL DEFAULT '', "
+                             "reason VARCHAR(512) NOT NULL DEFAULT '', text TEXT, "
+                             "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY kind_at (kind, at_ms), "
+                             "KEY bot_at (bot_low, at_ms), KEY activity_at (activity, at_ms), "
+                             "KEY where_at (map_id, zone_id, at_ms), KEY loop_at (loop_n, at_ms), "
+                             "KEY build_at (build, at_ms), KEY run_at (run_id, at_ms)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn40] one alert, from the single funnel every alert already passes'")
                  + parts)
                     .c_str());
 
@@ -1245,10 +1479,17 @@ namespace Journal
         uint64 const nowMs = line.atMs ? line.atMs : NowMs();
         Writer::Instance().Push(
             "pb_journal_line",
-            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{})", Writer::Instance().NextId(), BootId(),
-                                nowMs, nowMs / MS_PER_HOUR, Quoted(line.tag, 24), line.botLow, Quoted(line.botName, 32),
-                                line.mapId, line.zoneId, Real(line.x), Real(line.y), Real(line.z),
-                                Quoted(line.text, 16000), Quoted(Config().build, 16)));
+            // [jrn40] the tag is quoted to 32 and not 24. The old 24 did not merely clip a label: it SILENTLY
+            // DESTROYED tags. "[pull_estimate_vs_actual]" (1 096 rows) and "[queue-stale-idle-victim]" (333 rows)
+            // reached the table with their closing bracket cut off, so a query by the real tag found neither, and
+            // the parser's own bound threw away "[conjure_outside_instances]" and "[route_blocker_required_only]"
+            // whole (19 rows with an empty tag though the line plainly starts with one). A label that is wrong in
+            // the table is worse than a missing one, because a count by it answers.
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", Writer::Instance().NextId(),
+                                BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(line.tag, 32), line.botLow,
+                                Quoted(line.botName, 32), line.mapId, line.zoneId, Real(line.x), Real(line.y),
+                                Real(line.z), Quoted(line.text, 16000), Quoted(line.runId, 48),
+                                Quoted(Config().build, 16)));
     }
 
     void RecordMetric(Metric const& metric)
@@ -1329,6 +1570,144 @@ namespace Journal
                                 Quoted(death.threat, 1024), Quoted(death.runId, 48), death.decisionId,
                                 Quoted(Config().build, 16)));
     }
+
+    namespace
+    {
+        // [jrn40] the fixture exporter, installed by its own owner. nullptr until something installs one, and the
+        // column then stays empty - a gap a query can see rather than a silent loss.
+        std::atomic<FixtureWriter> g_fixtureWriter{nullptr};
+    }
+
+    void SetFixtureWriter(FixtureWriter writer) { g_fixtureWriter.store(writer); }
+
+    void RecordIssue(Issue const& issue)
+    {
+        if (!Ready())
+            return;
+        uint64 const nowMs = NowMs();
+
+        // The fixture is taken AT THE MOMENT THE PROBLEM IS SEEN, because the domain record this row points at is
+        // swept in 24-48 h while the row itself lives for ever. It is asked for on every occurrence, not only the
+        // first: the exporter owns the decision of whether it already has one, and a caller guessing at that from
+        // here would be a second owner of the same judgement. An exporter that returns "" leaves the column as the
+        // row's merge rule left it.
+        std::string fixture;
+        if (FixtureWriter const writer = g_fixtureWriter.load())
+            fixture = writer(issue);
+
+        Writer::Instance().Push(
+            "pb_journal_issue",
+            Acore::StringFormat(
+                // the UNIQUE identity is MD5 of the dedup key, computed in SQL FROM THAT VERY STRING: the full key
+                // stays readable in its own column while two different keys can never be merged by a truncated
+                // index. One owner of the key - the emitter builds it, the database only hashes it.
+                "({},{},{},{},{},{},{},MD5({}),{},{},{},{},1,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                "{},{},{},{},{},{},{},{},{},{},{})",
+                Writer::Instance().NextId(), BootId(), Quoted(issue.kind, 32), Quoted(issue.severity, 8),
+                Quoted(issue.reproClass, 16), Quoted(issue.status.empty() ? "open" : issue.status, 12),
+                Quoted(issue.dedupKey, 512), Quoted(issue.dedupKey, 512), Quoted(issue.why, 1024),
+                Quoted(issue.realWhen, 255), nowMs, nowMs, OrNull(issue.value), OrNull(issue.value),
+                Quoted(issue.valueUnit, 16), Quoted(issue.botName, 32), issue.botLow, issue.mapId, issue.zoneId,
+                Real(issue.x), Real(issue.y), Real(issue.z), Quoted(issue.runId, 48),
+                Quoted(issue.sourceTable, 32), issue.sourceId, issue.decisionId, Quoted(Config().build, 16),
+                Quoted(Config().build, 16), issue.checked ? 1 : 0, issue.checked ? nowMs : 0,
+                Quoted(issue.checkedBy, 48), Quoted(issue.testName, 128), Quoted(issue.clearedInRun, 48),
+                Quoted(issue.fixedInBuild, 16), 0, issue.mergedInto, Quoted(fixture, 255), issue.lastProgressMs,
+                Quoted(issue.real.empty() ? "unknown" : issue.real, 8), Quoted(issue.realWhy, 512),
+                Quoted(issue.realSource.empty() ? "emitter" : issue.realSource, 8)));
+    }
+
+    uint64 RecordIdle(Idle const& idle)
+    {
+        if (!Ready())
+            return 0;
+        uint64 const nowMs = NowMs();
+        uint64 const id = Writer::Instance().NextId();
+        Writer::Instance().Push(
+            "pb_journal_idle",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+                                id, BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(idle.event, 12),
+                                Quoted(idle.botName, 32), idle.botLow, OrNull(idle.botLevel), OrNull(idle.role, 8),
+                                idle.mapId, idle.zoneId, Real(idle.x), Real(idle.y), Real(idle.z),
+                                OrNull(idle.inDungeon), OrNull(idle.inCombat), OrNull(idle.windowSec),
+                                OrNull(idle.ticks), OrNull(idle.casts), OrNull(idle.castWait), OrNull(idle.nonCast),
+                                OrNull(idle.noTarget), OrNull(idle.rangeLos), OrNull(idle.moving), OrNull(idle.gcd),
+                                OrNull(idle.threat), OrNull(idle.leaderHold), OrNull(idle.other),
+                                OrNull(idle.refUnsaid), OrNull(idle.refUseless), OrNull(idle.refImpossible),
+                                OrNull(idle.refPrereq), OrNull(idle.refFailed), OrNull(idle.refBlocked),
+                                OrNull(idle.refNoCandidate), OrNull(idle.gapN), OrNull(idle.gapAvgMs),
+                                OrNull(idle.gapMaxMs), OrNull(idle.gapOver150), OrNull(idle.gapOver400),
+                                Quoted(idle.topActions, 255), OrNull(idle.stoodSec), OrNull(idle.stoodYd),
+                                Quoted(idle.doing, 96), Quoted(idle.why, 512), Quoted(idle.runId, 48),
+                                Quoted(Config().build, 16)));
+        return id;
+    }
+
+    uint64 RecordStuck(Stuck const& stuck)
+    {
+        if (!Ready())
+            return 0;
+        uint64 const nowMs = NowMs();
+        uint64 const id = Writer::Instance().NextId();
+        Writer::Instance().Push(
+            "pb_journal_stuck",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
+                                BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(stuck.kind, 16),
+                                Quoted(stuck.botName, 32), stuck.botLow, OrNull(stuck.botLevel),
+                                OrNull(stuck.role, 8), stuck.mapId, stuck.zoneId, Real(stuck.x), Real(stuck.y),
+                                Real(stuck.z), Quoted(stuck.targetName, 48), stuck.targetEntry, stuck.targetLow,
+                                OrNull(stuck.targetYd), OrNull(stuck.targetLevel), OrNull(stuck.inCombat),
+                                Quoted(stuck.actionRunning, 96), Quoted(stuck.why, 512), Quoted(stuck.runId, 48),
+                                Quoted(Config().build, 16)));
+        return id;
+    }
+
+    uint64 RecordAlert(Alert const& alert)
+    {
+        if (!Ready())
+            return 0;
+        uint64 const nowMs = NowMs();
+        uint64 const id = Writer::Instance().NextId();
+        Writer::Instance().Push(
+            "pb_journal_alert",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
+                                BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(alert.kind, 24), OrNull(alert.num),
+                                Quoted(alert.botName, 32), alert.botLow, OrNull(alert.botLevel), alert.mapId,
+                                alert.zoneId, Real(alert.x), Real(alert.y), Real(alert.z), OrNull(alert.loopN),
+                                Quoted(alert.activity, 32), OrNull(alert.noProgressXp),
+                                OrNull(alert.noProgressQuest), OrNull(alert.samePlace),
+                                Quoted(alert.lastAction, 512), Quoted(alert.reason, 512),
+                                alert.text.empty() ? std::string("NULL") : Quoted(alert.text, 16000),
+                                Quoted(alert.runId, 48), Quoted(Config().build, 16)));
+        return id;
+    }
+
+    std::string WithoutNumbers(std::string const& text)
+    {
+        std::string out;
+        out.reserve(text.size());
+        bool inNumber = false;
+        for (char const c : text)
+        {
+            if (c >= '0' && c <= '9')
+            {
+                if (!inNumber)
+                    out += 'N';
+                inNumber = true;
+                continue;
+            }
+            // a decimal point or separator inside a number belongs to it, so "15.5" and "3 216" each collapse to
+            // one "N" rather than to "N.N" and "N N" - two keys where there is one cause
+            if (inNumber && (c == '.' || c == ','))
+                continue;
+            inNumber = false;
+            out += c;
+        }
+        return out;
+    }
+
+    uint64 ClockMs() { return NowMs(); }
 
     uint64 QueuedRows() { return Config().enabled ? Writer::Instance().Queued() : 0; }
     uint64 DroppedRows() { return Config().enabled ? Writer::Instance().Dropped() : 0; }

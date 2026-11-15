@@ -42,12 +42,30 @@ namespace
     // the leading "[tag]" of a line, "" when it has none. Only a tag at the START of the line is the line's own
     // author: tags also appear mid-line as references to other code ("... + 0 heals [dun235], healer reaches it"),
     // and counting those as emitters is what inflates a grep by hundreds of lines.
+    // [jrn40] THE BOUND IS 31, NOT 24, AND THAT NUMBER WAS LOSING TAGS. The tag column was VARCHAR(24) and this
+    // test allowed a tag of up to 25 characters, so the two disagreed and both were too small for tags the code
+    // actually prints. Measured on the live table:
+    //   * "[pull_estimate_vs_actual]" (1 096 rows) and "[queue-stale-idle-victim]" (333 rows) are 25 characters -
+    //     they passed this test and were then CLIPPED by the column to 24, losing the closing bracket, so a query
+    //     for the real tag matched neither of them;
+    //   * "[conjure_outside_instances]" (26) and "[route_blocker_required_only]" (29) failed this test outright and
+    //     reached the table with an EMPTY tag, 19 rows that plainly begin with a tag.
+    // A label that is wrong is worse than one that is missing, because a count by it answers. 31 here and
+    // VARCHAR(32) there are now the same bound: substr(0, end + 1) is at most 32 characters.
+    //
+    // WHAT IS STILL EMPTY ON PURPOSE, and it is not this function's doing: 4 373 rows have no leading tag because
+    // the LINE has none - they begin with a bot's name ("Relara careful pull: ..."), or with "Test harness:", or
+    // with "Bot GUID Full:". Two of those matter and are named here so nobody looks for a parser bug again: the
+    // harness's post-mortem verdict ("Test harness: ... finished: stalled (no progress for 4 minutes ...)") and the
+    // movement watchdog ("stuck watchdog: reset movement (no progress 6s, still 3s ...)"). Both are detectors, and
+    // neither can be found by tag at all - which is why the list of detectors has to be made by reading the code
+    // and never by selecting tags out of this table.
     std::string LeadingTag(std::string const& text)
     {
         if (text.empty() || text.front() != '[')
             return {};
         size_t const end = text.find(']');
-        if (end == std::string::npos || end > 24)
+        if (end == std::string::npos || end > 31)
             return {};
         return text.substr(0, end + 1);
     }
