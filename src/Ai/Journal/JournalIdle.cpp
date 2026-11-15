@@ -183,8 +183,14 @@ namespace
         // decimals, 10 s to 60 s - became five rows in this table. The trace stays in `why` and in
         // pb_journal_idle.doing, where it is read by eye in a row already found.
         // [jrn42] ... and the hold is in it, which is the first CAUSE field this key has had
-        issue.dedupKey =
-            Journal::Key::Standing(*idle.role, bot->IsInCombat(), uint32(botAI->GetState()), heldBy, doing);
+        // [supply131] ... and the second one is whether the bot is in a group at all, which the row already
+        // carries as a column (idle.inGroup). It was chosen by measuring how often it turns over INSIDE one
+        // episode - 5 of 686 episodes on b504 (0.7 %) - because a graph that flips mid-episode splits one
+        // episode into two keys instead of narrowing anything; "its engine executed nothing" flipped inside 181
+        // of 686 (26.4 %) and therefore stays a column. Only the out-of-group case spells its graph, so the
+        // counts measured on b501-b504 go on meaning what they meant.
+        issue.dedupKey = Journal::Key::Standing(*idle.role, bot->IsInCombat(), uint32(botAI->GetState()), heldBy,
+                                                doing, idle.inGroup);
         issue.why = idle.why;
         issue.realWhen = "alive, not sitting, not casting, not in flight, not being teleported, under no order to "
                          "stand and waiting for no transport or group - and still inside max(combat reach, "

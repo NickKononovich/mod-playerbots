@@ -30,9 +30,26 @@ namespace Journal::Key
         // varies - so it narrows without splitting one episode, and it is what separates a bot standing with no
         // order from a bot standing exactly where its leader told it to. The empty name is kept out of the key
         // instead of being spelled, so the keys already measured on b501 and b502 go on meaning what they meant.
+        // [supply131] THE SECOND CAUSE FIELD, AND IT WAS PICKED BY MEASURING HOW OFTEN IT TURNS OVER INSIDE ONE
+        // EPISODE - not by how causal it looks. That measurement is the whole point, because a graph that flips
+        // mid-episode does not narrow the key, it SPLITS ONE EPISODE INTO TWO KEYS, which is the very staircase
+        // [jrn41] took out of this function. On b504's unheld standing samples (episode identity
+        // `at_ms - stood_sec*1000`, a TIME join and marked as one), over 686 episodes with more than one sample:
+        //   * "is the bot in a group" flipped inside 5 of 686 episodes (0.7 %)  -> it may be in the key;
+        //   * "did its engine execute nothing" flipped inside 181 of 686 (26.4 %) -> a COLUMN and never the key,
+        //     although it splits the largest key almost in half (1068 against 888) and reads like a cause.
+        // And it is a cause: of that key's 1956 unheld samples over 43 bots, 1284 stood out of any group and 672
+        // in one, and the 2601 s of #42 Cassand and #44 Blahadrin that blocked a whole certification batch were
+        // the out-of-group nature ([supply131], a five member with no group, held at the gate by a supply wait).
+        //
+        // ONLY THE OUT-OF-GROUP CASE SPELLS ITS GRAPH. Unstated (std::nullopt, an emitter that does not hold the
+        // fact) and `true` both leave the key byte for byte what it was, so every count already measured on
+        // b501-b504 goes on meaning what it meant - the same rule by which [jrn45] appended the place suffix to
+        // the new case only, and [jrn54] wrote the walking part only when it was non-zero.
         (void)actionTrace;
         return "standing|" + role + "|" + std::string(inCombat ? "combat" : "peace") + "|state " +
-               std::to_string(engineState) + (heldBy.empty() ? std::string() : "|held: " + heldBy);
+               std::to_string(engineState) + (heldBy.empty() ? std::string() : "|held: " + heldBy) +
+               (inGroup.has_value() && !*inGroup ? "|alone" : "");
     }
 
     std::string StuckTarget(std::string const& role, std::string const& actionRunning)

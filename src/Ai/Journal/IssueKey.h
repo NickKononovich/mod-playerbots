@@ -27,6 +27,7 @@
 // pb_journal_stuck.action_running), where it is read by eye in a row already found.
 
 #include <cstdint>
+#include <optional>  // [supply131] a cause graph that may be unstated keeps the key byte for byte
 #include <string>
 #include <vector>  // [jrn47] the reasons of combat_spot_none come in as a list
 
@@ -43,8 +44,17 @@ namespace Journal::Key
     // in which the leader of that very run had recorded a `pull` verdict of `held` (run_id by identity, the
     // overlap by time), so without this field one leader hold was counted again as a problem of each member
     // standing under it.
+    // [supply131] `inGroup` IS THE SECOND CAUSE FIELD, AND IT WAS CHOSEN BY MEASURING ITS STABILITY and not by
+    // picking the fact that looked most causal. A bot standing with no group at all is a different problem from a
+    // bot standing in a group whose follow fails: on b504 the largest key, `standing|dps|peace|state 1`, held
+    // 1956 unheld samples over 43 bots, 1284 of them out of a group and 672 in one - and the 2601 s of #42 Cassand
+    // and #44 Blahadrin, which blocked a whole certification batch, were the out-of-group nature.
+    //   `std::nullopt` keeps the key BYTE FOR BYTE what it was, and so does `true`: only the out-of-group case
+    // spells its graph. That is the rule [jrn45] used for the place suffix and [jrn54] for the walking part - the
+    // part is named by the whole and never instead of it - so the counts already measured on b501-b504 go on
+    // meaning exactly what they meant.
     std::string Standing(std::string const& role, bool inCombat, uint32_t engineState, std::string const& heldBy,
-                         std::string const& actionTrace);
+                         std::string const& actionTrace, std::optional<bool> inGroup = std::nullopt);
 
     // `stuck_target`: the combat engine holds an idle mob as its target and nothing of it runs (PlayerbotAI.cpp).
     // The cause is the role plus whether the engine had anything at all to run - an empty trace is the point of

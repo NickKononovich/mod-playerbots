@@ -95,6 +95,53 @@ TEST(IssueKeyStanding, OneHeldEpisodeIsStillOneKey)
     EXPECT_EQ(keys.size(), 1u) << "six samples of one held episode gave " << keys.size() << " keys";
 }
 
+// [supply131] THE GROUP GRAPH, AND THE MEASUREMENT THAT CHOSE IT. Inputs are b504's unheld standing samples:
+// the largest key `standing|dps|peace|state 1` held 1956 of them over 43 bots, 1284 out of any group and 672 in
+// one, and the 2601 s of #42 Cassand and #44 Blahadrin - which blocked a whole certification batch of wc-n - were
+// the out-of-group nature. Two natures under one name, and a fix for either would have turned a test green over
+// the other.
+TEST(IssueKeyStanding, StandingWithNoGroupAndStandingInOneAreTwoKeys)
+{
+    std::string const trace = KYLANTINO_EPISODE.front();
+    EXPECT_NE(Journal::Key::Standing("dps", false, 1, "", trace, false),
+              Journal::Key::Standing("dps", false, 1, "", trace, true))
+        << "a member standing with no group at all shares a key with a member standing in a group";
+}
+
+// THE DECIDING OTHER DIRECTION: "split on everything" would pass the test above and give us a staircase instead
+// of a deduplication. Two samples of ONE nature must stay ONE key however the engine's trace moves under them -
+// that is what the graph was measured for (in_group turned over inside 5 of 686 episodes, 0.7 %, while "the
+// engine executed nothing" turned over inside 181 of 686, 26.4 %, and is therefore a column and never a key).
+TEST(IssueKeyStanding, TwoSamplesOfOneNatureAreStillOneKey)
+{
+    std::set<std::string> alone, grouped;
+    for (std::string const& trace : KYLANTINO_EPISODE)
+    {
+        alone.insert(Journal::Key::Standing("dps", false, 1, "", trace, false));
+        grouped.insert(Journal::Key::Standing("dps", false, 1, "", trace, true));
+    }
+    EXPECT_EQ(alone.size(), 1u) << "six samples of one out-of-group episode gave " << alone.size() << " keys";
+    EXPECT_EQ(grouped.size(), 1u) << "six samples of one in-group episode gave " << grouped.size() << " keys";
+}
+
+// ... and the counts already measured keep meaning what they meant: the graph is named by the whole and never
+// instead of it. An emitter that does not hold the fact, and the in-group case, both write the key unchanged -
+// the rule of [jrn45]'s place suffix and [jrn54]'s walking part.
+TEST(IssueKeyStanding, TheKeysMeasuredBeforeTheGraphAreUnchangedByteForByte)
+{
+    std::string const trace = KYLANTINO_EPISODE.front();
+    // the four live texts of b502-b504 this kind was counted on
+    EXPECT_EQ(Journal::Key::Standing("dps", false, 1, "", trace), "standing|dps|peace|state 1");
+    EXPECT_EQ(Journal::Key::Standing("healer", true, 0, "", trace), "standing|healer|combat|state 0");
+    EXPECT_EQ(Journal::Key::Standing("healer", false, 0, "waits for its group", trace),
+              "standing|healer|peace|state 0|held: waits for its group");
+    EXPECT_EQ(Journal::Key::Standing("dps", false, 0, "dead", trace), "standing|dps|peace|state 0|held: dead");
+    // unstated and in-group are the same key as before; only the out-of-group case adds its graph
+    EXPECT_EQ(Journal::Key::Standing("dps", false, 1, "", trace, std::nullopt), "standing|dps|peace|state 1");
+    EXPECT_EQ(Journal::Key::Standing("dps", false, 1, "", trace, true), "standing|dps|peace|state 1");
+    EXPECT_EQ(Journal::Key::Standing("dps", false, 1, "", trace, false), "standing|dps|peace|state 1|alone");
+}
+
 // The same trap in the second emitter that holds a trace: these two are real stuck_target keys of b501, one of a
 // dps and one of a tank, and the tail of each is the engine's strategy trace of that instant.
 TEST(IssueKeyStuckTarget, TheCauseIsTheRoleAndWhetherAnythingRan)
