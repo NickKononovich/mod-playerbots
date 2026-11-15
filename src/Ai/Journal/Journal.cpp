@@ -226,7 +226,7 @@ namespace Journal
             "(decision_id, boot_id, at_ms, hour_bucket, idx, side, name, low, entry, spawn_id, level, spec, role, "
             "health, health_max, health_pct, mana, mana_max, mana_pct, pos_x, pos_y, pos_z, tank_yd, target_yd, "
             "in_combat, wanders, opener_ready, doing, checks, chk_reaches_spot, chk_pull_path, chk_walk, "
-            "chk_walks_into_fight, note, build)";
+            "chk_walks_into_fight, note, build, drinks, foods, drinks_need)";
         char const* const COLUMNS_ROUTE =
             "(id, boot_id, at_ms, hour_bucket, event, purpose, target, target_entry, target_low, why, verdict, "
             "bot_name, bot_low, map_id, zone_id, from_x, from_y, from_z, to_x, to_y, to_z, path_yd, straight_yd, "
@@ -924,7 +924,13 @@ namespace Journal
                              "chk_reaches_spot TINYINT UNSIGNED NULL, chk_pull_path TINYINT UNSIGNED NULL, "
                              "chk_walk TINYINT UNSIGNED NULL, chk_walks_into_fight TINYINT UNSIGNED NULL, "
                              "note VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
+                             // [jrn50] what the member CARRIES and what its run was priced at. NULL is "not
+                             // supplied" here too: a mob has no bags, and a member whose bags were not counted is
+                             // not a member with no water.
+                             "drinks SMALLINT UNSIGNED NULL, foods SMALLINT UNSIGNED NULL, "
+                             "drinks_need SMALLINT UNSIGNED NULL, "
                              "PRIMARY KEY (decision_id, idx, hour_bucket), KEY at_ms (at_ms), "
+                             "KEY supply_at (side, drinks, at_ms), "
                              "KEY who_at (low, at_ms), KEY entry_at (entry, at_ms), KEY spawn_at (spawn_id, at_ms), "
                              "KEY side_health (side, health_pct, at_ms), KEY side_mana (side, mana_pct, at_ms), "
                              "KEY role_at (role, at_ms), KEY level_at (level, at_ms), "
@@ -1550,7 +1556,7 @@ namespace Journal
                     "pb_journal_actor",
                     Acore::StringFormat(
                         "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                        "{},{},{},{},{})",
+                        "{},{},{},{},{},{},{},{})",
                         id, BootId(), nowMs, hour, idx++, uint32(a.side), Quoted(a.name, 48), a.low, a.entry,
                         a.spawnId, OrNull(a.level), OrNull(a.spec, 24), OrNull(a.role, 8), OrNull(a.health),
                         OrNull(a.healthMax), OrNull(a.healthPct), OrNull(a.mana), OrNull(a.manaMax),
@@ -1558,7 +1564,7 @@ namespace Journal
                         OrNull(a.targetYd), OrNull(a.inCombat), OrNull(a.wanders), OrNull(a.openerReady),
                         OrNull(a.doing, 96), OrNull(a.checks, 255), OrNull(a.chkReachesSpot), OrNull(a.chkPullPath),
                         OrNull(a.chkWalk), OrNull(a.chkWalksIntoFight), Quoted(a.note, 48),
-                        Quoted(Config().build, 16)));
+                        Quoted(Config().build, 16), OrNull(a.drinks), OrNull(a.foods), OrNull(a.drinksNeed)));
         }
     }
 

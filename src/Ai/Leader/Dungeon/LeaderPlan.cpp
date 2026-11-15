@@ -7,6 +7,7 @@
 #include "Common.h"
 #include "LeaderPlan.h"
 #include "LeaderRest.h"  // [rest75] CountRestItems
+#include "AiFactory.h"   // [jrn50] GetPlayerSpecName: the spec the judge saw, as a column
 
 #include "AggressiveTargetValue.h"
 #include "AiObjectContext.h"
@@ -127,6 +128,83 @@ namespace Leader::Dungeon
 
     namespace
     {
+        // [jrn50] THE STATE OF EVERY PARTICIPANT OF THE DECISION, written by the judge in its own pass.
+        //
+        // Why it is here and not in the journal. pb_journal_actor had the columns and no values: no bot row at all,
+        // and NULL for every mob's level, health and mana - so "put the same conditions back and run the judge
+        // again" had nothing to put back, and the two DeathReplay tests skip for exactly that. The journal will not
+        // fill them by looking a unit up itself: that is a second reading of the world at a second moment, a second
+        // judge of one quantity. So the numbers are taken HERE, in the same pass and under the same lock as the
+        // rest of the decision, and whatever the judge does not hold stays absent (the key is simply not written,
+        // and the column stays NULL - "not supplied", which is not 0).
+        //
+        // The wc-n failure is the measure of what this costs: a five gave 58 % of its run to resting because its
+        // paladin tank had run out of water, and the only way to establish that afterwards was a LIKE over the
+        // text. `drinks` / `foods` are what the member carries at this instant, counted by the one counter of that
+        // quantity (CountRestItems). What the run was PRICED at ([dun194] drinkNeed) is deliberately not read here:
+        // it belongs to the five's own owner (GuildFives writes it on the five_enter row), and reading it in two
+        // places is how a figure gets two judges.
+        //
+        // `mana` / `manaMax` are written only for a member that HAS a mana pool: a rogue has no mana percentage, it
+        // does not have 0 %.
+        std::string MobFacts(Creature* mob, Player* tank)
+        {
+            JsonObject o;
+            o.Str("name", mob->GetName())
+                .Num("low", int64(mob->GetGUID().GetCounter()))
+                .Num("entry", int64(mob->GetEntry()))
+                .Real("x", mob->GetPositionX())
+                .Real("y", mob->GetPositionY())
+                .Real("z", mob->GetPositionZ())
+                .Real("tankYd", tank->GetExactDist(mob))
+                .Bool("wanders", mob->GetDefaultMovementType() != IDLE_MOTION_TYPE)
+                .Num("level", int64(mob->GetLevel()))
+                .Num("hp", int64(mob->GetHealth()))
+                .Num("hpMax", int64(mob->GetMaxHealth()))
+                .Bool("combat", mob->IsInCombat());
+            return o.Build();
+        }
+
+        std::string FiveFacts(LeaderGroup& group, Player* tank, Unit* look)
+        {
+            JsonArray five;
+            for (LeaderGroup::MemberInfo const& member : group.Members())
+            {
+                Player* bot = ObjectAccessor::FindPlayer(member.guid);
+                if (!bot)
+                    continue;
+                JsonObject o;
+                o.Str("name", bot->GetName())
+                    .Num("low", int64(bot->GetGUID().GetCounter()))
+                    .Num("level", int64(bot->GetLevel()))
+                    .Str("role", PlayerbotAI::IsTank(bot) ? "tank" : (PlayerbotAI::IsHeal(bot) ? "healer" : "dps"))
+                    .Str("spec", AiFactory::GetPlayerSpecName(bot))
+                    .Num("hp", int64(bot->GetHealth()))
+                    .Num("hpMax", int64(bot->GetMaxHealth()))
+                    .Real("x", bot->GetPositionX())
+                    .Real("y", bot->GetPositionY())
+                    .Real("z", bot->GetPositionZ())
+                    .Real("tankYd", bot->GetExactDist(tank))
+                    .Bool("combat", bot->IsInCombat())
+                    // what it carries, by the one counter of that quantity ([rest75] CountRestItems)
+                    .Num("drinks", int64(CountRestItems(bot, 59)))
+                    .Num("foods", int64(CountRestItems(bot, 11)));
+                if (bot->GetMaxPower(POWER_MANA))
+                    o.Num("mana", int64(bot->GetPower(POWER_MANA)))
+                        .Num("manaMax", int64(bot->GetMaxPower(POWER_MANA)));
+                if (look)
+                    o.Real("targetYd", bot->GetExactDist(look));
+                // what it was doing at that instant, read off its own flags and nothing else - no status it
+                // declared, because TRAVEL and DUNGEON hide a hang (the user's rule on measuring idleness by fact)
+                o.Str("doing", bot->IsSitState()      ? "sits"
+                               : bot->IsInCombat()    ? "fights"
+                               : bot->isMoving()      ? "moves"
+                                                      : "stands");
+                five.Raw(o.Build());
+            }
+            return five.Build();
+        }
+
         // [lead221] the mana line a held answer names for `who` ("<who> at 46 % mana (needs 77 % = ...)",
         // "(needs 51 %)"), -1 when it names none (a health gap, "the tank rests")
         float NamedManaLine(std::string const& why, std::string const& who)
@@ -1210,17 +1288,18 @@ namespace Leader::Dungeon
             // (pull back, 4 mobs) in one run and "3 mobs at its spot" (engage) in the other - a wandering Earthborer
             // stood on the walk in one, beside the pack in the other; the decision logged no mob's place, so the
             // triage read the inputs as equal. The decision's mobs where they stand now (a wanderer's spot is RNG)
+            // [jrn50] ... and with each mob's own entry, level, health and combat. Those four columns of
+            // pb_journal_actor were NULL in every row because this line did not carry them, which is what left a
+            // pull unreplayable: the same coordinates with a mob at full health and at a quarter of it are not the
+            // same inputs. Read here, in the judge's own pass - never looked up again later.
             JsonArray packAt;
             for (ObjectGuid const& guid : decision.pack)
                 if (Creature* packMob = tank->GetMap()->GetCreature(guid))
-                    packAt.Raw(JsonObject()
-                                   .Num("low", int64(guid.GetCounter()))
-                                   .Real("x", packMob->GetPositionX())
-                                   .Real("y", packMob->GetPositionY())
-                                   .Real("tankYd", tank->GetExactDist(packMob))
-                                   .Bool("wanders", packMob->GetDefaultMovementType() != IDLE_MOTION_TYPE)
-                                   .Build());
+                    packAt.Raw(MobFacts(packMob, tank));
             fields.Raw("packAt", packAt.Build());
+            // [jrn50] and the five that is being sent in, member by member: health, mana beside its pool, level,
+            // role, where it stands and what it carries to rest with
+            fields.Raw("five", FiveFacts(group, tank, mob));
             // [lead1331] the wanderers this plan judged by their wander area (spawn point + wander distance), and
             // by which checks
             std::map<uint32, std::string>& judged = Leader::Fight::WanderJudged();
@@ -2696,20 +2775,26 @@ namespace Leader::Dungeon
                 // the GUID counter and not the name, because four times in one day two objects shared a name; the
                 // journal promotes each of these into a column of its own (JournalPull), which is why they go in
                 // here rather than being left for a reader to infer.
+                JsonObject answerFields;
+                answerFields.Str("answer", verdictName).Str("kind", decision.kind)
+                    .Str("why", decision.why).Str("pick", pickWhy)
+                    .Str("tag", "[lead30]")
+                    .Str("judge", tank->GetName())
+                    .Num("judgeLow", tank->GetGUID().GetCounter())
+                    .Num("map", tank->GetMapId()).Num("zone", tank->GetZoneId())
+                    .Raw("tank", Acore::StringFormat("[{:.1f},{:.1f},{:.1f}]", tank->GetPositionX(),
+                                                     tank->GetPositionY(), tank->GetPositionZ()))
+                    .Str("routeTarget", group.RouteTarget().IsEmpty() ? "-" : group.RouteTarget().ToString())
+                    // [jrn50] the state of every participant at the instant the answer was given: the five's bots
+                    // (pb_journal_actor held no bot row at all) and, below, the mob the answer is about
+                    .Raw("five", FiveFacts(group, tank, answered));
+                // written only when there IS a creature answered about: an empty object would become a participant
+                // row with no identity, and a row that says nothing still gets counted
+                if (Creature* lookCreature = answered ? answered->ToCreature() : nullptr)
+                    answerFields.Raw("lookAt", MobFacts(lookCreature, tank));
                 Decisions().Write(run, "leader", "planner_answer", decision.lookTarget,
                                               answered ? answered->GetName() : std::string("-"), true,
-                                              JsonObject().Str("answer", verdictName).Str("kind", decision.kind)
-                                                  .Str("why", decision.why).Str("pick", pickWhy)
-                                                  .Str("tag", "[lead30]")
-                                                  .Str("judge", tank->GetName())
-                                                  .Num("judgeLow", tank->GetGUID().GetCounter())
-                                                  .Num("map", tank->GetMapId()).Num("zone", tank->GetZoneId())
-                                                  .Raw("tank", Acore::StringFormat("[{:.1f},{:.1f},{:.1f}]",
-                                                                                   tank->GetPositionX(),
-                                                                                   tank->GetPositionY(),
-                                                                                   tank->GetPositionZ()))
-                                                  .Str("routeTarget", group.RouteTarget().IsEmpty() ? "-" :
-                                                                          group.RouteTarget().ToString()));
+                                              answerFields);
             }
         }
 

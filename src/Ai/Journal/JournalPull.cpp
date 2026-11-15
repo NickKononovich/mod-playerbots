@@ -37,6 +37,7 @@
 #include <string>
 #include <vector>
 
+#include "ActorFacts.h"
 #include "Journal.h"
 #include "LeaderLog.h"
 #include "Timer.h"
@@ -202,86 +203,72 @@ namespace
         return out + "}";
     }
 
-    // [jrn20] The mobs the judge weighed, out of the JSON it already writes and into rows that can be filtered.
+    // [jrn50] THE PARTICIPANTS of a decision, out of the judge's own `fields` and into rows that can be filtered.
     //
-    // Two arrays carry them today, and both were unqueryable text inside one field:
-    //   packAt      [{low, x, y, tankYd, wanders}]        - the pack the pull is aimed at
-    //   wanderArea  [{spawn, checks}]                     - every wandering spawn the plan judged, and the checks it
-    //                                                       passed: "reaches spot,pull path,walk,walks into the fight"
-    // The checks become boolean columns, which is the whole point: a spawn that FAILED a check is a candidate that
-    // returned zero, and those were invisible while the reason sat in a comma-separated string. Measured on the live
-    // table, wanderArea carries 41 spawns on average and appears on 1 155 of 2 503 option rows - so this is the bulk
-    // of what the judge actually looked at, and none of it was filterable.
+    // The translation itself lives in ActorFacts.{h,cpp} - a seam with no world, no clock and no database - and is
+    // covered by tests/unit/ActorFactsTest.cpp. It was moved out of this file for a measured reason: the bots of the
+    // five were not written AT ALL and every mob's level, health and mana was NULL, which is exactly why the two
+    // DeathReplay tests skip ("put the same conditions back and run the judge again" had nothing to put back), and a
+    // reader that cannot be tested is how that stayed unnoticed. Now a test feeds a recorded line and demands the
+    // value reach its column.
     //
-    // WHAT IS NOT HERE, and it is not an oversight: level, health and max health. The emitters do not put them in the
-    // line at all (checked against the live rows - packAt has no level and no health field), and the journal will not
-    // invent them by looking the unit up itself: that would be a second reading of the world at a second moment, a
-    // second judge of the same quantity. Those columns stay NULL - "not supplied" - until the judge writes them, and
-    // NULL is distinguishable from 0 on purpose.
-    void MobActors(std::vector<Journal::Actor>& out, std::string const& json)
+    // What the emitters put in the line (LeaderPlan):
+    //   five        [{name, low, level, role, spec, hp, hpMax, mana, manaMax, x, y, z, tankYd, targetYd, combat,
+    //                openerReady, drinks, foods, drinksNeed, doing}]   - the bots of the five, side = Bot
+    //   lookAt       {name, low, entry, level, hp, hpMax, x, y, z, tankYd, combat, wanders}  - the mob answered about
+    //   packAt      [{low, entry, x, y, z, tankYd, wanders, level, hp, hpMax, combat}]       - the pack aimed at
+    //   wanderArea  [{spawn, checks}]                                  - every wandering spawn the plan judged
+    //
+    // NOTHING HERE ASKS A UNIT ANYTHING. Every number comes from the judge's own pass under the judge's own lock; a
+    // lookup here would be a second reading of the world at a second moment - a second judge of one quantity. A key
+    // the emitter left out stays NULL, and NULL is "not supplied", never 0.
+    void DecisionActors(std::vector<Journal::Actor>& out, std::string const& json)
     {
-        // every {...} object inside the named array
-        auto each = [&json](char const* key, std::function<void(std::string const&)> const& fn)
+        for (Journal::Facts::ActorFact const& f : Journal::Facts::ActorsFromFields(json))
         {
-            size_t at = json.find(std::string("\"") + key + "\":[");
-            if (at == std::string::npos)
-                return;
-            at = json.find('[', at);
-            int depth = 0;
-            size_t start = std::string::npos;
-            for (size_t i = at; i < json.size(); ++i)
-            {
-                if (json[i] == '{')
-                {
-                    if (depth++ == 0)
-                        start = i;
-                }
-                else if (json[i] == '}')
-                {
-                    if (--depth == 0 && start != std::string::npos)
-                        fn(json.substr(start, i - start + 1));
-                }
-                else if (json[i] == ']' && depth == 0)
-                    return;
-            }
-        };
-
-        each("packAt",
-             [&out](std::string const& o)
-             {
-                 Journal::Actor a;
-                 a.side = Journal::Actor::Side::Mob;
-                 a.note = "pack member";
-                 a.low = uint32(JNumber(o, "low"));
-                 a.x = float(JNumber(o, "x"));
-                 a.y = float(JNumber(o, "y"));
-                 a.tankYd = float(JNumber(o, "tankYd"));
-                 a.wanders = JField(o, "wanders") == "true";
-                 out.push_back(a);
-             });
-
-        each("wanderArea",
-             [&out](std::string const& o)
-             {
-                 Journal::Actor a;
-                 a.side = Journal::Actor::Side::Mob;
-                 a.note = "wander area";
-                 a.spawnId = uint32(JNumber(o, "spawn"));
-                 std::string const checks = JField(o, "checks");
-                 a.checks = checks;
-                 a.wanders = true;
-                 // the text stays AND becomes fields: a failed check is a rejected candidate, and it has to filter
-                 a.chkReachesSpot = checks.find("reaches spot") != std::string::npos;
-                 a.chkPullPath = checks.find("pull path") != std::string::npos;
-                 a.chkWalksIntoFight = checks.find("walks into the fight") != std::string::npos;
-                 // "walk" on its own, not the "walk" inside "walks into the fight"
-                 bool walk = false;
-                 for (size_t i = 0, n = 0; (n = checks.find("walk", i)) != std::string::npos; i = n + 4)
-                     if (checks.compare(n, 5, "walks") != 0)
-                         walk = true;
-                 a.chkWalk = walk;
-                 out.push_back(a);
-             });
+            Journal::Actor a;
+            a.side = f.mob ? Journal::Actor::Side::Mob : Journal::Actor::Side::Bot;
+            a.name = f.name;
+            a.low = f.low;
+            a.entry = f.entry;
+            a.spawnId = f.spawnId;
+            a.level = f.level;
+            a.spec = f.spec;
+            a.role = f.role;
+            a.health = f.health;
+            a.healthMax = f.healthMax;
+            a.healthPct = f.healthPct;
+            a.mana = f.mana;
+            a.manaMax = f.manaMax;
+            a.manaPct = f.manaPct;
+            a.x = f.x;
+            a.y = f.y;
+            a.z = f.z;
+            a.tankYd = f.tankYd;
+            a.targetYd = f.targetYd;
+            a.inCombat = f.inCombat;
+            a.wanders = f.wanders;
+            a.openerReady = f.openerReady;
+            a.doing = f.doing;
+            a.drinks = f.drinks;
+            a.foods = f.foods;
+            a.drinksNeed = f.drinksNeed;
+            a.checks = f.checks;
+            a.chkReachesSpot = f.chkReachesSpot;
+            a.chkPullPath = f.chkPullPath;
+            a.chkWalk = f.chkWalk;
+            a.chkWalksIntoFight = f.chkWalksIntoFight;
+            a.note = f.note;
+            // the same candidate is re-judged every tick and the same pack is printed by several lines of one
+            // answer: one row per distinct participant of the decision, not one per line that mentioned it. The
+            // identity is the field (guid counter / spawn id) plus why it is in the record, never the name.
+            bool already = false;
+            for (Journal::Actor const& seen : out)
+                if (seen.side == a.side && seen.low == a.low && seen.spawnId == a.spawnId && seen.note == a.note)
+                    already = true;
+            if (!already)
+                out.push_back(a);
+        }
     }
 
     // [jrn20] WHO READS THIS VERDICT. The column the whole journal was asked for, and the only honest way to fill
@@ -405,11 +392,15 @@ namespace
                 {
                     Journal::Decision carried;
                     carried.options.swap(pending.decision.options);
+                    // [jrn50] the participants go with the options they were read from: the candidates judged
+                    // before this answer belong to THIS answer, and so do the mobs they named
+                    carried.actors.swap(pending.decision.actors);
                     Flush(pending);
                     pending = Pending();
                     pending.lastMs = stamp;
                     // the candidate verdicts seen before this answer belong to it, not to the one already written
                     pending.decision.options.swap(carried.options);
+                    pending.decision.actors.swap(carried.actors);
                 }
                 Fill(pending.decision, run, who, what, mob, mobName, stamp, json);
                 pending.decision.topic = "pull";
@@ -425,6 +416,9 @@ namespace
                     pending.decision.routeTargetEntry = uint32(std::strtoul(routeTarget.c_str() + e + 7, nullptr, 10));
                 if (size_t const l = routeTarget.find("Low: "); l != std::string::npos)
                     pending.decision.routeTargetLow = uint32(std::strtoul(routeTarget.c_str() + l + 5, nullptr, 10));
+                // [jrn50] the five and the mob answered about become actor rows of THIS decision: the state the
+                // judge saw, which is what a replay needs and what pb_journal_actor had none of
+                DecisionActors(pending.decision.actors, json);
                 pending.hasAnswer = true;
                 return 0;
             }
@@ -486,7 +480,7 @@ namespace
                 option.value = JNumber(json, "expected");
             }
             // the mobs this option weighed become actor rows of the decision, with their checks as fields
-            MobActors(pending.decision.actors, json);
+            DecisionActors(pending.decision.actors, json);
             // the same candidate is re-judged every tick; one option row per distinct verdict, not per tick
             for (Journal::Option const& already : pending.decision.options)
                 if (already.kind == option.kind && already.name == option.name && already.reason == option.reason)

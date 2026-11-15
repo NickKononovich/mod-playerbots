@@ -56,6 +56,8 @@
 #include "PathGenerator.h"
 #include "LeaderKnowledge.h"
 #include "RouteSearch.h"  // [lead99] the leader's route search
+#include "Journal.h"      // [jrn20] the route's events as journal rows
+#include "RouteFacts.h"   // [jrn20] what a route row says, as a seam with no world in it
 #include "PullFacts.h"    // [lead104] the leader's pull / fight facts
 #include "LeaderFightChecks.h"  // [lead107] the leader's checks
 #include "LeaderPlan.h"         // [lead107] the leader's planner tick
@@ -1563,6 +1565,49 @@ namespace Leader::Travel
             return nearest;
         }
 
+        // [jrn20] ONE LEG END as a journal row, in one place so the two sites that end a leg cannot drift apart.
+        // Everything here is a fact already in hand at the moment the leg ends - no clock, no second look at the
+        // map beyond resolving the target that is being left - and Journal::RecordRoute only pushes the row to the
+        // journal's writer, so nothing blocks the map thread.
+        //
+        // `arrivedMs` is the group's own arrival at that target (a state, not a duration) and is still the old
+        // target's at both sites; `skipUntil` plus `skipReason` are the route's refusal in its own words. Reached,
+        // refused and dropped-for-another are three different answers, which is why the verdict comes from
+        // RouteFacts::LegVerdict and not from a boolean.
+        void RecordLegEnd(LeaderGroup& group, Player* leader, Map* map, ObjectGuid was, std::string const& fallback)
+        {
+            Creature const* left = map->GetCreature(was);
+            Journal::Route leg;
+            leg.event = "leg_end";
+            leg.purpose = group.Route().targetIsBoss ? "boss approach" : "clear the path";
+            leg.verdict = RouteFacts::LegVerdict(group.Route().arrivedMs != 0, group.Route().skipUntil.count(was) != 0);
+            auto const reason = group.Route().skipReason.find(was);
+            leg.why = reason != group.Route().skipReason.end() ? reason->second : fallback;
+            leg.target = left ? left->GetName() : std::string();
+            leg.targetEntry = left ? left->GetEntry() : 0;
+            leg.targetLow = was.GetCounter();  // the identity stands even when the unit is gone from the world
+            leg.botName = leader->GetName();
+            leg.botLow = leader->GetGUID().GetCounter();
+            leg.mapId = leader->GetMapId();
+            leg.zoneId = leader->GetZoneId();
+            leg.fromX = leader->GetPositionX();
+            leg.fromY = leader->GetPositionY();
+            leg.fromZ = leader->GetPositionZ();
+            // no walk is measured at the end of a leg, and a target that has left the world (killed, despawned) has
+            // no place left to measure to: both lengths stay NEGATIVE rather than being called 0 yd. to_x/y/z keep
+            // the column's own default in that case, because the route table has no NULL there.
+            leg.pathYd = -1.0f;
+            leg.straightYd = left ? leader->GetExactDist(left) : -1.0f;
+            if (left)
+            {
+                leg.toX = left->GetPositionX();
+                leg.toY = left->GetPositionY();
+                leg.toZ = left->GetPositionZ();
+            }
+            leg.runId = group.Run().runId;
+            Journal::RecordRoute(leg);
+        }
+
         std::string PlanStopName(Map* map, PlannedStop const& stop)
         {
             Creature const* mob = map->GetCreature(stop.anchor);
@@ -1677,6 +1722,10 @@ namespace Leader::Travel
         // [lead1283] the stops cleared since the plan to this boss started: their spots in order (the walk behind the
         // group); a plan that ran out of stops keeps them
         bool const fresh = route.routePlanBoss != bossGuid;
+        // [jrn20] the stop whose departure is this replan's reason, kept for the route row's changed_stop: "one stop
+        // once tripled a tour and the reason was buried in the text". Filled at most once per call (only for the
+        // stop that becomes the plan's `why`), so this costs one structure per replan and nothing per tick.
+        Optional<RouteFacts::StopFact> leftStop;
         for (auto behind = route.planBehind.begin(); behind != route.planBehind.end();)
             behind = current.count(*behind) ? std::next(behind) : route.planBehind.erase(behind);
         auto const reviewStops = [&](std::vector<PlannedStop>& stops, bool cleared)
@@ -1706,7 +1755,25 @@ namespace Leader::Travel
                         left = Acore::StringFormat("{} left its walk", mob->GetName());
                 }
                 if (why.empty() && !left.empty())
+                {
                     why = left;
+                    // [jrn20] the same fact as a row of the route's stop table: identity by entry and guid counter,
+                    // the name only for the eyes
+                    RouteFacts::StopFact fact;
+                    fact.kind = RouteFacts::StopKind(stop->patrol, false);
+                    fact.x = stop->spot.GetPositionX();
+                    fact.y = stop->spot.GetPositionY();
+                    fact.z = stop->spot.GetPositionZ();
+                    fact.low = stop->anchor.GetCounter();
+                    if (Creature const* anchor = map->GetCreature(stop->anchor))
+                    {
+                        fact.entry = anchor->GetEntry();
+                        fact.what = anchor->GetName();
+                    }
+                    fact.verdict = "left";
+                    fact.why = left;
+                    leftStop = fact;
+                }
                 if (alive.empty())
                 {
                     if (cleared && !stop->patrol)
@@ -1780,6 +1847,27 @@ namespace Leader::Travel
                 ahead.push_back(bossSpot);
             JsonArray behindLog;
             JsonArray judgedLog;  // [lead1324]
+            // [jrn20] the candidates this plan WEIGHED AND DROPPED, as rows of the route's stop table. A candidate
+            // that returned zero is a row with a reason, not a disappearance - that is the whole reason the table
+            // has a verdict and a why of its own per stop.
+            std::vector<RouteFacts::StopFact> dropped;
+            auto const dropRow = [&dropped, &map](PlannedStop const& pack, char const* reason)
+            {
+                RouteFacts::StopFact fact;
+                fact.kind = RouteFacts::StopKind(pack.patrol, false);
+                fact.x = pack.spot.GetPositionX();
+                fact.y = pack.spot.GetPositionY();
+                fact.z = pack.spot.GetPositionZ();
+                fact.low = pack.anchor.GetCounter();
+                if (Creature const* anchor = map->GetCreature(pack.anchor))
+                {
+                    fact.entry = anchor->GetEntry();
+                    fact.what = anchor->GetName();
+                }
+                fact.verdict = "refused";
+                fact.why = reason;
+                dropped.push_back(std::move(fact));
+            };
             auto const isOld = [&planned](PlannedStop const& pack)
             {
                 return std::any_of(pack.mobs.begin(), pack.mobs.end(),
@@ -1903,6 +1991,10 @@ namespace Leader::Travel
                     if (behind)
                     {
                         route.planBehind.insert(pack->mobs.begin(), pack->mobs.end());
+                        dropRow(*pack, Acore::StringFormat("behind the group ({:.0f} yd from the cleared walk, "
+                                                           "{:.0f} yd from the walk ahead, reach {:.0f})",
+                                                           back, forward, AggroReach(anchor, leader))
+                                           .c_str());
                         behindLog.Raw(JsonObject()
                                           .Str("stop", PlanStopName(map, *pack))
                                           .Real("back", back)
@@ -1977,6 +2069,7 @@ namespace Leader::Travel
                     if (PlanWalkLength(leader, start, packs[i].spot) < 0.0f)
                     {
                         unreachable.Str(PlanStopName(map, packs[i]));
+                        dropRow(packs[i], "no walk to it on the navmesh from where the leader stands");
                         continue;
                     }
                     float bestAdd = -1.0f;
@@ -1998,6 +2091,7 @@ namespace Leader::Travel
                 if (walk < 0.0f)
                 {
                     unreachable.Str(PlanStopName(map, pack));
+                    dropRow(pack, "no walk to it on the navmesh from where the leader stands");
                     continue;
                 }
                 fromLeader.push_back(walk);
@@ -2148,6 +2242,125 @@ namespace Leader::Travel
             LOG_INFO("playerbots", "[lead204] {}: route plan ({}): {} stops to {}, {:.0f} yd", group.Run().runId, why,
                      route.routePlan.size(), nextBoss ? nextBoss->GetName() : std::string("no boss"),
                      route.routePlanLength);
+
+            // [jrn20] THE PLAN AS A ROUTE ROW (pb_journal_route + pb_journal_route_stop), which were empty. A
+            // coordinate per tick is this same stream over again, only dearer, and it still cannot say why the group
+            // went there - so the row is written at the moment the plan is built or changes, and the positions are
+            // the ones of that moment. Nothing below reads a clock or makes a decision: `Journal::RecordRoute` only
+            // pushes the row to the journal's writer, and this site is the one the planner already logs from, so no
+            // new pass over the map happens.
+            {
+                std::vector<RouteFacts::StopFact> planned;
+                planned.reserve(route.routePlan.size());
+                for (PlannedStop const& stop : route.routePlan)
+                {
+                    RouteFacts::StopFact fact;
+                    fact.kind = RouteFacts::StopKind(stop.patrol, false);
+                    fact.x = stop.spot.GetPositionX();
+                    fact.y = stop.spot.GetPositionY();
+                    fact.z = stop.spot.GetPositionZ();
+                    fact.low = stop.anchor.GetCounter();
+                    if (Creature const* anchor = map->GetCreature(stop.anchor))
+                    {
+                        fact.entry = anchor->GetEntry();
+                        fact.what = PlanStopName(map, stop);
+                    }
+                    planned.push_back(std::move(fact));
+                }
+                // [lead205] a walker that comes to another stop's fight is no stop of the tour, and its row says so
+                for (PlannedStop const& meet : route.routePlanMeets)
+                {
+                    RouteFacts::StopFact fact;
+                    fact.kind = "patrol";
+                    fact.x = meet.spot.GetPositionX();
+                    fact.y = meet.spot.GetPositionY();
+                    fact.z = meet.spot.GetPositionZ();
+                    fact.low = meet.anchor.GetCounter();
+                    if (Creature const* walker = map->GetCreature(meet.anchor))
+                    {
+                        fact.entry = walker->GetEntry();
+                        fact.what = walker->GetName();
+                    }
+                    fact.verdict = "meets";
+                    fact.why = "its walk comes to another stop's fight";
+                    dropped.push_back(std::move(fact));
+                }
+                if (leftStop)
+                    dropped.push_back(*leftStop);
+
+                // The two lengths must measure THE SAME TOUR or their ratio means nothing, and that is the only
+                // thing a detour is visible as. `routePlanLength` was measured over the leader, the packs in their
+                // tour order and the boss - before the walkers were inserted into route.routePlan - so the straight
+                // line beside it is summed over exactly those nodes and the inserted walkers are left out of it.
+                std::vector<RouteFacts::SpotFact> measured;
+                measured.push_back({start.GetPositionX(), start.GetPositionY(), start.GetPositionZ()});
+                for (PlannedStop const& stop : route.routePlan)
+                    if (!stop.patrol)
+                        measured.push_back(
+                            {stop.spot.GetPositionX(), stop.spot.GetPositionY(), stop.spot.GetPositionZ()});
+                if (toBoss)
+                    measured.push_back({bossSpot.GetPositionX(), bossSpot.GetPositionY(), bossSpot.GetPositionZ()});
+
+                RouteFacts::PlanFact const shape =
+                    RouteFacts::BuildPlan(std::move(planned), std::move(dropped), measured, route.routePlanLength);
+
+                Journal::Route row;
+                // a first plan and a plan for a new boss are PLANNED; everything else is a plan that CHANGED, and
+                // then the row has to name which stop and why
+                row.event = fresh || why == "first plan" ? "planned" : "changed";
+                row.purpose = toBoss ? "boss approach" : "clear the path";
+                row.why = why;
+                if (nextBoss)
+                {
+                    row.target = nextBoss->GetName();
+                    row.targetEntry = nextBoss->GetEntry();
+                    row.targetLow = bossGuid.GetCounter();
+                }
+                row.botName = leader->GetName();
+                row.botLow = leader->GetGUID().GetCounter();
+                row.mapId = leader->GetMapId();
+                row.zoneId = leader->GetZoneId();
+                row.fromX = start.GetPositionX();
+                row.fromY = start.GetPositionY();
+                row.fromZ = start.GetPositionZ();
+                row.toX = measured.back().x;
+                row.toY = measured.back().y;
+                row.toZ = measured.back().z;
+                row.pathYd = shape.pathYd;        // < 0: the navmesh found no walk - that is not a walk of 0 yd
+                row.straightYd = shape.straightYd;
+                row.stopCount = shape.stopCount;
+                row.runId = group.Run().runId;
+                if (row.event == "changed")
+                {
+                    // which stop appeared or went: the first stop of the new plan that no kept stop held (a join),
+                    // else the stop whose departure is the reason, by its own seq in this row
+                    for (size_t i = 0; i < route.routePlan.size() && !row.changedStop; ++i)
+                        if (std::none_of(kept.begin(), kept.end(), [&](PlannedStop const& old)
+                                         { return old.anchor == route.routePlan[i].anchor; }))
+                            row.changedStop = uint32(i);
+                    if (!row.changedStop && leftStop)
+                        for (RouteFacts::StopFact const& stop : shape.stops)
+                            if (stop.verdict == "left")
+                                row.changedStop = stop.seq;
+                    row.changedWhy = why;
+                }
+                for (RouteFacts::StopFact const& stop : shape.stops)
+                {
+                    Journal::RouteStop out;
+                    out.seq = stop.seq;
+                    out.x = stop.x;
+                    out.y = stop.y;
+                    out.z = stop.z;
+                    out.kind = stop.kind;
+                    out.what = stop.what;
+                    out.entry = stop.entry;
+                    out.low = stop.low;
+                    out.verdict = stop.verdict;
+                    out.why = stop.why;
+                    row.stops.push_back(std::move(out));
+                }
+                Journal::RecordRoute(row);
+            }
         }
         else if (route.routePlan.size() != headBefore && !route.routePlan.empty() &&
                  route.routePlan.front().anchor != headAnchor)
@@ -5673,6 +5886,9 @@ namespace Leader::Travel
 
         if (chosen.IsEmpty())
         {
+            // [jrn20] this turn is the one the state flips on: the journal's leg_end below rides the same guard, so
+            // it is one row per event and not one per tick
+            bool const noTargetsFresh = !group.Route().noTargets;
             if (!group.Route().noTargets)
             {
                 group.Route().noTargets = true;
@@ -5684,6 +5900,10 @@ namespace Leader::Travel
                              .Str("nextBossView",
                                   nextBoss ? AggressiveTargetValue::Explain(leader, nextBoss) : std::string()));
             }
+            // [jrn20] the leg ends here too, and this end is the interesting one: the group had a target and now
+            // there is nothing to walk to. It rides the same once-per-event guard, so this is one row per event.
+            if (ObjectGuid const was = group.Route().target; !was.IsEmpty() && noTargetsFresh)
+                RecordLegEnd(group, leader, map, was, "nothing left for the route to walk to");
             group.Route().target.Clear();
             group.ClearWaypoint(group.LeaderGuid());
             return;
@@ -5725,6 +5945,16 @@ namespace Leader::Travel
             group.SkipTarget(chosen, RESPAWNING_SKIP_MS, "respawning trash");
             return;
         }
+
+        // [jrn20] THE LEG THAT ENDS HERE. This is the one place the route's target changes by its own choice, so
+        // the leg to the previous target ends here and the next one starts (leg_start is written below, where the
+        // route's own rule for the new target is in hand) - both facts of state, neither of them a clock.
+        if (ObjectGuid const was = group.Route().target; !was.IsEmpty())
+            RecordLegEnd(group, leader, map, was,
+                         group.Route().arrivedMs
+                             ? std::string("the group reached it")
+                             // the next target by its identity, not by its name: a name is not a unit
+                             : Acore::StringFormat("the route took another target (low {})", chosen.GetCounter()));
 
         group.Route().target = chosen;
         group.Route().guaranteeHolding = false;
@@ -5797,6 +6027,44 @@ namespace Leader::Travel
                                       .Real("x", object ? object->GetPositionX() : 0.0f)
                                       .Real("y", object ? object->GetPositionY() : 0.0f)
                                       .Real("z", object ? object->GetPositionZ() : 0.0f));
+
+        // [jrn20] THE LEG THAT STARTS HERE, written where the route's choice and its reason are both in hand: the
+        // target, the rule that chose it, and where the leader stood when it set off. `why` is the route's own rule
+        // (targetRouteRule), which is what "where was it going and why did it turn" has to be answered out of.
+        //
+        // path_yd stays NEGATIVE on purpose. The search measured a walk for the candidate that scored best, and
+        // `chosen` is not always that candidate (a near target replaces a far one, a lift, a bridge, a room mob, an
+        // event starter): writing that number here would attribute one object's measured walk to another - a second
+        // judge of one quantity. The straight line IS in hand and is written; the measured walks live on the plan's
+        // own rows.
+        {
+            Journal::Route leg;
+            leg.event = "leg_start";
+            leg.purpose = group.Route().targetIsBoss ? "boss approach"
+                          : useStarter               ? "event starter"
+                                                     : "clear the path";
+            leg.why = routeRule;
+            leg.target = object ? object->GetName() : std::string();
+            leg.targetEntry = object ? object->GetEntry() : 0;
+            leg.targetLow = chosen.GetCounter();
+            leg.botName = leader->GetName();
+            leg.botLow = leader->GetGUID().GetCounter();
+            leg.mapId = leader->GetMapId();
+            leg.zoneId = leader->GetZoneId();
+            leg.fromX = leader->GetPositionX();
+            leg.fromY = leader->GetPositionY();
+            leg.fromZ = leader->GetPositionZ();
+            leg.pathYd = -1.0f;
+            leg.straightYd = object ? leader->GetExactDist(object) : -1.0f;
+            if (object)
+            {
+                leg.toX = object->GetPositionX();
+                leg.toY = object->GetPositionY();
+                leg.toZ = object->GetPositionZ();
+            }
+            leg.runId = group.Run().runId;
+            Journal::RecordRoute(leg);
+        }
     }
 
     void StartWingChange(LeaderGroup& group, size_t next, char const* why)

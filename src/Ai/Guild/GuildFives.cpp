@@ -12,6 +12,7 @@
 // run is kept in the completion table (playerbots DB guild_project_runs).
 
 #include "GuildCoordinator.h"
+#include "Journal.h"  // [jrn50] the five at the door, as columns instead of three printed lines
 
 #include "BuyAction.h"  // [supply27] CountBagFood, RESTOCK_*
 #include <algorithm>
@@ -4383,6 +4384,100 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
                      "heals {:.0f} mana less {:.0f} regen in the fights",
                      five.id, d.contentKey, drinkMana, line, players[1]->GetName(), priced.healingMana,
                      priced.fightRegen);
+        }
+
+        // [jrn50] THE FIVE AT THE DOOR, as columns instead of three printed lines ([gate100] the capacity count,
+        // [dun194] the drinks the run is priced at, [supply100] the pooled supplies). A five failed wc-n giving
+        // 58 % of its run to resting because its paladin tank had run out of water, and establishing that took a
+        // LIKE over the text - which is the one slow form of read this journal has (384 ms over the stream, and it
+        // grows linearly). So: one decision row per five that enters, one participant row per member carrying its
+        // pool beside its share, and the five's own forecast numbers as metrics - of which this code is the OWNER,
+        // which is the only place allowed to write them (a second writer of one quantity is a second judge of it).
+        //
+        // This is the ONE place every five passes through (the look's own five, the free five, the [cert10]
+        // certification batch and a forced `guild formfive` all form here), so the row cannot be missed by a kind
+        // of five, and it is written once per forming - never on a timer.
+        {
+            Journal::Decision entry;
+            entry.topic = "five_enter";
+            entry.choice = d.contentKey;
+            entry.verdict = "taken";  // the five is formed here; the gate refuses nobody any more (2026-11-14)
+            entry.why = gateVerdict.levelWhy.empty() ? why : gateVerdict.levelWhy;
+            entry.judge = Journal::Judge::GuildLeader;
+            entry.subject = d.name;
+            entry.subjectKind = "dungeon";
+            entry.cost = gateVerdict.worstLoad;
+            entry.costUnit = "load";
+            entry.tag = "[jrn50]";
+            entry.src = "GuildFives::FormFiveLocked";
+            // not established: nothing has been traced reading this row yet, and "" would claim it was proved
+            entry.readBy = "?";
+            entry.readField = "";
+            entry.fields = Acore::StringFormat(
+                "{{\"five\":{},\"dungeon\":\"{}\",\"pullsJudged\":{},\"pullsOverCapacity\":{},"
+                "\"worstLoad\":{:.3f},\"worstDrop\":{:.3f},\"worstMana\":{:.3f},\"drinkMana\":{:.0f},"
+                "\"over\":\"{}\"}}",
+                five.id, d.contentKey, gateVerdict.judged, gateVerdict.over, gateVerdict.worstLoad,
+                gateVerdict.worstDrop, gateVerdict.worstMana, drinkMana, gateVerdict.overList);
+            for (uint32 low : members)
+            {
+                Player* p = ObjectAccessor::FindPlayer(ObjectGuid::Create<HighGuid::Player>(low));
+                if (!p)
+                    continue;  // a member not in the world has no state to record, and 0 would not be its state
+                Journal::Actor a;
+                a.side = Journal::Actor::Side::Bot;
+                a.name = p->GetName();
+                a.low = low;
+                a.level = p->GetLevel();
+                auto const role = roles.find(low);
+                a.role = role != roles.end() ? role->second : std::string("dps");
+                a.spec = AiFactory::GetPlayerSpecName(p);
+                a.health = p->GetHealth();
+                a.healthMax = p->GetMaxHealth();
+                if (a.healthMax && *a.healthMax)
+                    a.healthPct = float(100.0 * double(*a.health) / double(*a.healthMax));
+                // a member with no mana pool has no mana percentage - it does not have 0 %
+                if (uint32 const pool = p->GetMaxPower(POWER_MANA))
+                {
+                    a.mana = p->GetPower(POWER_MANA);
+                    a.manaMax = pool;
+                    a.manaPct = float(100.0 * double(*a.mana) / double(pool));
+                }
+                a.x = p->GetPositionX();
+                a.y = p->GetPositionY();
+                a.z = p->GetPositionZ();
+                a.inCombat = p->IsInCombat();
+                a.drinks = CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
+                a.foods = CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
+                // what the run was PRICED at, by the one judge of that quantity: the map filled just above
+                if (auto const need = five.drinkNeed.find(low); need != five.drinkNeed.end())
+                    a.drinksNeed = need->second;
+                a.note = "five enter";
+                entry.actors.push_back(a);
+            }
+            uint64 const at = Journal::ClockMs();
+            Journal::Record(entry);
+            // the five's own forecast, each value with its OWN window: these are a forecast taken at one instant,
+            // so from and to are that instant and nothing implies a window that was never measured
+            auto metric = [&](char const* name, double value, char const* unit)
+            {
+                Journal::Metric m;
+                m.name = name;
+                m.value = value;
+                m.unit = unit;
+                m.fromMs = at;
+                m.toMs = at;
+                m.scope = "five:" + std::to_string(five.id);
+                Journal::RecordMetric(m);
+            };
+            metric("five_enter.pulls_judged", double(gateVerdict.judged), "pull");
+            metric("five_enter.pulls_over_capacity", double(gateVerdict.over), "pull");
+            metric("five_enter.worst_pull_load", gateVerdict.worstLoad, "load");
+            metric("five_enter.worst_tank_drop", gateVerdict.worstDrop, "%");
+            metric("five_enter.worst_healer_mana", gateVerdict.worstMana, "%");
+            metric("five_enter.drink_mana", drinkMana, "mana");
+            metric("five_enter.healer_healing_mana", gateVerdict.healingMana, "mana");
+            metric("five_enter.healer_fight_regen", gateVerdict.fightRegen, "mana");
         }
     }
 

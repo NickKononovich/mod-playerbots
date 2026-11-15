@@ -8,10 +8,13 @@
 // the leader's calculation, so each one earns a test that would have gone red before it - but there is nothing to
 // feed one yet:
 //
-//   - pb_journal_actor is EMPTY (0 rows, checked in the live journal): the bots' rows are not written at all, and
-//     the mobs' level, health and mana are NULL. The emitters do not put those numbers in the line; the journal does
-//     not invent them and does not ask the unit itself, because that would be a second reading of the world at a
-//     different moment - a second judge of one quantity.
+//   - [jrn50] THIS HALF IS DONE, and the note is corrected rather than left standing (a comment about what the code
+//     no longer does costs more than a wrong number): the emitters now write the five's bots and each mob's level,
+//     health and mana into the line themselves, in the judge's own pass (LeaderPlan: `five`, `lookAt`, the enriched
+//     `packAt`), the journal turns them into pb_journal_actor rows (ActorFacts, covered by ActorFactsTest), and the
+//     member's drinks / foods / drinks_need are columns too. The journal still does not ask a unit anything - that
+//     would be a second reading of the world at a different moment, a second judge of one quantity. What these
+//     tests wait for now is a RUN on a build carrying those emitters, so the rows exist to export.
 //   - pb_journal_death / pb_journal_fight / pb_journal_aggro are being created by another session right now
 //     (src/Ai/Journal/**). Their columns are read here, never written.
 //
@@ -38,10 +41,10 @@ TEST(DeathReplay, ADeathIsAnErrorOfTheSurvivalCalculation)
     std::vector<std::string> const files = PbFixture::ListJson(dir);
     if (files.empty())
         GTEST_SKIP() << "no death fixtures in " << dir
-                     << ": pb_journal_death is still being created and pb_journal_actor holds 0 rows, so the bots' "
-                        "health, mana and levels at the moment of the decision do not exist anywhere yet. Waiting "
-                        "on: actor rows for the five, and a death row carrying the decision_id of the pull that "
-                        "took the fight.";
+                     << ": waiting on a run of a build carrying the [jrn50] emitters (the five's rows and the "
+                        "mobs' health are written now, but no run has produced them yet) and on a death row "
+                        "carrying the decision_id of the pull that took the fight. The query that says the first "
+                        "half has arrived: SELECT COUNT(*) FROM pb_journal_actor WHERE side = 0;";
     // the body lands here together with the first exported fixture: load it, put the facts through
     // Leader::Judge::ReplayChainPull, and assert the margin the record refutes.
     FAIL() << "death fixtures exist (" << files.size() << ") but the replay body is not written yet";

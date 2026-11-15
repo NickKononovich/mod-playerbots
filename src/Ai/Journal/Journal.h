@@ -177,6 +177,15 @@ namespace Journal
         Optional<bool> openerReady;      // bots: its opener is off cooldown - 121 refusals rode on exactly this
         Optional<std::string> doing;     // what it was doing at that instant
 
+        // [jrn50] THE SUPPLY FACTS OF A MEMBER, and they are columns because a run was lost to them: a five failed
+        // wc-n giving 58 % of the run to resting after its paladin tank ran out of water, and the only way to
+        // establish that afterwards was a LIKE over the text. `drinks` / `foods` are what it CARRIES at this
+        // instant (the bags, counted by the emitter in its own pass), `drinksNeed` what the five's gate priced its
+        // run at ([dun194]). Both sides are needed: "0 drinks" is only a finding beside "the run needs 19".
+        Optional<uint32> drinks;
+        Optional<uint32> foods;
+        Optional<uint32> drinksNeed;
+
         // The checks a mob passed in the judge's own words, kept as the text AND as fields, because the text was
         // unfilterable: "reaches spot,pull path,walk,walks into the fight".
         Optional<std::string> checks;

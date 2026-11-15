@@ -57,8 +57,12 @@ add_executable(pb_unit_tests
     unit/MoveStepTest.cpp
     unit/ChaseWindowTest.cpp
     unit/ManaBudgetTest.cpp
+    unit/ActorFactsTest.cpp
+    unit/RouteFactsTest.cpp
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight/ChainPullJudge.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IssueKey.cpp"
+    "${PB_MODULE_ROOT}/src/Ai/Journal/ActorFacts.cpp"
+    "${PB_MODULE_ROOT}/src/Ai/Leader/Travel/RouteFacts.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/AggroReason.cpp"
     "${PB_MODULE_ROOT}/src/Bot/Engine/SoloCombatEntry.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/StandingEpisode.cpp"
@@ -70,6 +74,7 @@ target_include_directories(pb_unit_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/unit"
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight"
     "${PB_MODULE_ROOT}/src/Ai/Journal"
+    "${PB_MODULE_ROOT}/src/Ai/Leader/Travel"
     "${PB_MODULE_ROOT}/src/Bot/Engine"
     "${PB_MODULE_ROOT}/src/Ai/Base/Actions"
     "${PB_MODULE_ROOT}/src/Ai/World/Rpg")

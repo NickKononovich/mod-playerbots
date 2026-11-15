@@ -35,7 +35,12 @@ if (BUILD_TESTING)
     "${PB_TESTS_DIR}/unit/SoloCombatEntryTest.cpp"
     "${PB_TESTS_DIR}/unit/StandingEpisodeTest.cpp"
     "${PB_TESTS_DIR}/unit/MoveStepTest.cpp"
-    "${PB_TESTS_DIR}/unit/ChaseWindowTest.cpp")
+    "${PB_TESTS_DIR}/unit/ChaseWindowTest.cpp"
+    # [jrn50] the journal's own instruments: the decision's participants, and a route as events. ManaBudgetTest is
+    # in tests/CMakeLists.txt and was missing here before this line - the two lists had drifted apart.
+    "${PB_TESTS_DIR}/unit/ManaBudgetTest.cpp"
+    "${PB_TESTS_DIR}/unit/ActorFactsTest.cpp"
+    "${PB_TESTS_DIR}/unit/RouteFactsTest.cpp")
   set_property(GLOBAL APPEND PROPERTY ACORE_MODULE_TEST_INCLUDES
     "${PB_TESTS_DIR}/unit"
     "${CMAKE_BINARY_DIR}/pb_tests")
