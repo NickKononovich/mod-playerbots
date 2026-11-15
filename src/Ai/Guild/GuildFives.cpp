@@ -5061,8 +5061,29 @@ void GuildCoordinator::UpdateFives()
                         {
                             BotState const& ms = bots_[low];
                             PlayerbotAI* mai = GET_PLAYERBOT_AI(p);
+                            // [supply132] THE CONJURER'S SIDE OF THIS TEST IS A FACT NOW, NOT AN ABILITY. It read
+                            // `getClass() == CLASS_MAGE && HasSpell(5504)` - knowing how to make water, which is
+                            // constant by definition - so a five whose pool was short and that happened to hold a
+                            // mage had "something in flight" for ever, whatever the mage did or could not do. It is
+                            // the same mistake [supply130] took out of `drinkLine` and left standing in its twin.
+                            // The seam (SupplyWait.h) asks the two questions that can come out false: is it still
+                            // BELOW the line it was ordered to reach ([dun199] ConjureGoal, never under its own
+                            // priced line), and would the game take the cast NOW (RestState::CanConjureDrink: its
+                            // best known rank, its mana against that spell's own cost, not in combat). No new
+                            // number: Cassand at this gate in b504 held 178 mana of 1611 (11 %), 0 drinks of the 29
+                            // it was ordered to make, and cast nothing in 45 min
+                            GuildSupplyWait::ConjurerFacts conjurer;
+                            conjurer.knowsConjure = p->getClass() == CLASS_MAGE && p->HasSpell(5504);
+                            if (conjurer.knowsConjure)
+                            {
+                                conjurer.held = own;
+                                // the order if one was given this run, else the member's own priced line: the five
+                                // must not go in short on the pass before [dun199] below has spoken
+                                conjurer.goal = std::max(ConjureGoal(p->GetGUID()), drinkLine(low));
+                                conjurer.canCastNow = RestState::CanConjureDrink(p);
+                            }
                             if ((ms.supplyAsked && !ms.supplyDone) ||
-                                (p->getClass() == CLASS_MAGE && p->HasSpell(5504)) ||  // Conjure Water
+                                GuildSupplyWait::ConjurerFilling(conjurer) ||
                                 (mai && OnRestockRun(p, *mai)))
                                 shortfallInFlight = true;
                         }

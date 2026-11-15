@@ -831,3 +831,79 @@ TEST(SupplyWait, NothingInTheFactsIsAClockSoNoWaitCanBeSatisfiedByTime)
     EXPECT_EQ(GuildSupplyWait::Of(cassand), GuildSupplyWait::Of(cassand));
     EXPECT_EQ(sizeof(GuildSupplyWait::Facts), 5u) << "a field was added to the facts: if it is a time, it must not be";
 }
+
+// ---------------------------------------------------------------------------------------------------
+// [supply132] THE SECOND WAITER OF THE SAME SHAPE: "IT IS A MAGE AND IT KNOWS CONJURE WATER".
+//
+// Inputs are b504's own rows for #42 Cassand, mage L25 of wc-n five 2 - the same five [supply131] was
+// measured on: pb_journal_actor at the gate "mana 178 of 1611 = 11.049 %, drinks 0, drinks_need 27",
+// the [dun199] order "Cassand conjures water up to 29 before the run (its own line + 2 the others
+// lack)" written 3 times in the whole build and only for this five, and over 176 pb_journal_idle
+// windows of b504 - 1 297 ticks - casts 0 and non-cast actions 0.
+//
+// The bite is NOT measured and is not claimed: five 2 was held at the gate by the shoulders run
+// ([supply131]), not by this branch, because st.supplyDone was false and holdForPool was never
+// reached. This is rule 5 - a second judge of "is this member's water on its way" is a defect named
+// before it bites.
+namespace
+{
+    // Cassand at the gate, as the row reads: it knows Conjure Water, it holds nothing, it was ordered
+    // to reach 29 - and nothing it could cast went off in 45 minutes
+    GuildSupplyWait::ConjurerFacts CassandTheConjurer()
+    {
+        GuildSupplyWait::ConjurerFacts f;
+        f.knowsConjure = true;
+        f.held = 0;
+        f.goal = 29;
+        f.canCastNow = false;
+        return f;
+    }
+}  // namespace
+
+TEST(ConjurerInFlight, AnAbilityIsNotWaterOnItsWay)
+{
+    // the defect: the five's shortfall counted as "in flight" because a member of it is a mage. Knowing
+    // how to make water is constant by definition, so that reading could never come out false and the
+    // wait it feeds could never end
+    EXPECT_FALSE(GuildSupplyWait::ConjurerFilling(CassandTheConjurer()))
+        << "Cassand knew Conjure Water for all 45 min at 178 mana of 1611 and cast nothing: 0 casts over "
+           "176 windows, 0 of its 29 drinks made";
+}
+
+TEST(ConjurerInFlight, AConjurerBelowItsLineThatTheGameWouldTakeNowIsInMotion)
+{
+    // the reverse side: "a conjurer is never in motion" would pass the test above and break the design -
+    // a mage with the mana for the cast IS filling the pool, and the five waits on that as it always did
+    GuildSupplyWait::ConjurerFacts able = CassandTheConjurer();
+    able.canCastNow = true;
+    EXPECT_TRUE(GuildSupplyWait::ConjurerFilling(able));
+}
+
+TEST(ConjurerInFlight, AConjurerAtItsLineHasNothingLeftToMake)
+{
+    // and the other reverse side: a mage already at the line it was ordered to reach is not "in motion"
+    // either, however well it can cast - its bags already answer the five's requirement
+    GuildSupplyWait::ConjurerFacts filled = CassandTheConjurer();
+    filled.held = 29;
+    filled.canCastNow = true;
+    EXPECT_FALSE(GuildSupplyWait::ConjurerFilling(filled));
+    filled.held = 30;  // over the line is not under it
+    EXPECT_FALSE(GuildSupplyWait::ConjurerFilling(filled));
+}
+
+TEST(ConjurerInFlight, AMemberThatCannotConjureIsNeverAConjurer)
+{
+    // the guard the ability still earns: it is necessary, it is simply never sufficient
+    GuildSupplyWait::ConjurerFacts notAMage = CassandTheConjurer();
+    notAMage.knowsConjure = false;
+    notAMage.canCastNow = true;
+    EXPECT_FALSE(GuildSupplyWait::ConjurerFilling(notAMage));
+}
+
+TEST(ConjurerInFlight, NothingInTheConjurerFactsIsAClock)
+{
+    // rule 2 asserted structurally, as the wait's own facts are: no duration, age or timestamp here, so
+    // no assertion above can be satisfied by the member standing longer
+    EXPECT_EQ(sizeof(GuildSupplyWait::ConjurerFacts), 16u)  // two bools, two uint32, padded
+        << "a field was added to the conjurer's facts: if it is a time, it must not be";
+}

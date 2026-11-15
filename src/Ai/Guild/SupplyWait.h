@@ -108,6 +108,51 @@ inline Verdict Of(Facts const& facts)
     return Verdict::Yield;
 }
 
+// [supply132] WHETHER A CONJURER IS STILL FILLING ITS OWN LINE - A FACT, NOT AN ABILITY.
+//
+// The second waiter of the same shape, in the same function (GuildFives.cpp, `shortfallInFlight`), and the
+// one [supply130] removed from `drinkLine` and left standing in its twin:
+//     (p->getClass() == CLASS_MAGE && p->HasSpell(5504))   // Conjure Water
+// "it is a mage and it knows how to make water" is an ABILITY, constant by definition, so it is one more
+// assertion that cannot come out false (trap 5) - and it holds `holdForPool` for ever: a five whose pool is
+// short never enters while one member of it happens to be a mage, whatever that mage does or cannot do.
+//
+// MEASURED, and the bite is NOT measured - said plainly (rule 5 names a defect before it bites). b504 wrote
+// [dun199] three times in the whole build and only for five 2, so this branch can bite exactly that five; and
+// five 2 was NOT held by it in b504, because `st.supplyDone` was false there and `holdForPool` was never
+// reached (that was [supply131], the shoulders run). What five 2 DID carry is the state this test needs:
+// #42 Cassand, mage L25, pb_journal_actor at the gate "mana 178 of 1611 = 11.049 %, drinks 0, drinks_need 27",
+// its [dun199] order "conjures water up to 29 before the run", and over 176 windows of b504 - 1 297 ticks -
+// casts 0 and non-cast actions 0. An ability that says "water is on its way" while no water is on its way.
+//
+// THE REPLACEMENT IS STATE, AND IT CAN COME OUT FALSE: a conjurer is in motion while it is BELOW the line it
+// was told to reach AND the core would take the cast NOW. No new threshold: the line is [dun199]'s own
+// ConjureGoal (never under the member's priced line) and the castability is RestState::CanConjureDrink - the
+// highest rank it knows, its own mana against that spell's own cost from spell data, and not in combat. No
+// clock: there is no duration, age or timestamp here either, so no assertion below can be met by waiting.
+struct ConjurerFacts
+{
+    bool knowsConjure = false;  // the class ability. Necessary and never sufficient: this is the old whole test
+    uint32_t held = 0;          // drinks in its bags NOW (CountBagFood, the counter the pool itself is counted with)
+    uint32_t goal = 0;          // the line [dun199] told it to reach; 0 = nobody has ordered it to conjure yet
+    bool canCastNow = false;    // RestState::CanConjureDrink: mana against the spell's own cost, and not in combat
+};
+
+// Is this member's own water actually on its way? One place, so the gate's reading and a reader's cannot drift.
+inline bool ConjurerFilling(ConjurerFacts const& facts)
+{
+    if (!facts.knowsConjure)
+        return false;
+    // at or over the line there is nothing left for it to make: its bags already answer the five's requirement,
+    // and goal 0 (nobody has ordered it to conjure yet) is "at the line" by the same arithmetic
+    if (facts.held >= facts.goal)
+        return false;
+    // below the line it is only "in motion" while the game would take the cast now. A mage that cannot cast is
+    // standing, and a five must never wait on standing - that is the bound [dun282] asked for in its own words,
+    // "enters short never becomes never enters"
+    return facts.canCastNow;
+}
+
 }  // namespace GuildSupplyWait
 
 #endif
