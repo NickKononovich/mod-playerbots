@@ -448,9 +448,9 @@ namespace
             sample.targetEntry = state.formulaEntry;
             sample.targetLevel = state.formulaLevel;
             sample.mobs = uint32(state.attackers.size());
-            // [dps20] one reading of the formula over a fight of `fought`: DpsEstimate::FormulaOver, which is
-            // Estimate's own mana branch. This spelled the same arithmetic out a second time beside it.
-            sample.formulaDps = DpsEstimate::FormulaOver(state.formula, fought);
+            // [dps20] the formula is no longer priced here. It was `FormulaOver(state.formula, fought)` - the
+            // formula over SoloSafety's clock - while a fight in a dungeon was priced over the measurement's own
+            // window, so one column held two numbers. RecordFight prices it, once, over the window it measured.
             sample.cycleSec = state.formula.cycleSec;
             sample.dealt = foughtDealt;
             sample.fightSec = seconds;

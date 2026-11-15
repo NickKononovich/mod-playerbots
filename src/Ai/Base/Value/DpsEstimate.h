@@ -43,9 +43,20 @@ struct Result
     float tps = 0.0f;         // threat per second of the burst rotation (the pet's not included)
     float manaPerSec = 0.0f;  // the rotation's mana use minus its in-combat regeneration (0: none or no mana)
     float oomSec = std::numeric_limits<float>::max();  // seconds of rotation on its mana now
+    // [dps20] the same seconds with a Life Tap counted as no mana source. A warlock in a group is given endless
+    // mana above (`tapping`: it taps while nothing attacks it), which is a fair thing for a DECISION to assume and
+    // the wrong thing for a MEASUREMENT to divide by - the row judges the damage it dealt against mana it actually
+    // had, and an unreachable ceiling is not an ideal. FormulaOver reads this one; nothing that decides reads it,
+    // and `dps`, `manaPerSec` and `oomSec` above are untouched.
+    float drainOomSec = std::numeric_limits<float>::max();
     float cycleSec = 0.0f;  // one pass of the rotation: every spell it uses once, at least one global cooldown
     uint8 spells = 0;       // rotation spells it knows and uses
     float pushHitsPerSec = 0.0f;  // [death457] the landed hits on it a second its casts' pushback is priced at
+    // [dps20] buff categories the formula and the ideal assumed the bot would have and it did not wear at the
+    // fight's open (PlannedBuffs skips every category it already wears, so this counts only missing ones). The
+    // denominator rises by them on purpose - the ideal is what the spec does when the party does its job - and
+    // storing the count is what keeps "the five is not buffing" from being read as an instrument defect.
+    uint8 assumedBuffs = 0;
 };
 
 // `target`: the unit it fights (its level, armor, avoidance and auras are read); null: a mob of its level
@@ -124,9 +135,6 @@ struct FightSample
     char const* outcome = "won";  // won / fled / died
     std::string invalidWhy;       // empty: the caller has no reason of its own against the sample
     BuffContext ctx = BuffContext::Solo;
-    // the formula at the open over the fight ahead: FormulaOver(the Result the caller took, the measured window).
-    // 0: RecordFight takes the Result it stored at the fight's first hit itself
-    float formulaDps = 0.0f;
 };
 void RecordFight(Player* bot, FightSample const& sample);
 
