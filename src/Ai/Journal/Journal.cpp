@@ -221,7 +221,12 @@ namespace Journal
             "gap_over_400, top_actions, stood_sec, stood_yd, doing, held_by, why, run_id, build, in_group, "
             // [jrn51] which action the engine turned down, beside the reason it already gave
             // [jrn52] the walking part of no_target and range_los
-            "engine_state, ref_top_action, ref_top_cause, ref_top_ticks, no_target_moving, range_los_moving)";
+            // [jrn57] and the same question asked of the ticks the chain decided before `other` was ever reached
+            "engine_state, ref_top_action, ref_top_cause, ref_top_ticks, no_target_moving, range_los_moving, "
+            "ref_early_action, ref_early_cause, ref_early_ticks, "
+            // [jrn58] the same over EVERY refusal of every tick, with how many pairs there were at all, and the
+            // leader's own published readiness - the fact `leader_hold` was mistaken for
+            "ref_any_action, ref_any_cause, ref_any_events, ref_any_pairs, leader_ready)";
         // [mount9] one change of a bot's mount state, with the facts that could justify it as columns
         char const* const COLUMNS_MOUNT =
             "(id, boot_id, at_ms, hour_bucket, event, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
@@ -1373,6 +1378,44 @@ namespace Journal
                              // the emitter did not pass it, which is not "it never walked".
                              "no_target_moving SMALLINT UNSIGNED NULL, "
                              "range_los_moving SMALLINT UNSIGNED NULL, "
+                             // [jrn57] AND THE SAME QUESTION ASKED OF THE TICKS THE CHAIN DECIDED BEFORE `other`.
+                             // The engine records what it would have done and why it did not on EVERY tick, and
+                             // `ref_top_*` above counts it only where the chain got as far as `other`, so on a
+                             // `no_target`, `range_los` or `moving` tick the answer existed and was discarded:
+                             // 161 ledger rows / 1 248 cases name a bucket and no cause, among them all 38 090
+                             // idle ticks a healer in a dungeon produced over three builds.
+                             // SEPARATE COLUMNS, NOT A WIDENING OF ref_top_*: `ref_unsaid..ref_no_candidate` sum
+                             // EXACTLY to `other` (30 842 against 30 842 over b502's hour) and [jrn43]'s key
+                             // `other(useless)` stands on that, so counting an early tick there would break a
+                             // measurement already taken. NOT in the deduplication key either, and that is
+                             // measured: over consecutive windows of the same bot on the same map the refused
+                             // action flips in 56 of 450 pairs (12.4 %) and its cause in 42 of 450 (9.3 %),
+                             // against 0.7 % for a grapheme that did earn a place in a key - that unstable, it
+                             // would split one episode over several keys. NULL on every row before b505.
+                             "ref_early_action VARCHAR(64) NULL, ref_early_cause VARCHAR(12) NULL, "
+                             "ref_early_ticks SMALLINT UNSIGNED NULL, "
+                             // [jrn58] AND THE SAME OVER *EVERY* REFUSAL OF EVERY TICK. NoteIdleDiagRefusal keeps
+                             // a tick's FIRST refusal only, and the tank's "pull action" sits at relevance 105.0
+                             // against ACTION_DEFAULT (~10) for the rest of its rotation, so it refuses first on
+                             // every tick and hides the others: a tank in combat wrote 278 windows carrying ONE
+                             // pair between them (useless / pull action), 195 in a dungeon and 83 in the world,
+                             // against 30 pairs over a dps's 324 dungeon windows - and ref_top_ticks equals
+                             // `other` exactly for the tank (1 851 of 1 851, 415 of 415). 100 % by construction
+                             // is not a measurement, and believing it cost a wrong share: "the leader's lawful
+                             // plan" explains 29 ticks of 2 266 (1.3 %), not all of them.
+                             // `ref_any_pairs` IS THE FACT THAT MOVES - the busiest pair stays "pull action"
+                             // after the fix, so only the COUNT can show the fix worked. `ref_any_events` is not
+                             // a count of ticks (one tick can refuse several actions), which is why these do NOT
+                             // enter the invariant "ref_unsaid..ref_no_candidate sum exactly to other".
+                             "ref_any_action VARCHAR(64) NULL, ref_any_cause VARCHAR(12) NULL, "
+                             "ref_any_events SMALLINT UNSIGNED NULL, ref_any_pairs SMALLINT UNSIGNED NULL, "
+                             // [jrn58] the leader's own published readiness for this bot's five. `leader_hold`
+                             // does NOT mean this and never did: its only writer is LeaderCommandMultiplier::Log,
+                             // the CHAT command path, and the dungeon leader's pull verdict never touches it - 0
+                             // in all 278 tank windows while the leader held them. Its own column rather than a
+                             // reinterpretation of the old name ([jrn44]: in_combat_other beside bot_in_combat).
+                             // NULL = no fresh verdict (no group, not a led five, run over), NOT "not ready".
+                             "leader_ready TINYINT UNSIGNED NULL, "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY event_at (event, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY role_at (role, at_ms), "
                              "KEY where_at (map_id, zone_id, at_ms), KEY other_at (other, at_ms), "
@@ -1386,6 +1429,17 @@ namespace Journal
                              "KEY ref_cause_at (ref_top_cause, at_ms), "
                              // [jrn52] the slice that tells travel from standing, paired with time
                              "KEY no_target_moving_at (no_target_moving, at_ms), "
+                             // [jrn57] the same two names for the ticks decided before `other` was reached. Their
+                             // own indexes and not a widening of the pair above: the question "which action did
+                             // the engine want on the ticks nobody asked about" is asked of these columns alone.
+                             "KEY ref_early_action_at (ref_early_action, at_ms), "
+                             "KEY ref_early_cause_at (ref_early_cause, at_ms), "
+                             // [jrn58] the pair count is what the fix is judged by, so it gets an index of its
+                             // own; the leader's readiness turns "plan or defect" from a join by time into a
+                             // WHERE, which is the whole reason the column exists
+                             "KEY ref_any_action_at (ref_any_action, at_ms), "
+                             "KEY ref_any_pairs_at (ref_any_pairs, at_ms), "
+                             "KEY leader_ready_at (leader_ready, at_ms), "
                              "KEY run_at (run_id, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn40] idleness measured by fact: the diagnostics window and the standing "
@@ -1962,10 +2016,12 @@ namespace Journal
         uint64 const id = Writer::Instance().NextId();
         Writer::Instance().Push(
             "pb_journal_idle",
-            // [jrn51] the refused action and its reason; [jrn52] the walking part of two buckets: 55 fields
+            // [jrn51] the refused action and its reason; [jrn52] the walking part of two buckets;
+            // [jrn57] the same refusal asked of the ticks decided before `other`; [jrn58] the same over every
+            // refusal of every tick, the count of pairs, and the leader's own readiness: 63 fields
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
                                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{})",
+                                "{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(idle.event, 12),
                                 Quoted(idle.botName, 32), idle.botLow, OrNull(idle.botLevel), OrNull(idle.role, 8),
                                 idle.mapId, idle.zoneId, Real(idle.x), Real(idle.y), Real(idle.z),
@@ -1982,7 +2038,11 @@ namespace Journal
                                 Quoted(idle.runId, 48), Quoted(Config().build, 16), OrNull(idle.inGroup),
                                 OrNull(idle.engineState), OrNull(idle.refTopAction, 64),
                                 OrNull(idle.refTopCause, 12), OrNull(idle.refTopTicks),
-                                OrNull(idle.noTargetMoving), OrNull(idle.rangeLosMoving)));
+                                OrNull(idle.noTargetMoving), OrNull(idle.rangeLosMoving),
+                                OrNull(idle.refEarlyAction, 64), OrNull(idle.refEarlyCause, 12),
+                                OrNull(idle.refEarlyTicks), OrNull(idle.refAnyAction, 64),
+                                OrNull(idle.refAnyCause, 12), OrNull(idle.refAnyEvents),
+                                OrNull(idle.refAnyPairs), OrNull(idle.leaderReady)));
         return id;
     }
 

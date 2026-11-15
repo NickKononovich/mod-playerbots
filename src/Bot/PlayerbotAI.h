@@ -860,6 +860,21 @@ protected:
         // the (refusal, action) pairs of the window, so the row can name the busiest one as a COLUMN rather than
         // leaving it to a LIKE over the printed action list
         std::map<std::pair<uint8, std::string>, uint32> refusalActions;
+        // [jrn57] AND THE SAME PAIRS FOR THE TICKS THE CHAIN DECIDED BEFORE `other` WAS REACHED. The engine's
+        // refusal is recorded on every tick; `refusalActions` above is only incremented where the chain got as
+        // far as `other`, so on a no-target / out-of-reach / still-moving tick the answer was in hand and
+        // dropped. Its own map and never the same one: `ref_unsaid..ref_noCandidate` sum EXACTLY to `other`
+        // (30 842 against 30 842 over b502's hour), and [jrn43]'s key `other(useless)` stands on that invariant.
+        std::map<std::pair<uint8, std::string>, uint32> refusalActionsEarly;
+        // [jrn58] AND EVERY REFUSAL OF EVERY TICK, not just the first one the queue produced. The two maps above
+        // are keyed off `tickRefusal`, which NoteIdleDiagRefusal fills ONCE per tick, and the tank's "pull
+        // action" sits at relevance 105.0 against ACTION_DEFAULT (~10) for the rest of its rotation - so it
+        // refuses first on every tick and hides every other refusal: 278 tank windows carry ONE pair between
+        // them. This map is written at the refusal site itself, so a window can finally say how many different
+        // things the engine wanted and turned down. Its own map because `ref_unsaid..ref_noCandidate` must go on
+        // summing EXACTLY to `other` (30 842 against 30 842), the invariant [jrn43]'s key stands on, and because
+        // its counts are refusal EVENTS and not ticks: one tick can contribute several.
+        std::map<std::pair<uint8, std::string>, uint32> refusalActionsAny;
     } idleDiag;
 };
 

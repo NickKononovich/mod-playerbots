@@ -816,6 +816,45 @@ namespace Journal
         Optional<std::string> refTopAction;
         Optional<std::string> refTopCause;  // the IDLE_REFUSAL_* name: useless / impossible / failed / blocked ...
         Optional<uint32> refTopTicks;
+        // [jrn57] AND THE SAME QUESTION ASKED OF THE TICKS THAT NEVER REACHED `other`. The engine records what it
+        // would have done and why it did not on EVERY tick, but the pair above is counted only where the chain
+        // got as far as `other`; `noTarget`, `rangeLos` and `moving` are decided earlier, so on those the answer
+        // existed and was discarded. That is 161 of the ledger's idle rows (1 248 cases) with a bucket named and
+        // no cause at all, among them every one of the 38 090 idle ticks a healer in a dungeon used to produce.
+        //
+        // THREE SEPARATE COLUMNS AND NOT A WIDENING OF refTop*, because `ref_unsaid..ref_noCandidate` sum EXACTLY
+        // to `other` (30 842 against 30 842 over b502's hour) and [jrn43]'s key `other(useless)` stands on that
+        // invariant: counting an early tick into the same place would break a measurement already taken.
+        // NULL on every row written before b505 - "the emitter did not carry it", which is not a tick of zero.
+        Optional<std::string> refEarlyAction;
+        Optional<std::string> refEarlyCause;
+        Optional<uint32> refEarlyTicks;
+        // [jrn58] AND THE SAME QUESTION OVER *EVERY* REFUSAL OF EVERY TICK, not just the first one.
+        // NoteIdleDiagRefusal keeps only a tick's FIRST refusal, and the tank's "pull action" sits at relevance
+        // 105.0 against ACTION_DEFAULT (~10) for the rest of its rotation, so it refuses first on every tick and
+        // hides all the others. Measured over the closed b504 corpus: a tank in combat wrote 278 windows carrying
+        // ONE pair between them (useless / pull action), 195 in a dungeon and 83 in the world, while a dps in a
+        // dungeon shows 30 pairs over 324 windows; and ref_top_ticks equals `other` exactly for the tank
+        // (1 851 of 1 851, 415 of 415) - 100 % of its unexplained ticks on one pair, by construction. A value
+        // that cannot come out otherwise is not a measurement.
+        // `refAnyPairs` IS THE FACT THAT MOVES: the tank's "pull action" is refused on every idle tick, so it
+        // stays the busiest pair even after the fix - the busiest pair cannot show the fix worked, the count can.
+        // `refAnyEvents` is NOT a count of ticks: one tick can refuse several actions, which is why the name
+        // differs from refTopTicks / refEarlyTicks and why these columns do NOT enter the invariant
+        // "ref_unsaid..ref_noCandidate sum exactly to other".
+        Optional<std::string> refAnyAction;
+        Optional<std::string> refAnyCause;
+        Optional<uint32> refAnyEvents;
+        Optional<uint32> refAnyPairs;
+        // [jrn58] THE LEADER'S OWN PUBLISHED READINESS for this bot's five when the window closed. `leaderHold`
+        // next to it does NOT mean this and never did: its only writer is LeaderCommandMultiplier::Log, the CHAT
+        // command path (Stop / DontAttack), and the dungeon leader's pull verdict never touches it - 0 in all 278
+        // tank windows while the leader was holding them. The name over-promised, so the fact gets its own
+        // column rather than a reinterpretation of an old one (the [jrn44] lesson: in_combat_other was added
+        // beside bot_in_combat, not over it). Read from Leader::Readiness, whose owner is the leader and whose
+        // whole purpose is being read from a map thread; nothing here re-decides it. NULL = no fresh verdict (no
+        // group, not a led five, the run ended) - which is NOT "not ready".
+        Optional<uint8> leaderReady;
 
         // the standing watch
         Optional<float> stoodSec;  // how long it has not left the radius

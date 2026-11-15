@@ -8733,6 +8733,15 @@ namespace
 // [jrn51] ... and its name travels with it, out of the header because Action is only forward-declared there
 void PlayerbotAI::NoteIdleDiagRefusal(IdleRefusal cause, Action* action)
 {
+    // [jrn58] EVERY refusal of the tick is counted here, before the first-only rule below. That rule is right
+    // for `tickRefusal` - the 7 ref_* counters must go on summing EXACTLY to `other` (30 842 against 30 842),
+    // one per tick - but it made the tank's window unreadable: "pull action" sits at relevance 105.0 against
+    // ACTION_DEFAULT (~10) for the rest of its rotation, refuses first on every tick, and hid every other
+    // refusal behind it. 278 tank windows carried ONE pair between them, and ref_top_ticks equalled `other`
+    // exactly (1 851 of 1 851, 415 of 415) - 100 % attributed to one pair by construction, which is not a
+    // measurement. These counts are refusal EVENTS, not ticks: one tick can contribute several.
+    ++idleDiag.refusalActionsAny[{uint8(cause), action ? action->getName() : std::string()}];
+
     if (idleDiag.tickRefusal != IDLE_REFUSAL_NONE)
         return;
 
@@ -9046,6 +9055,18 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
                    ? Journal::IdleWindow::Tick::Threat
                    : Journal::IdleWindow::Tick::Other;
 
+    // [jrn57] AND THE ENGINE'S OWN ANSWER IS KEPT ON THE TICKS THE CHAIN DECIDED FIRST. It is already in hand:
+    // Engine::DoNextAction ran before this function and left the refusal and the name of the action it would have
+    // taken in `tickRefusal` / `tickRefusalAction`, which are cleared only at the top of the next tick. Until now
+    // it was counted only where the chain reached `other`, so a `no_target`, `range_los` or `moving` tick threw
+    // it away - 161 ledger rows / 1 248 cases naming a bucket and no cause, among them every one of the 38 090
+    // idle ticks a healer in a dungeon produced over three builds. Its own map, so that
+    // `ref_unsaid..ref_noCandidate` go on summing EXACTLY to `other` (30 842 against 30 842 over b502's hour),
+    // which is the invariant [jrn43]'s key `other(useless)` stands on. Which buckets count is the seam's answer
+    // and not a second list here (rule 5).
+    if (Journal::IdleWindow::DecidedBeforeTheEngineWasAsked(tick))
+        ++idleDiag.refusalActionsEarly[{uint8(idleDiag.tickRefusal), idleDiag.tickRefusalAction}];
+
     switch (tick)
     {
         case Journal::IdleWindow::Tick::CastWait:
@@ -9118,18 +9139,12 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     // action was not useful"; WHICH action it was had no home at all, and that pair is b503's largest unexplained
     // key (idle|healer|gcd+other(useless+failed)|world, 307 cases of one bot). The busiest pair only: the key
     // already carries WHICH reasons fired, and the counts' spread is the row's own value range.
-    uint8 refTopCause = IDLE_REFUSAL_NONE;
-    std::string refTopAction;
-    uint32 refTopTicks = 0;
-    for (auto const& [refused, ticks] : idleDiag.refusalActions)
-    {
-        if (ticks <= refTopTicks)
-            continue;
-
-        refTopTicks = ticks;
-        refTopCause = refused.first;
-        refTopAction = refused.second;
-    }
+    // [jrn58] ONE JUDGE OF "the busiest pair" for all three families (rule 5): the loop used to stand here once
+    // and would have had to stand here three times, and three copies of one rule drift. The seam also returns how
+    // many DISTINCT pairs there were, which is the number the tank's defect is measured by.
+    Journal::IdleWindow::Busiest const top = Journal::IdleWindow::BusiestOf(idleDiag.refusalActions);
+    Journal::IdleWindow::Busiest const early = Journal::IdleWindow::BusiestOf(idleDiag.refusalActionsEarly);
+    Journal::IdleWindow::Busiest const any = Journal::IdleWindow::BusiestOf(idleDiag.refusalActionsAny);
 
     // [chat20] `threat` is the bot's own threat, `leaderHold` the leader's command: separate buckets on purpose
     // [grp20] the refusal breakdown is appended after `other`, never inserted: a reader of an older log must keep
@@ -9209,11 +9224,38 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     record.gapOver400 = idleDiag.gapOver400;
     record.topActions = actions;
     // [jrn51] NULL when no tick of the window fell into `other` at all - absence, not a refusal of "none"
-    if (refTopTicks)
+    if (top.events)
     {
-        record.refTopAction = refTopAction;
-        record.refTopCause = IdleRefusalName(IdleRefusal(refTopCause));
-        record.refTopTicks = refTopTicks;
+        record.refTopAction = top.action;
+        record.refTopCause = IdleRefusalName(IdleRefusal(top.cause));
+        record.refTopTicks = top.events;
+    }
+    // [jrn57] NULL when no tick of the window was decided before `other` at all - absence, not a count of zero,
+    // and the two pairs are never written from one another: a window can have both, either or neither.
+    if (early.events)
+    {
+        record.refEarlyAction = early.action;
+        record.refEarlyCause = IdleRefusalName(IdleRefusal(early.cause));
+        record.refEarlyTicks = early.events;
+    }
+    // [jrn58] every refusal of every tick, and how many distinct pairs there were at all - the latter is the
+    // number the tank's single-pair defect is judged by, because its busiest pair does not move when fixed
+    if (any.pairs)
+    {
+        record.refAnyAction = any.action;
+        record.refAnyCause = IdleRefusalName(IdleRefusal(any.cause));
+        record.refAnyEvents = any.events;
+        record.refAnyPairs = any.pairs;
+    }
+    // [jrn58] the leader's OWN published verdict, not a second opinion about it: Leader::Readiness is written by
+    // the leader and exists to be read from a map thread. NULL when there is no fresh verdict - no group, not a
+    // led five, the run over - which is not "not ready". `leader_hold` beside it means the CHAT command and
+    // nothing else, and keeps that meaning.
+    if (Group* const group = bot->GetGroup())
+    {
+        bool leaderReady = false;
+        if (Leader::Readiness::Get(group->GetGUID(), leaderReady))
+            record.leaderReady = leaderReady ? uint8(1) : uint8(0);
     }
     record.runId = Leader::Runs::OfBot(bot);  // [jrn40] by identity, not by nearness in time
     uint64 const idleRowId = Journal::RecordIdle(record);

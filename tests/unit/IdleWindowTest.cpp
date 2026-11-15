@@ -516,3 +516,135 @@ TEST(IdleWindowTarget, TheChainItselfIsUnchangedAndStillAsksMovementInsideEachBr
     facts.moving = false;
     EXPECT_EQ(Journal::IdleWindow::Tick::RangeLosStill, Journal::IdleWindow::Classify(facts));
 }
+
+// [jrn57] THE TICKS WHOSE CAUSE WAS NEVER ASKED FOR, now countable one tick at a time so the engine's own answer
+// can be kept instead of discarded. The engine records WHAT it would have done and WHY it did not on every tick
+// (NoteIdleDiagRefusal; Engine::DoNextAction runs before UpdateIdleDiag and the fields are cleared only at the
+// top of the next tick), and that pair is counted only on a tick that reaches `other`. 161 ledger rows / 1 248
+// cases wait on exactly this.
+//
+// AND THE RULE LIVES IN TWO VIEWS, WHICH IS WHY THE LAST ASSERTION EXISTS: DecidedBeforeTheEngineWasAsked names
+// Tick values, UnaskedTicks sums the matching columns, and a rule in two places can drift. The test holds them
+// to each other bucket by bucket rather than trusting that both were edited together.
+TEST(IdleWindowEarly, TheBucketsDecidedBeforeTheEngineWasAskedAreNamed)
+{
+    using Journal::IdleWindow::DecidedBeforeTheEngineWasAsked;
+    using Journal::IdleWindow::Tick;
+    EXPECT_TRUE(DecidedBeforeTheEngineWasAsked(Tick::NoTargetStill));
+    EXPECT_TRUE(DecidedBeforeTheEngineWasAsked(Tick::NoTargetMoving));
+    EXPECT_TRUE(DecidedBeforeTheEngineWasAsked(Tick::RangeLosStill));
+    EXPECT_TRUE(DecidedBeforeTheEngineWasAsked(Tick::RangeLosMoving));
+    EXPECT_TRUE(DecidedBeforeTheEngineWasAsked(Tick::Moving));
+}
+
+TEST(IdleWindowEarly, ATickThatReachedTheEnginesAnswerOrProducedSomethingIsNotOne)
+{
+    using Journal::IdleWindow::DecidedBeforeTheEngineWasAsked;
+    using Journal::IdleWindow::Tick;
+    // `other` is where the engine's reason IS read, so a tick that got there must not be counted twice - that
+    // would break the invariant `ref_* sums exactly to other` (30 842 against 30 842) that [jrn43] and the key
+    // `other(useless)` stand on. This is the assertion a rule of "every idle tick is an early one" would fail.
+    EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(Tick::Other));
+    EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(Tick::Gcd));
+    EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(Tick::LeaderHold));
+    EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(Tick::Threat));
+    // and a tick that produced something is not idle at all
+    EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(Tick::Cast));
+    EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(Tick::CastWait));
+    EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(Tick::Action));
+    // the two questions the chain hands back to the caller are not counters at all
+    EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(Tick::AskGcd));
+    EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(Tick::AskThreat));
+}
+
+TEST(IdleWindowEarly, TheTwoViewsOfTheSameRuleAgree)
+{
+    using Journal::IdleWindow::DecidedBeforeTheEngineWasAsked;
+    using Journal::IdleWindow::Tick;
+    // bucket by bucket: a Tick the per-tick rule calls early must be one UnaskedTicks counts, and one it calls
+    // late must be one UnaskedTicks leaves alone. One tick in a window of one, so each answer is unambiguous.
+    struct Pair
+    {
+        Tick tick;
+        uint32_t Counts::*bucket;
+    };
+    Pair const early[] = {{Tick::NoTargetStill, &Counts::noTarget},
+                          {Tick::RangeLosStill, &Counts::rangeLos},
+                          {Tick::Moving, &Counts::moving}};
+    for (Pair const& p : early)
+    {
+        Counts c;
+        c.ticks = 1;
+        c.*(p.bucket) = 1;
+        EXPECT_TRUE(DecidedBeforeTheEngineWasAsked(p.tick));
+        EXPECT_EQ(1u, Journal::IdleWindow::UnaskedTicks(c));
+        EXPECT_EQ(1u, Journal::IdleWindow::IdleTicks(c));
+    }
+
+    Pair const late[] = {{Tick::Gcd, &Counts::gcd},
+                         {Tick::LeaderHold, &Counts::leaderHold},
+                         {Tick::Threat, &Counts::threat},
+                         {Tick::Other, &Counts::other}};
+    for (Pair const& p : late)
+    {
+        Counts c;
+        c.ticks = 1;
+        c.*(p.bucket) = 1;
+        EXPECT_FALSE(DecidedBeforeTheEngineWasAsked(p.tick));
+        EXPECT_EQ(0u, Journal::IdleWindow::UnaskedTicks(c));
+        EXPECT_EQ(1u, Journal::IdleWindow::IdleTicks(c));
+    }
+}
+
+// [jrn58] HOW MANY (reason, action) PAIRS A WINDOW SAW AT ALL - the number that caught the defect, and the one
+// the fix is judged by. `NoteIdleDiagRefusal` kept only the FIRST refusal of a tick, and the tank's "pull action"
+// sits at relevance 105.0 against ACTION_DEFAULT (~10) for the rest of its rotation, so it refused first on every
+// tick and hid every other refusal. Measured over the closed b504 corpus (at_ms <= 1794764479861): a tank in
+// combat wrote 278 windows carrying ONE pair between them (useless / pull action; 195 in a dungeon, 83 in the
+// world), while a dps in a dungeon shows 30 pairs over 324 windows and a healer in the world 12 over 294 - and
+// ref_top_ticks equals `other` exactly for the tank, 1 851 of 1 851 and 415 of 415. Believing that single pair
+// cost us a wrong share: "the leader's lawful plan" explains 29 ticks of 2 266 (1.3 %), not 100 %.
+//
+// WHY THE COUNT AND NOT THE BUSIEST PAIR, and this is the assertion that says it: the tank's "pull action" is
+// refused on EVERY idle tick, so it stays the busiest pair even after every refusal is recorded. The busiest pair
+// cannot show whether the fix worked; the count of pairs can, and it is the readiness criterion itself.
+TEST(IdleWindowBusiest, TheCountOfPairsIsReportedBesideTheBusiestOne)
+{
+    // the tank's window as the instrument recorded it: one pair, every tick
+    std::map<std::pair<uint8_t, std::string>, uint32_t> tank{{{1, "pull action"}, 67}};
+    Journal::IdleWindow::Busiest const before = Journal::IdleWindow::BusiestOf(tank);
+    EXPECT_EQ(1u, before.pairs);
+    EXPECT_EQ(67u, before.events);
+    EXPECT_EQ("pull action", before.action);
+
+    // and the same window once every refusal of the tick is kept: "pull action" is STILL the busiest, which is
+    // exactly why the count is the fact that moves
+    std::map<std::pair<uint8_t, std::string>, uint32_t> tankFixed{
+        {{1, "pull action"}, 67}, {{1, "melee"}, 41}, {{2, "shield slam"}, 12}, {{4, "set facing"}, 3}};
+    Journal::IdleWindow::Busiest const after = Journal::IdleWindow::BusiestOf(tankFixed);
+    EXPECT_EQ("pull action", after.action) << "the busiest pair does not move, so it cannot be the criterion";
+    EXPECT_EQ(67u, after.events);
+    EXPECT_EQ(4u, after.pairs) << "278 tank windows carried 1 pair between them; the count is what shows the fix";
+}
+
+TEST(IdleWindowBusiest, ATieKeepsTheFirstPairAndNotTheLastSeen)
+{
+    // the reverse side of a `>` that could have been a `>=`: with two pairs of equal weight the answer must be
+    // stable, or the same window would report differently depending on nothing
+    std::map<std::pair<uint8_t, std::string>, uint32_t> tied{{{1, "aaa"}, 9}, {{1, "zzz"}, 9}};
+    Journal::IdleWindow::Busiest const b = Journal::IdleWindow::BusiestOf(tied);
+    EXPECT_EQ("aaa", b.action);
+    EXPECT_EQ(9u, b.events);
+    EXPECT_EQ(2u, b.pairs);
+}
+
+TEST(IdleWindowBusiest, AnEmptyWindowClaimsNothing)
+{
+    // absence is not a refusal of "none": the caller writes NULL on this answer, and a zero count here must not
+    // read as "the engine wanted nothing"
+    std::map<std::pair<uint8_t, std::string>, uint32_t> none;
+    Journal::IdleWindow::Busiest const b = Journal::IdleWindow::BusiestOf(none);
+    EXPECT_EQ(0u, b.events);
+    EXPECT_EQ(0u, b.pairs);
+    EXPECT_TRUE(b.action.empty());
+}

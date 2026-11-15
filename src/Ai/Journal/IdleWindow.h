@@ -35,7 +35,9 @@
 // deliberately cannot see them, so its answer cannot quietly become a second judge of where the bot was.
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <utility>
 
 namespace Journal::IdleWindow
 {
@@ -198,6 +200,54 @@ namespace Journal::IdleWindow
 
     // Returns the counter, or AskGcd when the global cooldown is the next question.
     Tick Classify(TickFacts const& facts);
+
+    // [jrn57] WAS THIS TICK DECIDED BEFORE THE ENGINE'S OWN REASON WAS EVER READ? The refusal and the name of the
+    // action behind it are recorded on EVERY tick and counted only on a tick that reaches `Other`, so for these
+    // the answer existed and was thrown away - which is `UnaskedTicks` seen one tick at a time instead of one
+    // column at a time. The two MUST agree, and a test holds them to it (TheTwoViewsOfTheSameRuleAgree): this
+    // one names Tick values, that one sums the matching columns, and a rule in two places can drift.
+    //
+    // THE COUNT GOES IN A COLUMN AND NOT IN THE KEY, and that is measured rather than asserted, by the rule this
+    // project wrote for exactly this question: how often does the candidate flip INSIDE one episode, and what is
+    // the denominator. Over consecutive windows of the same bot on the same map (gap <= 1.5 windows - a join by
+    // TIME, marked as one), the refused action flips in 56 of 450 pairs (12.4 %) and its cause in 42 of 450
+    // (9.3 %), against 0.7 % for the `in_group` bucket that did earn a place in a key and 26.4 % for the one
+    // that did not. A grapheme that unstable would split one episode across several keys - the ladder [jrn41]
+    // removed - so it stays a column, where the slice is a WHERE.
+    bool DecidedBeforeTheEngineWasAsked(Tick tick);
+
+    // [jrn58] THE BUSIEST (reason, action) PAIR OF A WINDOW - AND HOW MANY PAIRS THERE WERE AT ALL.
+    //
+    // The second number is the one that matters, and it is what caught the defect. `NoteIdleDiagRefusal` keeps
+    // only the FIRST refusal of a tick, and the tank's `pull action` sits at relevance 105.0 against
+    // ACTION_DEFAULT (~10) for the whole rest of its rotation, so it refuses first on EVERY tick and hides every
+    // other refusal behind it. Measured over the closed b504 corpus (at_ms <= 1794764479861): a tank in combat
+    // wrote 278 windows and they carry ONE pair between them - `useless` / `pull action` - 195 in a dungeon and
+    // 83 in the world, while a dps in a dungeon shows 30 pairs over 324 windows and a healer in the world 12 over
+    // 294. And `ref_top_ticks` equals `other` exactly for the tank (1 851 of 1 851 in a dungeon, 415 of 415 in
+    // the world): 100 % of its unexplained ticks attributed to one pair, by construction. A value that cannot
+    // come out otherwise is not a measurement (trap 5). The cost of believing it: "this is the leader's lawful
+    // plan" explains 29 ticks of 2 266 (1.3 %), not the 100 % the single pair read like.
+    //
+    // WHY THE COUNT OF PAIRS AND NOT JUST THE BUSIEST ONE, decided by number rather than by taste: the tank's
+    // `pull action` is refused on every idle tick, so it stays the busiest pair even after every refusal is
+    // recorded - the busiest pair therefore CANNOT show whether the fix worked, while the count of pairs can and
+    // is the readiness criterion itself ("more than one pair over the tank's windows on b505"). The magnitude
+    // comes with it, because a busiest pair without its own count is a share with no denominator.
+    //
+    // ONE JUDGE OF "BUSIEST" (rule 5): this is called for both families, the first-refusal pairs and the
+    // every-refusal pairs, so the two cannot drift. Strictly greater, so a tie keeps the first pair in the map's
+    // own order rather than the last one seen - which is the same reason severity takes the worst and not the
+    // latest. An empty map answers "nothing, 0 events, 0 pairs", and the caller writes NULL for that.
+    struct Busiest
+    {
+        uint8_t cause{0};
+        std::string action;
+        uint32_t events{0};
+        uint32_t pairs{0};  // how many distinct (reason, action) pairs the window saw at all
+    };
+
+    Busiest BusiestOf(std::map<std::pair<uint8_t, std::string>, uint32_t> const& counted);
 
     // The rest of the chain, once the caller has read the global cooldown it was asked for.
     Tick ClassifyAfterGcd(bool gcdRunning, bool leaderHold);

@@ -85,6 +85,42 @@ namespace Journal::IdleWindow
         return Tick::AskGcd;
     }
 
+    bool DecidedBeforeTheEngineWasAsked(Tick tick)
+    {
+        // [jrn57] The same three buckets UnaskedTicks sums, one tick at a time: no live target, a live one out of
+        // reach or sight, and one right there while the bot still moves - each in its standing and its walking
+        // form. Everything else either produced something or travelled far enough down the chain to be asked.
+        switch (tick)
+        {
+            case Tick::NoTargetMoving:
+            case Tick::NoTargetStill:
+            case Tick::RangeLosMoving:
+            case Tick::RangeLosStill:
+            case Tick::Moving:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    Busiest BusiestOf(std::map<std::pair<uint8_t, std::string>, uint32_t> const& counted)
+    {
+        Busiest busiest;
+        busiest.pairs = uint32_t(counted.size());
+        for (auto const& [pair, events] : counted)
+        {
+            // strictly greater: a tie keeps the first pair in the map's own order instead of the last one seen,
+            // the same reason the issue row's severity takes the worst and not the latest
+            if (events <= busiest.events)
+                continue;
+
+            busiest.events = events;
+            busiest.cause = pair.first;
+            busiest.action = pair.second;
+        }
+        return busiest;
+    }
+
     Tick ClassifyAfterGcd(bool gcdRunning, bool leaderHold)
     {
         if (gcdRunning)
