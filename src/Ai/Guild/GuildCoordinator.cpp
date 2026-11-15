@@ -3845,16 +3845,7 @@ void GuildCoordinator::ClassifyTask(GuildOrder& o)
     o.townName.clear();
     if (o.place == GuildTaskPlace::FIELD || o.pos == WorldPosition())
         return;
-    uint64 const key = (uint64(o.pos.GetMapId()) << 48) |
-                       (uint64(uint32(int32(o.pos.GetPositionX())) & 0xFFFFFF) << 24) |
-                       uint64(uint32(int32(o.pos.GetPositionY())) & 0xFFFFFF);
-    auto cached = townCache_.find(key);
-    if (cached == townCache_.end())
-        cached = townCache_
-                     .emplace(key, sMapMgr->GetAreaId(PHASEMASK_NORMAL, o.pos.GetMapId(), o.pos.GetPositionX(),
-                                                      o.pos.GetPositionY(), o.pos.GetPositionZ()))
-                     .first;
-    uint32 const area = cached->second;
+    uint32 const area = TownAreaOf(o.pos);  // [town20] the one cached area lookup, shared with TownRefused
     AreaTableEntry const* entry = sAreaTableStore.LookupEntry(area);
     uint32 zone = area;  // the top of the area chain
     AreaTableEntry const* zoneEntry = entry;
@@ -8697,13 +8688,14 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
     // put the stop back again (182 MAIL_TO lines, ~70 min). A stop its own trip judge refuses (a danger on the way,
     // or the walk given up: NewRpgBaseAction::TripRefused) is left out and remembered: the planner then picks
     // another mailbox / channel for it (UpdateTransfers), until its next level. Judged outside lock_ (map thread)
-    std::vector<std::pair<int32, int32>> refused;
+    // [town20] the spot and the position it was judged at: the position names the TOWN the refusal belongs to
+    std::vector<std::pair<std::pair<int32, int32>, WorldPosition>> refused;
     for (auto& stop : stops)
     {
         WorldPosition const& pos = stop.first;
         if (NewRpgBaseAction::TripRefused(bot, pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
                                           "town task " + stop.second))
-            refused.emplace_back(int32(pos.GetPositionX()), int32(pos.GetPositionY()));
+            refused.push_back({{int32(pos.GetPositionX()), int32(pos.GetPositionY())}, pos});
         else
             out.push_back(std::move(stop));
     }
@@ -8713,8 +8705,9 @@ void GuildCoordinator::TownStops(Player* bot, std::vector<std::pair<WorldPositio
     auto& entry = townRefused_[low];
     if (entry.first != bot->GetLevel())
         entry = {bot->GetLevel(), {}};
-    for (auto const& xy : refused)
-        if (entry.second.insert_or_assign(xy, bot->GetZoneId()).second)
+    for (auto const& [xy, at] : refused)
+        // [town20] the value is the area of the refused spot, so the memory answers for its whole town
+        if (entry.second.insert_or_assign(xy, TownAreaOf(at)).second)
             LOG_INFO("playerbots", "[econ1] {} L{} town stop refused at ({},{}): its walk there is refused or "
                      "given up - another mailbox / forge or channel is planned", bot->GetName(), bot->GetLevel(),
                      xy.first, xy.second);
@@ -8742,6 +8735,24 @@ bool GuildCoordinator::CookNeeds(uint32 itemId) const
     return false;
 }
 
+uint32 GuildCoordinator::TownAreaOf(WorldPosition const& at) const
+{
+    // [town20] lifted out of ClassifyTask so the refusal memory names the TOWN of a spot with the same lookup and
+    // the same cache: one key, one answer, no second reading of where a spot lies
+    if (at == WorldPosition())
+        return 0;
+    uint64 const key = (uint64(at.GetMapId()) << 48) |
+                       (uint64(uint32(int32(at.GetPositionX())) & 0xFFFFFF) << 24) |
+                       uint64(uint32(int32(at.GetPositionY())) & 0xFFFFFF);
+    auto cached = townCache_.find(key);
+    if (cached == townCache_.end())
+        cached = townCache_
+                     .emplace(key, sMapMgr->GetAreaId(PHASEMASK_NORMAL, at.GetMapId(), at.GetPositionX(),
+                                                      at.GetPositionY(), at.GetPositionZ()))
+                     .first;
+    return cached->second;
+}
+
 bool GuildCoordinator::TownRefused(uint32 low, WorldPosition const& pos) const
 {
     auto const itr = townRefused_.find(low);
@@ -8757,13 +8768,36 @@ bool GuildCoordinator::TownRefused(uint32 low, WorldPosition const& pos) const
     // again from its cache (no new log line), and the task carried the same unreachable town for good: b476 29 of 41
     // refused town tasks kept it, 516 later task lines, median 15 repeats, up to 47 (Baridrol's BANK_DEPOSIT
     // Everlook). The refusal now lasts exactly as long as the judge's own verdict: until the bot's next level
-    auto const spot = itr->second.second.find({int32(pos.GetPositionX()), int32(pos.GetPositionY())});
-    return spot != itr->second.second.end();
+    auto const& spots = itr->second.second;
+    if (spots.count({int32(pos.GetPositionX()), int32(pos.GetPositionY())}))
+        return true;  // the very spot that was refused
+    // [town20] ... and a refusal is a refusal OF THE TOWN, not of one doorstep in it: Darnassus holds two guild
+    // vaults 9 yd apart ((9935,2517) and (9931,2526), both recorded for Baridrol in b495), so the pick moved from
+    // the refused one to its neighbour and the task said "waits town Darnassus" for another whole round of the
+    // verdict - 6 of the 11 b495 tasks that kept their town did exactly this. The towns are compared with the
+    // guild's own SameTown, the one that already decides whether a bot stands in a task's town (TownReady)
+    uint32 const area = TownAreaOf(pos);
+    if (!area)
+        return false;
+    for (auto const& [xy, spotArea] : spots)
+    {
+        (void)xy;
+        if (spotArea && SameTown(area, spotArea))
+            return true;
+    }
+    return false;
 }
 
 std::function<bool(WorldPosition const&)> GuildCoordinator::TownUnreachable(Player* bot) const
 {
-    // [town20] the same expression the craft inn's own `off` reader uses ([craft383]): one judge, read in one way
+    // [town20] the same expression the craft inn's own `off` reader uses ([craft383]): one judge, read in one way.
+    // The pick is therefore right only AFTER a verdict has been recorded, and the only writers are TownStops and
+    // NextStep, both of which need the order to exist and to be judged on the map thread: b495 the errand carried
+    // its assigned town a median 174.6 s and up to 783.1 s before the first verdict. Asking the judge's own cheap
+    // red-zone clause here instead would not help - Everlook, Gadgetzan, Nighthaven and Astranaar are all
+    // AREA_FLAG_TOWN with team 0, so [red96] exempts them before area_level is read (Everlook's own level is 55),
+    // and their parent zones carry area_level 0; the whole b495 log holds 0 [red73] lines. Closing that gap means
+    // deciding what [red96]'s exemption should do about a FAR town, which is the user's call, not a reader's
     uint32 const low = bot->GetGUID().GetCounter();
     return [this, bot, low](WorldPosition const& at)
     {
@@ -8783,7 +8817,8 @@ void GuildCoordinator::NoteTownRefused(Player* bot, WorldPosition const& pos, st
     if (entry.first != bot->GetLevel())
         entry = {bot->GetLevel(), {}};
     std::pair<int32, int32> const xy{int32(pos.GetPositionX()), int32(pos.GetPositionY())};
-    if (entry.second.insert_or_assign(xy, bot->GetZoneId()).second)
+    // [town20] the value is the area OF THE REFUSED SPOT, so the memory answers for the whole town (TownRefused)
+    if (entry.second.insert_or_assign(xy, TownAreaOf(pos)).second)
         LOG_INFO("playerbots", "[town20] {} L{} {} refused at ({},{}): its walk there is refused or given up - the "
                  "task is planned to another town, or postponed with its reason", bot->GetName(), bot->GetLevel(),
                  what, xy.first, xy.second);

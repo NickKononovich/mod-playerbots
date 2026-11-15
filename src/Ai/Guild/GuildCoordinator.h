@@ -1194,9 +1194,12 @@ private:
     // [econ1] member -> (level, town task spots (x, y)) its own trip judge refused or its walk gave up on
     // (NewRpgBaseAction::TripRefused, judged in TownStops on the map thread): no mailbox / forge there is planned
     // for it until its next level (lock_; mutable: TownStops is const)
-    // [town20] spot -> the zone it was judged in, for the log only: the judge's verdict holds per (bot, spot, level),
-    // so this memory no longer asks whether the bot still stands in that zone ([craft387] did, and that second
-    // question handed the same unreachable town back to the picker as soon as the bot walked out of it)
+    // [town20] spot (x, y) -> the AREA that spot lies in, so the memory answers for the whole town and not for one
+    // doorstep in it (TownRefused over SameTown: Darnassus holds two vaults 9 yd apart, and the pick used to step
+    // from the refused one to its neighbour for another full round of the verdict). It no longer asks whether the
+    // bot still stands in the zone it judged from either ([craft387] did, and that second question handed the same
+    // unreachable town back to the picker the moment the bot walked out of it): the judge's own verdict holds per
+    // (bot, spot, level), so this memory holds for the same span - until the bot's next level
     mutable std::map<uint32, std::pair<uint8, std::map<std::pair<int32, int32>, uint32>>> townRefused_;
     bool TownRefused(uint32 low, WorldPosition const& pos) const;  // lock_ held
     // [town20] lock_ held. The one reader of that verdict every town picker shares (the mailbox picker, the npc spot
@@ -1741,7 +1744,9 @@ private:
     std::unordered_map<uint32, std::vector<ProfessionPick>> professions_;  // member -> the leader's calls
     std::map<uint32, std::deque<std::pair<uint32, uint32>>> gatherUnits_;  // skill -> (game time, units gathered)
     std::map<uint32, std::deque<std::pair<uint32, uint32>>> gatherTime_;   // skill -> (game time, seconds gathering)
-    std::unordered_map<uint64, uint32> townCache_;  // (map, x, y) -> area of a task spot (world thread)
+    // [town20] mutable: TownRefused is const and reads the same cache to name the town of a refused spot
+    mutable std::unordered_map<uint64, uint32> townCache_;  // (map, x, y) -> area of a task spot (world thread)
+    uint32 TownAreaOf(WorldPosition const& at) const;  // [town20] the cached area of a spot (lock_ held)
     // [tasks] metrics: town tasks started, their wait since creation, town visits with town tasks
     uint64 townWaitSum_{0};
     uint32 townStarted_{0};
