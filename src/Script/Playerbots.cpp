@@ -34,6 +34,7 @@
 #include "ThreatManager.h"  // [deaths14]
 #include "GlobalScript.h"
 #include "GuildTaskMgr.h"
+#include "Journal.h"  // [jrn30] the fight-start, aggro and death events
 #include "PlayerScript.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotCommandScript.h"
@@ -46,6 +47,7 @@
 #include "ServerScript.h"
 #include "SessionScript.h"
 #include "WorldScript.h"
+#include "WorldSessionMgr.h"  // [jrn31] the session count that makes a tick time comparable
 #include "SlowUpdate.h"  // [perf212]
 #include "WalkGraph.h"  // [nav180]
 #include "cmath"
@@ -169,12 +171,18 @@ public:
                 if (Unit* victim = ref ? ref->GetVictim() : nullptr)
                     threat += Acore::StringFormat("{}{} {:.0f}", threat.empty() ? "" : ", ", victim->GetName(),
                                                   ref->GetThreat());
+        std::string const context = SoloSafety::DeathContext(killed, killer);  // [guild13] its fight
+        // [jrn30] THE DEATH AS AN EVENT, in a table a prevention line cannot reach. The line below stays, but it
+        // must not be what a death is counted by: 20 502 stream lines in one window carried a "[death*" tag and 17
+        // of them were deaths - the rest is the prevention domain printing that a death did NOT happen, so a count
+        // by tag overstated deaths by about 1 200 times. The count is COUNT(*) over pb_journal_death.
+        Journal::NoteDeath(killed, killer, context, threat);
         LOG_INFO("playerbots", "[death] {} L{} killed by {} (entry {}, L{}, {}% hp) at map {} ({:.1f},{:.1f}) {} | {}{}",
                  killed->GetName(), killed->GetLevel(), killer->GetName(), killer->GetEntry(), killer->GetLevel(),
                  uint32(killer->GetHealthPct()), killed->GetMapId(), killed->GetPositionX(), killed->GetPositionY(),
                  // [surv20] the killer goes in: its run-past chase line is this death's only when the killer (or a
                  // mob that hit it) is one of that chase's own chasers
-                 area ? area->area_name[0] : "?", SoloSafety::DeathContext(killed, killer),  // [guild13] its fight
+                 area ? area->area_name[0] : "?", context,
                  threat.empty() ? std::string() : "; [deaths14] the killer's threat list: " + threat);
         SelfBotControl::RecordGuildDeath(killed, killer);  // [live1]
         NewRpgBaseAction::RecordDeath(killed, killer);       // [guild12]
@@ -207,6 +215,12 @@ public:
 
     void OnPlayerEnterCombat(Player* player, Unit* enemy) override
     {
+        // [jrn30] THE FIGHT BEGINS. This hook is the combat-state TRANSITION (CombatManager only calls it when the
+        // owner was not in combat and now is), so it is one row per fight per bot, for every bot and with no clock
+        // of its own - which is what 9 467 fights with an end and no beginning were missing. It goes before the
+        // [dpsf] filter below on purpose: that line is only about bosses in instances, and a fight's start is about
+        // every fight anywhere.
+        Journal::NoteFightStart(player, enemy);
         if (!player || !enemy || !player->IsInWorld() || !GET_PLAYERBOT_AI(player) || !player->GetMap() ||
             !player->GetMap()->Instanceable())
             return;
@@ -237,6 +251,20 @@ public:
         if (damage && attacker && victim && attacker != victim)
             DpsEstimate::NoteDealt(attacker, victim, damage, uint8(damageType));
         return damage;
+    }
+
+    // [jrn30] AGGRO GAINED. Creature::AtEngage announces a creature engaging its first victim, once per creature
+    // per fight, so this is where the reason a mob is on a bot is a fact rather than a reconstruction: whether the
+    // bot was already fighting, whether it was walking, and whether a pull order the leader issued was open and
+    // about this mob. Journal::NoteAggro turns those into the reason code; nothing is decided here.
+    //
+    // The one code it cannot produce is "off_tank", a mid-fight threat switch: that is a change of GetVictim()
+    // between two ticks and not an engage, so it needs a watch in the leader's own tick. The code is in the schema,
+    // no emitter writes it yet, and a query that finds none of it must read that as "not measured".
+    void OnUnitEnterCombat(Unit* unit, Unit* victim) override
+    {
+        if (Creature* mob = unit ? unit->ToCreature() : nullptr)
+            Journal::NoteAggro(mob, victim);
     }
 };
 
@@ -703,8 +731,19 @@ class PlayerbotsAllMapScript : public AllMapScript
 {
 public:
     PlayerbotsAllMapScript() : AllMapScript("PlayerbotsAllMapScript", {
+        ALLMAPHOOK_ON_MAP_UPDATE,  // [jrn31] each map thread's own update time, never their sum
         ALLMAPHOOK_CAN_SEND_OBJECT_UPDATES_TO_PLAYER
     }) {}
+
+    // [jrn31] EACH MAP SEPARATELY. One stalled map thread among nineteen healthy ones is a sum that looks fine,
+    // and "the total looked fine" is its own class of defect here - so the journal gets a row per map and there is
+    // no row that adds them up. The sampler is one lock and one push_back of a float; it writes the window out
+    // every ten seconds from the world thread, not from here.
+    void OnMapUpdate(Map* map, uint32 diff) override
+    {
+        if (map)
+            Journal::NoteMapTick(map->GetId(), map->GetInstanceId(), diff);
+    }
 
     // Bots have no client to render object updates; only self bots still need them
     bool CanSendObjectUpdatesToPlayer(Map* /*map*/, Player* player) override
@@ -805,6 +844,12 @@ public:
         sRandomPlayerbotMgr.UpdateSessions();  // Per-bot packet queues, world thread only
         PlayerbotWorldThreadProcessor::instance().Update(diff);
         sRandomPlayerbotMgr.UpdateAI(diff);  // World thread only
+        // [jrn31] the server's own statistics into pb_journal_metric, and the window is written out from here.
+        // It is called LAST so the tick it measures is a whole tick, the bots' work included; `bots` and `sessions`
+        // go in the row because a tick time at 75 bots and one at 300 are not the same number, and nothing else in
+        // the row would say so.
+        Journal::NoteWorldTick(diff, sRandomPlayerbotMgr.GetPlayerbotsCount(),
+                               sWorldSessionMgr->GetActiveSessionCount());
     }
 
     // Runs before the sessions are kicked on server shutdown

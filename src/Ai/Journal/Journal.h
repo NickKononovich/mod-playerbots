@@ -51,6 +51,10 @@
 #include "ObjectGuid.h"
 #include "Optional.h"
 
+class Creature;
+class Player;
+class Unit;
+
 namespace Journal
 {
     // Who the judge is. The same decision taken by a different judge is a different decision, and "one judge per
@@ -79,7 +83,39 @@ namespace Journal
         double cost = 0.0;       // the price the judge put on it (its own unit, named by `costUnit` on the decision)
         double value = 0.0;      // the gain the judge put on it
         bool taken = false;
-        std::string fields;  // the numbers the judge weighed it on, as one JSON object ("" for none)
+
+        // [jrn30] THE CHAIN-PULL JUDGE'S OWN NUMBERS, promoted out of `fields` into columns because they are what
+        // the questions are about. "Every refusal where the healer had more than N yards to walk" is a query we
+        // want to ask, and while these lived inside one JSON field it could only be asked as a LIKE over text -
+        // measured at 384 ms on 411 819 rows, growing linearly, so about 8 s on a day of a thousand bots. The user's
+        // rule is the short form of that measurement: we do not filter on JSON; if something is needed it becomes a
+        // column. `fields` keeps what is read with the eyes - the full sentence, the tag, the printed strings.
+        //
+        // EVERY ONE IS OPTIONAL AND NULL IS NOT ZERO. The judge prints these only for the candidate kinds that have
+        // them: a 0.0 drop means the judge computed no tank-health cost, an absent drop means it never weighed one,
+        // and a query that merges the two will answer and be wrong.
+        Optional<float> fightSecLeft;  // seconds the current fight still has to run
+        Optional<float> runInSec;      // seconds the tank needs to run in
+        Optional<float> openSec;       // seconds its opener takes
+        std::string opener;            // the opener the judge meant to use ("" when it named none)
+        Optional<float> distance;      // yards to the candidate
+        Optional<float> overload;      // the overload gate's number
+        Optional<float> drop;          // tank health the candidate would cost (0..1)
+        Optional<float> tankHealth;    // the tank's health when it judged (0..1)
+        Optional<float> unionSec;      // seconds the joined fight would take
+        Optional<float> groupDps;      // the group damage the judge priced it with
+        Optional<float> walkSec;       // seconds of walk the plan needs
+        Optional<float> walkYd;        // and its length in yards: the two are not interchangeable
+        std::string healer;            // the healer the plan leans on ("" when it named none)
+        Optional<bool> healerWalks;    // that healer has to walk for it
+        Optional<float> healerSec;     // and how long it would take
+        Optional<bool> due;            // the pull was due now
+        Optional<uint32> stop;         // the route stop this candidate belongs to
+        Optional<uint32> packMobs;     // mobs in the candidate's own pack
+        Optional<uint32> fightMobs;    // mobs already in the fight
+        Optional<uint32> unionMobs;    // mobs in the two together, which is what the gate judges
+
+        std::string fields;  // what is left for the eyes, as one JSON object ("" for none)
     };
 
     // [jrn20] One participant of one decision: a bot of the five, or a mob the judge weighed. The point is replay -
@@ -171,6 +207,12 @@ namespace Journal
         Optional<float> judgeX;      // where the judge stood when it decided - "what happened at this spot"
         Optional<float> judgeY;
         Optional<float> judgeZ;
+        // [jrn30] WHERE the judge stood, as the map says it and not only as three floats. The user asked for this in
+        // so many words ("log the positions too, just so we know where he actually is, where he pulled whom"), and
+        // "what happens in this zone" is a question that gets asked, so the map and the zone are columns beside the
+        // coordinates. 0 means the emitter did not state it - a map 0 row with no coordinates is the gap, not Azeroth.
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
 
         std::string tag;        // the code tag that owns the line ("[pull81]"), so the row names its own author
         std::string src;        // file:line of the judge, so "who prints this" needs no grep
@@ -258,9 +300,209 @@ namespace Journal
         uint64 fromMs = 0;
         uint64 toMs = 0;
         std::string scope;
+
+        // [jrn31] THE MEAN HIDES THE SPIKE, and that is the whole reason these are columns. A mean of 50 ms over a
+        // window that contains one 900 ms tick is 50 ms, and 900 ms is what the bots stand on; a row carrying only
+        // the mean draws a reassuring flat line over the defect. So a sampled metric states its own distribution:
+        // the smallest sample, the largest, and the upper percentile - each its own column with an index, because
+        // "every window whose worst tick went over 200 ms" is a WHERE clause and not a read of JSON.
+        Optional<double> valueMin;
+        Optional<double> valueMax;
+        Optional<double> valueP95;  // the 95th percentile over the window's samples
+        Optional<uint32> samples;   // how many samples the window holds: a max over 2 samples is not a max
+        // [jrn31] WHAT MAKES TWO ROWS COMPARABLE, stated in the row instead of assumed. A tick time at 75 bots and
+        // one at 300 bots are not the same number, and `build` alone does not say so; the window's own start is
+        // `fromMs`, which is why it is never implied either.
+        Optional<uint32> bots;
+        Optional<uint32> sessions;
     };
 
     void RecordMetric(Metric const& metric);
+
+    // [jrn30] THE START OF A FIGHT, as an event of its own.
+    //
+    // Measured on the live journal: in one 2.69 h window `playerbots_fight_history` held 9 467 finished fights and
+    // the journal held NOT ONE beginning. A fight's start was visible only through a sampler, so "who pulled this,
+    // where, and against how many" was a reconstruction from neighbouring lines rather than a row.
+    //
+    // It is written at the combat-state TRANSITION the core already announces (CombatManager::UpdateOwnerCombatState
+    // -> OnPlayerEnterCombat fires only when the owner was not in combat and now is), so it needs no clock of its
+    // own, cannot fire twice for one fight, and covers every bot rather than the half a sampler happened to catch.
+    // The fight's END stays in `playerbots_fight_history`: one quantity, one owner.
+    struct Fight
+    {
+        std::string event;  // "start"
+        std::string botName;
+        uint32 botLow = 0;
+        Optional<uint32> botLevel;
+        Optional<std::string> role;  // "tank" | "healer" | "dps" in THIS group
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        uint32 areaId = 0;
+        float x = 0.f, y = 0.f, z = 0.f;
+        bool inDungeon = false;
+
+        // against whom, BY IDENTITY: four times in one day two objects shared a name, so the entry and the GUID
+        // counter are the columns and the name is for the eyes
+        std::string enemyName;
+        uint32 enemyEntry = 0;
+        uint32 enemyLow = 0;
+        Optional<uint32> enemyLevel;
+        Optional<uint32> mobs;  // creatures in combat with this bot at that instant (NULL: not counted)
+
+        // WHO PULLED IT AND WITH WHAT. The open pull order of the group's tank is the authority on this, because it
+        // is the thing that was actually issued; nothing is inferred from a name.
+        std::string pullerName;
+        uint32 pullerLow = 0;
+        std::string pullKind;    // "order" (an open pull order names it) | "self" | "other" | "none"
+        std::string pullMethod;  // the order's method ("" when no order names one)
+        Optional<uint32> pullExpected;  // mobs the plan expected
+        double pullCost = 0.0;
+        uint32 pullOrderId = 0;
+
+        std::string runId;
+        uint64 decisionId = 0;
+    };
+
+    void RecordFight(Fight const& fight);
+
+    // [jrn30] AGGRO GAINED, and the point of the row is the REASON CODE.
+    //
+    // The user asked for it in these words: "it caught some aggro, that too" - and then for the one case that
+    // mattered: "an error of the estimate". That class was not merely unrecorded, it was INEXPRESSIBLE: nothing in
+    // the journal said why a mob was on a bot, so the one question worth asking could not be asked. `reason` is
+    // therefore a column with an index, never a phrase inside `why`, and the sentence in `why` is what is read with
+    // the eyes afterwards.
+    //
+    //   "came"     nobody pulled it: the bot stood still and the mob engaged it (a wanderer, a respawn, a patrol)
+    //   "path"     hooked on the way: the bot was walking and out of combat when the mob engaged it
+    //   "estimate" AN ERROR OF THE ESTIMATE: a pull the leader judged was open, and the mob engaged somebody the
+    //              plan did not put in front of it (not the order's tank), or a mob the plan did not count
+    //   "add"      a mob joined a fight already running (the bot was in combat when this one engaged it)
+    //   "off_tank" the mob was torn off the tank mid-fight. DECLARED AND NOT YET EMITTED - see the note below
+    //   "unknown"  the emitter could not classify it, and says so rather than picking a neighbour
+    //
+    // WHY "off_tank" HAS NO EMITTER YET, stated here rather than left to be discovered: every reason above is a
+    // fact at the instant a creature ENGAGES (Creature::AtEngage, announced once per creature per fight). A mid-fight
+    // threat switch is not an engage - it is a change of `GetVictim()` between two ticks, so catching it needs a
+    // per-tick watch over every mob of every fight, which is a cost and a placement decision in the leader's own
+    // tick. The code is in the schema so that the day it gets an emitter no table changes; until then no row carries
+    // it, and a query that finds none must read that as "not measured", not as "never happens".
+    struct Aggro
+    {
+        std::string botName;
+        uint32 botLow = 0;
+        Optional<std::string> role;
+        Optional<float> botHealthPct;
+        Optional<bool> botInCombat;  // it was already fighting when this mob engaged it
+        Optional<bool> botMoving;    // it was walking: what separates "hooked on the way" from "it came"
+
+        std::string mobName;
+        uint32 mobEntry = 0;
+        uint32 mobLow = 0;
+        Optional<uint32> mobLevel;
+
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        float x = 0.f, y = 0.f, z = 0.f;
+
+        std::string reason;  // the code above - a column, because this is what gets filtered
+        std::string why;     // the same thing in words, for the eyes
+
+        std::string tankName;  // the tank the plan meant to take it
+        uint32 tankLow = 0;
+        Optional<bool> expected;  // the open plan put THIS bot in front of it
+        uint32 orderTargetEntry = 0;  // what the open pull order was aimed at (0: no order)
+        uint32 orderTargetLow = 0;
+
+        std::string runId;
+        uint64 decisionId = 0;
+    };
+
+    void RecordAggro(Aggro const& aggro);
+
+    // [jrn30] A DEATH, as an event that CANNOT be confused with a death being prevented.
+    //
+    // The defect this fixes, measured: 20 502 stream lines in one window carried a tag beginning with "[death", and
+    // the real deaths in that window were 17. The 20 485 others are the death-PREVENTION domain printing under its
+    // own numbered tags ("[death384] holds its hit at ...", "[deaths20] within the reach of ...: steps out to ...") -
+    // they are about a death that did NOT happen. A count by tag family therefore overstated deaths by about 1 200
+    // times, and `LIKE '[death%'` is exactly the shape of query that produces it.
+    //
+    // So a real death is a ROW IN A TABLE OF ITS OWN. Nothing about prevention is ever written here, and a count of
+    // deaths is `SELECT COUNT(*) FROM pb_journal_death` over a window - no pattern, nothing to disagree about.
+    //
+    // A DEATH IS A CALCULATION BUG in this project and not bad luck, so the row carries the INPUTS and not only the
+    // outcome: who, where, by whom, at what damage, and what the judge expected when it let the fight happen.
+    struct Death
+    {
+        std::string botName;
+        uint32 botLow = 0;
+        Optional<uint32> botLevel;
+        Optional<uint32> botClass;
+        Optional<std::string> role;
+        Optional<std::string> spec;
+
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        uint32 areaId = 0;
+        float x = 0.f, y = 0.f, z = 0.f;
+        bool inDungeon = false;
+
+        std::string killerName;
+        uint32 killerEntry = 0;
+        uint32 killerLow = 0;
+        Optional<uint32> killerLevel;
+        Optional<float> killerHealthPct;
+
+        Optional<uint32> healthMax;    // the denominator: the health at 0 % is only readable against the pool
+        // what the KILLER dealt to this bot inside this instance (DamageTaken::From). The project keeps no
+        // per-fight total, so this is the honest quantity rather than a per-fight number that does not exist.
+        Optional<uint32> damageFromKiller;
+        Optional<uint32> attackers;    // how many were on it at the moment it died
+
+        // WHAT THE JUDGE EXPECTED. A death is the estimate being wrong, so the estimate goes in the row.
+        Optional<bool> judgedPull;      // a pull the leader judged was open when it died
+        std::string expected;           // the order's own reason, in the leader's words ("" when no order)
+        Optional<uint32> pullExpected;  // mobs that plan counted on
+        std::string pullMethod;
+
+        std::string context;  // the existing death context sentence (its fight, the chase it belonged to)
+        std::string threat;   // the killer's threat list at the kill: whom else it was fighting
+
+        std::string runId;
+        uint64 decisionId = 0;
+    };
+
+    void RecordDeath(Death const& death);
+
+    // [jrn30] The three callers that turn a core hook into one of the rows above (JournalFight.cpp). They are
+    // separate from Record*() so that the script layer stays a one-line call and the facts of each event are
+    // gathered in one place that can be read whole.
+    //
+    // EVERY VALUE IS READ HERE, SYNCHRONOUSLY, ON THE THREAD THE EVENT HAPPENED ON. Health, position and "who is in
+    // combat" exist only on that thread and only at that instant; storing the GUID and reading them later would be
+    // a reading of the world AT A DIFFERENT MOMENT - a second judge of one quantity, which is the defect the whole
+    // journal exists to prevent. What is read is only ever put into the struct; nothing here decides anything.
+    //
+    // Declared in Journal.h and defined in JournalFight.cpp on purpose: the module is a STATIC library, and a
+    // linker takes an object file out of one only when a symbol in it is asked for. These are called from
+    // src/Script, which is certainly linked, so the object file cannot be discarded the way JournalPull.obj and
+    // JournalStream.obj silently were in b495.
+    void NoteFightStart(Player* bot, Unit* enemy);
+    void NoteAggro(Creature* mob, Unit* victim);
+    void NoteDeath(Player* killed, Creature* killer, std::string const& context, std::string const& threat);
+
+    // [jrn31] The writer's own two numbers, exposed so the STATS sampler can put them in a metric row instead of a
+    // log line. They are the honest sign of the one contention the journal could have: a single mutex guards the
+    // push queue for every map thread at once. While `DroppedRows()` stays 0 and `QueuedRows()` stays small there is
+    // nothing being fought over and nothing to change - the queue is the measurement, not the guess.
+    //
+    // ONE OWNER PER QUANTITY: `DroppedRows()` is monotonic since the process started, and the writer's own error
+    // line reports the DELTA it has not yet reported. Two readers of one counter, each resetting it, is the defect
+    // this journal exists to prevent.
+    uint64 QueuedRows();
+    uint64 DroppedRows();
 
     // [jrn20] A ROUTE, recorded as EVENTS and not as sampled positions. Writing a coordinate every tick is the same
     // stream over again, only dearer: the raw stream already costs about 1.5 GB a day at 75 bots (measured), and a
@@ -349,6 +591,27 @@ namespace Journal
     // object files into the link.
     void AttachPullObserver();
     void AttachLogStream();
+
+    // [jrn31] SERVER STATISTICS, collected continuously instead of snapshotted on command.
+    //
+    // Why this exists next to PerfMonitor rather than instead of it. PerfMonitor measures regions of code and
+    // aggregates FROM THE MOMENT IT WAS RESET: it is a reset -> run -> print cycle, written to a file, so two builds
+    // are only comparable when their reset points were the same. That is the project's own trap - if the instrument
+    // changed between two measurements, they cannot be compared - and it is why these rows state what makes them
+    // comparable at all: the build, the number of bots, and the window's own start.
+    //
+    // What is sampled, and why each one: the world tick's length and the diff it was handed; the bots and the
+    // sessions (the denominator of every other number here); the update time OF EACH MAP THREAD SEPARATELY - never
+    // their sum, because a sum hides the one thread that stalled and "the sum looked fine" is its own class of
+    // defect here; the journal's queue depth and its dropped-row counter; and the process's resident memory.
+    //
+    // Every sampled row carries the window's max and upper percentile beside the mean (see Metric): the mean is what
+    // draws a flat line over a 900 ms tick.
+    //
+    // NoteMapTick is called from map threads and NoteWorldTick from the world thread; both only add a number to a
+    // bucket under a short lock, and the window is written out by NoteWorldTick when it elapses.
+    void NoteWorldTick(uint32 diff, uint32 bots, uint32 sessions);
+    void NoteMapTick(uint32 mapId, uint32 instanceId, uint32 diff);
 
     // [jrn20] The counter a window line prints, taken from the SAME call that wrote the row - never by reading the
     // journal back. The journal is the one store of cases; a count made by a second pass over those cases would be

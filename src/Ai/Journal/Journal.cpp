@@ -14,6 +14,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <thread>
 #include <vector>
 
@@ -151,19 +152,36 @@ namespace Journal
             "(id, boot_id, at_ms, hour_bucket, topic, choice, verdict, why, judge, judge_name, judge_low, subject, "
             "subject_kind, subject_entry, subject_low, cost, cost_unit, tag, src, read_field, read_by, run_id, "
             "run_ms, options_total, options_rejected, fields, text, build, method, pack_size, careful, judge_x, "
-            "judge_y, judge_z, kind, route_target_entry, route_target_low)";
+            "judge_y, judge_z, kind, route_target_entry, route_target_low, map_id, zone_id)";
         char const* const COLUMNS_LOOT =
             "(id, boot_id, at_ms, hour_bucket, item_entry, item_name, count, quality, from_kind, from_name, "
             "from_entry, to_name, to_low, verdict, why, worth, worth_unit, run_id, decision_id, build)";
         char const* const COLUMNS_OPTION =
             "(decision_id, boot_id, at_ms, hour_bucket, idx, name, kind, reason, source_kind, cost, value, taken, "
-            "fields, build)";
+            "fields, build, fight_sec_left, run_in_sec, open_sec, opener, distance, overload, drop_pct, tank_health, "
+            "union_sec, group_dps, walk_sec, walk_yd, healer, healer_walks, healer_sec, due, stop, pack_mobs, "
+            "fight_mobs, union_mobs)";
         char const* const COLUMNS_READ = "(decision_id, boot_id, at_ms, hour_bucket, reader)";
         char const* const COLUMNS_LINE =
             "(id, boot_id, at_ms, hour_bucket, tag, bot_low, bot_name, map_id, zone_id, pos_x, pos_y, pos_z, text, "
             "build)";
         char const* const COLUMNS_METRIC =
-            "(id, boot_id, at_ms, hour_bucket, name, value, unit, from_ms, to_ms, scope, build)";
+            "(id, boot_id, at_ms, hour_bucket, name, value, unit, from_ms, to_ms, scope, build, value_min, "
+            "value_max, value_p95, samples, bots, sessions)";
+        char const* const COLUMNS_FIGHT =
+            "(id, boot_id, at_ms, hour_bucket, event, bot_name, bot_low, bot_level, role, map_id, zone_id, area_id, "
+            "pos_x, pos_y, pos_z, in_dungeon, enemy_name, enemy_entry, enemy_low, enemy_level, mobs, puller_name, "
+            "puller_low, pull_kind, pull_method, pull_expected, pull_cost, pull_order_id, run_id, decision_id, "
+            "build)";
+        char const* const COLUMNS_AGGRO =
+            "(id, boot_id, at_ms, hour_bucket, bot_name, bot_low, role, bot_health_pct, bot_in_combat, bot_moving, "
+            "mob_name, mob_entry, mob_low, mob_level, map_id, zone_id, pos_x, pos_y, pos_z, reason, why, tank_name, "
+            "tank_low, expected, order_target_entry, order_target_low, run_id, decision_id, build)";
+        char const* const COLUMNS_DEATH =
+            "(id, boot_id, at_ms, hour_bucket, bot_name, bot_low, bot_level, bot_class, role, spec, map_id, zone_id, "
+            "area_id, pos_x, pos_y, pos_z, in_dungeon, killer_name, killer_entry, killer_low, killer_level, "
+            "killer_health_pct, health_max, damage_from_killer, attackers, judged_pull, expected, pull_expected, "
+            "pull_method, context, threat, run_id, decision_id, build)";
         char const* const COLUMNS_ACTOR =
             "(decision_id, boot_id, at_ms, hour_bucket, idx, side, name, low, entry, spawn_id, level, spec, role, "
             "health, health_max, health_pct, mana, mana_max, mana_pct, pos_x, pos_y, pos_z, tank_yd, target_yd, "
@@ -189,6 +207,12 @@ namespace Journal
                 return COLUMNS_LOOT;
             if (!std::strcmp(table, "pb_journal_metric"))
                 return COLUMNS_METRIC;
+            if (!std::strcmp(table, "pb_journal_fight"))
+                return COLUMNS_FIGHT;
+            if (!std::strcmp(table, "pb_journal_aggro"))
+                return COLUMNS_AGGRO;
+            if (!std::strcmp(table, "pb_journal_death"))
+                return COLUMNS_DEATH;
             if (!std::strcmp(table, "pb_journal_actor"))
                 return COLUMNS_ACTOR;
             if (!std::strcmp(table, "pb_journal_route"))
@@ -216,7 +240,11 @@ namespace Journal
                     std::lock_guard<std::mutex> lock(_lock);
                     if (_queue.size() >= QUEUE_MAX)
                     {
-                        ++_dropped;  // the journal never stalls the world thread: it drops and says so
+                        // [jrn31] the journal never stalls the world thread: it drops and says so. The counter is
+                        // MONOTONIC and nothing resets it - the writer's error line reports the delta it has not
+                        // reported yet, and the stats sampler reads the total. Two readers each zeroing one counter
+                        // is a second judge of one quantity, which is the defect this table exists to prevent.
+                        ++_dropped;
                         return;
                     }
                     _queue.push_back(Row{table, std::move(values)});
@@ -240,6 +268,17 @@ namespace Journal
             {
                 std::call_once(_started, [this] { _thread = std::thread([this] { Loop(); }); });
             }
+
+            // [jrn31] the two numbers the stats sampler puts in a metric row. The queue depth is the honest sign of
+            // whether the single push mutex is being fought over at all: while it stays small and `Dropped()` stays
+            // 0 there is no contention and nothing in the writer is worth changing.
+            uint64 Queued()
+            {
+                std::lock_guard<std::mutex> lock(_lock);
+                return uint64(_queue.size());
+            }
+
+            uint64 Dropped() { return _dropped.load(); }
 
         private:
             static constexpr size_t QUEUE_MAX = 200000;
@@ -291,8 +330,12 @@ namespace Journal
             {
                 if (batch.empty())
                     return;
-                if (uint64 const dropped = _dropped.exchange(0))
-                    LOG_ERROR("playerbots", "[jrn20] journal dropped {} row(s): the writer fell behind", dropped);
+                if (uint64 const total = _dropped.load(); total > _droppedSaid)
+                {
+                    LOG_ERROR("playerbots", "[jrn20] journal dropped {} row(s) ({} in all): the writer fell behind",
+                              total - _droppedSaid, total);
+                    _droppedSaid = total;
+                }
 
                 char const* table = nullptr;
                 std::string sql;
@@ -329,7 +372,8 @@ namespace Journal
                 uint64 const keepFrom = nowHour > Config().retentionHours ? nowHour - Config().retentionHours : 0;
                 for (char const* table : {"pb_journal_decision", "pb_journal_option", "pb_journal_read",
                                           "pb_journal_loot", "pb_journal_metric", "pb_journal_actor",
-                                          "pb_journal_route", "pb_journal_route_stop", "pb_journal_line"})
+                                          "pb_journal_route", "pb_journal_route_stop", "pb_journal_fight",
+                                          "pb_journal_aggro", "pb_journal_death", "pb_journal_line"})
                 {
                     // [jrn20] the raw stream keeps its OWN, shorter window, and the number says why: measured on the
                     // live table it is 403 bytes a row at 152 967 rows an hour - 1.5 GB a day at 75 bots, and about
@@ -362,8 +406,21 @@ namespace Journal
                         } while (result->NextRow());
                     }
 
-                    // extend forward: reorganising the empty trailing partition is cheap, and a row past the last
-                    // partition would otherwise be refused (ER_NO_PARTITION_FOR_GIVEN_VALUE)
+                    // [jrn33] Extend forward. The reason stated here before was WRONG, and a comment about what
+                    // the code does not do costs more than a wrong number: a row past the last hour is NOT refused
+                    // with ER_NO_PARTITION_FOR_GIVEN_VALUE, because `pfuture` catches everything by construction
+                    // (VALUES LESS THAN MAXVALUE) - checked by inserting hour_bucket 999999, which landed in
+                    // pfuture silently.
+                    //
+                    // The real reason is retention, and it is worse than a refusal. The sweep below only ever drops
+                    // partitions named p<hour>; it excludes pfuture explicitly, and it must, because pfuture holds
+                    // every hour that does not exist yet. So a row that lands in pfuture is a row RETENTION WILL
+                    // NEVER REACH. While the carving ahead works (six hours of slack, swept every ten minutes) that
+                    // never happens; if it ever stops - the writer thread dead, one ALTER refused, the sweep itself
+                    // broken - then every new row goes to pfuture, writes keep succeeding, queries keep answering,
+                    // no error appears anywhere, and the table grows without a bound. That is why the count of rows
+                    // in pfuture is reported as a metric below: it is zero in a healthy server, so any non-zero
+                    // value is itself the alarm.
                     for (uint64 hour = std::max(highest + 1, nowHour); hour <= nowHour + 6; ++hour)
                         PlayerbotsDatabase.Execute(
                             Acore::StringFormat("ALTER TABLE {} REORGANIZE PARTITION pfuture INTO (PARTITION p{} "
@@ -382,6 +439,39 @@ namespace Journal
                             Acore::StringFormat("ALTER TABLE {} DROP PARTITION {}", table, names).c_str());
                     }
                 }
+
+                // [jrn33] THE SILENT PATH TO UNBOUNDED GROWTH, reported as a number. Rows that land in `pfuture`
+                // are outside retention for ever (see the comment above), and nothing about that state looks
+                // broken: the writes succeed and the queries answer. In a healthy server this is 0 for every
+                // table, so ANY non-zero value is the alarm and no threshold has to be invented for it.
+                //
+                // THE NUMBER IS AN ESTIMATE AND MUST NOT BE READ AS A COUNT. information_schema's TABLE_ROWS is
+                // InnoDB's own guess and it lies in the number - it said 322 for pb_journal_decision while the
+                // real count was 9 457. What it does NOT lie about is zero against non-zero, and that is the only
+                // thing read here. A real count would mean COUNT(*) over the partition on every sweep, which is
+                // the expensive scan this whole retention design exists to avoid.
+                //
+                // The row is written by the sweep because the sweep OWNS retention: one quantity, one owner, and a
+                // second reader of it would be a second judge of the same number.
+                if (QueryResult result = PlayerbotsDatabase.Query(
+                        "SELECT TABLE_NAME, IFNULL(TABLE_ROWS, 0) FROM information_schema.PARTITIONS WHERE "
+                        "TABLE_SCHEMA = DATABASE() AND PARTITION_NAME = 'pfuture' AND TABLE_NAME LIKE "
+                        "'pb\\_journal\\_%'"))
+                    do
+                    {
+                        Field* fields = result->Fetch();
+                        Metric metric;
+                        metric.name = "journal_pfuture_rows";
+                        metric.scope = "table:" + fields[0].Get<std::string>();
+                        metric.unit = "rows";
+                        metric.value = double(fields[1].Get<uint64>());
+                        metric.valueMax = metric.value;
+                        metric.samples = 1u;
+                        metric.fromMs = lastSweepEndedMs;
+                        metric.toMs = nowMs;
+                        RecordMetric(metric);
+                    } while (result->NextRow());
+                lastSweepEndedMs = nowMs;
             }
 
             std::mutex _lock;
@@ -391,6 +481,9 @@ namespace Journal
             std::once_flag _started;
             std::atomic<bool> _stop{false};
             std::atomic<uint64> _dropped{0};
+            uint64 _droppedSaid = 0;  // how much of _dropped the error line has already reported (writer thread only)
+            // [jrn33] when the previous sweep finished: the window of the pfuture metric is never implied
+            uint64 lastSweepEndedMs = 0;
             std::atomic<uint32> _seq{0};
         };
 
@@ -404,11 +497,152 @@ namespace Journal
         // table a build creates and the table the file creates cannot drift apart.
         char const* const PARTS = " PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE)";
 
+        // -------------------------------------------------------------------------------------------------------
+        // [jrn32] THE SCHEMA DRIFT TRAP, and the one thing that closes it.
+        //
+        // `CREATE TABLE IF NOT EXISTS` on a table that already exists does NOTHING. So the moment a build adds a
+        // column to the code's INSERT and the live table was made by an older build, every insert of that table
+        // fails with "Unknown column" - and because the write is asynchronous, the error goes to the database log
+        // and the journal simply stays EMPTY while the code is entirely correct. That is the exact failure this
+        // whole journal exists to prevent: an instrument reading zero, and the zero not being about the world.
+        //
+        // It had already happened: pb_journal_decision had 28 columns in the live database while Record() wrote a
+        // 37-field tuple (method, pack_size, careful, judge_x/y/z, kind, route_target_entry/low added by the build
+        // before this one). Nothing in the file migrated them - the only two ALTERs in here were about partitions.
+        //
+        // What closes it: the table is brought up to the schema the CODE declares, read out of the very CREATE
+        // statement the code just issued. Nothing is kept twice, so nothing can drift: the column list that creates
+        // a fresh table is literally the list that is compared against an old one. It runs on the journal's own
+        // thread (where DirectExecute is allowed) and is idempotent - a second start finds nothing missing.
+        //
+        // How to check it rather than read it: for every table, the number of columns in the live database must
+        // equal the number of fields in that table's tuple (the COLUMNS_* lists above).
+        //   SELECT TABLE_NAME, COUNT(*) FROM information_schema.COLUMNS
+        //    WHERE TABLE_SCHEMA = 'acore_playerbots' AND TABLE_NAME LIKE 'pb_journal%' GROUP BY TABLE_NAME;
+        // -------------------------------------------------------------------------------------------------------
+
+        // the pieces of a CREATE's column/key list, split at the commas that are not inside parentheses
+        std::vector<std::string> SplitDefinition(std::string const& body)
+        {
+            std::vector<std::string> pieces;
+            int depth = 0;
+            size_t start = 0;
+            for (size_t i = 0; i <= body.size(); ++i)
+            {
+                if (i == body.size() || (body[i] == ',' && depth == 0))
+                {
+                    size_t from = start;
+                    while (from < i && body[from] == ' ')
+                        ++from;
+                    if (i > from)
+                        pieces.push_back(body.substr(from, i - from));
+                    start = i + 1;
+                    continue;
+                }
+                if (body[i] == '(')
+                    ++depth;
+                else if (body[i] == ')')
+                    --depth;
+            }
+            return pieces;
+        }
+
+        // the first word of a piece: a column's name, or "PRIMARY"/"KEY"/"UNIQUE" for a key. Leading spaces are
+        // skipped rather than taken as an empty word - a key piece is read again past its "KEY " to get its name,
+        // and that remainder starts with a space.
+        std::string FirstWord(std::string const& piece)
+        {
+            size_t const from = piece.find_first_not_of(' ');
+            if (from == std::string::npos)
+                return {};
+            size_t const end = piece.find_first_of(" (", from);
+            return end == std::string::npos ? piece.substr(from) : piece.substr(from, end - from);
+        }
+
+        // Issues the CREATE, then brings a table an older build left behind up to the same column and index list.
+        void CreateOrExtend(std::string const& statement)
+        {
+            PlayerbotsDatabase.DirectExecute(statement.c_str());
+
+            static char const* const PREFIX = "CREATE TABLE IF NOT EXISTS ";
+            size_t const nameAt = statement.find(PREFIX);
+            if (nameAt == std::string::npos)
+                return;
+            size_t const open = statement.find('(', nameAt);
+            if (open == std::string::npos)
+                return;
+            std::string table = statement.substr(nameAt + std::strlen(PREFIX), open - nameAt - std::strlen(PREFIX));
+            while (!table.empty() && (table.back() == ' ' || table.back() == '('))
+                table.pop_back();
+
+            int depth = 0;
+            size_t close = std::string::npos;
+            for (size_t i = open; i < statement.size(); ++i)
+            {
+                if (statement[i] == '(')
+                    ++depth;
+                else if (statement[i] == ')' && --depth == 0)
+                {
+                    close = i;
+                    break;
+                }
+            }
+            if (close == std::string::npos)
+                return;
+
+            // what the live table has. Asked, never assumed: the whole point of this function is that an
+            // assumption about the live schema is what left the decision table empty.
+            std::set<std::string> columns;
+            std::set<std::string> keys;
+            if (QueryResult result = PlayerbotsDatabase.Query(
+                    Acore::StringFormat("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE "
+                                        "TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}'",
+                                        table)
+                        .c_str()))
+                do
+                    columns.insert(result->Fetch()[0].Get<std::string>());
+                while (result->NextRow());
+            if (columns.empty())
+                return;  // the CREATE above made it: it is already the code's schema
+            if (QueryResult result = PlayerbotsDatabase.Query(
+                    Acore::StringFormat("SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS WHERE "
+                                        "TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{}'",
+                                        table)
+                        .c_str()))
+                do
+                    keys.insert(result->Fetch()[0].Get<std::string>());
+                while (result->NextRow());
+
+            // One ALTER for everything missing: an ADD COLUMN rebuilds the table, and doing that once per build is
+            // the difference between a metadata-sized pause and one per column.
+            std::string adds;
+            for (std::string const& piece : SplitDefinition(statement.substr(open + 1, close - open - 1)))
+            {
+                std::string const first = FirstWord(piece);
+                if (first == "PRIMARY" || first == "UNIQUE")
+                    continue;  // a primary key is never added after the fact; nothing here declares a unique one
+                if (first == "KEY")
+                {
+                    std::string const rest = piece.substr(4);
+                    if (!keys.count(FirstWord(rest)))
+                        adds += (adds.empty() ? "" : ", ") + ("ADD " + piece);
+                    continue;
+                }
+                if (!columns.count(first))
+                    adds += (adds.empty() ? "" : ", ") + ("ADD COLUMN " + piece);
+            }
+            if (adds.empty())
+                return;
+            LOG_INFO("playerbots", "[jrn32] {}: the live table is older than the code - adding {}", table, adds);
+            PlayerbotsDatabase.DirectExecute(
+                Acore::StringFormat("ALTER TABLE {} {}", table, adds).c_str());
+        }
+
         void CreateTables(uint32 bootId, uint64 nowMs)
         {
             std::string const parts = PARTS;
 
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 "CREATE TABLE IF NOT EXISTS pb_journal_boot ("
                 "boot_id INT UNSIGNED NOT NULL, started_ms BIGINT UNSIGNED NOT NULL, "
                 "started_at DATETIME(3) NOT NULL, note VARCHAR(255) NOT NULL DEFAULT '', "
@@ -417,7 +651,7 @@ namespace Journal
                 "COMMENT='[jrn20] one row per server start: the window a comparison uses survives the restart'");
 
             // the decision: thousands of rows an hour, so the indexes are generous - the reads are offline
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 (std::string(
                      "CREATE TABLE IF NOT EXISTS pb_journal_decision ("
                      "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, at_ms BIGINT UNSIGNED NOT NULL, "
@@ -439,7 +673,10 @@ namespace Journal
                      "kind VARCHAR(24) NOT NULL DEFAULT '', "
                      "route_target_entry INT UNSIGNED NOT NULL DEFAULT 0, "
                      "route_target_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                     "map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                     "zone_id INT UNSIGNED NOT NULL DEFAULT 0, "
                      "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY topic_at (topic, at_ms), "
+                     "KEY where_at (map_id, zone_id, at_ms), "
                      "KEY verdict_at (verdict, topic, at_ms), KEY judge_at (judge_low, at_ms), "
                      "KEY judge_name_at (judge_name, at_ms), KEY run_at (run_id, at_ms), "
                      "KEY tag_at (tag, at_ms), KEY boot_at (boot_id, at_ms), "
@@ -455,7 +692,7 @@ namespace Journal
                     .c_str());
 
             // the options: what was rejected and why. This is the point of the whole journal.
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 (std::string(
                      "CREATE TABLE IF NOT EXISTS pb_journal_option ("
                      "decision_id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
@@ -465,16 +702,32 @@ namespace Journal
                      "cost DOUBLE NOT NULL DEFAULT 0, value DOUBLE NOT NULL DEFAULT 0, "
                      "taken TINYINT UNSIGNED NOT NULL DEFAULT 0, fields TEXT, "
                      "build VARCHAR(16) NOT NULL DEFAULT '', "
+                     // [jrn30] the chain-pull judge's numbers, out of `fields` and into columns: these are what the
+                     // questions are about ("every refusal where the healer had to walk more than N yards"), and a
+                     // LIKE over the JSON was measured at 384 ms over 411 819 rows. NULL is "the judge did not
+                     // weigh this one", which is not 0.
+                     "fight_sec_left FLOAT NULL, run_in_sec FLOAT NULL, open_sec FLOAT NULL, "
+                     "opener VARCHAR(48) NOT NULL DEFAULT '', distance FLOAT NULL, overload FLOAT NULL, "
+                     "drop_pct FLOAT NULL, tank_health FLOAT NULL, union_sec FLOAT NULL, group_dps FLOAT NULL, "
+                     "walk_sec FLOAT NULL, walk_yd FLOAT NULL, healer VARCHAR(32) NOT NULL DEFAULT '', "
+                     "healer_walks TINYINT UNSIGNED NULL, healer_sec FLOAT NULL, due TINYINT UNSIGNED NULL, "
+                     "stop SMALLINT UNSIGNED NULL, pack_mobs SMALLINT UNSIGNED NULL, "
+                     "fight_mobs SMALLINT UNSIGNED NULL, union_mobs SMALLINT UNSIGNED NULL, "
                      "PRIMARY KEY (decision_id, idx, hour_bucket), KEY at_ms (at_ms), "
                      "KEY source_at (source_kind, at_ms), KEY kind_at (kind, at_ms), KEY taken_at (taken, at_ms), "
-                     "KEY name_at (name(64), at_ms), KEY build_at (build, at_ms)) "
+                     "KEY name_at (name(64), at_ms), KEY build_at (build, at_ms), "
+                     "KEY drop_at (drop_pct, at_ms), KEY overload_at (overload, at_ms), "
+                     "KEY walk_at (walk_yd, at_ms), KEY healer_walk_at (healer_walks, healer_sec, at_ms), "
+                     "KEY union_at (union_mobs, at_ms), KEY fight_left_at (fight_sec_left, at_ms), "
+                     "KEY tank_health_at (tank_health, at_ms), KEY opener_at (opener, at_ms), "
+                     "KEY due_at (due, at_ms), KEY stop_at (stop, at_ms)) "
                      "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                      "COMMENT='[jrn20] every option a decision weighed, the rejected ones with their own reason'") +
                  parts)
                     .c_str());
 
             // who actually read a verdict. An empty join side is the answer "nobody", and it was the answer twice.
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 (std::string("CREATE TABLE IF NOT EXISTS pb_journal_read ("
                              "decision_id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
                              "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
@@ -489,7 +742,7 @@ namespace Journal
             // the loot: what dropped, from what, who got it, and on whose verdict. A narrow table because
             // "what dropped in that run and where did it go" must not read the whole stream; the run itself stays in
             // guild_project_runs and is referred to by run_id only.
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 (std::string(
                      "CREATE TABLE IF NOT EXISTS pb_journal_loot ("
                      "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
@@ -520,7 +773,7 @@ namespace Journal
             // is a corpse, a mob whose health was never recorded is a gap, and a query that cannot tell those apart
             // answers anyway. Shares always sit beside their denominator (health/health_max, mana/mana_max), because
             // "11 %" with no pool behind it is not checkable - and the tank drinking at 11 % mana was that argument.
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 (std::string("CREATE TABLE IF NOT EXISTS pb_journal_actor ("
                              "decision_id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
                              "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
@@ -551,7 +804,7 @@ namespace Journal
             // coordinate per tick is the stream again, only dearer, and it still cannot say why the bot went there.
             // Lengths are kept BOTH along the path and straight, because a detour is the ratio of the two and
             // neither number alone shows it.
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 (std::string("CREATE TABLE IF NOT EXISTS pb_journal_route ("
                              "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
                              "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
@@ -579,7 +832,7 @@ namespace Journal
                  + parts)
                     .c_str());
 
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 (std::string("CREATE TABLE IF NOT EXISTS pb_journal_route_stop ("
                              "route_id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
                              "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
@@ -599,7 +852,7 @@ namespace Journal
 
             // the raw stream. Millions of rows a day, so it keeps three indexes, not eleven: an index costs on every
             // insert, and the insert is the side that is not allowed to be expensive.
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 (std::string("CREATE TABLE IF NOT EXISTS pb_journal_line ("
                              "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
                              "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
@@ -618,7 +871,7 @@ namespace Journal
             // metric snapshots. A metric NEVER carries an implied window: from_ms / to_ms are columns, because three
             // times in one day numbers taken over different windows were compared as if they were the same number.
             // `scope` says what the value is about ("bot:Bierya", "five:3", "dungeon:wc-n", "server").
-            PlayerbotsDatabase.DirectExecute(
+            CreateOrExtend(
                 (std::string(
                      "CREATE TABLE IF NOT EXISTS pb_journal_metric ("
                      "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
@@ -627,11 +880,124 @@ namespace Journal
                      "unit VARCHAR(16) NOT NULL DEFAULT '', from_ms BIGINT UNSIGNED NOT NULL DEFAULT 0, "
                      "to_ms BIGINT UNSIGNED NOT NULL DEFAULT 0, scope VARCHAR(64) NOT NULL DEFAULT '', "
                      "build VARCHAR(16) NOT NULL DEFAULT '', "
+                     // [jrn31] THE MEAN HIDES THE SPIKE: a 50 ms average over a window holding one 900 ms tick is
+                     // 50 ms, and 900 ms is what the bots stand on. The distribution is columns, with indexes, so
+                     // "every window whose worst sample went over 200 ms" is a WHERE clause; and `bots` / `sessions`
+                     // are in the row because a tick time at 75 bots and one at 300 are not the same number.
+                     "value_min DOUBLE NULL, value_max DOUBLE NULL, value_p95 DOUBLE NULL, "
+                     "samples INT UNSIGNED NULL, bots INT UNSIGNED NULL, sessions INT UNSIGNED NULL, "
                      "PRIMARY KEY (id, hour_bucket), KEY name_at (name, at_ms), "
-                     "KEY name_build (name, build, at_ms), KEY scope_at (scope, at_ms)) "
+                     "KEY name_build (name, build, at_ms), KEY scope_at (scope, at_ms), "
+                     "KEY name_max (name, value_max, at_ms), KEY name_p95 (name, value_p95, at_ms), "
+                     "KEY name_value (name, value, at_ms), "
+                     "KEY name_bots (name, bots, at_ms), KEY scope_name (scope, name, at_ms)) "
                      "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                      "COMMENT='[jrn20] one measured value with its own window and build, never an implied one'") +
                  parts)
+                    .c_str());
+
+            // [jrn30] the start of a fight. 9 467 fights in one 2.69 h window had an end row in
+            // playerbots_fight_history and NOT ONE beginning: the start was only visible through a sampler that ran
+            // every 22 s and caught about half the bots. This row is written at the combat-state transition the core
+            // announces (OnPlayerEnterCombat), so it is one row per fight per bot with no clock of its own.
+            CreateOrExtend(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_fight ("
+                             "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "event VARCHAR(12) NOT NULL DEFAULT '', bot_name VARCHAR(32) NOT NULL DEFAULT '', "
+                             "bot_low INT UNSIGNED NOT NULL DEFAULT 0, bot_level SMALLINT UNSIGNED NULL, "
+                             "role VARCHAR(8) NULL, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "zone_id INT UNSIGNED NOT NULL DEFAULT 0, area_id INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "pos_x FLOAT NOT NULL DEFAULT 0, pos_y FLOAT NOT NULL DEFAULT 0, "
+                             "pos_z FLOAT NOT NULL DEFAULT 0, in_dungeon TINYINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "enemy_name VARCHAR(48) NOT NULL DEFAULT '', "
+                             "enemy_entry INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "enemy_low INT UNSIGNED NOT NULL DEFAULT 0, enemy_level SMALLINT UNSIGNED NULL, "
+                             "mobs SMALLINT UNSIGNED NULL, puller_name VARCHAR(32) NOT NULL DEFAULT '', "
+                             "puller_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "pull_kind VARCHAR(12) NOT NULL DEFAULT '', "
+                             "pull_method VARCHAR(16) NOT NULL DEFAULT '', pull_expected SMALLINT UNSIGNED NULL, "
+                             "pull_cost DOUBLE NOT NULL DEFAULT 0, pull_order_id INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "run_id VARCHAR(48) NOT NULL DEFAULT '', "
+                             "decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY bot_at (bot_low, at_ms), "
+                             "KEY enemy_at (enemy_entry, enemy_low, at_ms), KEY where_at (map_id, zone_id, at_ms), "
+                             "KEY event_at (event, at_ms), KEY pull_kind_at (pull_kind, at_ms), "
+                             "KEY puller_at (puller_low, at_ms), KEY mobs_at (mobs, at_ms), "
+                             "KEY run_at (run_id, at_ms), KEY build_at (build, at_ms), "
+                             "KEY decision (decision_id)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn30] a fight BEGINS: who, where, against whom, how many, pulled by whom'")
+                 + parts)
+                    .c_str());
+
+            // [jrn30] aggro gained, and the reason code is the point. `reason` is a column with an index because
+            // "an error of the estimate" is the one case the user asked for, and while the reason lived in a
+            // sentence that case was not merely unrecorded but inexpressible.
+            CreateOrExtend(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_aggro ("
+                             "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "bot_name VARCHAR(32) NOT NULL DEFAULT '', bot_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "role VARCHAR(8) NULL, bot_health_pct FLOAT NULL, bot_in_combat TINYINT UNSIGNED NULL, "
+                             "bot_moving TINYINT UNSIGNED NULL, mob_name VARCHAR(48) NOT NULL DEFAULT '', "
+                             "mob_entry INT UNSIGNED NOT NULL DEFAULT 0, mob_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "mob_level SMALLINT UNSIGNED NULL, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
+                             "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
+                             "reason VARCHAR(16) NOT NULL DEFAULT '', why VARCHAR(512) NOT NULL DEFAULT '', "
+                             "tank_name VARCHAR(32) NOT NULL DEFAULT '', tank_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "expected TINYINT UNSIGNED NULL, order_target_entry INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "order_target_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "run_id VARCHAR(48) NOT NULL DEFAULT '', "
+                             "decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), "
+                             "KEY reason_at (reason, at_ms), KEY bot_at (bot_low, at_ms), "
+                             "KEY mob_at (mob_entry, mob_low, at_ms), KEY where_at (map_id, zone_id, at_ms), "
+                             "KEY expected_at (expected, at_ms), KEY tank_at (tank_low, at_ms), "
+                             "KEY reason_bot (reason, bot_low, at_ms), KEY run_at (run_id, at_ms), "
+                             "KEY build_at (build, at_ms), KEY decision (decision_id)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn30] aggro gained, with the REASON as a code: came/path/estimate/add'")
+                 + parts)
+                    .c_str());
+
+            // [jrn30] a REAL death, in a table of its own so it cannot be counted together with a death prevented.
+            // Measured: 20 502 stream lines in one window carried a "[death*" tag and 17 of them were deaths; the
+            // rest are the prevention domain saying a death did NOT happen. A count by tag overstated by ~1 200x.
+            CreateOrExtend(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_death ("
+                             "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "bot_name VARCHAR(32) NOT NULL DEFAULT '', bot_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "bot_level SMALLINT UNSIGNED NULL, bot_class SMALLINT UNSIGNED NULL, "
+                             "role VARCHAR(8) NULL, spec VARCHAR(24) NULL, "
+                             "map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, zone_id INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "area_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
+                             "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
+                             "in_dungeon TINYINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "killer_name VARCHAR(48) NOT NULL DEFAULT '', "
+                             "killer_entry INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "killer_low INT UNSIGNED NOT NULL DEFAULT 0, killer_level SMALLINT UNSIGNED NULL, "
+                             "killer_health_pct FLOAT NULL, health_max INT UNSIGNED NULL, "
+                             "damage_from_killer INT UNSIGNED NULL, attackers SMALLINT UNSIGNED NULL, "
+                             "judged_pull TINYINT UNSIGNED NULL, expected VARCHAR(512) NOT NULL DEFAULT '', "
+                             "pull_expected SMALLINT UNSIGNED NULL, pull_method VARCHAR(16) NOT NULL DEFAULT '', "
+                             "context VARCHAR(1024) NOT NULL DEFAULT '', threat VARCHAR(1024) NOT NULL DEFAULT '', "
+                             "run_id VARCHAR(48) NOT NULL DEFAULT '', "
+                             "decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY bot_at (bot_low, at_ms), "
+                             "KEY killer_at (killer_entry, killer_low, at_ms), "
+                             "KEY where_at (map_id, zone_id, at_ms), KEY judged_at (judged_pull, at_ms), "
+                             "KEY level_at (bot_level, at_ms), KEY dungeon_at (in_dungeon, at_ms), "
+                             "KEY run_at (run_id, at_ms), KEY build_at (build, at_ms), "
+                             "KEY decision (decision_id)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn30] a real death with the judges inputs - prevention is never written here'")
+                 + parts)
                     .c_str());
 
             PlayerbotsDatabase.Execute(
@@ -753,7 +1119,7 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_decision",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{},{},{},{},{},{})",
+                                "{},{},{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, hour, Quoted(decision.topic, 48), Quoted(decision.choice, 255),
                                 Quoted(decision.verdict, 16), Quoted(decision.why, 1024),
                                 Quoted(JudgeName(decision.judge), 16), Quoted(decision.judgeName, 32),
@@ -767,19 +1133,27 @@ namespace Journal
                                 Quoted(Config().build, 16), Quoted(decision.method, 24), OrNull(decision.packSize),
                                 OrNull(decision.careful), OrNull(decision.judgeX), OrNull(decision.judgeY),
                                 OrNull(decision.judgeZ), Quoted(decision.kind, 24), decision.routeTargetEntry,
-                                decision.routeTargetLow));
+                                decision.routeTargetLow, decision.mapId, decision.zoneId));
 
         uint16 idx = 0;
         for (Option const& option : decision.options)
             Writer::Instance().Push(
                 "pb_journal_option",
-                Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{})", id, BootId(), nowMs, hour, idx++,
-                                    Quoted(option.name, 255), Quoted(option.kind, 24), Quoted(option.reason, 1024),
+                Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                    "{},{},{},{},{},{},{},{})",
+                                    id, BootId(), nowMs, hour, idx++, Quoted(option.name, 255),
+                                    Quoted(option.kind, 24), Quoted(option.reason, 1024),
                                     Quoted(option.sourceKind, 16), Real(option.cost), Real(option.value),
                                     option.taken ? 1 : 0,
                                     option.fields.empty() ? std::string("NULL")
                                                           : Quoted(option.fields, Config().optionFieldsMax),
-                                    Quoted(Config().build, 16)));
+                                    Quoted(Config().build, 16), OrNull(option.fightSecLeft), OrNull(option.runInSec),
+                                    OrNull(option.openSec), Quoted(option.opener, 48), OrNull(option.distance),
+                                    OrNull(option.overload), OrNull(option.drop), OrNull(option.tankHealth),
+                                    OrNull(option.unionSec), OrNull(option.groupDps), OrNull(option.walkSec),
+                                    OrNull(option.walkYd), Quoted(option.healer, 32), OrNull(option.healerWalks),
+                                    OrNull(option.healerSec), OrNull(option.due), OrNull(option.stop),
+                                    OrNull(option.packMobs), OrNull(option.fightMobs), OrNull(option.unionMobs)));
 
         WriteActors(id, nowMs, hour, decision.actors);
         return id;
@@ -879,12 +1253,82 @@ namespace Journal
         if (!Ready())
             return;
         uint64 const nowMs = NowMs();
-        Writer::Instance().Push("pb_journal_metric",
-                                Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{})", Writer::Instance().NextId(),
-                                                    BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(metric.name, 64),
-                                                    Real(metric.value), Quoted(metric.unit, 16), metric.fromMs,
-                                                    metric.toMs, Quoted(metric.scope, 64), Quoted(Config().build, 16)));
+        Writer::Instance().Push(
+            "pb_journal_metric",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", Writer::Instance().NextId(),
+                                BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(metric.name, 64), Real(metric.value),
+                                Quoted(metric.unit, 16), metric.fromMs, metric.toMs, Quoted(metric.scope, 64),
+                                Quoted(Config().build, 16), OrNull(metric.valueMin), OrNull(metric.valueMax),
+                                OrNull(metric.valueP95), OrNull(metric.samples), OrNull(metric.bots),
+                                OrNull(metric.sessions)));
     }
+
+    // [jrn30] the three event kinds this build adds. Each is one row, written where the fact is true and nowhere
+    // else: a fight's start at the combat-state transition, an aggro gain at the creature's engage, a death at the
+    // kill. None of them reads the world a second time and none of them invents a value it was not handed.
+    void RecordFight(Fight const& fight)
+    {
+        if (!Ready())
+            return;
+        uint64 const nowMs = NowMs();
+        Writer::Instance().Push(
+            "pb_journal_fight",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                "{},{},{},{})",
+                                Writer::Instance().NextId(), BootId(), nowMs, nowMs / MS_PER_HOUR,
+                                Quoted(fight.event, 12), Quoted(fight.botName, 32), fight.botLow,
+                                OrNull(fight.botLevel), OrNull(fight.role, 8), fight.mapId, fight.zoneId,
+                                fight.areaId, Real(fight.x), Real(fight.y), Real(fight.z), fight.inDungeon ? 1 : 0,
+                                Quoted(fight.enemyName, 48), fight.enemyEntry, fight.enemyLow,
+                                OrNull(fight.enemyLevel), OrNull(fight.mobs), Quoted(fight.pullerName, 32),
+                                fight.pullerLow, Quoted(fight.pullKind, 12), Quoted(fight.pullMethod, 16),
+                                OrNull(fight.pullExpected), Real(fight.pullCost), fight.pullOrderId,
+                                Quoted(fight.runId, 48), fight.decisionId, Quoted(Config().build, 16)));
+    }
+
+    void RecordAggro(Aggro const& aggro)
+    {
+        if (!Ready())
+            return;
+        uint64 const nowMs = NowMs();
+        Writer::Instance().Push(
+            "pb_journal_aggro",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                "{},{})",
+                                Writer::Instance().NextId(), BootId(), nowMs, nowMs / MS_PER_HOUR,
+                                Quoted(aggro.botName, 32), aggro.botLow, OrNull(aggro.role, 8),
+                                OrNull(aggro.botHealthPct), OrNull(aggro.botInCombat), OrNull(aggro.botMoving),
+                                Quoted(aggro.mobName, 48), aggro.mobEntry, aggro.mobLow, OrNull(aggro.mobLevel),
+                                aggro.mapId, aggro.zoneId, Real(aggro.x), Real(aggro.y), Real(aggro.z),
+                                Quoted(aggro.reason, 16), Quoted(aggro.why, 512), Quoted(aggro.tankName, 32),
+                                aggro.tankLow, OrNull(aggro.expected), aggro.orderTargetEntry, aggro.orderTargetLow,
+                                Quoted(aggro.runId, 48), aggro.decisionId, Quoted(Config().build, 16)));
+    }
+
+    void RecordDeath(Death const& death)
+    {
+        if (!Ready())
+            return;
+        uint64 const nowMs = NowMs();
+        Writer::Instance().Push(
+            "pb_journal_death",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                "{},{},{},{},{},{},{})",
+                                Writer::Instance().NextId(), BootId(), nowMs, nowMs / MS_PER_HOUR,
+                                Quoted(death.botName, 32), death.botLow, OrNull(death.botLevel),
+                                OrNull(death.botClass), OrNull(death.role, 8), OrNull(death.spec, 24), death.mapId,
+                                death.zoneId, death.areaId, Real(death.x), Real(death.y), Real(death.z),
+                                death.inDungeon ? 1 : 0, Quoted(death.killerName, 48), death.killerEntry,
+                                death.killerLow, OrNull(death.killerLevel), OrNull(death.killerHealthPct),
+                                OrNull(death.healthMax), OrNull(death.damageFromKiller), OrNull(death.attackers),
+                                OrNull(death.judgedPull), Quoted(death.expected, 512), OrNull(death.pullExpected),
+                                Quoted(death.pullMethod, 16), Quoted(death.context, 1024),
+                                Quoted(death.threat, 1024), Quoted(death.runId, 48), death.decisionId,
+                                Quoted(Config().build, 16)));
+    }
+
+    uint64 QueuedRows() { return Config().enabled ? Writer::Instance().Queued() : 0; }
+    uint64 DroppedRows() { return Config().enabled ? Writer::Instance().Dropped() : 0; }
 
     void Flush()
     {

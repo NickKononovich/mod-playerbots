@@ -3114,3 +3114,19 @@ AiPlayerbot.Journal.Stream = 0
 # sets this when it installs a build. Empty means "the build was not stated" - which is worth
 # seeing in a query rather than being quietly filled in with something plausible.
 AiPlayerbot.Journal.Build = ""
+
+# [jrn31] Server statistics into pb_journal_metric, collected continuously instead of snapshotted on
+# command: the world tick's length and the diff it was handed, the bots and the sessions, the update
+# time OF EACH MAP SEPARATELY (never their sum - one stalled map thread among healthy ones is a sum
+# that looks fine), the journal's queue depth and dropped-row counter, and resident memory. Every row
+# carries the window's max and 95th percentile beside the mean, because a mean of 50 ms over a window
+# holding one 900 ms tick is 50 ms and the 900 ms is what the bots stand on.
+# Cost: one mutex lock and one float appended per world tick and per map update; the window is written
+# out once per period from the world thread. It reads no bot and no unit, and no bot decision consults
+# it - the period below is the sampler's own window, not a rule any behaviour is timed against.
+AiPlayerbot.Journal.Stats = 1
+
+# How long one statistics window is, in seconds. It is a setting rather than a constant because the
+# only honest lever on a sampled table's volume is its window - exactly as retention is the only lever
+# on the journal's size. Shorten the window, never the detail.
+AiPlayerbot.Journal.StatsSeconds = 10

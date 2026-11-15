@@ -1910,7 +1910,15 @@ namespace Leader::Dungeon
                                               mob ? mob->GetName() : std::string(), true,
                                               JsonObject().Str("why", broken).Str("kind", committed.kind)
                                                   .Real("sec", getMSTimeDiff(lead.commitSinceMs, now) / 1000.0f)
-                                                  .Bool("issued", lead.commitIssued));
+                                                  .Bool("issued", lead.commitIssued)
+                                                  // [jrn30] the judge and its place, as above: identity by GUID
+                                                  .Str("judge", tank->GetName())
+                                                  .Num("judgeLow", tank->GetGUID().GetCounter())
+                                                  .Num("map", tank->GetMapId()).Num("zone", tank->GetZoneId())
+                                                  .Raw("tank", Acore::StringFormat("[{:.1f},{:.1f},{:.1f}]",
+                                                                                   tank->GetPositionX(),
+                                                                                   tank->GetPositionY(),
+                                                                                   tank->GetPositionZ())));
                 // [lead1282] b250 rfc-h 5B-10 207 / 230 s: the orders on Ragefire Trogg 18 and Ragefire Shaman 16
                 // ended with their mob out of the fight (74 / 101 yd off); it stayed the kept pick and the route's
                 // target (the commit's mob), on the path by that alone, and the route walked 100 yd back for it. An
@@ -2702,10 +2710,25 @@ namespace Leader::Dungeon
             if (sig != lead.answerSig)
             {
                 lead.answerSig = sig;
+                // [jrn30] WHO decided and WHERE it stood. The sink is handed the word "leader" and nothing else, so
+                // judge_name / judge_low / map_id / zone_id were empty in all 9 457 journal rows - the judge had no
+                // identity and the decision had no place, and the user asked for the place in so many words ("log
+                // the positions too, just so we know where he actually is, where he pulled whom"). The identity is
+                // the GUID counter and not the name, because four times in one day two objects shared a name; the
+                // journal promotes each of these into a column of its own (JournalPull), which is why they go in
+                // here rather than being left for a reader to infer.
                 Decisions().Write(run, "leader", "planner_answer", decision.lookTarget,
                                               answered ? answered->GetName() : std::string("-"), true,
                                               JsonObject().Str("answer", verdictName).Str("kind", decision.kind)
                                                   .Str("why", decision.why).Str("pick", pickWhy)
+                                                  .Str("tag", "[lead30]")
+                                                  .Str("judge", tank->GetName())
+                                                  .Num("judgeLow", tank->GetGUID().GetCounter())
+                                                  .Num("map", tank->GetMapId()).Num("zone", tank->GetZoneId())
+                                                  .Raw("tank", Acore::StringFormat("[{:.1f},{:.1f},{:.1f}]",
+                                                                                   tank->GetPositionX(),
+                                                                                   tank->GetPositionY(),
+                                                                                   tank->GetPositionZ()))
                                                   .Str("routeTarget", group.RouteTarget().IsEmpty() ? "-" :
                                                                           group.RouteTarget().ToString()));
             }

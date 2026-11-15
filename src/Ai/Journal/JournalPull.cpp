@@ -84,6 +84,121 @@ namespace
         }
     }
 
+    // [jrn30] ABSENT IS NOT ZERO, and these three are what keep them apart on the way out of the JSON. A drop of
+    // 0.0 means the judge computed no tank-health cost; an absent drop means it never weighed one, and a column
+    // that wrote 0 for both would answer a query and be wrong. JNumber above cannot tell them apart by design (it
+    // is for the places where the caller has already established the field is there), so the promoted columns use
+    // these.
+    Optional<float> JFloat(std::string const& json, char const* key)
+    {
+        std::string const text = JField(json, key);
+        if (text.empty())
+            return Optional<float>();
+        try
+        {
+            return Optional<float>(std::stof(text));
+        }
+        catch (...)
+        {
+            return Optional<float>();
+        }
+    }
+
+    Optional<uint32> JUInt(std::string const& json, char const* key)
+    {
+        std::string const text = JField(json, key);
+        if (text.empty())
+            return Optional<uint32>();
+        try
+        {
+            return Optional<uint32>(uint32(std::stol(text)));
+        }
+        catch (...)
+        {
+            return Optional<uint32>();
+        }
+    }
+
+    Optional<bool> JBool(std::string const& json, char const* key)
+    {
+        std::string const text = JField(json, key);
+        if (text.empty())
+            return Optional<bool>();
+        return Optional<bool>(text == "true");
+    }
+
+    // [jrn30] The keys that are now COLUMNS and therefore leave `fields`. The direction matters: this is a list of
+    // what to DROP and not a list of what to keep, so a field the emitter adds tomorrow still lands in the JSON
+    // where somebody can see it. A whitelist would silently throw away what nobody foresaw, which is the one thing
+    // the insurance field is for. What stays is what is read with the eyes: the full sentence, the verdict's word,
+    // the tag, the printed routeTarget, the pick.
+    std::string WithoutPromoted(std::string const& json)
+    {
+        static char const* const PROMOTED[] = {"fightSecLeft", "runInSec",    "openSec",   "opener",
+                                               "distance",     "overload",    "drop",      "tankHealth",
+                                               "unionSec",     "groupDps",    "walkSec",   "walkYd",
+                                               "healer",       "healerWalks", "healerSec", "due",
+                                               "stop",         "packMobs",    "fightMobs", "unionMobs"};
+        if (json.size() < 2 || json.front() != '{' || json.back() != '}')
+            return json;
+        std::string out = "{";
+        size_t at = 1;
+        while (at < json.size() - 1)
+        {
+            // one "key":value pair, respecting quotes, brackets and braces inside the value
+            size_t const keyFrom = json.find('"', at);
+            if (keyFrom == std::string::npos)
+                break;
+            size_t const keyTo = json.find('"', keyFrom + 1);
+            if (keyTo == std::string::npos)
+                break;
+            std::string const key = json.substr(keyFrom + 1, keyTo - keyFrom - 1);
+            size_t i = json.find(':', keyTo);
+            if (i == std::string::npos)
+                break;
+            ++i;
+            size_t const valueFrom = i;
+            int depth = 0;
+            bool inString = false;
+            for (; i < json.size(); ++i)
+            {
+                char const c = json[i];
+                if (inString)
+                {
+                    if (c == '\\')
+                        ++i;
+                    else if (c == '"')
+                        inString = false;
+                    continue;
+                }
+                if (c == '"')
+                    inString = true;
+                else if (c == '{' || c == '[')
+                    ++depth;
+                else if (c == '}' || c == ']')
+                {
+                    if (depth == 0)
+                        break;  // the object's own closing brace
+                    --depth;
+                }
+                else if (c == ',' && depth == 0)
+                    break;
+            }
+            bool promoted = false;
+            for (char const* name : PROMOTED)
+                if (key == name)
+                    promoted = true;
+            if (!promoted)
+            {
+                if (out.size() > 1)
+                    out += ',';
+                out += json.substr(keyFrom, i - keyFrom);
+            }
+            at = i + 1;
+        }
+        return out + "}";
+    }
+
     // [jrn20] The mobs the judge weighed, out of the JSON it already writes and into rows that can be filtered.
     //
     // Two arrays carry them today, and both were unqueryable text inside one field:
@@ -314,7 +429,35 @@ namespace
             Journal::Option option;
             option.kind = what;
             option.name = mobName.empty() ? JField(json, "pick") : mobName;
-            option.fields = json;
+            // [jrn30] `fields` keeps only what is read with the eyes; every number below is a column now
+            option.fields = WithoutPromoted(json);
+            // [jrn30] WHERE THE OPTION'S NUMBERS COME FROM, which was empty in all 2 503 option rows. A chain-pull
+            // candidate is a live creature the judge weighed in the world ("mob"); a committed pull's numbers are
+            // the leader's own plan ("plan"). It is a column because "was a drop source among the options at all"
+            // is a question that gets asked, and an empty source_kind cannot answer it either way.
+            option.sourceKind = what == "chain_pull" ? "mob" : "plan";
+            // [jrn30] the judge's numbers out of the JSON and into columns, each absent-aware: a 0.0 drop is a
+            // computed zero, an absent drop is a gap, and NULL is what keeps them apart
+            option.fightSecLeft = JFloat(json, "fightSecLeft");
+            option.runInSec = JFloat(json, "runInSec");
+            option.openSec = JFloat(json, "openSec");
+            option.opener = JField(json, "opener");
+            option.distance = JFloat(json, "distance");
+            option.overload = JFloat(json, "overload");
+            option.drop = JFloat(json, "drop");
+            option.tankHealth = JFloat(json, "tankHealth");
+            option.unionSec = JFloat(json, "unionSec");
+            option.groupDps = JFloat(json, "groupDps");
+            option.walkSec = JFloat(json, "walkSec");
+            option.walkYd = JFloat(json, "walkYd");
+            option.healer = JField(json, "healer");
+            option.healerWalks = JBool(json, "healerWalks");
+            option.healerSec = JFloat(json, "healerSec");
+            option.due = JBool(json, "due");
+            option.stop = JUInt(json, "stop");
+            option.packMobs = JUInt(json, "packMobs");
+            option.fightMobs = JUInt(json, "fightMobs");
+            option.unionMobs = JUInt(json, "unionMobs");
             if (what == "chain_pull")
             {
                 std::string const verdict = JField(json, "verdict");
@@ -352,6 +495,31 @@ namespace
                   std::string const& json)
         {
             decision.judge = JudgeOf(who, decision.judgeName);
+            // [jrn30] WHO decided and WHERE. `who` is the word "leader" and carries no name and no GUID, which is
+            // why judge_name and judge_low were empty in all 9 457 rows: the sink was never handed an identity.
+            // The emitter now puts the judge and its place in the line (LeaderPlan), and they become columns here.
+            // The GUID counter is the identity and the name is for the eyes - a name is not a unit, and no
+            // name-to-unit lookup happens anywhere in this file.
+            if (std::string const judge = JField(json, "judge"); !judge.empty())
+                decision.judgeName = judge;
+            if (Optional<uint32> const low = JUInt(json, "judgeLow"); low)
+                decision.judgeLow = *low;
+            if (Optional<uint32> const map = JUInt(json, "map"); map)
+                decision.mapId = *map;
+            if (Optional<uint32> const zone = JUInt(json, "zone"); zone)
+                decision.zoneId = *zone;
+            // the judge's own coordinates, out of the "tank":[x,y,z] the line carries. Taken HERE and not only at
+            // the flush, because a held answer may have no taken option to read it from.
+            if (size_t const at = json.find("\"tank\":["); at != std::string::npos)
+            {
+                float x = 0.f, y = 0.f, z = 0.f;
+                if (std::sscanf(json.c_str() + at + 8, "%f,%f,%f", &x, &y, &z) == 3)
+                {
+                    decision.judgeX = x;
+                    decision.judgeY = y;
+                    decision.judgeZ = z;
+                }
+            }
             decision.subject = mobName;
             decision.subjectKind = mob.IsEmpty() ? "" : "creature";
             decision.subjectEntry = mob.IsEmpty() ? 0 : mob.GetEntry();
