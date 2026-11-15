@@ -1770,6 +1770,24 @@ namespace SurvivalKit
         return out.amount > 0.0f;
     }
 
+    float HealPerMana(Player* bot)
+    {
+        PlayerbotAI* botAI = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+        if (!botAI || !bot->GetMaxPower(POWER_MANA))
+            return 0.0f;
+        std::vector<Piece> pieces;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            pieces = KitOf(bot).pieces;
+        }
+        float best = 0.0f;
+        for (Piece const& piece : pieces)
+            if (piece.kind == Kind::Heal && !piece.item && !piece.needsWindow && piece.amount > 0.0f &&
+                piece.cost > 0.0f)
+                best = std::max(best, piece.amount / piece.cost);
+        return best;
+    }
+
     bool Evaluate(Player* bot)
     {
         if (!bot || !bot->IsInCombat() || !SoloSafety::Applies(bot))

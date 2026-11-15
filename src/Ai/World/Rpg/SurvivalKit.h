@@ -83,6 +83,10 @@ namespace SurvivalKit
     // [runpast89] ... and the SAME pick as data, so the price of a run past counts exactly the piece the executor
     // above will cast and no second one. false: there is none, and the chase is priced against the body alone.
     bool RunPastHealPiece(Player* bot, Chase::Heal& out);
+    // [mana90] the health its best heal puts back per point of mana, from the spell's own data (its points over its
+    // cost; the spell heals only - an item costs no mana and a bandage needs a window). 0: it buys no health with
+    // mana at all, and the mana is then no bound on a fight (ManaBudget::Of)
+    float HealPerMana(Player* bot);
 }
 
 class SoloSurvivalTrigger : public Trigger

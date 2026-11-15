@@ -104,6 +104,11 @@ namespace SoloSafety
         G3D::Vector3 fightAt;             // [death462] the spot the pack was grown from (the fight it priced)
         bool fightAtSet = false;
         uint32 respawns = 0;              // [death463] spawns respawning into the fight, counted
+        // [mana90] the seconds of THIS fight the bot's mana holds (ManaBudget::Of over `fightSec`), and the mana the
+        // whole fight asks for. One quantity, one judge: the gate above and every line that prints it read these two
+        // fields instead of working the arithmetic again. Infinite `manaHoldsSec`: nothing drains the pool.
+        float manaHoldsSec = 0.0f;
+        float manaNeeded = 0.0f;
     };
     // the bot's pull of `target` now
     Verdict Judge(Player* bot, Unit* target);

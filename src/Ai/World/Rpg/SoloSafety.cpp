@@ -13,6 +13,7 @@
 #include "CellImpl.h"
 #include "AttackersValue.h"  // [deaths] NO_ATTACK
 #include "ChaseModel.h"  // [runpast88] the chase window, as a seam without the world
+#include "ManaBudget.h"  // [mana90] the seconds of a fight the mana holds, as a seam without the world
 #include "ChooseTargetActions.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -28,6 +29,7 @@
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
 #include "Group.h"
+#include "HealthTriggers.h"  // [mana90] ManaRegenPerSec: the in-combat regen, from the one place that has it
 #include "LeaderFightChecks.h"
 #include "LeaderPlannerShared.h"  // [deaths] PullPlanning::PatrolForecast
 #include "NewRpgBaseAction.h"
@@ -2935,10 +2937,55 @@ namespace SoloSafety
         bool const full = bot->GetHealth() >= bot->GetMaxHealth() &&
                           (!bot->GetMaxPower(POWER_MANA) || bot->GetPower(POWER_MANA) >= bot->GetMaxPower(POWER_MANA));
 
+        // [mana90] AND THE MANA OVER THE WHOLE FIGHT, which nothing asked before. The heal count above is right for
+        // the seconds it is given, and those seconds are the episode's: b502 Selalleas L26 was judged
+        // "3 attackers 37.6 dps, 24 s ... 683 dmg to come at hp 479 (+175 heals)" - correct - and then fought 167.7 s,
+        // healed itself 2628 against a body of 774 and died "lost out of mana to 5 attackers". Four of the hour's
+        // eight deaths are that. The budget is the game's own numbers (ManaBudget::Of: the mana it has, what its
+        // rotation spends, the mana combat gives back, and the health its own heal buys per point of mana) over the
+        // judge's OWN estimate of the fight's length - no constant, no clock.
+        // [dun230] the in-combat regen from the one place that computes it (ManaRegenPerSec, the core's own rate
+        // under the five-second rule, less a drink aura's MP5 that breaks on standing up): no second copy here
+        float const combatRegen = ManaRegenPerSec(bot, true);
+        auto const manaBudget = [&](Projection const& fight, float health, float mana)
+        {
+            ManaBudget::Fight ask;
+            ask.fightSec = fight.seconds;
+            ask.incomingDps = fight.damage / std::max(fight.seconds, 1.0f);
+            ask.health = health;
+            ask.mana = mana;
+            ask.manaPerSec = bot->GetMaxPower(POWER_MANA) ? manaPerSec : 0.0f;
+            ask.regenPerSec = combatRegen;
+            ask.healPerMana = SurvivalKit::HealPerMana(bot);
+            return ManaBudget::Of(ask);
+        };
+        ManaBudget::Answer const manaNow = manaBudget(now, float(bot->GetHealth()), float(bot->GetPower(POWER_MANA)));
+        ManaBudget::Answer const manaFull =
+            manaBudget(atFull, float(bot->GetMaxHealth()), float(bot->GetMaxPower(POWER_MANA)));
+        verdict.manaHoldsSec = manaNow.holdsSec;
+        verdict.manaNeeded = manaNow.needMana;
+
         if (elite)
         {
             verdict.kind = Verdict::Kind::Refuse;
             verdict.why = "an elite in the pack";
+        }
+        // the mana is a bound on the fight like the health is: short of it at full too, the fight is refused; short
+        // of it only now, the bot drinks first (the same answer the health's own margin gives through RestFirst)
+        else if (!manaNow.holds && !manaFull.holds)
+        {
+            verdict.kind = Verdict::Kind::Refuse;
+            verdict.why = Acore::StringFormat(
+                "the mana holds {:.0f} s of a {:.0f} s fight ({:.0f} mana asked of {:.0f} at full)",
+                manaFull.holdsSec, atFull.seconds, manaFull.needMana, float(bot->GetMaxPower(POWER_MANA)));
+        }
+        else if (!manaNow.holds)
+        {
+            verdict.kind = Verdict::Kind::RestFirst;
+            verdict.why = Acore::StringFormat("the mana holds {:.0f} s of a {:.0f} s fight ({:.0f} asked of {:.0f}): "
+                                              "at full mana only",
+                                              manaNow.holdsSec, now.seconds, manaNow.needMana,
+                                              float(bot->GetPower(POWER_MANA)));
         }
         // [lag353] user 2026-11-11: two or more mobs above its level are judged by the fight's numbers as one is, no
         // fixed refusal ("never two above at once"): the judge's margin for a mob above its level holds - fought only
