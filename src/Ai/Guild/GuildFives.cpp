@@ -185,6 +185,32 @@ namespace
         player->SendDirectMessage(&data);
     }
 
+    // [met20] a reason in words does not fit one addon line: the line holds 240 BYTES and a Russian letter costs
+    // two, so "why the certification counter was zeroed" (≈250 letters) is over the limit twice. FiveCell would cut
+    // it - and cut it BY BYTES, splitting a character in half, which is the same class of defect as a truncated
+    // `real_why` in the journal: a cut reason lies about why the row is closed. So it goes in pieces the client
+    // glues back in arrival order, and every cut is moved back onto a character boundary.
+    void SendChunked(Player* player, std::string const& prefix, std::string text)
+    {
+        if (text.empty())
+            return;
+        std::replace(text.begin(), text.end(), ';', ',');   // ';' is the field separator of these lines
+        std::replace(text.begin(), text.end(), '\t', ' ');
+        std::replace(text.begin(), text.end(), '\n', ' ');
+        size_t const room = LineBudget(prefix);
+        if (room < 8)  // nothing sensible fits: say nothing rather than send a letter at a time
+            return;
+        for (size_t pos = 0; pos < text.size();)
+        {
+            size_t take = std::min(room, text.size() - pos);
+            // a UTF-8 continuation byte is 10xxxxxx: step back off one so no character is split
+            while (take > 1 && (uint8(text[pos + take]) & 0xC0) == 0x80)
+                --take;
+            SendLine(player, prefix + text.substr(pos, take));
+            pos += take;
+        }
+    }
+
     char const* RoleRu(std::string const& role)
     {
         return role == "tank" ? "tank" : role == "healer" ? "healer" : "dps";
@@ -2440,9 +2466,11 @@ void GuildCoordinator::LoadRuns()
         "run_ids VARCHAR(255) NOT NULL DEFAULT '', passed TINYINT UNSIGNED NOT NULL DEFAULT 0, why TEXT, "
         "PRIMARY KEY (content, kind, wave)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
         "COMMENT='[feed20] one row per certification / speed wave: the history guild_project_cert overwrites'");
+    // [met20] `duration` joins the SELECT: it was written on every run and never read back, which is why the
+    // window's speed column had nothing to print over 395 timed clean runs
     if (QueryResult result = PlayerbotsDatabase.Query(
             "SELECT id, content, kind, at, leader, members, result, bosses_killed, bosses_total, deaths, wipes, "
-            "diagnosed_at, diagnosis FROM guild_project_runs ORDER BY id"))
+            "diagnosed_at, diagnosis, duration FROM guild_project_runs ORDER BY id"))
     {
         do
         {
@@ -2465,6 +2493,7 @@ void GuildCoordinator::LoadRuns()
             rec.wipes = f[10].Get<uint16>();  // [cert10]
             rec.diagnosedAt = f[11].Get<uint32>();  // [feed20]
             rec.diagnosis = f[12].Get<std::string>();
+            rec.duration = f[13].Get<uint32>();  // [met20] the speed column's own figure
             if (rec.result == "done")
                 for (uint32 low : rec.members)
                     cleared_[rec.contentKey].insert(low);
@@ -2507,10 +2536,26 @@ void GuildCoordinator::LoadRuns()
         "CREATE TABLE IF NOT EXISTS guild_project_cert ("
         "content VARCHAR(16) NOT NULL, phase TINYINT UNSIGNED NOT NULL, batches INT UNSIGNED NOT NULL, "
         "passed_batch INT UNSIGNED NOT NULL, passed_at INT UNSIGNED NOT NULL, last_batch INT UNSIGNED NOT NULL, "
-        "verdicts TEXT, PRIMARY KEY (content)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+        "verdicts TEXT, epoch_at INT UNSIGNED NOT NULL DEFAULT 0, epoch_why TEXT, "
+        "PRIMARY KEY (content)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
         "COMMENT='[cert10] the dungeon gate phase two: a batch of 5 fives at once, every one of them clean'");
+    // [met20] the zero point of the certification counter. CREATE TABLE IF NOT EXISTS on a table that already
+    // exists is a successful query that does nothing (the trap this project has paid for), so an existing table is
+    // extended by its own guarded ALTER - the same shape run_id above uses - and the SELECT below may then name the
+    // two columns on both a fresh and a live database
+    if (QueryResult have = PlayerbotsDatabase.Query(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND "
+            "table_name = 'guild_project_cert' AND column_name = 'epoch_at'");
+        !have || !have->Fetch()[0].Get<uint64>())
+    {
+        LOG_INFO("playerbots", "[met20] guild_project_cert has no epoch_at yet: adding it");
+        PlayerbotsDatabase.DirectExecute("ALTER TABLE guild_project_cert "
+                                         "ADD COLUMN epoch_at INT UNSIGNED NOT NULL DEFAULT 0, "
+                                         "ADD COLUMN epoch_why TEXT");
+    }
     if (QueryResult result = PlayerbotsDatabase.Query(
-            "SELECT content, phase, batches, passed_batch, passed_at, last_batch, verdicts FROM guild_project_cert"))
+            "SELECT content, phase, batches, passed_batch, passed_at, last_batch, verdicts, epoch_at, epoch_why "
+            "FROM guild_project_cert"))
     {
         do
         {
@@ -2523,6 +2568,8 @@ void GuildCoordinator::LoadRuns()
             cs.passedBatch = f[3].Get<uint32>();
             cs.passedAt = f[4].Get<uint32>();
             cs.lastBatch = f[5].Get<uint32>();
+            cs.epochAt = f[7].Get<uint32>();            // [met20] 0 = the counter was never zeroed
+            cs.epochWhy = f[8].Get<std::string>();      // ... and why it was, in the words that zeroed it
             std::stringstream in(f[6].Get<std::string>());
             std::string token;
             while (std::getline(in, token, ';'))
@@ -6613,6 +6660,8 @@ void GuildCoordinator::RecordRun(GuildFive const& five, GuildFiveReport const& r
     for (auto const& [name, count] : report.deaths)
         rec.deaths += count;
     rec.wipes = report.wipes;  // [cert10] kept with the rest: the per-run success rate is read off the table
+    // [met20] the same figure the INSERT below writes: the window needs no reload to read the speed column
+    rec.duration = report.durationSec;
     rec.id = runs_.empty() ? 1 : runs_.back().id + 1;  // the DB's own id may differ; the tab shows the order
     if (rec.result == "done")
     {
@@ -6982,9 +7031,13 @@ void GuildCoordinator::SendFives(Player* player) const
     // [feed20] user 2026-11-15: the success share is the one of the LAST 30 RUNS, not the one of all time - rfc-n
     // reads 78.8 % over 297 runs and 83.3 % over its last 30, wc-n 53.9 % over 204 and 36.7 % over its last 30, and
     // the number that says whether the fixes work is the second one. The 30 are taken in id order (runs_ is loaded
-    // ORDER BY id and appended to), NEVER by time: `at` is the run's START, so a run begun 23:16 and ended 00:09
-    // falls out of a time filter and stays in an id one. The clean verdict is IsCleanRun, the same one the
-    // completion log prints
+    // ORDER BY id and appended to), never by a window of wall-clock time. The clean verdict is IsCleanRun, the same
+    // one the completion log prints.
+    // [met20] THE SENTENCE THAT STOOD HERE WAS WRONG, and it is corrected rather than left (a stale comment costs
+    // more than a wrong number): it said "`at` is the run's START". It is the END - RecordRun sets
+    // `rec.at = time(nullptr)` at the moment the report lands, and the figures say the same: wave 9 of wc-n went in
+    // at 10:30:04 (guild_project_cert_waves.started_at) and its five rows carry `at - duration` = 10:30:09. The
+    // certification mark below leans on this, so it had to be measured and not read off the comment
     auto const sendContent = [&](std::string const& name, std::string const& band, std::string const& key)
     {
         auto const cleared = cleared_.find(key);
@@ -7026,6 +7079,84 @@ void GuildCoordinator::SendFives(Player* player) const
                                  ";" + std::to_string(clean30) + "/" + std::to_string(last30) + ";" +
                                  std::to_string(cleanAll) + "/" + std::to_string(runs) + ";";
         SendLine(player, head + FiveCell(outcomeText.empty() ? "-" : outcomeText, LineBudget(head)));
+
+        // [met20] the three numbers the window had to print "НЕТ ПРИБОРА" over, and one it was printing WRONG.
+        // Each is measured here, beside the figures it belongs to, because that is where they already are - no
+        // second count, and the window derives nothing.
+        //
+        // 1. THE CERTIFICATION SHARE. Two user rules meet in it. (a) An interrupted run is neither a pass nor a
+        //    failure: "засчитывать мы тоже не можем прерванный, но и в ошибки тоже не записываем. То есть он не
+        //    будет обновлять, но и не будет добавлять" - so `stopped` leaves BOTH the numerator and the
+        //    denominator, and does not take a slot of the 30 either; the count of the ones dropped travels beside
+        //    the share, or the denominator goes invisible again. (b) A bug that blocks certifying zeroes the
+        //    counter (epoch_at), and only a restart is neutral. A run is in the series by the second it ENDED:
+        //    `at` is the END of the run - measured, not read off the comment above, which says "START" and is
+        //    wrong (wave 9 of wc-n started 10:30:04 and its five rows carry at - duration = 10:30:09).
+        // 2. THE ALL-TIME SHARE does not look at the mark at all - two rules over one number would be two judges
+        //    of it. It only stops counting interrupted runs in its denominator, for the same reason as above.
+        // 3. SPEED. "Среднее прячет выброс" is a rule of this project, so one number is not an answer: the window
+        //    gets the best, the median, p95 and the worst of the CLEAN runs, and `speedN` beside them - a
+        //    percentile over 12 samples and over 200 are different statements.
+        uint32 epochAt = 0;
+        std::string epochWhy, waveWhy;
+        uint32 wave = 0, waveFives = 0, waveClean = 0, wavePassed = 0;
+        if (auto const cs = cert_.find(key); cs != cert_.end())
+        {
+            epochAt = cs->second.epochAt;
+            epochWhy = cs->second.epochWhy;
+            wave = cs->second.batches;
+            wavePassed = cs->second.passedBatch;
+            waveFives = uint32(cs->second.verdicts.size());
+            if (!cs->second.flight.empty())
+                waveFives = std::max(waveFives, uint32(cs->second.flight.size()));
+            for (auto const& [fiveId, verdict] : cs->second.verdicts)
+            {
+                if (verdict == "clean")
+                    ++waveClean;
+                else
+                    waveWhy += (waveWhy.empty() ? "" : "; ") + ("five " + std::to_string(fiveId) + ": " + verdict);
+            }
+        }
+        uint32 certClean = 0, certFin = 0, certStopped = 0, finAll = 0, stoppedAll = 0;
+        std::vector<uint32> cleanSecs;
+        for (GuildRunRecord const& rec : runs_)
+            if (rec.contentKey == key)
+            {
+                (rec.result == "stopped" ? stoppedAll : finAll) += 1;
+                if (IsCleanRun(rec) && rec.duration)
+                    cleanSecs.push_back(rec.duration);
+            }
+        for (auto itr = runs_.rbegin(); itr != runs_.rend() && certFin < 30; ++itr)
+        {
+            if (itr->contentKey != key || itr->at < epochAt)
+                continue;
+            if (itr->result == "stopped")
+                ++certStopped;  // dropped: it neither counts nor costs a slot
+            else
+            {
+                ++certFin;
+                certClean += IsCleanRun(*itr) ? 1 : 0;
+            }
+        }
+        std::sort(cleanSecs.begin(), cleanSecs.end());
+        size_t const sn = cleanSecs.size();
+        uint32 const best = sn ? cleanSecs.front() : 0;
+        uint32 const worst = sn ? cleanSecs.back() : 0;
+        uint32 const med = sn ? cleanSecs[(sn - 1) / 2] : 0;
+        // ceil(0.95 n) as the 1-based rank, in integers so no float rounding decides a boundary
+        uint32 const p95 = sn ? cleanSecs[std::min(sn - 1, size_t((19 * sn + 19) / 20) - 1)] : 0;
+        // OCQ;dungeon;epoch_at;clean/finished since the mark;interrupted dropped there;clean/finished all time;
+        //     interrupted all time;clean runs timed;best;median;p95;worst sec;wave;clean fives/fives;passed batch
+        SendLine(player, "OCQ;" + FiveCell(name, 30) + ";" + std::to_string(epochAt) + ";" +
+                             std::to_string(certClean) + "/" + std::to_string(certFin) + ";" +
+                             std::to_string(certStopped) + ";" + std::to_string(cleanAll) + "/" +
+                             std::to_string(finAll) + ";" + std::to_string(stoppedAll) + ";" + std::to_string(sn) +
+                             ";" + std::to_string(best) + ";" + std::to_string(med) + ";" + std::to_string(p95) +
+                             ";" + std::to_string(worst) + ";" + std::to_string(wave) + ";" +
+                             std::to_string(waveClean) + "/" + std::to_string(waveFives) + ";" +
+                             std::to_string(wavePassed));
+        SendChunked(player, "OCW;e;", epochWhy);  // whole, in pieces: the tooltip may not hold a cut reason
+        SendChunked(player, "OCW;w;", waveWhy);
     };
     std::set<std::string> sent;
     for (DungeonOption const& d : dungeons_)

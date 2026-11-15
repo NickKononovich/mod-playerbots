@@ -214,6 +214,9 @@ struct GuildRunRecord
     uint32 bossesTotal{0};
     uint32 deaths{0};
     uint32 wipes{0};  // [cert10] a clean run has none: the per-run success rate is read off these four figures
+    // [met20] how long the run took, seconds. It was written to guild_project_runs and never read back, so the
+    // window's speed column had to say «НЕТ ПРИБОРА» over 395 timed clean runs. 0 = the report named no duration
+    uint32 duration{0};
     // [feed20] the fact that an unclean run has been looked into. The user's rule - every unclean run is diagnosed
     // before the next wave, a repeat without the analysis is how a problem stays behind - had no instrument at all:
     // the diagnosis lived in a report file nobody could join to the run. 0 = no diagnosis yet
@@ -902,6 +905,13 @@ private:
         // what we actually did had nowhere to live - the verdicts of wc-n's waves 2 and 3 are gone for good
         uint32 batchAt{0};
         std::vector<uint32> runIds;
+        // [met20] the certification counter's own zero point (guild_project_cert.epoch_at / epoch_why), user
+        // 2026-11-15: "раз баг есть, который мешает сертифицировать, значит, обнуляй счётчик до нуля. Это только
+        // если был рестарт, то тогда нейтрально". A run that ENDED before this mark is not in the clean series;
+        // 0 = no mark was ever set. The ALL-TIME share does NOT look at it - two rules over one number would be
+        // two judges of it (rule 5), so the mark belongs to the certification column alone
+        uint32 epochAt{0};
+        std::string epochWhy;
     };
 
     void LoadPlan();
