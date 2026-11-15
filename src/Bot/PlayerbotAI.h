@@ -676,11 +676,10 @@ public:
         IDLE_REFUSAL_MAX
     };
     // the queue is relevance-ordered, so the first refusal of the tick is the action the bot would have taken
-    void NoteIdleDiagRefusal(IdleRefusal cause)
-    {
-        if (idleDiag.tickRefusal == IDLE_REFUSAL_NONE)
-            idleDiag.tickRefusal = cause;
-    }
+    // [jrn51] ... and `action` is WHICH action that was. It is read only for the refusal that is kept, so the cost
+    // is one name per tick at most; a refusal with no action of its own (the queue held nothing) passes nullptr,
+    // and the empty name that results is the honest answer rather than a guess.
+    void NoteIdleDiagRefusal(IdleRefusal cause, Action* action = nullptr);
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();
@@ -847,8 +846,16 @@ protected:
         bool tickCast = false;
         bool tickLeaderHold = false;  // [chat20] set by LeaderCommandMultiplier::Log, cleared with tickAction
         IdleRefusal tickRefusal = IDLE_REFUSAL_NONE;  // [grp20] set by the engine, cleared with tickAction
+        // [jrn51] AND WHICH ACTION THE ENGINE TURNED DOWN. `other` says a tick produced nothing and `ref_useless`
+        // says the engine's reason was "it is not useful", but WHAT was not useful was nowhere - and the largest
+        // of b503's 522 unexplained keys is exactly that shape (`idle|healer|gcd+other(useless+failed)|world`,
+        // 307 cases). The engine holds the action at the refusal site, so it passes it instead of being asked.
+        std::string tickRefusalAction;
         std::string tickAction;
         std::map<std::string, uint32> actions;
+        // the (refusal, action) pairs of the window, so the row can name the busiest one as a COLUMN rather than
+        // leaving it to a LIKE over the printed action list
+        std::map<std::pair<uint8, std::string>, uint32> refusalActions;
     } idleDiag;
 };
 

@@ -61,6 +61,7 @@
 #include "IssueKey.h"  // [jrn41] the deduplication key of an issue row, as a seam a test can assert
 #include "SoloCombatEntry.h"  // [solofight1] the two engine-state decisions, as a seam a test can assert
 #include "Journal.h"   // [jrn40] the idle window, the stuck target and their issue rows
+#include "IdleWindow.h"  // [jrn51] the window's own verdict, as a seam: the counters in, is_real and its words out
 #include "Playerbots.h"
 #include "PositionValue.h"
 #include "RBAC.h"
@@ -1265,6 +1266,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     idleDiag.tickAction.clear();
     idleDiag.tickLeaderHold = false;  // [chat20]
     idleDiag.tickRefusal = IDLE_REFUSAL_NONE;  // [grp20]
+    idleDiag.tickRefusalAction.clear();        // [jrn51] cleared with the refusal it belongs to
     UpdateAIInternal(elapsed, minimal);
     MapWorkerTrace::SetStage("after ai", nullptr);
     SlowUpdate::Stage("after ai");  // [perf212]
@@ -8700,13 +8702,64 @@ namespace
     constexpr uint32 IDLE_DIAG_VERY_SLOW_GAP_MS = 400;
     constexpr uint8 IDLE_DIAG_THREAT_HOLD = 80;  // ThreatMultiplier's single-target limit
     constexpr float IDLE_DIAG_RANGED_REACH = 30.0f;
+
+    // [jrn51] the one spelling of the refusal enum, for the row's `ref_top_cause`. The deduplication key's own
+    // labels (Journal::Key::Idle) are deliberately NOT read from here and not written from here: they are the
+    // key's wire format, frozen so that counts recorded on earlier builds keep meaning what they meant, while
+    // this names a single enum value for a column. Two different jobs, and only one of them may ever change.
+    char const* IdleRefusalName(PlayerbotAI::IdleRefusal cause)
+    {
+        switch (cause)
+        {
+            case PlayerbotAI::IDLE_REFUSAL_USELESS:
+                return "useless";
+            case PlayerbotAI::IDLE_REFUSAL_IMPOSSIBLE:
+                return "impossible";
+            case PlayerbotAI::IDLE_REFUSAL_PREREQ:
+                return "prereq";
+            case PlayerbotAI::IDLE_REFUSAL_FAILED:
+                return "failed";
+            case PlayerbotAI::IDLE_REFUSAL_BLOCKED:
+                return "blocked";
+            case PlayerbotAI::IDLE_REFUSAL_NO_CANDIDATE:
+                return "noCandidate";
+            default:
+                return "unsaid";
+        }
+    }
+}
+
+// [grp20] the first refusal of the relevance-ordered queue is the action the bot WOULD have taken
+// [jrn51] ... and its name travels with it, out of the header because Action is only forward-declared there
+void PlayerbotAI::NoteIdleDiagRefusal(IdleRefusal cause, Action* action)
+{
+    if (idleDiag.tickRefusal != IDLE_REFUSAL_NONE)
+        return;
+
+    idleDiag.tickRefusal = cause;
+    if (action)
+        idleDiag.tickRefusalAction = action->getName();
 }
 
 void PlayerbotAI::NoteIdleDiagAction(Action* action, std::string const& source)
 {
-    if (!bot->GetGroup() || !bot->GetMap() || !bot->GetMap()->Instanceable())
-        return;
-
+    // [jrn51] THE GATE [jrn45] REMOVED FROM THE WINDOW WAS STILL HERE, AND HERE IT DID WORSE THAN HIDE ROWS - IT
+    // FALSIFIED THEM. The test used to be `!bot->GetGroup() || !bot->GetMap() || !bot->GetMap()->Instanceable()`,
+    // so outside a dungeon nothing the bot SUCCESSFULLY DID was ever recorded, while the engine's REFUSALS were
+    // recorded everywhere (Engine::DoNextAction calls NoteIdleDiagRefusal with no such condition). The bucket
+    // chain in UpdateIdleDiag asks "did an action run this tick?" before it asks anything else, so with the
+    // answer forced to "no" every productive tick of a bot in the world fell through into `gcd` or `other`, and
+    // the deduplication key named a cause that may not have existed.
+    //
+    // MEASURED ON b503, the first build that wrote the window outside a dungeon at all: 0 casts and 0 executed
+    // actions over 19 574 world windows, against 15 205 casts and 30 923 non-cast actions over 7 068 dungeon
+    // windows; 2 448 of the 2 453 world windows that became problem rows (99.8 %) recorded no executed action of
+    // any kind; and 829 of them (33.8 %) counted global-cooldown ticks while recording nothing done at all, which
+    // cannot both be true - against 0 of the build's 2 301 dungeon windows. Those 2 453 cases are 63.1 % of the
+    // 3 888 unexplained idle cases this build left behind, under 225 of its 522 keys.
+    //
+    // Nothing is gated now: an asymmetry between how a success and a refusal are recorded is not a saving, it is
+    // a lie with a denominator. The cost is the same std::string the dungeon path already paid, now on every map.
     idleDiag.tickAction = action->getName();
     if (!dynamic_cast<CastSpellAction*>(action))
         return;
@@ -8966,6 +9019,11 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
             // why it turned the tick's action down, so the bucket reads its answer instead of guessing.
             ++idleDiag.other;
             ++idleDiag.refusals[idleDiag.tickRefusal];
+            // [jrn51] WHICH action the engine turned down, beside the reason it gave. `ref_useless` answered "it
+            // was not useful" and nothing answered "what was not useful"; that is the whole of b503's largest
+            // unexplained key. The pair, never the reason alone, because one action refused as USELESS and
+            // another refused as FAILED are two defects and a single name would merge them.
+            ++idleDiag.refusalActions[{uint8(idleDiag.tickRefusal), idleDiag.tickRefusalAction}];
         }
     }
 
@@ -8977,6 +9035,24 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     std::string actions;
     for (size_t i = 0; i < top.size() && i < 6; ++i)
         actions += Acore::StringFormat(" {}:{}", top[i].first, top[i].second);
+
+    // [jrn51] THE REFUSED ACTION THE WINDOW SPENT MOST OF ITS IDLE TICKS ON, as three columns with indexes rather
+    // than a phrase. `other` + `ref_useless` said "a tick produced nothing and the engine's reason was that the
+    // action was not useful"; WHICH action it was had no home at all, and that pair is b503's largest unexplained
+    // key (idle|healer|gcd+other(useless+failed)|world, 307 cases of one bot). The busiest pair only: the key
+    // already carries WHICH reasons fired, and the counts' spread is the row's own value range.
+    uint8 refTopCause = IDLE_REFUSAL_NONE;
+    std::string refTopAction;
+    uint32 refTopTicks = 0;
+    for (auto const& [refused, ticks] : idleDiag.refusalActions)
+    {
+        if (ticks <= refTopTicks)
+            continue;
+
+        refTopTicks = ticks;
+        refTopCause = refused.first;
+        refTopAction = refused.second;
+    }
 
     // [chat20] `threat` is the bot's own threat, `leaderHold` the leader's command: separate buckets on purpose
     // [grp20] the refusal breakdown is appended after `other`, never inserted: a reader of an older log must keep
@@ -9051,6 +9127,13 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     record.gapOver150 = idleDiag.gapOver150;
     record.gapOver400 = idleDiag.gapOver400;
     record.topActions = actions;
+    // [jrn51] NULL when no tick of the window fell into `other` at all - absence, not a refusal of "none"
+    if (refTopTicks)
+    {
+        record.refTopAction = refTopAction;
+        record.refTopCause = IdleRefusalName(IdleRefusal(refTopCause));
+        record.refTopTicks = refTopTicks;
+    }
     record.runId = Leader::Runs::OfBot(bot);  // [jrn40] by identity, not by nearness in time
     uint64 const idleRowId = Journal::RecordIdle(record);
 
@@ -9106,10 +9189,27 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
         issue.dedupKey = shape;
         issue.why = Acore::StringFormat("{} of {} ticks idle over {:.0f} s ({}), {} cast", idleTicks,
                                         idleDiag.ticks, *record.windowSec, causes, idleDiag.casts);
-        issue.realWhen = "at least one idle bucket is non-zero over the window (406 of 3 900 live windows had all "
-                         "of them at zero, which is a clean result and not a problem)";
-        issue.real = "yes";
-        issue.realWhy = "the engine itself counted ticks that produced nothing, and says in which bucket";
+        // [jrn51] THE CRITERION IS A SEAM NOW (Journal::IdleWindow), and it gained the two answers it could not
+        // give. "At least one idle bucket is non-zero" called a problem of every window where the game's own
+        // global cooldown or the leader's command accounted for all the idle ticks - 13 614 of b503's 64 112
+        // dungeon idle ticks, 21.2 % - and of every window whose own numbers disagree with each other. The row
+        // still gets written either way, because is_real is a column and not a gate (the user's rule: better to
+        // over-report and mark than to miss), and the count driven to zero is is_real IN ('yes','unknown').
+        Journal::IdleWindow::Counts verdictCounts;
+        verdictCounts.ticks = idleDiag.ticks;
+        verdictCounts.casts = idleDiag.casts;
+        verdictCounts.castWait = idleDiag.castWait;
+        verdictCounts.nonCast = idleDiag.nonCast;
+        verdictCounts.noTarget = idleDiag.noTarget;
+        verdictCounts.rangeLos = idleDiag.rangeLos;
+        verdictCounts.moving = idleDiag.moving;
+        verdictCounts.gcd = idleDiag.gcd;
+        verdictCounts.threat = idleDiag.threat;
+        verdictCounts.leaderHold = idleDiag.leaderHold;
+        verdictCounts.other = idleDiag.other;
+        issue.realWhen = Journal::IdleWindow::RealWhen();
+        issue.real = Journal::IdleWindow::Real(verdictCounts);
+        issue.realWhy = Journal::IdleWindow::RealWhy(verdictCounts);
         issue.realSource = "emitter";
         issue.value = double(idleTicks);
         issue.valueUnit = "ticks";

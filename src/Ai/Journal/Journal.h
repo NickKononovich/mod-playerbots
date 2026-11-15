@@ -788,6 +788,14 @@ namespace Journal
         Optional<uint32> gapOver150;
         Optional<uint32> gapOver400;
         std::string topActions;  // the window's busiest actions, printed: read with the eyes
+        // [jrn51] AND THE REFUSED ACTION THE WINDOW SPENT MOST OF ITS IDLE TICKS ON. `other` says a tick produced
+        // nothing and `refUseless` says the engine's reason was "not useful"; WHAT was not useful had no home,
+        // and that is the shape of b503's largest unexplained key (307 cases). Columns and not words inside `why`,
+        // because the first question asked of them is "which action, how often, on which builds". Absent (NULL)
+        // when no tick of the window fell into `other` at all - which is not a refusal of "none".
+        Optional<std::string> refTopAction;
+        Optional<std::string> refTopCause;  // the IDLE_REFUSAL_* name: useless / impossible / failed / blocked ...
+        Optional<uint32> refTopTicks;
 
         // the standing watch
         Optional<float> stoodSec;  // how long it has not left the radius

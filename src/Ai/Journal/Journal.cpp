@@ -204,7 +204,8 @@ namespace Journal
             "range_los, moving, gcd, threat, leader_hold, other, ref_unsaid, ref_useless, ref_impossible, "
             "ref_prereq, ref_failed, ref_blocked, ref_no_candidate, gap_n, gap_avg_ms, gap_max_ms, gap_over_150, "
             "gap_over_400, top_actions, stood_sec, stood_yd, doing, held_by, why, run_id, build, in_group, "
-            "engine_state)";
+            // [jrn51] which action the engine turned down, beside the reason it already gave
+            "engine_state, ref_top_action, ref_top_cause, ref_top_ticks)";
         // [jrn43] target_zone_id: the target's own zone - for `wait_behind`, the member's
         char const* const COLUMNS_STUCK =
             "(id, boot_id, at_ms, hour_bucket, kind, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
@@ -1256,6 +1257,14 @@ namespace Journal
                              // project does not filter by text. NULL = the emitter did not pass it (every row
                              // written before [jrn45]); 0 is BOT_STATE_COMBAT and is not absence.
                              "in_group TINYINT UNSIGNED NULL, engine_state TINYINT UNSIGNED NULL, "
+                             // [jrn51] WHICH action the engine turned down, with the reason it gave and for how
+                             // many ticks. `other` + `ref_useless` said a tick produced nothing because an action
+                             // was not useful and never which action - the whole of b503's largest unexplained
+                             // idle key. NULL = no tick of the window fell into `other`, which is not a refusal
+                             // of "none"; each of the two names has its own index, because the first questions
+                             // are "which action" and "which reason", on their own and across builds.
+                             "ref_top_action VARCHAR(64) NULL, ref_top_cause VARCHAR(12) NULL, "
+                             "ref_top_ticks SMALLINT UNSIGNED NULL, "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY event_at (event, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY role_at (role, at_ms), "
                              "KEY where_at (map_id, zone_id, at_ms), KEY other_at (other, at_ms), "
@@ -1264,6 +1273,9 @@ namespace Journal
                              "KEY casts_at (casts, at_ms), KEY build_at (build, at_ms), "
                              "KEY engine_combat_at (engine_state, in_combat, at_ms), "
                              "KEY group_at (in_group, at_ms), "
+                             // [jrn51] the refused action and the reason, each paired with time
+                             "KEY ref_action_at (ref_top_action, at_ms), "
+                             "KEY ref_cause_at (ref_top_cause, at_ms), "
                              "KEY run_at (run_id, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn40] idleness measured by fact: the diagnostics window and the standing "
@@ -1779,8 +1791,9 @@ namespace Journal
         uint64 const id = Writer::Instance().NextId();
         Writer::Instance().Push(
             "pb_journal_idle",
+            // [jrn51] 53 fields, the last three the refused action and its reason
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(idle.event, 12),
                                 Quoted(idle.botName, 32), idle.botLow, OrNull(idle.botLevel), OrNull(idle.role, 8),
                                 idle.mapId, idle.zoneId, Real(idle.x), Real(idle.y), Real(idle.z),
@@ -1795,7 +1808,8 @@ namespace Journal
                                 Quoted(idle.topActions, 255), OrNull(idle.stoodSec), OrNull(idle.stoodYd),
                                 Quoted(idle.doing, 96), Quoted(idle.heldBy, 48), Quoted(idle.why, 512),
                                 Quoted(idle.runId, 48), Quoted(Config().build, 16), OrNull(idle.inGroup),
-                                OrNull(idle.engineState)));
+                                OrNull(idle.engineState), OrNull(idle.refTopAction, 64),
+                                OrNull(idle.refTopCause, 12), OrNull(idle.refTopTicks)));
         return id;
     }
 
