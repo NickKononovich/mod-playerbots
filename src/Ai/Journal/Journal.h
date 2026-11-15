@@ -479,7 +479,8 @@ namespace Journal
         uint64 decisionId = 0;
     };
 
-    void RecordDeath(Death const& death);
+    // Returns the row's id so an issue row can point at it (0 when the journal is off).
+    uint64 RecordDeath(Death const& death);
 
     // [jrn40] THE LIST OF PROBLEMS: one row per PROBLEM, driven to zero rows.
     //
@@ -632,14 +633,18 @@ namespace Journal
     // the row.
     void RecordIssue(Issue const& issue);
 
-    // [jrn40] THE CONSEQUENCE THAT MUST NOT BE LOST. The issue row lives for ever; the domain record it points at
-    // is swept after 24-48 h. So a week later `source_id` points at nothing, and the only surviving copy of the
-    // inputs is a FIXTURE FILE taken at the moment the problem was opened. The fixture exporter is another owner's
-    // code; it installs itself here, and RecordIssue calls it for a row it is opening for the first time, storing
-    // whatever path it returns in `fixture_path`. Until something installs one, the column stays empty - which is
-    // a gap a query can see, not a silent loss.
-    using FixtureWriter = std::string (*)(Issue const& issue);
-    void SetFixtureWriter(FixtureWriter writer);
+    // [jrn40] THE CONSEQUENCE THAT MUST NOT BE LOST, and how it is actually carried. The issue row lives for ever
+    // while the domain record it points at is swept after 24-48 h, so a week later `source_id` reaches nothing and
+    // the inputs are gone. The copy that survives is `Issue::fixture` - the flat JSON the EMITTER puts there,
+    // because the emitter is holding those values at that instant anyway. The offline exporter turns rows into
+    // files afterwards.
+    //
+    // THERE WAS A FUNCTION-POINTER SEAM HERE AND IT IS DELETED ON PURPOSE. It let an owner install a writer that
+    // RecordIssue would call, and nothing could ever install one: writing a file from a map thread is not allowed,
+    // and the exporter is offline by design. A seam nobody can fill looks like working machinery to the next
+    // reader, which is worse than no seam at all - the same reason a comment about what the code no longer does
+    // costs more than a wrong number. `fixture` empty means the emitter had no inputs to hand over, which is a gap
+    // a query can see.
 
     // [jrn40] One idle-diagnostics record: the 15 s window of why a bot in a fight cast nothing, and the standing
     // watch. Both belong to PlayerbotAI's own tick, which is the only moment those numbers exist.

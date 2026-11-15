@@ -1549,16 +1549,17 @@ namespace Journal
                                 Quoted(aggro.runId, 48), aggro.decisionId, Quoted(Config().build, 16)));
     }
 
-    void RecordDeath(Death const& death)
+    uint64 RecordDeath(Death const& death)
     {
         if (!Ready())
-            return;
+            return 0;
         uint64 const nowMs = NowMs();
+        uint64 const id = Writer::Instance().NextId();
         Writer::Instance().Push(
             "pb_journal_death",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
                                 "{},{},{},{},{},{},{})",
-                                Writer::Instance().NextId(), BootId(), nowMs, nowMs / MS_PER_HOUR,
+                                id, BootId(), nowMs, nowMs / MS_PER_HOUR,
                                 Quoted(death.botName, 32), death.botLow, OrNull(death.botLevel),
                                 OrNull(death.botClass), OrNull(death.role, 8), OrNull(death.spec, 24), death.mapId,
                                 death.zoneId, death.areaId, Real(death.x), Real(death.y), Real(death.z),
@@ -1569,16 +1570,8 @@ namespace Journal
                                 Quoted(death.pullMethod, 16), Quoted(death.context, 1024),
                                 Quoted(death.threat, 1024), Quoted(death.runId, 48), death.decisionId,
                                 Quoted(Config().build, 16)));
+        return id;
     }
-
-    namespace
-    {
-        // [jrn40] the fixture exporter, installed by its own owner. nullptr until something installs one, and the
-        // column then stays empty - a gap a query can see rather than a silent loss.
-        std::atomic<FixtureWriter> g_fixtureWriter{nullptr};
-    }
-
-    void SetFixtureWriter(FixtureWriter writer) { g_fixtureWriter.store(writer); }
 
     void RecordIssue(Issue const& issue)
     {
@@ -1586,15 +1579,9 @@ namespace Journal
             return;
         uint64 const nowMs = NowMs();
 
-        // The fixture is taken AT THE MOMENT THE PROBLEM IS SEEN, because the domain record this row points at is
-        // swept in 24-48 h while the row itself lives for ever. It is asked for on every occurrence, not only the
-        // first: the exporter owns the decision of whether it already has one, and a caller guessing at that from
-        // here would be a second owner of the same judgement. An exporter that returns "" leaves the column as the
-        // row's merge rule left it.
-        std::string fixture;
-        if (FixtureWriter const writer = g_fixtureWriter.load())
-            fixture = writer(issue);
-
+        // [jrn40] The inputs come from the CALLER, in `issue.fixture`, and nothing is fetched here. The emitter is
+        // holding those values at the instant the problem is seen, which is the only instant they exist; asking
+        // anybody for them later would be a reading of the world at another moment.
         Writer::Instance().Push(
             "pb_journal_issue",
             Acore::StringFormat(
@@ -1612,7 +1599,11 @@ namespace Journal
                 Quoted(issue.sourceTable, 32), issue.sourceId, issue.decisionId, Quoted(Config().build, 16),
                 Quoted(Config().build, 16), issue.checked ? 1 : 0, issue.checked ? nowMs : 0,
                 Quoted(issue.checkedBy, 48), Quoted(issue.testName, 128), Quoted(issue.clearedInRun, 48),
-                Quoted(issue.fixedInBuild, 16), 0, issue.mergedInto, Quoted(fixture, 255), issue.lastProgressMs,
+                // fixture_path is always inserted empty and is never written from the server: it is where the
+                // OFFLINE exporter records the file it made out of this row, by its own UPDATE. The inputs
+                // themselves travel in `fixture` below, from the emitter.
+                Quoted(issue.fixedInBuild, 16), 0, issue.mergedInto, Quoted(std::string(), 255),
+                issue.lastProgressMs,
                 Quoted(issue.real.empty() ? "unknown" : issue.real, 8), Quoted(issue.realWhy, 512),
                 Quoted(issue.realSource.empty() ? "emitter" : issue.realSource, 8),
                 issue.fixture.empty() ? std::string("NULL") : Quoted(issue.fixture, 16000)));

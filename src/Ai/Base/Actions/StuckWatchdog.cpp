@@ -5,6 +5,8 @@
  */
 
 #include "StuckWatchdog.h"
+#include "Journal.h"       // [jrn40] the watchdog step as a stuck row and an issue
+#include "LeaderOrders.h"  // [jrn40] Leader::Runs::OfBot
 #include "BotPath.h"  // [lead109]
 #include "AiObjectContext.h"
 #include "Event.h"
@@ -461,4 +463,72 @@ void StuckRecoveryAction::LogStep(char const* step, Player* leader)
              "{:.1f})",
              bot->GetGUID().ToString(), bot->GetName(), step, stuckSeconds, stillSeconds, bot->GetDistance(leader),
              leader->GetName(), bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+
+    // [jrn40] THE WATCHDOG AS A ROW, with `is_real` honestly "unknown" - which is exactly what the third value is
+    // for. This line has NO leading tag, so it cannot be found in the journal by tag at all and nobody has ever
+    // counted it; that is also why its rate is unknown rather than estimated here. Not connecting it would mean
+    // zero rows, and zero reads as "the watchdog never fires", which is the worse error of the two: a wrong
+    // classification is visible and gets corrected, silence is not.
+    //
+    // WHY NO CRITERION IS CLAIMED. This step fires on the watchdog's own thresholds ("no progress 6s, still 3s"),
+    // and whether a given step is a defect or the ordinary re-seating of movement is not decided here - deciding
+    // it from this call site would be inventing a criterion rather than measuring one. Post-analysis separates
+    // them after a run; if the watchdog turns out to fire in the thousands, that is itself a finding (in b477 one
+    // bot produced 1 081 of the log's 1 523 stuck lines).
+    //
+    // THE DURATIONS ARE WHAT THE ROW CARRIES, not a threshold: "longer than N seconds" stays a WHERE clause.
+    Journal::Stuck stuck;
+    stuck.kind = "watchdog";
+    stuck.botName = bot->GetName();
+    stuck.botLow = bot->GetGUID().GetCounter();
+    stuck.botLevel = bot->GetLevel();
+    stuck.mapId = bot->GetMapId();
+    stuck.zoneId = bot->GetZoneId();
+    stuck.x = bot->GetPositionX();
+    stuck.y = bot->GetPositionY();
+    stuck.z = bot->GetPositionZ();
+    stuck.targetName = leader->GetName();
+    stuck.targetLow = leader->GetGUID().GetCounter();
+    stuck.targetLevel = leader->GetLevel();
+    stuck.targetYd = bot->GetDistance(leader);
+    stuck.inCombat = bot->IsInCombat();
+    stuck.actionRunning = step;  // which recovery step the watchdog took: that IS the event
+    stuck.why = Acore::StringFormat("{}: no progress for {} s, still for {} s", step, stuckSeconds, stillSeconds);
+    stuck.runId = Leader::Runs::OfBot(bot);
+    uint64 const stuckRowId = Journal::RecordStuck(stuck);
+
+    Journal::Issue issue;
+    issue.kind = "watchdog";
+    issue.severity = "mid";
+    // whether the walk could have progressed is a property of the world at that moment, not of a reproducible
+    // judge over recorded inputs
+    issue.reproClass = "not_offline";
+    // the key is WHICH recovery step fired, and nothing else: the bot, the leader, the distance and the two
+    // durations are what would fan one cause into thousands. The durations' spread is the value range.
+    issue.dedupKey = std::string("watchdog|") + step;
+    issue.why = stuck.why;
+    issue.realWhen = "";  // not established: see the note above
+    issue.real = "unknown";
+    issue.realWhy = "the step fires on the watchdog's own thresholds, and whether it is a defect or the ordinary "
+                    "re-seating of movement is not decided at runtime; the rate is also unmeasured, because the "
+                    "line carries no leading tag and has never been counted in the journal";
+    issue.realSource = "emitter";
+    issue.value = double(stuckSeconds);
+    issue.valueUnit = "sec";
+    issue.botName = stuck.botName;
+    issue.botLow = stuck.botLow;
+    issue.mapId = stuck.mapId;
+    issue.zoneId = stuck.zoneId;
+    issue.x = stuck.x;
+    issue.y = stuck.y;
+    issue.z = stuck.z;
+    issue.runId = stuck.runId;
+    issue.sourceTable = "pb_journal_stuck";
+    issue.sourceId = stuckRowId;
+    issue.fixture = Acore::StringFormat(
+        "{{\"step\":\"{}\",\"noProgressSec\":{},\"stillSec\":{},\"leaderYd\":{:.1f},\"inCombat\":{},\"map\":{},"
+        "\"zone\":{},\"x\":{:.2f},\"y\":{:.2f},\"z\":{:.2f},\"criterionUnnamed\":true,\"rateUnmeasured\":true}}",
+        step, stuckSeconds, stillSeconds, bot->GetDistance(leader), bot->IsInCombat() ? 1 : 0, stuck.mapId,
+        stuck.zoneId, stuck.x, stuck.y, stuck.z);
+    Journal::RecordIssue(issue);
 }

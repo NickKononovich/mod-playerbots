@@ -44,6 +44,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "StringFormat.h"
 #include "ThreatManager.h"
 
 namespace
@@ -278,6 +279,61 @@ namespace Journal
         else
             death.judgedPull = false;  // asked and answered: no pull order was open. Not a gap.
 
-        RecordDeath(death);
+        uint64 const deathRowId = RecordDeath(death);
+
+        // [jrn40] A DEATH IS A PROBLEM, and in this project it is a CALCULATION BUG rather than bad luck - so it
+        // belongs in the table that is driven to zero. The issue row points at pb_journal_death and copies none of
+        // it: that table is the one owner of a death's inputs.
+        //
+        // `is_real` is "yes" with nothing to establish: this is the core's own "killed by a creature" hook, so the
+        // death either happened or this code did not run. That is also what separates it from the 20 502 lines
+        // whose tag begins with "[death" - those are the PREVENTION domain, and 17 of them were deaths.
+        //
+        // THE KEY IS NOT MEASURED, AND THE ROW SAYS SO. Seventeen deaths in a 2.69 h window is too few to tell a
+        // right key from a lucky one by COUNT(DISTINCT), which is the check every other kind here passed. Not
+        // connecting the detector would be worse than a wrong key: a wrong key is visible and gets fixed, while
+        // zero rows read as "there were no deaths". So the key is the killer's entry plus the context sentence with
+        // its numbers removed, `real_source` says the key is unmeasured, and the measurement happens on the next
+        // run - if COUNT(DISTINCT) is not severalfold below COUNT(*), the key changes.
+        Issue issue;
+        issue.kind = "death";
+        issue.severity = "high";
+        // the inputs are all recorded and the judges are deterministic: the same conditions put back re-run them
+        issue.reproClass = "decision";
+        issue.dedupKey = "death|entry " + std::to_string(death.killerEntry) + "|" + WithoutNumbers(death.context);
+        issue.why = Acore::StringFormat("{} L{} killed by {} L{} at {} % health; {}", death.botName,
+                                        killed->GetLevel(), death.killerName, killer->GetLevel(),
+                                        uint32(killer->GetHealthPct()), context);
+        issue.realWhen = "the core's own killed-by-creature hook ran: the bot is dead and a creature killed it";
+        issue.real = "yes";
+        issue.realWhy = "a death is a calculation bug in this project, not a failure of luck - the estimate that "
+                        "allowed the fight was wrong";
+        // stated in the row rather than in a note: the deduplication key for this kind has NOT been measured
+        issue.realSource = "emitter";
+        issue.value = death.healthMax ? double(*death.healthMax) : 0.0;
+        issue.valueUnit = "hp pool";
+        issue.botName = death.botName;
+        issue.botLow = death.botLow;
+        issue.mapId = death.mapId;
+        issue.zoneId = death.zoneId;
+        issue.x = death.x;
+        issue.y = death.y;
+        issue.z = death.z;
+        issue.runId = death.runId;
+        issue.sourceTable = "pb_journal_death";
+        issue.sourceId = deathRowId;
+        // THE INPUTS THEMSELVES, flat, because pb_journal_death is swept in 48 h and this row lives for ever. The
+        // emitter is holding every one of these at this instant; nothing is read a second time.
+        issue.fixture = Acore::StringFormat(
+            "{{\"killerEntry\":{},\"killerLow\":{},\"killerLevel\":{},\"killerHealthPct\":{:.1f},\"botLevel\":{},"
+            "\"botClass\":{},\"healthMax\":{},\"damageFromKiller\":{},\"attackers\":{},\"judgedPull\":{},"
+            "\"pullMethod\":\"{}\",\"map\":{},\"zone\":{},\"area\":{},\"x\":{:.2f},\"y\":{:.2f},\"z\":{:.2f},"
+            "\"keyUnmeasured\":true}}",
+            death.killerEntry, death.killerLow, killer->GetLevel(), killer->GetHealthPct(), killed->GetLevel(),
+            uint32(killed->getClass()), death.healthMax ? *death.healthMax : 0,
+            death.damageFromKiller ? *death.damageFromKiller : 0, death.attackers ? *death.attackers : 0,
+            death.judgedPull && *death.judgedPull ? 1 : 0, death.pullMethod, death.mapId, death.zoneId,
+            death.areaId, death.x, death.y, death.z);
+        RecordIssue(issue);
     }
 }  // namespace Journal
