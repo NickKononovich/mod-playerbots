@@ -456,6 +456,49 @@ namespace Leader
         }
     }
 
+    // [jrn40] which run a group is in: one owner (the harness publishes), many readers (the journal's emitters on
+    // map threads). See the note in LeaderOrders.h for why a registry and not a lookup.
+    namespace Runs
+    {
+        namespace
+        {
+            std::mutex runLock;
+            std::unordered_map<ObjectGuid, std::string> runs;
+        }
+
+        void Publish(ObjectGuid group, std::string const& runId)
+        {
+            if (group.IsEmpty())
+                return;
+            std::lock_guard<std::mutex> lock(runLock);
+            if (runId.empty())
+                runs.erase(group);
+            else
+                runs[group] = runId;
+        }
+
+        void Clear(ObjectGuid group)
+        {
+            std::lock_guard<std::mutex> lock(runLock);
+            runs.erase(group);
+        }
+
+        std::string Of(ObjectGuid group)
+        {
+            if (group.IsEmpty())
+                return {};
+            std::lock_guard<std::mutex> lock(runLock);
+            auto const found = runs.find(group);
+            return found == runs.end() ? std::string() : found->second;
+        }
+
+        std::string OfBot(Player* bot)
+        {
+            Group* group = bot ? bot->GetGroup() : nullptr;
+            return group ? Of(group->GetGUID()) : std::string();
+        }
+    }
+
     namespace SelfLead
     {
         namespace

@@ -58,6 +58,7 @@
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotMgr.h"
 #include "PlayerbotTextMgr.h"
+#include "Journal.h"  // [jrn40] the idle window, the stuck target and their issue rows
 #include "Playerbots.h"
 #include "PositionValue.h"
 #include "RBAC.h"
@@ -1261,6 +1262,7 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     idleDiag.tickCast = false;
     idleDiag.tickAction.clear();
     idleDiag.tickLeaderHold = false;  // [chat20]
+    idleDiag.tickRefusal = IDLE_REFUSAL_NONE;  // [grp20]
     UpdateAIInternal(elapsed, minimal);
     MapWorkerTrace::SetStage("after ai", nullptr);
     SlowUpdate::Stage("after ai");  // [perf212]
@@ -2607,10 +2609,70 @@ void PlayerbotAI::ReleaseIdleTargetNobodyReaches(bool acted)
     bool const fresh = !SoloSafety::Unreachable(bot, target);
     ReleaseIdleTarget(target, "no action of its combat engine ran on it");
     if (fresh)
+    {
+        // [jrn40] THE STUCK AS A ROW. `fresh` is the criterion and it is the domain's own: the same pair of stands
+        // is counted ONCE, which is why 1 081 of b477's 1 523 "[stuck258]" lines were one bot alternating between
+        // two mobs. Writing a row per line instead would reproduce that inflation inside the problems table.
+        Journal::Stuck stuck;
+        stuck.kind = "stuck_target";
+        stuck.botName = bot->GetName();
+        stuck.botLow = bot->GetGUID().GetCounter();
+        stuck.botLevel = bot->GetLevel();
+        stuck.role = IsTank(bot) ? "tank" : IsHeal(bot) ? "healer" : "dps";
+        stuck.mapId = bot->GetMapId();
+        stuck.zoneId = bot->GetZoneId();
+        stuck.x = bot->GetPositionX();
+        stuck.y = bot->GetPositionY();
+        stuck.z = bot->GetPositionZ();
+        stuck.targetName = target->GetName();
+        stuck.targetLow = target->GetGUID().GetCounter();
+        stuck.targetLevel = target->GetLevel();
+        stuck.targetYd = bot->GetExactDist(target);
+        stuck.inCombat = false;  // asked and answered: the guard above requires it
+        if (Creature* creature = target->ToCreature())
+            stuck.targetEntry = creature->GetEntry();
+        // what the engine had to run, in its own words - empty is the point of this problem, not a gap
+        stuck.actionRunning = currentEngine ? currentEngine->GetLastAction() : std::string();
+        stuck.why = "the combat engine is out of combat with an idle mob as its target and no action of it runs";
+        stuck.runId = Leader::Runs::OfBot(bot);  // [jrn40]
+        uint64 const stuckRowId = Journal::RecordStuck(stuck);
+
+        Journal::Issue issue;
+        issue.kind = "stuck_target";
+        issue.severity = "mid";
+        // The inputs are all here and the picker is deterministic: the same two stands put back reproduce it.
+        issue.reproClass = "decision";
+        // the key is the shape of the deadlock, not the pair it happened to: the bot's name, the mob's name and the
+        // distance are what would fan one cause into hundreds
+        issue.dedupKey = "stuck_target|" + (*stuck.role) + "|" +
+                         (stuck.actionRunning.empty() ? "no action" : stuck.actionRunning);
+        issue.why = Acore::StringFormat("{} held idle {} at {:.0f} yd with no action that runs", bot->GetName(),
+                                        target->GetName(), *stuck.targetYd);
+        issue.realWhen = "the engine is the combat engine, the bot is out of combat, the target is alive and idle, "
+                         "out of melee reach, and this pair of stands was not already counted";
+        issue.real = "yes";
+        issue.realWhy = "two engines take turns over this target and neither acts: the bot does nothing until the "
+                        "bot or the mob leaves the stand";
+        issue.realSource = "emitter";
+        issue.value = double(*stuck.targetYd);
+        issue.valueUnit = "yd";
+        issue.botName = stuck.botName;
+        issue.botLow = stuck.botLow;
+        issue.mapId = stuck.mapId;
+        issue.zoneId = stuck.zoneId;
+        issue.x = stuck.x;
+        issue.y = stuck.y;
+        issue.z = stuck.z;
+        issue.sourceTable = "pb_journal_stuck";
+        issue.sourceId = stuckRowId;
+        issue.runId = stuck.runId;
+        Journal::RecordIssue(issue);
+
         LOG_INFO("playerbots", "[stuck258] {} L{}: the combat engine out of combat with idle {} L{} ({:.0f} yd) as its "
                  "target and no action that runs: target dropped, back to the non-combat engine - picked again only "
                  "once the bot or the mob leaves the stand that made it undroppable",
                  bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), bot->GetExactDist(target));
+    }
     bot->AttackStop();
     bot->SetTarget(ObjectGuid::Empty);
     bot->SetSelection(ObjectGuid::Empty);
@@ -8731,8 +8793,12 @@ void PlayerbotAI::UpdateHealDiag()
 
 void PlayerbotAI::UpdateIdleDiag(bool casting)
 {
-    if (!bot->IsInCombat() || !bot->GetGroup() || !bot->GetMap() || !bot->GetMap()->Instanceable() ||
-        IsTank(bot) || IsHeal(bot))
+    // [jrn40] THE TANK AND HEALER EXCLUSION IS GONE, and it was not a saving - it was a blind spot. The test used
+    // to be `|| IsTank(bot) || IsHeal(bot)`, so TWO ROLES OUT OF THREE WERE NEVER MEASURED, and the healer is
+    // exactly where a chain of deaths came from. A quantity that cannot be measured for two thirds of its subjects
+    // is not objective; it only looks objective, and every share computed from it had a denominator nobody stated.
+    // The roles are not mixed instead: `role` is a column of pb_journal_idle, so they are read apart.
+    if (!bot->IsInCombat() || !bot->GetGroup() || !bot->GetMap() || !bot->GetMap()->Instanceable())
     {
         idleDiag.busyEndMs = 0;
         return;
@@ -8774,7 +8840,12 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
         else if (aiObjectContext->GetValue<uint8>("threat", "current target")->Get() >= IDLE_DIAG_THREAT_HOLD)
             ++idleDiag.threat;
         else
+        {
+            // [grp20] `other` was 37.1 % of b495's idle ticks with nothing said about it. The engine already knows
+            // why it turned the tick's action down, so the bucket reads its answer instead of guessing.
             ++idleDiag.other;
+            ++idleDiag.refusals[idleDiag.tickRefusal];
+        }
     }
 
     if (getMSTimeDiff(idleDiag.windowStartMs, now) < IDLE_DIAG_WINDOW_MS)
@@ -8787,14 +8858,130 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
         actions += Acore::StringFormat(" {}:{}", top[i].first, top[i].second);
 
     // [chat20] `threat` is the bot's own threat, `leaderHold` the leader's command: separate buckets on purpose
+    // [grp20] the refusal breakdown is appended after `other`, never inserted: a reader of an older log must keep
+    // parsing it unchanged, and an absent breakdown is not the same fact as a breakdown of zeros
     LOG_DEBUG("playerbots",
               "[idle diag] {} {}s ticks {} cast {} castWait {} nonCast {} | idle: noTarget {} rangeLos {} moving {} "
-              "gcd {} threat {} leaderHold {} other {} | gap n {} avg {} max {} >150 {} >400 {} | actions{}",
+              "gcd {} threat {} leaderHold {} other {} | other: unsaid {} useless {} impossible {} prereq {} "
+              "failed {} blocked {} noCandidate {} | gap n {} avg {} max {} >150 {} >400 {} | actions{}",
               bot->GetName(), getMSTimeDiff(idleDiag.windowStartMs, now) / IN_MILLISECONDS, idleDiag.ticks,
               idleDiag.casts, idleDiag.castWait, idleDiag.nonCast, idleDiag.noTarget, idleDiag.rangeLos,
-              idleDiag.moving, idleDiag.gcd, idleDiag.threat, idleDiag.leaderHold, idleDiag.other, idleDiag.gapCount,
+              idleDiag.moving, idleDiag.gcd, idleDiag.threat, idleDiag.leaderHold, idleDiag.other,
+              idleDiag.refusals[IDLE_REFUSAL_NONE], idleDiag.refusals[IDLE_REFUSAL_USELESS],
+              idleDiag.refusals[IDLE_REFUSAL_IMPOSSIBLE], idleDiag.refusals[IDLE_REFUSAL_PREREQ],
+              idleDiag.refusals[IDLE_REFUSAL_FAILED], idleDiag.refusals[IDLE_REFUSAL_BLOCKED],
+              idleDiag.refusals[IDLE_REFUSAL_NO_CANDIDATE], idleDiag.gapCount,
               idleDiag.gapCount ? idleDiag.gapSumMs / idleDiag.gapCount : 0, idleDiag.gapMaxMs, idleDiag.gapOver150,
               idleDiag.gapOver400, actions);
+
+    // [jrn40] THE SAME WINDOW AS A ROW, so that "who idled and on what" is a query and not a LIKE over text. The
+    // line above stays: it is the live stream a human watches, and this is the history a question is asked of.
+    //
+    // THE CRITERION FOR THIS BEING A PROBLEM, and it is measured, not assumed: at least one idle bucket must be
+    // non-zero. Of 3 900 live rows, 406 had EVERY bucket at zero - the window is printed every 15 s whether or not
+    // anything idled, so those 406 are a clean instrument result and not a defect. Writing them as problems would
+    // put 406 problems that do not exist into a table the user drives to zero, which is the same mistake as the
+    // 20 502 lines tagged "[death*]" of which 17 were deaths. The domain row is written EITHER WAY (a clean window
+    // is evidence too, and `is_real` is a column rather than a gate); only the issue row waits for the criterion.
+    uint32 const idleTicks = idleDiag.noTarget + idleDiag.rangeLos + idleDiag.moving + idleDiag.gcd +
+                             idleDiag.threat + idleDiag.leaderHold + idleDiag.other;
+
+    Journal::Idle record;
+    record.event = "window";
+    record.botName = bot->GetName();
+    record.botLow = bot->GetGUID().GetCounter();
+    record.botLevel = bot->GetLevel();
+    record.role = IsTank(bot) ? "tank" : IsHeal(bot) ? "healer" : "dps";
+    record.mapId = bot->GetMapId();
+    record.zoneId = bot->GetZoneId();
+    record.x = bot->GetPositionX();
+    record.y = bot->GetPositionY();
+    record.z = bot->GetPositionZ();
+    record.inDungeon = bot->GetMap()->IsDungeon();
+    record.inCombat = bot->IsInCombat();
+    record.windowSec = getMSTimeDiff(idleDiag.windowStartMs, now) / float(IN_MILLISECONDS);
+    record.ticks = idleDiag.ticks;
+    record.casts = idleDiag.casts;
+    record.castWait = idleDiag.castWait;
+    record.nonCast = idleDiag.nonCast;
+    record.noTarget = idleDiag.noTarget;
+    record.rangeLos = idleDiag.rangeLos;
+    record.moving = idleDiag.moving;
+    record.gcd = idleDiag.gcd;
+    record.threat = idleDiag.threat;
+    record.leaderHold = idleDiag.leaderHold;
+    record.other = idleDiag.other;
+    record.refUnsaid = idleDiag.refusals[IDLE_REFUSAL_NONE];
+    record.refUseless = idleDiag.refusals[IDLE_REFUSAL_USELESS];
+    record.refImpossible = idleDiag.refusals[IDLE_REFUSAL_IMPOSSIBLE];
+    record.refPrereq = idleDiag.refusals[IDLE_REFUSAL_PREREQ];
+    record.refFailed = idleDiag.refusals[IDLE_REFUSAL_FAILED];
+    record.refBlocked = idleDiag.refusals[IDLE_REFUSAL_BLOCKED];
+    record.refNoCandidate = idleDiag.refusals[IDLE_REFUSAL_NO_CANDIDATE];
+    record.gapN = idleDiag.gapCount;
+    record.gapAvgMs = idleDiag.gapCount ? uint32(idleDiag.gapSumMs / idleDiag.gapCount) : 0;
+    record.gapMaxMs = idleDiag.gapMaxMs;
+    record.gapOver150 = idleDiag.gapOver150;
+    record.gapOver400 = idleDiag.gapOver400;
+    record.topActions = actions;
+    record.runId = Leader::Runs::OfBot(bot);  // [jrn40] by identity, not by nearness in time
+    uint64 const idleRowId = Journal::RecordIdle(record);
+
+    if (idleTicks)
+    {
+        // [jrn40] THE KEY IS THE COMBINATION OF NON-ZERO BUCKETS, and that was measured rather than chosen.
+        // Keying on the whole line gave 757 "causes" over 3 900 rows; the 757 were the trailing "| actions ..."
+        // list, which is trap #2 in new clothes - last time numbers split one cause, here a set of action names
+        // did. Keying on the cause text alone gave 1, which is too coarse to act on. The combination of non-zero
+        // buckets gives 97 (98 including the all-zero form that is not a problem at all), and those are the shapes
+        // a fix can be aimed at: gcd+other 536, moving+gcd+other 450, rangeLos+moving+gcd+other 413, gcd 301.
+        // So: which buckets fired, never how many times - the counts' spread is the value range.
+        std::string shape;
+        auto const bucket = [&shape](char const* name, uint32 value)
+        {
+            if (value)
+                shape += (shape.empty() ? "" : "+") + std::string(name);
+        };
+        bucket("noTarget", idleDiag.noTarget);
+        bucket("rangeLos", idleDiag.rangeLos);
+        bucket("moving", idleDiag.moving);
+        bucket("gcd", idleDiag.gcd);
+        bucket("threat", idleDiag.threat);
+        bucket("leaderHold", idleDiag.leaderHold);
+        bucket("other", idleDiag.other);
+
+        Journal::Issue issue;
+        issue.kind = "idle";
+        issue.severity = idleDiag.casts ? "mid" : "high";  // a whole window in a fight with no cast at all
+        // We did not notice this class until the measurement existed, and the measurement is what was broken for
+        // two roles out of three: that is the "instrument" class exactly.
+        issue.reproClass = "instrument";
+        issue.dedupKey = "idle|" + (*record.role) + "|" + shape;
+        issue.why = Acore::StringFormat("{} of {} ticks idle over {:.0f} s ({}), {} cast", idleTicks,
+                                        idleDiag.ticks, *record.windowSec, shape, idleDiag.casts);
+        issue.realWhen = "at least one idle bucket is non-zero over the window (406 of 3 900 live windows had all "
+                         "of them at zero, which is a clean result and not a problem)";
+        issue.real = "yes";
+        issue.realWhy = "the engine itself counted ticks that produced nothing, and says in which bucket";
+        issue.realSource = "emitter";
+        issue.value = double(idleTicks);
+        issue.valueUnit = "ticks";
+        issue.botName = record.botName;
+        issue.botLow = record.botLow;
+        issue.mapId = record.mapId;
+        issue.zoneId = record.zoneId;
+        issue.x = record.x;
+        issue.y = record.y;
+        issue.z = record.z;
+        issue.sourceTable = "pb_journal_idle";
+        issue.sourceId = idleRowId;
+        issue.runId = record.runId;
+        // the slice's window is this window: its own start is the last moment the measurement was reset
+        issue.lastProgressMs = Journal::ClockMs() > uint64(getMSTimeDiff(idleDiag.windowStartMs, now))
+                                   ? Journal::ClockMs() - uint64(getMSTimeDiff(idleDiag.windowStartMs, now))
+                                   : 0;
+        Journal::RecordIssue(issue);
+    }
 
     uint32 const busyEnd = idleDiag.busyEndMs;
     idleDiag = IdleDiag();

@@ -479,6 +479,31 @@ namespace Leader
         bool Get(ObjectGuid group, bool& ready, std::string* why = nullptr);
     }
 
+    // [jrn40] WHICH RUN A GROUP IS IN, published by the harness and readable from a map thread.
+    //
+    // Why this registry exists. The journal's rows are joined into one slice for a test, and a slice has to be
+    // joined BY IDENTITY and not by nearness in time - four times in one day two objects shared a name, and a
+    // fixture built on a near-miss pair would make a test that confirms a conclusion about a different fight.
+    // Measured: pb_journal_line had no run_id at all, so all 411 819 stream rows - every alert, idle window and
+    // stuck line - could be attached to a run only by time. The emitters that needed it are on map threads
+    // (Unit::Update, the bot's tick, the death hook) and the run lives in the harness on the world thread, with no
+    // path between them: Orders is keyed by the tank and carries no run, and LeaderGroup::Run() is the harness's
+    // own object. This is that path, in the same shape as Orders and Readiness: a mutex and a map, written by the
+    // owner and read by anybody.
+    //
+    // IT IS RECORD-KEEPING AND NOT A DECISION. Nothing reads this to choose anything; an empty answer means "this
+    // group is in no run", which is a fact, and the column it fills means "outside a run" rather than "lost".
+    namespace Runs
+    {
+        // The harness publishes its party's run (world thread), and clears it when the run ends.
+        void Publish(ObjectGuid group, std::string const& runId);
+        void Clear(ObjectGuid group);
+        // The run this group is in, "" when none. Thread safe: read from map threads.
+        std::string Of(ObjectGuid group);
+        // The run the bot's group is in, "" when it has no group or the group is in no run.
+        std::string OfBot(Player* bot);
+    }
+
     // [dun186] the group's leader is dead (or outside the instance) while its living members fight: each living member
     // leads itself (its own strategies decide its heals, targets and moves) until the leader is back or the fight ends
     namespace SelfLead

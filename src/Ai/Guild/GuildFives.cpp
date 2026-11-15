@@ -6482,6 +6482,57 @@ void GuildCoordinator::RecordRun(GuildFive const& five, GuildFiveReport const& r
         key, rec.at, rec.leaderLow, members, result, std::min<uint32>(rec.bossesKilled, 255),
         std::min<uint32>(rec.bossesTotal, 255), std::min<uint32>(rec.deaths, 65535), std::min<uint32>(report.wipes, 65535),
         report.durationSec, drops, reason);
+
+    // [jrn40] A RUN THAT DID NOT GO CLEANLY IS A PROBLEM, and the issue row points at guild_project_runs rather
+    // than copying it: that table is the one owner of a run, and the journal links to it and never keeps a second
+    // copy. The criterion is the run's own facts and needs no threshold: it did not finish, or a boss is left, or
+    // somebody died, or the group wiped. A clean run writes nothing, so an empty result reads as "every run was
+    // clean" and not as "we did not look".
+    //
+    // ONE ROW PER PROBLEM, NOT PER RUN. The key is the dungeon, the result and the SHAPE of the failure, with the
+    // numbers taken out - the counts' spread is the value range. Keying on the reason text would fan one cause
+    // across every run that hit it, which is this project's trap #2 (a staircase of fifteen "causes" that was one
+    // cause behind 3 216 holds).
+    bool const clean = rec.result == "done" && rec.bossesKilled >= rec.bossesTotal && !rec.deaths && !report.wipes;
+    if (!clean)
+    {
+        std::string shape;
+        auto const note = [&shape](char const* what, bool on)
+        {
+            if (on)
+                shape += (shape.empty() ? "" : "+") + std::string(what);
+        };
+        note("not done", rec.result != "done");
+        note("boss left", rec.bossesKilled < rec.bossesTotal);
+        note("deaths", rec.deaths > 0);
+        note("wipes", report.wipes > 0);
+
+        Journal::Issue issue;
+        issue.kind = "run_failed";
+        issue.severity = report.wipes ? "high" : rec.deaths ? "high" : "mid";
+        // The inputs of a run are the journal's own rows for it - the pulls, the deaths, the fights - so the same
+        // conditions can be put back and the judges run again.
+        issue.reproClass = "decision";
+        issue.dedupKey = "run_failed|" + rec.contentKey + "|" + rec.result + "|" + shape;
+        issue.why = Acore::StringFormat("{} ended {} after {} s: {} of {} bosses, {} death(s), {} wipe(s){}",
+                                        rec.contentKey, rec.result, report.durationSec, rec.bossesKilled,
+                                        rec.bossesTotal, rec.deaths, report.wipes,
+                                        report.reason.empty() ? std::string() : " - " + report.reason);
+        issue.realWhen = "the run's own record says it did not finish, or left a boss, or cost a death, or wiped";
+        issue.real = "yes";
+        issue.realWhy = "a dungeon is certified only by a run that is absolutely clean, so any of these four is a "
+                        "defect by the project's own gate";
+        issue.realSource = "emitter";
+        // the deaths are the number worth ranging over: "which failure is getting worse" is read off value_max
+        issue.value = double(rec.deaths);
+        issue.valueUnit = "death";
+        issue.runId = five.runId;
+        issue.sourceTable = "guild_project_runs";
+        // the row's own id in that table, as this code numbered it. The DB's auto-increment may differ, which is
+        // said here rather than discovered later: the honest join is (content, at, leader).
+        issue.sourceId = rec.id;
+        Journal::RecordIssue(issue);
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

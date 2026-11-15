@@ -617,6 +617,14 @@ namespace Journal
         // problem. `lastProgressMs` is that moment; with `run_id` and the problem's own time the slice is a query.
         // 0 means the emitter could not name a last progress, which is a gap and not "the run's beginning".
         uint64 lastProgressMs = 0;
+
+        // [jrn40] THE FLAT JSON OF THE INPUTS, here for one reason only: the DOMAIN row this issue points at is
+        // swept after 24-48 h while this row lives for ever, so without a copy taken when the problem was opened,
+        // `source_id` reaches nothing a week later and the fixture cannot be rebuilt. It is NOT a filterable field -
+        // it is read with the eyes and by the fixture exporter - and it is not a second home for anything that has
+        // a column of its own. Empty means the inputs live only in the domain row and will go with it, which is a
+        // gap a query can see rather than a silent loss.
+        std::string fixture;
     };
 
     // Writes (or updates) one problem. Returns nothing: the row's identity is its dedup key, not an id the caller

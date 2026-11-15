@@ -19,6 +19,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "InstanceGuid.h"  // [rot44]
+#include "Journal.h"  // [jrn40] the pet-reach stuck row and its issue
 #include "LeaderOrders.h"  // [lead186] the owner's leader Attack
 #include "Map.h"
 #include "MotionMaster.h"
@@ -1506,9 +1507,66 @@ bool KeepOutOfIdleReach(PlayerbotAI* botAI, Creature* pet, PetControlState& stat
 
         motion->MoveFollow(bot, PET_SIDE_DISTANCE, bestAngle);
         if (newMob && worst)
+        {
             LOG_INFO("playerbots", "[pet idle reach] {}: {} has no spot out of the reach of idle {} within {:.0f} yd "
                      "(the owner {:.1f} yd from it): the owner's far side", bot->GetName(), pet->GetName(),
                      worst->GetName(), PET_PARK_MAX_DISTANCE, worst->GetExactDist(bot));
+
+            // [jrn40] the same event as a row. `newMob` is the criterion and it is the domain's own: one row per
+            // mob the search failed on, not one per tick of the following - the pet is re-placed every tick, and a
+            // row per tick would turn one unsolvable spot into thousands of problems.
+            Journal::Stuck stuck;
+            stuck.kind = "pet_reach";
+            stuck.botName = bot->GetName();
+            stuck.botLow = bot->GetGUID().GetCounter();
+            stuck.botLevel = bot->GetLevel();
+            stuck.mapId = bot->GetMapId();
+            stuck.zoneId = bot->GetZoneId();
+            stuck.x = bot->GetPositionX();
+            stuck.y = bot->GetPositionY();
+            stuck.z = bot->GetPositionZ();
+            stuck.targetName = worst->GetName();
+            stuck.targetLow = worst->GetGUID().GetCounter();
+            stuck.targetLevel = worst->GetLevel();
+            stuck.targetYd = worst->GetExactDist(bot);
+            if (Creature* creature = worst->ToCreature())
+                stuck.targetEntry = creature->GetEntry();
+            stuck.actionRunning = pet->GetName();  // whose spot could not be found: the pet, not the owner
+            stuck.why = Acore::StringFormat("no spot for the pet out of the reach of an idle mob within {:.0f} yd, "
+                                            "so it is parked on the owner's far side", PET_PARK_MAX_DISTANCE);
+            stuck.runId = Leader::Runs::OfBot(bot);
+            uint64 const stuckRowId = Journal::RecordStuck(stuck);
+
+            Journal::Issue issue;
+            issue.kind = "pet_reach";
+            issue.severity = "low";  // the fallback keeps the pet out of the fight; it is a worse spot, not a hang
+            // The inputs are the owner's and the mob's places and the search's own bound, and the search is
+            // deterministic: the same three put back reproduce it.
+            issue.reproClass = "decision";
+            // the key is the shape of the failure, not which mob: the name and the distance are what would fan one
+            // cause across every idle mob in the zone
+            issue.dedupKey = "pet_reach|no spot within bound|on the owner's far side";
+            issue.why = Acore::StringFormat("{}: {} has no spot out of the reach of idle {}", bot->GetName(),
+                                            pet->GetName(), worst->GetName());
+            issue.realWhen = "the search over the spots round the owner found none outside the idle mob's reach, "
+                             "and this mob had not already been counted";
+            issue.real = "yes";
+            issue.realWhy = "the pet ends up on a spot the search itself rejected, which is what wakes an idle mob";
+            issue.realSource = "emitter";
+            issue.value = double(*stuck.targetYd);
+            issue.valueUnit = "yd";
+            issue.botName = stuck.botName;
+            issue.botLow = stuck.botLow;
+            issue.mapId = stuck.mapId;
+            issue.zoneId = stuck.zoneId;
+            issue.x = stuck.x;
+            issue.y = stuck.y;
+            issue.z = stuck.z;
+            issue.runId = stuck.runId;
+            issue.sourceTable = "pb_journal_stuck";
+            issue.sourceId = stuckRowId;
+            Journal::RecordIssue(issue);
+        }
         return true;
     }
 

@@ -76,6 +76,7 @@ namespace
 #include "SpellAuras.h"  // [deaths14] Resurrection Sickness
 #include "TerrainHazard.h"  // [guild15] SafeFloorZ
 #include "NewRpgCoop.h"  // [coop]
+#include "Journal.h"  // [jrn40] the wait-behind stuck row and its issue
 #include "LeaderOrders.h"  // [deaths20] Leader::Route
 #include "RouteSearch.h"  // [perf215] Leader::RouteSearchesOnThread
 #include "AreaDefines.h"
@@ -4272,6 +4273,61 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
             LOG_INFO("playerbots", "[wait14] {} L{} walks to meet {} L{} {:.0f} yd behind (its follow does not bring it "
                      "within the group reward distance)",
                      bot->GetName(), bot->GetLevel(), member->GetName(), member->GetLevel(), bot->GetExactDist(member));
+
+            // [jrn40] the same event as a row. `_meetLogged` is the criterion and it is the domain's own: one row
+            // per member walked to, not one per tick of the walk - b354 had a bot stand 928 s for one member, and a
+            // row per tick would have made that one problem into thousands.
+            Journal::Stuck stuck;
+            stuck.kind = "wait_behind";
+            stuck.botName = bot->GetName();
+            stuck.botLow = bot->GetGUID().GetCounter();
+            stuck.botLevel = bot->GetLevel();
+            stuck.mapId = bot->GetMapId();
+            stuck.zoneId = bot->GetZoneId();
+            stuck.x = bot->GetPositionX();
+            stuck.y = bot->GetPositionY();
+            stuck.z = bot->GetPositionZ();
+            stuck.targetName = member->GetName();
+            stuck.targetLow = member->GetGUID().GetCounter();
+            stuck.targetLevel = member->GetLevel();
+            stuck.targetYd = bot->GetExactDist(member);
+            stuck.inCombat = false;  // the guard above requires it
+            stuck.why = "a member is beyond the group reward distance and its own follow does not close the gap, so "
+                        "this bot walks to meet it";
+            stuck.runId = Leader::Runs::OfBot(bot);
+            uint64 const stuckRowId = Journal::RecordStuck(stuck);
+
+            Journal::Issue issue;
+            issue.kind = "wait_behind";
+            issue.severity = "mid";
+            // A property of the world over time (where two bots happen to be and whether a follow closes): there
+            // is nothing to replay offline, so a run without the sign is the proof, not a test.
+            issue.reproClass = "not_offline";
+            // the key is the shape, not the pair: the two names and the distance are what would fan one cause into
+            // hundreds. Whether both are on one map is the fact that separates a long follow from a lost one.
+            issue.dedupKey = std::string("wait_behind|") +
+                             (member->GetMapId() == bot->GetMapId() ? "same map" : "other map");
+            issue.why = Acore::StringFormat("{} walks to meet {} {:.0f} yd behind", bot->GetName(),
+                                            member->GetName(), *stuck.targetYd);
+            issue.realWhen = "the member is outside the group reward distance, out of combat, and its own follow "
+                             "has not closed the gap";
+            issue.real = "yes";
+            issue.realWhy = "until the gap closes neither bot earns group credit, and the waiting one stands where "
+                            "it happens to be";
+            issue.realSource = "emitter";
+            issue.value = double(*stuck.targetYd);
+            issue.valueUnit = "yd";
+            issue.botName = stuck.botName;
+            issue.botLow = stuck.botLow;
+            issue.mapId = stuck.mapId;
+            issue.zoneId = stuck.zoneId;
+            issue.x = stuck.x;
+            issue.y = stuck.y;
+            issue.z = stuck.z;
+            issue.runId = stuck.runId;
+            issue.sourceTable = "pb_journal_stuck";
+            issue.sourceId = stuckRowId;
+            Journal::RecordIssue(issue);
         }
         // [wait19] the walk is a meet walk, no quest spot's: its give-up postpones no quest and asks no help
         info.meetWalk = true;

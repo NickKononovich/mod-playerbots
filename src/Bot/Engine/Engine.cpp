@@ -269,6 +269,7 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                         multiplier->NoteBlock();
 
                     LogAction("Multiplier %s made action %s useless", multiplier->getName().c_str(), action->getName().c_str());
+                    botAI->NoteIdleDiagRefusal(PlayerbotAI::IDLE_REFUSAL_BLOCKED);  // [grp20]
                     if (intentTick)
                         IntentMarkMultiplier(action, relevance, multiplier->getName(), value);
                     break;
@@ -285,6 +286,9 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                         intentPushBy = "prereq of " + action->getName();
                     if (MultiplyAndPush(actionNode->getPrerequisites(), relevance + 0.002f, false, event, "prereq"))
                     {
+                        // [grp20] marked where the action is actually deferred, not where PREREQ is logged: the log
+                        // line prints before the push is tried, and a push that fails leaves the action to run
+                        botAI->NoteIdleDiagRefusal(PlayerbotAI::IDLE_REFUSAL_PREREQ);
                         if (intentTick)
                             IntentMark(action->getName(), INTENT_PREREQ, relevance, action);
                         PushAgain(actionNode, relevance + 0.001f, event);
@@ -318,6 +322,7 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
                 else
                 {
                     LogAction("A:%s - FAILED", action->getName().c_str());
+                    botAI->NoteIdleDiagRefusal(PlayerbotAI::IDLE_REFUSAL_FAILED);  // [grp20]
                     if (intentTick)
                     {
                         IntentMark(action->getName(), INTENT_FAILED, relevance, action);
@@ -329,6 +334,7 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
             else
             {
                 LogAction("A:%s - IMPOSSIBLE", action->getName().c_str());
+                botAI->NoteIdleDiagRefusal(PlayerbotAI::IDLE_REFUSAL_IMPOSSIBLE);  // [grp20]
                 if (intentTick)
                 {
                     // A multiplier that scaled it to 0 stays the reason (isPossible() still ran first).
@@ -342,6 +348,7 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
         else
         {
             LogAction("A:%s - USELESS", action->getName().c_str());
+            botAI->NoteIdleDiagRefusal(PlayerbotAI::IDLE_REFUSAL_USELESS);  // [grp20]
             if (intentTick)
                 IntentMark(action->getName(), INTENT_USELESS, relevance, action);
             lastRelevance = relevance;
@@ -356,7 +363,10 @@ bool Engine::DoNextAction(Unit* /*unit*/, uint32 /*depth*/, bool minimal)
     }
 
     if (!actionExecuted)
+    {
         LogAction("no actions executed");
+        botAI->NoteIdleDiagRefusal(PlayerbotAI::IDLE_REFUSAL_NO_CANDIDATE);  // [grp20]
+    }
 
     // [lead154] b173 20261101-154539 281-366 s: "Rtshaab buffing" 85 s - its Follow ran every tick at 94 and the
     // "ready reply" (6) that closes the rebuff window was never reached. The window's own fact: a full tick in which

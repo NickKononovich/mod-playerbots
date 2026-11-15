@@ -192,7 +192,7 @@ namespace Journal
             "last_seen_ms, occurrences, value_min, value_max, value_unit, bot_name, bot_low, map_id, zone_id, pos_x, "
             "pos_y, pos_z, run_id, source_table, source_id, decision_id, build, first_build, checked, checked_at_ms, "
             "checked_by, test_name, cleared_in_run, fixed_in_build, fixed_ms, merged_into, fixture_path, "
-            "last_progress_ms, is_real, real_why, real_source)";
+            "last_progress_ms, is_real, real_why, real_source, fixture)";
         char const* const COLUMNS_IDLE =
             "(id, boot_id, at_ms, hour_bucket, event, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
             "pos_y, pos_z, in_dungeon, in_combat, window_sec, ticks, casts, cast_wait, non_cast, no_target, "
@@ -1128,7 +1128,7 @@ namespace Journal
                 "fixture_path VARCHAR(255) NOT NULL DEFAULT '', "
                 "last_progress_ms BIGINT UNSIGNED NOT NULL DEFAULT 0, "
                 "is_real VARCHAR(8) NOT NULL DEFAULT 'unknown', real_why VARCHAR(512) NOT NULL DEFAULT '', "
-                "real_source VARCHAR(8) NOT NULL DEFAULT 'emitter', "
+                "real_source VARCHAR(8) NOT NULL DEFAULT 'emitter', fixture TEXT, "
                 "checked_state VARCHAR(12) GENERATED ALWAYS AS (CASE WHEN checked = 0 THEN 'unchecked' "
                 "  WHEN repro_class = 'decision' AND test_name <> '' THEN 'by_test' "
                 "  WHEN repro_class = 'not_offline' AND cleared_in_run <> '' AND fixed_in_build <> '' THEN 'by_run' "
@@ -1356,7 +1356,7 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_decision",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{},{},{},{},{},{},{},{})",
+                                "{},{},{},{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, hour, Quoted(decision.topic, 48), Quoted(decision.choice, 255),
                                 Quoted(decision.verdict, 16), Quoted(decision.why, 1024),
                                 Quoted(JudgeName(decision.judge), 16), Quoted(decision.judgeName, 32),
@@ -1602,7 +1602,7 @@ namespace Journal
                 // stays readable in its own column while two different keys can never be merged by a truncated
                 // index. One owner of the key - the emitter builds it, the database only hashes it.
                 "({},{},{},{},{},{},{},MD5({}),{},{},{},{},1,{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                "{},{},{},{},{},{},{},{},{},{},{})",
+                "{},{},{},{},{},{},{},{},{},{},{},{})",
                 Writer::Instance().NextId(), BootId(), Quoted(issue.kind, 32), Quoted(issue.severity, 8),
                 Quoted(issue.reproClass, 16), Quoted(issue.status.empty() ? "open" : issue.status, 12),
                 Quoted(issue.dedupKey, 512), Quoted(issue.dedupKey, 512), Quoted(issue.why, 1024),
@@ -1614,7 +1614,8 @@ namespace Journal
                 Quoted(issue.checkedBy, 48), Quoted(issue.testName, 128), Quoted(issue.clearedInRun, 48),
                 Quoted(issue.fixedInBuild, 16), 0, issue.mergedInto, Quoted(fixture, 255), issue.lastProgressMs,
                 Quoted(issue.real.empty() ? "unknown" : issue.real, 8), Quoted(issue.realWhy, 512),
-                Quoted(issue.realSource.empty() ? "emitter" : issue.realSource, 8)));
+                Quoted(issue.realSource.empty() ? "emitter" : issue.realSource, 8),
+                issue.fixture.empty() ? std::string("NULL") : Quoted(issue.fixture, 16000)));
     }
 
     uint64 RecordIdle(Idle const& idle)

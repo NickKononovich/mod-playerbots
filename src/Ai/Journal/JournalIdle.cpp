@@ -48,6 +48,7 @@
 
 #include "Config.h"
 #include "Engine.h"
+#include "LeaderOrders.h"  // [jrn40] Leader::Runs::OfBot
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -131,6 +132,7 @@ namespace
         idle.stoodSec = stoodSec;
         idle.stoodYd = movedYd;  // the radius it stayed inside: the pair is the fact, neither number alone is
         idle.doing = doing;
+        idle.runId = Leader::Runs::OfBot(bot);  // [jrn40] by identity, not by nearness in time
         idle.why = Acore::StringFormat(
             "{} for {:.0f} s within {:.1f} yd (state {}, {}){}", ended ? "stood" : "has been standing", stoodSec,
             movedYd, uint32(botAI->GetState()), bot->IsInCombat() ? "in combat" : "out of combat",
@@ -169,6 +171,7 @@ namespace
         issue.z = idle.z;
         issue.sourceTable = "pb_journal_idle";
         issue.sourceId = sourceId;
+        issue.runId = idle.runId;
         // the window of the slice comes from the data: the episode's own start is the last moment this bot was
         // demonstrably making progress through space
         issue.lastProgressMs = Journal::ClockMs() > uint64(getMSTimeDiff(episode.sinceMs, nowMs))

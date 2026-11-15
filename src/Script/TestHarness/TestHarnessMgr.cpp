@@ -2403,6 +2403,12 @@ namespace TestHarness
         for (Member const& member : party.members)
             StatsRegistry::Instance().TrackMember(member.guid, party.seq);
         Leader::Orders::Track(party.leader);  // [lead1] the tank's pull orders are posted from now on
+        // [jrn40] the run this group is in, published for readers on map threads. The journal's detectors live
+        // there (the unit update, the bot's tick, the death hook) and the run lives here, with no path between
+        // them before this - so every one of 411 819 stream rows could be joined to a run only by nearness in
+        // time, and a fixture built on a near-miss pair makes a test that confirms a conclusion about another
+        // fight. It publishes a fact and decides nothing; the run's own verdicts are untouched.
+        Leader::Runs::Publish(party.groupGuid, party.id);
 
         // [hleft-daily-reset] heroics and raids are reset by the server at Instance.ResetTimeHour: every member is put
         // out and the bind dropped (2026-10-25 05:00: all ten WotLK / TBC heroics of the 04:47 batch, uk-h, hol-h,
@@ -4994,6 +5000,7 @@ namespace TestHarness
         Leader::Orders::Untrack(party.leader);  // [lead1]
         PullPlanner::Release(party.leader);     // [lead7] the leader's planner instance for this tank
         Leader::Readiness::Clear(party.groupGuid);  // [lead6] the leader's readiness verdict for its group
+        Leader::Runs::Clear(party.groupGuid);       // [jrn40] no row written after this claims to be in this run
         for (Member const& member : party.members)  // [lead27] no command outlives the run (no TTL ends them)
             Leader::Events::Clear(member.guid);
         DecisionLog::Instance().EndRun(party.seq);

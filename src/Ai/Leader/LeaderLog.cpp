@@ -163,8 +163,17 @@ namespace Leader
             _body += "0";
             return *this;
         }
+        // [jrn40] SIX DECIMALS, NOT ONE. The judge's numbers go from here into columns of pb_journal_option, and a
+        // fixture built from them has to put the SAME conditions back - at one decimal it cannot. Measured: of 159
+        // fixtures taken from live decisions, one was unresolvable by rounding alone, which is the whole point of
+        // keeping a record of real fights rather than invented ones: a replay that disagrees with the original by a
+        // rounding step proves nothing about the judge.
+        //
+        // This is the printed FORM of a number, not the number: nothing decides anything differently, and the line
+        // stays readable (a trailing ".0" prints as "0.000000", which is longer and not less true). Six decimals is
+        // what a float carries honestly - past that the digits would be an invention of the formatter.
         std::ostringstream out;
-        out << std::fixed << std::setprecision(1) << value;
+        out << std::fixed << std::setprecision(6) << value;
         _body += out.str();
         return *this;
     }

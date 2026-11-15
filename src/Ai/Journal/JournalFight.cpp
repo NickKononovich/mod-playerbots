@@ -116,6 +116,7 @@ namespace Journal
         fight.y = bot->GetPositionY();
         fight.z = bot->GetPositionZ();
         fight.inDungeon = bot->GetMap() && bot->GetMap()->IsDungeon();
+        fight.runId = Leader::Runs::OfBot(bot);  // [jrn40] by identity, not by nearness in time
         fight.enemyName = enemy->GetName();
         fight.enemyLow = enemy->GetGUID().GetCounter();
         fight.enemyLevel = enemy->GetLevel();
@@ -172,6 +173,7 @@ namespace Journal
         aggro.x = bot->GetPositionX();
         aggro.y = bot->GetPositionY();
         aggro.z = bot->GetPositionZ();
+        aggro.runId = Leader::Runs::OfBot(bot);  // [jrn40]
 
         Leader::PullOrder order;
         Player* owner = OpenOrderOf(bot, order);
@@ -250,6 +252,7 @@ namespace Journal
         death.y = killed->GetPositionY();
         death.z = killed->GetPositionZ();
         death.inDungeon = killed->GetMap() && killed->GetMap()->IsDungeon();
+        death.runId = Leader::Runs::OfBot(killed);  // [jrn40]
         death.killerName = killer->GetName();
         death.killerEntry = killer->GetEntry();
         death.killerLow = killer->GetGUID().GetCounter();

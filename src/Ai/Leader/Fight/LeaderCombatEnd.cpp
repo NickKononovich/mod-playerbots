@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "Journal.h"  // [jrn40] the stale-victim stuck row and its issue
 #include "Common.h"
 #include "LeaderCombatEnd.h"
 
@@ -487,6 +488,59 @@ namespace Leader::Fight
                          "dropped (release {})",
                          group.Run().runId, leader->GetName(), stale ? stale->GetName() : staleGuid.ToString(), why,
                          route.staleVictimReleases);
+                // [jrn40] the same event as a row. This emitter HAS a run id, unlike the bot-side detectors, so
+                // the slice joins by identity here and not by nearness in time.
+                {
+                    Journal::Stuck stuck;
+                    stuck.kind = "stale_victim";
+                    stuck.botName = leader->GetName();
+                    stuck.botLow = leader->GetGUID().GetCounter();
+                    stuck.botLevel = leader->GetLevel();
+                    stuck.role = "tank";  // the leader of a five holds the target; its role in this five
+                    stuck.mapId = leader->GetMapId();
+                    stuck.zoneId = leader->GetZoneId();
+                    stuck.x = leader->GetPositionX();
+                    stuck.y = leader->GetPositionY();
+                    stuck.z = leader->GetPositionZ();
+                    stuck.targetName = stale ? stale->GetName() : staleGuid.ToString();
+                    stuck.targetLow = staleGuid.GetCounter();
+                    stuck.targetEntry = staleGuid.IsCreature() ? staleGuid.GetEntry() : 0;
+                    if (stale)
+                        stuck.targetLevel = stale->GetLevel();
+                    if (stale && stale->IsInWorld() && stale->GetMap() == leader->GetMap())
+                        stuck.targetYd = leader->GetExactDist(stale);
+                    stuck.inCombat = false;  // the guard above requires it: asked and answered, not a gap
+                    stuck.why = "the leader held a target outside a fight: " + why;
+                    stuck.runId = group.Run().runId;
+                    uint64 const stuckRowId = Journal::RecordStuck(stuck);
+
+                    Journal::Issue issue;
+                    issue.kind = "stale_victim";
+                    issue.severity = "mid";
+                    issue.reproClass = "decision";
+                    // the key is WHY it went stale, numbers out; the mob and the release count are what would fan
+                    // one cause into hundreds
+                    issue.dedupKey = "stale_victim|" + Journal::WithoutNumbers(why);
+                    issue.why = stuck.why;
+                    issue.realWhen = "the leader's target is no part of any fight any more and the leader is out of "
+                                     "combat, so nothing was going to act on it";
+                    issue.real = "yes";
+                    issue.realWhy = "the target had to be dropped by this code for the group to move on at all";
+                    issue.realSource = "emitter";
+                    issue.value = double(route.staleVictimReleases);
+                    issue.valueUnit = "release";
+                    issue.botName = stuck.botName;
+                    issue.botLow = stuck.botLow;
+                    issue.mapId = stuck.mapId;
+                    issue.zoneId = stuck.zoneId;
+                    issue.x = stuck.x;
+                    issue.y = stuck.y;
+                    issue.z = stuck.z;
+                    issue.runId = stuck.runId;
+                    issue.sourceTable = "pb_journal_stuck";
+                    issue.sourceId = stuckRowId;
+                    Journal::RecordIssue(issue);
+                }
                 leader->AttackStop();
                 leader->SetTarget(ObjectGuid::Empty);
                 if (leaderAI)

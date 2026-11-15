@@ -165,3 +165,8 @@ SET @stmt := (SELECT IF(COUNT(*) > 0, 'DO 0',
   FROM information_schema.COLUMNS
  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pb_journal_line' AND COLUMN_NAME = 'run_id');
 PREPARE jrn40 FROM @stmt; EXECUTE jrn40; DEALLOCATE PREPARE jrn40;
+SET @stmt := (SELECT IF(COUNT(*) > 0, 'DO 0',
+  'ALTER TABLE pb_journal_issue ADD COLUMN fixture TEXT NULL AFTER real_source')
+  FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'pb_journal_issue' AND COLUMN_NAME = 'fixture');
+PREPARE jrn40b FROM @stmt; EXECUTE jrn40b; DEALLOCATE PREPARE jrn40b;

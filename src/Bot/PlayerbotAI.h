@@ -663,6 +663,24 @@ public:
     void NoteIdleDiagAction(Action* action, std::string const& source);
     // [chat20] the leader's command held one of this tick's actions (LeaderCommandMultiplier::Log)
     void NoteIdleDiagLeaderHold() { idleDiag.tickLeaderHold = true; }
+    // [grp20] why the engine turned down this tick's action, in its own words (Engine::DoNextAction).
+    enum IdleRefusal : uint8
+    {
+        IDLE_REFUSAL_NONE = 0,
+        IDLE_REFUSAL_USELESS,       // isUseful() false
+        IDLE_REFUSAL_IMPOSSIBLE,    // isPossible() false: the core's own answer, mana among its reasons
+        IDLE_REFUSAL_PREREQ,        // a prerequisite was pushed in its place
+        IDLE_REFUSAL_FAILED,        // it ran and reported failure
+        IDLE_REFUSAL_BLOCKED,       // a multiplier scaled it to zero
+        IDLE_REFUSAL_NO_CANDIDATE,  // the queue held nothing at all
+        IDLE_REFUSAL_MAX
+    };
+    // the queue is relevance-ordered, so the first refusal of the tick is the action the bot would have taken
+    void NoteIdleDiagRefusal(IdleRefusal cause)
+    {
+        if (idleDiag.tickRefusal == IDLE_REFUSAL_NONE)
+            idleDiag.tickRefusal = cause;
+    }
 
     std::vector<Quest const*> GetAllCurrentQuests();
     std::vector<Quest const*> GetCurrentIncompleteQuests();
@@ -818,6 +836,7 @@ protected:
         uint32 threat = 0;      // the bot's OWN threat on the target, not the leader's Stop
         uint32 leaderHold = 0;  // [chat20] the leader's command zeroed the bot's actions this tick
         uint32 other = 0;
+        uint32 refusals[IDLE_REFUSAL_MAX] = {};  // [grp20] `other` split by the engine's own refusal
         uint32 nonCast = 0;
         uint32 gapCount = 0;
         uint64 gapSumMs = 0;
@@ -827,6 +846,7 @@ protected:
         uint32 busyEndMs = 0;
         bool tickCast = false;
         bool tickLeaderHold = false;  // [chat20] set by LeaderCommandMultiplier::Log, cleared with tickAction
+        IdleRefusal tickRefusal = IDLE_REFUSAL_NONE;  // [grp20] set by the engine, cleared with tickAction
         std::string tickAction;
         std::map<std::string, uint32> actions;
     } idleDiag;
