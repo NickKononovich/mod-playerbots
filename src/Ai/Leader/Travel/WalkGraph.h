@@ -51,6 +51,22 @@ namespace Leader::Travel::WalkGraph
     // the live navmesh has the tile at `at` (the fine route search reaches only loaded grids)
     bool LiveTileLoaded(Map* map, G3D::Vector3 const& at);
 
+    // [maze21] THE GRAPH'S OWN NODES AROUND A POINT - the one place that answers "which places near here could a
+    // walk go through". The maze search (NewRpgBaseAction::WalkAround) asked the stock TravelNodeMap for this, and
+    // that store is never loaded in this build (TravelMgr::LoadQuestTravelTable has no caller in the module or the
+    // core; only the `load node` debug command reaches loadNodeStore), so the whole way-round cycle was dead code:
+    // 76 of 76 recorded give-ups of b504 carry "0 vias in reach, 0 searched" and not one child row, while 75 of
+    // those 76 stands have 1 to 8 walkable places within 400 yd. The user's word 2026-11-15: switch it over.
+    // `out` gets the nodes within `reach` of `at`, unordered (the caller ranks them: Leader::Travel::Maze::Of).
+    // THE RETURN IS THE SOURCE'S OWN ANSWER AND NOT A COUNT: false = this map has no built graph, i.e. nobody
+    // looked, which is NOT "there are none" (rule 7). An empty `out` with true is a measurement.
+    struct NodeAt
+    {
+        uint32 node = 0;
+        G3D::Vector3 pos;
+    };
+    bool NodesInReach(Map* map, G3D::Vector3 const& at, float reach, std::vector<NodeAt>& out);
+
     // [nav183] the far walk's search time per kind, for the [perf] line (fine vs graph, per bot and hour)
     enum class SearchKind : uint8
     {

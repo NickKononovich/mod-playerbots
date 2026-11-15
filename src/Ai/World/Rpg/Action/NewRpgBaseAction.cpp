@@ -53,6 +53,7 @@
 #include "QuestPackets.h"  // [quest14] the grey abandon
 #include "World.h"  // [guild13]
 #include "RouteSearch.h"  // [guild13] PointOnPath
+#include "MazeVias.h"      // [maze21]
 #include "WalkGraph.h"     // [nav181]
 #include "SpellMgr.h"     // [guild13]
 #include "LeaderOrders.h"  // [guild14] Leader::Route
@@ -955,61 +956,30 @@ namespace
                std::get<2>(spot) == int32(bot->GetPositionY()) && std::get<3>(spot) == int32(bot->GetPositionZ());
     }
 
-    // [deaths] user 2026-11-08: a long walk in stages - the travel node graph (TravelNodeMap, loaded at startup and
-    // read only after) by its walk links on the bot's map, from the node nearest the bot to the node nearest the
-    // destination, the shortest by link length; the nodes' spots in walk order (empty: no such chain)
-    std::vector<G3D::Vector3> NodeStages(Player* bot, WorldPosition const& dest)
+    // [deaths] user 2026-11-08: a long walk in stages - the nodes of the walk graph on the bot's map, from the
+    // bot's own grid region to the goal's, the shortest chain by graph length; their spots in walk order (empty:
+    // no such chain, or this map has no built graph).
+    // [maze21] THE SOURCE IS THE GRAPH, not the stock TravelNodeMap. That store is never loaded in this build
+    // (TravelMgr::LoadQuestTravelTable has no caller anywhere), so this function returned an EMPTY chain on every
+    // call since it was written, and both its readers silently fell back: the maze search's stage branch never
+    // fired, and DangerOnWalk priced the rest of a long walk on the straight line across whatever lies between -
+    // which is the very thing its own comment says it exists to avoid. Leader::Travel::WalkGraph is now the one
+    // place that answers "where are the nodes" (rule 5), and its own A* is the one chain finder: the second
+    // Dijkstra that used to stand here was a copy of it over a different graph.
+    // `banned` is the walker's own list of nodes whose leg it has had refused ([nav182]): the caller holds it,
+    // this function keeps none of its own
+    std::vector<G3D::Vector3> NodeStages(Player* bot, WorldPosition const& dest, std::vector<uint32> const& banned)
     {
         std::vector<G3D::Vector3> stages;
-        std::vector<TravelNode*> const nodes = sTravelNodeMap.getNodes(WorldPosition(bot));
-        if (nodes.size() < 2)
+        if (!bot || dest.GetMapId() != bot->GetMapId())
             return stages;
-        TravelNode* const start = nodes.front();
-        TravelNode* goal = nullptr;
-        float goalGap = std::numeric_limits<float>::max();
-        for (TravelNode* node : nodes)
-            if (float const gap = node->fDist(dest); gap < goalGap)
-            {
-                goalGap = gap;
-                goal = node;
-            }
-        if (!goal || goal == start)
-            return stages;
-        uint32 const mapId = bot->GetMapId();
-        std::unordered_map<TravelNode*, float> cost{{start, 0.0f}};
-        std::unordered_map<TravelNode*, TravelNode*> previous;
-        using Entry = std::pair<float, TravelNode*>;
-        std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
-        open.emplace(0.0f, start);
-        while (!open.empty())
-        {
-            auto const [reached, node] = open.top();
-            open.pop();
-            if (node == goal)
-                break;
-            if (reached > cost[node])
-                continue;
-            for (auto const& [next, link] : *node->getLinks())
-            {
-                if (!next || !link || link->getPathType() != TravelNodePathType::walk || next->getMapId() != mapId)
-                    continue;
-                float const through = reached + std::max(link->getDistance(), 0.0f);
-                auto const known = cost.find(next);
-                if (known != cost.end() && known->second <= through)
-                    continue;
-                cost[next] = through;
-                previous[next] = node;
-                open.emplace(through, next);
-            }
-        }
-        if (!previous.count(goal))
-            return stages;
-        for (TravelNode* node = goal; node && node != start; node = previous[node])
-        {
-            WorldPosition const* at = node->getPosition();
-            stages.emplace_back(at->GetPositionX(), at->GetPositionY(), at->GetPositionZ());
-        }
-        std::reverse(stages.begin(), stages.end());
+        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
+        G3D::Vector3 const goal(dest.GetPositionX(), dest.GetPositionY(), dest.GetPositionZ());
+        Leader::Travel::WalkGraph::Plan const plan =
+            Leader::Travel::WalkGraph::PlanWalk(bot->GetMap(), here, goal, banned);
+        if (!plan.found)
+            return stages;  // one grid holds both ends, no plan, or no graph: no chain to price in stages
+        stages = plan.points;
         return stages;
     }
 }
@@ -1255,7 +1225,7 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
     if (longWalk)
     {
         G3D::Vector3 const* stage = nullptr;
-        std::vector<G3D::Vector3> const stages = NodeStages(bot, dest);
+        std::vector<G3D::Vector3> const stages = NodeStages(bot, dest, botAI->rpgInfo.graphBans);
         for (G3D::Vector3 const& at : stages)
             if (std::hypot(at.x - here.x, at.y - here.y) <= searchReach &&
                 (at - goal).length() + MOVE_FAR_PROGRESS < disToDest)
@@ -1278,14 +1248,13 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
     // the search behind them. Raising a bound one knows nothing about trades one ignorance for another, so these
     // rows come first: a route row per give-up, with a child row per via tried and its own verdict and reason.
     std::vector<Journal::RouteStop> viaTries;  // the vias this look searched, each with why it fell away
-    uint32 viaCandidates = 0;                  // the travel nodes in reach: what the bound was cutting
-    uint32 viaAlreadyTried = 0;                // vias an earlier look at this destination had already searched
+    // [maze21] NULL, not 0: the graph of this map answered nothing, so nobody looked (rule 7). The old source
+    // answered nothing on EVERY look and the row wrote that down as "0 ways round in reach", a statement about
+    // the world - false at 75 of the 76 stands of b504
+    Optional<uint32> viaCandidates;  // the graph's nodes in reach: what the try bound is cutting into
+    Optional<uint32> viaAlreadyTried;  // vias an earlier look at this destination had already searched
     {
-        struct Via
-        {
-            G3D::Vector3 at;
-            float yards;
-        };
+        using Via = Leader::Travel::Maze::Via;
         std::vector<Via> vias;
         // [maze20] user 2026-11-15: 400 yd and 8 tries, up from 200 and 4. THE PRICE, named: each try is TWO route
         // searches (the leg to the via and the leg on to the goal), so the worst case of one look goes from 8 to 16
@@ -1294,17 +1263,31 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
         // the thing that decided the answer: `candidates` is how many vias were in reach at all, and a look whose
         // candidates never reached the bound was not bounded by it.
         float const viaReach = 2.0f * searchReach;
-        for (TravelNode* node : sTravelNodeMap.getNodes(WorldPosition(bot), viaReach))
-        {
-            WorldPosition const* at = node->getPosition();
-            G3D::Vector3 const spot(at->GetPositionX(), at->GetPositionY(), at->GetPositionZ());
-            if ((spot - here).length() <= MOVE_FAR_PROGRESS)
-                continue;
-            vias.push_back({spot, (spot - here).length() + (goal - spot).length()});
-        }
-        std::sort(vias.begin(), vias.end(), [](Via const& a, Via const& b) { return a.yards < b.yards; });
+        // [maze21] THE SOURCE IS THE GRAPH THAT IS ACTUALLY BUILT. It was the stock TravelNodeMap, and that store
+        // is never loaded in this build (TravelMgr::LoadQuestTravelTable has no caller in the module or the core;
+        // only the `load node` debug command reaches loadNodeStore), so every way round fell away before it was
+        // looked at: 76 of 76 give-up rows of b504 carry "0 in reach, 0 searched" and not one child row, while the
+        // bots were walking multi-hop plans over Leader::Travel::WalkGraph in those very minutes (26 381 [nav181]
+        // lines). Which means the raise of this bound ([maze20], 4 -> 8 tries and 200 -> 400 yd) could not have
+        // changed a single outcome. The user's word 2026-11-15: switch the fifth one over, price it afresh then.
+        // The graph is the ONE place that answers "which places near here" (rule 5); the route search below stays
+        // the one judge of whether a way round is walkable, and of whether it passes a zone the bot must not enter
+        std::vector<Leader::Travel::WalkGraph::NodeAt> nodes;
+        bool const graphAnswered = Leader::Travel::WalkGraph::NodesInReach(bot->GetMap(), here, viaReach, nodes);
+        std::vector<Leader::Travel::Maze::Spot> spots;
+        spots.reserve(nodes.size());
+        for (auto const& node : nodes)
+            spots.push_back({node.pos.x, node.pos.y, node.pos.z});
+        Leader::Travel::Maze::Vias const ways =
+            Leader::Travel::Maze::Of(graphAnswered, spots, {here.x, here.y, here.z}, {goal.x, goal.y, goal.z},
+                                     viaReach, MOVE_FAR_PROGRESS);
+        vias = ways.order;
         constexpr size_t MAZE_VIA_TRIES = 8;  // search cost bound (route searches per look), not a behaviour rule
-        viaCandidates = uint32(vias.size());
+        if (ways.measured)
+        {
+            viaCandidates = ways.candidates;
+            viaAlreadyTried = 0u;  // measured from here on: the skips below are a count, not a silence
+        }
         size_t searched = 0;
         // [maze20] one child row per via searched: the point, its total yards through, and the check that
         // turned it down. `verdict` is a code (a cut), `why` is for the eyes
@@ -1325,13 +1308,15 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
         {
             if (searched >= MAZE_VIA_TRIES)
                 break;
-            if (tried(via.at))
+            G3D::Vector3 const at(via.at.x, via.at.y, via.at.z);
+            if (tried(at))
             {
-                ++viaAlreadyTried;
+                if (viaAlreadyTried)
+                    ++*viaAlreadyTried;
                 continue;
             }
             ++searched;
-            BotPath const leg = FindBotPath(bot, via.at.x, via.at.y, via.at.z);
+            BotPath const leg = FindBotPath(bot, at.x, at.y, at.z);
             if (leg.type != PATHFIND_NORMAL || leg.throughRefused)
             {
                 noteVia(via, "refused",
@@ -1339,10 +1324,10 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
                                            : "no walk of its own from where the bot stands");
                 continue;
             }
-            BotPath const on = FindBotPath(bot, via.at.x, via.at.y, via.at.z, goal.x, goal.y, goal.z);
+            BotPath const on = FindBotPath(bot, at.x, at.y, at.z, goal.x, goal.y, goal.z);
             bool const onward = on.type == PATHFIND_NORMAL ||
                                 (on.type == PATHFIND_INCOMPLETE && (on.actualEnd - goal).length() + MOVE_FAR_PROGRESS <
-                                                                       (via.at - goal).length());
+                                                                       (at - goal).length());
             if (!onward || on.throughRefused)
             {
                 noteVia(via, "refused",
@@ -1350,7 +1335,7 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
                                 : "the walk on from it passes a reach the bot does not fight");
                 continue;
             }
-            if (walkVia(via.at, leg, "another way"))
+            if (walkVia(at, leg, "another way"))
                 return true;
             noteVia(via, "abandoned", "the step to it did not start");
         }
@@ -1386,9 +1371,14 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
     // 4. every way blocked: another task (the quest postponed with the co-op seek for help, the next gather node)
     std::string const why = path.throughRefused ? "every way there passes mobs it does not pull (maze search)"
                                                 : "its walk there ends in a dead end (maze search)";
-    LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {} (vias: {} in reach, {} searched, {} "
-             "already tried before){}{}", bot->GetName(), bot->GetLevel(), goal.x, goal.y, why, viaCandidates,
-             viaTries.size(), viaAlreadyTried, walls.empty() ? "" : "; walls: ", walls);
+    // [maze21] the line says "not measured" where the graph of this map answered nothing: "0 in reach" was read as
+    // "there is nowhere to go round" on every one of the 76 rows of b504, and that was never what happened
+    std::string const viaCount =
+        viaCandidates ? Acore::StringFormat("{} in reach, {} searched, {} already tried before", *viaCandidates,
+                                            viaTries.size(), viaAlreadyTried ? *viaAlreadyTried : 0u)
+                      : std::string("not measured, this map has no built walk graph");
+    LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {} (vias: {}){}{}", bot->GetName(),
+             bot->GetLevel(), goal.x, goal.y, why, viaCount, walls.empty() ? "" : "; walls: ", walls);
     // [maze20] THE GIVE-UP AS A ROUTE EVENT, with the vias as its child rows: the walk's own domain writes it
     // (pb_journal_route / pb_journal_route_stop were empty, waiting for exactly this call). The counts are
     // columns because every question about them is a cut: how many tries went, how many vias there were to try,
@@ -1414,6 +1404,8 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
         // the search's own numbers: the detour is their ratio, and neither of them alone shows it
         route.pathYd = path.length;
         route.straightYd = (goal - here).length();
+        // [maze21] both NULL when the graph of this map answered nothing: "nobody looked" and "there were none"
+        // are different answers, and the row that wrote 0 for both was answering the second
         route.candidates = viaCandidates;        // the vias in reach: what the bound was cutting into
         route.triesSkipped = viaAlreadyTried;    // vias an earlier look at this destination had searched already
         route.stops = viaTries;
@@ -6474,7 +6466,10 @@ CreatureTemplate const* NewRpgBaseAction::TripDanger(Player* bot, float x, float
     // [deaths] user 2026-11-08: the rest of a walk longer than the search goes in stages over the travel nodes
     // (NodeStages): the danger on that chain, not on the straight line across whatever lies between (b338
     // TRIP_REFUSED walks of 1200-7000 yd named camps far off any road)
-    std::vector<G3D::Vector3> const stages = NodeStages(bot, WorldPosition(bot->GetMapId(), x, y, z));
+    PlayerbotAI* const walkerAI = GET_PLAYERBOT_AI(bot);  // a static check: the walker's own ban list, if it has one
+    std::vector<G3D::Vector3> const stages =
+        NodeStages(bot, WorldPosition(bot->GetMapId(), x, y, z),
+                   walkerAI ? walkerAI->rpgInfo.graphBans : std::vector<uint32>());
     if (!stages.empty())
     {
         float const restGap = std::hypot(x - lastX, y - lastY);

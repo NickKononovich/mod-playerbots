@@ -66,6 +66,7 @@ add_executable(pb_unit_tests
     unit/ItemUseTest.cpp
     unit/GoToInstanceTest.cpp  # [tele20] which copy of the dungeon a "go to him" lands in
     unit/HealerPlaceTest.cpp  # [spot91] whether a healer's fight place can exist at all
+    unit/MazeViasTest.cpp  # [maze21] the ways round a refused walk, and "no source answered" against "there are none"
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight/ChainPullJudge.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IssueKey.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/ActorFacts.cpp"

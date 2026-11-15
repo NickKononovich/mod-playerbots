@@ -785,6 +785,45 @@ namespace Leader::Travel::WalkGraph
         return tx >= 0 && ty >= 0 && mesh->getTileAt(tx, ty, 0) != nullptr;
     }
 
+    bool NodesInReach(Map* map, G3D::Vector3 const& at, float reach, std::vector<NodeAt>& out)
+    {
+        out.clear();
+        int const slot = map && !map->Instanceable() ? SlotOf(map->GetId()) : -1;
+        MapGraph const* graph = slot >= 0 ? published[size_t(slot)].load() : nullptr;
+        dtNavMesh const* mesh = map ? map->GetMapCollisionData().GetMMapData().GetNavMesh() : nullptr;
+        dtNavMeshParams const* params = mesh ? mesh->getParams() : nullptr;
+        if (!graph || !params || params->tileWidth <= 0.0f || params->tileHeight <= 0.0f)
+            return false;  // nobody looked: the caller must write NULL and not 0
+        // only the grids the reach touches, and each one's nodes once. The grid size comes from the navmesh itself
+        // (no second copy of it here), and the ring is the grids a circle of `reach` can reach out of this one
+        float const point[3] = {at.y, at.z, at.x};
+        int tx = 0;
+        int ty = 0;
+        mesh->calcTileLoc(point, &tx, &ty);
+        int const ringX = int(reach / params->tileWidth) + 1;
+        int const ringY = int(reach / params->tileHeight) + 1;
+        std::vector<uint32> clusters;
+        for (int x = tx - ringX; x <= tx + ringX; ++x)
+            for (int y = ty - ringY; y <= ty + ringY; ++y)
+            {
+                auto const found = graph->tileCluster.find(TileKey(x, y, 0));
+                if (found == graph->tileCluster.end())
+                    continue;
+                if (std::find(clusters.begin(), clusters.end(), found->second) == clusters.end())
+                    clusters.push_back(found->second);
+            }
+        for (uint32 cluster : clusters)
+        {
+            auto const found = graph->clusterNodes.find(cluster);
+            if (found == graph->clusterNodes.end())
+                continue;
+            for (uint32 n : found->second)
+                if (n < graph->nodes.size() && (graph->nodes[n].pos - at).length() <= reach)
+                    out.push_back({n, graph->nodes[n].pos});
+        }
+        return true;
+    }
+
     Plan PlanWalk(Map* map, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<uint32> const& banned)
     {
         Plan plan;
