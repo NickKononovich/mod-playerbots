@@ -467,7 +467,10 @@ namespace Journal
                         metric.value = double(fields[1].Get<uint64>());
                         metric.valueMax = metric.value;
                         metric.samples = 1u;
-                        metric.fromMs = lastSweepEndedMs;
+                        // the window is never implied, and it is never 0 either: on the first sweep there is no
+                        // previous one behind it, so the window is this instant - a reading of the state now, which
+                        // is what it is, rather than a range stretching back to the epoch
+                        metric.fromMs = lastSweepEndedMs ? lastSweepEndedMs : nowMs;
                         metric.toMs = nowMs;
                         RecordMetric(metric);
                     } while (result->NextRow());
