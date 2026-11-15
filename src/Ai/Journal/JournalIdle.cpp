@@ -144,6 +144,12 @@ namespace
         idle.z = bot->GetPositionZ();
         idle.inDungeon = bot->GetMap() && bot->GetMap()->IsDungeon();
         idle.inCombat = bot->IsInCombat();
+        // [jrn45] the engine state as a COLUMN, not only inside the sentence below. It is already in the key of this
+        // kind (Journal::Key::Standing), and a cause field no query can slice on is a comment: measured on b502,
+        // 200 of the 1 921 standing rows in combat had the engine on its non-combat set, and the only way to count
+        // them was a LIKE over `why`, which this project does not do.
+        idle.inGroup = bot->GetGroup() != nullptr;
+        idle.engineState = uint32(botAI->GetState());
         idle.stoodSec = stoodSec;
         // the radius it stayed inside: the pair is the fact, neither number alone is. [jrn41] it is the widest
         // distance seen WHILE INSIDE the radius, never the step that took it out - the seam holds that
@@ -221,7 +227,11 @@ namespace Journal
 {
     void NoteStanding(Player* bot)
     {
-        if (!Enabled() || !bot || !bot->IsInWorld())
+        // [jrn45] THE EPISODE IS TRACKED WHETHER OR NOT THE JOURNAL WRITES, and the gate moved down to the write for
+        // that reason: this watch is now the ONE OWNER of "the bot has not left its radius, and for this long"
+        // (Journal::StoodSecOf below), and an owner that stops counting when the row-writing is switched off would
+        // leave its readers - GuildCoordinator's STUCK watch among them - with no answer at all.
+        if (!bot || !bot->IsInWorld())
             return;
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         if (!botAI)
@@ -292,8 +302,34 @@ namespace Journal
             // them, so a ten-minute hang is ONE problem whose duration range tops out at 600 s.
             look = Journal::Standing::Observe(shard.episodes[low], sample);
         }
-        if (look.report)
+        if (look.report && Enabled())
             Report(bot, botAI, look);
+    }
+
+    // [jrn45] ONE JUDGE FOR "IT HAS NOT MOVED". This watch keeps the anchor, the radius (max(combat reach, 1.5)) and
+    // the duration; whoever else needs that number READS IT HERE instead of keeping a second anchor of its own.
+    //
+    // The defect this closes is rule 5 and nothing softer. GuildCoordinator::UpdateHealth kept its own anchor, with
+    // the same radius expression, its own reset list and its own 60 s count, and the overlap was measured BY FIELD
+    // IDENTITY on b502: 71 of the 106 `LOOP` alerts have a `standing` row of the same bot_low within +-60 s (25 of
+    // 43 `alert_LOOP` issue rows). The same join cannot be made for `STUCK` in that data - bot_low is 0 in all 57 of
+    // its rows - and joining by name would be identity by name, which is rule 6, so that half is stated as
+    // unmeasurable rather than answered. Two places recomputing one quantity is a defect even before it bites, and
+    // here they were two anchors that could disagree about the very thing both alerts are named after.
+    //
+    // 0 means "no open episode": the bot is moving, or it is not standing at all (dead, sitting, casting, in flight,
+    // being teleported). It is NOT "it has stood for zero seconds", and a reader that treats the two alike will
+    // answer. The duration is the OPEN episode's only - an episode that has just ended is reported in its row and is
+    // no longer a fact about now.
+    float StoodSecOf(ObjectGuid const& bot)
+    {
+        uint32 const low = bot.GetCounter();
+        Shard& shard = Shards()[low % SHARDS];
+        std::lock_guard<std::mutex> lock(shard.lock);
+        auto const it = shard.episodes.find(low);
+        if (it == shard.episodes.end() || !it->second.open)
+            return 0.f;
+        return getMSTimeDiff(it->second.sinceMs, getMSTime()) / float(IN_MILLISECONDS);
     }
 
     void ForgetStanding(uint32 botLow)

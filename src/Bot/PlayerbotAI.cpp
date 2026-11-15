@@ -8801,7 +8801,26 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     // exactly where a chain of deaths came from. A quantity that cannot be measured for two thirds of its subjects
     // is not objective; it only looks objective, and every share computed from it had a denominator nobody stated.
     // The roles are not mixed instead: `role` is a column of pb_journal_idle, so they are read apart.
-    if (!bot->IsInCombat() || !bot->GetGroup() || !bot->GetMap() || !bot->GetMap()->Instanceable())
+    //
+    // [jrn45] AND THE OTHER THREE CONDITIONS ARE GONE TOO, for the same reason and with the same shape of proof.
+    // The test used to be `!bot->IsInCombat() || !bot->GetGroup() || !bot->GetMap()->Instanceable()`, so the
+    // instrument said NOTHING AT ALL about a bot levelling alone in the world - and all eight deaths of the b502
+    // hour happened to exactly those bots. `in_combat` was 1 in all 3 923 windows of that hour, which looks like a
+    // fact about bots and is only a fact about the gate. A condition that decides whether to measure is a worse
+    // thing than a column: a column lets the slice be a WHERE and lets the share state its denominator. So the
+    // three conditions became the columns `in_combat`, `in_group` and `in_dungeon`, and the window is written for
+    // every bot everywhere.
+    //
+    // WHAT THAT COSTS, as a number rather than a feeling (b502, 73 bots): 4 723 window rows over 2.27 h = 2 081
+    // rows/h now, against 73 x 3600/15 = 17 520 rows/h at full coverage - x8.4 - and 1 214 bytes a row
+    // (SUM(DATA_LENGTH+INDEX_LENGTH)/COUNT(*) over PARTITIONS), so 0.06 GB/day becomes 0.51 GB/day beside the
+    // journal's 1.67. Volume is not the limit here (rule 1: retention is the knob, detail never is).
+    //
+    // THE PROBLEM ROW IS NOT WIDENED WITH IT. The issue row below still requires the window to be in combat:
+    // idling in a fight is a defect, while a bot out of combat with no target is the standing watch's subject and
+    // already has its own kind, its own hold-name and its own is_real. Widening the measurement is free; widening
+    // the table the user drives to zero is not.
+    if (!bot->GetMap() || !bot->IsAlive())
     {
         idleDiag.busyEndMs = 0;
         return;
@@ -8902,6 +8921,12 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     record.z = bot->GetPositionZ();
     record.inDungeon = bot->GetMap()->IsDungeon();
     record.inCombat = bot->IsInCombat();
+    // [jrn45] the two facts that used to be the gate, and the one that answers the breakage directly: the engine
+    // state. `engine_state = 1 AND in_combat = 1` is "the engine ran its non-combat set while the core held the bot
+    // in combat" - the shape Thelengyl L27 died in after 113.9 s of a fight with 9.6 s of activity - and until now
+    // it was nowhere in this table, not even as text.
+    record.inGroup = bot->GetGroup() != nullptr;
+    record.engineState = uint32(currentState);
     record.windowSec = getMSTimeDiff(idleDiag.windowStartMs, now) / float(IN_MILLISECONDS);
     record.ticks = idleDiag.ticks;
     record.casts = idleDiag.casts;
@@ -8930,7 +8955,10 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     record.runId = Leader::Runs::OfBot(bot);  // [jrn40] by identity, not by nearness in time
     uint64 const idleRowId = Journal::RecordIdle(record);
 
-    if (idleTicks)
+    // [jrn45] in combat, and that is now CHECKED rather than guaranteed by the gate above: a window out of combat
+    // is a measurement and not a problem (the standing watch owns out-of-combat stillness, with its own kind and
+    // its own hold-name), so widening the instrument must not widen the table that is driven to zero.
+    if (idleTicks && record.inCombat && *record.inCombat)
     {
         // [jrn40] THE KEY IS THE COMBINATION OF NON-ZERO BUCKETS, and that was measured rather than chosen.
         // Keying on the whole line gave 757 "causes" over 3 900 rows; the 757 were the trailing "| actions ..."
@@ -8962,16 +8990,16 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
         shapeFacts.refFailed = idleDiag.refusals[IDLE_REFUSAL_FAILED];
         shapeFacts.refBlocked = idleDiag.refusals[IDLE_REFUSAL_BLOCKED];
         shapeFacts.refNoCandidate = idleDiag.refusals[IDLE_REFUSAL_NO_CANDIDATE];
-        std::string const shape = Journal::Key::Idle(*record.role, shapeFacts);
+        std::string const shape = Journal::Key::Idle(*record.role, shapeFacts, *record.inDungeon);
         // the cause part alone, for the sentence a human reads: the key already carries the role and the kind
         std::string const causes = shape.substr(shape.rfind('|') + 1);
 
         Journal::Issue issue;
         issue.kind = "idle";
-        // a whole window in a fight with no cast at all. [jrn43] "in a fight" is checked, not assumed: this
-        // function returns at once unless the bot is in combat, in a group and inside an instance, so in_combat
-        // was 1 in all 3 923 live windows. The flip side is a measured blind spot of this instrument, named here
-        // because an unnamed one gets read as a zero: it says nothing at all about a bot levelling in the world.
+        // a whole window in a fight with no cast at all. [jrn45] "in a fight" is checked by the `if` above and no
+        // longer guaranteed by a gate: the blind spot this comment used to name - "it says nothing at all about a
+        // bot levelling in the world" - is closed, the window is written for every bot everywhere, and `in_combat`
+        // can now come out 0, which is why the problem row tests it.
         issue.severity = idleDiag.casts ? "mid" : "high";
         // We did not notice this class until the measurement existed, and the measurement is what was broken for
         // two roles out of three: that is the "instrument" class exactly.

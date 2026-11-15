@@ -35,7 +35,9 @@
 
 #include <string>
 
+#include "AggroReason.h"
 #include "AiFactory.h"
+#include "CombatManager.h"
 #include "Creature.h"
 #include "DamageTaken.h"
 #include "Group.h"
@@ -87,6 +89,27 @@ namespace
             if (Creature* mob = ref ? ref->GetOwner() : nullptr; mob && mob->IsAlive())
                 ++mobs;
         return mobs;
+    }
+
+    // [jrn44] WAS THE BOT IN COMBAT WITH ANYBODY BUT THIS MOB. `bot->IsInCombat()` cannot answer that question here
+    // and answering it with IsInCombat() is what killed the reason code: Creature::AtEngage is reached only after the
+    // core has already joined these two, so IsInCombat() is true for the FIRST mob of every fight. Measured on b502:
+    // 4 661 of 4 661 rows said `add`, and 2 621 of them were the first mob of a fight whose own `mobs` count was 0.
+    //
+    // The combat references are the right list rather than the threat list: the reference for this very mob exists at
+    // this instant (it is why IsInCombat() is true), so excluding its guid is exact, while the threat list is written
+    // a moment earlier or later depending on who engaged whom. Suppressed references are skipped for the same reason
+    // CombatManager::HasCombat skips them - a suppressed reference is not a fight.
+    bool InCombatWithOtherThan(Player* bot, ObjectGuid const& mob)
+    {
+        CombatManager const& combat = bot->GetCombatManager();
+        for (auto const& [guid, ref] : combat.GetPvECombatRefs())
+            if (guid != mob && ref && !ref->IsSuppressedFor(bot))
+                return true;
+        for (auto const& [guid, ref] : combat.GetPvPCombatRefs())
+            if (guid != mob && ref && !ref->IsSuppressedFor(bot))
+                return true;
+        return false;
     }
 
     // Only bots of this module get rows: a real player's fight is not the instrument's subject, and a unit with no
@@ -186,50 +209,41 @@ namespace Journal
             aggro.orderTargetLow = order.target.GetCounter();
         }
 
-        // THE REASON CODE. Every branch below is a fact at this instant, and the one case the user asked for -
-        // "an error of the estimate" - is the branch where a judged pull was open and the mob went for somebody the
-        // plan did not put in front of it, or for a mob the plan was not about. That is now a WHERE clause.
-        if (bot->IsInCombat())
-        {
-            aggro.reason = "add";
-            aggro.why = "a mob joined a fight already running: " + aggro.botName + " was in combat when " +
-                        aggro.mobName + " engaged it";
-            if (owner)
-                aggro.expected = false;
-        }
-        else if (owner)
-        {
-            bool const onThePlansTank = owner == bot;
-            bool const thePlansMob = order.target == mob->GetGUID();
-            aggro.expected = onThePlansTank && thePlansMob;
-            if (*aggro.expected)
-            {
-                aggro.reason = "came";
-                aggro.why = "the issued pull arrived as planned: " + aggro.mobName + " engaged the tank it was " +
-                            "pulled by (" + std::string(Leader::MethodName(order.method)) + ")";
-            }
-            else
-            {
-                aggro.reason = "estimate";
-                aggro.why = "AN ERROR OF THE ESTIMATE: the pull of " + order.targetName + " by " +
-                            aggro.tankName + " (" + std::string(Leader::MethodName(order.method)) + ", " +
-                            std::to_string(order.expected) + " mob(s) expected) put " +
-                            (onThePlansTank ? std::string("a mob it did not count (") + aggro.mobName + ")"
-                                            : aggro.mobName + " on " + aggro.botName + ", who is not its tank");
-            }
-        }
-        else if (bot->isMoving())
-        {
-            aggro.reason = "path";
-            aggro.why = "hooked on the way: " + aggro.botName + " was walking and out of combat when " +
+        // [jrn44] THE REASON CODE, decided by the seam (Journal::AggroReason) over the facts of this instant. The
+        // facts are gathered here, where they are held; the choice between the codes is asserted by a test over real
+        // b502 rows, because it had been wrong for every row the table ever had.
+        AggroReason::Facts facts;
+        facts.inCombatWithOthers = InCombatWithOtherThan(bot, mob->GetGUID());
+        facts.pullOrderOpen = owner != nullptr;
+        facts.onThePlansTank = owner == bot;
+        facts.thePlansMob = order.target == mob->GetGUID();
+        facts.moving = bot->isMoving();
+        aggro.inCombatOther = facts.inCombatWithOthers;
+        aggro.reason = AggroReason::Of(facts);
+        // `expected` answers the plan's own question and keeps answering it for an addition too; with no order open
+        // it stays unset, because "no order" is not "the plan was wrong" and a 0 there would say it was.
+        if (facts.pullOrderOpen)
+            aggro.expected = AggroReason::Expected(facts);
+
+        // the same reason in words, for the eyes. One sentence per code, built from what the code was decided on.
+        std::string const method = facts.pullOrderOpen ? std::string(Leader::MethodName(order.method)) : std::string();
+        if (aggro.reason == "add")
+            aggro.why = "a mob joined a fight already running: " + aggro.botName + " was in combat with somebody "
+                        "other than " + aggro.mobName + " when it engaged";
+        else if (aggro.reason == "estimate")
+            aggro.why = "AN ERROR OF THE ESTIMATE: the pull of " + order.targetName + " by " + aggro.tankName + " (" +
+                        method + ", " + std::to_string(order.expected) + " mob(s) expected) put " +
+                        (facts.onThePlansTank ? std::string("a mob it did not count (") + aggro.mobName + ")"
+                                              : aggro.mobName + " on " + aggro.botName + ", who is not its tank");
+        else if (aggro.reason == "path")
+            aggro.why = "hooked on the way: " + aggro.botName + " was walking and in combat with nobody else when " +
                         aggro.mobName + " engaged it, and no pull order named it";
-        }
+        else if (facts.pullOrderOpen)
+            aggro.why = "the issued pull arrived as planned: " + aggro.mobName + " engaged the tank it was pulled "
+                        "by (" + method + ")";
         else
-        {
-            aggro.reason = "came";
-            aggro.why = "it came by itself: " + aggro.botName + " stood still and out of combat, and no pull "
-                        "order named " + aggro.mobName;
-        }
+            aggro.why = "it came by itself: " + aggro.botName + " stood still and in combat with nobody else, and "
+                        "no pull order named " + aggro.mobName;
 
         RecordAggro(aggro);
     }

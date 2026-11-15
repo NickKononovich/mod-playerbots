@@ -84,7 +84,7 @@ namespace Journal::Key
         uint32_t refNoCandidate{0};
     };
 
-    std::string Idle(std::string const& role, IdleBuckets const& buckets);
+    std::string Idle(std::string const& role, IdleBuckets const& buckets, bool inDungeon);
 
     // `wait_behind`: a bot walks to meet a member its own follow does not bring within the group reward distance
     // (NewRpgAction.cpp). `sameZone` is the cause field, and it replaced one that could not differ: the emitter's

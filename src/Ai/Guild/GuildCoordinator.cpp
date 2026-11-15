@@ -11579,6 +11579,7 @@ void GuildCoordinator::UpdateHealth()
         {
             st.seen = false;
             st.anchorAt = 0;
+            st.progressAt = 0;  // [jrn45] the progress clock restarts with the bot, as its episode does
             continue;
         }
         ++online;
@@ -11648,6 +11649,7 @@ void GuildCoordinator::UpdateHealth()
         {
             ++dead;
             st.anchorAt = 0;
+            st.progressAt = 0;  // [jrn45] as above: a death ends the standing episode, so both restart together
             st.stuckAlerted = false;
             st.stillWhy.clear();  // [ui11]
             continue;
@@ -11725,19 +11727,34 @@ void GuildCoordinator::UpdateHealth()
         }
 
         // stuck: out of combat, alive, not moved beyond its combat reach for 60 s, no legitimate wait
-        float const reach = std::max(p->GetCombatReach(), 1.5f);
-        if (p->IsInCombat() || !st.anchorAt || st.mapId != p->GetMapId() || skillRose || casted || moneyMoved ||
-            p->GetExactDist(st.ax, st.ay, st.az) > reach)
+        //
+        // [jrn45] ONE JUDGE FOR "IT HAS NOT MOVED". This watch used to keep its OWN anchor (mapId / ax / ay / az /
+        // anchorAt) with its own copy of the radius expression max(combat reach, 1.5), while the standing watch
+        // (Journal::NoteStanding, every bot every tick) kept another one of exactly the same quantity. Two places
+        // recomputing one number is rule 5, a defect before it bites, and these two were measured overlapping BY
+        // FIELD IDENTITY on b502: 71 of the 106 `LOOP` alerts have a `standing` row of the same bot_low within
+        // +-60 s (25 of 43 `alert_LOOP` issue rows). For `STUCK` the same join cannot be made in that data at all -
+        // bot_low is 0 in all 57 of its rows - and joining by name would be identity by name, which is rule 6. The
+        // duration now comes from the owner and the four anchor fields are gone: they had no other reader.
+        //
+        // WHAT STAYS THIS WATCH'S OWN, because it is a DIFFERENT quantity: progress made WITHOUT moving. A skill that
+        // rose, a cast, a coin that changed hands are progress in place, and the standing watch neither knows nor
+        // should know them (a smelt or a fishing channel does end its episode as a cast, but a vendor sale does not).
+        // So the alert still needs both: the bot has not left its radius for 60 s AND it has made no progress in
+        // place for 60 s - which is exactly what the old single anchor said, since either one reset it.
+        float const stoodSec = Journal::StoodSecOf(p->GetGUID());
+        if (skillRose || casted || moneyMoved || !st.progressAt)
+            st.progressAt = now;
+        // 0 is "no open episode" (it moved, or it is not standing at all), never "it stood for 0 s"
+        if (p->IsInCombat() || stoodSec <= 0.0f || now - st.progressAt < STUCK_SECONDS)
         {
-            st.mapId = p->GetMapId();
-            st.ax = p->GetPositionX();
-            st.ay = p->GetPositionY();
-            st.az = p->GetPositionZ();
             st.anchorAt = now;
             st.stuckAlerted = false;
             st.stillWhy.clear();  // [ui11]
             continue;
         }
+        // the owner's duration, carried in the field every reader below already uses ("(now - st.anchorAt) s")
+        st.anchorAt = now - uint32(stoodSec);
         // [diag253] a legitimate wait (Resurrection Sickness, a flight, a boat / zeppelin / tram, a rest, ...) is no
         // stuck time: the anchor moves on with it, the 60 s count from the wait's end. b424 Dekorhan L17: "STUCK 440 s"
         // right after its 416 s sickness wait ([deaths14] RECOVER) and its rest to full - the waits were counted
@@ -11750,6 +11767,11 @@ void GuildCoordinator::UpdateHealth()
                 bool const leaderStands = lead != bots_.end() && lead->second.anchorAt &&
                                           now - lead->second.anchorAt >= STUCK_SECONDS;
                 st.anchorAt = now;
+                // [jrn45] a wait is not stuck time, and the 60 s count restarts when it ENDS ([diag253]). The
+                // standing episode goes on through such a wait by design - its duration is the number worth having -
+                // so the restart has to be kept here, in this watch's own clock, or the first tick after the wait
+                // would alert at once with the wait's own seconds.
+                st.progressAt = now;
                 st.stillWhy = (leaderStands ? "its leader stands (judged there): " : "waits: ") + st.ownerLabel;
                 continue;
             }
@@ -11757,6 +11779,7 @@ void GuildCoordinator::UpdateHealth()
         if (!wait.empty())
         {
             st.anchorAt = now;
+            st.progressAt = now;  // [jrn45] as above: the count restarts at the wait's end, not during it
             st.stillWhy = "waits: " + wait;  // [ui11] BotControl: why it stands
             continue;
         }

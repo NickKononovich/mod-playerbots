@@ -158,7 +158,7 @@ namespace
 // that could not be cast, and a fix for one of them would turn a test over this key green while the other lived on.
 TEST(IssueKeyIdle, TheRefusalBehindOtherIsPartOfTheCause)
 {
-    EXPECT_NE(Journal::Key::Idle("dps", UselessAndFailed()), Journal::Key::Idle("dps", ImpossibleOnly()))
+    EXPECT_NE(Journal::Key::Idle("dps", UselessAndFailed(), true), Journal::Key::Idle("dps", ImpossibleOnly(), true))
         << "two windows whose only idle buckets are gcd and `other` share one key although the engine named "
            "different refusals: `other` is not a cause, it is the hole where the cause goes";
 }
@@ -168,13 +168,14 @@ TEST(IssueKeyIdle, TheRefusalBehindOtherIsPartOfTheCause)
 // Without this, a key per combination of counts would fan one cause into a staircase - trap #2.
 TEST(IssueKeyIdle, TheSameRefusalInTwoWindowsIsOneKey)
 {
-    EXPECT_EQ(Journal::Key::Idle("dps", ImpossibleOnly()), Journal::Key::Idle("dps", ImpossibleOnlyOtherBot()))
+    EXPECT_EQ(Journal::Key::Idle("dps", ImpossibleOnly(), true),
+              Journal::Key::Idle("dps", ImpossibleOnlyOtherBot(), true))
         << "two windows with the same buckets and the same refusal gave two keys";
     // ... and the buckets and the role go on being causes, as they were
-    EXPECT_NE(Journal::Key::Idle("healer", ImpossibleOnly()), Journal::Key::Idle("dps", ImpossibleOnly()));
+    EXPECT_NE(Journal::Key::Idle("healer", ImpossibleOnly(), true), Journal::Key::Idle("dps", ImpossibleOnly(), true));
     Journal::Key::IdleBuckets moving = ImpossibleOnly();
     moving.moving = 4;
-    EXPECT_NE(Journal::Key::Idle("dps", moving), Journal::Key::Idle("dps", ImpossibleOnly()));
+    EXPECT_NE(Journal::Key::Idle("dps", moving, true), Journal::Key::Idle("dps", ImpossibleOnly(), true));
 }
 
 // A window with no `other` at all has no refusal to name, and its key must stay exactly what it was: the keys
@@ -184,7 +185,25 @@ TEST(IssueKeyIdle, AWindowWithoutOtherKeepsTheKeyItHad)
     Journal::Key::IdleBuckets plain;
     plain.gcd = 18;
     plain.moving = 3;
-    EXPECT_EQ(Journal::Key::Idle("dps", plain), "idle|dps|moving+gcd");
+    EXPECT_EQ(Journal::Key::Idle("dps", plain, true), "idle|dps|moving+gcd");
+}
+
+// [jrn45] WHERE IT IDLED IS A CAUSE, now that the window is measured outside instances too. Until this build the
+// emitter returned at once unless the bot was in a group inside an instance (`in_combat` was 1 in all 3 923 windows
+// of b502's hour, which is a fact about the gate and not about bots), so this field could not differ in any row the
+// key ever wrote. A dungeon five idling on the global cooldown and a bot levelling alone in the world idling on it
+// are two different defects.
+TEST(IssueKeyIdle, TheSameBucketsInADungeonAndInTheWorldAreTwoKeys)
+{
+    Journal::Key::IdleBuckets plain;
+    plain.gcd = 18;
+    plain.moving = 3;
+    EXPECT_NE(Journal::Key::Idle("dps", plain, true), Journal::Key::Idle("dps", plain, false));
+    // ... and the dungeon key keeps its exact text, so the keys counted on b501 and b502 go on meaning what they
+    // meant: the suffix is added only for the case that was never measured (the same rule the empty hold name of
+    // Standing() follows).
+    EXPECT_EQ(Journal::Key::Idle("dps", plain, true), "idle|dps|moving+gcd");
+    EXPECT_EQ(Journal::Key::Idle("dps", plain, false), "idle|dps|moving+gcd|world");
 }
 
 // [jrn43] `stuck_target`: THE KEY SAID SOMETHING THAT CANNOT BE TRUE. The detector is called with the engine's own

@@ -657,9 +657,17 @@ private:
         std::string foundRefused;
         uint8 foundRefusedLevel{0};
         // health
-        uint32 mapId{0};
-        float ax{0}, ay{0}, az{0};
+        // [jrn45] the anchor fields (mapId / ax / ay / az) are GONE: "it has not left its radius, and for this long"
+        // has one owner now, the standing watch (Journal::StoodSecOf), and this watch read its own copy of exactly
+        // that quantity with its own copy of the radius. `anchorAt` stays as the field every reader below already
+        // uses, filled from the owner's duration rather than computed here.
         uint32 anchorAt{0};
+        // ... and this is what remains THIS watch's own, because it is a different quantity: when the bot last did
+        // something that is not stuck time. Two kinds of thing, neither of them the standing watch's business -
+        // progress made WITHOUT moving (a profession skill that rose, a cast, a coin that changed hands), and a
+        // legitimate wait ending ([diag253]: the 60 s count starts when the wait ends, never during it, and the
+        // standing episode deliberately runs on through such a wait because its duration is the number worth having).
+        uint32 progressAt{0};
         bool stuckAlerted{false};
         std::string stuckKey;
         // [diag252] a fight without progress: the time its foes' health last fell (or the fight began), their

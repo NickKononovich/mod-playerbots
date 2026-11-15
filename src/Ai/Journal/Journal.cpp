@@ -179,7 +179,7 @@ namespace Journal
         char const* const COLUMNS_AGGRO =
             "(id, boot_id, at_ms, hour_bucket, bot_name, bot_low, role, bot_health_pct, bot_in_combat, bot_moving, "
             "mob_name, mob_entry, mob_low, mob_level, map_id, zone_id, pos_x, pos_y, pos_z, reason, why, tank_name, "
-            "tank_low, expected, order_target_entry, order_target_low, run_id, decision_id, build)";
+            "tank_low, expected, order_target_entry, order_target_low, run_id, decision_id, build, in_combat_other)";
         char const* const COLUMNS_DEATH =
             "(id, boot_id, at_ms, hour_bucket, bot_name, bot_low, bot_level, bot_class, role, spec, map_id, zone_id, "
             "area_id, pos_x, pos_y, pos_z, in_dungeon, killer_name, killer_entry, killer_low, killer_level, "
@@ -203,7 +203,8 @@ namespace Journal
             "pos_y, pos_z, in_dungeon, in_combat, window_sec, ticks, casts, cast_wait, non_cast, no_target, "
             "range_los, moving, gcd, threat, leader_hold, other, ref_unsaid, ref_useless, ref_impossible, "
             "ref_prereq, ref_failed, ref_blocked, ref_no_candidate, gap_n, gap_avg_ms, gap_max_ms, gap_over_150, "
-            "gap_over_400, top_actions, stood_sec, stood_yd, doing, held_by, why, run_id, build)";
+            "gap_over_400, top_actions, stood_sec, stood_yd, doing, held_by, why, run_id, build, in_group, "
+            "engine_state)";
         // [jrn43] target_zone_id: the target's own zone - for `wait_behind`, the member's
         char const* const COLUMNS_STUCK =
             "(id, boot_id, at_ms, hour_bucket, kind, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
@@ -1074,8 +1075,13 @@ namespace Journal
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', "
                              "decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
                              "build VARCHAR(16) NOT NULL DEFAULT '', "
+                             // [jrn44] the fact the reason code is decided on, as its own indexed column: was the
+                             // bot in combat with anybody OTHER than this mob. NULL in every pre-[jrn44] row, and
+                             // that is "not measured" rather than "no".
+                             "in_combat_other TINYINT UNSIGNED NULL, "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), "
                              "KEY reason_at (reason, at_ms), KEY bot_at (bot_low, at_ms), "
+                             "KEY in_combat_other_at (in_combat_other, at_ms), "
                              "KEY mob_at (mob_entry, mob_low, at_ms), KEY where_at (map_id, zone_id, at_ms), "
                              "KEY expected_at (expected, at_ms), KEY tank_at (tank_low, at_ms), "
                              "KEY reason_bot (reason, bot_low, at_ms), KEY run_at (run_id, at_ms), "
@@ -1219,12 +1225,21 @@ namespace Journal
                              "held_by VARCHAR(48) NOT NULL DEFAULT '', "
                              "why VARCHAR(512) NOT NULL DEFAULT '', run_id VARCHAR(48) NOT NULL DEFAULT '', "
                              "build VARCHAR(16) NOT NULL DEFAULT '', "
+                             // [jrn45] the two facts this instrument's old gate used to DECIDE on instead of
+                             // recording: whether the bot was in a group, and which engine it was running. The
+                             // engine state is what makes "the engine says non-combat while the core holds the bot
+                             // in combat" a WHERE clause - it lived only inside the `why` sentence, and this
+                             // project does not filter by text. NULL = the emitter did not pass it (every row
+                             // written before [jrn45]); 0 is BOT_STATE_COMBAT and is not absence.
+                             "in_group TINYINT UNSIGNED NULL, engine_state TINYINT UNSIGNED NULL, "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY event_at (event, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY role_at (role, at_ms), "
                              "KEY where_at (map_id, zone_id, at_ms), KEY other_at (other, at_ms), "
                              "KEY stood_at (stood_sec, at_ms), KEY gap_at (gap_max_ms, at_ms), "
                              "KEY held_at (held_by, at_ms), "
                              "KEY casts_at (casts, at_ms), KEY build_at (build, at_ms), "
+                             "KEY engine_combat_at (engine_state, in_combat, at_ms), "
+                             "KEY group_at (in_group, at_ms), "
                              "KEY run_at (run_id, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn40] idleness measured by fact: the diagnostics window and the standing "
@@ -1592,7 +1607,7 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_aggro",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{})",
+                                "{},{},{})",
                                 Writer::Instance().NextId(), BootId(), nowMs, nowMs / MS_PER_HOUR,
                                 Quoted(aggro.botName, 32), aggro.botLow, OrNull(aggro.role, 8),
                                 OrNull(aggro.botHealthPct), OrNull(aggro.botInCombat), OrNull(aggro.botMoving),
@@ -1600,7 +1615,8 @@ namespace Journal
                                 aggro.mapId, aggro.zoneId, Real(aggro.x), Real(aggro.y), Real(aggro.z),
                                 Quoted(aggro.reason, 16), Quoted(aggro.why, 512), Quoted(aggro.tankName, 32),
                                 aggro.tankLow, OrNull(aggro.expected), aggro.orderTargetEntry, aggro.orderTargetLow,
-                                Quoted(aggro.runId, 48), aggro.decisionId, Quoted(Config().build, 16)));
+                                Quoted(aggro.runId, 48), aggro.decisionId, Quoted(Config().build, 16),
+                                OrNull(aggro.inCombatOther)));
     }
 
     uint64 RecordDeath(Death const& death)
@@ -1681,7 +1697,7 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_idle",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(idle.event, 12),
                                 Quoted(idle.botName, 32), idle.botLow, OrNull(idle.botLevel), OrNull(idle.role, 8),
                                 idle.mapId, idle.zoneId, Real(idle.x), Real(idle.y), Real(idle.z),
@@ -1695,7 +1711,8 @@ namespace Journal
                                 OrNull(idle.gapMaxMs), OrNull(idle.gapOver150), OrNull(idle.gapOver400),
                                 Quoted(idle.topActions, 255), OrNull(idle.stoodSec), OrNull(idle.stoodYd),
                                 Quoted(idle.doing, 96), Quoted(idle.heldBy, 48), Quoted(idle.why, 512),
-                                Quoted(idle.runId, 48), Quoted(Config().build, 16)));
+                                Quoted(idle.runId, 48), Quoted(Config().build, 16), OrNull(idle.inGroup),
+                                OrNull(idle.engineState)));
         return id;
     }
 

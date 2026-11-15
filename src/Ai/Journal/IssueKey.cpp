@@ -47,7 +47,7 @@ namespace Journal::Key
                (actionRunning.empty() ? "its engine named no action" : "its engine named actions and none ran");
     }
 
-    std::string Idle(std::string const& role, IdleBuckets const& buckets)
+    std::string Idle(std::string const& role, IdleBuckets const& buckets, bool inDungeon)
     {
         std::string shape;
         auto const bucket = [&shape](char const* name, uint32_t value)
@@ -92,7 +92,21 @@ namespace Journal::Key
             if (!refusals.empty())
                 shape += "(" + refusals + ")";
         }
-        return "idle|" + role + "|" + shape;
+        // [jrn45] AND WHERE IT IDLED, now that the window is measured outside instances too. Until this build the
+        // emitter returned at once unless the bot was in a group inside an instance, so every row this key ever
+        // wrote was a five in a dungeon and the field could not differ; with a bot levelling alone in the world
+        // measured as well, a dungeon five's `gcd+other` and a solo bot's `gcd+other` are two different defects and
+        // one key would hide a fix for either behind the other's green test.
+        //
+        // THE SUFFIX IS ADDED ONLY FOR THE NEW CASE, exactly as [jrn42] added the hold name: the keys already
+        // measured on b501 and b502 keep their text to the byte, so the counts in this project's notes go on
+        // meaning what they meant.
+        //
+        // THE ENGINE STATE IS DELIBERATELY NOT IN THIS KEY, although it is in the row as a column and in the
+        // sibling Standing() key. A window is 15 s of ticks and the engine may switch inside it, so the state is
+        // not a property of the episode the way the role and the place are - the same reason the action trace is
+        // kept out. `engine_state` beside `in_combat` in pb_journal_idle is where that slice is taken.
+        return "idle|" + role + "|" + shape + (inDungeon ? "" : "|world");
     }
 
     std::string WaitBehind(bool sameZone)

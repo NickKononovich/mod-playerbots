@@ -415,7 +415,13 @@ namespace Journal
         uint32 botLow = 0;
         Optional<std::string> role;
         Optional<float> botHealthPct;
-        Optional<bool> botInCombat;  // it was already fighting when this mob engaged it
+        // [jrn44] `bot_in_combat` IS THE CORE'S FLAG AND NOTHING MORE, and at this instant it CANNOT come out false:
+        // this hook runs after the core has joined the bot and the mob, so it was 1 in all 4 661 live rows. It stays
+        // as the raw reading of that flag; the fact the reason code is actually decided on is the next field.
+        Optional<bool> botInCombat;
+        // was the bot in combat with anybody OTHER than this mob - the fact "already fighting" has to mean, and the
+        // repair of the reason code. NULL in every row written before [jrn44]: not measured, which is not a 0.
+        Optional<bool> inCombatOther;
         Optional<bool> botMoving;    // it was walking: what separates "hooked on the way" from "it came"
 
         std::string mobName;
@@ -738,6 +744,12 @@ namespace Journal
         float x = 0.f, y = 0.f, z = 0.f;
         Optional<bool> inDungeon;
         Optional<bool> inCombat;
+        // [jrn45] the two facts the diagnostics window used to be GATED on instead of carrying. A gate decides and
+        // says nothing; a column lets the slice be a WHERE. `engineState` is BotState (0 = BOT_STATE_COMBAT), so
+        // "the engine ran the non-combat set while the core held the bot in combat" - the shape Thelengyl died in -
+        // is `engine_state = 1 AND in_combat = 1`, with no LIKE over `why`.
+        Optional<bool> inGroup;
+        Optional<uint32> engineState;
 
         Optional<float> windowSec;  // the window the counts below cover: a count without its window is not a count
         Optional<uint32> ticks;
@@ -872,6 +884,16 @@ namespace Journal
 
     // Drops a bot's standing episode (its logout or removal): the state is per bot and must not outlive it.
     void ForgetStanding(uint32 botLow);
+
+    // [jrn45] HOW LONG THIS BOT HAS NOT LEFT ITS OWN RADIUS - max(combat reach, 1.5 yd) - as the ONE OWNER of that
+    // quantity. GuildCoordinator's STUCK watch kept a second anchor with the same radius, its own reset list and its
+    // own 60 s count: on b502, 71 of the 106 `LOOP` alerts have a `standing` row of the same bot_low within +-60 s,
+    // and rule 5 makes a second place recomputing one number a defect before it bites. The watch tracks the episode
+    // whether or not the journal writes rows, so a reader always has an answer.
+    //
+    // 0 IS "NO OPEN EPISODE" - moving, or not standing at all (dead, sitting, casting, in flight, teleporting) - and
+    // not "it has stood for zero seconds". A reader that confuses the two will answer and be wrong.
+    float StoodSecOf(ObjectGuid const& bot);
 
     // [jrn30] The three callers that turn a core hook into one of the rows above (JournalFight.cpp). They are
     // separate from Record*() so that the script layer stays a one-line call and the facts of each event are
