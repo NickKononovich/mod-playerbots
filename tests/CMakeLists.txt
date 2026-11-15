@@ -62,6 +62,7 @@ add_executable(pb_unit_tests
     unit/ManaLineTest.cpp
     unit/IdleWindowTest.cpp
     unit/AggroReachTest.cpp
+    unit/ItemUseTest.cpp
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight/ChainPullJudge.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IssueKey.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/ActorFacts.cpp"

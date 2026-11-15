@@ -25,6 +25,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "ItemUse.h"  // [death475] was the item use accepted by the core, as a seam without the world
 #include "SoloSafety.h"
 #include "Spell.h"
 #include "SpellAuras.h"
@@ -510,6 +511,27 @@ namespace
             if (Bag* container = bot->GetBagByPos(bag))
                 for (uint32 slot = 0; slot < container->GetBagSize(); ++slot)
                     consider(container->GetItemByPos(uint8(slot)));
+    }
+
+    // [death475] the four facts the item-use seam asks for, read from the core in one place. `item` may be null
+    // (then nothing is usable and nothing was accepted - a missing item is not a cooldown)
+    Rpg::ItemUse::Facts ItemFacts(Player* bot, Item* item, uint32 spell)
+    {
+        Rpg::ItemUse::Facts facts;
+        if (!bot || !item)
+        {
+            facts.spellOnCooldown = true;  // not usable, and nothing to report as accepted
+            return facts;
+        }
+        facts.isPotion = item->IsPotion();
+        // [lead481] a potion drunk IN COMBAT carries no cooldown at all: Spell::SendSpellCooldown records the item
+        // in Player::m_lastPotionId instead and Spell::CheckCast refuses every further potion while it is set. The
+        // core clears it when the combat ends (Player::UpdatePotionCooldown) - a state, never a clock
+        uint32 const lastPotion = bot->GetLastPotionId();
+        facts.potionAlreadyDrunk = lastPotion != 0;
+        facts.lastPotionIsThisItem = lastPotion == item->GetEntry();
+        facts.spellOnCooldown = spell && bot->HasSpellCooldown(spell);
+        return facts;
     }
 
     Item* FindItem(Player* bot, uint32 entry)
@@ -1689,13 +1711,27 @@ namespace SurvivalKit
     // from the same rule: one quantity, one judge. Before, the price counted SurvivalKit::HealPoints - every heal
     // item of every shared cooldown plus as many casts of the best heal per mana as the whole pool paid for - while
     // the executor only ever used this single biggest one.
+    // [death475] "castable now" is what this comment has always promised, and for an ITEM nothing was asked at all:
+    // the test read `piece.item || !bot->HasSpellCooldown(piece.spell)`, so the cooldown question was skipped for
+    // every item, and the pick was "it is in the bags". A potion is worse than that - drunk in combat it carries no
+    // cooldown either ([lead481]), so the SAME potion was offered on every tick for ever. An item is now asked the
+    // same question in the same place (Rpg::ItemUse::UsableNow over the core's own state), and "usable" means the
+    // core will take it
+    bool UsablePieceNow(PlayerbotAI* botAI, Player* bot, Piece const& piece)
+    {
+        if (!piece.item)
+            return !bot->HasSpellCooldown(piece.spell) && Castable(botAI, bot, piece, bot);
+        Item* item = FindItem(bot, piece.item);
+        return item && bot->CanUseItem(item) == EQUIP_ERR_OK &&
+               Rpg::ItemUse::UsableNow(ItemFacts(bot, item, piece.spell));
+    }
+
     Piece const* BestOnTheMove(PlayerbotAI* botAI, Player* bot, std::vector<Piece> const& pieces)
     {
         Piece const* best = nullptr;
         for (Piece const& piece : pieces)
             if (piece.kind == Kind::Heal && piece.amount > 0.0f && !piece.needsWindow && (piece.item || piece.instant) &&
-                (piece.item || !bot->HasSpellCooldown(piece.spell)) && (!best || piece.amount > best->amount) &&
-                (piece.item ? FindItem(bot, piece.item) != nullptr : Castable(botAI, bot, piece, bot)))
+                (!best || piece.amount > best->amount) && UsablePieceNow(botAI, bot, piece))
                 best = &piece;
         return best;
     }
@@ -1724,7 +1760,12 @@ namespace SurvivalKit
                 SpellCastTargets targets;
                 targets.SetUnitTarget(bot);
                 bot->CastItemUseSpell(item, targets, 1, 0);
-                cast = true;
+                // [death475] Player::CastItemUseSpell returns void, so the success is taken from the CORE'S OWN
+                // STATE after the call and never assumed: the potion recorded as this combat's drink, or the on-use
+                // spell put on cooldown. A use the core did not take reports false, and the flee tick then goes on
+                // to the run exactly as it does when there is no heal to cast at all - no new rule of choice, no
+                // timer. This is the `cast = true` that ate 45 of Selalleas' 46 flee ticks
+                cast = Rpg::ItemUse::Accepted(ItemFacts(bot, item, best->spell));
             }
         }
         else
