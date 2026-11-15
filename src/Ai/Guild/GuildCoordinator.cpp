@@ -41,8 +41,10 @@
 #include "GuildHonest.h"
 #include "GuildLedger.h"  // [eco190]
 #include "GuildRiding.h"   // [mount1]
+#include "IssueKey.h"  // [jrn43] Journal::Real: which alert kinds repeat a domain row
 #include "Item.h"
 #include "ItemUsageValue.h"
+#include "LeaderOrders.h"  // [jrn43] Leader::Runs::OfBot: the run an alert's subject is in
 #include "Log.h"
 #include "LootMgr.h"          // [questrate] the quest items' creature sources
 #include "LootObjectStack.h"  // [questrate] chest places
@@ -1068,6 +1070,32 @@ void GuildCoordinator::Decision(std::string text)
         decisions_.pop_back();
 }
 
+namespace
+{
+    // [jrn43] WHO THE ALERT IS ABOUT, filled in ONE place for every kind. Measured on b502: of the 136 alert rows,
+    // only the 82 LOOP ones carried a subject - DEATH (9), STUCK (43) and STUCK_COMBAT (2) had bot_name '',
+    // bot_low 0, map_id 0 and pos 0,0,0, while the bot's name, level and coordinates stood inside the alert's
+    // TEXT. The identity was therefore available only to a LIKE over text, which is the one thing the journal's
+    // first rule forbids, and the same gap cost every alert its run: run_id was '' in all 136 rows, because the
+    // run is read from the bot and no site but the loop detector passed one.
+    // Each site HAS the player right there, so nothing new is read about the world here - this is the same facts
+    // taken from the same object, in one place instead of four.
+    void AlertSubject(Journal::Alert& facts, Player* subject)
+    {
+        if (!subject)
+            return;  // left empty on purpose: "the funnel had no player", which is not bot 0 at (0,0,0)
+        facts.botName = subject->GetName();
+        facts.botLow = subject->GetGUID().GetCounter();
+        facts.botLevel = subject->GetLevel();
+        facts.mapId = subject->GetMapId();
+        facts.zoneId = subject->GetZoneId();
+        facts.x = subject->GetPositionX();
+        facts.y = subject->GetPositionY();
+        facts.z = subject->GetPositionZ();
+        facts.runId = Leader::Runs::OfBot(subject);  // by identity, not by nearness in time
+    }
+}  // namespace
+
 void GuildCoordinator::Alert(std::string text, Journal::Alert facts)
 {
     LOG_INFO("playerbots", "[alert] {}", text);
@@ -1111,9 +1139,20 @@ void GuildCoordinator::Alert(std::string text, Journal::Alert facts)
     // An alert is raised from facts the coordinator holds, but WHY the activity made no progress is not something
     // this funnel knows - so the repro class and `real` are honest rather than flattering. Post-analysis fills them.
     issue.reproClass = "not_offline";
-    issue.real = "unknown";
-    issue.realWhy = "the alert fired on the coordinator's own facts; whether the underlying state is a defect is "
-                    "not established at runtime here";
+    // [jrn43] ... WITH ONE KIND EXCEPTED, AND IT IS EXCEPTED BY MEASUREMENT. A death already has a row of its own
+    // with its full inputs - the core's "killed by" hook writes pb_journal_death and an issue row of kind `death`
+    // - and this alert is the coordinator's notice of that same event: 9 deaths on b502 against 9 DEATH alerts,
+    // each alert 1-2 ms behind its own death, in the same order. Counting both is trap #1 at the level of the
+    // table itself, so the row STAYS (it carries the coordinator's view, the member's number and its order) and
+    // says `no` with the reason in words, exactly as a named standing hold does.
+    bool const repeatsADomainRow = Journal::Real::AlertKindDuplicatesDomainRow(c.kind);
+    issue.real = repeatsADomainRow ? "no" : "unknown";
+    issue.realWhy = repeatsADomainRow
+                        ? "the event itself is recorded with its inputs in pb_journal_death and counted there as "
+                          "an issue of kind `death`; this row is the alert funnel's notice of the same event, so "
+                          "counting it again would count one event twice"
+                        : "the alert fired on the coordinator's own facts; whether the underlying state is a "
+                          "defect is not established at runtime here";
     issue.realSource = "emitter";
     issue.realWhen = "";
     issue.dedupKey = "alert|" + c.kind + "|" + Journal::WithoutNumbers(c.reason);
@@ -1132,6 +1171,7 @@ void GuildCoordinator::Alert(std::string text, Journal::Alert facts)
     }
     issue.sourceTable = "pb_journal_alert";
     issue.sourceId = sourceId;
+    issue.runId = row.runId;  // [jrn43] it was never set here, so run_id was '' in all 136 live alert rows
     Journal::RecordIssue(issue);
 
     alerts_.emplace_front(Now(), std::move(text));
@@ -11370,10 +11410,15 @@ void GuildCoordinator::ProcessDeaths()
             out << " at map " << p->GetMapId() << " (" << int32(p->GetPositionX()) << "," << int32(p->GetPositionY())
                 << ") " << (zone ? zone->area_name[0] : "?") << " status=" << StatusName(p, GET_PLAYERBOT_AI(p))
                 << " order=" << ActiveTask(st.orders);
-        Alert(out.str());
+        // [jrn43] the subject as COLUMNS and not only inside the sentence: the player is right here, and without
+        // it the row's only identity was its name inside the text
+        Journal::Alert facts;
+        AlertSubject(facts, p);
+        Alert(out.str(), facts);
         if (st.deaths.size() >= 2)
             Alert("DEATHS #" + std::to_string(row ? row->num : 0) + " " + (p ? p->GetName() : "?") + ": " +
-                  std::to_string(st.deaths.size()) + " deaths in the last hour, last killer " + r.killer);
+                      std::to_string(st.deaths.size()) + " deaths in the last hour, last killer " + r.killer,
+                  facts);
     }
 }
 
@@ -11472,14 +11517,7 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
         facts.noProgressQuest = true;
         facts.samePlace = true;
         facts.lastAction = LastAction(ai, "new rpg status update");
-        facts.botName = bot->GetName();
-        facts.botLow = bot->GetGUID().GetCounter();
-        facts.botLevel = bot->GetLevel();
-        facts.mapId = bot->GetMapId();
-        facts.zoneId = bot->GetZoneId();
-        facts.x = bot->GetPositionX();
-        facts.y = bot->GetPositionY();
-        facts.z = bot->GetPositionZ();
+        AlertSubject(facts, bot);  // [jrn43] one place fills the subject, for every kind
         Alert("LOOP #" + std::to_string(row ? row->num : 0) + " " + bot->GetName() + " L" +
               std::to_string(bot->GetLevel()) + ": " + RpgName(status) +
               " re-entered without progress (no XP, no quest progress, same place) at map " +
@@ -11675,7 +11713,9 @@ void GuildCoordinator::UpdateHealth()
                     << ", status=" << StatusName(p, ai) << ", last action=" << LastAction(ai)
                     // [feed20] the same reason= field the other two alerts carry: its last `[rpg]` line
                     << ", reason=" << (st.rpgLine.empty() ? "none recorded" : st.rpgLine);
-                Alert(out.str());
+                Journal::Alert facts;  // [jrn43] the subject as columns: the player is right here
+                AlertSubject(facts, p);
+                Alert(out.str(), facts);
             }
         }
         else
@@ -11744,7 +11784,9 @@ void GuildCoordinator::UpdateHealth()
             // line that names the cause is the bot's LAST `[rpg]` line - the state it is standing in - which is the
             // same line the triage takes for a STUCK. The field printed "none" since it was added
             << ", reason=" << (st.rpgLine.empty() ? "none recorded" : st.rpgLine);
-        Alert(out.str());
+        Journal::Alert facts;  // [jrn43] the subject as columns: the player is right here
+        AlertSubject(facts, p);
+        Alert(out.str(), facts);
     }
     sample.deaths = deathsTotal_;
     deathsTotal_ = 0;

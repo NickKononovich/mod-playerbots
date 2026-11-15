@@ -199,10 +199,11 @@ namespace Journal
             "range_los, moving, gcd, threat, leader_hold, other, ref_unsaid, ref_useless, ref_impossible, "
             "ref_prereq, ref_failed, ref_blocked, ref_no_candidate, gap_n, gap_avg_ms, gap_max_ms, gap_over_150, "
             "gap_over_400, top_actions, stood_sec, stood_yd, doing, held_by, why, run_id, build)";
+        // [jrn43] target_zone_id: the target's own zone - for `wait_behind`, the member's
         char const* const COLUMNS_STUCK =
             "(id, boot_id, at_ms, hour_bucket, kind, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
-            "pos_y, pos_z, target_name, target_entry, target_low, target_yd, target_level, in_combat, "
-            "action_running, why, run_id, build)";
+            "pos_y, pos_z, target_name, target_entry, target_low, target_yd, target_level, target_zone_id, "
+            "in_combat, action_running, why, run_id, build)";
         char const* const COLUMNS_ALERT =
             "(id, boot_id, at_ms, hour_bucket, kind, num, bot_name, bot_low, bot_level, map_id, zone_id, pos_x, "
             "pos_y, pos_z, loop_n, activity, no_progress_xp, no_progress_quest, same_place, last_action, reason, "
@@ -286,7 +287,17 @@ namespace Journal
                    "                  IFNULL(inc.value_min, pb_journal_issue.value_min)), "
                    "value_max = GREATEST(IFNULL(pb_journal_issue.value_max, inc.value_max), "
                    "                     IFNULL(inc.value_max, pb_journal_issue.value_max)), "
-                   "why = inc.why, severity = inc.severity, build = inc.build, "
+                   "why = inc.why, build = inc.build, "
+                   // [jrn43] THE SEVERITY OF A PROBLEM IS THE WORST CASE SEEN, not the latest one. It used to be
+                   // `severity = inc.severity`, so a row took the severity of whichever case happened to arrive
+                   // last - measured on b502: 24 of the 103 `mid` idle rows hold at least one case the emitter
+                   // called `high` (a whole window in a fight with no cast at all), and the row said `mid`. That
+                   // is the same mistake value_min / value_max were built to avoid: the range is the fact, and for
+                   // a label the fact is the worst end of it. FIELD gives 0 to a name that is not in the list, so
+                   // an unknown severity never wins over a known one and never erases it.
+                   "severity = IF(FIELD(inc.severity, 'low', 'mid', 'high') > "
+                   "              FIELD(pb_journal_issue.severity, 'low', 'mid', 'high'), "
+                   "           inc.severity, pb_journal_issue.severity), "
                    "bot_name = inc.bot_name, bot_low = inc.bot_low, map_id = inc.map_id, zone_id = inc.zone_id, "
                    "pos_x = inc.pos_x, pos_y = inc.pos_y, pos_z = inc.pos_z, run_id = inc.run_id, "
                    "source_table = inc.source_table, source_id = inc.source_id, "
@@ -1210,13 +1221,16 @@ namespace Journal
                              "target_name VARCHAR(48) NOT NULL DEFAULT '', "
                              "target_entry INT UNSIGNED NOT NULL DEFAULT 0, "
                              "target_low INT UNSIGNED NOT NULL DEFAULT 0, target_yd FLOAT NULL, "
-                             "target_level SMALLINT UNSIGNED NULL, in_combat TINYINT UNSIGNED NULL, "
+                             // [jrn43] the target's zone, the cause field of `wait_behind`'s key
+                             "target_level SMALLINT UNSIGNED NULL, target_zone_id INT UNSIGNED NULL, "
+                             "in_combat TINYINT UNSIGNED NULL, "
                              "action_running VARCHAR(96) NOT NULL DEFAULT '', why VARCHAR(512) NOT NULL DEFAULT '', "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY kind_at (kind, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY target_at (target_entry, target_low, at_ms), "
                              "KEY where_at (map_id, zone_id, at_ms), KEY yd_at (target_yd, at_ms), "
-                             "KEY role_at (role, at_ms), KEY build_at (build, at_ms), KEY run_at (run_id, at_ms)) "
+                             "KEY role_at (role, at_ms), KEY build_at (build, at_ms), KEY run_at (run_id, at_ms), "
+                             "KEY target_zone_at (target_zone_id, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn40] held or awaited and not progressing: target, distance, what ran'")
                  + parts)
@@ -1659,12 +1673,14 @@ namespace Journal
         uint64 const id = Writer::Instance().NextId();
         Writer::Instance().Push(
             "pb_journal_stuck",
-            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
                                 BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(stuck.kind, 16),
                                 Quoted(stuck.botName, 32), stuck.botLow, OrNull(stuck.botLevel),
                                 OrNull(stuck.role, 8), stuck.mapId, stuck.zoneId, Real(stuck.x), Real(stuck.y),
                                 Real(stuck.z), Quoted(stuck.targetName, 48), stuck.targetEntry, stuck.targetLow,
-                                OrNull(stuck.targetYd), OrNull(stuck.targetLevel), OrNull(stuck.inCombat),
+                                OrNull(stuck.targetYd), OrNull(stuck.targetLevel),
+                                OrNull(stuck.targetZoneId),  // [jrn43]
+                                OrNull(stuck.inCombat),
                                 Quoted(stuck.actionRunning, 96), Quoted(stuck.why, 512), Quoted(stuck.runId, 48),
                                 Quoted(Config().build, 16)));
         return id;

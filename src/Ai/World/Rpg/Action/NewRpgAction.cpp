@@ -76,6 +76,7 @@ namespace
 #include "SpellAuras.h"  // [deaths14] Resurrection Sickness
 #include "TerrainHazard.h"  // [guild15] SafeFloorZ
 #include "NewRpgCoop.h"  // [coop]
+#include "IssueKey.h"  // [jrn43] the deduplication key of the issue row, as a seam a test can assert
 #include "Journal.h"  // [jrn40] the wait-behind stuck row and its issue
 #include "LeaderOrders.h"  // [deaths20] Leader::Route
 #include "RouteSearch.h"  // [perf215] Leader::RouteSearchesOnThread
@@ -4291,6 +4292,8 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
             stuck.targetLow = member->GetGUID().GetCounter();
             stuck.targetLevel = member->GetLevel();
             stuck.targetYd = bot->GetExactDist(member);
+            // [jrn43] the member's OWN zone, so that the key's cause field below can be checked by a query
+            stuck.targetZoneId = member->GetZoneId();
             stuck.inCombat = false;  // the guard above requires it
             stuck.why = "a member is beyond the group reward distance and its own follow does not close the gap, so "
                         "this bot walks to meet it";
@@ -4304,9 +4307,13 @@ bool NewRpgWaitForGroupAction::Execute(Event /*event*/)
             // is nothing to replay offline, so a run without the sign is the proof, not a test.
             issue.reproClass = "not_offline";
             // the key is the shape, not the pair: the two names and the distance are what would fan one cause into
-            // hundreds. Whether both are on one map is the fact that separates a long follow from a lost one.
-            issue.dedupKey = std::string("wait_behind|") +
-                             (member->GetMapId() == bot->GetMapId() ? "same map" : "other map");
+            // hundreds. [jrn43] AND ITS ONE CAUSE FIELD COULD NOT COME OUT FALSE: the field was whether both are on
+            // one map, while the guard four lines above requires `member->GetMapId() == bot->GetMapId()` - so it
+            // read "same map" in all 43 live rows and in every row this kind could ever write. A statement that
+            // cannot be false is counted here as a defect of its own, and it left the kind with no cause at all:
+            // 84 yd behind in the bot's own zone and 6 894 yd behind across the map shared one row (43 rows over 7
+            // zones, 14 bots, 16 members). The zone is the same fact one step finer and it does differ.
+            issue.dedupKey = Journal::Key::WaitBehind(member->GetZoneId() == bot->GetZoneId());
             issue.why = Acore::StringFormat("{} walks to meet {} {:.0f} yd behind", bot->GetName(),
                                             member->GetName(), *stuck.targetYd);
             issue.realWhen = "the member is outside the group reward distance, out of combat, and its own follow "

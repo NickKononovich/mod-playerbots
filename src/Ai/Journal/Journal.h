@@ -756,6 +756,11 @@ namespace Journal
         uint32 targetLow = 0;
         Optional<float> targetYd;
         Optional<uint32> targetLevel;
+        // [jrn43] the TARGET's zone, which for `wait_behind` is the member walked to. It is here because a cause
+        // field nobody can check by a query is a comment: the key of `wait_behind` splits on whether the member is
+        // in the bot's own zone, and until this column existed the row carried only the bot's zone, so the split
+        // could not be verified or faulted. NULL = the emitter did not pass it, which is not zone 0.
+        Optional<uint32> targetZoneId;
         Optional<bool> inCombat;
         std::string actionRunning;  // the engine's last action, or "" when it had none to run - which is the point
         std::string why;

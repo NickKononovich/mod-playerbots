@@ -4,6 +4,7 @@
  * or (at your option) any later version.
  */
 
+#include "IssueKey.h"  // [jrn43] the deduplication key and the is_real criterion, as a seam a test asserts
 #include "Journal.h"  // [jrn40] the stale-victim stuck row and its issue
 #include "Common.h"
 #include "LeaderCombatEnd.h"
@@ -522,10 +523,28 @@ namespace Leader::Fight
                     // one cause into hundreds
                     issue.dedupKey = "stale_victim|" + Journal::WithoutNumbers(why);
                     issue.why = stuck.why;
-                    issue.realWhen = "the leader's target is no part of any fight any more and the leader is out of "
-                                     "combat, so nothing was going to act on it";
-                    issue.real = "yes";
-                    issue.realWhy = "the target had to be dropped by this code for the group to move on at all";
+                    // [jrn43] AND THE REASON DECIDES WHETHER THERE IS A PROBLEM AT ALL. Three of the five reasons
+                    // are the normal end of a fight: the victim is dead, its guid resolves to nothing, or it is
+                    // off the leader's map. This function runs on the leader's own update and drops on the FIRST
+                    // tick the facts change, once per victim, with no clock in it (that was the point of taking
+                    // STALE_VICTIM_MS out), so in those three nothing ever waited on the stale target - the group
+                    // had just killed the mob. Measured on b502: 178 rows `dead` over 116 distinct guids, 6
+                    // leaders and 10 runs, 3 `gone`, 1 `an idle mob no pull order is for` - 181 of 182 of them the
+                    // routine clearing after a kill, counted as 172 occurrences of a problem.
+                    // The two that stay real: `evading` is a mob the group cannot reach, and `an idle mob no pull
+                    // order is for` is a target held against the leader's order. The criterion is in the seam
+                    // (Journal::Real::StaleVictim), where a test over the live reasons asserts it.
+                    bool const realProblem = Journal::Real::StaleVictim(why);
+                    issue.realWhen = "the leader's target is no part of any fight any more and the leader is out "
+                                     "of combat, and the reason it went stale is not the normal end of a fight "
+                                     "(dead / gone / off the map)";
+                    issue.real = realProblem ? "yes" : "no";
+                    issue.realWhy =
+                        realProblem
+                            ? "the target had to be dropped by this code for the group to move on at all"
+                            : "the victim stopped being a victim in the normal course of the fight (" + why +
+                                  "): this runs on the leader's own update and dropped it on the first tick it "
+                                  "could, so nothing waited on it - the row keeps the release count it measured";
                     issue.realSource = "emitter";
                     issue.value = double(route.staleVictimReleases);
                     issue.valueUnit = "release";

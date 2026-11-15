@@ -49,6 +49,78 @@ namespace Journal::Key
     // The cause is the role plus whether the engine had anything at all to run - an empty trace is the point of
     // this problem - and never the trace's text.
     std::string StuckTarget(std::string const& role, std::string const& actionRunning);
+
+    // `idle`: the diagnostics window of one bot (PlayerbotAI.cpp). The cause is the role plus WHICH buckets fired -
+    // never how many times, the counts' spread is the value range - and, for the `other` bucket, which refusal the
+    // engine gave, because `other` is not a cause but a hole in the list of causes.
+    //
+    // WHY THE REFUSAL BELONGS IN THE KEY, measured on b502: the key `idle|<role>|<buckets>` gave 109 keys over the
+    // 3 665 windows whose `other` was non-zero, and those same windows hold 336 distinct combinations of the
+    // refusal the engine named. The largest single key, `idle|dps|gcd+other` (306 windows, 19 bots), covered 14 of
+    // them: an action turned down as USELESS by its own usefulness check and one turned down as IMPOSSIBLE are two
+    // defects, and under one key a fix for the first one turns a test green while the second lives on beneath it.
+    // That is the worse of the two directions this seam exists to assert, and `other` is where it had been left:
+    // the refusal columns (ref_* in pb_journal_idle) have been filled since b502 and sum EXACTLY to `other`
+    // (30 842 ticks against 30 842), so the breakdown is a fact of the same instant and not a second reading.
+    //
+    // WHICH refusals, never how many: the same rule as the buckets themselves. The counts stay in the row's own
+    // columns and their spread in value_min / value_max.
+    struct IdleBuckets
+    {
+        uint32_t noTarget{0};
+        uint32_t rangeLos{0};
+        uint32_t moving{0};
+        uint32_t gcd{0};
+        uint32_t threat{0};
+        uint32_t leaderHold{0};
+        uint32_t other{0};
+        // the breakdown of `other`: the engine's own answer for a tick it produced nothing in (IDLE_REFUSAL_*)
+        uint32_t refUnsaid{0};
+        uint32_t refUseless{0};
+        uint32_t refImpossible{0};
+        uint32_t refPrereq{0};
+        uint32_t refFailed{0};
+        uint32_t refBlocked{0};
+        uint32_t refNoCandidate{0};
+    };
+
+    std::string Idle(std::string const& role, IdleBuckets const& buckets);
+
+    // `wait_behind`: a bot walks to meet a member its own follow does not bring within the group reward distance
+    // (NewRpgAction.cpp). `sameZone` is the cause field, and it replaced one that could not differ: the emitter's
+    // guard requires `member->GetMapId() == bot->GetMapId()`, so the old "same map" / "other map" field read
+    // "same map" in all 43 live rows and in every row it could ever write. A statement that cannot come out false
+    // is counted here as a defect of its own, and it left this kind with no cause field at all: 84 yd behind in
+    // the same zone and 6 894 yd behind across the map were one row.
+    std::string WaitBehind(bool sameZone);
+}
+
+// [jrn43] WHETHER THE ROW IS A PROBLEM AT ALL - the `is_real` column, as a seam, for the kinds whose answer is a
+// closed set of names rather than a number. The precedent is Journal::Standing::HoldName: a row recognised as
+// not-a-problem is MARKED and STAYS, keeping its duration and its range, and the count the user drives to zero
+// (is_real IN ('yes','unknown')) stops counting it.
+namespace Journal::Real
+{
+    // `stale_victim`: the leader held a target outside a fight and this code dropped it (LeaderCombatEnd.cpp).
+    // THE REASON DECIDES, and three of the five reasons are the normal end of a fight rather than a defect: the
+    // victim is dead, its guid resolves to nothing any more, or it is off the leader's map. The drop costs nothing
+    // in those three - TickStaleVictim runs on the leader's own update and drops on the FIRST tick the facts
+    // change, once per victim, with no clock anywhere in it, so nothing ever waited on the stale target.
+    // Measured on b502: 178 rows `dead`, 3 `gone`, 1 `an idle mob no pull order is for` - 181 of 182 of them the
+    // routine clearing of a mob the group had just killed (116 distinct guids, 6 leaders, 10 runs), counted as 172
+    // occurrences of a problem.
+    // THE TWO THAT STAY REAL: `evading` is a mob the group cannot reach (the navmesh / pathing defect this
+    // project treats as high urgency), and `an idle mob no pull order is for` is somebody holding a target against
+    // the leader's order, which is rule 4. An unknown reason stays real too - better to over-report than to miss.
+    bool StaleVictim(std::string const& why);
+
+    // The alert funnel (GuildCoordinator::Alert) raises four kinds, and one of them is about an event that already
+    // has a row of its own with its full inputs: a death is written by the core's "killed by" hook into
+    // pb_journal_death and into an issue row of kind `death`. Measured on b502: 9 deaths in pb_journal_death and 9
+    // DEATH alerts, each 1-2 ms after its own death and in the same order - one event counted twice in the
+    // problems table, which is this project's trap #1 at the level of the table itself. The alert row stays (it is
+    // the funnel's own notice and carries the coordinator's view) and says `no` with the reason in words.
+    bool AlertKindDuplicatesDomainRow(std::string const& alertKind);
 }
 
 #endif

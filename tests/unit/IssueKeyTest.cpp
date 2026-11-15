@@ -110,3 +110,132 @@ TEST(IssueKeyStuckTarget, TheCauseIsTheRoleAndWhetherAnythingRan)
     EXPECT_NE(Journal::Key::StuckTarget("dps", dpsTrace), Journal::Key::StuckTarget("dps", ""));
     EXPECT_NE(Journal::Key::StuckTarget("tank", dpsTrace), Journal::Key::StuckTarget("dps", dpsTrace));
 }
+
+// [jrn43] THE `idle` KEY AND THE HOLE IN ITS LIST OF CAUSES. Every window below is a real row of pb_journal_idle
+// from b502, by its id, and `other` is the bucket for "the engine turned this tick's action down and the list of
+// causes has no name for that". Since b502 the engine's own answer IS recorded (ref_*), and the breakdown sums
+// exactly to `other` over the whole hour - 30 842 ticks against 30 842 - so it is a fact of the same instant.
+//
+// THE NUMBER THAT MAKES THIS THE WORSE DIRECTION: 109 keys over the 3 665 windows with a non-zero `other`, against
+// 336 distinct refusal combinations inside them. One key, `idle|dps|gcd+other`, holds 306 windows of 19 bots and
+// 14 of those combinations.
+namespace
+{
+    // id 7708327910943569239, Tuihgrelfim, dps: 73 ticks, 7 casts, gcd 18, other 47 = useless 40 + failed 7
+    Journal::Key::IdleBuckets UselessAndFailed()
+    {
+        Journal::Key::IdleBuckets b;
+        b.gcd = 18;
+        b.other = 47;
+        b.refUseless = 40;
+        b.refFailed = 7;
+        return b;
+    }
+
+    // id 7708327910943281755, Feeli, dps: 48 ticks, 6 casts, gcd 6, other 26 = impossible 26
+    Journal::Key::IdleBuckets ImpossibleOnly()
+    {
+        Journal::Key::IdleBuckets b;
+        b.gcd = 6;
+        b.other = 26;
+        b.refImpossible = 26;
+        return b;
+    }
+
+    // id 7708327910943329936, Idunk, dps: 49 ticks, 5 casts, gcd 15, other 25 = impossible 25 - another bot, another
+    // window, the same cause as Feeli's above
+    Journal::Key::IdleBuckets ImpossibleOnlyOtherBot()
+    {
+        Journal::Key::IdleBuckets b;
+        b.gcd = 15;
+        b.other = 25;
+        b.refImpossible = 25;
+        return b;
+    }
+}  // namespace
+
+// THE DEFECT: two different refusals under one key. An action its own usefulness check turned down is not an action
+// that could not be cast, and a fix for one of them would turn a test over this key green while the other lived on.
+TEST(IssueKeyIdle, TheRefusalBehindOtherIsPartOfTheCause)
+{
+    EXPECT_NE(Journal::Key::Idle("dps", UselessAndFailed()), Journal::Key::Idle("dps", ImpossibleOnly()))
+        << "two windows whose only idle buckets are gcd and `other` share one key although the engine named "
+           "different refusals: `other` is not a cause, it is the hole where the cause goes";
+}
+
+// THE OTHER DIRECTION, and it is the one that matters more here: the refusal is a closed set of names the engine
+// answers with, never a count and never a trace, so two windows of two bots with the same refusal are ONE key.
+// Without this, a key per combination of counts would fan one cause into a staircase - trap #2.
+TEST(IssueKeyIdle, TheSameRefusalInTwoWindowsIsOneKey)
+{
+    EXPECT_EQ(Journal::Key::Idle("dps", ImpossibleOnly()), Journal::Key::Idle("dps", ImpossibleOnlyOtherBot()))
+        << "two windows with the same buckets and the same refusal gave two keys";
+    // ... and the buckets and the role go on being causes, as they were
+    EXPECT_NE(Journal::Key::Idle("healer", ImpossibleOnly()), Journal::Key::Idle("dps", ImpossibleOnly()));
+    Journal::Key::IdleBuckets moving = ImpossibleOnly();
+    moving.moving = 4;
+    EXPECT_NE(Journal::Key::Idle("dps", moving), Journal::Key::Idle("dps", ImpossibleOnly()));
+}
+
+// A window with no `other` at all has no refusal to name, and its key must stay exactly what it was: the keys
+// already measured on b502 go on meaning what they meant (the same rule the empty hold name follows).
+TEST(IssueKeyIdle, AWindowWithoutOtherKeepsTheKeyItHad)
+{
+    Journal::Key::IdleBuckets plain;
+    plain.gcd = 18;
+    plain.moving = 3;
+    EXPECT_EQ(Journal::Key::Idle("dps", plain), "idle|dps|moving+gcd");
+}
+
+// [jrn43] `stuck_target`: THE KEY SAID SOMETHING THAT CANNOT BE TRUE. The detector is called with the engine's own
+// answer - ReleaseIdleTargetNobodyReaches(acted) returns at once when `acted` - so NO action ran in any row it ever
+// writes, and the sentence in every row says exactly that ("with no action that runs"). The key, meanwhile, read a
+// non-empty action TRACE as "an action ran": 121 of the 123 live occurrences carried that label. A row that
+// contradicts itself answers a query, which is worse than a row that is missing.
+TEST(IssueKeyStuckTarget, NoKeyClaimsAnActionRan)
+{
+    std::string const trace = "|A:claw - USELESS|A:melee - USELESS|no actions executed";
+    for (std::string const& key : {Journal::Key::StuckTarget("healer", trace),
+                                   Journal::Key::StuckTarget("dps", trace), Journal::Key::StuckTarget("tank", "")})
+        EXPECT_EQ(key.find("an action ran"), std::string::npos)
+            << "the key says an action ran: " << key
+            << " - the detector only fires when the engine executed nothing";
+}
+
+// [jrn43] `wait_behind`: THE CAUSE FIELD COULD NOT DIFFER. The emitter's guard requires the member to be on the
+// bot's own map, so "same map" was the answer in all 43 live rows and in every row the kind could ever write,
+// which left 84 yd behind in one zone and 6 894 yd behind across the map sharing one row.
+TEST(IssueKeyWaitBehind, TheCauseFieldCanComeOutBothWays)
+{
+    EXPECT_NE(Journal::Key::WaitBehind(true), Journal::Key::WaitBehind(false))
+        << "the two values of the cause field give one key: it cannot come out false";
+    EXPECT_EQ(Journal::Key::WaitBehind(true).find("map"), std::string::npos)
+        << "the key is keyed on the map, which the emitter's own guard makes constant: "
+        << Journal::Key::WaitBehind(true);
+}
+
+// [jrn43] `stale_victim`: WHICH REASONS ARE A PROBLEM. 178 of the 182 live rows are the mob the group had just
+// killed, dropped on the first tick the drop was possible, with no clock and nothing waiting on it.
+TEST(IssueRealStaleVictim, TheNormalEndOfAFightIsNotAProblem)
+{
+    EXPECT_FALSE(Journal::Real::StaleVictim("dead")) << "the victim the group had just killed is a problem";
+    EXPECT_FALSE(Journal::Real::StaleVictim("gone"));
+    EXPECT_FALSE(Journal::Real::StaleVictim("out of the map"));
+    // and the two that stay real, plus an unknown reason: better to over-report than to miss
+    EXPECT_TRUE(Journal::Real::StaleVictim("evading"));
+    EXPECT_TRUE(Journal::Real::StaleVictim("an idle mob no pull order is for"));
+    EXPECT_TRUE(Journal::Real::StaleVictim("a reason nobody has written yet"));
+}
+
+// [jrn43] THE ALERT THAT IS A SECOND ROW FOR ONE EVENT: 9 deaths in pb_journal_death, 9 DEATH alerts 1-2 ms after
+// them. The other three kinds are honestly `unknown` - the funnel cannot tell whether the state under them is a
+// defect - and must not be marked as duplicates of anything.
+TEST(IssueRealAlert, OnlyTheDeathAlertRepeatsADomainRow)
+{
+    EXPECT_TRUE(Journal::Real::AlertKindDuplicatesDomainRow("DEATH"))
+        << "the DEATH alert is counted as a problem of its own beside the death row it follows";
+    EXPECT_TRUE(Journal::Real::AlertKindDuplicatesDomainRow("DEATHS"));
+    EXPECT_FALSE(Journal::Real::AlertKindDuplicatesDomainRow("LOOP"));
+    EXPECT_FALSE(Journal::Real::AlertKindDuplicatesDomainRow("STUCK"));
+    EXPECT_FALSE(Journal::Real::AlertKindDuplicatesDomainRow("STUCK_COMBAT"));
+}

@@ -8939,29 +8939,46 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
         // buckets gives 97 (98 including the all-zero form that is not a problem at all), and those are the shapes
         // a fix can be aimed at: gcd+other 536, moving+gcd+other 450, rangeLos+moving+gcd+other 413, gcd 301.
         // So: which buckets fired, never how many times - the counts' spread is the value range.
-        std::string shape;
-        auto const bucket = [&shape](char const* name, uint32 value)
-        {
-            if (value)
-                shape += (shape.empty() ? "" : "+") + std::string(name);
-        };
-        bucket("noTarget", idleDiag.noTarget);
-        bucket("rangeLos", idleDiag.rangeLos);
-        bucket("moving", idleDiag.moving);
-        bucket("gcd", idleDiag.gcd);
-        bucket("threat", idleDiag.threat);
-        bucket("leaderHold", idleDiag.leaderHold);
-        bucket("other", idleDiag.other);
+        //
+        // [jrn43] AND THE KEY MOVED INTO THE SEAM (IssueKey.h), WHERE A TEST ASSERTS IT IN BOTH DIRECTIONS, because
+        // the wide direction was open here: `other` is not a cause, it is the bucket for a tick the engine turned
+        // down with no name in this list, and the engine's own answer sits in the row beside it (ref_*, summing
+        // exactly to `other`). Measured on b502: 109 keys over the 3 665 windows with a non-zero `other`, against
+        // 336 combinations of the refusal inside them - the single key `idle|dps|gcd+other` held 306 windows of 19
+        // bots and 14 of those combinations, so a fix for one refusal would have turned it green with the others
+        // alive underneath. The bucket shape itself is unchanged, and a window without `other` keeps its old key.
+        Journal::Key::IdleBuckets shapeFacts;
+        shapeFacts.noTarget = idleDiag.noTarget;
+        shapeFacts.rangeLos = idleDiag.rangeLos;
+        shapeFacts.moving = idleDiag.moving;
+        shapeFacts.gcd = idleDiag.gcd;
+        shapeFacts.threat = idleDiag.threat;
+        shapeFacts.leaderHold = idleDiag.leaderHold;
+        shapeFacts.other = idleDiag.other;
+        shapeFacts.refUnsaid = idleDiag.refusals[IDLE_REFUSAL_NONE];
+        shapeFacts.refUseless = idleDiag.refusals[IDLE_REFUSAL_USELESS];
+        shapeFacts.refImpossible = idleDiag.refusals[IDLE_REFUSAL_IMPOSSIBLE];
+        shapeFacts.refPrereq = idleDiag.refusals[IDLE_REFUSAL_PREREQ];
+        shapeFacts.refFailed = idleDiag.refusals[IDLE_REFUSAL_FAILED];
+        shapeFacts.refBlocked = idleDiag.refusals[IDLE_REFUSAL_BLOCKED];
+        shapeFacts.refNoCandidate = idleDiag.refusals[IDLE_REFUSAL_NO_CANDIDATE];
+        std::string const shape = Journal::Key::Idle(*record.role, shapeFacts);
+        // the cause part alone, for the sentence a human reads: the key already carries the role and the kind
+        std::string const causes = shape.substr(shape.rfind('|') + 1);
 
         Journal::Issue issue;
         issue.kind = "idle";
-        issue.severity = idleDiag.casts ? "mid" : "high";  // a whole window in a fight with no cast at all
+        // a whole window in a fight with no cast at all. [jrn43] "in a fight" is checked, not assumed: this
+        // function returns at once unless the bot is in combat, in a group and inside an instance, so in_combat
+        // was 1 in all 3 923 live windows. The flip side is a measured blind spot of this instrument, named here
+        // because an unnamed one gets read as a zero: it says nothing at all about a bot levelling in the world.
+        issue.severity = idleDiag.casts ? "mid" : "high";
         // We did not notice this class until the measurement existed, and the measurement is what was broken for
         // two roles out of three: that is the "instrument" class exactly.
         issue.reproClass = "instrument";
-        issue.dedupKey = "idle|" + (*record.role) + "|" + shape;
+        issue.dedupKey = shape;
         issue.why = Acore::StringFormat("{} of {} ticks idle over {:.0f} s ({}), {} cast", idleTicks,
-                                        idleDiag.ticks, *record.windowSec, shape, idleDiag.casts);
+                                        idleDiag.ticks, *record.windowSec, causes, idleDiag.casts);
         issue.realWhen = "at least one idle bucket is non-zero over the window (406 of 3 900 live windows had all "
                          "of them at zero, which is a clean result and not a problem)";
         issue.real = "yes";

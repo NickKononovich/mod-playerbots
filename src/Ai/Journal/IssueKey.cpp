@@ -37,6 +37,92 @@ namespace Journal::Key
     {
         // Whether the engine had anything at all to run is the cause ("no action of its combat engine ran on it");
         // WHICH actions it listed is the trace of that instant and belongs in pb_journal_stuck.action_running.
-        return "stuck_target|" + role + "|" + (actionRunning.empty() ? "no action" : "an action ran");
+        // [jrn43] AND NEITHER LABEL MAY SAY WHAT CANNOT BE TRUE. "an action ran" was the label of a non-empty
+        // trace in 121 of the 123 live occurrences, while the caller is
+        // ReleaseIdleTargetNobodyReaches(acted) - it returns at once when `acted`, so NOTHING ran in any row this
+        // kind ever writes, and the row's own sentence says so ("with no action that runs"). What the trace being
+        // empty or not really tells apart is whether the engine NAMED anything at all, which is the fact this
+        // problem is about, so the two labels now say that and nothing more.
+        return "stuck_target|" + role + "|" +
+               (actionRunning.empty() ? "its engine named no action" : "its engine named actions and none ran");
+    }
+
+    std::string Idle(std::string const& role, IdleBuckets const& buckets)
+    {
+        std::string shape;
+        auto const bucket = [&shape](char const* name, uint32_t value)
+        {
+            if (value)
+                shape += (shape.empty() ? "" : "+") + std::string(name);
+        };
+        bucket("noTarget", buckets.noTarget);
+        bucket("rangeLos", buckets.rangeLos);
+        bucket("moving", buckets.moving);
+        bucket("gcd", buckets.gcd);
+        bucket("threat", buckets.threat);
+        bucket("leaderHold", buckets.leaderHold);
+        bucket("other", buckets.other);
+        // [jrn43] AND THE REFUSAL BEHIND `other`, WHICH IS WHERE THE CAUSE IS. `other` is the bucket for a tick
+        // the engine produced nothing in and the list of causes has no name for; the engine's own answer is
+        // recorded beside it (ref_*, and it sums exactly to `other`: 30 842 ticks against 30 842 over b502's
+        // hour), so the name goes in the key. Measured: without it, 109 keys stood over 336 refusal combinations,
+        // and the largest key alone held 14 of them.
+        //
+        // IN PARENTHESES AFTER `other`, never in place of it, and NOT WRITTEN AT ALL when `other` is zero: a
+        // window with no `other` has no refusal to name, so its key stays character for character the key it had,
+        // and the keys already measured on b501 and b502 go on meaning what they meant. The same rule the empty
+        // hold name of Standing() follows.
+        if (buckets.other)
+        {
+            std::string refusals;
+            auto const refusal = [&refusals](char const* name, uint32_t value)
+            {
+                if (value)
+                    refusals += (refusals.empty() ? "" : "+") + std::string(name);
+            };
+            refusal("unsaid", buckets.refUnsaid);
+            refusal("useless", buckets.refUseless);
+            refusal("impossible", buckets.refImpossible);
+            refusal("prereq", buckets.refPrereq);
+            refusal("failed", buckets.refFailed);
+            refusal("blocked", buckets.refBlocked);
+            refusal("noCandidate", buckets.refNoCandidate);
+            // An absent breakdown is not a breakdown of zeros: a build before the columns existed cannot say, and
+            // such a window keeps the bare `other` it used to have instead of claiming a refusal of "none".
+            if (!refusals.empty())
+                shape += "(" + refusals + ")";
+        }
+        return "idle|" + role + "|" + shape;
+    }
+
+    std::string WaitBehind(bool sameZone)
+    {
+        // The zone, because the map CANNOT differ: the emitter walks to meet a member only when
+        // `member->GetMapId() == bot->GetMapId()`, so the field this key used to carry read "same map" in all 43
+        // live rows and in every row it could ever write. The zone is the same fact one step finer and it does
+        // come out both ways - a member a few yards behind in the bot's own zone is a follow that has not caught
+        // up, a member in another zone is a travel leg behind - and the member's zone is written to the row
+        // (pb_journal_stuck.target_zone_id) so that the split can be checked by a query and not by this comment.
+        return std::string("wait_behind|") + (sameZone ? "same zone" : "another zone");
+    }
+}
+
+namespace Journal::Real
+{
+    bool StaleVictim(std::string const& why)
+    {
+        // The three reasons that are the normal end of a fight, spelled exactly as TickStaleVictim writes them.
+        // Anything else - `evading`, `an idle mob no pull order is for`, or a reason a later build adds - stays a
+        // problem: the user's rule for this table is to over-report rather than to miss, so the default is `yes`
+        // and only a named routine reason answers `no`.
+        return why != "dead" && why != "gone" && why != "out of the map";
+    }
+
+    bool AlertKindDuplicatesDomainRow(std::string const& alertKind)
+    {
+        // The death is recorded by the core's own "killed by" hook, with the killer, the damage and what the judge
+        // expected, in pb_journal_death and in an issue row of kind `death`. The alert is the coordinator's notice
+        // of that same event 1-2 ms later: 9 against 9 on b502, each alert behind its own death.
+        return alertKind == "DEATH" || alertKind == "DEATHS";
     }
 }
