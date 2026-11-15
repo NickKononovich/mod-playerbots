@@ -9034,34 +9034,78 @@ bool AggressiveTargetAction::DecideLook()
                 ObjectGuid routeGoal = RouteTarget::Get(bot->GetGUID());
                 if (routeGoal.IsEmpty())
                     routeGoal = leaderInputs->routeTarget;
-                if (!routeGoal.IsEmpty())
-                    if (Unit* goal = botAI->GetUnit(routeGoal);
-                        goal && goal->IsAlive() && goal->IsInWorld() && !goal->IsInCombat() &&
-                        bot->GetExactDist(goal) > APPROACH_DISTANCE + 1.0f &&
-                        std::fabs(goal->GetPositionZ() - bot->GetPositionZ()) <= APPROACH_MAX_HEIGHT &&
-                        !bot->IsInCombat() && !bot->isMoving() && !IsGroupFighting(bot) && IsGroupToppedUp(bot) &&
-                        !PullReadiness::GroupPreparing(bot))
+                // [reach21] This walk IS the replacement of the pick's refusal, and when it refuses in turn it said
+                // nothing at all: one `return false` for nine different terms. wc-n 2026-11-15 b495: 6901 holds of
+                // "no aggressive target of N possible (N range 40)" - 6608 of 6728 dropped candidates, 98 %, left
+                // out for range alone - against 0 lines of this walk, and the only [pull20] lines in the whole log
+                // are its other half (9 height exemptions). So the substitute does not run, and the log does not
+                // say which of its terms stops it: a refusal nobody can price, which is the same defect one layer
+                // down. The terms, their order and their short-circuit are unchanged (the two that cost - the
+                // topped-up and the readiness look - stay last); each one now names itself, and the two that
+                // already carry a reason of their own hand it over. No number is new, no term is new.
+                std::string approachRefusal;
+                Unit* goal = routeGoal.IsEmpty() ? nullptr : botAI->GetUnit(routeGoal);
+                float const goalDz = goal ? goal->GetPositionZ() - bot->GetPositionZ() : 0.0f;
+                if (routeGoal.IsEmpty())
+                    approachRefusal = "the leader named no route target";
+                else if (!goal || !goal->IsAlive() || !goal->IsInWorld())
+                    approachRefusal = "its route target is gone (dead, or out of this world)";
+                else if (goal->IsInCombat())
+                    approachRefusal = Acore::StringFormat("its route target {} already fights", goal->GetName());
+                else if (bot->GetExactDist(goal) <= APPROACH_DISTANCE + 1.0f)
+                    approachRefusal = Acore::StringFormat("it stands at its route target {} already ({:.1f} yd)",
+                                                          goal->GetName(), bot->GetExactDist(goal));
+                else if (std::fabs(goalDz) > APPROACH_MAX_HEIGHT)
+                    approachRefusal = Acore::StringFormat(
+                        "its route target {} is {:.1f} yd {} it, over this walk's own height rule ({:.0f} yd) - the "
+                        "pick's height rule is a different one, and the route target is exempt from THAT",
+                        goal->GetName(), std::fabs(goalDz), goalDz < 0.0f ? "under" : "over", APPROACH_MAX_HEIGHT);
+                else if (bot->IsInCombat())
+                    approachRefusal = "the tank is in a fight";
+                else if (bot->isMoving())
+                    approachRefusal = "the tank already walks somewhere";
+                else if (IsGroupFighting(bot))
+                    approachRefusal = "the group is in a fight";
+                else if (std::string topped; !IsGroupToppedUp(bot, &topped))
+                    approachRefusal = "the group is not topped up"
+                                      + (topped.empty() ? std::string() : " (" + topped + ")");
+                else if (std::string ready; PullReadiness::GroupPreparing(bot, &ready))
+                    approachRefusal = "the group still gets ready"
+                                      + (ready.empty() ? std::string() : " (" + ready + ")");
+                if (!approachRefusal.empty())
+                {
+                    _lookWhy += " - no walk toward its route target: " + approachRefusal;
+                    static thread_local uint32 goalRefuseMs = 0;  // per map thread, a log cadence only
+                    if (!goalRefuseMs || getMSTimeDiff(goalRefuseMs, getMSTime()) > 5 * IN_MILLISECONDS)
                     {
-                        _approach = routeGoal;
-                        _lookWhy += " - walks toward its route target " + std::string(goal->GetName()) +
-                                    Acore::StringFormat(" ({:.0f} yd) [pull85] [pull20]", bot->GetExactDist(goal));
-                        static thread_local uint32 goalWalkMs = 0;  // per map thread, a log cadence only
-                        if (!goalWalkMs || getMSTimeDiff(goalWalkMs, getMSTime()) > 5 * IN_MILLISECONDS)
-                        {
-                            goalWalkMs = getMSTime();
-                            if (!goalWalkMs)
-                                goalWalkMs = 1;
-                            LOG_INFO("playerbots", "[pull85] [pull20] {}: the leader picks no mob ({}) and its route "
-                                     "target {} stands {:.0f} yd off ({}): walks toward it instead of standing",
-                                     bot->GetName(),
-                                     leaderInputs->pickWhy.empty() ? "no reason given" : leaderInputs->pickWhy,
-                                     goal->GetName(), bot->GetExactDist(goal),
-                                     RouteTarget::Get(bot->GetGUID()).IsEmpty() ? "the leader's own route target"
-                                                                                : "the route registry");
-                        }
-                        return true;
+                        goalRefuseMs = getMSTime();
+                        if (!goalRefuseMs)
+                            goalRefuseMs = 1;
+                        LOG_INFO("playerbots", "[reach21] {}: the leader picks no mob ({}) and the walk toward its "
+                                 "route target is refused too: {}", bot->GetName(),
+                                 leaderInputs->pickWhy.empty() ? "no reason given" : leaderInputs->pickWhy,
+                                 approachRefusal);
                     }
-                return false;
+                    return false;
+                }
+
+                _approach = routeGoal;
+                _lookWhy += " - walks toward its route target " + std::string(goal->GetName()) +
+                            Acore::StringFormat(" ({:.0f} yd) [pull85] [pull20]", bot->GetExactDist(goal));
+                static thread_local uint32 goalWalkMs = 0;  // per map thread, a log cadence only
+                if (!goalWalkMs || getMSTimeDiff(goalWalkMs, getMSTime()) > 5 * IN_MILLISECONDS)
+                {
+                    goalWalkMs = getMSTime();
+                    if (!goalWalkMs)
+                        goalWalkMs = 1;
+                    LOG_INFO("playerbots", "[pull85] [pull20] {}: the leader picks no mob ({}) and its route target "
+                             "{} stands {:.0f} yd off ({}): walks toward it instead of standing", bot->GetName(),
+                             leaderInputs->pickWhy.empty() ? "no reason given" : leaderInputs->pickWhy,
+                             goal->GetName(), bot->GetExactDist(goal),
+                             RouteTarget::Get(bot->GetGUID()).IsEmpty() ? "the leader's own route target"
+                                                                        : "the route registry");
+                }
+                return true;
             }
             LogPullHold(bot, "no aggressive target", nullptr);
             // Nobody stands still while mobs are there: the tank walks toward the nearest one it cannot pick.
