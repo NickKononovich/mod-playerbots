@@ -14,6 +14,7 @@
 #include "AttackersValue.h"  // [deaths] NO_ATTACK
 #include "ChaseModel.h"  // [runpast88] the chase window, as a seam without the world
 #include "ManaBudget.h"  // [mana90] the seconds of a fight the mana holds, as a seam without the world
+#include "KillRate.h"  // [dpszero1] its own damage in three states - no estimate, deals nothing, deals
 #include "ChooseTargetActions.h"
 #include "Creature.h"
 #include "DBCStores.h"
@@ -1340,8 +1341,16 @@ namespace
     };
     bool LosesAtFull(Player* bot, DpsEstimate::Result const& own, std::vector<RouteFoe> const& foes, float petHealth)
     {
-        float const botDps = std::max(own.burstDps, 1.0f);
-        float const whiteDps = std::clamp(own.whiteDps, 1.0f, botDps);
+        // [dpszero1] its own damage with no invented floor. NO ESTIMATE: no wall is built on a number nobody
+        // computed (rule 7) - the walk is not refused here, it is simply not judged here, which is what this
+        // function already answers when it cannot tell. A MEASURED ZERO: the pack is never killed, so it loses -
+        // and that is an answer about the fight, not a small number standing in for one.
+        KillRate::Own const burst{own.estimated, own.burstDps};
+        KillRate::Own const white{own.estimated, std::min(own.whiteDps, own.burstDps)};
+        if (!KillRate::Judgeable(burst))
+            return false;
+        if (KillRate::StateOf(burst) == KillRate::State::DealsNothing)
+            return true;
         float const maxMana = float(bot->GetMaxPower(POWER_MANA));
         bool const spends = maxMana > 0.0f && own.manaPerSec > 0.0f;
         float const spellSec = spends ? maxMana / own.manaPerSec : std::numeric_limits<float>::max();
@@ -1351,15 +1360,21 @@ namespace
         float variance = 0.0f;
         for (RouteFoe const& foe : foes)
         {
-            float hp = foe.hp + HealToCome(foe.mob, foe.hp / botDps);
+            float hp = foe.hp + HealToCome(foe.mob, KillRate::KillSec(burst, foe.hp));
             if (seconds < spellSec)
             {
-                float const spellPart = (spellSec - seconds) * botDps;
+                float const spellPart = (spellSec - seconds) * burst.dps;
                 float const part = std::min(hp, spellPart);
-                seconds += part / botDps;
+                seconds += KillRate::KillSec(burst, part);
                 hp -= part;
             }
-            seconds += hp / whiteDps;
+            if (hp > 0.0f)
+            {
+                // [dpszero1] nothing of its damage outlives its mana: the rest of the pack never falls
+                if (KillRate::StateOf(white) != KillRate::State::Deals)
+                    return true;
+                seconds += KillRate::KillSec(white, hp);
+            }
             damage += foe.dps * seconds;
             // [death396] the judge's high end ([death386]): the swings' and casts' spread over the seconds each one
             // lives. Before, the mean: b453 Maronic L21 "Redridge Brute: wins on the mean (2949 dmg) but not at the
@@ -2602,11 +2617,28 @@ namespace SoloSafety
         // [dps1] its damage from the formula against the target (user 2026-11-08: no fight history): its rotation
         // while its mana lasts, then what lasts without mana
         DpsEstimate::Result const own = OwnDamage(bot, target);
-        float const botDps = std::max(own.burstDps, 1.0f);
+        // [dpszero1] its own damage with NO invented floor, in the three states a reader owes it (KillRate.h).
+        // NO ESTIMATE: nobody ran the formula, so no verdict about this fight may rest on a number - the judge
+        // answers nothing, which is what it already answers when it does not apply. A MEASURED ZERO: it deals
+        // nothing, so no health it has makes the fight winnable; refused, and no fight is priced because there is
+        // no fight that ends. Everything below is the honest reading, a hundredth of a dps included.
+        KillRate::Own const burst{own.estimated, own.burstDps};
+        switch (KillRate::StateOf(burst))
+        {
+            case KillRate::State::NoEstimate:
+                return verdict;
+            case KillRate::State::DealsNothing:
+                verdict.kind = Verdict::Kind::Refuse;
+                verdict.why = "its own damage is measured at zero: the fight has no end to price";
+                return verdict;
+            case KillRate::State::Deals:
+                break;
+        }
+        float const botDps = own.burstDps;
         // [deaths] each mob's health with the heals it casts on itself over the time the bot needs for it
         for (Mob& mob : mobs)
             if (Creature* creature = mob.unit->ToCreature())
-                mob.hp += HealToCome(creature, mob.hp / botDps);
+                mob.hp += HealToCome(creature, KillRate::KillSec(burst, mob.hp));
         // [death388] ... and the heals its friends cast on it (SMART_EVENT_FRIENDLY_HEALTH: a Greymist Oracle's Healing
         // Wave on a hurt friend), on the one the bot fights first, over the time the bot needs for the pack
         if (!mobs.empty())
@@ -2616,7 +2648,7 @@ namespace SoloSafety
                 packHp += mob.hp;
             for (Mob const& mob : mobs)
                 if (Creature* creature = mob.unit->ToCreature())
-                    mobs.front().hp += FriendHealToCome(creature, packHp / botDps);
+                    mobs.front().hp += FriendHealToCome(creature, KillRate::KillSec(burst, packHp));
         }
 
         // [death449] the creatures the pack's scripts summon in the fight: each its template's health at its level,
@@ -2697,7 +2729,7 @@ namespace SoloSafety
             G3D::Vector3 const& at = verdict.fightAt;
             float const walk = std::hypot(bot->GetPositionX() - at.x, bot->GetPositionY() - at.y) /
                                std::max(bot->GetSpeed(MOVE_RUN), 0.1f);
-            float const window = walk + packHp / botDps;
+            float const window = walk + KillRate::KillSec(burst, packHp);
             time_t const now = GameTime::GetGameTime().count();
             float const reachMax = MAX_AGGRO_RADIUS + MaxWanderDistance(bot->GetMapId());
             std::set<uint32> grids;
@@ -2786,13 +2818,19 @@ namespace SoloSafety
         // in-combat regeneration) runs its spells, its weapon's white damage (and its pet's) is what is left when the
         // mana is gone (b307/b308: priests pulled at 7-25 % mana judged on their full-mana damage and died)
         float const manaPerSec = own.manaPerSec;
-        float const whiteDps = std::clamp(own.whiteDps, 1.0f, botDps);
+        // [dpszero1] what lasts with no mana: never above the burst, and never floored either. A bot whose damage
+        // does not outlive its mana is one whose fight does not end, and the projection says so by not ending it
+        KillRate::Own const white{own.estimated, std::min(own.whiteDps, own.burstDps)};
+        float const whiteDps = white.dps;
         struct Projection
         {
             float seconds = 0.0f;
             float damage = 0.0f;
             float targetDamage = 0.0f;  // the target's part (a taunting pet's to take)
             float variance = 0.0f;      // [death386] of the damage: the mobs' swings over their seconds alive
+            // [dpszero1] the projection never reached the end of the pack: what lasts without mana kills nothing,
+            // so a mob is left standing however long the fight runs. Not a number - the absence of one
+            bool unending = false;
         };
         // [death390] the bot's own spread: the kill time of each mob varies with its hits' crit (x2 melee, x1.5 a
         // spell) and miss shares - a renewal of one hit per swing / global cooldown: the variance of a kill of T
@@ -2834,7 +2872,12 @@ namespace SoloSafety
                     later += DpsEstimate::MeleeHitsPerSec(bot, mobs[i].unit);
                 float const hits = (i == 0 ? own.pushHitsPerSec : 0.0f) + later;
                 DpsEstimate::Result const at = DpsEstimate::Estimate(bot, target, ctx, 0.0f, hits);
-                phases[i] = {std::max(at.burstDps, 1.0f), at.manaPerSec};
+                // [dpszero1] the pushed-back rotation's own reading, floor-free: a zero it MEASURED is kept as a
+                // zero (the projection below then leaves the mob to what lasts without mana). Only an estimate
+                // that did not run at all leaves the phase at the judge's own reading, which did run - never 1.0
+                KillRate::Own const pushed{at.estimated, at.burstDps};
+                if (KillRate::Judgeable(pushed))
+                    phases[i] = {pushed.dps, at.manaPerSec};
             }
             thread_local std::unordered_set<uint64> pushLogged;  // a log cadence per bot, target kind and pack size
             if (pushLogged.size() > 65536)
@@ -2862,7 +2905,9 @@ namespace SoloSafety
                 auto const [phaseDps, phaseMana] = phases[i];
                 float const spellSec = spends && phaseMana > 0.0f ? mana / phaseMana
                                                                   : std::numeric_limits<float>::max();
-                if (spellSec > 0.0f)
+                // [dpszero1] a phase that deals nothing spends no seconds and no mana: the mob is left to what
+                // lasts without mana below, instead of to a floor that would have killed it
+                if (spellSec > 0.0f && phaseDps > 0.0f)
                 {
                     float const spellPart = spellSec * phaseDps;
                     float const spent = hp <= spellPart ? hp / phaseDps : spellSec;
@@ -2871,7 +2916,17 @@ namespace SoloSafety
                     if (spends && phaseMana > 0.0f)
                         mana = std::max(0.0f, mana - spent * phaseMana);
                 }
-                out.seconds += hp / whiteDps;
+                if (hp > 0.0f)
+                {
+                    // [dpszero1] no damage of its outlives its mana: this mob never falls, and the fight that
+                    // follows is unpriceable rather than long. Said once, here, instead of a floor on the dps
+                    if (KillRate::StateOf(white) != KillRate::State::Deals)
+                    {
+                        out.unending = true;
+                        return out;
+                    }
+                    out.seconds += KillRate::KillSec(white, hp);
+                }
                 out.damage += mob.dps * out.seconds;
                 out.variance += mob.variance * out.seconds;
                 // [death390] its kill time's spread, under every mob still alive
@@ -2908,7 +2963,8 @@ namespace SoloSafety
             float const ehp = health + std::min(petHealth, fight.targetDamage) + heals;
             // [death386] user 2026-11-12 "survives with a margin": the high end of its rolls, not their mean - two
             // standard deviations of the mobs' swings (weapon roll, miss / dodge / parry, crit, crush) over the fight
-            wins = high < ehp;
+            // [dpszero1] a fight the projection could not end is not a fight it won
+            wins = !fight.unending && high < ehp;
             return ehp;
         };
         bool winNow = false;
@@ -3333,7 +3389,12 @@ namespace SoloSafety
         // chase Redridge Mystic L19 (3 % hp): the reach of Black Dragon Whelp L18" under its bolts and died
         if (!PlayerbotAI::IsRanged(bot) && target->GetVictim() == bot && !bot->IsWithinMeleeRange(target))
         {
-            float const botDps = std::max(OwnDamage(bot, target).burstDps, 1.0f);
+            // [dpszero1] no floor: with no estimate there is nothing to price this step with, and with a measured
+            // zero the fight has no end - either way the step is not refused on an invented number
+            DpsEstimate::Result const step = OwnDamage(bot, target);
+            KillRate::Own const burst{step.estimated, step.burstDps};
+            if (KillRate::StateOf(burst) != KillRate::State::Deals)
+                return true;
             struct Foe
             {
                 float hp, dps, variance;
@@ -3362,7 +3423,7 @@ namespace SoloSafety
             float variance = 0.0f;
             for (Foe const& foe : foes)
             {
-                float const kill = foe.hp / botDps;
+                float const kill = KillRate::KillSec(burst, foe.hp);
                 seconds += kill;
                 damage += aliveDps * kill;
                 variance += aliveVariance * kill;
@@ -3786,7 +3847,15 @@ namespace SoloSafety
         uint8 const expansion = bot->GetLevel() <= CLASSIC_MAX_LEVEL   ? EXPANSION_CLASSIC
                                 : bot->GetLevel() <= OUTLAND_MAX_LEVEL ? EXPANSION_THE_BURNING_CRUSADE
                                                                        : EXPANSION_WRATH_OF_THE_LICH_KING;
-        float const fightSec = float(stats->BaseHealth[expansion]) / std::max(OwnDamage(bot, nullptr).dps, 1.0f);
+        // [dpszero1] no floor: with no estimate this share is unknown, which this function already says with -1,
+        // and a measured zero means a fight that never ends - the approach is then a vanishing part of it
+        DpsEstimate::Result const own = OwnDamage(bot, nullptr);
+        KillRate::Own const rate{own.estimated, own.dps};
+        if (!KillRate::Judgeable(rate))
+            return -1.0f;
+        if (KillRate::StateOf(rate) == KillRate::State::DealsNothing)
+            return 1.0f;
+        float const fightSec = KillRate::KillSec(rate, float(stats->BaseHealth[expansion]));
         float const approachSec = std::max(0.0f, autoShot->GetMaxRange(false) - autoShot->GetMinRange(false)) /
                                   (baseMoveSpeed[MOVE_RUN] * CREATURE_DEFAULT_SPEED_RUN);
         if (fightSec <= 0.0f)
@@ -3888,12 +3957,26 @@ namespace SoloSafety
         }
 
         DpsEstimate::Result const own = OwnDamage(bot, bot->GetVictim());
-        float const botDps = own.dps;
-        out.botDps = std::max(botDps, 1.0f);
+        // [dpszero1] no floor. NO ESTIMATE: nothing is projected, the same answer this function already gives when
+        // there is nothing to project - a fight is never called lost on a number nobody computed. A MEASURED ZERO:
+        // the attackers never fall, so the open fight IS lost, and it is said as that verdict rather than by
+        // dividing their health by an invented 1 dps.
+        KillRate::Own const rate{own.estimated, own.dps};
+        switch (KillRate::StateOf(rate))
+        {
+            case KillRate::State::NoEstimate:
+                return out;
+            case KillRate::State::DealsNothing:
+                out.lost = true;
+                return out;
+            case KillRate::State::Deals:
+                break;
+        }
+        out.botDps = rate.dps;
         // [deaths] each attacker's health with the heals it still casts on itself over the time the bot needs for it
         for (Projection::Foe& foe : out.foes)
             if (Creature* creature = foe.unit->ToCreature())
-                foe.hp += HealToCome(creature, foe.hp / out.botDps);
+                foe.hp += HealToCome(creature, KillRate::KillSec(rate, foe.hp));
         // the rest of the fight as the judge counts it: its current target first, then the most damage per health
         Unit* const victim = bot->GetVictim();
         std::sort(out.foes.begin(), out.foes.end(),
@@ -3905,7 +3988,7 @@ namespace SoloSafety
                   });
         for (Projection::Foe const& foe : out.foes)
         {
-            out.seconds += foe.hp / out.botDps;
+            out.seconds += KillRate::KillSec(rate, foe.hp);
             out.damage += foe.dps * out.seconds;
         }
         // [death415] its heals as the judge counts them (SurvivalKit::HealPoints on the mana its rotation leaves, each
@@ -4763,7 +4846,17 @@ namespace SoloSafety
         // high end ([death386]: two standard deviations of the rolls) against its health now and the heals its mana
         // holds
         DpsEstimate::Result const own = OwnDamage(bot, nullptr);
-        float const botDps = std::max(own.burstDps, 1.0f);
+        // [dpszero1] no floor: with no estimate the trap is not walled on a number nobody computed, and with a
+        // measured zero the summons never fall, which walls it with no number needed
+        KillRate::Own const burst{own.estimated, own.burstDps};
+        if (!KillRate::Judgeable(burst))
+            return false;
+        if (KillRate::StateOf(burst) == KillRate::State::DealsNothing)
+        {
+            why = Acore::StringFormat("its trap summons {} x {} L{} and its own damage is measured at zero", count,
+                                      named->Name, named->maxlevel);
+            return true;
+        }
         float aliveDps = 0.0f;
         float aliveVariance = 0.0f;
         for (Foe const& foe : foes)
@@ -4776,7 +4869,7 @@ namespace SoloSafety
         float variance = 0.0f;
         for (Foe const& foe : foes)
         {
-            float const kill = foe.hp / botDps;
+            float const kill = KillRate::KillSec(burst, foe.hp);
             seconds += kill;
             damage += aliveDps * kill;
             variance += aliveVariance * kill;

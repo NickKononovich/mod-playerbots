@@ -25,7 +25,9 @@
 
 #include "ChainPullJudge.h"
 #include "Fixture.h"
+#include "KillRate.h"
 
+#include <cmath>
 #include <cstdio>
 #include <gtest/gtest.h>
 
@@ -70,4 +72,54 @@ TEST(EstimateOutcome, TheEstimateDidNotDivergeFromTheFactByMoreThanTheBand)
     // seconds, the mob count, the tank's drop). The band is a number the user approves - this rig does not invent
     // thresholds.
     FAIL() << "estimate/outcome pairs exist (" << files.size() << ") but the band is not agreed with the user yet";
+}
+
+// [dpszero1] THE ESTIMATE THAT DOES NOT EXIST, AND THE ONE THAT IS SMALL. Nine judge sites read the bot's own
+// damage through `std::max(own.burstDps, 1.0f)`: one floor standing in for a missing estimate, for a measured zero
+// and for an honest fraction of a dps at once. The fixtures are the b502 hour's own rows - the 37 judge lines that
+// print exactly 1.0 dps, against a journal in which no line prints 0.1-0.9 or 1.1-4.3.
+TEST(OwnDamageFloor, AnEstimateThatDoesNotExistIsNotAMeasuredZero)
+{
+    KillRate::Own const none;                      // nobody ran the formula
+    KillRate::Own const measured{true, 0.0f};      // it ran, and the bot deals nothing
+    EXPECT_EQ(KillRate::StateOf(none), KillRate::State::NoEstimate);
+    EXPECT_EQ(KillRate::StateOf(measured), KillRate::State::DealsNothing);
+    EXPECT_NE(KillRate::StateOf(none), KillRate::StateOf(measured));
+    // the one a verdict may rest on is the one that exists
+    EXPECT_FALSE(KillRate::Judgeable(none));
+    EXPECT_TRUE(KillRate::Judgeable(measured));
+}
+
+TEST(OwnDamageFloor, AnEstimateThatDoesNotExistNeverTurnsIntoASpeed)
+{
+    // Irrua L25's recorded refusal: "118135 dmg expected over 3048 s at 1.0 dps". 3048 is the Barrens Guard's
+    // health divided by the floor, so the whole line is the floor's arithmetic. An absent estimate must not be
+    // able to produce a finite number of seconds at all.
+    constexpr float GUARD_HEALTH = 3048.0f;
+    KillRate::Own const none;
+    EXPECT_FALSE(std::isfinite(KillRate::KillSec(none, GUARD_HEALTH)))
+        << "an estimate nobody computed produced " << KillRate::KillSec(none, GUARD_HEALTH)
+        << " s of fight: that is the invented 1.0 dps wearing a kill time";
+    // a measured zero answers about the FIGHT, and the answer is that it does not end
+    EXPECT_FALSE(std::isfinite(KillRate::KillSec({true, 0.0f}, GUARD_HEALTH)));
+}
+
+TEST(OwnDamageFloor, ATinyEstimateIsUsedAsItIsAndNotRaisedToOne)
+{
+    // Why those 37 lines were small, and it is no defect: at eleven levels and more above the bot the core's own
+    // spell-hit table bottoms out at 1 % (94 - (levelDiff - 2) * 11, clamped), and 75 % resistance caps it further.
+    // Every floored line is a caster against a mob 11 to 42 levels above - never ten or less. So the honest reading
+    // is BELOW 1 dps, and the floor raised it: the fight looked shorter and the damage taken smaller than the
+    // formula said.
+    constexpr float GUARD_HEALTH = 3048.0f;
+    constexpr float ONE_PERCENT_HIT = 0.04f;  // a L25 caster's dps at the table's floor, order of magnitude
+    float const honest = KillRate::KillSec({true, ONE_PERCENT_HIT}, GUARD_HEALTH);
+    float const floored = KillRate::KillSec({true, 1.0f}, GUARD_HEALTH);
+    ASSERT_TRUE(std::isfinite(honest));
+    EXPECT_GT(honest, floored) << "a fraction of a dps was answered with the same kill time as 1.0 dps: the floor "
+                                  "is still there, and it points the optimistic way";
+    EXPECT_NEAR(honest, GUARD_HEALTH / ONE_PERCENT_HIT, 1.0f);
+    // and nothing left to kill is nothing to wait for, in every state
+    EXPECT_FLOAT_EQ(KillRate::KillSec(KillRate::Own{}, 0.0f), 0.0f);
+    EXPECT_FLOAT_EQ(KillRate::KillSec({true, ONE_PERCENT_HIT}, -5.0f), 0.0f);
 }

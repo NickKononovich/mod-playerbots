@@ -36,6 +36,14 @@ enum class BuffContext : uint8
 
 struct Result
 {
+    // [dpszero1] THE FORMULA RAN. false: there is no estimate at all - no bot, or it or its target is out of the
+    // world - and every field below is its untouched default, which is NOT a measurement of zero (rule 7). The two
+    // were indistinguishable, so nine judge sites read them both through one `std::max(own.burstDps, 1.0f)`: a
+    // floor against a division by zero that also turned "nobody computed this" into "1 dps", and an honest fraction
+    // of a dps into "1 dps" as well. 37 of the 1988 judge lines of the b502 hour print exactly 1.0 and no line in
+    // the journal prints 0.1-0.9 or 1.1-4.3. See `KillRate.h` (src/Ai/World/Rpg) for the three states a reader owes
+    // this field and for why those 37 were small (the core's 1 % spell-hit floor at 11 levels above and up).
+    bool estimated = false;
     float dps = 0.0f;         // over the fight length on its mana now (the burst when no length is given)
     float burstDps = 0.0f;    // the rotation unlimited by mana (rage, energy, runes always limit it)
     float whiteDps = 0.0f;    // what lasts with no mana: weapon swings, Auto Shot or wand, and the pet

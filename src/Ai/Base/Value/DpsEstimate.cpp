@@ -2709,7 +2709,8 @@ Result Estimate(Player* bot, Unit* target, BuffContext ctx, float fightSec, floa
 {
     Result out;
     if (!bot || !bot->IsInWorld() || (target && !target->IsInWorld()))
-        return out;
+        return out;  // [dpszero1] `estimated` stays false: no estimate exists, and that is not a zero
+    out.estimated = true;
     Profile profile = ProfileOf(bot, target, ctx);
     out.pushHitsPerSec = profile.pushHitsPerSec;
     // [death457] the hits of every mob on it (not its target's alone): each pushed-back cast's execute time again at
