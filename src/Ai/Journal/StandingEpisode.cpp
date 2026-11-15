@@ -39,9 +39,59 @@ namespace
 
 namespace Journal::Standing
 {
+    bool EndsTheEpisode(Holds const& holds)
+    {
+        // Only the holds that mean the bot is not standing at all. The three labelling ones are deliberately
+        // absent: see the comment on Holds in the header.
+        return holds.dead || holds.sitting || holds.casting || holds.inFlight || holds.beingTeleported;
+    }
+
+    char const* HoldName(Holds const& holds)
+    {
+        // One name per sample, in a fixed order, so that the key is stable for one state of the world. The order
+        // is "what the bot is" before "what it was told": a dead bot under its leader's Hold is dead.
+        if (holds.dead)
+            return "dead";
+        if (holds.sitting)
+            return "sitting";
+        if (holds.casting)
+            return "casting";
+        if (holds.inFlight)
+            return "in flight";
+        if (holds.beingTeleported)
+            return "being teleported";
+        if (holds.orderedToStand)
+            return "its leader ordered it to stand";
+        if (holds.waitsForTransport)
+            return "waits for a transport to dock";
+        if (holds.waitsForGroup)
+            return "waits for its group";
+        return "";
+    }
+
+    std::string TrailTail(std::string const& trail, std::size_t room)
+    {
+        if (room == 0)
+            return std::string();
+        if (trail.size() <= room)
+            return trail;
+        std::string tail = trail.substr(trail.size() - room);
+        // Start the tail at an action boundary when one is inside it, so the row never begins mid-name. If the
+        // whole tail is one entry there is no boundary to find and the raw tail is kept: losing the newest
+        // characters to tidiness would be the very defect this function exists to end.
+        std::size_t const bar = tail.find('|');
+        if (bar != std::string::npos && bar + 1 < tail.size())
+            tail = tail.substr(bar);
+        return tail;
+    }
+
     Look Observe(Anchor& anchor, Sample const& sample)
     {
         Look look;
+        // [jrn42] the hold travels with every row this call writes: the row that says "it stood for 120 s under
+        // its leader's order" and the row that says "nothing held it still" are the same row, and the one field
+        // below is the whole difference between a problem and a bot doing as it was told
+        look.heldBy = HoldName(sample.holds);
         if (!anchor.open)
         {
             Restart(anchor, sample);
@@ -59,7 +109,7 @@ namespace Journal::Standing
         }
         float const movedYd = Dist(anchor, sample);
         uint32_t const stoodMs = Diff(anchor.sinceMs, sample.nowMs);
-        if (sample.held || movedYd > sample.radius)
+        if (EndsTheEpisode(sample.holds) || movedYd > sample.radius)
         {
             look.ended = true;
             look.report = stoodMs >= sample.cadenceMs;

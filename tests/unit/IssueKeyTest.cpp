@@ -47,7 +47,7 @@ TEST(IssueKeyStanding, OneEpisodeIsOneKeyWhateverTheEngineTried)
 {
     std::set<std::string> keys;
     for (std::string const& trace : KYLANTINO_EPISODE)
-        keys.insert(Journal::Key::Standing("dps", false, 1, trace));
+        keys.insert(Journal::Key::Standing("dps", false, 1, "", trace));
     EXPECT_EQ(keys.size(), 1u) << "six samples of one standing episode gave " << keys.size()
                                << " keys: the engine's action trace is in the key";
 }
@@ -57,13 +57,42 @@ TEST(IssueKeyStanding, OneEpisodeIsOneKeyWhateverTheEngineTried)
 TEST(IssueKeyStanding, DifferentCausesAreDifferentKeys)
 {
     std::string const trace = KYLANTINO_EPISODE.front();
-    EXPECT_NE(Journal::Key::Standing("dps", true, 1, trace), Journal::Key::Standing("dps", false, 1, trace));
-    EXPECT_NE(Journal::Key::Standing("dps", false, 0, trace), Journal::Key::Standing("dps", false, 1, trace));
-    EXPECT_NE(Journal::Key::Standing("dps", true, 0, trace), Journal::Key::Standing("dps", false, 1, trace));
+    EXPECT_NE(Journal::Key::Standing("dps", true, 1, "", trace), Journal::Key::Standing("dps", false, 1, "", trace));
+    EXPECT_NE(Journal::Key::Standing("dps", false, 0, "", trace), Journal::Key::Standing("dps", false, 1, "", trace));
+    EXPECT_NE(Journal::Key::Standing("dps", true, 0, "", trace), Journal::Key::Standing("dps", false, 1, "", trace));
     // the role is a cause here as it is in the sibling kinds: a healer that stands is not a tank that stands, and
     // the live rows separate into 42 dps, 18 tank and 3 healer episodes out of combat
-    EXPECT_NE(Journal::Key::Standing("healer", false, 1, trace), Journal::Key::Standing("dps", false, 1, trace));
-    EXPECT_NE(Journal::Key::Standing("tank", false, 1, trace), Journal::Key::Standing("dps", false, 1, trace));
+    EXPECT_NE(Journal::Key::Standing("healer", false, 1, "", trace),
+              Journal::Key::Standing("dps", false, 1, "", trace));
+    EXPECT_NE(Journal::Key::Standing("tank", false, 1, "", trace), Journal::Key::Standing("dps", false, 1, "", trace));
+}
+
+// [jrn42] THE CAUSE FIELD. A member standing exactly where its leader ordered it to stand is not the problem a
+// member standing with no order at all is, and until the hold entered the key both were one row. The numbers that
+// make this the biggest key in the table: of 1089 out-of-combat standing rows inside Wailing Caverns on b502, 931
+// (85.5 %) fell in a window in which the leader of that very run had recorded a `pull` verdict of `held` - so one
+// leader hold was counted again as a problem of each member waiting under it. Joined by run_id (identity) and by
+// the overlap in time (marked as a time join, as the project's slice rule requires).
+TEST(IssueKeyStanding, TheLegitimateHoldIsPartOfTheCause)
+{
+    std::string const trace = KYLANTINO_EPISODE.front();
+    std::string const unheld = Journal::Key::Standing("dps", false, 1, "", trace);
+    EXPECT_NE(Journal::Key::Standing("dps", false, 1, "its leader ordered it to stand", trace), unheld)
+        << "a member standing under its leader's own order shares a key with a member standing under no order";
+    EXPECT_NE(Journal::Key::Standing("dps", false, 1, "waits for a transport to dock", trace), unheld);
+    EXPECT_NE(Journal::Key::Standing("dps", false, 1, "waits for a transport to dock", trace),
+              Journal::Key::Standing("dps", false, 1, "waits for its group", trace))
+        << "two different legitimate waits share one key";
+}
+
+// ... and the other direction: the hold is a closed set of names read as facts, so one hold through one episode
+// is still one key however the engine's trace moves under it.
+TEST(IssueKeyStanding, OneHeldEpisodeIsStillOneKey)
+{
+    std::set<std::string> keys;
+    for (std::string const& trace : KYLANTINO_EPISODE)
+        keys.insert(Journal::Key::Standing("dps", false, 1, "waits for a transport to dock", trace));
+    EXPECT_EQ(keys.size(), 1u) << "six samples of one held episode gave " << keys.size() << " keys";
 }
 
 // The same trap in the second emitter that holds a trace: these two are real stuck_target keys of b501, one of a

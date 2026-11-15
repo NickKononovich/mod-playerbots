@@ -29,9 +29,55 @@
 // `stoodYd` is the widest distance from the anchor seen WHILE INSIDE the radius.
 
 #include <cstdint>
+#include <string>
 
 namespace Journal::Standing
 {
+    // [jrn42] THE LEGITIMATE STILLNESSES, AS FACTS WITH NAMES. Until now the emitter folded them into one
+    // anonymous bool, so the row could say "nothing legitimately held it still" and be wrong without anyone
+    // being able to ask which hold it was. They fall into two kinds, and the kinds behave differently on purpose:
+    //
+    //   * THE BOT IS NOT STANDING AT ALL (dead, sitting, casting, in flight, being teleported). These end the
+    //     episode, exactly as before: a duration joined across a sit-down would be a number about nothing.
+    //
+    //   * THE BOT IS STANDING, AND IT IS RIGHT TO (its leader ordered it to stand, it waits on the pier for a
+    //     transport, its walk waits for the group). These LABEL the episode and never end it, because the bot
+    //     really does hold one position and the duration is the very number worth having. Measured on b502:
+    //     Ganna stood 120 s at (-37.33, 2475.54) on map 369 and boarded tram car 176084 fifteen seconds after
+    //     the last row - one wait of one tram cycle (the module's own note puts one way at 63 s), reported as
+    //     twelve problems. Ending the episode on such a hold would instead write one 10 s row per sample, which
+    //     is the cadence talking and not the bot.
+    //
+    // The name is also the cause field the deduplication key has been missing (IssueKey.h says so in as many
+    // words): without it the largest key covered 17 bots over 4 maps because this detector held nothing that
+    // told one cause of standing from another.
+    struct Holds
+    {
+        bool dead = false;
+        bool sitting = false;
+        bool casting = false;
+        bool inFlight = false;
+        bool beingTeleported = false;
+        bool orderedToStand = false;     // its leader's Hold / StandAt, or it is already on the spot it was sent to
+        bool waitsForTransport = false;  // on the pier / platform until the boat, zeppelin or tram docks
+        bool waitsForGroup = false;      // its far walk waits with the group (NewRpgInfo::groupWaiting)
+    };
+
+    // True when the bot is not standing at all and the episode is over. The three labelling holds are NOT here.
+    bool EndsTheEpisode(Holds const& holds);
+
+    // The hold's name for the row and for the key, "" when nothing held it still. One hold is named per sample:
+    // the first in this order, so the name is stable for one state of the world rather than a set that grows.
+    char const* HoldName(Holds const& holds);
+
+    // Engine::GetLastAction() is a ring buffer kept to its NEWEST 512 characters, so the end of the trail is the
+    // newest end. A column narrower than the trail must therefore keep the TAIL: keeping the head answers "what
+    // did it push first", while the column is read as "its engine's last action". Measured on b502: 170 of 1029
+    // standing rows had filled `why` to its 512 characters, so the newest ~110 characters of the trail fell off
+    // the end of it, and `doing` (96 characters) held the OLDEST 96 in 837 of 1032 rows. The cut is made at a
+    // '|' boundary when one lies within the room, so a row never starts in the middle of an action's name.
+    std::string TrailTail(std::string const& trail, std::size_t room);
+
     // The open episode: where the bot was last seen to be making progress through space, and when.
     struct Anchor
     {
@@ -45,8 +91,8 @@ namespace Journal::Standing
         float maxYd = 0.f;  // the widest distance from the anchor seen while inside the radius
     };
 
-    // One look at the bot. `held` is the detector's own list of legitimate reasons to be still (dead, sitting,
-    // casting, in flight, being teleported), read in the emitter at this instant and passed in as a fact.
+    // One look at the bot. `holds` is the detector's own list of legitimate reasons to be still, each read in the
+    // emitter at this instant and passed in as a fact.
     struct Sample
     {
         uint32_t nowMs = 0;
@@ -54,7 +100,7 @@ namespace Journal::Standing
         float x = 0.f;
         float y = 0.f;
         float z = 0.f;
-        bool held = false;
+        Holds holds;
         float radius = 1.5f;
         uint32_t cadenceMs = 10000;
     };
@@ -65,7 +111,8 @@ namespace Journal::Standing
         bool report = false;  // write a row for this episode now
         bool ended = false;   // the episode is over ("stood for"), as against still open ("has been standing")
         float stoodSec = 0.f;
-        float stoodYd = 0.f;  // the radius the bot stayed inside, never the step that took it out
+        float stoodYd = 0.f;        // the radius the bot stayed inside, never the step that took it out
+        char const* heldBy = "";    // [jrn42] the legitimate hold this episode stands under, "" when none
     };
 
     // Advances the anchor by one sample and says what to write. The anchor is the caller's state, one per bot.

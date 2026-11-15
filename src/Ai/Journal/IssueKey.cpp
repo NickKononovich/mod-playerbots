@@ -8,7 +8,7 @@
 
 namespace Journal::Key
 {
-    std::string Standing(std::string const& role, bool inCombat, uint32_t engineState,
+    std::string Standing(std::string const& role, bool inCombat, uint32_t engineState, std::string const& heldBy,
                          std::string const& actionTrace)
     {
         // THE TRACE COMES IN AND DOES NOT GO INTO THE KEY, and that is this function's whole reason to exist:
@@ -22,13 +22,15 @@ namespace Journal::Key
         // and it is constant through an episode, so it narrows the key without splitting one episode. Measured on
         // b501's rows: 42 dps, 18 tank and 3 healer episodes out of combat, 3 tank and 2 dps in combat.
         //
-        // THE KEY IS STILL WIDE, AND THAT IS STATED RATHER THAN HIDDEN: its largest group covers 42 rows over 17
-        // bots and 4 maps, because this detector holds no field that tells one cause of standing from another.
-        // Narrowing it further needs CAUSE FIELDS from the emitter - the way the idle diagnostics has buckets and
-        // keys on the combination of the non-zero ones - and not a string that happens to differ.
+        // [jrn42] THE FIRST CAUSE FIELD THIS KEY EVER HAD, and the request for it stood in this very comment:
+        // "narrowing it further needs CAUSE FIELDS from the emitter ... and not a string that happens to differ".
+        // `heldBy` is such a field - a closed set of names read as facts at the sample's instant, not a text that
+        // varies - so it narrows without splitting one episode, and it is what separates a bot standing with no
+        // order from a bot standing exactly where its leader told it to. The empty name is kept out of the key
+        // instead of being spelled, so the keys already measured on b501 and b502 go on meaning what they meant.
         (void)actionTrace;
         return "standing|" + role + "|" + std::string(inCombat ? "combat" : "peace") + "|state " +
-               std::to_string(engineState);
+               std::to_string(engineState) + (heldBy.empty() ? std::string() : "|held: " + heldBy);
     }
 
     std::string StuckTarget(std::string const& role, std::string const& actionRunning)

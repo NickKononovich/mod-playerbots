@@ -35,7 +35,14 @@ namespace Journal::Key
     // bot's role in its five, whether it stood through a fight, and which state its AI was in - the same three
     // kinds of part the sibling kinds use (`idle|<role>|<buckets>`, `stuck_target|<role>|...`). `actionTrace` is
     // passed in so that the one place that must NOT use it is the one place that holds it.
-    std::string Standing(std::string const& role, bool inCombat, uint32_t engineState,
+    // [jrn42] `heldBy` is the cause field the comment below asked for and did not have: the name of the
+    // legitimate stillness the episode stands under ("" when none, Journal::Standing::HoldName). It is in the
+    // key because standing under the leader's own order is not the same problem as standing with no order at
+    // all - measured on b502, 931 of 1089 out-of-combat standing rows inside Wailing Caverns fell in a window
+    // in which the leader of that very run had recorded a `pull` verdict of `held` (run_id by identity, the
+    // overlap by time), so without this field one leader hold was counted again as a problem of each member
+    // standing under it.
+    std::string Standing(std::string const& role, bool inCombat, uint32_t engineState, std::string const& heldBy,
                          std::string const& actionTrace);
 
     // `stuck_target`: the combat engine holds an idle mob as its target and nothing of it runs (PlayerbotAI.cpp).

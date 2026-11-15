@@ -198,7 +198,7 @@ namespace Journal
             "pos_y, pos_z, in_dungeon, in_combat, window_sec, ticks, casts, cast_wait, non_cast, no_target, "
             "range_los, moving, gcd, threat, leader_hold, other, ref_unsaid, ref_useless, ref_impossible, "
             "ref_prereq, ref_failed, ref_blocked, ref_no_candidate, gap_n, gap_avg_ms, gap_max_ms, gap_over_150, "
-            "gap_over_400, top_actions, stood_sec, stood_yd, doing, why, run_id, build)";
+            "gap_over_400, top_actions, stood_sec, stood_yd, doing, held_by, why, run_id, build)";
         char const* const COLUMNS_STUCK =
             "(id, boot_id, at_ms, hour_bucket, kind, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
             "pos_y, pos_z, target_name, target_entry, target_low, target_yd, target_level, in_combat, "
@@ -1180,12 +1180,14 @@ namespace Journal
                              "gap_max_ms INT UNSIGNED NULL, gap_over_150 SMALLINT UNSIGNED NULL, "
                              "gap_over_400 SMALLINT UNSIGNED NULL, top_actions VARCHAR(255) NOT NULL DEFAULT '', "
                              "stood_sec FLOAT NULL, stood_yd FLOAT NULL, doing VARCHAR(96) NOT NULL DEFAULT '', "
+                             "held_by VARCHAR(48) NOT NULL DEFAULT '', "
                              "why VARCHAR(512) NOT NULL DEFAULT '', run_id VARCHAR(48) NOT NULL DEFAULT '', "
                              "build VARCHAR(16) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY event_at (event, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY role_at (role, at_ms), "
                              "KEY where_at (map_id, zone_id, at_ms), KEY other_at (other, at_ms), "
                              "KEY stood_at (stood_sec, at_ms), KEY gap_at (gap_max_ms, at_ms), "
+                             "KEY held_at (held_by, at_ms), "
                              "KEY casts_at (casts, at_ms), KEY build_at (build, at_ms), "
                              "KEY run_at (run_id, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
@@ -1631,7 +1633,7 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_idle",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(idle.event, 12),
                                 Quoted(idle.botName, 32), idle.botLow, OrNull(idle.botLevel), OrNull(idle.role, 8),
                                 idle.mapId, idle.zoneId, Real(idle.x), Real(idle.y), Real(idle.z),
@@ -1644,8 +1646,8 @@ namespace Journal
                                 OrNull(idle.refNoCandidate), OrNull(idle.gapN), OrNull(idle.gapAvgMs),
                                 OrNull(idle.gapMaxMs), OrNull(idle.gapOver150), OrNull(idle.gapOver400),
                                 Quoted(idle.topActions, 255), OrNull(idle.stoodSec), OrNull(idle.stoodYd),
-                                Quoted(idle.doing, 96), Quoted(idle.why, 512), Quoted(idle.runId, 48),
-                                Quoted(Config().build, 16)));
+                                Quoted(idle.doing, 96), Quoted(idle.heldBy, 48), Quoted(idle.why, 512),
+                                Quoted(idle.runId, 48), Quoted(Config().build, 16)));
         return id;
     }
 

@@ -720,6 +720,12 @@ namespace Journal
         Optional<float> stoodSec;  // how long it has not left the radius
         Optional<float> stoodYd;   // the radius it stayed inside - the pair is the fact, neither number alone is
         std::string doing;         // what the engine's last action was, as the engine already knows it
+        // [jrn42] the legitimate stillness this episode stands under, by name (Journal::Standing::HoldName):
+        // "its leader ordered it to stand", "waits for a transport to dock", "waits for its group", "sitting"...
+        // EMPTY MEANS "checked at this instant, nothing held it still" - a finding, as it is in `read_by`, and
+        // not a blank. It is a column and not a word inside `why` because every question worth asking of this
+        // table filters on it: how much of the standing is the leader's own hold, and how much is nobody's.
+        std::string heldBy;
         std::string why;           // the reason in words, from what the domain knows at this instant
 
         std::string runId;
