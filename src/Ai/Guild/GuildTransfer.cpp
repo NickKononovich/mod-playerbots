@@ -26,6 +26,7 @@
 // All game actions run on the world thread (the core runs these opcodes there: PROCESS_THREADUNSAFE).
 
 #include "GuildCoordinator.h"
+#include "SupplyShare.h"  // [supply130] the five's pool and the share of a short pool, as a seam
 #include "BuyAction.h"  // [share92] RESTOCK_FOOD_MIN
 #include "NewRpgProfession.h"  // [roles62] NeedsRespec
 #include "NewRpgQuestRoute.h"  // [inv372] the route a pickup's mailbox is measured against
@@ -1450,48 +1451,37 @@ void GuildCoordinator::UpdateTransfers()
         // five gate and the planner judge the tank's healing on it), a dps short of mana still deals its white
         // damage. b444 wc-n five 12: "pool 1 of the lines' 78, short: Farret 0/1, Feette 1/20, ..." - the healer
         // stood at 38-41 % with no drink while the planner held Verdan's pull for his mana
+        // [supply130] and the TANK right after it, before any dps: the leader holds the pull on the tank's mana,
+        // so a share that leaves the tank dry contradicts the arithmetic the leader judges by. wc-n five 1 of the
+        // certification batch (run 681): at "pool 3 of the lines' 36" the proportional share gave the last drink
+        // to a dps priced at 11 while the tank Bami held 0 of its 7 - the tank then rested on spirit regen
+        // (measured 0.31 %/s) and the leader held the pull "the tank rests" 1762 s of the 3033 s run (58 %), 3 of
+        // 8 bosses, no death and no wipe. The whole allocation now lives in the seam the stand asserts over these
+        // very rows (Guild::Supply::ShortPoolTargets, SupplyShare.h)
         size_t healerFill = fills.size();
+        size_t tankFill = fills.size();
         if (kind == DRINK)
             for (size_t n = 0; n < fills.size(); ++n)
                 if (auto const role = five.roles.find(fills[n].p->GetGUID().GetCounter());
-                    role != five.roles.end() && role->second == "healer")
-                    healerFill = n;
+                    role != five.roles.end())
+                {
+                    if (role->second == "healer")
+                        healerFill = n;
+                    else if (role->second == "tank" && tankFill == fills.size())
+                        tankFill = n;
+                }
         if (!covered)
         {
-            uint64 given = 0, sharedPool = pool, sharedLines = lines;
-            if (healerFill < fills.size())
-            {
-                target[healerFill] = uint32(std::min<uint64>(pool, fills[healerFill].line));
-                given = target[healerFill];
-                sharedPool -= given;
-                sharedLines -= fills[healerFill].line;
-            }
-            std::vector<std::pair<uint64, size_t>> rest;  // (remainder, member)
+            std::vector<Guild::Supply::Member> share;
+            share.reserve(fills.size());
             for (size_t n = 0; n < fills.size(); ++n)
-            {
-                if (n == healerFill || !sharedLines)
-                    continue;
-                uint64 const exact = sharedPool * fills[n].line;
-                target[n] = uint32(exact / sharedLines);
-                given += target[n];
-                rest.emplace_back(exact % sharedLines, n);
-            }
-            std::stable_sort(rest.begin(), rest.end(), [](auto const& a, auto const& b) { return a.first > b.first; });
-            for (size_t k = 0; given < pool && k < rest.size(); ++k, ++given)
-                ++target[rest[k].second];
-            if (pool >= fills.size())
-                for (size_t n = 0; n < fills.size(); ++n)
-                    if (!target[n] && n != healerFill)
-                    {
-                        size_t most = n;  // [dun230] never from the healer's share
-                        for (size_t m = 0; m < target.size(); ++m)
-                            if (m != healerFill && target[m] > target[most])
-                                most = m;
-                        if (target[most] < 2)
-                            break;
-                        --target[most];
-                        target[n] = 1;
-                    }
+                share.push_back({fills[n].held, fills[n].line,
+                                 n == healerFill   ? Guild::Supply::Role::Healer
+                                 : n == tankFill   ? Guild::Supply::Role::Tank
+                                                   : Guild::Supply::Role::Other});
+            std::vector<uint32_t> const targets = Guild::Supply::ShortPoolTargets(share, uint32_t(pool));
+            for (size_t n = 0; n < fills.size() && n < targets.size(); ++n)
+                target[n] = targets[n];
         }
         // the most a member may hold after (a receiver's cap) and the least a giver keeps
         auto const capOf = [&](Fill const& f) { return covered ? f.line : target[size_t(&f - fills.data())]; };
@@ -1524,8 +1514,14 @@ void GuildCoordinator::UpdateTransfers()
             order[n] = n;
         std::sort(order.begin(), order.end(), [&](size_t a, size_t b)
                   { return uint64(fills[a].held) * fills[b].line < uint64(fills[b].held) * fills[a].line; });
-        if (!covered && healerFill < fills.size())  // [dun230] the healer of a short pool takes first
+        // [dun230] the healer of a short pool takes first, [supply130] the tank right after it: the same order
+        // the shares above are cut in, so the trades reach the two bars the pull is held on before any other
+        if (!covered && (healerFill < fills.size() || tankFill < fills.size()))
+        {
+            std::stable_partition(order.begin(), order.end(),
+                                  [&](size_t n) { return n == healerFill || n == tankFill; });
             std::stable_partition(order.begin(), order.end(), [&](size_t n) { return n == healerFill; });
+        }
         std::string planned;
         // [dun210] b441: Lanbuzz -> Almored 22 trades of one Ice Cold Milk each, Almored at 7/8 drinking them as they
         // came; Ainne <-> Geefeelli 4 / 2, Aevmae <-> Zharet 2 / 2, Aevmae <-> Galiver 2 / 1 back and forth. A member
@@ -1580,7 +1576,7 @@ void GuildCoordinator::UpdateTransfers()
                 // only a member at a higher fill gives (its fill before this update); [dun230] any member above its
                 // share gives to the healer of a short pool (the healer gives none back: its share is all it holds)
                 if (g != r && above > spare &&
-                    ((!covered && r == healerFill) ||
+                    ((!covered && (r == healerFill || r == tankFill)) ||  // [supply130] the tank too
                      uint64(fills[g].held) * to.line > uint64(to.held) * fills[g].line))
                 {
                     // [dun210] no trade back while the pair holds what it held after its last trade
@@ -1637,6 +1633,9 @@ void GuildCoordinator::UpdateTransfers()
                                  (covered ? ", covers them" : ", short") +
                                  (!covered && healerFill < fills.size()
                                       ? ", [dun230] the healer " + fills[healerFill].p->GetName() + " first"
+                                      : std::string()) +
+                                 (!covered && tankFill < fills.size()
+                                      ? ", [supply130] then the tank " + fills[tankFill].p->GetName()
                                       : std::string()) +
                                  "): " + before + " -> " + after + "; " +
                                  (planned.empty() ? std::string("nothing moves") : planned) +

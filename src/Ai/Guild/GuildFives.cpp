@@ -39,6 +39,7 @@
 #include "LFGMgr.h"  // [next1] whether the Dungeon Finder can port a five
 #include "Item.h"
 #include "IssueKey.h"  // [jrn46] the key, the shape and the ranged value of `run_failed`, as a seam a test asserts
+#include "SupplyShare.h"  // [supply130] the five's drink pool and its requirement, as a seam
 #include "ItemUsageValue.h"
 #include "Log.h"
 #include "MapMgr.h"
@@ -4829,26 +4830,43 @@ void GuildCoordinator::UpdateFives()
             // waits lasted up to ~1290 s (Ellosera, five 4, "the guild's supply gold is on its way"), ~1050 s
             // (Dekorhan, five 10), ~810 s (Selalleas, five 10), ~330 s (Mutil, five 1)
             // [dun194] a mana user's drink line: the drinks the run needs it to carry (priced at the five's forming)
-            // [dun198] a mage that knows Conjure Water covers its own line (it conjures, in the run too), never the
-            // five's: the others' drink is counted in their bags (b436 dm-n five 7: "a mage conjures water" let the
-            // five in, the mage Feeli then stood at 6 % mana with no drink)
+            // [supply130] the old [dun198] rule stood here - "a mage that knows Conjure Water covers its own
+            // line" - and it is gone: it was a line nobody held and nobody counted (b436 dm-n five 7 is its own
+            // evidence: "a mage conjures water" let the five in and the mage Feeli then stood at 6 % mana with no
+            // drink). A conjurer's line is now priced and counted like every other member's, and conjuring is how
+            // it fills it ([dun199] gives that order at the gate)
             auto const drinkLine = [&five](uint32 low) -> uint32
             {
-                Player* p = ObjectAccessor::FindConnectedPlayer(ObjectGuid::Create<HighGuid::Player>(low));
-                if (p && p->getClass() == CLASS_MAGE && p->HasSpell(5504))  // Conjure Water
-                    return 0;
+                // [supply130] NO MEMBER IS EXCUSED ITS LINE, a conjuring mage least of all. The line here used to
+                // be 0 for a mage that knows Conjure Water, so the gate compared a requirement without the mages'
+                // lines against a pool without the mages' bags, while the in-run share ([dun208] RunLine) counts
+                // every mana user with its full priced line: one quantity, two judges, disagreeing by exactly the
+                // mages' lines. Measured on b502, wc-n five 1 of the certification batch went in on 15 against 15
+                // and the share read "pool 29 of the lines' 36, short" eight seconds later - its paladin tank held
+                // 0 of its 7 from 10:37:54 and the leader held the pull "the tank rests" 1762 s of 3033 s (58 %),
+                // 3 of 8 bosses, no death. Conjuring answers the line BY CONJURING ([dun199] orders it at the
+                // gate): the water lands in the bags, where this pool counts it. Being able to make water and
+                // holding it are two facts, and only the second one carries a run.
                 auto const priced = five.drinkNeed.find(low);
                 return priced != five.drinkNeed.end() ? priced->second : RESTOCK_FOOD_MIN;
             };
+            // [supply130] read in the pool count below, read again by the admission further down: the five's
+            // own requirement is the five's, and a member's concluded errand does not answer it
+            bool shortfallInFlight = false;
             {
                 uint32 manaUsers = 0, drinks = 0, food = 0, mages = 0, drinksNeeded = 0;
-                // [dun281] measured, decides nothing: the share of the pool that is a conjuring mage's own stock,
-                // and the lines [dun198] excused it. The pool excuses a mage's need (drinkLine: it conjures) and
-                // still counts its bags, so a mage carrying its own water can read as the five's cover. The
-                // in-run share ([dun208] RunLine) gives that same mage its full priced line, which is what keeps
-                // its conjured stock from being shared away (b436 Feeli at 6 % mana with no drink). Two questions,
-                // one requirement - the leader's priced drinkNeed; this line says what the difference is worth
-                uint32 mageDrinks = 0, mageLines = 0;
+                // [supply130] the five's mana users as the seam reads them (SupplyShare.h): the pool, the
+                // requirement and the verdict are COUNTED THERE, by the same functions the stand asserts over
+                // the recorded rows of five 1, so this place cannot drift away from them
+                std::vector<Guild::Supply::Member> pool;
+                // [supply130] the [dun281] measurement that stood here is gone with the thing it measured: it
+                // priced the gap the mage exemption opened ("of the pool N drink(s) are a conjuring mage's own,
+                // its excused line M"), and there is no exemption left to price. One requirement, counted once.
+                // [supply130] whether the shortfall can still be closed by something already in motion: a member
+                // whose own restock has not concluded, a vendor run on its way, or a conjurer still below its
+                // line. The five waits on THAT fact while its pool is short - never on a number of minutes - and
+                // when nothing is in motion it goes in short as before, so "enters short" never becomes "never
+                // enters" ([dun282] asked for exactly that bound)
                 std::string noRoom;  // [supply104] a short member the pool cannot reach: no free bag slot
                 for (uint32 low : five.members)
                 {
@@ -4858,26 +4876,30 @@ void GuildCoordinator::UpdateFives()
                     if (p->GetMaxPower(POWER_MANA))
                     {
                         ++manaUsers;
-                        drinksNeeded += drinkLine(low);
                         uint32 const own = CountBagFood(p, RESTOCK_SPELL_CATEGORY_DRINK);
-                        // [dun282] a mage excused by [dun198] supplies itself, so its bags are not the five's
-                        // pool either: the sum counted its water for the others while counting none of its need,
-                        // and one expression may not disagree with itself. b475 measured the cost at nothing -
-                        // every five with a conjuring mage carried 165 drinks against a line of 6, 144/9, 102/14,
-                        // 92/37, 89/26, 54/7. The in-run share ([dun208] RunLine) still gives that mage its full
-                        // priced line: that is a different question and it stays as it is
-                        if (!drinkLine(low))  // [dun281] its own stock, against the line [dun198] excused it
-                        {
-                            mageDrinks += own;
-                            auto const priced = five.drinkNeed.find(low);
-                            mageLines += priced != five.drinkNeed.end() ? priced->second : 0;
-                        }
-                        else
-                            drinks += own;
+                        // [supply130] every mana user with its full line and its whole bags, the conjurers among
+                        // them: a drink the pool does not count is a drink it cannot hand to anybody
+                        auto const memberRole = five.roles.find(low);
+                        std::string const roleName = memberRole != five.roles.end() ? memberRole->second : "dps";
+                        pool.push_back({own, drinkLine(low),
+                                        roleName == "tank"     ? Guild::Supply::Role::Tank
+                                        : roleName == "healer" ? Guild::Supply::Role::Healer
+                                                               : Guild::Supply::Role::Other,
+                                        p->getClass() == CLASS_MAGE && p->HasSpell(5504)});
                         // [supply104] the hand-over must be possible: a member below the line takes a stack only
                         // into a free slot (the giver's side: share103 hands the whole stack when it cannot split)
                         if (own < drinkLine(low) && !p->GetFreeInventorySpace())
                             noRoom += (noRoom.empty() ? "" : ", ") + p->GetName();
+                        // [supply130] what is already in motion for a member still under its line
+                        if (own < drinkLine(low))
+                        {
+                            BotState const& ms = bots_[low];
+                            PlayerbotAI* mai = GET_PLAYERBOT_AI(p);
+                            if ((ms.supplyAsked && !ms.supplyDone) ||
+                                (p->getClass() == CLASS_MAGE && p->HasSpell(5504)) ||  // Conjure Water
+                                (mai && OnRestockRun(p, *mai)))
+                                shortfallInFlight = true;
+                        }
                     }
                     food += CountBagFood(p, RESTOCK_SPELL_CATEGORY_FOOD);
                     mages += p->getClass() == CLASS_MAGE && p->HasSpell(5504) ? 1 : 0;  // Conjure Water
@@ -4917,7 +4939,11 @@ void GuildCoordinator::UpdateFives()
                         }
                     }
                 }
-                bool const pooled = noRoom.empty() && drinks >= drinksNeeded;
+                // [supply130] ONE JUDGE FOR THE FIVE'S DRINK: the seam counts the pool and the requirement and
+                // gives the verdict; the figures below are the ones it counted, printed, never recomputed here
+                drinks = Guild::Supply::PoolDrinks(pool);
+                drinksNeeded = Guild::Supply::PoolNeed(pool);
+                bool const pooled = Guild::Supply::Pooled(pool, noRoom.empty());
                 if (!noRoom.empty() && !five.poolGoesIn)
                     if (std::string& logged = fiveLfgWhy[id + 1000000]; logged != noRoom)
                     {
@@ -4926,17 +4952,15 @@ void GuildCoordinator::UpdateFives()
                                  "a stack - restocks or frees a slot first",
                                  id, five.contentKey, noRoom);
                     }
+                // [supply130] the mages are named as what they are now - conjurers filling their OWN lines into
+                // their own bags, which this pool counts - and not as a reason the pool may be short
                 std::string const poolText =
                     Acore::StringFormat("pool {} drinks for {} mana users ([dun194] {} the run needs){}, {} food",
                                         drinks, manaUsers, drinksNeeded,
-                                        mages ? ", a mage conjures its own" : "", food) +
-                    // [dun281] measured only: of that pool, what a conjuring mage holds for itself, against the
-                    // line the pool excused it and the in-run share ([dun208]) still gives it
-                    (mageDrinks || mageLines
-                         ? Acore::StringFormat(" [dun281] of the pool {} drink(s) are a conjuring mage's own, its "
-                                               "excused line {} (the in-run share still gives it that)",
-                                               mageDrinks, mageLines)
-                         : std::string());
+                                        mages ? ", a mage conjures into its bags (its line counted like any "
+                                                "other's)"
+                                              : "",
+                                        food);
                 if (pooled)
                 {
                     if (!five.poolGoesIn)
@@ -5141,13 +5165,34 @@ void GuildCoordinator::UpdateFives()
                         continue;
                     }
                 }
-                if (shortOf.empty() || st.supplyDone)
+                // [supply130] coordinator 2026-11-15: THE ORDER MINUSES THE BAND AND THE NEED, NOT THE SUPPLY.
+                // A member's own errand ending ("its restock was made or could not be made") used to admit the
+                // five while the FIVE's pool was still short of the lines - that is the five's own requirement and
+                // no errand of one member answers it. This is no new threshold: `pool >= lines` is the supply gate
+                // that already existed, and the five simply stops going round it. The wait is on the fact (the
+                // pool is collected), never on minutes, and it lasts only while something is in motion that can
+                // collect it (shortfallInFlight: a restock not concluded, a vendor run on its way, a conjurer
+                // under its line). With nothing in motion the five goes in short exactly as before.
+                bool const holdForPool = !five.poolGoesIn && shortfallInFlight;
+                if (shortOf.empty() || (st.supplyDone && !holdForPool))
                 {
                     if (!shortOf.empty() && st.supplyShort != "in: " + shortOf)
                         LOG_INFO("playerbots", "[supply27] five {} ({}): {} goes in short of {} (its restock was made "
-                                 "or could not be made)",
+                                 "or could not be made, and nothing is in motion that can fill the five's pool)",
                                  id, five.contentKey, Who(low), shortOf);
                     st.supplyShort = shortOf.empty() ? "" : "in: " + shortOf;
+                    continue;
+                }
+                if (holdForPool && st.supplyDone)
+                {
+                    supplied = false;
+                    if (st.supplyShort != "pool: " + shortOf)
+                        LOG_INFO("playerbots",
+                                 "[supply130] five {} ({}): waits for its own pool, not for {}: it is short of {} "
+                                 "and its restock has ended, but the five's pool is still under the lines and "
+                                 "something is filling it",
+                                 id, five.contentKey, Who(low), shortOf);
+                    st.supplyShort = "pool: " + shortOf;
                     continue;
                 }
                 supplied = false;
