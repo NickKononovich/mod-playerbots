@@ -27,6 +27,7 @@
 #include "Log.h"             // [lead925]
 #include "StringFormat.h"    // [lead925]
 #include "GroupRouteState.h"      // [lead1170] the route's plan
+#include "ChainPullJudge.h"       // [test1] the chain pull judge's numeric gates, as a seam
 #include "LeaderGroup.h"          // [lead1170]
 #include "LeaderPlannerShared.h"  // [lead1170] TankEngageOpeners
 #include "LeaderSupport.h"        // [lead1170] HealerOutOfMana
@@ -698,7 +699,10 @@ namespace Leader::Fight
                             (opener->Speed > 0.0f ? chain.distance / opener->Speed : 0.0f);
         else if (walkOpener)
             walkEnd(chain.mobs, walkWhy);
-        chain.due = fightSecLeft < chain.walkSec + chain.runInSec + chain.openSec;
+        // [test1] the trigger through the chain pull judge's seam (ChainPullJudge.h): the same expression,
+        // callable from a recorded fixture with no map and no clock behind it
+        Leader::Judge::ChainTiming const timing{fightSecLeft, chain.walkSec, chain.runInSec, chain.openSec};
+        chain.due = Leader::Judge::DueNow(timing);
         // the facts that do not change while the fight goes on first
         for (ObjectGuid const& guid : chain.mobs)
             if (Creature* mob = map->GetCreature(guid); mob && (mob->IsDungeonBoss() || mob->isWorldBoss()))
@@ -752,7 +756,8 @@ namespace Leader::Fight
         }
         else if (!walkEnd(chain.mobs, walkWhy))
             return reject("pack_reach", "no walk's end reaches the whole pack: " + walkWhy);
-        if (chain.walk && fightSecLeft >= chain.walkSec + chain.runInSec + chain.openSec)
+        if (chain.walk && !Leader::Judge::DueNow(
+                             Leader::Judge::ChainTiming{fightSecLeft, chain.walkSec, chain.runInSec, chain.openSec}))
         {
             chain.waiting = true;
             return reject("waits", "the whole pack's walk is not due yet");
@@ -783,7 +788,7 @@ namespace Leader::Fight
         chain.tankHealth = tank->GetHealthPct() / 100.0f;
         if (!fits)
             return reject("overload", "the overload gate: " + judged);
-        if (chain.tankHealth <= chain.drop)
+        if (!Leader::Judge::TankOutlastsDrop(Leader::Judge::ChainSurvival{chain.tankHealth, chain.drop}))
             return reject("health", Acore::StringFormat("the tank at {:.0f} % health, the union's drop {:.0f} %",
                                                         chain.tankHealth * 100.0f, chain.drop * 100.0f));
         // [lead1190] a healer keeps the tank: where it fights by the pack's arrival (its opening and run in) or, for

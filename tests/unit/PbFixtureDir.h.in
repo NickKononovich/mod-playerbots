@@ -1,0 +1,15 @@
+/*
+ * This file is part of the mod-playerbots module for AzerothCore. See AUTHORS file for Copyright
+ * information; released under GNU GPL v2 license, redistribute/modify under version 2 of the License,
+ * or (at your option) any later version.
+ */
+
+// [test1] Generated at configure time by mod-playerbots.cmake: where the committed fixtures live, for the core's
+// unit_tests target (which cannot take a compile definition from the module hook, being configured later).
+
+#ifndef PLAYERBOTS_TESTS_PBFIXTUREDIR_H
+#define PLAYERBOTS_TESTS_PBFIXTUREDIR_H
+
+#define PB_FIXTURE_DIR_DEFAULT "@PB_FIXTURE_DIR@"
+
+#endif

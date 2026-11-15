@@ -8,3 +8,29 @@
 target_link_libraries(modules
   PRIVATE
     mysql)
+
+# [test1] The module's unit tests, registered with the core's own unit_tests target (src/test/CMakeLists.txt reads
+# these two global properties). The framework is the core's googletest; no second one is added. The sources live in
+# tests/ and NOT under src/, because the core sweeps every .cpp under a module's src/ into the module library -
+# a gtest source there would be compiled into worldserver.
+#
+# The same sources also build on their own through tests/CMakeLists.txt, which is the fast way: the seam they test
+# (src/Ai/Leader/Fight/ChainPullJudge.h) depends on nothing but <cstdint>, while unit_tests links `game` and
+# `modules`, so reaching the tests this way means building the whole server.
+if (BUILD_TESTING)
+  set(PB_TESTS_DIR "${CMAKE_CURRENT_LIST_DIR}/tests")
+  set(PB_FIXTURE_DIR "${PB_TESTS_DIR}/fixtures")
+  configure_file(
+    "${PB_TESTS_DIR}/unit/PbFixtureDir.h.in"
+    "${CMAKE_BINARY_DIR}/pb_tests/PbFixtureDir.h"
+    @ONLY)
+  set_property(GLOBAL APPEND PROPERTY ACORE_MODULE_TEST_SOURCES
+    "${PB_TESTS_DIR}/unit/Fixture.cpp"
+    "${PB_TESTS_DIR}/unit/ChainPullJudgeTest.cpp"
+    "${PB_TESTS_DIR}/unit/ChainPullCorpusTest.cpp"
+    "${PB_TESTS_DIR}/unit/EstimateOutcomeTest.cpp"
+    "${PB_TESTS_DIR}/unit/DeathReplayTest.cpp")
+  set_property(GLOBAL APPEND PROPERTY ACORE_MODULE_TEST_INCLUDES
+    "${PB_TESTS_DIR}/unit"
+    "${CMAKE_BINARY_DIR}/pb_tests")
+endif()
