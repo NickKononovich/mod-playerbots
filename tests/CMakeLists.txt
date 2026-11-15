@@ -68,6 +68,7 @@ add_executable(pb_unit_tests
     unit/HealerPlaceTest.cpp  # [spot91] whether a healer's fight place can exist at all
     unit/MazeViasTest.cpp  # [maze21] the ways round a refused walk, and "no source answered" against "there are none"
     unit/StandGroundTest.cpp  # [dpszero3] standing inside the aggro zone of a fight that is lost
+    unit/LastWayTest.cpp  # [lastway1] a lost fight with no way out clear of other mobs still leaves
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight/ChainPullJudge.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IssueKey.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/ActorFacts.cpp"

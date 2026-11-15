@@ -26,6 +26,7 @@
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "ItemUse.h"  // [death475] was the item use accepted by the core, as a seam without the world
+#include "LastWay.h"  // [lastway1] a lost fight with no way clear of other mobs still leaves, as a seam
 #include "SoloSafety.h"
 #include "Spell.h"
 #include "SpellAuras.h"
@@ -177,6 +178,15 @@ namespace
         // [deaths] the fight was logged lost with nothing to use (once a fight: b337 deaths "without rescue" left no
         // line at all - Feeli, Eraelor, Rumanatol, Ginde - and the triage could not tell why)
         bool loggedNone = false;
+        // [lastway1] the last way out, asked ONCE A FIGHT for the same reason `noRun` above is cached once a fight -
+        // the ground is the same, and the ground is what the answer is about. Not a timer: nothing here ages, and a
+        // new fight asks again. `lastWayAsked` false with `lastWayFound` false is "not asked", which is not "none"
+        bool lastWayAsked = false;
+        bool lastWayFound = false;
+        float lastWayAngle = 0.0f;
+        float lastWayYards = 0.0f;
+        uint32 lastWayReaches = 0;  // the reaches over the ground it runs to, against `lastWayHere` over the stand
+        uint32 lastWayHere = 0;
     };
 
     std::mutex lock;
@@ -2141,6 +2151,78 @@ namespace SurvivalKit
             return true;
         }
 
+        // 3b. [lastway1] NO WAY CLEAR OF OTHER MOBS IS NOT A REASON TO STAND STILL (user 2026-11-15,
+        // translated: "he should still try to run away by the shortest point if he loses the fight"). All three
+        // priced searches above are gated on the way being CLEAR of other mobs; when all three fail the bot used
+        // to stand where it was until it died. Seven such lines in the closed b504 hour, every one of them also
+        // carrying "0 castable", and three of the seven deaths of that hour among them (Baridrol, Kianey,
+        // Kylantino; in two the damage to come was only 1.12x and 1.34x of the body).
+        //
+        // It runs towards the LEAST COVERED ground instead, and the direction is NOT decided here (rule 5): it is
+        // the one `[death472]` and `[dpszero3]` already compute - `StandsOnLostGround`'s 16 rays, fewest aggro
+        // reaches first, compared against the count over the stand. `LastWay::Of` holds the rule and `StandGround`
+        // the direction; this place only asks and walks.
+        //
+        // THIS IS NOT A PROMISE OF SURVIVAL and it is priced as none: there is no clean way, so there is no clean
+        // chase to price, and the line says what it is. It ranks exactly where the priced run already ranked -
+        // after the reset and after the pieces that TURN the projection won, before the palliative biggest piece -
+        // so no better option is ever given up for it.
+        //
+        // COST, named: one `StandsOnLostGround` (16 rays plus one `JudgeAlone` per covering mob) ONCE A FIGHT,
+        // cached exactly as `[guild15]` caches `noRun` on the same ground, and only on a bot whose fight is lost
+        // and whose three searches all failed - ten episodes in the whole b504 hour.
+        if (!flee.ok && p.lost && !state.lastWayAsked)
+        {
+            state.lastWayAsked = true;
+            SoloSafety::LostStand lost;
+            SoloSafety::StandsOnLostGround(bot, lost);
+
+            StandGround::Stand stand;
+            stand.reachesHere = lost.covered.reachesHere;
+            stand.lostReaches = lost.lostReaches;
+            stand.clearSpot = !lost.spots.empty();
+            std::vector<StandGround::Candidate> spots;
+            for (SoloSafety::CoveredSpot const& spot : lost.covered.spots)
+                spots.push_back({spot.reaches});
+
+            LastWay::Exits exits;
+            exits.fightLost = true;   // this branch is reached only on `p.lost`, the judge's own verdict
+            exits.resetDue = false;   // step 1 above already took a reset when one was due
+            exits.pieceDue = false;   // step 2 above already took a piece that TURNS the projection won
+            exits.clearWay = false;   // step 3 above found no way clear of other mobs
+
+            uint32_t index = 0;
+            if (LastWay::Of(exits, stand, spots, index) == LastWay::Answer::LeastCovered)
+            {
+                // a spot out of EVERY reach first (the step-out's own ground), else the named ray point
+                G3D::Vector3 const to = stand.clearSpot ? lost.spots.front() : lost.covered.spots[index].at;
+                state.lastWayFound = true;
+                state.lastWayAngle = std::atan2(to.y - bot->GetPositionY(), to.x - bot->GetPositionX());
+                state.lastWayYards = std::hypot(to.x - bot->GetPositionX(), to.y - bot->GetPositionY());
+                state.lastWayHere = stand.reachesHere;
+                state.lastWayReaches = stand.clearSpot ? 0 : lost.covered.spots[index].reaches;
+            }
+        }
+        if (!flee.ok && state.lastWayFound)
+        {
+            Piece run;
+            run.kind = Kind::Flee;
+            state.choice = run;
+            state.target = bot->GetGUID();
+            state.fleeAngle = state.lastWayAngle;
+            state.fleeTrail = false;
+            state.trailStep = 0;
+            state.fleeRoute.clear();
+            state.routeStep = 0;
+            state.fleeFrom = p.foes.front().unit->GetGUID();
+            state.why = Acore::StringFormat(
+                "the last way out: no way clear of other mobs, so {:.0f} yd to ground {} aggro reach(es) cover "
+                "against {} over this stand - no clean chase to price, and standing still is certain; {}",
+                state.lastWayYards, state.lastWayReaches, state.lastWayHere, numbers);
+            state.active = true;
+            return true;
+        }
+
         // 4. everything it has, the biggest piece first
         Scored const* best = nullptr;
         for (Scored const& s : scored)
@@ -2151,9 +2233,16 @@ namespace SurvivalKit
             if (!state.loggedNone)
             {
                 state.loggedNone = true;
+                // [lastway1] ... and whether the last way out was asked at all. "asked, nowhere less covered" and
+                // "not asked" are DIFFERENT answers (rule 7) and the line now tells them apart: before this, a bot
+                // standing here said only "no way out clear of other mobs" and the ground was never looked at
                 LOG_INFO("playerbots",
-                         "[solo] {} L{} survival none: no reset, no piece due ({} castable), no run: {}; {}",
-                         bot->GetName(), bot->GetLevel(), scored.size(), flee.why, numbers);
+                         "[solo] {} L{} survival none: no reset, no piece due ({} castable), no run: {}; last way "
+                         "out: {}; {}",
+                         bot->GetName(), bot->GetLevel(), scored.size(), flee.why,
+                         !state.lastWayAsked ? "not asked (the fight is not judged lost)"
+                                             : "asked, no ground within sight is less covered than this stand",
+                         numbers);
             }
             return false;
         }
