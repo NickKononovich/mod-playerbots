@@ -91,6 +91,8 @@ namespace TestHarness
     // and no meet for him.
     using Leader::Travel::BlackMorassHoldsAtMedivh;  // [lead107] RouteMeet.h
     bool IsTerminalPhase(Phase phase);
+    // [jrn41] the party is inside a run (the travel half included), which is what the journal's run_id rests on
+    bool InRunPhase(Phase phase);
 
     struct Member
     {

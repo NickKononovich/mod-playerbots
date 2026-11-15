@@ -21,9 +21,17 @@
 //
 // WHAT IS NOT GUESSED HERE. The row's `bot_low` / `bot_name` stay empty for appender lines. Most lines do begin with
 // a bot's name after the tag, but a name is not a unit: picking the bot by matching a name against the world is
-// exactly the mistake that produced "the mob blocks itself" - the name matched, the unit did not. A caller that
-// knows which bot it is talking about passes it through Journal::RecordLine directly; the appender cannot know, so
-// it says nothing rather than something plausible. The text keeps the name either way.
+// exactly the mistake that produced "the mob blocks itself" - the name matched, the unit did not. The appender
+// cannot know, so it says nothing rather than something plausible. The text keeps the name either way.
+//
+// [jrn41] AND IT IS NOT "MOST": IT IS ALL OF THEM. This sink is the ONLY caller of Journal::RecordLine in the
+// whole module (grep: one call, right below), so every row of pb_journal_line comes out of the appender -
+// 421 174 of 421 174 on b501 - and `bot_low`, `bot_name`, `map_id`, `zone_id`, `pos_*` and `run_id` are empty in
+// all of them for that one reason. The sentence that used to stand here promised that "a caller that knows which
+// bot it is talking about passes it through RecordLine directly"; no such caller has ever existed, and a comment
+// about what the code does not do costs more than a wrong number. `run_id` empty therefore means "the appender
+// has no unit, no group and no run to name", NOT "a run was lost" - the narrow event tables are where a row
+// carries its run, because their emitters hold the bot.
 //
 // To turn the stream on, the appender also has to exist and be attached in worldserver.conf:
 //     Appender.Journal=100,5,0

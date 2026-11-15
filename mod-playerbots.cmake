@@ -29,7 +29,9 @@ if (BUILD_TESTING)
     "${PB_TESTS_DIR}/unit/ChainPullJudgeTest.cpp"
     "${PB_TESTS_DIR}/unit/ChainPullCorpusTest.cpp"
     "${PB_TESTS_DIR}/unit/EstimateOutcomeTest.cpp"
-    "${PB_TESTS_DIR}/unit/DeathReplayTest.cpp")
+    "${PB_TESTS_DIR}/unit/DeathReplayTest.cpp"
+    "${PB_TESTS_DIR}/unit/IssueKeyTest.cpp"
+    "${PB_TESTS_DIR}/unit/StandingEpisodeTest.cpp")
   set_property(GLOBAL APPEND PROPERTY ACORE_MODULE_TEST_INCLUDES
     "${PB_TESTS_DIR}/unit"
     "${CMAKE_BINARY_DIR}/pb_tests")

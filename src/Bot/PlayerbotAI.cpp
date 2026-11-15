@@ -58,7 +58,8 @@
 #include "PlayerbotGuildMgr.h"
 #include "PlayerbotMgr.h"
 #include "PlayerbotTextMgr.h"
-#include "Journal.h"  // [jrn40] the idle window, the stuck target and their issue rows
+#include "IssueKey.h"  // [jrn41] the deduplication key of an issue row, as a seam a test can assert
+#include "Journal.h"   // [jrn40] the idle window, the stuck target and their issue rows
 #include "Playerbots.h"
 #include "PositionValue.h"
 #include "RBAC.h"
@@ -2643,9 +2644,11 @@ void PlayerbotAI::ReleaseIdleTargetNobodyReaches(bool acted)
         // The inputs are all here and the picker is deterministic: the same two stands put back reproduce it.
         issue.reproClass = "decision";
         // the key is the shape of the deadlock, not the pair it happened to: the bot's name, the mob's name and the
-        // distance are what would fan one cause into hundreds
-        issue.dedupKey = "stuck_target|" + (*stuck.role) + "|" +
-                         (stuck.actionRunning.empty() ? "no action" : stuck.actionRunning);
+        // distance are what would fan one cause into hundreds. [jrn41] AND NEITHER IS THE ENGINE'S TRACE: it held
+        // the whole strategy trace of that instant ("|S:+cure|S:+cc|S:+aoe|..."), which differs on every sample of
+        // one deadlock; the cause is WHETHER anything ran, and the trace itself stays in
+        // pb_journal_stuck.action_running. The key is built in the seam (IssueKey.h), where a test asserts it.
+        issue.dedupKey = Journal::Key::StuckTarget(*stuck.role, stuck.actionRunning);
         issue.why = Acore::StringFormat("{} held idle {} at {:.0f} yd with no action that runs", bot->GetName(),
                                         target->GetName(), *stuck.targetYd);
         issue.realWhen = "the engine is the combat engine, the bot is out of combat, the target is alive and idle, "

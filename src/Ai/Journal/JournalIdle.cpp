@@ -40,6 +40,9 @@
 
 #include "Journal.h"
 
+#include "IssueKey.h"         // [jrn41] the deduplication key, as a seam a test can assert
+#include "StandingEpisode.h"  // [jrn41] the episode's arithmetic, as a seam a test can assert
+
 #include <algorithm>
 #include <array>
 #include <mutex>
@@ -76,12 +79,9 @@ namespace
         return on;
     }
 
-    struct Episode
-    {
-        uint32 sinceMs = 0;      // when the bot last moved out of its radius
-        uint32 reportedMs = 0;   // when this episode was last written
-        float x = 0.f, y = 0.f, z = 0.f;
-    };
+    // [jrn41] the episode's own arithmetic lives in the seam (StandingEpisode.h): the anchor carries its MAP, and
+    // the reported radius is the one the bot stayed inside - the two defects measured on b501's live rows
+    using Episode = Journal::Standing::Anchor;
 
     // One lock for every map thread would be contended on a per-player-per-tick path, so the state is sharded by
     // the bot's GUID counter. A bot stays on one map thread, so its shard is touched by one thread at a time in
@@ -110,9 +110,10 @@ namespace
     }
 
     // Writes the episode out: one domain row with the duration and the reason, and one issue row pointing at it.
-    void Report(Player* bot, PlayerbotAI* botAI, Episode const& episode, uint32 nowMs, float movedYd, bool ended)
+    void Report(Player* bot, PlayerbotAI* botAI, Journal::Standing::Look const& look)
     {
-        float const stoodSec = getMSTimeDiff(episode.sinceMs, nowMs) / 1000.0f;
+        float const stoodSec = look.stoodSec;
+        bool const ended = look.ended;
         std::string const doing =
             botAI->GetCurrentEngine() ? botAI->GetCurrentEngine()->GetLastAction() : std::string();
 
@@ -130,12 +131,14 @@ namespace
         idle.inDungeon = bot->GetMap() && bot->GetMap()->IsDungeon();
         idle.inCombat = bot->IsInCombat();
         idle.stoodSec = stoodSec;
-        idle.stoodYd = movedYd;  // the radius it stayed inside: the pair is the fact, neither number alone is
+        // the radius it stayed inside: the pair is the fact, neither number alone is. [jrn41] it is the widest
+        // distance seen WHILE INSIDE the radius, never the step that took it out - the seam holds that
+        idle.stoodYd = look.stoodYd;
         idle.doing = doing;
         idle.runId = Leader::Runs::OfBot(bot);  // [jrn40] by identity, not by nearness in time
         idle.why = Acore::StringFormat(
             "{} for {:.0f} s within {:.1f} yd (state {}, {}){}", ended ? "stood" : "has been standing", stoodSec,
-            movedYd, uint32(botAI->GetState()), bot->IsInCombat() ? "in combat" : "out of combat",
+            look.stoodYd, uint32(botAI->GetState()), bot->IsInCombat() ? "in combat" : "out of combat",
             doing.empty() ? std::string(", and its engine had no action to name")
                           : ", its engine's last action: " + doing);
         uint64 const sourceId = Journal::RecordIdle(idle);
@@ -146,12 +149,12 @@ namespace
         // A property of the world over time: there is nothing to replay offline, so a test cannot be the proof -
         // a run in which the sign is gone is (see Journal::Issue::reproClass).
         issue.reproClass = "not_offline";
-        // THE KEY IS THE CAUSE, NOT THE LINE. Measured on the idle diagnostics: keying on the whole line gave 757
-        // "causes" over 3 900 rows and keying on the cause alone gave one - the 757 were a trailing list of action
-        // names, which is trap #2 in new clothes. So the key here is the engine's last action, the engine state and
-        // whether it was a fight: no name, no coordinates, no duration. The duration's spread is the value range.
-        issue.dedupKey = "standing|" + std::string(bot->IsInCombat() ? "combat" : "peace") + "|state " +
-                         std::to_string(uint32(botAI->GetState())) + "|" + (doing.empty() ? "no action" : doing);
+        // THE KEY IS THE CAUSE, NOT THE LINE, and it is built in the seam (IssueKey.h) so that a test can assert
+        // it in both directions. [jrn41] THE ENGINE'S ACTION TRACE WAS IN IT AND IS NOT ANY MORE: `doing` changes
+        // on every sample of one episode, so Kylantino's single episode on map 369 - the same position to four
+        // decimals, 10 s to 60 s - became five rows in this table. The trace stays in `why` and in
+        // pb_journal_idle.doing, where it is read by eye in a row already found.
+        issue.dedupKey = Journal::Key::Standing(*idle.role, bot->IsInCombat(), uint32(botAI->GetState()), doing);
         issue.why = idle.why;
         issue.realWhen = "alive, not sitting, not casting, not in flight, not being teleported - and still inside "
                          "max(combat reach, 1.5 yd) for the whole episode";
@@ -174,9 +177,8 @@ namespace
         issue.runId = idle.runId;
         // the window of the slice comes from the data: the episode's own start is the last moment this bot was
         // demonstrably making progress through space
-        issue.lastProgressMs = Journal::ClockMs() > uint64(getMSTimeDiff(episode.sinceMs, nowMs))
-                                   ? Journal::ClockMs() - uint64(getMSTimeDiff(episode.sinceMs, nowMs))
-                                   : 0;
+        uint64 const stoodMs = uint64(stoodSec * 1000.0f);
+        issue.lastProgressMs = Journal::ClockMs() > stoodMs ? Journal::ClockMs() - stoodMs : 0;
         Journal::RecordIssue(issue);
     }
 }  // namespace
@@ -200,44 +202,35 @@ namespace Journal
         bool const held = !bot->IsAlive() || bot->IsSitState() || bot->IsNonMeleeSpellCast(false) ||
                           bot->IsInFlight() || bot->IsBeingTeleported();
 
-        float const radius = std::max(bot->GetCombatReach(), 1.5f);
-        Episode snapshot;
-        bool report = false;
-        bool ended = false;
-        float movedYd = 0.f;
+        // [jrn41] the sample is a set of facts; the episode's arithmetic is in the seam, where a test holds it.
+        // What is read here is read ONCE and at this instant - the same rule as everywhere in this file.
+        Journal::Standing::Sample sample;
+        sample.nowMs = nowMs;
+        sample.mapId = bot->GetMapId();
+        sample.x = bot->GetPositionX();
+        sample.y = bot->GetPositionY();
+        sample.z = bot->GetPositionZ();
+        sample.held = held;
+        // The radius is NOT a new number: it is max(GetCombatReach(), 1.5f), the expression the loop detector in
+        // GuildCoordinator already uses for "same place".
+        sample.radius = std::max(bot->GetCombatReach(), 1.5f);
+        sample.cadenceMs = CadenceMs();
+
+        Journal::Standing::Look look;
         {
             std::lock_guard<std::mutex> lock(shard.lock);
-            Episode& episode = shard.episodes[low];
-            if (!episode.sinceMs)
-            {
-                episode = Episode{nowMs, nowMs, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-                return;
-            }
-            movedYd = bot->GetExactDist(episode.x, episode.y, episode.z);
-            if (held || movedYd > radius)
-            {
-                // The episode is over - the bot either moved out of the radius or is now legitimately held still.
-                // A held bot ENDS the episode rather than pausing it: the stretch before the hold was real standing
-                // and is reported with its own duration, while a duration joined across a hold would be a number
-                // about nothing. It is reported only if it lasted at least one instrument window, which is the one
-                // floor this detector has and it is the sampler's own cadence, not a rule about bots.
-                snapshot = episode;
-                report = getMSTimeDiff(episode.sinceMs, nowMs) >= CadenceMs();
-                ended = true;
-                episode = Episode{nowMs, nowMs, bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ()};
-            }
-            else if (getMSTimeDiff(episode.reportedMs, nowMs) >= CadenceMs())
-            {
-                // Still standing. One row per instrument window, so an episode that never ends is visible within
-                // one window instead of only at an end that never comes; the issue row deduplicates them, so a
-                // ten-minute hang is ONE problem whose duration range tops out at 600 s, not sixty problems.
-                episode.reportedMs = nowMs;
-                snapshot = episode;
-                report = true;
-            }
+            // The episode is over when the bot leaves the radius, when it is legitimately held still, or when it
+            // is on another map at all. A held bot ENDS the episode rather than pausing it: the stretch before the
+            // hold was real standing and is reported with its own duration, while a duration joined across a hold
+            // would be a number about nothing. An ending episode is reported only if it lasted at least one
+            // instrument window - the one floor this detector has, and it is the sampler's own cadence, not a rule
+            // about bots. While it is open it is reported once per window, so an episode that never ends is
+            // visible within one window instead of only at an end that never comes; the issue row deduplicates
+            // them, so a ten-minute hang is ONE problem whose duration range tops out at 600 s.
+            look = Journal::Standing::Observe(shard.episodes[low], sample);
         }
-        if (report)
-            Report(bot, botAI, snapshot, nowMs, movedYd, ended);
+        if (look.report)
+            Report(bot, botAI, look);
     }
 
     void ForgetStanding(uint32 botLow)

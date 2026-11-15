@@ -177,6 +177,24 @@ namespace TestHarness
         return phase == Phase::Done || phase == Phase::Failed || phase == Phase::Stalled || phase == Phase::Stopped;
     }
 
+    // [jrn41] the party is inside a run: everything from the moment it is sent to its content up to the terminal
+    // verdict, the travel half included. Named here next to IsTerminalPhase because the journal's run_id rests on
+    // it: a row written in a phase that is not in this list says "outside a run", and that has to be true.
+    bool InRunPhase(Phase phase)
+    {
+        switch (phase)
+        {
+            case Phase::Picking:
+            case Phase::LoggingIn:
+            case Phase::Preparing:
+            case Phase::Grouping:
+            case Phase::Idle:  // a prepared party, no run: its id is "P<seq>" and it is not a run id
+                return false;
+            default:
+                return !IsTerminalPhase(phase);
+        }
+    }
+
     char const* PhaseName(Phase phase)
     {
         switch (phase)
@@ -1054,6 +1072,21 @@ namespace TestHarness
                                          .Str("waitingFor", party.waitingFor));
         party.phase = phase;
         party.phaseSinceMs = now;
+        // [jrn41] THE RUN THIS GROUP IS IN, PUBLISHED AT THE PHASE CHANGE AND NOT AT THE INSTANCE DOOR. It used to
+        // be published in EnterInstance, which is the LAST step of a run's first half: everything a journal
+        // detector wrote while the five was teleporting, buffing, travelling or standing at the portal carried an
+        // empty run_id, and an empty run_id means "outside a run". Measured on b501: the only boot that holds the
+        // [jrn40] tables lived 69 s, no five had reached its instance, and run_id was empty in all 80 issue rows,
+        // 79 idle rows, 35 fight rows, 38 aggro rows and 6 stuck rows - the travel half of a run is exactly where
+        // the standing watch fires. One writer, this funnel, which every phase change already passes through; the
+        // phases before a run (and the terminal ones) clear it, so no row claims a run the party is not in.
+        if (!party.groupGuid.IsEmpty())
+        {
+            if (InRunPhase(phase))
+                Leader::Runs::Publish(party.groupGuid, party.id);
+            else
+                Leader::Runs::Clear(party.groupGuid);
+        }
     }
 
     void TestHarnessMgr::Update(uint32 diff)
@@ -2403,12 +2436,12 @@ namespace TestHarness
         for (Member const& member : party.members)
             StatsRegistry::Instance().TrackMember(member.guid, party.seq);
         Leader::Orders::Track(party.leader);  // [lead1] the tank's pull orders are posted from now on
-        // [jrn40] the run this group is in, published for readers on map threads. The journal's detectors live
-        // there (the unit update, the bot's tick, the death hook) and the run lives here, with no path between
-        // them before this - so every one of 411 819 stream rows could be joined to a run only by nearness in
-        // time, and a fixture built on a near-miss pair makes a test that confirms a conclusion about another
-        // fight. It publishes a fact and decides nothing; the run's own verdicts are untouched.
-        Leader::Runs::Publish(party.groupGuid, party.id);
+        // [jrn40] the run this group is in is published for readers on map threads - the journal's detectors live
+        // there (the unit update, the bot's tick, the death hook) and the run lives here, with no path between them
+        // before it, so every one of 411 819 stream rows could be joined to a run only by nearness in time, and a
+        // fixture built on a near-miss pair makes a test that confirms a conclusion about another fight.
+        // [jrn41] IT IS PUBLISHED IN SetPhase AND NOT HERE: by this line the five has already travelled, and a
+        // detector that fired on the way wrote "outside a run". One writer, in the phase funnel.
 
         // [hleft-daily-reset] heroics and raids are reset by the server at Instance.ResetTimeHour: every member is put
         // out and the bind dropped (2026-10-25 05:00: all ten WotLK / TBC heroics of the 04:47 batch, uk-h, hol-h,
