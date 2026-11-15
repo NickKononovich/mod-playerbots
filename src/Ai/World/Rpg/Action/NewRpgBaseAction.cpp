@@ -49,6 +49,7 @@
 #include "NewRpgQuestUse.h"  // [questitems]
 #include "PerfMonitor.h"  // [guild15]
 #include "QuestStats.h"  // [guild90]
+#include "Journal.h"  // [dpszero2] the problem row for a goal walled by a lost fight
 #include "QuestPackets.h"  // [quest14] the grey abandon
 #include "World.h"  // [guild13]
 #include "RouteSearch.h"  // [guild13] PointOnPath
@@ -1340,6 +1341,61 @@ bool NewRpgBaseAction::WalkAround(WorldPosition const& dest, BotPath const& path
                                                 : "its walk there ends in a dead end (maze search)";
     LOG_INFO("playerbots", "[solo] {} L{} MAZE no way to ({:.0f},{:.0f}): {}{}{}", bot->GetName(), bot->GetLevel(),
              goal.x, goal.y, why, walls.empty() ? "" : "; walls: ", walls);
+    // [dpszero2] THE PRICE OF THE ZONE RULE, as a row and not as a softer rule. The user's rule keeps a bot out of
+    // the aggro zone of a mob whose fight is lost; where every way to the goal passes such a zone the bot does
+    // exactly what it did before (the next task, or the flight below - never a hearthstone or a teleport), and the
+    // cost becomes visible as a number instead of as a quiet give-up. Measured over the recorded hour, the rule
+    // turns up to 19 588 priced run-pasts into walls, 9 601 of them against mobs eleven or more levels above.
+    if (path.throughRefused)
+    {
+        SoloSafety::LostWall wall;
+        if (SoloSafety::NearestLostFightWall(bot, wall))
+        {
+            CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(wall.entry);
+            Journal::Issue issue;
+            issue.kind = "route_zone_lost";
+            issue.severity = "mid";  // the bot keeps working elsewhere; a stretch of the world is out of reach
+            // the bot, the goal and the walled pack are all recorded and the judge is deterministic: put the same
+            // three back and the same walk is refused again
+            issue.reproClass = "decision";
+            // the SHAPE of the failure plus the PLACE it happens in - not the mob and not a number out of a
+            // reason: "which parts of the world are cut off" is the question this row has to answer
+            issue.dedupKey = Acore::StringFormat(
+                "route_zone_lost|every way to the goal passes a mob whose fight is lost|zone {}", bot->GetZoneId());
+            issue.why = Acore::StringFormat(
+                "{} L{} found no way to ({:.0f},{:.0f}): the nearest wall is {} L{} (pack {}) {:.0f} yd off, whose "
+                "fight the judge calls lost even at full",
+                bot->GetName(), bot->GetLevel(), goal.x, goal.y, tmpl ? tmpl->Name : std::to_string(wall.entry),
+                wall.level, wall.pack, wall.yards);
+            issue.realWhen = "the maze search found every way to the goal passing a mob the fight judge calls lost, "
+                             "and no via it tried was clear";
+            issue.real = "yes";
+            issue.realWhy = "a goal the bot cannot reach at all is work it cannot do: the walk is given up here";
+            issue.value = double(wall.yards);
+            issue.valueUnit = "yd";
+            issue.botName = bot->GetName();
+            issue.botLow = bot->GetGUID().GetCounter();
+            issue.mapId = bot->GetMapId();
+            issue.zoneId = bot->GetZoneId();
+            issue.x = bot->GetPositionX();
+            issue.y = bot->GetPositionY();
+            issue.z = bot->GetPositionZ();
+            issue.runId = Leader::Runs::OfBot(bot);
+            issue.realSource = "emitter";
+            // the walls' own line is the inputs this row points at, and it goes with the stream's retention: the
+            // copy that outlives it is here. It is a JSON string value, so the two characters that would break
+            // one are escaped rather than trusted not to appear in a creature name
+            std::string wallsJson = walls;
+            for (size_t at = 0; at < wallsJson.size(); ++at)
+                if (wallsJson[at] == '\\' || wallsJson[at] == '"')
+                    wallsJson.insert(at++, 1, '\\');
+            issue.fixture = Acore::StringFormat(
+                "{{\"goalX\":{:.0f},\"goalY\":{:.0f},\"wallEntry\":{},\"wallLevel\":{},\"wallPack\":{},"
+                "\"wallYd\":{:.0f},\"walls\":\"{}\"}}",
+                goal.x, goal.y, wall.entry, wall.level, wall.pack, wall.yards, wallsJson);
+            Journal::RecordIssue(issue);
+        }
+    }
     // [nav165] a dead end (no mob walls it): the deep search out of where it stands, once per pocket and level
     if (!path.throughRefused)
         RequestPocketRescue(dest);

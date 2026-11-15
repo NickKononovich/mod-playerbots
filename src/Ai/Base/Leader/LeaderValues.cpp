@@ -12,6 +12,7 @@
 #include "GameObject.h"
 #include "Group.h"
 #include "HealthTriggers.h"
+#include "KillRate.h"  // [dpszero1] own and incoming damage in states, with no floor
 #include "LeaderOrders.h"  // [lead6] Leader::Readiness
 #include "InstanceScript.h"  // [b44_hos]
 #include "LeaderFightChecks.h"    // [lead1300] AttackerDps
@@ -30,6 +31,7 @@
 #include "Timer.h"
 
 #include <algorithm>
+#include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -322,32 +324,54 @@ FightOutlook LeaderFightOutlookValue::Calculate()
     }
 
     // the members' damage: the burst first, then on their mana now over the fight that burst gives
+    // [dpszero1] no floor on either sum, and the sum knows whether it IS a sum: a dealer whose formula did not run
+    // leaves it incomplete, and an incomplete sum is not a smaller one (rule 7). `std::max(burst, 1.0f)` priced a
+    // group that deals nothing as a group dealing 1 dps - the same lie as the solo judge's floor (see KillRate.h)
+    bool burstKnown = !dealers.empty();
     float burst = 0.0f;
     for (Player* member : dealers)
-        burst += DpsEstimate::Estimate(member, member->GetVictim(), DpsEstimate::ContextOf(member)).burstDps;
-    float const burstSec = outlook.enemyHp / std::max(burst, 1.0f);
+    {
+        DpsEstimate::Result const r =
+            DpsEstimate::Estimate(member, member->GetVictim(), DpsEstimate::ContextOf(member));
+        burstKnown = burstKnown && r.estimated;
+        burst += r.burstDps;
+    }
+    float const burstSec = KillRate::KillSec({burstKnown, burst}, outlook.enemyHp);
+    // `fightSec` 0 is Estimate's own "no length given": where the kill time has no bound there is no length to pass
+    float const overSec = std::isfinite(burstSec) ? burstSec : 0.0f;
+    bool dpsKnown = !dealers.empty();
     for (Player* member : dealers)
-        outlook.groupDps +=
-            DpsEstimate::Estimate(member, member->GetVictim(), DpsEstimate::ContextOf(member), burstSec).dps;
-    outlook.killSec = outlook.enemyHp / std::max(outlook.groupDps, 1.0f);
+    {
+        DpsEstimate::Result const r =
+            DpsEstimate::Estimate(member, member->GetVictim(), DpsEstimate::ContextOf(member), overSec);
+        dpsKnown = dpsKnown && r.estimated;
+        outlook.groupDps += r.dps;
+    }
+    outlook.killSec = KillRate::KillSec({dpsKnown, outlook.groupDps}, outlook.enemyHp);
 
     // Healed at the healers' rate (no more than the enemies land) while their mana lasts, then the enemies' full
     // damage. Their mana goes at the share of their rate the damage asks for.
     float const healed = std::min(healHps, enemyDps);
     float const healedDrain = enemyDps - healed;
-    float const unhealedDrain = std::max(enemyDps, 1.0f);
+    // [dpszero1] the INCOMING damage with no floor either, and this one pointed the pessimistic way:
+    // `std::max(enemyDps, 1.0f)` gave a pool nothing drains a lifetime of `healthPool` seconds, so a quiet fight
+    // read as a 1 dps fight. Nothing draining the pool is not a slow drain - it is no drain
+    float const unhealedDrain = std::max(enemyDps, 0.0f);
     float const manaBurn = healHps > 0.0f ? manaPerSec * healed / healHps : 0.0f;
     float const manaSec = manaBurn > 0.0f ? float(healerMana) / manaBurn : 0.0f;
 
-    float surviveSec = 0.0f;
-    if (manaSec <= 0.0f)
-        surviveSec = healthPool / unhealedDrain;
-    else if (healedDrain <= 0.0f)
-        surviveSec = manaSec + healthPool / unhealedDrain;
-    else if (healthPool / healedDrain <= manaSec)
-        surviveSec = healthPool / healedDrain;
-    else
-        surviveSec = manaSec + (healthPool - healedDrain * manaSec) / unhealedDrain;
+    float surviveSec = MAX_SURVIVE_SEC;  // nothing drains the pool: no fight of this one kills the group
+    if (unhealedDrain > 0.0f)
+    {
+        if (manaSec <= 0.0f)
+            surviveSec = healthPool / unhealedDrain;
+        else if (healedDrain <= 0.0f)
+            surviveSec = manaSec + healthPool / unhealedDrain;
+        else if (healthPool / healedDrain <= manaSec)
+            surviveSec = healthPool / healedDrain;
+        else
+            surviveSec = manaSec + (healthPool - healedDrain * manaSec) / unhealedDrain;
+    }
 
     outlook.surviveSec = std::min(surviveSec, MAX_SURVIVE_SEC);
 

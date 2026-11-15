@@ -85,6 +85,38 @@ namespace KillRate
             return std::numeric_limits<float>::infinity();
         return health / own.dps;
     }
+
+    // [dpszero2] MAY THE WALK ENTER A MOB'S AGGRO ZONE WITHOUT FIGHTING IT - the route's own question, answered by
+    // the fight judge that already exists and by nothing else.
+    //
+    // THE USER'S RULE (2026-11-15): a bot does not enter the aggro zone of a mob whose fight is lost. NOT "a mob
+    // eleven levels above": the level gap is one of the reasons a fight comes out lost, and keying on it would
+    // catch one case of many and plant a threshold where none is needed. There is no level check anywhere here.
+    //
+    // WHAT WAS WRONG. `RouteCosts` offered an orange / red / elite mob a RUN PAST first and, when the chase priced
+    // as survivable, cleared the wall - so the fight was never judged at all and its aggro disc never reached the
+    // search's refusals. Measured over the recorded b502 hour: 19 588 run-pasts priced as survivable across 73 of
+    // the 75 bots, and about half of them (9 601) against a mob eleven or more levels above the bot, i.e. a fight
+    // the formula gives hundredths of a dps. Lyleria L24 priced a run past Horde Guard L40 8 358 times in that one
+    // hour. Running past IS entering the zone, and once inside there is no way out: the chase estimate of
+    // [runpast89] is that a mob of equal speed is never outrun.
+    //
+    // SO THE FIGHT'S VERDICT COMES FIRST, and it is the SAME judge (rule 5: one quantity, one judge) - nothing
+    // here recomputes damage, health or a chase. A fight NOBODY judged leaves the answer to the chase exactly as
+    // before: no verdict rests on a judgement that did not happen (rule 7).
+    struct Zone
+    {
+        bool judged = false;         // the fight judge ran on this mob's pack
+        bool fightLost = false;      // ... and said the bot loses it even at full
+        bool chaseSurvived = false;  // the run past was priced and the bot lives through the chase
+    };
+
+    inline bool MayRunPast(Zone const& zone)
+    {
+        if (zone.judged && zone.fightLost)
+            return false;
+        return zone.chaseSurvived;
+    }
 }
 
 #endif

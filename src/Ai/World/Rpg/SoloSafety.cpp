@@ -129,6 +129,10 @@ namespace
         // the bot's health with its heal kit over that chase: a wall because damage >= hp; 0 / 0 when not priced
         float runPastDamage = 0.0f;
         float runPastHp = 0.0f;
+        // [dpszero2] the FIGHT judge called this wall's fight lost. `why` keeps the reason the wall was first
+        // raised for (an elite stays an elite: ConWalls hands those quests to a party, and that must not change),
+        // so the fight's verdict needs its own field - and it is the field the zone rule and its problem row read
+        bool fightLost = false;
     };
 
     constexpr float RUN_PAST_ON_LEG = 8.0f;        // [death452] the farRoute tolerance (MoveFarToDirect)
@@ -2144,11 +2148,14 @@ namespace SoloSafety
                                                                                    bot->GetMaxHealth()));
     }
 
-    float BotDps(Player* bot, Unit* target)
+    KillRate::Own BotDps(Player* bot, Unit* target)
     {
+        // [dpszero1] no bot means NO ESTIMATE, not a zero: the old `return 0.0f;` handed a caller a number it
+        // could not tell from "it deals nothing", and the one caller then floored it to 1 dps (rule 7)
         if (!bot)
-            return 0.0f;
-        return OwnDamage(bot, target).dps;
+            return {};
+        DpsEstimate::Result const own = OwnDamage(bot, target);
+        return {own.estimated, own.dps};
     }
 
     Verdict Judge(Player* bot, Unit* target)
@@ -5811,7 +5818,10 @@ namespace SoloSafety
         Acore::AnyUnitInObjectRangeCheck check(bot, range);
         Acore::UnitListSearcher<Acore::AnyUnitInObjectRangeCheck> searcher(bot, units, check);
         Cell::VisitObjects(bot, searcher, range);
-        float const dps = std::max(BotDps(bot), 1.0f);
+        // [dpszero1] the walk's own damage as a state, with no floor. It prices the fight a mob on the way COSTS
+        // (yards of walk below), and where there is no estimate or the bot deals nothing that cost has no bound -
+        // which the search already has a value for: any detour is the better walk
+        KillRate::Own const rate = BotDps(bot);
         float const speed = bot->GetSpeed(MOVE_RUN);
         ObjectGuid const target = bot->GetTarget();
         uint8 const level = bot->GetLevel();
@@ -6152,6 +6162,21 @@ namespace SoloSafety
                                                            : std::string()));
             return true;
         };
+        // [dpszero2] "it loses this pack even at full" over a mob's LINKED pack (PullModel::Links) in the judge's
+        // own kill order - the SAME judge the walk already asks (LosesAtFull), in one place instead of two. The
+        // zone rule reads this answer; it does not compute one of its own (rule 5).
+        auto const losesLinkedPack = [&](PullModel const& model) -> bool
+        {
+            std::vector<RouteFoe> foes;
+            for (PullModel::Member const& m : model.pack)
+                foes.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});  // [dps1]
+            if (foes.empty())
+                return false;
+            // the judge's kill order: the mob met first, then the most damage per health
+            std::sort(foes.begin() + 1, foes.end(), [](RouteFoe const& x, RouteFoe const& y)
+                      { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
+            return LosesAtFull(bot, own, foes, petHealth);
+        };
         for (Unit* unit : units)
         {
             Creature* mob = unit->ToCreature();
@@ -6214,6 +6239,8 @@ namespace SoloSafety
             bool ranPast = false;
             float runPastDamage = 0.0f;
             float runPastHp = 0.0f;
+            // [dpszero2] the fight judge's verdict on this mob, kept beside `why` and not inside it
+            bool fightLost = false;
             // [surv10] the run past is no longer vetoed by the zone either: the veto was the other half of the block,
             // so an orange / red mob standing where the bot once died walled every walk past it with no way round
             // priced at all. The chase is priced here as it is anywhere else, and the zone's own cost is added to the
@@ -6224,10 +6251,27 @@ namespace SoloSafety
                 buildAround();
                 PullModel model(bot, mob, around);
                 model.Links();
-                if (tryRunPast(mob, model, runPastDamage, runPastHp))
+                // [dpszero2] user 2026-11-15: a bot does not enter the aggro zone of a mob WHOSE FIGHT IS LOST, and
+                // running past is entering it. The fight's verdict therefore comes first, from the judge that is
+                // already here - there is no level check and no second judge. The chase is priced only where the
+                // fight is not a veto, so the judge costs nothing where the answer was already no.
+                // Measured over the recorded hour: 19 588 run-pasts priced survivable (73 of 75 bots), 9 601 of them
+                // against a mob 11+ levels above; Lyleria L24 priced a run past Horde Guard L40 8 358 times.
+                // The verdict is read here ONLY to veto the run past: no pull is offered for an orange / red mob
+                // ([wall17] is for the bot's own band and stays that way).
+                KillRate::Zone zone;
+                zone.judged = true;
+                zone.fightLost = losesLinkedPack(model);
+                fightLost = fightLost || zone.fightLost;
+                zone.chaseSurvived = true;  // asked of the fight alone first
+                if (KillRate::MayRunPast(zone))
                 {
-                    ranPast = true;
-                    why = RouteWall::Why::None;
+                    zone.chaseSurvived = tryRunPast(mob, model, runPastDamage, runPastHp);
+                    if (KillRate::MayRunPast(zone))
+                    {
+                        ranPast = true;
+                        why = RouteWall::Why::None;
+                    }
                 }
                 wallPack = uint32(model.pack.size());
             }
@@ -6280,23 +6324,25 @@ namespace SoloSafety
                                                     centre.GetPositionZ(), radius),
                                        meet, own, petHealth);
                         if (loses)
+                        {
                             why = RouteWall::Why::Loses;
+                            fightLost = true;  // [dpszero2]
+                        }
                         wallPack = size;
                         priced = true;
                     }
                 }
                 if (!priced)  // a mob off the leg: its linked pack, as before
                 {
-                    std::vector<RouteFoe> foes;
-                    for (PullModel::Member const& m : model.pack)
-                        foes.push_back({m.mob, MobDps(m.mob, bot), float(m.mob->GetHealth())});  // [dps1]
-                    // the judge's kill order: the mob met first, then the most damage per health
-                    std::sort(foes.begin() + 1, foes.end(), [](RouteFoe const& x, RouteFoe const& y)
-                              { return x.dps / std::max(x.hp, 1.0f) > y.dps / std::max(y.hp, 1.0f); });
                     // [lag353] the fight's numbers decide, no fixed refusal of two above its level
-                    if (LosesAtFull(bot, own, foes, petHealth))
+                    // [dpszero2] through the one judge the zone rule reads as well (losesLinkedPack): this was the
+                    // second copy of the same four lines, and an empty pack reached `foes.begin() + 1`
+                    if (losesLinkedPack(model))
+                    {
                         why = RouteWall::Why::Loses;
-                    wallPack = uint32(foes.size());
+                        fightLost = true;  // [dpszero2]
+                    }
+                    wallPack = uint32(model.pack.size());
                     // [death431] the walk the search finds may enter its reach off the straight leg: grown there
                     // once the walk is known (GrowOnWalk)
                     if (why == RouteWall::Why::None)
@@ -6374,12 +6420,20 @@ namespace SoloSafety
                 // flees for help and no caster stands to cast at the fight spot. b447 Dekorhan L22 on the Zoram
                 // Strand: the Wrathtail wanderers (30 yd apart, assistance radius 10) priced as one grown pack of 11,
                 // "run-past priced 2271 hp vs hp 1152", the pier and Darnassus given up, hearthed
-                if (why != RouteWall::Why::None && mayRunPast)
+                // [dpszero2] ... but NOT where the judge above has just called the fight lost: that is the zone the
+                // user's rule keeps the bot out of, and a run past is how it used to get in. The verdict the judge
+                // already produced is read here; nothing is recomputed
+                KillRate::Zone zone;
+                zone.judged = true;
+                zone.fightLost = why == RouteWall::Why::Loses;
+                zone.chaseSurvived = true;  // asked of the fight alone first
+                if (why != RouteWall::Why::None && mayRunPast && KillRate::MayRunPast(zone))
                 {
                     buildAround();
                     PullModel walkPast(bot, mob, around);
                     walkPast.Links();
-                    if (tryRunPast(mob, walkPast, runPastDamage, runPastHp))
+                    zone.chaseSurvived = tryRunPast(mob, walkPast, runPastDamage, runPastHp);
+                    if (KillRate::MayRunPast(zone))
                     {
                         ranPast = true;
                         why = RouteWall::Why::None;
@@ -6468,7 +6522,7 @@ namespace SoloSafety
             if (never)
                 walls.push_back({mob->GetEntry(), mob->GetLevel(), why, wallPack,
                                  bot->GetExactDist2d(centre.GetPositionX(), centre.GetPositionY()), runPastDamage,
-                                 runPastHp});
+                                 runPastHp, fightLost});
             if (never)
                 refuse.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
             // [deaths] a patrol it must never fight is refused along its beat (its waypoint forecast), not only where
@@ -6493,11 +6547,15 @@ namespace SoloSafety
             penalty.y = centre.GetPositionY();
             penalty.z = centre.GetPositionZ();
             penalty.r = radius;
-            penalty.cost = float(mob->GetHealth()) / dps * speed;
             // a mob it must never fight, when no walk round it is complete: any detour up to the whole trip again is
             // the better walk (b301: Thokhen L3 walked 4 times through the same L9 Nightstalkers on a 1943 yd walk)
+            float const anyDetour = (to - from).length() + 2.0f * radius;
+            // [dpszero1] an unbounded kill time (no estimate, or it deals nothing) is priced at that same value
+            // instead of at a floored 1 dps: the number already in the code for "going round is better"
+            float const killSec = KillRate::KillSec(rate, float(mob->GetHealth()));
+            penalty.cost = std::isfinite(killSec) ? killSec * speed : anyDetour;
             if (never || ranPast)
-                penalty.cost = std::max(penalty.cost, (to - from).length() + 2.0f * radius);
+                penalty.cost = std::max(penalty.cost, anyDetour);
             penalties.push_back(penalty);
             seen[mob->GetGUID().GetRawValue()] = never;
         }
@@ -6541,7 +6599,15 @@ namespace SoloSafety
                 penalty.y = zoneDiscs[i].y;
                 penalty.z = zoneDiscs[i].z;
                 penalty.r = zoneDiscs[i].w;
-                penalty.cost = float(stats->GenerateHealth(tmpl)) / dps * speed;
+                // [dpszero1] the same reading, no floor: an unbounded kill time leaves the zone unpriceable, which
+                // this loop already has an answer for - it is left out rather than turned into a wall
+                float const zoneKillSec = KillRate::KillSec(rate, float(stats->GenerateHealth(tmpl)));
+                if (!std::isfinite(zoneKillSec))
+                {
+                    ++unpriceable;
+                    continue;
+                }
+                penalty.cost = zoneKillSec * speed;
                 penalties.push_back(penalty);
                 if (priced.size() < 200)
                     priced += Acore::StringFormat("{}{} at ({:.0f},{:.0f}) r {:.0f} costs {:.0f} yd",
@@ -6722,6 +6788,30 @@ namespace SoloSafety
         return out;
     }
 
+    // [dpszero2] read back, never recomputed: the search wrote these walls and their reasons, and a second look at
+    // the world here would be a second judge of the same thing (rule 5)
+    bool NearestLostFightWall(Player* bot, LostWall& out)
+    {
+        if (!bot)
+            return false;
+        std::vector<RouteWall> walls;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const found = states.find(bot->GetGUID().GetCounter());
+            if (found == states.end())
+                return false;
+            walls = found->second.routeWalls;
+        }
+        RouteWall const* nearest = nullptr;
+        for (RouteWall const& w : walls)
+            if (w.fightLost && (!nearest || w.yards < nearest->yards))
+                nearest = &w;
+        if (!nearest)
+            return false;
+        out = {nearest->entry, nearest->level, nearest->pack, nearest->yards};
+        return true;
+    }
+
     std::string RouteWalls(Player* bot)
     {
 
@@ -6749,6 +6839,11 @@ namespace SoloSafety
                                                                : "loses at full";
             out += Acore::StringFormat("{}{} L{} {:.0f} yd ({}, pack {}", out.empty() ? "" : ", ",
                                        tmpl ? tmpl->Name : std::to_string(w.entry), w.level, w.yards, why, w.pack);
+            // [dpszero2] the fight's own verdict, which `why` no longer carries for an elite / orange wall - and
+            // the reason no chase is priced below: a zone whose fight is lost is not entered, so there is nothing
+            // to price a run through it with
+            if (w.fightLost && w.why != RouteWall::Why::Loses)
+                out += "; its fight is lost too: no run past priced";
             // [runpast11] the run past it priced and refused: its chase against the bot's health with its kit
             if (w.runPastHp > 0.0f)
                 out += w.runPastDamage == std::numeric_limits<float>::max()

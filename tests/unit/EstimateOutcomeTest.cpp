@@ -123,3 +123,49 @@ TEST(OwnDamageFloor, ATinyEstimateIsUsedAsItIsAndNotRaisedToOne)
     EXPECT_FLOAT_EQ(KillRate::KillSec(KillRate::Own{}, 0.0f), 0.0f);
     EXPECT_FLOAT_EQ(KillRate::KillSec({true, ONE_PERCENT_HIT}, -5.0f), 0.0f);
 }
+
+// [dpszero2] THE ROUTE DOES NOT WALK INTO A ZONE WHOSE FIGHT IS LOST. User, 2026-11-15. The inputs are the
+// recorded b502 hour: 19 588 run-pasts priced as survivable across 73 of the 75 bots, 9 601 of them against a mob
+// eleven or more levels above - Lyleria L24 priced a run past Horde Guard L40 8 358 times in that hour, Irrua L25
+// priced one past Gritjaw Basilisk L31 159 times and died in the same hour.
+TEST(ZoneRule, AZoneWhoseFightIsLostIsNotEnteredEvenWhenTheChaseIsSurvivable)
+{
+    // what the old rule answered on these very inputs: the chase alone, so "yes, walk in"
+    KillRate::Zone lost;
+    lost.judged = true;
+    lost.fightLost = true;
+    lost.chaseSurvived = true;
+    EXPECT_FALSE(KillRate::MayRunPast(lost))
+        << "the walk entered the aggro zone of a mob whose fight the judge already called lost: once inside there "
+           "is no way out, and that is the 19 588 run-pasts of the hour";
+}
+
+TEST(ZoneRule, AZoneWhoseFightIsWONIsStillEntered)
+{
+    // the counter-statement, and it is the point of this test: without it "refuse every zone" would pass green.
+    // A mob in the bot's own weight class is walked past exactly as before - the rule is about losing the fight,
+    // not about mobs
+    KillRate::Zone won;
+    won.judged = true;
+    won.fightLost = false;
+    won.chaseSurvived = true;
+    EXPECT_TRUE(KillRate::MayRunPast(won)) << "a zone whose fight the bot wins was refused: the rule has become "
+                                              "'refuse everything', which is not the rule";
+    // and a chase it does not live through is still a wall, as it was before any of this
+    KillRate::Zone wonButCaught = won;
+    wonButCaught.chaseSurvived = false;
+    EXPECT_FALSE(KillRate::MayRunPast(wonButCaught));
+}
+
+TEST(ZoneRule, AFightNobodyJudgedLeavesTheAnswerToTheChaseAsBefore)
+{
+    // rule 7: absence is not a verdict. A mob whose fight was never judged is answered by the chase, exactly as
+    // the code answered before the zone rule existed - a refusal is never built on a judgement that did not happen
+    KillRate::Zone unjudged;
+    unjudged.judged = false;
+    unjudged.fightLost = true;  // meaningless without `judged`, and it must stay meaningless
+    unjudged.chaseSurvived = true;
+    EXPECT_TRUE(KillRate::MayRunPast(unjudged));
+    unjudged.chaseSurvived = false;
+    EXPECT_FALSE(KillRate::MayRunPast(unjudged));
+}

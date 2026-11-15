@@ -23,6 +23,7 @@
 
 #include "Define.h"
 #include "ChaseModel.h"  // [runpast89] Chase::Heal, the piece a run past prices its healing on
+#include "KillRate.h"  // [dpszero1] BotDps answers a state, not a bare float
 #include "G3D/Vector3.h"
 #include "G3D/Vector4.h"
 #include "ObjectGuid.h"  // [build153] Verdict / EngageNote::counted ([death392])
@@ -248,6 +249,19 @@ namespace SoloSafety
                     std::vector<G3D::Vector3> const& walk, std::vector<G3D::Vector4>& lost);
     // [pull9] the mobs its last route search refused, nearest first, and why (for the refused-walk lines)
     std::string RouteWalls(Player* bot);
+
+    // [dpszero2] the nearest wall of the bot's last route search whose reason was THE FIGHT ("loses at full"): the
+    // zone the user's rule keeps it out of. The walk's own search already recorded it; this only reads it back, so
+    // the place that knows there is NO WAY ROUND can say which zone it was and write the problem row. false: the
+    // walk was walled by something else, or by nothing.
+    struct LostWall
+    {
+        uint32 entry = 0;
+        uint8 level = 0;
+        uint32 pack = 1;
+        float yards = 0.0f;
+    };
+    bool NearestLostFightWall(Player* bot, LostWall& out);
     // [wall17] the orange / red and elite mobs among its last route search's walls (empty: none) - [guild12] never
     // fights them; a quest walled by them goes to a party (NewRpgCoop::OnSpotRefused)
     std::string ConWalls(Player* bot);
@@ -350,7 +364,10 @@ namespace SoloSafety
 
     // [dps1] the bot's damage per second: DpsEstimate's formula over its state now (its buff context: solo / party /
     // raid), against `target` or a mob of its level; no fight history
-    float BotDps(Player* bot, Unit* target = nullptr);
+    // [dpszero1] as a STATE and not a bare float: it used to answer 0.0f both for "no bot, nothing computed" and
+    // for "computed, it deals nothing", and a caller cannot tell those apart (rule 7) - it floored the pair to
+    // 1 dps instead. `KillRate::StateOf` / `KillSec` are how a caller asks (src/Ai/World/Rpg/KillRate.h)
+    KillRate::Own BotDps(Player* bot, Unit* target = nullptr);
 
     // [guild80] the open solo fight projected: the attackers on the bot (their damage per second: this fight's
     // measurement, else the model; their SmartAI spell share), the time its damage needs for them, the damage still to
