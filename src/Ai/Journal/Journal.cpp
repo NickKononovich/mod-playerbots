@@ -1365,7 +1365,7 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_decision",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{},{},{},{},{},{},{},{},{})",
+                                "{},{},{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, hour, Quoted(decision.topic, 48), Quoted(decision.choice, 255),
                                 Quoted(decision.verdict, 16), Quoted(decision.why, 1024),
                                 Quoted(JudgeName(decision.judge), 16), Quoted(decision.judgeName, 32),
