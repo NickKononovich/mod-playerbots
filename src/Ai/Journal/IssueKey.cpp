@@ -11,7 +11,7 @@
 namespace Journal::Key
 {
     std::string Standing(std::string const& role, bool inCombat, uint32_t engineState, std::string const& heldBy,
-                         std::string const& actionTrace)
+                         std::string const& actionTrace, std::optional<bool> inGroup)
     {
         // THE TRACE COMES IN AND DOES NOT GO INTO THE KEY, and that is this function's whole reason to exist:
         // Engine::GetLastAction() is the trace of an instant, it changes on every sample of one episode, and the
