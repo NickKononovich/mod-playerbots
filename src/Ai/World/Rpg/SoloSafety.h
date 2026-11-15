@@ -37,6 +37,11 @@ class Player;
 class Unit;
 class WorldObject;  // [objective23]
 
+namespace Journal
+{
+    struct DeathFacts;  // [runpast88] the death's numbers as values - defined in Ai/Journal/Journal.h
+}
+
 namespace Leader::Travel
 {
     struct RoutePenalty;
@@ -220,8 +225,12 @@ namespace SoloSafety
     // after another - a camp for a party, not a solo bot (`why`: the roamers)
     bool DenseCamp(Player* bot, std::string& why);
     // the death line's context: attackers now, the fight's start. [surv20] `killer` names the mob that dealt the
-    // killing blow, so a run-past chase priced of other mobs is not read as its price
-    std::string DeathContext(Player* bot, Creature* killer = nullptr);
+    // killing blow, so a run-past chase priced of other mobs is not read as its price.
+    // [runpast88] `facts`, when given, takes the same numbers as VALUES in the same pass, under the same lock, at
+    // the same instant: the user's first rule is that nothing is filtered by text, so "the deaths where more mobs
+    // hit it than the route search had priced" has to be a WHERE over columns. The struct lives in the journal
+    // (Journal::DeathFacts) because the journal is where those columns are - one definition, not two
+    std::string DeathContext(Player* bot, Creature* killer = nullptr, Journal::DeathFacts* facts = nullptr);
 
     // Leader::Route for a solo bot: the idle mobs round the walk, refused (`refuse`: x, y, z, radius) or priced
     void RouteCosts(Unit* walker, G3D::Vector3 const& from, G3D::Vector3 const& to, std::vector<G3D::Vector4>& refuse,

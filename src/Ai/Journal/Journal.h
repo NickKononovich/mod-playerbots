@@ -453,6 +453,47 @@ namespace Journal
     // So a real death is a ROW IN A TABLE OF ITS OWN. Nothing about prevention is ever written here, and a count of
     // deaths is `SELECT COUNT(*) FROM pb_journal_death` over a window - no pattern, nothing to disagree about.
     //
+    // [runpast88] THE DEATH'S NUMBERS, EACH ITS OWN VALUE, filled by the emitter that already holds them.
+    //
+    // Every one of these stood inside the death's `context` sentence as words. The user's first rule is that
+    // nothing is filtered by text or by JSON: "the deaths where more mobs hit it than its route search had priced"
+    // has to be a WHERE over columns, not a LIKE over a sentence (a LIKE over pb_journal_line's text was measured
+    // at 384 ms across 411 819 rows and grows linearly). SoloSafety::DeathContext fills this in the SAME pass that
+    // builds the sentence, under the same lock, at the same instant - so the words and the numbers can never
+    // disagree, and nothing is read from the world a second time.
+    //
+    // AN UNSET VALUE MEANS THE EMITTER DID NOT HOLD IT (no fight of its own tracked, no chase committed, no route
+    // search behind it) AND IS NOT A ZERO: `hitBy` 0 would say nobody hit it.
+    struct DeathFacts
+    {
+        // the fight it died in, as SoloSafety measured it from its own damage events - open world and dungeon alike
+        Optional<uint32> hitBy;             // DISTINCT creatures that dealt it damage this fight
+        Optional<uint32> takenThisFight;    // what they dealt it, summed
+        Optional<uint32> damageFromKiller;  // the killer's own share of that sum
+        Optional<float> fightSec;           // its first damage event of the fight to its last
+
+        // [runpast87] the committed run-past chase it was walking under when it died, if any
+        Optional<float> runPastPriced;  // the chase's MEAN price - the number the death line prints
+        // [death386] the HIGH end: the mean plus two standard deviations of the chasers' swings. THIS is the number
+        // SurvivesRunPast was asked, and it was in no column and no line. b502 Lanbuzz: the sentence says 577, the
+        // gate let the walk through on 677, 911 arrived. One quantity, one judge - so the judged number gets a
+        // column of its own beside the printed one, and a query comparing a price with the damage uses this one.
+        Optional<float> runPastPricedHigh;
+        Optional<float> runPastSec;        // the seconds the chase was priced over
+        Optional<float> runPastHp;         // the health (with its heal kit) it was priced against
+        Optional<uint32> runPastTaken;     // what actually arrived since the chase was committed
+        Optional<bool> runPastOfItsChase;  // [surv20] the killer or a hitter is one of that chase's own chasers
+
+        // [deaths] how its last route search had seen the mobs that went on to hit it, as counts
+        Optional<uint32> routeAgeMs;  // the search's age at the death
+        Optional<bool> routeComplete;
+        Optional<bool> routeThroughRefused;
+        Optional<uint32> routePriced;      // seen and priced
+        Optional<uint32> routeRefused;     // seen and walked round
+        Optional<uint32> routeUnseen;      // out of the search's range altogether
+        Optional<uint32> routeOtherFight;  // [surv21] in range, left out because its fight was not the bot's
+    };
+
     // A DEATH IS A CALCULATION BUG in this project and not bad luck, so the row carries the INPUTS and not only the
     // outcome: who, where, by whom, at what damage, and what the judge expected when it let the fight happen.
     struct Death
@@ -477,10 +518,21 @@ namespace Journal
         Optional<float> killerHealthPct;
 
         Optional<uint32> healthMax;    // the denominator: the health at 0 % is only readable against the pool
-        // what the KILLER dealt to this bot inside this instance (DamageTaken::From). The project keeps no
-        // per-fight total, so this is the honest quantity rather than a per-fight number that does not exist.
+        // what the KILLER dealt to this bot inside this instance (DamageTaken::From).
+        // [runpast88] UNSET OUTSIDE A DUNGEON, and that is the honest value: DeathRecorder::IsTracked only
+        // accumulates for a player whose map is a dungeon, so in the open world there is nothing to read. All eight
+        // b502 deaths were out in the world and every one of them carried a 0 here, which read as "the killer dealt
+        // it nothing". What the killer dealt it out there is `facts.damageFromKiller`, measured by the other
+        // instrument - SoloSafety's own damage events - and the two are kept apart on purpose.
         Optional<uint32> damageFromKiller;
-        Optional<uint32> attackers;    // how many were on it at the moment it died
+        // how many were on it at the moment it died.
+        // [runpast88] UNSET WHEN THE CORE'S LIST IS EMPTY AT THE HOOK, which is always: the kill clears the
+        // attacker list before OnPlayerKilledByCreature runs, so a 0 here was "cannot be measured at this instant"
+        // dressed as "nobody". The count that answers the question is `facts.hitBy`.
+        Optional<uint32> attackers;
+
+        // [runpast88] the fight, the chase and the route search behind this death, as values - see DeathFacts
+        DeathFacts facts;
 
         // WHAT THE JUDGE EXPECTED. A death is the estimate being wrong, so the estimate goes in the row.
         Optional<bool> judgedPull;      // a pull the leader judged was open when it died
@@ -836,7 +888,9 @@ namespace Journal
     // JournalStream.obj silently were in b495.
     void NoteFightStart(Player* bot, Unit* enemy);
     void NoteAggro(Creature* mob, Unit* victim);
-    void NoteDeath(Player* killed, Creature* killer, std::string const& context, std::string const& threat);
+    // [runpast88] `facts`: the death's numbers as values, filled by the same DeathContext pass that built `context`
+    void NoteDeath(Player* killed, Creature* killer, std::string const& context, std::string const& threat,
+                   DeathFacts const& facts);
 
     // [jrn31] The writer's own two numbers, exposed so the STATS sampler can put them in a metric row instead of a
     // log line. They are the honest sign of the one contention the journal could have: a single mutex guards the

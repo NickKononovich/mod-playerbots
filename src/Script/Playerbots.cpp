@@ -171,12 +171,15 @@ public:
                 if (Unit* victim = ref ? ref->GetVictim() : nullptr)
                     threat += Acore::StringFormat("{}{} {:.0f}", threat.empty() ? "" : ", ", victim->GetName(),
                                                   ref->GetThreat());
-        std::string const context = SoloSafety::DeathContext(killed, killer);  // [guild13] its fight
+        // [guild13] its fight. [runpast88] one pass fills the sentence AND the same numbers as values: asking
+        // SoloSafety twice would be two readings of one state at two instants, which is two judges of one quantity
+        Journal::DeathFacts facts;
+        std::string const context = SoloSafety::DeathContext(killed, killer, &facts);
         // [jrn30] THE DEATH AS AN EVENT, in a table a prevention line cannot reach. The line below stays, but it
         // must not be what a death is counted by: 20 502 stream lines in one window carried a "[death*" tag and 17
         // of them were deaths - the rest is the prevention domain printing that a death did NOT happen, so a count
         // by tag overstated deaths by about 1 200 times. The count is COUNT(*) over pb_journal_death.
-        Journal::NoteDeath(killed, killer, context, threat);
+        Journal::NoteDeath(killed, killer, context, threat, facts);
         LOG_INFO("playerbots", "[death] {} L{} killed by {} (entry {}, L{}, {}% hp) at map {} ({:.1f},{:.1f}) {} | {}{}",
                  killed->GetName(), killed->GetLevel(), killer->GetName(), killer->GetEntry(), killer->GetLevel(),
                  uint32(killer->GetHealthPct()), killed->GetMapId(), killed->GetPositionX(), killed->GetPositionY(),

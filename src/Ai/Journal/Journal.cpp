@@ -184,7 +184,12 @@ namespace Journal
             "(id, boot_id, at_ms, hour_bucket, bot_name, bot_low, bot_level, bot_class, role, spec, map_id, zone_id, "
             "area_id, pos_x, pos_y, pos_z, in_dungeon, killer_name, killer_entry, killer_low, killer_level, "
             "killer_health_pct, health_max, damage_from_killer, attackers, judged_pull, expected, pull_expected, "
-            "pull_method, context, threat, run_id, decision_id, build)";
+            "pull_method, context, threat, run_id, decision_id, build, "
+            // [runpast88] the fight, the chase and the route search as COLUMNS - the same numbers the context
+            // sentence already carried as words. NULL means the emitter did not hold the value, not a zero.
+            "fight_hit_by, fight_taken, fight_damage_from_killer, fight_sec, runpast_priced, runpast_priced_high, "
+            "runpast_sec, runpast_hp, runpast_taken, runpast_of_its_chase, route_age_ms, route_complete, "
+            "route_through_refused, route_priced, route_refused, route_unseen, route_other_fight)";
         // [jrn40] the problems table. `checked_state` is NOT here: it is a GENERATED column the database computes,
         // so it can neither be inserted nor contradicted.
         char const* const COLUMNS_ISSUE =
@@ -1099,6 +1104,18 @@ namespace Journal
                              "killer_low INT UNSIGNED NOT NULL DEFAULT 0, killer_level SMALLINT UNSIGNED NULL, "
                              "killer_health_pct FLOAT NULL, health_max INT UNSIGNED NULL, "
                              "damage_from_killer INT UNSIGNED NULL, attackers SMALLINT UNSIGNED NULL, "
+                             // [runpast88] the fight, the chase and the route search behind the death, each
+                             // quantity its own column. They stood in `context` as words, and nothing here is
+                             // filtered by text. NULL = the emitter did not hold it, and that is not a zero.
+                             "fight_hit_by SMALLINT UNSIGNED NULL, fight_taken INT UNSIGNED NULL, "
+                             "fight_damage_from_killer INT UNSIGNED NULL, fight_sec FLOAT NULL, "
+                             "runpast_priced FLOAT NULL, runpast_priced_high FLOAT NULL, "
+                             "runpast_sec FLOAT NULL, runpast_hp FLOAT NULL, "
+                             "runpast_taken INT UNSIGNED NULL, runpast_of_its_chase TINYINT UNSIGNED NULL, "
+                             "route_age_ms INT UNSIGNED NULL, route_complete TINYINT UNSIGNED NULL, "
+                             "route_through_refused TINYINT UNSIGNED NULL, route_priced SMALLINT UNSIGNED NULL, "
+                             "route_refused SMALLINT UNSIGNED NULL, route_unseen SMALLINT UNSIGNED NULL, "
+                             "route_other_fight SMALLINT UNSIGNED NULL, "
                              "judged_pull TINYINT UNSIGNED NULL, expected VARCHAR(512) NOT NULL DEFAULT '', "
                              "pull_expected SMALLINT UNSIGNED NULL, pull_method VARCHAR(16) NOT NULL DEFAULT '', "
                              "context VARCHAR(1024) NOT NULL DEFAULT '', threat VARCHAR(1024) NOT NULL DEFAULT '', "
@@ -1110,6 +1127,14 @@ namespace Journal
                              "KEY where_at (map_id, zone_id, at_ms), KEY judged_at (judged_pull, at_ms), "
                              "KEY level_at (bot_level, at_ms), KEY dungeon_at (in_dungeon, at_ms), "
                              "KEY run_at (run_id, at_ms), KEY build_at (build, at_ms), "
+                             // [runpast88] one index per question that gets asked of a death: more hitters than
+                             // the search had priced, a chase priced below what arrived, a mob never seen
+                             "KEY fight_hit_by_at (fight_hit_by, at_ms), "
+                             "KEY runpast_priced_high_at (runpast_priced_high, at_ms), "
+                             "KEY runpast_taken_at (runpast_taken, at_ms), "
+                             "KEY route_unseen_at (route_unseen, at_ms), "
+                             "KEY route_priced_at (route_priced, at_ms), "
+                             "KEY route_age_ms_at (route_age_ms, at_ms), "
                              "KEY decision (decision_id)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn30] a real death with the judges inputs - prevention is never written here'")
@@ -1587,7 +1612,7 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_death",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{},{},{},{})",
+                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, nowMs / MS_PER_HOUR,
                                 Quoted(death.botName, 32), death.botLow, OrNull(death.botLevel),
                                 OrNull(death.botClass), OrNull(death.role, 8), OrNull(death.spec, 24), death.mapId,
@@ -1598,7 +1623,16 @@ namespace Journal
                                 OrNull(death.judgedPull), Quoted(death.expected, 512), OrNull(death.pullExpected),
                                 Quoted(death.pullMethod, 16), Quoted(death.context, 1024),
                                 Quoted(death.threat, 1024), Quoted(death.runId, 48), death.decisionId,
-                                Quoted(Config().build, 16)));
+                                Quoted(Config().build, 16),
+                                OrNull(death.facts.hitBy), OrNull(death.facts.takenThisFight),
+                                OrNull(death.facts.damageFromKiller), OrNull(death.facts.fightSec),
+                                OrNull(death.facts.runPastPriced), OrNull(death.facts.runPastPricedHigh),
+                                OrNull(death.facts.runPastSec), OrNull(death.facts.runPastHp),
+                                OrNull(death.facts.runPastTaken), OrNull(death.facts.runPastOfItsChase),
+                                OrNull(death.facts.routeAgeMs), OrNull(death.facts.routeComplete),
+                                OrNull(death.facts.routeThroughRefused), OrNull(death.facts.routePriced),
+                                OrNull(death.facts.routeRefused), OrNull(death.facts.routeUnseen),
+                                OrNull(death.facts.routeOtherFight)));
         return id;
     }
 

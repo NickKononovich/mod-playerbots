@@ -234,7 +234,8 @@ namespace Journal
         RecordAggro(aggro);
     }
 
-    void NoteDeath(Player* killed, Creature* killer, std::string const& context, std::string const& threat)
+    void NoteDeath(Player* killed, Creature* killer, std::string const& context, std::string const& threat,
+                   DeathFacts const& facts)
     {
         if (!OurBot(killed) || !killer)
             return;
@@ -261,10 +262,24 @@ namespace Journal
         death.killerHealthPct = float(killer->GetHealthPct());
         // the share's denominator, always beside it: health 0 of a pool of 544 is readable, "0 %" alone is not
         death.healthMax = killed->GetMaxHealth();
-        death.damageFromKiller = uint32(DamageTaken::From(killed->GetGUID(), killer->GetGUID()));
-        death.attackers = uint32(killed->getAttackers().size());
+        // [runpast88] ABSENCE IS NOT ZERO, in both of the next two.
+        //
+        // DamageTaken only accumulates for a player whose map is a dungeon (DeathRecorder::IsTracked), so out in the
+        // world there is nothing to read and a 0 here said "the killer dealt it nothing". All eight b502 deaths were
+        // in the open world. The open-world measure is the other instrument's (SoloSafety's own damage events) and
+        // travels as `fightDamageFromKiller`; two instruments, two columns, neither pretending to be the other.
+        if (death.inDungeon)
+            death.damageFromKiller = uint32(DamageTaken::From(killed->GetGUID(), killer->GetGUID()));
+        // The kill clears the core's attacker list before this hook runs, so this count is 0 at every death ever
+        // recorded - "cannot be measured at this instant" written as "nobody was on it". It stays as the honest
+        // reading of that list and goes unset when the list is empty; `fightHitBy` is the count that answers.
+        if (!killed->getAttackers().empty())
+            death.attackers = uint32(killed->getAttackers().size());
         death.context = context;
         death.threat = threat;
+        // [runpast88] the numbers the context sentence carried as words, in their own columns - the emitter held
+        // every one of them when it built that sentence (SoloSafety::DeathContext, one pass under one lock)
+        death.facts = facts;
 
         // WHAT THE JUDGE EXPECTED. A death is a calculation bug in this project, not bad luck, so the estimate that
         // allowed the fight goes into the row beside the outcome.
@@ -324,16 +339,44 @@ namespace Journal
         issue.sourceId = deathRowId;
         // THE INPUTS THEMSELVES, flat, because pb_journal_death is swept in 48 h and this row lives for ever. The
         // emitter is holding every one of these at this instant; nothing is read a second time.
+        // [runpast88] the fight's and the chase's own numbers, and a key is WRITTEN ONLY WHEN IT WAS HELD: the
+        // replay reads a missing key as "not measured" (PbFixture::Flat::Num's default), while a 0 written in its
+        // place would say the chase was free and nobody hit the bot. Without `runPastPricedHigh` the stand cannot
+        // put a price against the damage at all - the sentence only ever carried the mean.
+        std::string held;
+        auto const number = [&held](char const* key, auto const& value)
+        {
+            if (value)
+                held += Acore::StringFormat(",\"{}\":{:.2f}", key, double(*value));
+        };
+        number("fightHitBy", death.facts.hitBy);
+        number("fightTaken", death.facts.takenThisFight);
+        number("fightDamageFromKiller", death.facts.damageFromKiller);
+        number("fightSec", death.facts.fightSec);
+        number("runPastPriced", death.facts.runPastPriced);
+        number("runPastPricedHigh", death.facts.runPastPricedHigh);
+        number("runPastSec", death.facts.runPastSec);
+        number("runPastHp", death.facts.runPastHp);
+        number("runPastTaken", death.facts.runPastTaken);
+        number("routeAgeMs", death.facts.routeAgeMs);
+        number("routePriced", death.facts.routePriced);
+        number("routeRefused", death.facts.routeRefused);
+        number("routeUnseen", death.facts.routeUnseen);
+        number("routeOtherFight", death.facts.routeOtherFight);
+        if (death.facts.runPastOfItsChase)
+            held += Acore::StringFormat(",\"runPastOfItsChase\":{}", *death.facts.runPastOfItsChase ? 1 : 0);
+        if (death.facts.routeComplete)
+            held += Acore::StringFormat(",\"routeComplete\":{}", *death.facts.routeComplete ? 1 : 0);
         issue.fixture = Acore::StringFormat(
             "{{\"killerEntry\":{},\"killerLow\":{},\"killerLevel\":{},\"killerHealthPct\":{:.1f},\"botLevel\":{},"
             "\"botClass\":{},\"healthMax\":{},\"damageFromKiller\":{},\"attackers\":{},\"judgedPull\":{},"
-            "\"pullMethod\":\"{}\",\"map\":{},\"zone\":{},\"area\":{},\"x\":{:.2f},\"y\":{:.2f},\"z\":{:.2f},"
+            "\"pullMethod\":\"{}\",\"map\":{},\"zone\":{},\"area\":{},\"x\":{:.2f},\"y\":{:.2f},\"z\":{:.2f}{},"
             "\"keyUnmeasured\":true}}",
             death.killerEntry, death.killerLow, killer->GetLevel(), killer->GetHealthPct(), killed->GetLevel(),
             uint32(killed->getClass()), death.healthMax ? *death.healthMax : 0,
             death.damageFromKiller ? *death.damageFromKiller : 0, death.attackers ? *death.attackers : 0,
             death.judgedPull && *death.judgedPull ? 1 : 0, death.pullMethod, death.mapId, death.zoneId,
-            death.areaId, death.x, death.y, death.z);
+            death.areaId, death.x, death.y, death.z, held);
         RecordIssue(issue);
     }
 }  // namespace Journal

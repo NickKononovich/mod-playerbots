@@ -12,10 +12,12 @@
 #include "BuyAction.h"
 #include "CellImpl.h"
 #include "AttackersValue.h"  // [deaths] NO_ATTACK
+#include "ChaseModel.h"  // [runpast88] the chase window, as a seam without the world
 #include "ChooseTargetActions.h"
 #include "Creature.h"
 #include "DBCStores.h"
 #include "DpsEstimate.h"  // [dps1] its own damage from the formula
+#include "Journal.h"      // [runpast88] Journal::DeathFacts - the death's numbers as values
 #include "Item.h"
 #include "CreatureGroups.h"
 #include "ObjectAccessor.h"
@@ -221,6 +223,10 @@ namespace
         // [runpast87] the keep-walking chase it took last: priced damage and seconds, its health and the fight's taken
         // damage then - the death line sets the measured beside the priced (a log for the chase model, no decision)
         float runPastPriced = 0.0f;
+        // [runpast88] the HIGH end of the same chase ([death386]: the mean plus two standard deviations of the
+        // chasers' swings). THIS is the number SurvivesRunPast was asked, and it was kept nowhere: the death line
+        // printed the mean, so the journal held a price no decision had been taken on
+        float runPastPricedHigh = 0.0f;
         float runPastSec = 0.0f;
         float runPastHp = 0.0f;
         uint64 runPastTakenAt = 0;
@@ -384,6 +390,7 @@ namespace
                      state.taken - std::min(state.taken, state.runPastTakenAt), died ? "died" : "lived",
                      ofItsChase ? "" : "; [surv20] no sample of the chase: none of its own chasers hit the bot");
             state.runPastPriced = 0.0f;
+            state.runPastPricedHigh = 0.0f;  // [runpast88]
             state.runPastChasers.clear();
         }
         float const seconds =
@@ -4379,8 +4386,8 @@ namespace SoloSafety
                                                                  getMSTime()};
     }
 
-    std::string DeathContext(Player* bot, Creature* killer)  // [surv20] the killer, for the chase line's context
-
+    // [surv20] the killer, for the chase line's context. [runpast88] `facts`: the same numbers as values
+    std::string DeathContext(Player* bot, Creature* killer, Journal::DeathFacts* facts)
     {
         std::string out = Acore::StringFormat("hp {:.0f}/{:.0f}", float(bot->GetHealth()), float(bot->GetMaxHealth()));
         std::string attackers;
@@ -4403,6 +4410,27 @@ namespace SoloSafety
             for (auto const& [guid, track] : found->second.attackers)
                 came += (came.empty() ? "" : ", ") + track.name + " L" + std::to_string(track.level);
             out += Acore::StringFormat("; hit by {} this fight: {}", found->second.attackers.size(), came);
+        }
+        // [runpast88] the fight's own numbers as values, from the very same state the sentence above was built from.
+        // `attackers` on the death row is the core's list at the hook and the core has already cleared it, so the
+        // quantity that answers "more hitters than the judge counted" is THIS one - the creatures whose damage
+        // events SoloSafety saw this fight. In the open world it is also the only measure of what the killer dealt:
+        // DamageTaken::From only accumulates inside a dungeon (DeathRecorder::IsTracked), which is why all eight
+        // b502 deaths - every one of them out in the world - carried damage_from_killer 0.
+        if (facts && found != states.end())
+        {
+            SoloBotState const& state = found->second;
+            if (!state.attackers.empty())
+            {
+                facts->hitBy = uint32(state.attackers.size());
+                facts->takenThisFight = uint32(state.taken);
+                if (state.lastMs && state.firstMs)
+                    facts->fightSec = float(getMSTimeDiff(state.firstMs, state.lastMs)) / float(IN_MILLISECONDS);
+                if (killer)
+                    if (auto const track = state.attackers.find(killer->GetGUID().GetRawValue());
+                        track != state.attackers.end())
+                        facts->damageFromKiller = uint32(track->second.damage);
+            }
         }
         // [death451] in a dungeon the fight is the five leader's pull ([dun188] / "careful pull" lines), never the
         // bot's last solo engage (b467 Shalaeth L21 in Wailing Caverns: "pulled Pridewing Consort judged 1 mobs",
@@ -4447,6 +4475,20 @@ namespace SoloSafety
                                        state.taken - state.runPastTakenAt,
                                        ofItsChase ? ""
                                                   : " - [surv20] of other mobs, none of its chasers in this fight");
+            // [runpast88] ... and as values. `runPastPricedHigh` is the one that matters and was nowhere: the gate
+            // judges on RunPast::High() ([death386], two standard deviations of the chasers' swings) while the line
+            // prints the mean, so the journal held a number no decision was made on. b502 Lanbuzz: the sentence
+            // says 577, the gate let the walk through on 677, and 911 arrived. One quantity, one judge - the
+            // judged number goes in its own column beside the printed one.
+            if (facts)
+            {
+                facts->runPastPriced = state.runPastPriced;
+                facts->runPastPricedHigh = state.runPastPricedHigh;
+                facts->runPastSec = state.runPastSec;
+                facts->runPastHp = state.runPastHp;
+                facts->runPastTaken = uint32(state.taken - std::min(state.taken, state.runPastTakenAt));
+                facts->runPastOfItsChase = ofItsChase;
+            }
         }
         // [deaths] how its last route search saw the mobs that hit it: refused (a walk round them was searched),
         // priced (the walk may pass their reach), unseen (out of the search's range), in a fight of its own
@@ -4455,9 +4497,21 @@ namespace SoloSafety
         {
             SoloBotState const& state = found->second;
             std::string seen;
+            // [runpast88] the four words of that sentence are four counters, because the question the user asks of
+            // them - "the deaths where a mob the search never saw came" - is a WHERE and not a LIKE. b502 Emdyl:
+            // three priced, one unseen (Slark, a patrol out of the search's range), and the search itself 233 s old
+            uint32 priced = 0, refusedSeen = 0, unseen = 0, otherFight = 0;
             for (auto const& [guid, track] : state.attackers)
             {
                 auto const mob = state.routeMobs.find(guid);
+                if (mob != state.routeMobs.end() && mob->second)
+                    ++refusedSeen;
+                else if (mob != state.routeMobs.end())
+                    ++priced;
+                else if (state.routeOthersFight.count(guid))
+                    ++otherFight;
+                else
+                    ++unseen;
                 seen += (seen.empty() ? "" : ", ") + track.name + " " +
                         (mob != state.routeMobs.end() ? (mob->second ? "refused" : "priced")
                          : state.routeOthersFight.count(guid) ? "in a fight of its own"  // [surv21]
@@ -4467,13 +4521,26 @@ namespace SoloSafety
                                        float(getMSTimeDiff(state.routeMs, getMSTime())) / IN_MILLISECONDS,
                                        state.routeComplete ? "complete" : "partial",
                                        state.routeThroughRefused ? ", through a refused reach" : "", seen);
+            if (facts)
+            {
+                facts->routeAgeMs = getMSTimeDiff(state.routeMs, getMSTime());
+                facts->routeComplete = state.routeComplete;
+                facts->routeThroughRefused = state.routeThroughRefused;
+                facts->routePriced = priced;
+                facts->routeRefused = refusedSeen;
+                facts->routeUnseen = unseen;
+                facts->routeOtherFight = otherFight;
+            }
         }
         return out;
     }
 
     namespace
     {
-        // the share of its speed a daze (spell 1604, Unit::AttackerStateUpdate from behind) takes off, by its data
+        // the share of its speed a daze (spell 1604, Unit::AttackerStateUpdate from behind) takes off, by its data.
+        // [runpast88] the sign is the SPELL'S: MOD_DECREASE_SPEED carries -50, so this returns -0.5 and the dazed
+        // speed is `vb * (1 + share)`. The std::min keeps the deepest slow and leaves 0 when daze is off, which
+        // reads as "no daze" in that same multiplication - the convention Chase::Of documents and relies on.
         float DazedShare()
         {
             float dazed = 0.0f;
@@ -4509,13 +4576,12 @@ namespace SoloSafety
                 if (SurvivalKit::RunPastSpeed(bot, std::max(leashSec, leashRadius / std::max(vb, 0.1f)) + 1.0f, pct))
                     vb *= 1.0f + pct;
             }
-            float const dazed = DazedShare();
-            bool const canDaze = melee > 0.0f && vm > vb && vb * (1.0f + dazed) <= vm;
-            float const follow = std::max(std::min(vm, canDaze ? vb * (1.0f + dazed) : vb), 0.1f);
-            until = std::max(leashSec, leashRadius / follow) + 1.0f;  // + ThreatManager's 1 s, as the flee
-            exposure = until;
-            if (vm < vb && !canDaze)
-                exposure = std::min(until, reach / (vb - vm));
+            // [runpast88] the arithmetic itself is a seam now (Chase::Of in ChaseModel.h): the same six numbers in
+            // and the same two out, with no world in it, so a chase recorded in a real death can be put back on the
+            // test stand. Nothing about the result changed here.
+            Chase::Window const window = Chase::Of(vb, vm, leashSec, leashRadius, DazedShare(), melee, reach);
+            until = window.until;
+            exposure = window.exposure;
         }
     }
 
@@ -5290,6 +5356,7 @@ namespace SoloSafety
             state.legPoints.clear();
             state.legNamed.clear();
             state.runPastPriced = 0.0f;  // [runpast87]
+            state.runPastPricedHigh = 0.0f;  // [runpast88]
             state.runPastChasers.clear();  // [surv20]
             return false;
         }
@@ -5405,6 +5472,7 @@ namespace SoloSafety
         if (state.runPastPriced <= 0.0f)  // [runpast87] the chase's price at its start
         {
             state.runPastPriced = left.damage;
+            state.runPastPricedHigh = left.High();  // [runpast88] the number the gate above was actually asked
             state.runPastSec = left.seconds;
             state.runPastHp = hp;
             state.runPastTakenAt = state.taken;
