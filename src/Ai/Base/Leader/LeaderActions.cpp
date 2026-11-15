@@ -22,6 +22,7 @@
 #include "Log.h"
 #include "MotionMaster.h"
 #include "MoveSpline.h"  // [lead762]
+#include "MoveStep.h"  // [move51]
 #include "ObjectAccessor.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -74,11 +75,9 @@ namespace
 
     // [lead372] a MoveTo "refusal" that refuses no X: the same walk is on, or the game holds the bot (a root, a
     // stun, a cast); the walk goes once that ends
-    bool TransientRefusal(std::string const& guard)
-    {
-        return guard.empty() || guard.rfind("IsDuplicateMove", 0) == 0 || guard.rfind("IsWaitingForLastMove", 0) == 0 ||
-               guard.rfind("IsMovingAllowed", 0) == 0 || guard.rfind("the walk ends where", 0) == 0;
-    }
+    // [move51] one judge of it: the list lives in the seam (MoveStep.h), where the test holds the movement's own
+    // refusals to it - a second copy here would decide the same thing twice and drift
+    bool TransientRefusal(std::string const& guard) { return Move::TransientRefusal(guard); }
 }
 
 bool LeaderReadyCheckAction::Execute(Event /*event*/)

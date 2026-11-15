@@ -10,6 +10,7 @@
 #include "HazardZone.h"  // [lead16]
 #include "Action.h"
 #include "LastMovementValue.h"
+#include "MoveStep.h"  // [move51]
 #include "ObjectGuid.h"
 #include "PlayerbotAIConfig.h"
 #include <G3D/Vector3.h>
@@ -215,7 +216,11 @@ private:
     const Movement::PointsArray SearchForBestPath(float x, float y, float z, float& modified_z, int maxSearchCount = 5,
                                                   bool normal_only = false, float step = 8.0f);
     bool wasMovementRestricted = false;
-    void DoMovePoint(Unit* unit, float x, float y, float z, bool generatePath, bool backwards);
+    // [move51] the move order ANSWERS whether the step started: three of its exits put nothing into the motion
+    // master (no mover, no complete path, a dungeon path WalkBotPoints refused), and while this was `void` the
+    // caller reported every one of them as a walk under way. Move::StepStart (MoveStep.h) is the single judge of
+    // "the bot walks by this order"; the refusal is left in LastMoveRefusal() for the leader to hear.
+    Move::StepStart DoMovePoint(Unit* unit, float x, float y, float z, bool generatePath, bool backwards);
     // A straight swim through open water, as a player dives to a mob on the bottom or swims up to one: the navmesh
     // has a layer on the surface and one on the bottom, and a path between them runs along either.
     bool SwimStraight(uint32 mapId, float x, float y, float z, MovementPriority priority, bool lessDelay);

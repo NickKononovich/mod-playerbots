@@ -52,14 +52,17 @@ add_executable(pb_unit_tests
     unit/DeathReplayTest.cpp
     unit/IssueKeyTest.cpp
     unit/StandingEpisodeTest.cpp
+    unit/MoveStepTest.cpp
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight/ChainPullJudge.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IssueKey.cpp"
-    "${PB_MODULE_ROOT}/src/Ai/Journal/StandingEpisode.cpp")
+    "${PB_MODULE_ROOT}/src/Ai/Journal/StandingEpisode.cpp"
+    "${PB_MODULE_ROOT}/src/Ai/Base/Actions/MoveStep.cpp")
 
 target_include_directories(pb_unit_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/unit"
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight"
-    "${PB_MODULE_ROOT}/src/Ai/Journal")
+    "${PB_MODULE_ROOT}/src/Ai/Journal"
+    "${PB_MODULE_ROOT}/src/Ai/Base/Actions")
 
 # the fixtures are files in the source tree, committed next to the tests; PB_FIXTURE_DIR overrides it
 target_compile_definitions(pb_unit_tests PRIVATE

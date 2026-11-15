@@ -95,6 +95,21 @@ namespace
     // [hleft-door-chase] one "[chase refused]" line per target this often
     constexpr uint32 CHASE_REFUSED_LOG_MS = 10 * IN_MILLISECONDS;
 
+    // [move51] one line per bot, destination and exit for a move order that started no step: the same walk asked
+    // again every tick is not a new event (the stream counts events, not ticks), while a NEW spot the bot cannot
+    // walk to is. `which` tells the exits apart, so [nav24] and [sfk243] never hide one another.
+    bool FreshMoveStepLine(Player* bot, float x, float y, uint32 which)
+    {
+        static std::mutex lock;
+        static std::unordered_map<uint64, uint64> logged;
+        uint64 const key = (uint64(uint32(int32(x))) << 32) ^ uint64(uint32(int32(y))) ^ (uint64(which) << 60);
+        std::lock_guard<std::mutex> guard(lock);
+        uint64& last = logged[bot->GetGUID().GetRawValue()];
+        bool const fresh = last != key;
+        last = key;
+        return fresh;
+    }
+
     // A bot in water (or right above its surface) heading for a point under water in sight, one of the two off the
     // bottom: it swims straight there. Blackfathom Deeps wave 38: after "surface for air" the tank floated 9.5 yd
     // above its Sea Witch for five minutes ("reach melee" moves to the surface above it, the navmesh path keeps to
@@ -1830,7 +1845,22 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         std::string why;
         WaterDrop const drop = JudgeWaterDrop(bot, ledge, x, y, z, jump, why);
         if (drop == WaterDrop::Under)
-            return true;
+        {
+            // [move51] the group's jump off the brink is in the air (the effect motion generator runs, or the bot
+            // carries MOVEMENTFLAG_FALLING): this call ordered no step, but the bot IS moving, by the jump's own
+            // order - Move::StepMoves(AlreadyUnderWay). Reported as success on purpose: a jump in flight read as a
+            // refusal would let the leader pick another spot in the middle of a group water drop, and what the
+            // leader decides is not changed here. The line is new - this exit left none, so a motion slot the game
+            // never gives back looked exactly like a walk in progress
+            if (FreshMoveStepLine(bot, x, y, 2))
+                LOG_INFO("playerbots",
+                         "[move51] {}: {} to ({:.1f},{:.1f},{:.1f}) ordered no step: its own jump is in the air "
+                         "(motion {}, falling {})",
+                         bot->GetName(), getName(), x, y, z,
+                         uint32(bot->GetMotionMaster()->GetCurrentMovementGeneratorType()),
+                         bot->HasUnitMovementFlag(MOVEMENTFLAG_FALLING));
+            return Move::StepMoves(Move::StepStart::AlreadyUnderWay);
+        }
         if (drop == WaterDrop::Jump || drop == WaterDrop::Hold || !why.empty())
         {
             thread_local std::unordered_map<uint64, uint32> waterDropLogMs;
@@ -1904,7 +1934,10 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         {
             if (dry)
                 return true;
-            DoMovePoint(vehicleBase, x, y, z, generatePath, backwards);
+            // [move51] the order answers: a step that never started is no walk to report (DoMovePoint named the
+            // refusal in s_moveRefusal), so no LastMovement is set and the caller - the leader's executor - hears it
+            if (!Move::StepMoves(DoMovePoint(vehicleBase, x, y, z, generatePath, backwards)))
+                return false;
             float speed = backwards ? vehicleBase->GetSpeed(MOVE_RUN_BACK) : vehicleBase->GetSpeed(MOVE_RUN);
             float delay = IN_MILLISECONDS * (distance / speed);
             if (lessDelay)
@@ -1930,7 +1963,9 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
 
             // bot->CastStop();
 
-            DoMovePoint(bot, x, y, z, generatePath, backwards);
+            // [move51] the order answers whether the step started
+            if (!Move::StepMoves(DoMovePoint(bot, x, y, z, generatePath, backwards)))
+                return false;
             float delay = IN_MILLISECONDS * MoveDelay(distance, backwards);
             if (lessDelay)
             {
@@ -1989,8 +2024,12 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
             // bot->CastStop();
 
             // [lead109] the route SearchForBestPath took is the walk (no second search)
+            // [move51] ... and when that route is not walked, the move order answers whether its step started
             if (backwards || !UsesLeaderRoute(bot) || !WalkBotPoints(bot, path))
-                DoMovePoint(bot, x, y, modifiedZ, generatePath, backwards);
+            {
+                if (!Move::StepMoves(DoMovePoint(bot, x, y, modifiedZ, generatePath, backwards)))
+                    return false;
+            }
             float delay = IN_MILLISECONDS * MoveDelay(distance, backwards);
             if (lessDelay)
             {
@@ -2020,7 +2059,8 @@ bool MovementAction::MoveTo(uint32 mapId, float x, float y, float z, bool /*idle
         {
             if (bot->IsSitState())
                 bot->SetStandState(UNIT_STAND_STATE_STAND);
-            DoMovePoint(bot, origX, origY, origZ, false, false);
+            if (!Move::StepMoves(DoMovePoint(bot, origX, origY, origZ, false, false)))  // [move51]
+                return false;
             float const delay = std::min(float(sPlayerbotAIConfig.MaxWaitForMove),
                                          IN_MILLISECONDS * MoveDelay(bot->GetExactDist(origX, origY, origZ), false));
             AI_VALUE(LastMovement&, "last movement")
@@ -5265,8 +5305,8 @@ bool MovementAction::MoveStraight(uint32 mapId, float x, float y, float z, bool 
         mm->Clear();
         mm->MoveSplinePath(&line);
     }
-    else
-        DoMovePoint(bot, x, y, z, false, false);
+    else if (!Move::StepMoves(DoMovePoint(bot, x, y, z, false, false)))  // [move51]
+        return false;
     float const delay = std::min(static_cast<float>(sPlayerbotAIConfig.MaxWaitForMove),
                                  static_cast<float>(IN_MILLISECONDS) * MoveDelay(distance));
     AI_VALUE(LastMovement&, "last movement").Set(mapId, x, y, z, bot->GetOrientation(), delay, priority);
@@ -5294,21 +5334,34 @@ bool MovementAction::MoveFlying(uint32 mapId, float x, float y, float z, Movemen
     if (distance <= 0.01f)
         return false;
 
-    DoMovePoint(bot, x, y, z, false, false);
+    if (!Move::StepMoves(DoMovePoint(bot, x, y, z, false, false)))  // [move51]
+        return false;
     float const delay = std::min(static_cast<float>(sPlayerbotAIConfig.MaxWaitForMove),
                                  static_cast<float>(IN_MILLISECONDS) * MoveDelay(distance));
     AI_VALUE(LastMovement&, "last movement").Set(mapId, x, y, z, bot->GetOrientation(), delay, priority);
     return true;
 }
 
-void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool generatePath, bool backwards)
+// [move51] the order ANSWERS whether the step started. Three exits below put nothing into the motion master; while
+// this was `void` the callers set `LastMovement` and reported a walk under way after every one of them, the leader
+// was acked "walks to the spot", and the member stood still until the leader's order changed by itself (73
+// `A:leader move order - OK` rows of a standing member in the live journal, up to 51 s in one episode). The refusal
+// is named in `s_moveRefusal`, where the leader's executor already reads it ([lead235] / [lead372]).
+Move::StepStart MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool generatePath, bool backwards)
 {
+    // the single place that turns an exit into words: the seam owns the wording, nobody writes a second one
+    auto const noStep = [](Move::StepStart step)
+    {
+        s_moveRefusal = Move::StepRefusal(step);
+        return step;
+    };
+
     if (!unit)
-        return;
+        return noStep(Move::StepStart::NoMover);
 
     MotionMaster* mm = unit->GetMotionMaster();
     if (!mm)
-        return;
+        return noStep(Move::StepStart::NoMover);
 
     // [seabed46] a swimmer's straight move (the navmesh has no underwater floor) ends no lower than the sea / lake
     // bed under its end: a chase after a mob on the floor, a dive, took the bot through the bed. b388 Ryarii L11 (a
@@ -5330,7 +5383,7 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
 
     // [lead109] a player bot walks the leader's route (BotPath.h); no route found: the core's own path as before
     if (unit == bot && generatePath && !backwards && WalkBotRoute(bot, x, y, z))
-        return;
+        return Move::StepStart::Started;
     // [nav24] the navmesh owner 2026-11-09: ... but only a complete core path. Its straight shortcut (no polygon at
     // the destination) and the straight tail of an INCOMPLETE path (past MAX_PATH_LENGTH 74 / 148 polygons or the
     // 1024-node query: the Dolanaar inn's 110-polygon stair, Ban'ethil's 356) climbed through towers and hills. No
@@ -5411,14 +5464,29 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
         }
         if (!(type & PATHFIND_NOT_USING_PATH) && !complete && !partial)
         {
-            LOG_DEBUG("playerbots", "[nav24] {} no move to ({:.1f},{:.1f},{:.1f}): no route, the core's path is not "
-                      "complete (type {:#x})", bot->GetName(), x, y, z, uint32(type));
-            return;
+            // [move51] the walk gives the spot up here, so the line is the leader's only sight of it. It was
+            // LOG_DEBUG and left two rows an hour in pb_journal_line; one row per bot and destination says how
+            // often the spot was asked for without flooding the stream
+            if (FreshMoveStepLine(bot, x, y, 0))
+                LOG_INFO("playerbots",
+                         "[nav24] {} no move to ({:.1f},{:.1f},{:.1f}) ({:.0f} yd): no route, the core's path is not "
+                         "complete (type {:#x}) - the walk gives the spot up",
+                         bot->GetName(), x, y, z, bot->GetExactDist(x, y, z), uint32(type));
+            return noStep(Move::StepStart::NoCompletePath);
         }
         if ((complete || partial) && WalkBotPoints(bot, points))
-            return;
+            return Move::StepStart::Started;
         if (dungeonWalk && (complete || partial))
-            return;  // [sfk243] its path climbs a wall (WalkBotPoints refused it): no straight move either
+        {
+            // [sfk243] its path climbs a wall (WalkBotPoints refused it): no straight move either - and until
+            // [move51] this exit left no line anywhere at all, so the standing it caused had no row to be found by
+            if (FreshMoveStepLine(bot, x, y, 1))
+                LOG_INFO("playerbots",
+                         "[sfk243] {} no move to ({:.1f},{:.1f},{:.1f}) ({:.0f} yd, {:+.1f} yd up): the dungeon path "
+                         "of {} points was refused (it climbs a wall), no straight move",
+                         bot->GetName(), x, y, z, bot->GetExactDist(x, y, z), z - bot->GetPositionZ(), points.size());
+            return noStep(Move::StepStart::DungeonPathRefused);
+        }
     }
 
     mm->Clear();
@@ -5429,7 +5497,7 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
             /*coords*/ x, y, z,
             /*generatePath*/ generatePath,
             /*forceDestination*/ false);
-        return;
+        return Move::StepStart::Started;
     }
     else
     {
@@ -5442,6 +5510,7 @@ void MovementAction::DoMovePoint(Unit* unit, float x, float y, float z, bool gen
             /*generatePath*/ generatePath,  // true => terrain path (2d mmap); false => straight spline (3d vmap)
             /*forceDestination*/ false);
     }
+    return Move::StepStart::Started;
 }
 
 bool MovementAction::SwimStraight(uint32 mapId, float x, float y, float z, MovementPriority priority, bool lessDelay)
