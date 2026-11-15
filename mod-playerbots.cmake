@@ -32,6 +32,7 @@ if (BUILD_TESTING)
     "${PB_TESTS_DIR}/unit/DeathReplayTest.cpp"
     "${PB_TESTS_DIR}/unit/IssueKeyTest.cpp"
     "${PB_TESTS_DIR}/unit/AggroReasonTest.cpp"
+    "${PB_TESTS_DIR}/unit/SoloCombatEntryTest.cpp"
     "${PB_TESTS_DIR}/unit/StandingEpisodeTest.cpp"
     "${PB_TESTS_DIR}/unit/MoveStepTest.cpp"
     "${PB_TESTS_DIR}/unit/ChaseWindowTest.cpp")

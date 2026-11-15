@@ -59,6 +59,7 @@
 #include "PlayerbotMgr.h"
 #include "PlayerbotTextMgr.h"
 #include "IssueKey.h"  // [jrn41] the deduplication key of an issue row, as a seam a test can assert
+#include "SoloCombatEntry.h"  // [solofight1] the two engine-state decisions, as a seam a test can assert
 #include "Journal.h"   // [jrn40] the idle window, the stuck target and their issue rows
 #include "Playerbots.h"
 #include "PositionValue.h"
@@ -2560,6 +2561,37 @@ void PlayerbotAI::ChangeEngineOnCombat()
     }
 }
 
+// [solofight1] WHICH ATTACKER IS NEAREST - one quantity, one judge (rule 5). Two places name the target of a bot
+// alone under attack (the healer path of [death383] and the entry below it), and two copies of this loop could
+// disagree by a hair and send the two paths at different mobs. Only a living attacker counts; an attacker list that
+// still holds a corpse is the core's business, not a target.
+namespace
+{
+    Unit* NearestAttackerOf(Player* bot)
+    {
+        Unit* nearest = nullptr;
+        for (Unit* attacker : bot->getAttackers())
+            if (attacker && attacker->IsAlive() &&
+                (!nearest || bot->GetExactDist(attacker) < bot->GetExactDist(nearest)))
+                nearest = attacker;
+        return nearest;
+    }
+
+    // [solofight1] the facts of this tick for the seam's entry decision, each read here and once. `alive` is passed
+    // in rather than read again: DoNextAction already holds it, and a second reading of one quantity is a second
+    // judge.
+    Bot::Combat::EntryFacts SoloCombatEntryFacts(PlayerbotAI* botAI, Player* bot, bool alive)
+    {
+        Bot::Combat::EntryFacts facts;
+        facts.alive = alive;
+        facts.inGroup = bot->GetGroup() != nullptr;
+        facts.coreInCombat = bot->IsInCombat();
+        facts.hasAttackers = NearestAttackerOf(bot) != nullptr;
+        facts.engineOnNonCombatSet = botAI->GetState() == BOT_STATE_NON_COMBAT;
+        return facts;
+    }
+}  // namespace
+
 void PlayerbotAI::ChangeEngineOnNonCombat()
 {
     if (HasStrategy("wait for attack", BOT_STATE_COMBAT))
@@ -2589,16 +2621,41 @@ void PlayerbotAI::ReleaseIdleTarget(Unit* target, char const* why)
     SoloSafety::NoteUnreachable(bot, target, why, false);
 }
 
+// [solofight1] THE TARGET IS LET GO BY THE FACT THE USER NAMED - "this mob no longer attacks me and I have nothing
+// that passes on it" - and no longer only when it dies. Two conditions were dropped here because NEITHER OF THEM IS
+// ABOUT WHETHER THIS MOB IS THIS BOT'S BUSINESS: `bot->IsInCombat() || !bot->getAttackers().empty()` (the bot being
+// in a fight with something ELSE is a reason to let this one go, not to hold it) and `target->IsInCombat()` (a mob
+// busy with somebody else is precisely not the bot's). Measured on b502: 178 `stuck_target` rows, 116 of them
+// healers - Selalleas 52 rows over 36 mobs, Ellosera 32, Rollothan 20 - targets 5.1-102.1 yd off, the trail
+// `moonfire - IMPOSSIBLE | wrath ... | reach spell - USELESS`.
+//
+// WHAT REPLACES THEM IS A FACT ABOUT THE TARGET: it is not on the bot (`GetVictim() != bot` and it is not among the
+// bot's attackers). And no clock is introduced: the decision is Bot::Combat::ReleasesTheTarget, whose facts carry no
+// duration, age or timestamp at all, so nothing here can be satisfied by waiting (rule 2).
+//
+// THE ENTRY ABOVE AND THIS RELEASE CANNOT CHASE EACH OTHER: the entry names an ATTACKER, this lets go only of a
+// target that does NOT attack the bot, so no unit satisfies both. When something else is on the bot, this hands the
+// stale target back and the entry re-takes the engine on the attacker - the intended sequence, not a loop.
 void PlayerbotAI::ReleaseIdleTargetNobodyReaches(bool acted)
 {
-    if (acted || currentEngine != engines[BOT_STATE_COMBAT] || !bot->IsAlive() || bot->IsInCombat() ||
-        !bot->getAttackers().empty() || bot->isMoving() || bot->IsNonMeleeSpellCast(false) ||
-        bot->GetMap()->Instanceable() || Leader::LedBot(bot))
-        return;
     Unit* const target = aiObjectContext->GetValue<Unit*>("current target")->Get();
-    if (!target || !target->IsAlive() || target->IsInCombat() || bot->IsWithinMeleeRange(target))
-        return;
-    if (aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().target == target->GetGUID())
+    Bot::Combat::ReleaseFacts facts;
+    facts.engineIsCombat = currentEngine == engines[BOT_STATE_COMBAT];
+    facts.alive = bot->IsAlive();
+    facts.actedThisTick = acted;
+    facts.inInstance = bot->GetMap()->Instanceable();
+    facts.led = Leader::LedBot(bot);
+    facts.movingToIt = bot->isMoving();
+    facts.castingOnIt =
+        bot->IsNonMeleeSpellCast(false) ||
+        (target && aiObjectContext->GetValue<LastSpellCast&>("last spell cast")->Get().target == target->GetGUID());
+    facts.targetPresent = target != nullptr;
+    facts.targetAlive = target && target->IsAlive();
+    // on the bot: its victim is this bot, or it is one of the bot's attackers (a mob swinging at it is in both, a
+    // mob that has just turned to it is in one - so both are read, at this one instant)
+    facts.targetAttacksMe = target && (target->GetVictim() == bot || bot->getAttackers().count(target));
+    facts.targetWithinMeleeRange = target && bot->IsWithinMeleeRange(target);
+    if (!Bot::Combat::ReleasesTheTarget(facts))
         return;
     // [stuck40] the memo is a fact of two stands, kept per target (SoloSafety), not one guid slot on the AI: with
     // two or three such mobs round it the slot's own candidates evicted each other and the two engines took turns
@@ -2629,12 +2686,20 @@ void PlayerbotAI::ReleaseIdleTargetNobodyReaches(bool acted)
         stuck.targetLow = target->GetGUID().GetCounter();
         stuck.targetLevel = target->GetLevel();
         stuck.targetYd = bot->GetExactDist(target);
-        stuck.inCombat = false;  // asked and answered: the guard above requires it
+        // [solofight1] READ, NOT ASSUMED. It used to be a hard `false` with "the guard above requires it" beside
+        // it, and the guard no longer does: the release now turns on whether THIS MOB is on the bot, not on whether
+        // the bot is in a fight at all. A row that states a fact the code stopped checking is worse than a missing
+        // one, because a query by it answers - all 178 live rows read 0 while the guard held, and from here on the
+        // column can come out either way.
+        stuck.inCombat = bot->IsInCombat();
         if (Creature* creature = target->ToCreature())
             stuck.targetEntry = creature->GetEntry();
         // what the engine had to run, in its own words - empty is the point of this problem, not a gap
         stuck.actionRunning = currentEngine ? currentEngine->GetLastAction() : std::string();
-        stuck.why = "the combat engine is out of combat with an idle mob as its target and no action of it runs";
+        // [solofight1] the sentence says what the release now turns on, so the row and the rule agree: it used
+        // to say "out of combat with an idle mob", and neither of those two is a condition any more
+        stuck.why = "the combat engine holds a mob that does not attack it, out of its melee reach, and no "
+                    "action of it runs on it";
         stuck.runId = Leader::Runs::OfBot(bot);  // [jrn40]
         uint64 const stuckRowId = Journal::RecordStuck(stuck);
 
@@ -2671,9 +2736,9 @@ void PlayerbotAI::ReleaseIdleTargetNobodyReaches(bool acted)
         issue.runId = stuck.runId;
         Journal::RecordIssue(issue);
 
-        LOG_INFO("playerbots", "[stuck258] {} L{}: the combat engine out of combat with idle {} L{} ({:.0f} yd) as its "
-                 "target and no action that runs: target dropped, back to the non-combat engine - picked again only "
-                 "once the bot or the mob leaves the stand that made it undroppable",
+        LOG_INFO("playerbots", "[stuck258] {} L{}: the combat engine holds {} L{} ({:.0f} yd), which does not "
+                 "attack it, and no action of it runs on it: target dropped, back to the non-combat engine - "
+                 "picked again only once the bot or the mob leaves the stand that made it undroppable",
                  bot->GetName(), bot->GetLevel(), target->GetName(), target->GetLevel(), bot->GetExactDist(target));
     }
     bot->AttackStop();
@@ -2736,14 +2801,11 @@ void PlayerbotAI::DoNextAction(bool min)
     {
         // [death383] alone, it has to kill what attacks it too: the nearest attacker is its target (its own "dps
         // assist" waits while its health is short, so nothing else names one)
+        // [solofight1] the pick itself moved into NearestAttackerOf: it is now used by two places, and one quantity
+        // has one judge (rule 5) - two copies of "which attacker is nearest" could disagree by a hair and send the
+        // two paths at different mobs.
         if (!bot->GetGroup() && !aiObjectContext->GetValue<Unit*>("current target")->Get())
-        {
-            Unit* nearest = nullptr;
-            for (Unit* attacker : bot->getAttackers())
-                if (attacker && attacker->IsAlive() &&
-                    (!nearest || bot->GetExactDist(attacker) < bot->GetExactDist(nearest)))
-                    nearest = attacker;
-            if (nearest)
+            if (Unit* nearest = NearestAttackerOf(bot))
             {
                 aiObjectContext->GetValue<Unit*>("current target")->Set(nearest);
                 bot->SetSelection(nearest->GetGUID());
@@ -2758,7 +2820,6 @@ void PlayerbotAI::DoNextAction(bool min)
                     LOG_INFO("playerbots", "[death383] {} L{}: a healer alone under attack takes the combat engine "
                              "on {} L{}", bot->GetName(), bot->GetLevel(), nearest->GetName(), nearest->GetLevel());
             }
-        }
         ChangeEngine(BOT_STATE_COMBAT);
     }
     // [lead112] a tank joins the combat engine as soon as a mob it can take back is on a member (TankIncomingMob):
@@ -2769,12 +2830,50 @@ void PlayerbotAI::DoNextAction(bool min)
     // its target first (as the tank's pull / assist set it), then the engine
     else if (currentEngine == engines[BOT_STATE_NON_COMBAT] && isBotAlive && PlayerbotAI::IsTank(bot) &&
              bot->GetGroup())
+    {
         if (Unit* incoming = TankIncomingMob(this, bot))
         {
             bot->SetSelection(incoming->GetGUID());
             aiObjectContext->GetValue<Unit*>("current target")->Set(incoming);
             ChangeEngine(BOT_STATE_COMBAT);
         }
+    }
+    // [solofight1] ... AND THE SAME FACT FOR EVERY OTHER ROLE WHEN THERE IS NO GROUP AT ALL. The two branches above
+    // were the only fact-driven ways into the combat set of strategies, and between them they covered a healer and
+    // a tank IN A GROUP. A bot alone that is not a healer had none: its engine state was moved only by an action,
+    // and the one target picker of the non-combat set that needs neither a group nor a tank - "attack anything" -
+    // refuses itself with `if (bot->IsInCombat()) return false`. Measured on b502: Thelengyl L27, a tank alone in
+    // Ashenvale, 113.9 s of fight, 9.6 s of activity, 985 damage taken out of a pool of 1 034, its foe on 100 %
+    // health, `engine non-combat` while the core held it in combat; 91 `[solo] NO_ATTACK` fights in the hour, 28 of
+    // them in exactly this shape, and 4 STUCK_COMBAT alerts.
+    //
+    // THE TARGET IS THE NEAREST ATTACKER, the same quantity and the same judge as [death383] above. Not a grind
+    // target: nothing the leader did not plan can be pulled by this, and with a group present the branch does not
+    // run at all, so rule 4 is untouched. The decision itself is Bot::Combat::TakesTheCombatEngine, where a test
+    // over Thelengyl's own facts holds it; there is no clock in it (rule 2).
+    else if (Bot::Combat::TakesTheCombatEngine(SoloCombatEntryFacts(this, bot, isBotAlive)))
+    {
+        if (Unit* nearest = NearestAttackerOf(bot))
+        {
+            aiObjectContext->GetValue<Unit*>("current target")->Set(nearest);
+            bot->SetSelection(nearest->GetGUID());
+            ChangeEngine(BOT_STATE_COMBAT);
+            // one line per bot, as [death383] does: a diagnostic, and no decision reads it
+            static std::mutex soloEntryLogLock;
+            static std::unordered_set<uint32> soloEntryLogged;
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> guard(soloEntryLogLock);
+                fresh = soloEntryLogged.insert(bot->GetGUID().GetCounter()).second;
+            }
+            if (fresh)
+                LOG_INFO("playerbots", "[solofight1] {} L{} ({}): held in combat by the core on its non-combat "
+                         "engine - takes the combat engine on its nearest attacker {} L{} ({:.1f} yd)",
+                         bot->GetName(), bot->GetLevel(),
+                         IsTank(bot) ? "tank" : IsHeal(bot) ? "healer" : "dps", nearest->GetName(),
+                         nearest->GetLevel(), bot->GetExactDist(nearest));
+        }
+    }
 
     // Clear targets if in combat but sticking with old data
     if (currentEngine == engines[BOT_STATE_NON_COMBAT] && bot->IsInCombat())
