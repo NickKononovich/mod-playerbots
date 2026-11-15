@@ -11670,7 +11670,14 @@ void GuildCoordinator::UpdateHealth()
              avg, p95, maxDiff, target, aiAvgMs, aiMax / 1000.0f, online, uint32(plan_.size()), dead, stuck,
              perHour(questsH), perHour(double(xpH)), perHour(killsH), perHour(killsH) * perBot, perHour(levelsH),
              perHour(levelsH) * perBot, perHour(deathsH), perHour(double(moneyH)) / GOLD, window / MINUTE);
-    healthRow_ = buf;
+    // [feed20] the cut point for every "this run" number. The window had no mark of when the server came up, so
+    // "runs closed in THIS run" could not be computed at all - and every later per-run count needs the same single
+    // mark, so it is one field, in front of the row, not one per counter. Uptime (steady clock, no wall-clock jump)
+    // plus the unix second it started, because a count is cut by the second and read by the minute
+    healthRow_ = Acore::StringFormat("server up {} min (started {}); ",
+                                     uint32(GameTime::GetUptime().count()) / MINUTE,
+                                     uint32(GameTime::GetStartTime().count()));
+    healthRow_ += buf;
     // [tasks] the task lists: waiting town tasks, their wait until started, town tasks per visit
     uint32 waiting = 0, waitingTown = 0;
     for (auto const& [low, st] : bots_)

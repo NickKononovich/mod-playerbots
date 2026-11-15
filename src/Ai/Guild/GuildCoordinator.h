@@ -212,6 +212,11 @@ struct GuildRunRecord
     uint32 bossesTotal{0};
     uint32 deaths{0};
     uint32 wipes{0};  // [cert10] a clean run has none: the per-run success rate is read off these four figures
+    // [feed20] the fact that an unclean run has been looked into. The user's rule - every unclean run is diagnosed
+    // before the next wave, a repeat without the analysis is how a problem stays behind - had no instrument at all:
+    // the diagnosis lived in a report file nobody could join to the run. 0 = no diagnosis yet
+    uint32 diagnosedAt{0};
+    std::string diagnosis;
 };
 
 // [guild60] the dungeon leader's end of a five's run, as the global leader gets it
@@ -300,6 +305,12 @@ public:
                                 bool withIssuer);
     std::string FivesText() const;  // "playerbots guild fives"
     std::string DungeonsText(uint8 level) const;  // "playerbots guild dungeons [level]": the band and why / why not
+    // [feed20] the user's rule "every unclean run is diagnosed before the next wave; a repeat without the analysis is
+    // how a problem stays behind" had no instrument: the diagnosis lived in a report file nobody could join to the
+    // run. DiagnoseRun writes it onto the run row ("playerbots guild diagnose <run id> <words>"), UndiagnosedText
+    // answers the rule in one query ("playerbots guild undiagnosed [content]"). No decision of a bot reads either
+    std::string DiagnoseRun(uint32 runId, std::string text);
+    std::string UndiagnosedText(std::string const& contentKey) const;
     void SetAutoFives(bool on) { autoFives_ = on; }
     // [next1] the five the global leader would take into `contentKey` now (members in its band, tank / healer / dps as
     // PickFive picks them, the tank first) and its five-gate verdict - the harness's "guildlike" comp copies it
@@ -876,6 +887,11 @@ private:
         std::vector<std::pair<uint32, std::string>> verdicts;
         uint32 lastBatch{0};   // the batch `verdicts` belongs to
         std::string dispatchLogged;  // world thread: the log cadence of "why no batch forms"
+        // [feed20] the wave journal (guild_project_cert_waves): when this batch went in, and the run ids it produced.
+        // guild_project_cert keeps one row per dungeon and overwrites the last wave's verdicts, so the history of
+        // what we actually did had nowhere to live - the verdicts of wc-n's waves 2 and 3 are gone for good
+        uint32 batchAt{0};
+        std::vector<uint32> runIds;
     };
 
     void LoadPlan();
@@ -916,8 +932,12 @@ private:
     std::string CertVerdict(GuildFiveReport const& report) const;
     // [cert11] a five of a batch in flight has reported (clean or not): the batch's own verdict when all five are in.
     // lock_ held
-    void CertFiveEnded(GuildFive const& five, std::string const& why);
+    // [feed20] runId: the guild_project_runs row this five's run became (0 = it never reported, a disband)
+    void CertFiveEnded(GuildFive const& five, std::string const& why, uint32 runId);
     void CertSave(std::string const& contentKey);  // [cert10] the durable state (guild_project_cert)
+    // [feed20] one row per wave in guild_project_cert_waves: written when the wave is dispatched and again when its
+    // last five has reported. Keyed by (content, kind, wave), so no id has to be read back
+    void CertWaveSave(std::string const& contentKey, CertState const& cs, bool ended) const;
     // [cert13] the fact a five of a batch in flight is holding on, read off state that already exists (its stage,
     // the run's own phase, a refused walk, its supply shortfall, the gold at its leader's mailbox). Reports, decides
     // nothing. "" is never returned: a five nothing names says exactly that, and that sentence is the defect

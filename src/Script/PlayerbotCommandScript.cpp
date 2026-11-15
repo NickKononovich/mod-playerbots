@@ -98,6 +98,8 @@ public:
             {"dungeons", HandleGuildDungeonsCommand, SEC_ADMINISTRATOR, Console::Yes},
             {"autofives", HandleGuildAutoFivesCommand, SEC_ADMINISTRATOR, Console::Yes},
             {"need", HandleGuildNeedCommand, SEC_ADMINISTRATOR, Console::Yes},  // [ord10]
+            {"diagnose", HandleGuildDiagnoseCommand, SEC_ADMINISTRATOR, Console::Yes},      // [feed20]
+            {"undiagnosed", HandleGuildUndiagnosedCommand, SEC_ADMINISTRATOR, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -479,6 +481,35 @@ public:
             sGuildCoordinator.SetDrain(tokens[1] == "on");
         }
         handler->PSendSysMessage("{}", sGuildCoordinator.FivesText());
+        return true;
+    }
+
+    // [feed20] "playerbots guild diagnose <run id> <the diagnosis in words>": the fact that an unclean run has been
+    // looked into, onto the run's own row (guild_project_runs.diagnosed_at / diagnosis). The user's rule - every
+    // unclean run is diagnosed before the next wave, a repeat without the analysis is how a problem stays behind -
+    // was checkable by nothing until the fact lived beside the run. Nothing a bot decides reads it
+    static bool HandleGuildDiagnoseCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const tokens = SplitArgs(args);
+        if (tokens.size() < 2)
+        {
+            handler->PSendSysMessage("Usage: playerbots guild diagnose <run id> <the diagnosis in words>");
+            return false;
+        }
+        std::string text;
+        for (size_t i = 1; i < tokens.size(); ++i)
+            text += (text.empty() ? "" : " ") + tokens[i];
+        handler->PSendSysMessage(
+            "{}", sGuildCoordinator.DiagnoseRun(uint32(std::strtoul(tokens[0].c_str(), nullptr, 10)), text));
+        return true;
+    }
+
+    // [feed20] "playerbots guild undiagnosed [content]": the rule itself, in one answer - the unclean runs that have
+    // no diagnosis yet, newest first
+    static bool HandleGuildUndiagnosedCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const tokens = SplitArgs(args);
+        handler->PSendSysMessage("{}", sGuildCoordinator.UndiagnosedText(tokens.empty() ? std::string() : tokens[0]));
         return true;
     }
 

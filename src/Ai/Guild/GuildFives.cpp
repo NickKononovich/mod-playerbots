@@ -132,14 +132,33 @@ namespace
         text = out;
     }
 
-    // [feed20] ONE definition of a clean run, for the completion log, the metrics window and anything that asks
-    // later: the run is done, every boss of the dungeon died, nobody died and the five never wiped. The guard on
-    // bossesTotal keeps a "done" with no boss count out of the clean share (no such row exists today, and a run
-    // whose boss total is unknown is not a proven clear)
+    // [feed20] THE definition of a clean run, in words, for everything that asks: the run is done, every boss of the
+    // dungeon died, nobody died and the five never wiped. "" = clean. There were three copies of this formula - the
+    // completion log's tally in LoadRuns, the metrics window's share, and CertVerdict, which judges the certification
+    // five off its report; they agreed by luck, not by construction. Now the words are written once and the two
+    // callers differ only in where they read the five figures from: a stored GuildRunRecord, or the live report.
+    // The guard on the boss total is deliberate: a "done" whose boss sheet is missing has proved nothing.
+    std::string CleanWhy(std::string const& result, uint32 bossesKilled, uint32 bossesTotal, uint32 deaths,
+                         uint32 wipes)
+    {
+        std::string why;
+        auto const add = [&why](std::string const& text) { why += (why.empty() ? "" : ", ") + text; };
+        if (result != "done")  // stalled / failed / partial / stopped / timeout: all failures
+            add("result " + result);
+        if (!bossesTotal)
+            add("no boss sheet in the report");
+        else if (bossesKilled < bossesTotal)
+            add(Acore::StringFormat("bosses {}/{}", bossesKilled, bossesTotal));
+        if (deaths)
+            add(Acore::StringFormat("{} death(s)", deaths));
+        if (wipes)
+            add(Acore::StringFormat("{} wipe(s)", wipes));
+        return why;
+    }
+
     bool IsCleanRun(GuildRunRecord const& rec)
     {
-        return rec.result == "done" && rec.bossesTotal && rec.bossesKilled >= rec.bossesTotal && !rec.deaths &&
-               !rec.wipes;
+        return CleanWhy(rec.result, rec.bossesKilled, rec.bossesTotal, rec.deaths, rec.wipes).empty();
     }
 
     // [feed20] the budget a line's text really has: SendLine cuts the whole line, prefix included, at ADDON_LINE_MAX
@@ -2371,11 +2390,37 @@ void GuildCoordinator::LoadRuns()
         "at INT UNSIGNED NOT NULL, leader INT UNSIGNED NOT NULL, members VARCHAR(255) NOT NULL, "
         "result VARCHAR(16) NOT NULL, bosses_killed TINYINT UNSIGNED NOT NULL, bosses_total TINYINT UNSIGNED NOT NULL, "
         "deaths SMALLINT UNSIGNED NOT NULL, wipes SMALLINT UNSIGNED NOT NULL, duration INT UNSIGNED NOT NULL, "
-        "drops TEXT, reason TEXT, PRIMARY KEY (id), KEY content (content)) "
+        "drops TEXT, reason TEXT, diagnosed_at INT UNSIGNED NOT NULL DEFAULT 0, diagnosis TEXT, "
+        "PRIMARY KEY (id), KEY content (content)) "
         "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[guild60] guild fives x dungeons, raids x raids'");
+    // [feed20] the two diagnosis columns on a table that already exists: CREATE TABLE IF NOT EXISTS adds no column to
+    // it, and the 642 rows of the live table were written before them. The migration
+    // (data/sql/playerbots/updates/2026_11_15_00_playerbots_cert_waves.sql) is the record of the change; this guard
+    // means the server does not depend on the order the migration and the build are applied in, and it asks
+    // information_schema rather than running an ALTER that MySQL 8 cannot make conditional
+    if (QueryResult have = PlayerbotsDatabase.Query(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND "
+            "table_name = 'guild_project_runs' AND column_name = 'diagnosed_at'");
+        !have || !have->Fetch()[0].Get<uint64>())
+    {
+        LOG_INFO("playerbots", "[feed20] guild_project_runs has no diagnosis columns yet: adding them");
+        PlayerbotsDatabase.DirectExecute(
+            "ALTER TABLE guild_project_runs ADD COLUMN diagnosed_at INT UNSIGNED NOT NULL DEFAULT 0, "
+            "ADD COLUMN diagnosis TEXT");
+    }
+    // [feed20] one row per certification / speed wave: the history guild_project_cert overwrites (it keeps the last
+    // wave's verdicts only). A journal, never the criterion - the certification is decided over the last 30 runs
+    PlayerbotsDatabase.DirectExecute(
+        "CREATE TABLE IF NOT EXISTS guild_project_cert_waves ("
+        "content VARCHAR(16) NOT NULL, kind VARCHAR(16) NOT NULL DEFAULT 'cert', wave INT UNSIGNED NOT NULL, "
+        "started_at INT UNSIGNED NOT NULL DEFAULT 0, ended_at INT UNSIGNED NOT NULL DEFAULT 0, "
+        "fives TINYINT UNSIGNED NOT NULL DEFAULT 0, clean_fives TINYINT UNSIGNED NOT NULL DEFAULT 0, "
+        "run_ids VARCHAR(255) NOT NULL DEFAULT '', passed TINYINT UNSIGNED NOT NULL DEFAULT 0, why TEXT, "
+        "PRIMARY KEY (content, kind, wave)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+        "COMMENT='[feed20] one row per certification / speed wave: the history guild_project_cert overwrites'");
     if (QueryResult result = PlayerbotsDatabase.Query(
-            "SELECT id, content, kind, at, leader, members, result, bosses_killed, bosses_total, deaths, wipes "
-            "FROM guild_project_runs ORDER BY id"))
+            "SELECT id, content, kind, at, leader, members, result, bosses_killed, bosses_total, deaths, wipes, "
+            "diagnosed_at, diagnosis FROM guild_project_runs ORDER BY id"))
     {
         do
         {
@@ -2396,6 +2441,8 @@ void GuildCoordinator::LoadRuns()
             rec.bossesTotal = f[8].Get<uint8>();
             rec.deaths = f[9].Get<uint16>();
             rec.wipes = f[10].Get<uint16>();  // [cert10]
+            rec.diagnosedAt = f[11].Get<uint32>();  // [feed20]
+            rec.diagnosis = f[12].Get<std::string>();
             if (rec.result == "done")
                 for (uint32 low : rec.members)
                     cleared_[rec.contentKey].insert(low);
@@ -3732,6 +3779,8 @@ void GuildCoordinator::CertifyBatch()
     cs.flight.clear();
     cs.verdicts.clear();
     cs.lastBatch = cs.batches;
+    cs.batchAt = uint32(time(nullptr));  // [feed20] the wave's start, for its journal row
+    cs.runIds.clear();
     std::string formed;
     for (std::vector<FiveCandidate> const& five : batch)
     {
@@ -3779,6 +3828,7 @@ void GuildCoordinator::CertifyBatch()
                                  CERT_FIVES, CERT_MEMBERS));
     cs.dispatchLogged.clear();
     CertSave(d->contentKey);
+    CertWaveSave(d->contentKey, cs, false);  // [feed20] the wave exists in the journal from the moment it goes in
 }
 
 // [cert20] The inputs of the certification batch's own verdict (GuildCoordinator.h). Reports, decides nothing: every
@@ -3925,26 +3975,15 @@ std::string GuildCoordinator::CertVerdict(GuildFiveReport const& report) const
     uint32 deaths = 0;
     for (auto const& [name, count] : report.deaths)
         deaths += count;
-    std::string why;
-    auto const add = [&why](std::string const& text) { why += (why.empty() ? "" : ", ") + text; };
-    if (report.result != "done")  // stalled / failed / partial / stopped / timeout: all failures
-        add("result " + report.result);
-    // "every boss killed" is never vacuously true: a report with no boss sheet at all has proved nothing
-    if (!report.bossesTotal)
-        add("no boss sheet in the report");
-    else if (report.bossesKilled.size() < report.bossesTotal)
-        add(Acore::StringFormat("bosses {}/{}", report.bossesKilled.size(), report.bossesTotal));
-    if (deaths)
-        add(Acore::StringFormat("{} death(s)", deaths));
-    if (report.wipes)
-        add(Acore::StringFormat("{} wipe(s)", report.wipes));
-    return why;
+    // [feed20] the words come from CleanWhy, the one definition the stored run is judged by too: this was the third
+    // copy of the same five tests, and a copy that agrees today is a copy that can disagree tomorrow
+    return CleanWhy(report.result, uint32(report.bossesKilled.size()), report.bossesTotal, deaths, report.wipes);
 }
 
 // [cert11] one five of the batch in flight has ended (a report, or a disband that never reported). When the last of
 // them is in, the batch passes only if ALL of them were clean; a failed batch keeps its per-five reasons (that is
 // what the next fix brief is written from) and is repeated
-void GuildCoordinator::CertFiveEnded(GuildFive const& five, std::string const& why)
+void GuildCoordinator::CertFiveEnded(GuildFive const& five, std::string const& why, uint32 runId)
 {
     auto const found = cert_.find(five.contentKey);
     if (found == cert_.end())
@@ -3955,6 +3994,8 @@ void GuildCoordinator::CertFiveEnded(GuildFive const& five, std::string const& w
         return;  // not a five of the batch in flight
     cs.flight.erase(at);
     cs.verdicts.emplace_back(five.id, why.empty() ? std::string("clean") : why);
+    if (runId)
+        cs.runIds.push_back(runId);  // [feed20] the wave's runs, so its rows can be looked up afterwards
     LOG_INFO("playerbots", "[cert11] {} batch {} five {}: {}{}", five.contentKey, cs.batches, five.id,
              why.empty() ? std::string("clean") : "FAILED - " + why,
              cs.flight.empty() ? std::string()
@@ -3962,6 +4003,7 @@ void GuildCoordinator::CertFiveEnded(GuildFive const& five, std::string const& w
     if (!cs.flight.empty())
     {
         CertSave(five.contentKey);
+        CertWaveSave(five.contentKey, cs, false);  // [feed20] the journal row follows the wave while it still runs
         return;
     }
     uint32 clean = 0;
@@ -4008,6 +4050,39 @@ void GuildCoordinator::CertFiveEnded(GuildFive const& five, std::string const& w
     }
     cs.dispatchLogged.clear();
     CertSave(five.contentKey);
+    // [feed20] the wave is closed in the journal: its verdicts, its runs and whether it counted. guild_project_cert
+    // overwrites all of this on the next wave, which is why wc-n's waves 2 and 3 exist nowhere at all
+    CertWaveSave(five.contentKey, cs, true);
+}
+
+// [feed20] one row per wave, keyed by (content, kind, wave), so nothing has to be read back from the database: a
+// REPLACE writes the row when the wave is dispatched and again when its last five has reported. A JOURNAL of what we
+// did - it is NOT the criterion of a certificate. User 2026-11-15: the criterion is the last 30 runs of the dungeon
+// all clean (guild_project_runs ORDER BY id DESC LIMIT 30 by IsCleanRun), and no count of waves stands in for it
+void GuildCoordinator::CertWaveSave(std::string const& contentKey, CertState const& cs, bool ended) const
+{
+    if (!cs.lastBatch)
+        return;
+    uint32 clean = 0;
+    std::string why, runIds;
+    for (auto const& [id, text] : cs.verdicts)
+    {
+        if (text == "clean")
+            ++clean;
+        else
+            why += (why.empty() ? "" : "; ") + Acore::StringFormat("five {}: {}", id, text);
+    }
+    for (uint32 id : cs.runIds)
+        runIds += (runIds.empty() ? "" : ",") + std::to_string(id);
+    bool const passed = ended && clean == CERT_FIVES && cs.verdicts.size() == CERT_FIVES;
+    std::string key = contentKey;
+    SqlEscape(key);
+    SqlEscape(why);
+    PlayerbotsDatabase.Execute(
+        "REPLACE INTO guild_project_cert_waves (content, kind, wave, started_at, ended_at, fives, clean_fives, "
+        "run_ids, passed, why) VALUES ('{}', 'cert', {}, {}, {}, {}, {}, '{}', {}, '{}')",
+        key, cs.lastBatch, cs.batchAt, ended ? uint32(time(nullptr)) : 0u, uint32(CERT_FIVES),
+        std::min<uint32>(clean, 255), runIds, passed ? 1u : 0u, why);
 }
 
 // [cert10] the certification state is durable: the phase, the batches attempted and the last batch's per-five
@@ -4399,7 +4474,8 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
     }
     // [cert11] a five of a certification batch that is disbanded never hands in a report: it is a failed five of
     // that batch, so the batch is judged on it like any other (and repeated)
-    CertFiveEnded(itr->second, "disbanded before its report" + (reason.empty() ? std::string() : ": " + reason));
+    // [feed20] runId 0: a five disbanded before its report wrote no run row, so the wave's journal names none for it
+    CertFiveEnded(itr->second, "disbanded before its report" + (reason.empty() ? std::string() : ": " + reason), 0);
     Decision("five " + std::to_string(fiveId) + " (" + itr->second.dungeon + ") disbanded" +
              (reason.empty() ? "" : ": " + reason) + " — authority back with the global leader, members quest");
     fives_.erase(itr);
@@ -6144,7 +6220,8 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
     RecordRun(five, report);
     // [cert11] if this five is one of a certification batch in flight, its verdict is read off the very figures
     // RecordRun just wrote (and [guild70] printed): nothing is re-counted here
-    CertFiveEnded(five, CertVerdict(report));
+    // [feed20] ... and the run row RecordRun just appended is the one the wave's journal names
+    CertFiveEnded(five, CertVerdict(report), runs_.empty() ? 0 : runs_.back().id);
 
     // [death470] One judge of a run's deaths: the five-leader's report, which is StatsRegistry's own count
     // (OnUnitDeath + RecordReentry) and the figure [guild70] and RecordRun already print. This line used to keep a
@@ -6822,6 +6899,60 @@ std::string GuildCoordinator::FivesText() const
             out << "\n      batch " << cs.lastBatch << " five " << id << ": " << text;
     }
     return out.str();
+}
+
+// [feed20] the diagnosis of one unclean run, onto the run's own row. A clean run is refused one on purpose: the rule
+// is about the runs that went wrong, and a diagnosis on a clean run would make the "still to diagnose" count lie
+std::string GuildCoordinator::DiagnoseRun(uint32 runId, std::string text)
+{
+    CoordLock guard(lock_, __func__);
+    auto const found = std::find_if(runs_.begin(), runs_.end(),
+                                    [runId](GuildRunRecord const& rec) { return rec.id == runId; });
+    if (found == runs_.end())
+        return Acore::StringFormat("run {} is not in the completion table ({} runs loaded)", runId, runs_.size());
+    if (IsCleanRun(*found))
+        return Acore::StringFormat("run {} ({}) is clean - it needs no diagnosis", runId, found->contentKey);
+    found->diagnosedAt = uint32(time(nullptr));
+    found->diagnosis = text;
+    std::string stored = std::move(text);
+    SqlEscape(stored);
+    PlayerbotsDatabase.Execute("UPDATE guild_project_runs SET diagnosed_at = {}, diagnosis = '{}' WHERE id = {}",
+                               found->diagnosedAt, stored, runId);
+    uint32 left = 0;
+    for (GuildRunRecord const& rec : runs_)
+        left += !IsCleanRun(rec) && !rec.diagnosedAt ? 1 : 0;
+    return Acore::StringFormat("run {} ({}, {}) diagnosed: {}. Still undiagnosed: {}", runId, found->contentKey,
+                               CleanWhy(found->result, found->bossesKilled, found->bossesTotal, found->deaths,
+                                        found->wipes),
+                               found->diagnosis, left);
+}
+
+// [feed20] the rule in one query: which unclean runs have no diagnosis yet. Newest first (id order), because the ones
+// that matter are the ones the next wave would repeat
+std::string GuildCoordinator::UndiagnosedText(std::string const& contentKey) const
+{
+    CoordLock guard(lock_, __func__);
+    std::ostringstream out;
+    uint32 unclean = 0, left = 0, shown = 0;
+    for (auto itr = runs_.rbegin(); itr != runs_.rend(); ++itr)
+    {
+        if (!contentKey.empty() && itr->contentKey != contentKey)
+            continue;
+        if (IsCleanRun(*itr))
+            continue;
+        ++unclean;
+        if (itr->diagnosedAt)
+            continue;
+        ++left;
+        if (++shown > 20)
+            continue;
+        out << "\n  run " << itr->id << " " << itr->contentKey << " started " << itr->at << ": "
+            << CleanWhy(itr->result, itr->bossesKilled, itr->bossesTotal, itr->deaths, itr->wipes);
+    }
+    return Acore::StringFormat("[feed20] {}: {} unclean run(s), {} of them with no diagnosis{}{}",
+                               contentKey.empty() ? "all content" : contentKey, unclean, left,
+                               shown > 20 ? Acore::StringFormat(" (the newest 20 of {} shown)", left) : std::string(),
+                               out.str().empty() ? " - every unclean run has been looked into" : out.str());
 }
 
 std::string GuildCoordinator::DungeonsText(uint8 level) const
