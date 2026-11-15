@@ -23,6 +23,44 @@ namespace Journal::IdleWindow
         return counts.gcd + counts.leaderHold + counts.threat;
     }
 
+    uint32_t TravelTicks(Counts const& counts)
+    {
+        // The parts of the two biggest buckets in which the bot was walking. NOT added to MechanicTicks: a walk to
+        // the next pack is the dungeon flow doing its job and a walk in circles is a defect, and 15 s of counters
+        // cannot tell them apart - whether a walk had a purpose is the route domain's question. Naming the number
+        // is honest; calling it legitimate would be inventing.
+        return counts.noTargetMoving + counts.rangeLosMoving;
+    }
+
+    Tick Classify(TickFacts const& facts)
+    {
+        if (facts.casting)
+            return Tick::CastWait;
+        if (facts.cast)
+            return Tick::Cast;
+        if (facts.actionRan)
+            return Tick::Action;
+        // [jrn52] AND HERE THE MOVEMENT QUESTION COMES FIRST, inside each of the two branches that used to
+        // swallow it. Walking with nothing to attack yet and standing with nothing to attack are not the same
+        // tick; neither are running at a mob and stopping short of one.
+        if (!facts.hasLiveTarget)
+            return facts.moving ? Tick::NoTargetMoving : Tick::NoTargetStill;
+        if (facts.outOfReachOrLos)
+            return facts.moving ? Tick::RangeLosMoving : Tick::RangeLosStill;
+        if (facts.moving)
+            return Tick::Moving;
+        return Tick::AskGcd;
+    }
+
+    Tick ClassifyAfterGcd(bool gcdRunning, bool leaderHold)
+    {
+        if (gcdRunning)
+            return Tick::Gcd;
+        if (leaderHold)
+            return Tick::LeaderHold;
+        return Tick::AskThreat;
+    }
+
     bool ActivityRecorded(Counts const& counts)
     {
         // Three different things count, and leaving any of them out would read as "the bot did nothing" for a bot
@@ -73,9 +111,18 @@ namespace Journal::IdleWindow
                    " under the leader's command, " + number(counts.threat) +
                    " held back by the bot's own threat on the target. The duration stays in the row; the problem, "
                    "if there is one, belongs to whatever issued that command and is recorded there";
-        return "the engine itself counted " + number(idle) + " of " + number(counts.ticks) +
-               " ticks that produced nothing and says in which bucket, and " + number(idle - mechanic) +
-               " of them are named by neither the global cooldown nor the leader's command nor the threat hold";
+        std::string why = "the engine itself counted " + number(idle) + " of " + number(counts.ticks) +
+                          " ticks that produced nothing and says in which bucket, and " + number(idle - mechanic) +
+                          " of them are named by neither the global cooldown nor the leader's command nor the "
+                          "threat hold";
+        if (uint32_t const travel = TravelTicks(counts))
+            why += "; of those, " + number(travel) +
+                   " are ticks in which the bot was WALKING (" + number(counts.noTargetMoving) +
+                   " with nothing to attack yet, " + number(counts.rangeLosMoving) +
+                   " on its way to a target out of reach), which is the dungeon flow when the walk has a purpose "
+                   "and a defect when it has none - a question for the route domain and not for this window, so "
+                   "the verdict stays yes rather than invent an answer";
+        return why;
     }
 
     char const* RealWhen()

@@ -205,7 +205,8 @@ namespace Journal
             "ref_prereq, ref_failed, ref_blocked, ref_no_candidate, gap_n, gap_avg_ms, gap_max_ms, gap_over_150, "
             "gap_over_400, top_actions, stood_sec, stood_yd, doing, held_by, why, run_id, build, in_group, "
             // [jrn51] which action the engine turned down, beside the reason it already gave
-            "engine_state, ref_top_action, ref_top_cause, ref_top_ticks)";
+            // [jrn52] the walking part of no_target and range_los
+            "engine_state, ref_top_action, ref_top_cause, ref_top_ticks, no_target_moving, range_los_moving)";
         // [jrn43] target_zone_id: the target's own zone - for `wait_behind`, the member's
         char const* const COLUMNS_STUCK =
             "(id, boot_id, at_ms, hour_bucket, kind, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
@@ -1265,6 +1266,15 @@ namespace Journal
                              // are "which action" and "which reason", on their own and across builds.
                              "ref_top_action VARCHAR(64) NULL, ref_top_cause VARCHAR(12) NULL, "
                              "ref_top_ticks SMALLINT UNSIGNED NULL, "
+                             // [jrn52] the part of no_target / range_los in which the bot WAS WALKING. Parts and
+                             // never replacements: the totals keep the meaning they have had since [grp20], and
+                             // `no_target - no_target_moving` is the part in which the bot stood. The chain asked
+                             // `!target` and "out of reach" BEFORE `isMoving()`, so walking was counted as "no
+                             // target" and `moving` caught only the residue - 6 002 ticks of b503's 96 070
+                             // dungeon combat ticks against 46 119 in `no_target`. NULL on every earlier row:
+                             // the emitter did not pass it, which is not "it never walked".
+                             "no_target_moving SMALLINT UNSIGNED NULL, "
+                             "range_los_moving SMALLINT UNSIGNED NULL, "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY event_at (event, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY role_at (role, at_ms), "
                              "KEY where_at (map_id, zone_id, at_ms), KEY other_at (other, at_ms), "
@@ -1276,6 +1286,8 @@ namespace Journal
                              // [jrn51] the refused action and the reason, each paired with time
                              "KEY ref_action_at (ref_top_action, at_ms), "
                              "KEY ref_cause_at (ref_top_cause, at_ms), "
+                             // [jrn52] the slice that tells travel from standing, paired with time
+                             "KEY no_target_moving_at (no_target_moving, at_ms), "
                              "KEY run_at (run_id, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn40] idleness measured by fact: the diagnostics window and the standing "
@@ -1791,9 +1803,10 @@ namespace Journal
         uint64 const id = Writer::Instance().NextId();
         Writer::Instance().Push(
             "pb_journal_idle",
-            // [jrn51] 53 fields, the last three the refused action and its reason
+            // [jrn51] the refused action and its reason; [jrn52] the walking part of two buckets: 55 fields
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                "{})",
                                 id, BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(idle.event, 12),
                                 Quoted(idle.botName, 32), idle.botLow, OrNull(idle.botLevel), OrNull(idle.role, 8),
                                 idle.mapId, idle.zoneId, Real(idle.x), Real(idle.y), Real(idle.z),
@@ -1809,7 +1822,8 @@ namespace Journal
                                 Quoted(idle.doing, 96), Quoted(idle.heldBy, 48), Quoted(idle.why, 512),
                                 Quoted(idle.runId, 48), Quoted(Config().build, 16), OrNull(idle.inGroup),
                                 OrNull(idle.engineState), OrNull(idle.refTopAction, 64),
-                                OrNull(idle.refTopCause, 12), OrNull(idle.refTopTicks)));
+                                OrNull(idle.refTopCause, 12), OrNull(idle.refTopTicks),
+                                OrNull(idle.noTargetMoving), OrNull(idle.rangeLosMoving)));
         return id;
     }
 

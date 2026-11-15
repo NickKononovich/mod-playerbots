@@ -768,6 +768,13 @@ namespace Journal
         // why a tick produced nothing - each reason its own column, because each is filtered on
         Optional<uint32> noTarget;
         Optional<uint32> rangeLos;
+        // [jrn52] the part of each of the two above in which the bot WAS WALKING - a part, never a replacement,
+        // so a count taken on an earlier build still means what it meant and `no_target - no_target_moving` is
+        // the part in which the bot stood. The chain used to ask `!target` and "out of reach" BEFORE `isMoving()`,
+        // so walking was counted as "no target" and `moving` only ever caught the residue (6 002 ticks of b503's
+        // 96 070 dungeon combat ticks against 46 119 in `noTarget`). NULL on every earlier row: absence, not zero.
+        Optional<uint32> noTargetMoving;
+        Optional<uint32> rangeLosMoving;
         Optional<uint32> moving;
         Optional<uint32> gcd;
         Optional<uint32> threat;     // the bot's OWN threat on the target

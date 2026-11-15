@@ -835,6 +835,10 @@ protected:
         uint32 threat = 0;      // the bot's OWN threat on the target, not the leader's Stop
         uint32 leaderHold = 0;  // [chat20] the leader's command zeroed the bot's actions this tick
         uint32 other = 0;
+        // [jrn52] the part of `noTarget` and `rangeLos` in which the bot was WALKING. Parts, not replacements:
+        // the totals keep the meaning they have had since [grp20].
+        uint32 noTargetMoving = 0;
+        uint32 rangeLosMoving = 0;
         uint32 refusals[IDLE_REFUSAL_MAX] = {};  // [grp20] `other` split by the engine's own refusal
         uint32 nonCast = 0;
         uint32 gapCount = 0;

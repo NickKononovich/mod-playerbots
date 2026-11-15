@@ -196,3 +196,100 @@ TEST(IdleWindow, TheVerdictInWordsNamesTheNumbersOfThatVeryWindow)
     EXPECT_NE(std::string::npos, held.find("70"));                   // the idle ticks, all of them legitimate
     EXPECT_NE(std::string::npos, held.find("leader"));
 }
+
+// [jrn52] THE CHAIN'S ORDER, which is where the largest of b503's ten dungeon causes came from. `!target` and
+// "out of reach or sight" were asked BEFORE `isMoving()`, so a bot WALKING to the next pack was counted as "it
+// had no target" and a bot RUNNING AT its target as "out of range" - and the `moving` bucket could only catch the
+// residue where the target was already in reach and in sight. Measured over b503's dungeon combat windows:
+// `moving` 6 002 ticks of 96 070 (6.2 %), against `noTarget` 46 119 and `rangeLos` 14 851; and of the 548
+// noTarget-dominant windows, 373 (68.1 %) belong to a bot that covered 20 yd or more during the window, 9 to one
+// its leader had ordered to stand, 118 to one that moved 5-20 yd, and 48 to one that stood inside 5 yd.
+
+namespace
+{
+    Journal::IdleWindow::TickFacts WalkingWithNoTarget()
+    {
+        Journal::IdleWindow::TickFacts f;
+        f.moving = true;
+        return f;
+    }
+
+    Journal::IdleWindow::TickFacts StandingWithNoTarget() { return Journal::IdleWindow::TickFacts{}; }
+
+    Journal::IdleWindow::TickFacts RunningAtATargetOutOfReach()
+    {
+        Journal::IdleWindow::TickFacts f;
+        f.hasLiveTarget = true;
+        f.outOfReachOrLos = true;
+        f.moving = true;
+        return f;
+    }
+
+    Journal::IdleWindow::TickFacts StandingShortOfATargetOutOfReach()
+    {
+        Journal::IdleWindow::TickFacts f;
+        f.hasLiveTarget = true;
+        f.outOfReachOrLos = true;
+        return f;
+    }
+}  // namespace
+
+TEST(IdleWindowChain, WalkingWithNoTargetIsNotTheSameTickAsStandingWithNoTarget)
+{
+    EXPECT_EQ(Journal::IdleWindow::Tick::NoTargetMoving, Journal::IdleWindow::Classify(WalkingWithNoTarget()));
+    EXPECT_EQ(Journal::IdleWindow::Tick::NoTargetStill, Journal::IdleWindow::Classify(StandingWithNoTarget()));
+}
+
+TEST(IdleWindowChain, RunningAtATargetIsNotTheSameTickAsStandingShortOfIt)
+{
+    EXPECT_EQ(Journal::IdleWindow::Tick::RangeLosMoving,
+              Journal::IdleWindow::Classify(RunningAtATargetOutOfReach()));
+    EXPECT_EQ(Journal::IdleWindow::Tick::RangeLosStill,
+              Journal::IdleWindow::Classify(StandingShortOfATargetOutOfReach()));
+}
+
+TEST(IdleWindowChain, WhatTheBotDidBeatsEveryIdleAnswerAndACastInFlightBeatsThat)
+{
+    Journal::IdleWindow::TickFacts f = WalkingWithNoTarget();
+    f.actionRan = true;
+    EXPECT_EQ(Journal::IdleWindow::Tick::Action, Journal::IdleWindow::Classify(f));
+    f.cast = true;
+    EXPECT_EQ(Journal::IdleWindow::Tick::Cast, Journal::IdleWindow::Classify(f));
+    f.casting = true;
+    EXPECT_EQ(Journal::IdleWindow::Tick::CastWait, Journal::IdleWindow::Classify(f));
+}
+
+TEST(IdleWindowChain, TheMovingBucketIsOnlyForATargetAlreadyInReachAndInSight)
+{
+    Journal::IdleWindow::TickFacts f;
+    f.hasLiveTarget = true;
+    f.moving = true;
+    EXPECT_EQ(Journal::IdleWindow::Tick::Moving, Journal::IdleWindow::Classify(f));
+    f.moving = false;
+    EXPECT_EQ(Journal::IdleWindow::Tick::AskGcd, Journal::IdleWindow::Classify(f));
+}
+
+TEST(IdleWindowChain, TheWorldReadsStayWithTheCallerAndTheirOrderIsStillAsserted)
+{
+    EXPECT_EQ(Journal::IdleWindow::Tick::Gcd, Journal::IdleWindow::ClassifyAfterGcd(true, true));
+    EXPECT_EQ(Journal::IdleWindow::Tick::LeaderHold, Journal::IdleWindow::ClassifyAfterGcd(false, true));
+    EXPECT_EQ(Journal::IdleWindow::Tick::AskThreat, Journal::IdleWindow::ClassifyAfterGcd(false, false));
+}
+
+TEST(IdleWindowChain, TheTravelPartIsCountedAndIsNOTCalledLegitimate)
+{
+    Counts c;
+    c.ticks = 62;
+    c.casts = 4;
+    c.noTarget = 28;
+    c.noTargetMoving = 25;
+    c.rangeLos = 6;
+    c.rangeLosMoving = 4;
+    c.gcd = 3;
+    EXPECT_EQ(29u, Journal::IdleWindow::TravelTicks(c));
+    // the walk is named by number, and the window is still a problem: a purposeful walk and a circle look alike
+    // here, and which it was belongs to the route domain
+    EXPECT_EQ(3u, Journal::IdleWindow::MechanicTicks(c));
+    EXPECT_STREQ("yes", Journal::IdleWindow::Real(c));
+    EXPECT_NE(std::string::npos, Journal::IdleWindow::RealWhy(c).find("29"));
+}

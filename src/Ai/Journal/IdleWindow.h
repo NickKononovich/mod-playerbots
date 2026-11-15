@@ -49,6 +49,11 @@ namespace Journal::IdleWindow
         uint32_t nonCast{0};   // ticks in which the engine ran an action that was not a cast
         uint32_t noTarget{0};
         uint32_t rangeLos{0};
+        // [jrn52] of those two, the part in which the bot WAS WALKING. They are parts and not replacements: the
+        // totals above keep the meaning they have had since [grp20], so a count taken on an earlier build still
+        // means what it meant, and `noTarget - noTargetMoving` is the part in which the bot stood.
+        uint32_t noTargetMoving{0};
+        uint32_t rangeLosMoving{0};
         uint32_t moving{0};
         uint32_t gcd{0};
         uint32_t threat{0};      // the bot's own threat on the target held it back
@@ -62,6 +67,60 @@ namespace Journal::IdleWindow
     // Of those, the ones named by the game's own mechanic or by the leader's order - legitimate, not a defect.
     // The threat hold is in here with them: holding damage below the tank's threat is the project's own rule.
     uint32_t MechanicTicks(Counts const& counts);
+
+    // [jrn52] And the ones in which the bot was WALKING. Deliberately NOT added to MechanicTicks: walking to the
+    // next pack is the dungeon flow working, walking in circles is a defect, and a 15 s window cannot tell them
+    // apart - whether the walk had a purpose is the route domain's question (pb_journal_route), not this one. So
+    // the number is reported in words and the verdict stays "yes": calling a circle legitimate would be inventing.
+    uint32_t TravelTicks(Counts const& counts);
+
+    // [jrn52] WHICH COUNTER THIS TICK BELONGS TO - the chain itself, as a seam, because its ORDER was the defect.
+    // `!target` and then "out of reach or sight" were asked BEFORE `isMoving()`, so the `moving` bucket could only
+    // ever catch a tick whose target existed, was in reach AND in sight while the bot still moved: 6 002 ticks of
+    // b503's 96 070 dungeon combat ticks (6.2 %), against 46 119 in `noTarget` and 14 851 in `rangeLos`. Walking
+    // was therefore counted as "it had no target" or "it was out of range", and the largest of the build's ten
+    // dungeon causes was not one cause but two under one name - travel and idleness - with travel the bigger
+    // part: of the 548 noTarget windows, 373 (68.1 %) belong to a bot that covered 20 yd or more during them.
+    //
+    // THE WORLD READS STAY WITH THE CALLER, which is why this is two functions and not one. The chain asks about
+    // the global cooldown only after the movement question and about the threat only after the leader's command,
+    // and every one of those reads costs something per tick for every bot. `AskGcd` and `AskThreat` are the seam
+    // saying "this is the next question, and it is yours to ask" - the order is asserted by a test all the same,
+    // and nothing that used to be read lazily is now read eagerly.
+    enum class Tick : uint8_t
+    {
+        CastWait,        // a cast already in flight
+        Cast,            // the engine cast a spell this tick
+        Action,          // the engine ran an action that was not a cast
+        NoTargetMoving,  // no live target, and the bot was walking
+        NoTargetStill,   // no live target, and the bot stood
+        RangeLosMoving,  // a live target out of reach or sight, and the bot was walking towards it
+        RangeLosStill,   // a live target out of reach or sight, and the bot stood
+        Moving,          // the target is right there and in sight, and the bot still moves
+        AskGcd,          // the caller's turn: is the global cooldown running?
+        Gcd,
+        LeaderHold,
+        AskThreat,  // the caller's turn: is the bot's own threat at or over the hold?
+        Threat,
+        Other,  // the engine turned the tick's action down and this list has no name for the reason
+    };
+
+    // The facts of one tick that cost nothing to gather, in the order the chain asks them.
+    struct TickFacts
+    {
+        bool casting{false};           // a cast is already in flight
+        bool cast{false};              // the engine cast a spell this tick
+        bool actionRan{false};         // the engine ran an action this tick
+        bool hasLiveTarget{false};     // there is a target and it is alive
+        bool outOfReachOrLos{false};   // ... but out of reach or out of sight
+        bool moving{false};            // the bot was moving
+    };
+
+    // Returns the counter, or AskGcd when the global cooldown is the next question.
+    Tick Classify(TickFacts const& facts);
+
+    // The rest of the chain, once the caller has read the global cooldown it was asked for.
+    Tick ClassifyAfterGcd(bool gcdRunning, bool leaderHold);
 
     // Did this window record ANY activity at all? Three different things count as activity on purpose: a cast the
     // engine issued, an action it ran that was not a cast, and a cast already in flight. A window with none of the

@@ -8983,38 +8983,89 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
         idleDiag.windowStartMs = now;
 
     ++idleDiag.ticks;
-    if (casting)
-        ++idleDiag.castWait;
-    else if (idleDiag.tickCast)
-        ++idleDiag.casts;
-    else if (!idleDiag.tickAction.empty())
+
+    // [jrn52] WHICH COUNTER THIS TICK BELONGS TO IS THE SEAM'S ANSWER NOW (Journal::IdleWindow::Classify),
+    // because the ORDER of this chain was the defect and an order written inline cannot be asserted by a test.
+    // `!target` and "out of reach or sight" were asked BEFORE `isMoving()`, so a bot WALKING to the next pack
+    // was counted as "it had no target" and a bot RUNNING AT its mob as "out of range", while `moving` could only
+    // ever catch the residue where the target was already in reach and in sight. Measured over b503's dungeon
+    // combat windows: `moving` 6 002 ticks of 96 070 (6.2 %) against `noTarget` 46 119 and `rangeLos` 14 851; of
+    // the 548 noTarget-dominant problem windows, 373 (68.1 %) belong to a bot that covered 20 yd or more during
+    // the window. The largest of the build's ten dungeon causes was not one cause but two under one name.
+    //
+    // THE WORLD READS STAY HERE, lazily, exactly as they were: the seam answers `AskGcd` and `AskThreat` to say
+    // "this is the next question and it is yours", so the global cooldown and the threat value are still read
+    // only on the ticks that reach them. Nothing that used to be lazy became eager; `isMoving()` is now asked on
+    // an idle tick that used to skip it, and it is a flag test.
+    Journal::IdleWindow::TickFacts tickFacts;
+    tickFacts.casting = casting;
+    tickFacts.cast = idleDiag.tickCast;
+    tickFacts.actionRan = !idleDiag.tickAction.empty();
+    if (!tickFacts.casting && !tickFacts.cast && !tickFacts.actionRan)
     {
-        ++idleDiag.nonCast;
-        ++idleDiag.actions[idleDiag.tickAction];
+        Unit* const target = aiObjectContext->GetValue<Unit*>("current target")->Get();
+        tickFacts.hasLiveTarget = target && target->IsAlive();
+        if (tickFacts.hasLiveTarget)
+            tickFacts.outOfReachOrLos = (IsRanged(bot) ? bot->GetDistance(target) > IDLE_DIAG_RANGED_REACH
+                                                       : !bot->IsWithinMeleeRange(target)) ||
+                                        !bot->IsWithinLOSInMap(target);
+        tickFacts.moving = bot->isMoving();
     }
-    else
+
+    Journal::IdleWindow::Tick tick = Journal::IdleWindow::Classify(tickFacts);
+    if (tick == Journal::IdleWindow::Tick::AskGcd)
+        tick = Journal::IdleWindow::ClassifyAfterGcd(GetGlobalCooldownRemaining() != 0, idleDiag.tickLeaderHold);
+    if (tick == Journal::IdleWindow::Tick::AskThreat)
+        tick = aiObjectContext->GetValue<uint8>("threat", "current target")->Get() >= IDLE_DIAG_THREAT_HOLD
+                   ? Journal::IdleWindow::Tick::Threat
+                   : Journal::IdleWindow::Tick::Other;
+
+    switch (tick)
     {
-        Unit* target = aiObjectContext->GetValue<Unit*>("current target")->Get();
-        bool const outOfReach = target && (IsRanged(bot) ? bot->GetDistance(target) > IDLE_DIAG_RANGED_REACH
-                                                         : !bot->IsWithinMeleeRange(target));
-        if (!target || !target->IsAlive())
+        case Journal::IdleWindow::Tick::CastWait:
+            ++idleDiag.castWait;
+            break;
+        case Journal::IdleWindow::Tick::Cast:
+            ++idleDiag.casts;
+            break;
+        case Journal::IdleWindow::Tick::Action:
+            ++idleDiag.nonCast;
+            ++idleDiag.actions[idleDiag.tickAction];
+            break;
+        // [jrn52] the total keeps the meaning it has had since [grp20] and the walking part is a PART of it, so a
+        // count taken on an earlier build still means what it meant and `no_target - no_target_moving` is the
+        // part in which the bot stood
+        case Journal::IdleWindow::Tick::NoTargetMoving:
             ++idleDiag.noTarget;
-        else if (outOfReach || !bot->IsWithinLOSInMap(target))
+            ++idleDiag.noTargetMoving;
+            break;
+        case Journal::IdleWindow::Tick::NoTargetStill:
+            ++idleDiag.noTarget;
+            break;
+        case Journal::IdleWindow::Tick::RangeLosMoving:
             ++idleDiag.rangeLos;
-        else if (bot->isMoving())
+            ++idleDiag.rangeLosMoving;
+            break;
+        case Journal::IdleWindow::Tick::RangeLosStill:
+            ++idleDiag.rangeLos;
+            break;
+        case Journal::IdleWindow::Tick::Moving:
             ++idleDiag.moving;
-        else if (GetGlobalCooldownRemaining())
+            break;
+        case Journal::IdleWindow::Tick::Gcd:
             ++idleDiag.gcd;
+            break;
         // [chat20] the leader's command (Stop, DontAttack, a spared mob in the area, an unassigned external) zeroed
-        // the bot's actions this tick. Its own bucket because `threat` below is the bot's OWN threat on the target
-        // and nothing else: reading one for the other made the leader's Stop invisible, and its ticks fell into
+        // the bot's actions this tick. Its own bucket because `threat` is the bot's OWN threat on the target and
+        // nothing else: reading one for the other made the leader's Stop invisible, and its ticks fell into
         // `other` - 24 % of the ticks of a 58 min log, our largest unexplained figure
-        else if (idleDiag.tickLeaderHold)
+        case Journal::IdleWindow::Tick::LeaderHold:
             ++idleDiag.leaderHold;
-        else if (aiObjectContext->GetValue<uint8>("threat", "current target")->Get() >= IDLE_DIAG_THREAT_HOLD)
+            break;
+        case Journal::IdleWindow::Tick::Threat:
             ++idleDiag.threat;
-        else
-        {
+            break;
+        default:
             // [grp20] `other` was 37.1 % of b495's idle ticks with nothing said about it. The engine already knows
             // why it turned the tick's action down, so the bucket reads its answer instead of guessing.
             ++idleDiag.other;
@@ -9024,7 +9075,7 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
             // unexplained key. The pair, never the reason alone, because one action refused as USELESS and
             // another refused as FAILED are two defects and a single name would merge them.
             ++idleDiag.refusalActions[{uint8(idleDiag.tickRefusal), idleDiag.tickRefusalAction}];
-        }
+            break;
     }
 
     if (getMSTimeDiff(idleDiag.windowStartMs, now) < IDLE_DIAG_WINDOW_MS)
@@ -9109,6 +9160,10 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     record.nonCast = idleDiag.nonCast;
     record.noTarget = idleDiag.noTarget;
     record.rangeLos = idleDiag.rangeLos;
+    // [jrn52] the part of each in which the bot WAS WALKING. NULL on every row written before this build, which
+    // is "the emitter did not pass it" and not "it never walked" - absence is not zero.
+    record.noTargetMoving = idleDiag.noTargetMoving;
+    record.rangeLosMoving = idleDiag.rangeLosMoving;
     record.moving = idleDiag.moving;
     record.gcd = idleDiag.gcd;
     record.threat = idleDiag.threat;
@@ -9202,6 +9257,8 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
         verdictCounts.nonCast = idleDiag.nonCast;
         verdictCounts.noTarget = idleDiag.noTarget;
         verdictCounts.rangeLos = idleDiag.rangeLos;
+        verdictCounts.noTargetMoving = idleDiag.noTargetMoving;  // [jrn52] the walking part of each
+        verdictCounts.rangeLosMoving = idleDiag.rangeLosMoving;
         verdictCounts.moving = idleDiag.moving;
         verdictCounts.gcd = idleDiag.gcd;
         verdictCounts.threat = idleDiag.threat;
