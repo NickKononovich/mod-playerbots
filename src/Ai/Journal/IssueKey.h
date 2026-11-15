@@ -70,6 +70,11 @@ namespace Journal::Key
     {
         uint32_t noTarget{0};
         uint32_t rangeLos{0};
+        // [jrn54] the PART of each of the two above in which the bot was WALKING. A part, never a replacement:
+        // a window with no walking part keeps the key it had character for character, so the counts taken on
+        // b501, b502 and b503 go on meaning what they meant.
+        uint32_t noTargetMoving{0};
+        uint32_t rangeLosMoving{0};
         uint32_t moving{0};
         uint32_t gcd{0};
         uint32_t threat{0};

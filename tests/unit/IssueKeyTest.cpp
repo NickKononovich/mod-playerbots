@@ -206,6 +206,119 @@ TEST(IssueKeyIdle, TheSameBucketsInADungeonAndInTheWorldAreTwoKeys)
     EXPECT_EQ(Journal::Key::Idle("dps", plain, false), "idle|dps|moving+gcd|world");
 }
 
+// [jrn54] WALKING AND STANDING WERE ONE KEY, AND THAT WAS THE LAST MERGED CAUSE IN THE TABLE. `noTarget` was the
+// largest of b503's ten unexplained dungeon causes - 548 of 1 435 cases - and it was not one cause: the bucket
+// chain asked `!target` and then "out of reach or sight" BEFORE `isMoving()`, so a bot WALKING to the next pack
+// was counted as "it had no target" and a bot RUNNING AT its mob as "out of range", while the `moving` bucket
+// could only ever catch the residue where the target was already in reach and in sight (6 002 ticks of the
+// build's 96 070 dungeon combat ticks, 6.2 %, against 46 119 in `noTarget` and 14 851 in `rangeLos`).
+//
+// Measured from the positions the table already carried (LAG over the same bot on the same map), of the 548
+// noTarget-dominant problem windows 373 (68.1 %) belong to a bot that covered 20 yd or more during the window -
+// average displacement 32.4 yd - and only 48 (8.8 %) to one that stood inside 5 yd with no named hold. One key
+// over the two means a fix for either turns a test green while the other lives on beneath it, which is the wide
+// direction this seam exists to assert; [jrn52] added the counts (no_target_moving, range_los_moving) and this is
+// the key catching up with them.
+//
+// BOTH DIRECTIONS ARE ASSERTED HERE, and the second is the one that would let a careless "split everything" pass:
+// two windows of the SAME nature must stay ONE key, whatever their counts, or the split becomes trap #2 again.
+namespace
+{
+    // a dps that walked through almost the whole window with nothing to attack yet - the 68.1 % shape
+    Journal::Key::IdleBuckets WalkedWithNothingToAttack()
+    {
+        Journal::Key::IdleBuckets b;
+        b.noTarget = 28;
+        b.noTargetMoving = 25;
+        b.gcd = 3;
+        return b;
+    }
+
+    // the same shape in another window of another bot: different counts, same nature
+    Journal::Key::IdleBuckets WalkedWithNothingToAttackOtherBot()
+    {
+        Journal::Key::IdleBuckets b;
+        b.noTarget = 54;
+        b.noTargetMoving = 41;
+        b.gcd = 9;
+        return b;
+    }
+
+    // a dps that STOOD with nothing to attack - the 8.8 % shape, and the only one of the two that is a defect of
+    // idleness rather than a question about a walk
+    Journal::Key::IdleBuckets StoodWithNothingToAttack()
+    {
+        Journal::Key::IdleBuckets b;
+        b.noTarget = 28;
+        b.gcd = 3;
+        return b;
+    }
+
+    Journal::Key::IdleBuckets RanAtATargetOutOfReach()
+    {
+        Journal::Key::IdleBuckets b;
+        b.rangeLos = 20;
+        b.rangeLosMoving = 18;
+        return b;
+    }
+
+    Journal::Key::IdleBuckets StoodShortOfATargetOutOfReach()
+    {
+        Journal::Key::IdleBuckets b;
+        b.rangeLos = 20;
+        return b;
+    }
+}  // namespace
+
+TEST(IssueKeyIdle, AWindowSpentWalkingAndAWindowSpentStandingAreTwoKeys)
+{
+    EXPECT_NE(Journal::Key::Idle("dps", WalkedWithNothingToAttack(), true),
+              Journal::Key::Idle("dps", StoodWithNothingToAttack(), true))
+        << "a bot walking to the next pack and a bot standing with nothing to attack share one key: a fix for "
+           "either would turn a test green while the other lived on under it";
+    EXPECT_NE(Journal::Key::Idle("dps", RanAtATargetOutOfReach(), true),
+              Journal::Key::Idle("dps", StoodShortOfATargetOutOfReach(), true))
+        << "running at a mob and stopping short of one share one key";
+}
+
+// THE OTHER DIRECTION. Which buckets fired is the cause; how many times is the value range, as it has been since
+// [jrn40]. Two windows of the same nature and different counts are ONE problem.
+TEST(IssueKeyIdle, TwoWindowsOfTheSameNatureAreStillOneKey)
+{
+    EXPECT_EQ(Journal::Key::Idle("dps", WalkedWithNothingToAttack(), true),
+              Journal::Key::Idle("dps", WalkedWithNothingToAttackOtherBot(), true))
+        << "two windows of one nature with different counts gave two keys - the staircase this project has "
+           "already measured twice";
+}
+
+// A window with NO walking part keeps its key character for character: the counts taken on b501, b502 and b503 go
+// on meaning what they meant, exactly as [jrn45] added its place suffix only for the case that had never been
+// measured. This is the assertion that makes the split safe to compare across builds.
+TEST(IssueKeyIdle, AWindowWithoutAWalkingPartKeepsTheKeyItHad)
+{
+    EXPECT_EQ(Journal::Key::Idle("dps", StoodWithNothingToAttack(), true), "idle|dps|noTarget+gcd");
+    EXPECT_EQ(Journal::Key::Idle("tank", StoodShortOfATargetOutOfReach(), false), "idle|tank|rangeLos|world");
+    // and the walking part is named after the bucket it is a part of, never in place of it
+    EXPECT_EQ(Journal::Key::Idle("dps", WalkedWithNothingToAttack(), true), "idle|dps|noTarget+noTargetMoving+gcd");
+    Journal::Key::IdleBuckets onlyWalked;
+    onlyWalked.noTarget = 25;
+    onlyWalked.noTargetMoving = 25;
+    EXPECT_EQ(Journal::Key::Idle("dps", onlyWalked, true), "idle|dps|noTargetMoving");
+}
+
+// THE PART CANNOT EXCEED THE WHOLE, and if an emitter ever passes numbers that say it does, the key must not read
+// an unsigned wrap-around as "it also stood for four billion ticks". Absence is not zero and nonsense is not a
+// count: the standing part of such a window is nothing, and the walking part is what was passed.
+TEST(IssueKeyIdle, AWalkingPartLargerThanItsWholeDoesNotInventAStandingPart)
+{
+    Journal::Key::IdleBuckets impossible;
+    impossible.noTarget = 5;
+    impossible.noTargetMoving = 9;
+    impossible.rangeLos = 2;
+    impossible.rangeLosMoving = 7;
+    EXPECT_EQ(Journal::Key::Idle("dps", impossible, true), "idle|dps|noTargetMoving+rangeLosMoving");
+}
+
 // [jrn43] `stuck_target`: THE KEY SAID SOMETHING THAT CANNOT BE TRUE. The detector is called with the engine's own
 // answer - ReleaseIdleTargetNobodyReaches(acted) returns at once when `acted` - so NO action ran in any row it ever
 // writes, and the sentence in every row says exactly that ("with no action that runs"). The key, meanwhile, read a

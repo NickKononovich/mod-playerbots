@@ -9215,6 +9215,10 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
         Journal::Key::IdleBuckets shapeFacts;
         shapeFacts.noTarget = idleDiag.noTarget;
         shapeFacts.rangeLos = idleDiag.rangeLos;
+        // [jrn54] the walking part of each, so that a bot walking to the next pack and a bot standing with
+        // nothing to attack stop being one problem row
+        shapeFacts.noTargetMoving = idleDiag.noTargetMoving;
+        shapeFacts.rangeLosMoving = idleDiag.rangeLosMoving;
         shapeFacts.moving = idleDiag.moving;
         shapeFacts.gcd = idleDiag.gcd;
         shapeFacts.threat = idleDiag.threat;

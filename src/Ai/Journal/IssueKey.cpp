@@ -70,8 +70,34 @@ namespace Journal::Key
             if (value)
                 shape += (shape.empty() ? "" : "+") + std::string(name);
         };
-        bucket("noTarget", buckets.noTarget);
-        bucket("rangeLos", buckets.rangeLos);
+        // [jrn54] WALKING AND STANDING WERE ONE NAME, and that was the last merged cause this table had left.
+        // `noTarget` was the largest of b503's ten unexplained dungeon causes (548 of 1 435 cases) and it was not
+        // one cause: the bucket chain asked `!target` and then "out of reach or sight" BEFORE `isMoving()`, so a
+        // bot WALKING to the next pack was counted as "it had no target" and a bot RUNNING AT its mob as "out of
+        // range", while `moving` could only catch the residue where the target was already in reach and in sight -
+        // 6 002 ticks of the build's 96 070 dungeon combat ticks (6.2 %) against 46 119 and 14 851. Measured from
+        // the positions the table already carried (LAG over the same bot on the same map): of those 548 windows
+        // 373 (68.1 %) belong to a bot that covered 20 yd or more during the window, average displacement 32.4 yd,
+        // and 48 (8.8 %) to one that stood inside 5 yd with no named hold. Under one name a fix for either would
+        // turn a test green while the other lived on beneath it - the wide direction this seam exists to assert.
+        //
+        // THE PART IS NAMED AFTER THE WHOLE AND NEVER IN PLACE OF IT, and a window with NO walking part keeps its
+        // key CHARACTER FOR CHARACTER: `noTargetMoving` is written only when the walking part is non-zero, which
+        // on every build before [jrn52] it could not be (the emitter did not count it), so the keys measured on
+        // b501, b502 and b503 go on meaning what they meant. The same rule [jrn45] followed for the place suffix
+        // and [jrn42] for the empty hold name.
+        //
+        // THE PART CANNOT EXCEED THE WHOLE, and if an emitter ever says it does, the standing part is NOTHING -
+        // not an unsigned wrap-around that would read as four billion ticks of standing. Nonsense is not a count.
+        uint32_t const stoodWithNoTarget = buckets.noTarget > buckets.noTargetMoving
+                                               ? buckets.noTarget - buckets.noTargetMoving
+                                               : 0;
+        uint32_t const stoodOutOfReach =
+            buckets.rangeLos > buckets.rangeLosMoving ? buckets.rangeLos - buckets.rangeLosMoving : 0;
+        bucket("noTarget", stoodWithNoTarget);
+        bucket("noTargetMoving", buckets.noTargetMoving);
+        bucket("rangeLos", stoodOutOfReach);
+        bucket("rangeLosMoving", buckets.rangeLosMoving);
         bucket("moving", buckets.moving);
         bucket("gcd", buckets.gcd);
         bucket("threat", buckets.threat);
