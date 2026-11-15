@@ -41,6 +41,7 @@
 #include "Item.h"
 #include "IssueKey.h"  // [jrn46] the key, the shape and the ranged value of `run_failed`, as a seam a test asserts
 #include "SupplyShare.h"  // [supply130] the five's drink pool and its requirement, as a seam
+#include "SupplyWait.h"  // [supply131] whether a member's supply run still holds its five, as a seam
 #include "ItemUsageValue.h"
 #include "Log.h"
 #include "MapMgr.h"
@@ -4333,6 +4334,7 @@ uint32 GuildCoordinator::FormFiveLocked(uint32 leaderLow, std::vector<uint32> co
         st.supplyShort.clear();  // [supply27] a new five, or none: its supply check starts again
         SetConjureGoal(ObjectGuid::Create<HighGuid::Player>(low), 0);  // [dun199]
         st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+        st.supplyWaitLogged.clear();  // [supply131] a new wait writes its own row
         st.fiveRefused.clear();
         // the five's order comes first: the member leaves its quest now (New RPG takes the order at IDLE)
         // [supply20] ... but a restock run already on its way is not another errand the order outranks: it is the
@@ -4624,6 +4626,7 @@ void GuildCoordinator::DisbandFive(uint32 fiveId, std::string const& reason)
         st.supplyShort.clear();  // [supply27] a new five, or none: its supply check starts again
         SetConjureGoal(ObjectGuid::Create<HighGuid::Player>(low), 0);  // [dun199]
         st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+        st.supplyWaitLogged.clear();  // [supply131] a new wait writes its own row
         st.fiveRefused.clear();
         if (st.run && st.runType == GuildOrderType::DUNGEON)
         {
@@ -4721,6 +4724,7 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
             st.fiveId = 0;
             st.supplyShort.clear();
             st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+            st.supplyWaitLogged.clear();  // [supply131] a new wait writes its own row
             st.fiveRefused.clear();
             if (st.run && st.runType == GuildOrderType::DUNGEON)
             {
@@ -4745,6 +4749,7 @@ bool GuildCoordinator::ReplaceRefusedMember(GuildFive& five, uint32 refusedLow)
             st.fiveId = five.id;
             st.supplyShort.clear();
             st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+            st.supplyWaitLogged.clear();  // [supply131] a new wait writes its own row
             st.fiveRefused.clear();
             if (PlayerbotAI* ai = GET_PLAYERBOT_AI(c.player); ai && !c.player->IsInCombat())
             {
@@ -5177,6 +5182,7 @@ void GuildCoordinator::UpdateFives()
                     {
                         BotState& st = bots_[low];
                         st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+                        st.supplyWaitLogged.clear();  // [supply131] a new wait writes its own row
                     }
                 }
                 // [dun282] what the gate's strictness costs: every time the shortfall changes while the five is
@@ -5308,6 +5314,7 @@ void GuildCoordinator::UpdateFives()
                                  id, five.contentKey, Who(low), st.supplyMoneyAt, p->GetMoney(), shortOf);
                         st.supplyAsked = true;
                         st.supplyDone = st.supplyStarted = st.supplyYielded = false;
+                        st.supplyWaitLogged.clear();  // [supply131] the re-armed wait writes its own row
                         st.supplyShort = shortOf;
                         supplied = false;
                         continue;
@@ -6524,6 +6531,7 @@ void GuildCoordinator::OnFiveRunEnd(uint32 fiveId, GuildFiveReport const& report
         st.supplyShort.clear();  // [supply27] a new five, or none: its supply check starts again
         SetConjureGoal(ObjectGuid::Create<HighGuid::Player>(low), 0);  // [dun199]
         st.supplyAsked = st.supplyYielded = st.supplyStarted = st.supplyDone = false;
+        st.supplyWaitLogged.clear();  // [supply131] a new wait writes its own row
         st.run = false;
         st.fiveRefused.clear();
     }
@@ -6811,21 +6819,66 @@ bool GuildCoordinator::FiveStep(Player* bot, BotState& st, GuildRunStep& step)
         return false;
     // [supply27] its restock before the five goes in: the five step yields to New RPG's vendor run (it sees
     // SupplyWanted); a run seen started and ended, or none started after a yield, ends the wait
+    // [supply131] ... and "a run" is now ITS RESTOCK run, read from the run's own reason by the seam
+    // (GuildSupplyWait), not the bare vendorRunEntry flag, which is set by every vendor run there is and
+    // therefore could not come out false. b504, the wc-n certification batch: #42 Cassand and #44 Blahadrin of
+    // five 2 stood 2601 s each at 0.0 yd with this very wait on them, their task label unchanged through all
+    // 45 min, while Cassand's live vendor run was its own "BUY Glorious Shoulders - vendor Nizzik 3357 yd". The
+    // conclusion line below was written 4 times in that whole build and for neither of them: the wait had no end
     if (st.supplyAsked && !st.supplyDone)
     {
         PlayerbotAI* ai = GET_PLAYERBOT_AI(bot);
-        bool const running = ai && ai->rpgInfo.vendorRunEntry;
-        if (running)
-            st.supplyStarted = true;
-        else if (st.supplyStarted || st.supplyYielded)
+        GuildSupplyWait::Facts facts;
+        facts.asked = st.supplyAsked;
+        facts.done = st.supplyDone;
+        facts.started = st.supplyStarted;
+        facts.yielded = st.supplyYielded;
+        facts.restockRunLive = ai && ai->rpgInfo.vendorRunEntry &&
+                               GuildSupplyWait::IsRestock(ai->rpgInfo.vendorRunReason);
+        switch (GuildSupplyWait::Of(facts))
         {
-            st.supplyDone = true;
-            st.supplyMoneyAt = bot->GetMoney();  // [supply79]
-            LOG_INFO("playerbots", "[supply27] {} L{} supply run {}", bot->GetName(), bot->GetLevel(),
-                     st.supplyStarted ? "made" : "could not be made (no vendor run started)");
+            case GuildSupplyWait::Verdict::Running:
+                st.supplyStarted = true;
+                break;
+            case GuildSupplyWait::Verdict::Concluded:
+                st.supplyDone = true;
+                st.supplyMoneyAt = bot->GetMoney();  // [supply79]
+                LOG_INFO("playerbots", "[supply27] {} L{} supply run {}", bot->GetName(), bot->GetLevel(),
+                         st.supplyStarted ? "made" : "could not be made (no restock run started)");
+                break;
+            case GuildSupplyWait::Verdict::Yield:
+                st.supplyYielded = true;
+                break;
+            case GuildSupplyWait::Verdict::NoWait:
+                break;
         }
-        else
-            st.supplyYielded = true;
+        // [supply131] the cause is a column from here on: topic='five_supply_wait', verdict='held' / 'concluded',
+        // the run's own reason in `why`, the member in subject_low - written only when the verdict CHANGES (a fact
+        // key, never a cadence), so a COUNT over it counts events and not ticks (trap 1)
+        if (char const* verdict = st.supplyDone ? "concluded" : "held"; st.supplyWaitLogged != verdict)
+        {
+            st.supplyWaitLogged = verdict;
+            Journal::Decision d;
+            d.topic = "five_supply_wait";
+            d.verdict = verdict;
+            d.choice = facts.restockRunLive ? "its restock run is live" : "no restock run of its own is live";
+            d.why = ai && ai->rpgInfo.vendorRunEntry
+                        ? "its live vendor run: " + ai->rpgInfo.vendorRunReason
+                        : std::string("no vendor run of its own is live");
+            d.judge = Journal::Judge::GuildLeader;
+            d.judgeName = bot->GetName();
+            d.judgeLow = bot->GetGUID().GetCounter();
+            d.mapId = bot->GetMapId();
+            d.zoneId = bot->GetZoneId();
+            d.subject = itr->second.dungeon;
+            d.subjectKind = "five";
+            d.subjectEntry = itr->second.id;
+            d.subjectLow = bot->GetGUID().GetCounter();
+            d.tag = "[supply131]";
+            d.src = "GuildCoordinator::FiveStep";
+            d.readBy = "GuildCoordinator::FiveStep (the member's step to the entrance)";
+            Journal::Record(d);
+        }
         if (!st.supplyDone)
             return false;
     }

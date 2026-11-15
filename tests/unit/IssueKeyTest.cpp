@@ -737,3 +737,97 @@ TEST(IdlePlacePick, NothingIsRefusedWithoutTheMeasuredRefusal)
     gone.blockerStillIdle = false;
     EXPECT_FALSE(PickRefused(gone));
 }
+
+// ---------------------------------------------------------------------------------------------------
+// [supply131] THE FIVE'S WAIT FOR A MEMBER'S SUPPLY RUN. Inputs are the real rows of b504 named in
+// SupplyWait.h: five 2 of the wc-n certification batch, #42 Cassand and #44 Blahadrin standing 2601 s
+// each at 0.0 yd with pb_journal_idle.held_by empty, their task label frozen at "waits for its supply
+// run before the entrance" through all 45 min, and Cassand's one live vendor run named by its own task
+// line as "BUY ... Glorious Shoulders for itself - vendor Nizzik 3357 yd".
+//
+// These tests live here and not in a file of their own because tests/CMakeLists.txt is held by another
+// agent in this same tree (two agents never edit one file); the seam is header-only, so the include
+// below is the whole wiring. MOVE TO tests/unit/SupplyWaitTest.cpp once the stand's list is free.
+#include "../../src/Ai/Guild/SupplyWait.h"
+
+namespace
+{
+    // Cassand as b504 recorded it: its five asked it to restock, the wait never concluded, a vendor run
+    // IS live - and it is the run for a pair of shoulders, not for its drink
+    GuildSupplyWait::Facts CassandAtTheGate()
+    {
+        GuildSupplyWait::Facts f;
+        f.asked = true;
+        f.done = false;
+        f.started = false;
+        f.yielded = true;  // the wait had already given it its one pass
+        f.restockRunLive = GuildSupplyWait::IsRestock("buy Glorious Shoulders for itself");
+        return f;
+    }
+}  // namespace
+
+TEST(SupplyWait, AVendorRunForSomethingElseIsNotTheMembersRestock)
+{
+    using namespace GuildSupplyWait;
+    EXPECT_EQ(ReasonFor("buy drink"), Kind::Drink);
+    EXPECT_EQ(ReasonFor("sell junk + buy food"), Kind::Food);
+    // the three live runs b504 held fives on, none of them a restock
+    EXPECT_EQ(ReasonFor("buy Glorious Shoulders for itself"), Kind::None) << "the shoulders run at Nizzik 3357 yd";
+    EXPECT_EQ(ReasonFor("repair"), Kind::None);
+    EXPECT_EQ(ReasonFor("sell junk"), Kind::None);
+    EXPECT_FALSE(IsRestock("buy Glorious Shoulders for itself"));
+}
+
+TEST(SupplyWait, AWaitOnARunThatIsNotTheRestockEnds)
+{
+    // the defect: five 2 stood at the gate on a flag that is set by ANY vendor run, so the wait had no
+    // end. 2601 s standing, 0.0 yd, and FiveStep's own conclusion line never written for either member
+    EXPECT_EQ(GuildSupplyWait::Of(CassandAtTheGate()), GuildSupplyWait::Verdict::Concluded)
+        << "a run for a pair of shoulders 3357 yd away held a certification batch at the entrance for 45 min";
+}
+
+TEST(SupplyWait, ARealRestockRunStillHoldsTheFive)
+{
+    // the other side: "end the wait always" would pass the test above and break the design. A member
+    // actually on its way to buy its drink keeps its five at the gate, exactly as before
+    GuildSupplyWait::Facts onItsWay = CassandAtTheGate();
+    onItsWay.restockRunLive = GuildSupplyWait::IsRestock("goes to vendor Gruham Rumdnul (397 yd): buy drink");
+    EXPECT_EQ(GuildSupplyWait::Of(onItsWay), GuildSupplyWait::Verdict::Running);
+}
+
+TEST(SupplyWait, TheFirstPassStillYieldsSoARunMayStart)
+{
+    // and "end the wait at once" would break the two-pass shape the rule is written in: the first pass
+    // yields, and only a second pass with nothing live concludes
+    GuildSupplyWait::Facts firstPass = CassandAtTheGate();
+    firstPass.yielded = false;
+    EXPECT_EQ(GuildSupplyWait::Of(firstPass), GuildSupplyWait::Verdict::Yield);
+}
+
+TEST(SupplyWait, ARunSeenLiveAndNowOverEndsTheWait)
+{
+    GuildSupplyWait::Facts over = CassandAtTheGate();
+    over.started = true;
+    over.yielded = false;
+    over.restockRunLive = false;
+    EXPECT_EQ(GuildSupplyWait::Of(over), GuildSupplyWait::Verdict::Concluded);
+}
+
+TEST(SupplyWait, AMemberNobodyAskedAndAWaitAlreadyOverAreNotWaits)
+{
+    GuildSupplyWait::Facts unasked;
+    EXPECT_EQ(GuildSupplyWait::Of(unasked), GuildSupplyWait::Verdict::NoWait);
+    GuildSupplyWait::Facts concluded = CassandAtTheGate();
+    concluded.done = true;
+    concluded.restockRunLive = true;  // even a live restock does not re-open a concluded wait
+    EXPECT_EQ(GuildSupplyWait::Of(concluded), GuildSupplyWait::Verdict::NoWait);
+}
+
+TEST(SupplyWait, NothingInTheFactsIsAClockSoNoWaitCanBeSatisfiedByTime)
+{
+    // rule 2 asserted structurally: the facts carry no duration, age or timestamp, so the verdict for one
+    // set of facts is the same answer however long the member has been standing
+    GuildSupplyWait::Facts const cassand = CassandAtTheGate();
+    EXPECT_EQ(GuildSupplyWait::Of(cassand), GuildSupplyWait::Of(cassand));
+    EXPECT_EQ(sizeof(GuildSupplyWait::Facts), 5u) << "a field was added to the facts: if it is a time, it must not be";
+}

@@ -655,6 +655,9 @@ private:
         bool supplyStarted = false;
         bool supplyDone = false;
         uint32 supplyMoneyAt = 0;  // [supply79] its money when its supply run ended (a gold arrival shows against it)
+        // [supply131] the last supply-wait verdict this member had a journal row for, so the row is keyed by the FACT
+        // and written only when the verdict changes - never once a tick (trap 1: count events, not rows). "" = none
+        std::string supplyWaitLogged;
         // [guild80] map thread: no safe walk to the Guild Master / vault at this level (planning skips it until the
         // next level)
         std::string foundRefused;
