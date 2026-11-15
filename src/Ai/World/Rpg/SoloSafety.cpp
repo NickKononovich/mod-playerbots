@@ -12,6 +12,7 @@
 #include "BuyAction.h"
 #include "CellImpl.h"
 #include "AttackersValue.h"  // [deaths] NO_ATTACK
+#include "AggroReach.h"  // [death470] the ground one mob's aggro covers, as a seam without the world
 #include "ChaseModel.h"  // [runpast88] the chase window, as a seam without the world
 #include "ManaBudget.h"  // [mana90] the seconds of a fight the mana holds, as a seam without the world
 #include "KillRate.h"  // [dpszero1] its own damage in three states - no estimate, deals nothing, deals
@@ -133,6 +134,21 @@ namespace
         // raised for (an elite stays an elite: ConWalls hands those quests to a party, and that must not change),
         // so the fight's verdict needs its own field - and it is the field the zone rule and its problem row read
         bool fightLost = false;
+        // [death471] THE FACT THIS WALL WAS MADE FROM, so that it lives exactly as long as that fact does.
+        // The refusal discs themselves are rebuilt by every search, but this list is READ BACK long after the search
+        // that wrote it, by things that act on it: ConWalls hands a walled quest to a party, NearestLostFightWall
+        // writes the problem row, RouteWalls prints the wall in a death line. b503 Duskwood: Mor'Ladim L30 is a
+        // WAYPOINT patrol (creature 5086, wander_distance 0, detection_range 20) and its wall was read back at 103,
+        // 107, 115, 117, 128, 132, 160 and 162 yd from the walker; Baridrol's death row carries route_age_ms 24 826,
+        // so the stand it was refused at was 25 s old and the patrol had walked on. The replacement is NOT a shorter
+        // age: it is the mob itself. `mob` says which creature, and `atX/atY/atRadius` is THE VERY DISC the refusal
+        // was computed over - the one that went into `refuse`. A reader asks AggroReach::Covers of it, so the
+        // quantity "the ground this mob's aggro covers" keeps exactly one judge (rule 5): the refusal stands while
+        // the mob is still on the ground the refusal was made of, and a patrol that has walked off it walls nothing
+        uint64 mob = 0;  // the creature's raw guid; 0: the emitter did not say (and then the wall is kept as before)
+        float atX = 0.0f;
+        float atY = 0.0f;
+        float atRadius = 0.0f;
     };
 
     constexpr float RUN_PAST_ON_LEG = 8.0f;        // [death452] the farRoute tolerance (MoveFarToDirect)
@@ -1438,25 +1454,31 @@ namespace
         return rank == CREATURE_ELITE_ELITE || rank == CREATURE_ELITE_RAREELITE || rank == CREATURE_ELITE_WORLDBOSS;
     }
 
-    // [pullplan] an idle mob's aggro reach on the bot as a disc (x, y, z, radius): a wanderer's round its home with
-    // its wander area on top
+    // [pullplan] an idle mob's aggro reach on the bot as a disc (x, y, z, radius)
+    // [death470] the arithmetic itself is the seam's (AggroReach::Of, a pure function, world- and clock-free): one
+    // judge of "what ground does this mob's aggro cover", and the only place that reads the world for it is here.
+    // [surv10] lives on inside it: a FREE wanderer's disc sits on its home, widened by how far it has actually gone,
+    // so it holds the area it returns to AND the circle round where it stands now (b484 Kylantino L22 met a
+    // Boulderfist Ogre L33 at 5 yd and the home disc read "outside it"). What is new is the mob that is HELD away
+    // from home by something of its own - a fight, the walk back after one: its ground is its home and its wander
+    // area, and the yards it is being held in are ground it is leaving.
     G3D::Vector4 AggroDisc(Creature* mob, Player* bot)
     {
-        float radius = mob->GetAggroRange(bot) + bot->GetCombatReach();
-        Position centre = mob->GetPosition();
-        if (mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE)
-        {
-            centre = mob->GetHomePosition();
-            // [surv10] a wanderer's disc sits on its home so that the whole area it may wander into is covered, but a
-            // wanderer that is chasing, leashing back or was pulled stands outside that area, and then the home disc
-            // covers neither it nor the ground round it: b484 Kylantino L22 met a Boulderfist Ogre L33 at 5 yd and the
-            // disc read "outside it" because the ogre was 44 yd from a home whose envelope is 40 yd. The envelope is
-            // widened by how far the mob has actually gone, so it holds the area it returns to AND the circle round
-            // where it stands now. A measured distance, not a threshold; the disc never shrinks, so no caller of it
-            // becomes less careful than before.
-            radius += std::max(mob->GetWanderDistance(), mob->GetHomePosition().GetExactDist2d(mob));
-        }
-        return G3D::Vector4(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
+        AggroReach::Mob ask;
+        Position const& home = mob->GetHomePosition();
+        ask.homeX = home.GetPositionX();
+        ask.homeY = home.GetPositionY();
+        ask.homeZ = home.GetPositionZ();
+        ask.x = mob->GetPositionX();
+        ask.y = mob->GetPositionY();
+        ask.z = mob->GetPositionZ();
+        ask.aggroYd = mob->GetAggroRange(bot);
+        ask.botReachYd = bot->GetCombatReach();
+        ask.wanders = mob->GetDefaultMovementType() == RANDOM_MOTION_TYPE;
+        ask.wanderYd = mob->GetWanderDistance();
+        ask.busy = mob->IsInCombat() || mob->IsInEvadeMode();
+        AggroReach::Disc const disc = AggroReach::Of(ask);
+        return G3D::Vector4(disc.x, disc.y, disc.z, disc.radius);
     }
 
     bool InDisc(G3D::Vector4 const& disc, G3D::Vector3 const& at)
@@ -2189,10 +2211,18 @@ namespace SoloSafety
                 spot = bot->GetPosition();
         }
         std::vector<Creature*> idle;
+        // [death470] A MOB BUSY SOMEWHERE ELSE IS STILL PART OF THIS FIGHT'S SURROUNDINGS. `!IsInCombat()` dropped it
+        // from the count outright, and `[death462]` measured what that cost: of the 31 mobs it named as "reaches over
+        // the spot left out" of a judged engage, 18 were in a fight of their own (the victim another bot of the guild)
+        // and 8 were evading home - 26 of 31. They are not gone: the fight ends, they walk home, their home reach
+        // covers the fight spot and they join. `[deaths139]`'s 141 adds say it from the other end - 60 had a home
+        // whose reach "covers it", median 9.2 s into the fight. Over the whole priced corpus 118 of 4 920 fights had
+        // more mobs come than were judged (2.4 %) - and that 2.4 % holds ALL FIVE of the fights that were lost.
+        // The ground such a mob covers is its HOME's, never where it is being held: AggroDisc / AggroReach::Of.
         for (ObjectGuid const& guid :
              GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get())
             if (Creature* mob = ObjectAccessor::GetCreature(*bot, guid))
-                if (mob != target && mob->IsAlive() && !mob->IsInCombat() && mob->IsHostileTo(bot) &&
+                if (mob != target && mob->IsAlive() && mob->IsHostileTo(bot) &&
                     mob->HasReactState(REACT_AGGRESSIVE))
                     idle.push_back(mob);
         // [deaths12] a wanderer whose home lies beyond the bot's sight walks its wander area into the fight's
@@ -2226,7 +2256,8 @@ namespace SoloSafety
                 for (Unit* unit : units)
                 {
                     Creature* mob = unit->ToCreature();
-                    if (!mob || mob == target || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
+                    // [death470] a mob in a fight of its own or evading home belongs here too (the count above)
+                    if (!mob || mob == target || !mob->IsAlive() || !mob->IsHostileTo(bot) ||
                         !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() ||
                         mob->HasUnitFlag(UNIT_FLAG_IMMUNE_TO_PC) ||
                         std::find(idle.begin(), idle.end(), mob) != idle.end())
@@ -2592,8 +2623,17 @@ namespace SoloSafety
                 if (Creature* creature = unit->ToCreature())
                 {
                     elite = elite || IsElite(creature);
-                    verdict.radius = std::max(verdict.radius,
-                                              unit->GetExactDist2d(target) + creature->GetAggroRange(bot));
+                    // [death470] a member HELD away from home by a fight of its own is measured to the ground its
+                    // aggro covers (its home), not to the tick it is being held on - otherwise admitting such a
+                    // member to the count would stretch the pack's radius over every yard it was dragged. A free
+                    // mob is measured exactly where it was before. The radius names the pack for
+                    // NewRpgCoop::judgedPulls and for engage.safeRadius, so it must not grow by itself
+                    bool const held = creature->IsInCombat() || creature->IsInEvadeMode();
+                    G3D::Vector4 const ground = held ? AggroDisc(creature, bot)
+                                                     : G3D::Vector4(unit->GetPositionX(), unit->GetPositionY(),
+                                                                    unit->GetPositionZ(), 0.0f);
+                    verdict.radius = std::max(verdict.radius, target->GetExactDist2d(ground.x, ground.y) +
+                                                                  creature->GetAggroRange(bot));
                 }
                 if (unit->GetLevel() > bot->GetLevel())
                     ++verdict.above;
@@ -6519,10 +6559,13 @@ namespace SoloSafety
                 }
             }
             bool const never = why != RouteWall::Why::None;
+            // [death471] the wall carries the fact it was made from: which creature, and the very disc its refusal
+            // was computed over - the one that goes into `refuse` on the next line
             if (never)
                 walls.push_back({mob->GetEntry(), mob->GetLevel(), why, wallPack,
                                  bot->GetExactDist2d(centre.GetPositionX(), centre.GetPositionY()), runPastDamage,
-                                 runPastHp, fightLost});
+                                 runPastHp, fightLost, mob->GetGUID().GetRawValue(), centre.GetPositionX(),
+                                 centre.GetPositionY(), radius});
             if (never)
                 refuse.emplace_back(centre.GetPositionX(), centre.GetPositionY(), centre.GetPositionZ(), radius);
             // [deaths] a patrol it must never fight is refused along its beat (its waypoint forecast), not only where
@@ -6767,17 +6810,42 @@ namespace SoloSafety
         }
     }
 
+    // [death471] the wall's own fact still holds: the creature is still in the world and still ON THE GROUND its
+    // refusal was computed over - the very disc that went into `refuse`, asked of the one judge of that quantity
+    // (AggroReach::Covers). A free wanderer is inside its own home disc by construction and stays inside it while
+    // it wanders, so its wall never flickers; a patrol's disc sits where it stood, and once it has walked off it
+    // the wall describes nothing. A wall whose emitter did not record the fact (`mob` 0) is kept exactly as before:
+    // absence of the fact is not "the fact is false". The state lock must NOT be held here - this reads the world
+    // and `lock` only guards the state map, so every caller copies its walls out first
+    bool WallStandsStill(Player* bot, RouteWall const& wall)
+    {
+        if (!wall.mob)
+            return true;
+        Creature* mob = ObjectAccessor::GetCreature(*bot, ObjectGuid(wall.mob));
+        if (!mob || !mob->IsAlive())
+            return false;  // the spawn that made the refusal is gone: so is the refusal
+        AggroReach::Disc const made{wall.atX, wall.atY, 0.0f, wall.atRadius};
+        return AggroReach::Covers(made, mob->GetPositionX(), mob->GetPositionY());
+    }
+
     std::string ConWalls(Player* bot)
     {
         if (!bot)
             return std::string();
-        std::lock_guard<std::mutex> guard(lock);
-        auto const found = states.find(bot->GetGUID().GetCounter());
-        if (found == states.end())
-            return std::string();
+        std::vector<RouteWall> kept;
+        {
+            std::lock_guard<std::mutex> guard(lock);
+            auto const it = states.find(bot->GetGUID().GetCounter());
+            if (it == states.end())
+                return std::string();
+            kept = it->second.routeWalls;
+        }
+        kept.erase(std::remove_if(kept.begin(), kept.end(),
+                                  [&](RouteWall const& w) { return !WallStandsStill(bot, w); }),
+                   kept.end());
         std::string out;
         uint32 n = 0;
-        for (RouteWall const& w : found->second.routeWalls)
+        for (RouteWall const& w : kept)
             if (w.why == RouteWall::Why::Con || w.why == RouteWall::Why::Elite)
             {
                 CreatureTemplate const* tmpl = sObjectMgr->GetCreatureTemplate(w.entry);
@@ -6788,8 +6856,11 @@ namespace SoloSafety
         return out;
     }
 
-    // [dpszero2] read back, never recomputed: the search wrote these walls and their reasons, and a second look at
-    // the world here would be a second judge of the same thing (rule 5)
+    // [dpszero2] read back, never recomputed: the search wrote these walls and their reasons, and judging the fight
+    // again here would be a second judge of the same thing (rule 5)
+    // [death471] the one thing asked of the world is whether the wall's own fact still holds - the mob still on the
+    // ground its refusal was made of (WallStandsStill). That is not a second verdict on the fight; it is the end of the
+    // first one, and without it the verdict outlives the fact it was made from
     bool NearestLostFightWall(Player* bot, LostWall& out)
     {
         if (!bot)
@@ -6804,7 +6875,7 @@ namespace SoloSafety
         }
         RouteWall const* nearest = nullptr;
         for (RouteWall const& w : walls)
-            if (w.fightLost && (!nearest || w.yards < nearest->yards))
+            if (w.fightLost && WallStandsStill(bot, w) && (!nearest || w.yards < nearest->yards))
                 nearest = &w;
         if (!nearest)
             return false;
@@ -6825,6 +6896,10 @@ namespace SoloSafety
                 return std::string();
             walls = found->second.routeWalls;
         }
+        // [death471] a wall whose mob has left the ground its refusal was made of is no wall any more
+        walls.erase(std::remove_if(walls.begin(), walls.end(),
+                                   [&](RouteWall const& w) { return !WallStandsStill(bot, w); }),
+                    walls.end());
         std::sort(walls.begin(), walls.end(), [](RouteWall const& a, RouteWall const& b) { return a.yards < b.yards; });
         constexpr size_t LOGGED_WALLS = 5;  // the nearest few: a log line's length, no decision
         std::string out;

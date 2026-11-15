@@ -61,6 +61,7 @@ add_executable(pb_unit_tests
     unit/RouteFactsTest.cpp
     unit/ManaLineTest.cpp
     unit/IdleWindowTest.cpp
+    unit/AggroReachTest.cpp
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight/ChainPullJudge.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IssueKey.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/ActorFacts.cpp"
@@ -72,6 +73,7 @@ add_executable(pb_unit_tests
     "${PB_MODULE_ROOT}/src/Ai/Base/Actions/MoveStep.cpp"
     "${PB_MODULE_ROOT}/src/Ai/World/Rpg/ChaseModel.cpp"
     "${PB_MODULE_ROOT}/src/Ai/World/Rpg/ManaBudget.cpp"
+    "${PB_MODULE_ROOT}/src/Ai/World/Rpg/AggroReach.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Base/Trigger/ManaLine.cpp")
 
 target_include_directories(pb_unit_tests PRIVATE

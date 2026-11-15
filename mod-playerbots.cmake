@@ -43,7 +43,9 @@ if (BUILD_TESTING)
     "${PB_TESTS_DIR}/unit/RouteFactsTest.cpp"
     # [pull84] the pull's mana line: its seam compiles into the module from src, so only the test is listed here
     "${PB_TESTS_DIR}/unit/ManaLineTest.cpp"
-    "${PB_TESTS_DIR}/unit/IdleWindowTest.cpp")
+    "${PB_TESTS_DIR}/unit/IdleWindowTest.cpp"
+    # [death470] the ground one mob's aggro covers: its seam compiles into the module from src, so only the test here
+    "${PB_TESTS_DIR}/unit/AggroReachTest.cpp")
   set_property(GLOBAL APPEND PROPERTY ACORE_MODULE_TEST_INCLUDES
     "${PB_TESTS_DIR}/unit"
     "${CMAKE_BINARY_DIR}/pb_tests")
