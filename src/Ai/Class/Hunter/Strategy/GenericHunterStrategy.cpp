@@ -5,6 +5,8 @@
  */
 
 #include "GenericHunterStrategy.h"
+#include <string>
+#include "Playerbots.h"  // [rot640] KnowsSpell: the bot's own cached "spell id"
 
 class GenericHunterStrategyActionNodeFactory : public NamedObjectFactory<ActionNode>
 {
@@ -52,6 +54,12 @@ private:
 GenericHunterStrategy::GenericHunterStrategy(PlayerbotAI* botAI) : CombatStrategy(botAI)
 {
     actionNodeFactories.Add(new GenericHunterStrategyActionNodeFactory());
+}
+
+// [rot640] the gate the three specs' getDefaultActions() share (GenericHunterStrategy.h says why)
+bool GenericHunterStrategy::KnowsSpell(char const* spell) const
+{
+    return botAI->GetAiObjectContext()->GetValue<uint32>("spell id", std::string(spell))->Get() != 0;
 }
 
 void GenericHunterStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)

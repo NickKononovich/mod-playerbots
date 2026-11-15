@@ -12,28 +12,15 @@ MarksmanshipHunterStrategy::MarksmanshipHunterStrategy(PlayerbotAI* botAI) : Gen
     // No custom ActionNodeFactory needed
 }
 
-namespace
-{
-// [rot640] A list entry for a spell the bot has not learned is not pushed at all. The engine would create its
-// node, resolve its target and then refuse it on the very same cached "spell id" this reads (SpellIdValue, 20 s
-// per name, the bot's own spell map and active spec), so the choice cannot change - only the work disappears.
-// b483 (hunters of level 19-26, who know none of the three): kill command 114, silencing shot 105 and kill shot
-// 93 refusals out of the window's 351 for this spec. None of these actions has an ActionNode of its own, so no
-// prerequisite, alternative or continuer was ever pushed in their stead either.
-bool KnowsSpell(PlayerbotAI* botAI, char const* spell)
-{
-    return botAI->GetAiObjectContext()->GetValue<uint32>("spell id", std::string(spell))->Get() != 0;
-}
-}
-
 // ===== Default Actions =====
 std::vector<NextAction> MarksmanshipHunterStrategy::getDefaultActions()
 {
     std::vector<NextAction> actions;
-    // [rot640] `spell` is the name the action casts; nullptr means the entry is never gated
+    // [rot640] `spell` is the name the action casts; nullptr means the entry is never gated. The gate itself is
+    // GenericHunterStrategy::KnowsSpell, shared with Survival and Beast Mastery
     auto const add = [&](char const* action, float relevance, char const* spell)
     {
-        if (!spell || KnowsSpell(botAI, spell))
+        if (!spell || KnowsSpell(spell))
             actions.push_back(NextAction(action, relevance));
     };
 
