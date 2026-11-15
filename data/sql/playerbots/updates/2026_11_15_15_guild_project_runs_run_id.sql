@@ -14,7 +14,19 @@
 -- whether this file or the build lands first; this file is the record of the change.
 --
 -- Rows written before it keep the empty string, which means "the emitter did not supply it" - not "no run".
-ALTER TABLE `guild_project_runs`
-    ADD COLUMN `run_id` VARCHAR(64) NOT NULL DEFAULT ''
-        COMMENT '[pull85] the five run id every journal table carries; empty: written before the column existed',
-    ADD KEY `run` (`run_id`);
+--
+-- ИДЕМПОТЕНТНО. Голый ALTER тут уже стоил падения: сервер добавляет колонку сам при старте
+-- (GuildCoordinator::LoadRuns), и если он успел раньше, обновлятор ядра получает
+-- "ERROR 1060 Duplicate column name 'run_id'" и ОТКАЗЫВАЕТСЯ ПОДНИМАТЬ СЕРВЕР. В MySQL 8 нет
+-- ADD COLUMN IF NOT EXISTS, поэтому защита через information_schema + PREPARE.
+SET @col := (SELECT COUNT(*) FROM information_schema.COLUMNS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'guild_project_runs' AND COLUMN_NAME = 'run_id');
+SET @sql := IF(@col = 0,
+  "ALTER TABLE `guild_project_runs` ADD COLUMN `run_id` VARCHAR(64) NOT NULL DEFAULT '' COMMENT '[pull85] the five run id every journal table carries; empty: written before the column existed'",
+  'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
+
+SET @idx := (SELECT COUNT(*) FROM information_schema.STATISTICS
+             WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'guild_project_runs' AND INDEX_NAME = 'run');
+SET @sql := IF(@idx = 0, 'ALTER TABLE `guild_project_runs` ADD KEY `run` (`run_id`)', 'DO 0');
+PREPARE s FROM @sql; EXECUTE s; DEALLOCATE PREPARE s;
