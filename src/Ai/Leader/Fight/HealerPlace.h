@@ -42,17 +42,19 @@
 // NO NEW CONSTANT. Every number is an argument; the only literal here is zero, and it is the boundary between
 // "a place can exist" and "it cannot", not a setting.
 //
-// IT HAS NO CALLER YET, AND THAT IS SAID HERE SO IT CANNOT LOOK LIKE WORKING MACHINERY (a dead seam costs more than
-// an absent one). The two facts it needs sit on opposite sides of a file boundary: the ring radii are computed in
-// LeaderCombatSpot (this directory), while the tank's fight place and LEADER_HEALER_TANK_YD live in healerSpotKeeps
-// in src/Ai/Leader/Dungeon/LeaderEvents.cpp, which reaches the generator only as an opaque `keeps` function. Wiring
-// it is one call at healerSpotKeeps plus one reject reason, and both of those files were held by other agents in the
-// session that wrote this. Until then the measurement above and `tests/unit/HealerPlaceTest.cpp` are what it is for:
-// the arithmetic is settled and asserted, so the question it raises can be put with a number instead of a guess.
+// ITS CALLERS, so the seam is not a dead one (a dead seam costs more than an absent one):
+//   * Leader::Fight::LeaderCombatSpot (LeaderFightChecks.cpp) asks `CanExist` and `RingReachesBand` to walk the
+//     healer's candidate rings round the TANK'S FIGHT PLACE, which LeaderEvents.cpp hands it as `tankAt`;
+//   * the `combat_spot_none` emitter in src/Ai/Leader/Dungeon/LeaderEvents.cpp asks `CanExist`, `MaxTankToTargetYd`
+//     and `ShortBy` for the row `topic='healer_place'`, so the record can tell "no place COULD exist" from "a place
+//     could and the search did not find it" - two things that used to be one row;
+//   * `CanExistOnTargetRings` / `ShortByOnTargetRings` are kept because they answer what the OLD generator could
+//     have found, which is the measurement this file was written on and the thing the new rule must beat.
 //
 // NO CLOCK: every fact is a state, read at the instant the place is judged.
 
 #include <algorithm>
+#include <cmath>
 
 namespace Leader::Fight::HealerPlace
 {
@@ -88,13 +90,61 @@ namespace Leader::Fight::HealerPlace
 
     // Can ANY place the generator offers satisfy the tank's acceptance? When this is false the search is not at
     // fault: the set it is asked to pick from is empty by arithmetic.
-    inline bool CanExist(Band const& band, Tank const& tank) { return MinGapToTank(band, tank) <= tank.keepsYd; }
+    inline bool CanExistOnTargetRings(Band const& band, Tank const& tank)
+    {
+        return MinGapToTank(band, tank) <= tank.keepsYd;
+    }
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // [spot91b] USER 2026-11-15: "the healer's place is searched on rings round the MOB. Why is it not searched near
+    // the TANK? That is nonsense, fix it." THE ONE CENTRE IS THE TANK, because the acceptance already measures from
+    // the tank: a candidate generated on a ring round the tank's fight place is inside `keepsYd` of it BY
+    // CONSTRUCTION, so the tank half of the acceptance can no longer empty the set before a candidate is looked at.
+    // The band to the target stays a CHECK, exactly as it was - nothing here moves the healer out of its heal range.
+    //
+    // MEASURED on the closed b504 corpus, and it is why the rings round the mob are the defect: in ALL 20 healer
+    // `combat_spot_none` events every one of the 480 ring candidates round the target (16 directions x 3 rings) was
+    // refused - 480 of 480. Of 2 329 candidates 1 283 (55.1 %) were refused "heal reach", the test `keeps` owns, and
+    // 820 of the 980 `near` candidates (83.7 %) - the stage centred on the HEALER - went that way. Not one stage of
+    // the search was centred on the tank, and the acceptance is the tank's.
+    // ---------------------------------------------------------------------------------------------------------------
+
+    // The farthest the tank's fight place can be from the target with a place still existing: the disk the acceptance
+    // allows round the tank (radius keepsYd) has to touch the band round the target. Both numbers are the code's own,
+    // and this is the single place their sum is written.
+    inline float MaxTankToTargetYd(Band const& band, Tank const& tank) { return tank.keepsYd + band.acceptOuter; }
+
+    // Can a place exist at all, with the candidates generated round the TANK? The disk |p - tank| <= keepsYd must meet
+    // the annulus acceptInner <= |p - target| <= acceptOuter: it reaches the annulus while d <= keepsYd + acceptOuter,
+    // and it is not swallowed by the annulus's hole while d + keepsYd >= acceptInner. Both halves are needed: a rule
+    // that checked only the first would call a tank hugging the target with a short reach a place.
+    inline bool CanExist(Band const& band, Tank const& tank)
+    {
+        return tank.toTargetYd <= MaxTankToTargetYd(band, tank) &&
+               tank.toTargetYd + tank.keepsYd >= band.acceptInner;
+    }
+
+    // A ring of this radius round the tank can hold a point inside the band round the target: the ring's nearest point
+    // to the target is |d - ring| and its farthest d + ring. Rings that cannot are not walked - the pruning is the
+    // band's own two numbers, so it adds no candidate the check would refuse and introduces no number.
+    inline bool RingReachesBand(Band const& band, float toTargetYd, float ring)
+    {
+        return std::fabs(toTargetYd - ring) <= band.acceptOuter && toTargetYd + ring >= band.acceptInner;
+    }
 
     // By how many yards the geometry is short. Zero means a place can exist (it says nothing about whether the
     // ground, the sight or the hazards there are good - those are the search's own checks).
-    inline float ShortBy(Band const& band, Tank const& tank)
+    inline float ShortByOnTargetRings(Band const& band, Tank const& tank)
     {
         return std::max(0.0f, MinGapToTank(band, tank) - tank.keepsYd);
+    }
+
+    // By how many yards the geometry is short of allowing ANY place, the candidates being generated round the tank.
+    // Zero: a place can exist (it says nothing about the ground, the sight or the hazards there - those are the
+    // search's own checks).
+    inline float ShortBy(Band const& band, Tank const& tank)
+    {
+        return std::max(0.0f, tank.toTargetYd - MaxTankToTargetYd(band, tank));
     }
 
     // Rule 5: is "the healer's band" ONE number, or two? True when the ring the generator offers reaches as far out

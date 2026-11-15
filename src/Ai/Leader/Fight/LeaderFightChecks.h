@@ -343,11 +343,16 @@ namespace Leader::Fight
                                std::vector<HazardZone> const& zones,
                                std::function<bool(Position const&)> const& keeps, bool sight);
 
-    // a new combat spot: melee behind the target, ranged at its own reach (LeaderShootReach) / the healer at LEADER_HEALER_YD
-    // nearest the member's own side, each safe, in heal reach and (ranged) in sight of the target
+    // a new combat spot: melee behind the target, ranged at its own reach (LeaderShootReach) nearest the member's
+    // own side, each safe, in heal reach and (ranged) in sight of the target
+    // [spot91b] A HEALER'S CANDIDATES ARE GENERATED ROUND `tankAt`, the tank's fight place - the centre its own
+    // acceptance measures from. Without it the healer falls back to the rings round the target, which is what every
+    // one of the 20 healer `combat_spot_none` events of b504 had (480 of 480 ring candidates refused): `tankAt` is
+    // not a tuning knob, it is the fact the caller either holds or does not.
     bool LeaderCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
                           std::vector<HazardZone> const& zones, std::function<bool(Position const&)> const& keeps,
-                          Position& out, std::vector<ObjectGuid> const* fightMobs = nullptr);
+                          Position& out, std::vector<ObjectGuid> const* fightMobs = nullptr,
+                          Position const* tankAt = nullptr);
 
     // [lead21] a mob of the fight: a hostile creature the tank may attack, never a player's summon or guardian
     // (slabs-h 20261026-195203: the tank was told to take back the mage's Mirror Image 1187 times)
@@ -383,6 +388,12 @@ namespace Leader::Fight
     // [lead1490] the healer's reach edge for its band round a target: its heal reach to a melee member on the
     // target's far side (the heal reach outranks the Inhibit Magic band)
     float LeaderHealerBandEdge(Player* healer, Unit* target);
+    // [spot91b] THE HEALER'S BAND, ONE QUANTITY WITH ONE JUDGE (rule 5). It was written as two numbers in two
+    // places: the generator walked rings out to LEADER_HEALER_YD (20) while the validity check accepted a gap out
+    // to LEADER_HEALER_YD + 10 (30), so the generator never offered a third of the band its own check allows.
+    // Both now ask this. `preferredRing`: the Inhibit Magic ring a caster prefers round Shirrak, 0 when there is
+    // none ([lead1481] / [lead1490]) - the generator's starting radius, never a bound of the band.
+    void LeaderHealerBand(Player* healer, Unit* target, float& inner, float& outer, float* preferredRing = nullptr);
     int32 LeaderInhibitBestStacks(Player* bot, Unit* target);
     float LeaderInhibitRate(int32 stacks);
 
@@ -589,7 +600,8 @@ namespace Leader::Fight
     bool LeaderSearchCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
                                 std::vector<HazardZone> const& zones,
                                 std::function<bool(Position const&)> const& keeps, Position& out,
-                                std::vector<ObjectGuid> const* fightMobs, FightCover const* cover, bool& covered);
+                                std::vector<ObjectGuid> const* fightMobs, FightCover const* cover, bool& covered,
+                                Position const* tankAt = nullptr);  // [spot91b] a healer's centre
 
     // [lead15] the assigned spot's checks: ground, sight to the fight spot, no idle mob outside the pulled pack
     // reaching it, a walk to it.

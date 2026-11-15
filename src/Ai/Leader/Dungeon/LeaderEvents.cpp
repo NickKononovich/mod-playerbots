@@ -24,6 +24,7 @@
 #include "DBCStores.h"
 #include "Engine.h"
 #include "IssueKey.h"  // [jrn47] the key of combat_spot_none, as a seam a test asserts
+#include "HealerPlace.h"  // [spot91b] whether a healer's place could exist at all, for the record
 #include "Journal.h"  // [jrn47] the spot event, its refusals and its problem row
 #include "EscortProtect.h"  // [b36_ohb] EscortGossipHeld
 #include "DpsEstimate.h"  // [lead1308] the threat headroom's rates
@@ -9218,13 +9219,19 @@ namespace Leader::Dungeon
                                                   .Str("target", target->GetName()));
                         }
                         bool covered = false;
+                        // [spot91b] a healer's candidates are generated round the tank's fight place - the centre
+                        // its own acceptance (healerSpotKeeps) already measures from. The one owner of "who is the
+                        // healer" is PlayerbotAI, asked here as everywhere else.
+                        bool const healerHere = PlayerbotAI::IsHeal(bot) && tank->IsAlive();
+                        Position const healerCentre = healerHere ? tankFightAt() : Position();
                         bool got = here || slow([&]
                                                 {
                                                     SpotAcquire const acquire;  // [lead36]
                                                     return LeaderSearchCombatSpot(
                                                         bot, botAI, target, melee, zones, keeps, spot,
                                                         &killOrder,  // [lead214]
-                                                        wantsCover ? &cover : nullptr, covered);
+                                                        wantsCover ? &cover : nullptr, covered,
+                                                        healerHere ? &healerCentre : nullptr);
                                                 });
                         // [lead1470] no spot covers the fight: where it stands, when it fits there, is no worse
                         if (!here && fitsHere && (!got || !covered))
@@ -9584,6 +9591,80 @@ namespace Leader::Dungeon
                                         issue.sourceTable = "pb_journal_spot";
                                         issue.sourceId = spotId;
                                         Journal::RecordIssue(issue);
+
+                                        // [spot91b] THE NUMBER THE RECORD COULD NOT SAY, AS A COLUMN. The whole
+                                        // analysis of these events had to join `pb_journal_actor.tank_yd` of a
+                                        // pull decision to this event BY TIME (2.3-19.9 s of lag over the three
+                                        // b504 events that had the column at all, 17 of 20 had none), and a
+                                        // time join is not identity (rule 6) - it is also the wrong instant,
+                                        // because the tank has not run in when the planner answers. The gap
+                                        // between the two centres AT THE INSTANT THE PLACE IS JUDGED lives
+                                        // nowhere, so it goes in `cost` with its unit, and the verdict says
+                                        // which of the two things happened: a place that COULD NOT EXIST by the
+                                        // band's own two numbers, or a place that could and the search did not
+                                        // find. Before this column those two were one row.
+                                        // `pb_journal_spot` would be its home (it owns this event), but its
+                                        // columns live in src/Ai/Journal/Journal.cpp, held by another agent this
+                                        // session; a decision row needs no schema change and carries the same
+                                        // columns (subject entry+guid, judge, place, cost).
+                                        if (PlayerbotAI::IsHeal(bot) && tank->IsAlive())
+                                        {
+                                            Position const centre = tankFightAt();
+                                            float bandInner = 0.0f;
+                                            float bandOuter = 0.0f;
+                                            Leader::Fight::LeaderHealerBand(bot, target, bandInner, bandOuter);
+                                            Leader::Fight::HealerPlace::Band band;
+                                            band.ringInner = bandInner;
+                                            band.ringOuter = bandOuter;
+                                            band.acceptInner = bandInner;
+                                            band.acceptOuter = bandOuter;
+                                            Leader::Fight::HealerPlace::Tank facts;
+                                            facts.toTargetYd = centre.GetExactDist2d(target->GetPositionX(),
+                                                                                     target->GetPositionY());
+                                            facts.keepsYd = Leader::LEADER_HEALER_TANK_YD;
+                                            bool const canExist =
+                                                Leader::Fight::HealerPlace::CanExist(band, facts);
+                                            Journal::Decision place;
+                                            place.topic = "healer_place";
+                                            place.verdict = canExist ? "search_found_none" : "cannot_exist";
+                                            place.kind = "healer";
+                                            place.choice = canExist ? "a place could exist and none was found"
+                                                                    : "no place could exist";
+                                            place.why = Acore::StringFormat(
+                                                "the tank's fight place is {:.4f} yd from {}, the healer's band "
+                                                "{:.1f}..{:.1f} yd round it and the tank keeps the healer within "
+                                                "{:.1f} yd: a place can exist out to {:.1f} yd, short by {:.4f}; "
+                                                "{} candidates refused ({})",
+                                                facts.toTargetYd, target->GetName(), bandInner, bandOuter,
+                                                facts.keepsYd,
+                                                Leader::Fight::HealerPlace::MaxTankToTargetYd(band, facts),
+                                                Leader::Fight::HealerPlace::ShortBy(band, facts),
+                                                spot.candidates, rejects.Summary());
+                                            // the five's leader places its members: it is the judge, and the
+                                            // member whose place is missing is the judge's own name here because
+                                            // the row is about that member's place (identity stays the guid)
+                                            place.judge = Journal::Judge::FiveLeader;
+                                            place.judgeName = bot->GetName();
+                                            place.judgeLow = guid.GetCounter();
+                                            place.subject = target->GetName();
+                                            place.subjectEntry = target->GetEntry();
+                                            place.subjectLow = target->GetGUID().GetCounter();
+                                            place.subjectKind = "mob";
+                                            place.cost = double(facts.toTargetYd);
+                                            place.costUnit = "yd tank to target";
+                                            place.mapId = bot->GetMapId();
+                                            place.zoneId = bot->GetZoneId();
+                                            place.judgeX = centre.GetPositionX();
+                                            place.judgeY = centre.GetPositionY();
+                                            place.judgeZ = centre.GetPositionZ();
+                                            place.runId = run.runId;
+                                            place.tag = "[spot91b]";
+                                            place.src = "Ai/Leader/Dungeon/LeaderEvents.cpp";
+                                            place.readBy = "";  // checked: nothing reads it, it is the record
+                                            place.text =
+                                                Acore::StringFormat("[spot91b] {}: {}", bot->GetName(), place.why);
+                                            Journal::Record(place);
+                                        }
                                     }
                                     // [lead734] the idle mob the melee places met, where it and the fight stand
                                     Decisions().Write(
@@ -9642,7 +9723,13 @@ namespace Leader::Dungeon
                     if (!valid)
                     {
                         Position spot;
-                        if (slow([&] { return LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot); }))
+                        bool const healerHere = PlayerbotAI::IsHeal(bot) && tank->IsAlive();  // [spot91b]
+                        Position const healerCentre = healerHere ? tankFightAt() : Position();
+                        if (slow([&]
+                                 {
+                                     return LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, spot, nullptr,
+                                                             healerHere ? &healerCentre : nullptr);
+                                 }))
                             lead.combatSpots[guid] = {target->GetGUID(), spot};
                         else
                             lead.combatSpots.erase(guid);
@@ -11541,9 +11628,13 @@ namespace Leader::Dungeon
                                 [&]
                                 {
                                     SpotAcquire const acquire;
+                                    // [spot91b] the healer's centre is the tank's fight place
+                                    bool const healerHere = PlayerbotAI::IsHeal(bot) && tank->IsAlive();
+                                    Position const healerCentre = healerHere ? tankFightAt() : Position();
                                     return LeaderSearchCombatSpot(bot, botAI, judgedOn, false, zones, keeps, spot,
                                                                   &killOrder,  // [lead214]
-                                                                  wantsCover ? &cover : nullptr, covered);
+                                                                  wantsCover ? &cover : nullptr, covered,
+                                                                  healerHere ? &healerCentre : nullptr);
                                 });
                             // [lead1471] the walk weighed by the game math: it pays only when the fight outlasts
                             // it (no damage on its target where it stands; the walk's seconds none either); a flee

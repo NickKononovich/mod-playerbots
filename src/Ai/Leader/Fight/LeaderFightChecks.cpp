@@ -34,6 +34,7 @@
 #include "SpellInfo.h"
 #include "SpellMgr.h"
 #include "StringFormat.h"
+#include "HealerPlace.h"  // [spot91b] whether a healer's place can exist, and which rings reach the band
 #include "LeaderGround.h"  // [dun206] LeaderGroundZ
 #include "LeaderOrders.h"  // [commit10] Leader::Route, the leader's own route search
 #include "TerrainHazard.h"
@@ -1308,10 +1309,11 @@ namespace Leader::Fight
             }
             else if (PlayerbotAI::IsHeal(bot))
             {
-                // [lead1481] round Shirrak the band reaches out to its Inhibit Magic ring's heal reach
-                float inhibitTop = 0.0f;
-                LeaderInhibitRing(bot, target, LeaderHealerBandEdge(bot, target), &inhibitTop);  // [lead1490]
-                if (gap < LEADER_HEALER_YD - 6.0f || gap > std::max(LEADER_HEALER_YD + 10.0f, inhibitTop))
+                // [spot91b] the band has one judge now (LeaderHealerBand): this check and the generator read it
+                float inner = 0.0f;
+                float outer = 0.0f;
+                LeaderHealerBand(bot, target, inner, outer);
+                if (gap < inner || gap > outer)
                     return "out of the healer's band";
             }
             else
@@ -1367,25 +1369,37 @@ namespace Leader::Fight
         return CombatSpotValidWhy(bot, botAI, target, spot, melee, zones, keeps, sight).empty();
     }
 
-    // a new combat spot: melee behind the target, ranged at its own reach (LeaderShootReach) / the healer at LEADER_HEALER_YD
-    // nearest the member's own side, each safe, in heal reach and (ranged) in sight of the target
+    // a new combat spot: melee behind the target, ranged at its own reach (LeaderShootReach) nearest the member's own
+    // side, each safe, in heal reach and (ranged) in sight of the target
+    // [spot91b] a HEALER's candidates are generated round `tankAt` when the caller holds it - the centre its own
+    // acceptance measures from - and its band is the one LeaderHealerBand judges, not a second number here
     bool LeaderCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
                           std::vector<HazardZone> const& zones, std::function<bool(Position const&)> const& keeps,
-                          Position& out, std::vector<ObjectGuid> const* fightMobs)
+                          Position& out, std::vector<ObjectGuid> const* fightMobs, Position const* tankAt)
     {
         std::optional<Position> fallback;  // [lead18] new ground, when no cleared spot fits
         static constexpr float TURNS[] = {0.0f,  0.35f, -0.35f, 0.7f,  -0.7f, 1.05f, -1.05f, 1.4f,
                                           -1.4f, 1.75f, -1.75f, 2.1f,  -2.1f, 2.45f, -2.45f, 3.14f};
         float const base = melee ? target->GetOrientation() + float(M_PI) : target->GetAngle(bot);
+        bool const healer = !melee && PlayerbotAI::IsHeal(bot);
+        float bandInner = 0.0f;
+        float bandOuter = 0.0f;
+        float bandRing = 0.0f;
+        if (healer)
+            LeaderHealerBand(bot, target, bandInner, bandOuter, &bandRing);  // [spot91b] one judge of the band
         float distance = melee ? std::max(1.5f, target->GetCombatReach() + bot->GetCombatReach() * 0.5f)
-                         : PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD
-                                                    : LeaderCastReach(bot, target) - 2.0f;  // [lead660]
+                         : healer ? bandOuter  // [spot91b] the generator offers the band its own check accepts
+                                  : LeaderCastReach(bot, target) - 2.0f;  // [lead660]
         // [lead1481] round Shirrak a caster's / healer's ring is its Inhibit Magic ring (fewest stacks in reach)
-        if (!melee)
+        if (healer)
         {
-            float const reachEdge = PlayerbotAI::IsHeal(bot) ? LeaderHealerBandEdge(bot, target)  // [lead1490]
-                                                             : LeaderCastReach(bot, target) - bot->GetCombatReach() -
-                                                                   target->GetCombatReach();
+            if (bandRing > 0.0f)  // [spot91b] the band's one judge already asked for it
+                distance = bandRing;
+        }
+        else if (!melee)
+        {
+            float const reachEdge =
+                LeaderCastReach(bot, target) - bot->GetCombatReach() - target->GetCombatReach();
             if (float const inhibit = LeaderInhibitRing(bot, target, reachEdge); inhibit > 0.0f)
                 distance = inhibit;
         }
@@ -1396,13 +1410,130 @@ namespace Leader::Fight
         // (LeaderCombatSpotValid: half its reach .. its reach, out of the target's melee): when the outer ring has
         // none, the rings inside the band are searched too, the search step of LeaderNearestCombatSpot's rings
         constexpr float RING_STEP_YD = 3.0f;
-        // [lead492] b209 rfc-h: the healers' one ring at LEADER_HEALER_YD lost 3-16 of its 16 points "out of the
-        // healer's band" (the rays hit RFC's walls short of 20 yd, 5C 201.2 s Rtpriab x16); the healer's band reaches
-        // down to LEADER_HEALER_YD - 6 (CombatSpotValidWhy), its rings inside are searched too
-        float const inner = melee                     ? distance
-                            : PlayerbotAI::IsHeal(bot) ? LEADER_HEALER_YD - 6.0f
-                                                       : LeaderRangedMinGap(bot, target) + 1.0f;  // [lead463]
+        // [lead492] b209 rfc-h: the healers' one ring lost 3-16 of its 16 points "out of the healer's band" (the rays
+        // hit RFC's walls short of 20 yd, 5C 201.2 s Rtpriab x16); the band reaches down below that ring, so the rings
+        // inside it are searched too. [spot91b] both ends of that band are LeaderHealerBand's, one judge for one
+        // quantity - the generator used to stop at its middle
+        float const inner = melee    ? distance
+                            : healer ? bandInner  // [spot91b] the band's one judge
+                                     : LeaderRangedMinGap(bot, target) + 1.0f;  // [lead463]
         Map* map = target->GetMap();
+        // [spot91b] ONE SEQUENCE OF CHECKS FOR A CANDIDATE, whatever ring generated it (rule 5): the rings round the
+        // tank below and the rings round the target that follow ask exactly these judges in exactly this order, so
+        // the two centres cannot drift apart in what they accept. Nothing here is new arithmetic; every call was
+        // already the ring loop's.
+        // `fallbackOut` is the stage's OWN "uncleared ground" ([lead18]): the two stages must not hand each other
+        // one, or the target rings would return the tank stage's leftover before searching their own.
+        auto const candidateFits = [&](Position const& spot, char const* stage, std::optional<Position>& fallbackOut)
+        {
+            if (std::string const why = CombatSpotValidWhy(bot, botAI, target, spot, melee, zones, keeps, true);
+                !why.empty())
+            {
+                NoteSpotReject(stage, why);
+                return false;
+            }
+            // [lead214] a fresh ranged / healer spot is out of every fight mob's melee reach too (lead210), else it
+            // breaks on the next look
+            if (!melee && fightMobs && !LeaderOutOfMobsMelee(bot, spot, *fightMobs))
+            {
+                NoteSpotReject(stage, "inside a fight mob's melee reach");
+                return false;
+            }
+            if (g_spotCover && !melee && !LeaderCoversFight(bot, spot, *g_spotCover))  // [lead1470]
+            {
+                NoteSpotReject(stage, "does not cover the fight spot");
+                return false;
+            }
+            // [lead490] [lead492] a fight spot is judged by how deep it lies in an idle mob's reach against the
+            // fight there (LeaderFightAggroAt)
+            if (int const candidate = LeaderCandidate(bot, spot, fallbackOut, target); candidate != 2)
+            {
+                if (!candidate)
+                    NoteSpotReject(stage, "an idle mob's aggro reach");
+                return false;
+            }
+            return true;
+        };
+        // [spot91b] USER 2026-11-15: «Место для хила ищется кольцами вокруг моба. Я не понимаю, а почему место для
+        // хила ищется не возле танка, а возле моба? Какая-то херня. Это нужно пофиксить.»
+        //
+        // THE HEALER'S CANDIDATES ARE GENERATED ROUND THE TANK'S FIGHT PLACE, because that is the centre its
+        // acceptance already measures from (healerSpotKeeps: within LEADER_HEALER_TANK_YD of where the tank fights).
+        // A candidate born on a ring round the tank is inside that reach BY CONSTRUCTION, so the tank half of the
+        // acceptance can no longer empty the set before a candidate is looked at. Measured on the closed b504
+        // corpus: in ALL 20 healer `combat_spot_none` events every one of the 480 ring candidates round the target
+        // was refused (480 of 480), 1 283 of 2 329 candidates (55.1 %) for "heal reach" - the test `keeps` owns -
+        // and 820 of the 980 `near` candidates (83.7 %), the stage centred on the HEALER. No stage was centred on
+        // the tank.
+        //
+        // THE BAND TO THE TARGET IS STILL A CHECK, SO THE HEALER STILL REACHES WHAT IT HEALS: candidateFits above
+        // asks CombatSpotValidWhy (the band, the hazards and cleaves of LeaderSpotSafe, `keeps` itself, the line of
+        // sight) and LeaderOutOfMobsMelee for every one of these points. Nothing retreats onto the tank's own place.
+        //
+        // WHICH RINGS ARE WALKED is the band's own two numbers through HealerPlace::RingReachesBand - a ring that
+        // cannot hold a point inside the band is not walked at all, so this stage adds no candidate the check would
+        // refuse. No clock, no new number.
+        if (healer && tankAt)
+        {
+            HealerPlace::Band band;
+            band.ringInner = bandInner;
+            band.ringOuter = bandOuter;
+            band.acceptInner = bandInner;
+            band.acceptOuter = bandOuter;
+            HealerPlace::Tank facts;
+            facts.toTargetYd = tankAt->GetExactDist2d(target->GetPositionX(), target->GetPositionY());
+            facts.keepsYd = Leader::LEADER_HEALER_TANK_YD;
+            std::optional<Position> tankFallback;
+            if (!HealerPlace::CanExist(band, facts))
+                NoteSpotReject("tank", "no point in the tank's reach lies in the healer's band");
+            else
+            {
+                float const tankBase = tankAt->GetAngle(bot->GetPositionX(), bot->GetPositionY());
+                for (float ring = facts.keepsYd; ring > 0.0f; ring -= RING_STEP_YD)
+                {
+                    if (!HealerPlace::RingReachesBand(band, facts.toTargetYd, ring))
+                        continue;  // not a rejected candidate: no candidate was made
+                    std::optional<Position> best;
+                    float bestWalk = 0.0f;
+                    for (float turn : TURNS)
+                    {
+                        float const angle = tankBase + turn;
+                        float x = tankAt->GetPositionX() + std::cos(angle) * ring;
+                        float y = tankAt->GetPositionY() + std::sin(angle) * ring;
+                        float z = tankAt->GetPositionZ();
+                        // [lead471] the same ground test the healer places round the tank already use
+                        if (!map->CheckCollisionAndGetValidCoords(target, tankAt->GetPositionX(),
+                                                                  tankAt->GetPositionY(), tankAt->GetPositionZ(), x,
+                                                                  y, z) ||
+                            std::fabs(z - tankAt->GetPositionZ()) > 4.0f)
+                        {
+                            NoteSpotReject("tank", "no ground on the tank's floor");
+                            continue;
+                        }
+                        Position const spot(x, y, z);
+                        if (best && bot->GetExactDist(spot) >= bestWalk)  // [lead902]
+                            continue;
+                        if (!candidateFits(spot, "tank", tankFallback))
+                            continue;
+                        if (float const walk = Leader::WalkYd(bot, spot); !best || walk < bestWalk)
+                        {
+                            best = spot;
+                            bestWalk = walk;
+                        }
+                    }
+                    if (best)
+                    {
+                        out = *best;
+                        return true;
+                    }
+                }
+                if (tankFallback)  // [lead18] new ground round the tank, when no cleared point fits
+                {
+                    out = *tankFallback;
+                    return true;
+                }
+            }
+        }
         for (float ring = distance; ring >= inner || ring == distance; ring -= RING_STEP_YD)
         {
             // [lead902] user 2026-11-03: of the ring's fitting points the one nearest by the member's real walk
@@ -1433,33 +1564,8 @@ namespace Leader::Fight
                 Position const spot(x, y, z);
                 if (best && bot->GetExactDist(spot) >= bestWalk)  // [lead902] no walk to it can be shorter
                     continue;
-                if (std::string const why = CombatSpotValidWhy(bot, botAI, target, spot, melee, zones, keeps, true);
-                    !why.empty())
-                {
-                    NoteSpotReject("ring", why);
+                if (!candidateFits(spot, "ring", fallback))  // [spot91b] the one sequence, shared with the tank
                     continue;
-                }
-                // [lead214] a fresh ranged / healer spot is out of every fight mob's melee reach too (lead210), else
-                // it breaks on the next look
-                if (!melee && fightMobs && !LeaderOutOfMobsMelee(bot, spot, *fightMobs))
-                {
-                    NoteSpotReject("ring", "inside a fight mob's melee reach");
-                    continue;
-                }
-                if (g_spotCover && !melee && !LeaderCoversFight(bot, spot, *g_spotCover))  // [lead1470]
-                {
-                    NoteSpotReject("ring", "does not cover the fight spot");
-                    continue;
-                }
-                // [lead490] [lead492] a fight spot is judged by how deep it lies in an idle mob's reach against the
-                // fight there (LeaderFightAggroAt)
-                if (int const candidate = LeaderCandidate(bot, spot, fallback, target);
-                    candidate != 2)
-                {
-                    if (!candidate)
-                        NoteSpotReject("ring", "an idle mob's aggro reach");
-                    continue;
-                }
                 if (float const walk = Leader::WalkYd(bot, spot); !best || walk < bestWalk)
                 {
                     best = spot;
@@ -1687,6 +1793,23 @@ namespace Leader::Fight
     {
         float const healCentre = Leader::LEADER_HEAL_REACH_YD + 2.0f * healer->GetCombatReach();
         return healCentre - target->GetMeleeRange(healer) - healer->GetCombatReach() - target->GetCombatReach();
+    }
+
+    // [spot91b] THE HEALER'S BAND, ONE QUANTITY WITH ONE JUDGE (rule 5). The two numbers it used to be written as
+    // are both here and nowhere else: the floor LEADER_HEALER_YD - 6 ([lead492]: the rays hit RFC's walls short of
+    // 20 yd, so the rings inside are searched too) and the ceiling LEADER_HEALER_YD + 10, which only the validity
+    // check ever knew - the generator stopped at LEADER_HEALER_YD and so never offered a third of the band its own
+    // check accepts. Measured on b504: 480 of 480 ring candidates round the target refused in all 20 healer
+    // `combat_spot_none` events.
+    void LeaderHealerBand(Player* healer, Unit* target, float& inner, float& outer, float* preferredRing)
+    {
+        inner = LEADER_HEALER_YD - 6.0f;
+        float inhibitTop = 0.0f;
+        // [lead1481] / [lead1490] round Shirrak the band reaches out to its Inhibit Magic ring's heal reach
+        float const ring = LeaderInhibitRing(healer, target, LeaderHealerBandEdge(healer, target), &inhibitTop);
+        outer = std::max(LEADER_HEALER_YD + 10.0f, inhibitTop);
+        if (preferredRing)
+            *preferredRing = ring;
     }
 
     // [lead1482] the core's getStackCount on the edge-to-edge gap (Unit::GetDistance: the 3D centre gap less both
@@ -3394,14 +3517,15 @@ namespace Leader::Fight
     bool LeaderSearchCombatSpot(Player* bot, PlayerbotAI* botAI, Unit* target, bool melee,
                                 std::vector<HazardZone> const& zones,
                                 std::function<bool(Position const&)> const& keeps, Position& out,
-                                std::vector<ObjectGuid> const* fightMobs, FightCover const* cover, bool& covered)
+                                std::vector<ObjectGuid> const* fightMobs, FightCover const* cover, bool& covered,
+                                Position const* tankAt)
     {
         covered = false;
         auto const search = [&]
         {
             return LeaderNearestCombatSpot(bot, botAI, target, bot->GetPosition(), melee, zones, keeps, out,
                                            fightMobs) ||
-                   LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, out, fightMobs);
+                   LeaderCombatSpot(bot, botAI, target, melee, zones, keeps, out, fightMobs, tankAt);  // [spot91b]
         };
         if (cover && cover->tank && !melee && !PlayerbotAI::IsHeal(bot))
         {
