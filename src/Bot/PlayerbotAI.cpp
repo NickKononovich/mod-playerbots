@@ -9003,12 +9003,38 @@ void PlayerbotAI::UpdateIdleDiag(bool casting)
     tickFacts.actionRan = !idleDiag.tickAction.empty();
     if (!tickFacts.casting && !tickFacts.cast && !tickFacts.actionRan)
     {
+        // [jrn56] AND WHICH TARGET IS EVEN BEING ASKED ABOUT IS THE SEAM'S ANSWER TOO, because the question was
+        // wrong for a whole role. "current target" is the HOSTILE target; in a dungeon the leader's plan gives
+        // the pull to the tank, so a healer has none, and this first question therefore answered every tick it
+        // did not act on. Measured with the corpus closed at at_ms <= 1794764479861: a healer in a dungeon in
+        // combat wrote 1 028 windows holding 45 234 ticks, of which 38 090 idled - ALL 38 090 in `noTarget`, with
+        // `rangeLos`, `moving`, `gcd`, `threat`, `leaderHold` and `other` exactly zero in every one of the 1 028
+        // windows across three builds, and ref_top_action NULL in 1 028 of 1 028. Two keys, 1 021 of the
+        // ledger's 3 606 unexplained idle cases, naming the only bucket such a healer could reach.
+        Journal::IdleWindow::TargetLook look;
         Unit* const target = aiObjectContext->GetValue<Unit*>("current target")->Get();
-        tickFacts.hasLiveTarget = target && target->IsAlive();
-        if (tickFacts.hasLiveTarget)
-            tickFacts.outOfReachOrLos = (IsRanged(bot) ? bot->GetDistance(target) > IDLE_DIAG_RANGED_REACH
-                                                       : !bot->IsWithinMeleeRange(target)) ||
-                                        !bot->IsWithinLOSInMap(target);
+        look.hostileAlive = target && target->IsAlive();
+        if (look.hostileAlive)
+            look.hostileOutOfReachOrLos = (IsRanged(bot) ? bot->GetDistance(target) > IDLE_DIAG_RANGED_REACH
+                                                         : !bot->IsWithinMeleeRange(target)) ||
+                                          !bot->IsWithinLOSInMap(target);
+        look.heals = IsHeal(bot);
+        // READ LAZILY, and only where it can change the answer: the hostile target wins wherever it exists, so a
+        // healer that is fighting something never reaches this, and a tank or a dps never does at all. "party
+        // member to heal" is cached per tick and already ranks heals in flight, so this is a lookup and not a
+        // scan of the group. A caster's reach is the existing IDLE_DIAG_RANGED_REACH and not a new number: a
+        // heal is a cast, and IsRanged() is about weapons - it answers "melee" for a holy paladin.
+        if (look.heals && !look.hostileAlive)
+        {
+            Unit* const toHeal = aiObjectContext->GetValue<Unit*>("party member to heal")->Get();
+            look.healAlive = toHeal && toHeal->IsAlive();
+            if (look.healAlive)
+                look.healOutOfReachOrLos = bot->GetDistance(toHeal) > IDLE_DIAG_RANGED_REACH ||
+                                           !bot->IsWithinLOSInMap(toHeal);
+        }
+        Journal::IdleWindow::Target const looked = Journal::IdleWindow::Looked(look);
+        tickFacts.hasLiveTarget = looked.live;
+        tickFacts.outOfReachOrLos = looked.outOfReachOrLos;
         tickFacts.moving = bot->isMoving();
     }
 

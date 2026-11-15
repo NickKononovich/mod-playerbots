@@ -106,6 +106,54 @@ namespace Journal::IdleWindow
     // against the window's own total, so there is no threshold here and nothing to tune.
     bool NamesNoCause(Counts const& counts);
 
+    // [jrn56] WHICH TARGET THE CHAIN IS EVEN TALKING ABOUT - the question itself was wrong for a whole role.
+    //
+    // `hasLiveTarget` was read from one value, "current target", which is the bot's HOSTILE target. In a dungeon
+    // the leader's plan gives the pull to the tank, so a healer has no hostile target at all, and the chain's
+    // first question therefore answered every tick it did not act on. Measured over pb_journal_idle with the
+    // corpus closed at at_ms <= 1794764479861, a healer in a dungeon in combat: 1 028 windows, 45 234 ticks,
+    // 38 090 idle - and ALL 38 090 in `noTarget`, with `rangeLos`, `moving`, `gcd`, `threat`, `leaderHold` and
+    // `other` exactly zero in every one of the 1 028 windows, over three builds. `idle|healer|noTarget` and
+    // `idle|healer|noTarget+noTargetMoving` hold 1 021 of the ledger's 3 606 unexplained idle cases (28.3 %),
+    // and neither names a cause: they name the only bucket such a healer can reach.
+    //
+    // A HEALER'S OWN TARGET IS THE ONE IT HEALS, and the code already has that value: "party member to heal",
+    // cached per tick and ranking heals in flight. Asking it costs no new scan of the world. The hostile target
+    // still WINS where it exists, because a healer grinding in the world is fighting that mob and the bucket must
+    // keep saying so - outside a dungeon the same healers already reach every bucket (217 windows with
+    // `rangeLos`, 560 with `moving`, 1 357 with `gcd`, 1 146 with `other`), which is how we know this is role x
+    // place and not a property of healers.
+    //
+    // WHAT THIS DOES NOT DO: it does not judge whether there was healing WORK. Whether a member at full health is
+    // worth a heal is already decided elsewhere (DpsAssistAction reads the same value against
+    // AlmostFullHealth), and a second place deciding it here would be rule 5. The chain asks only "was there a
+    // target of the kind this bot's job gives it"; WHY nothing came of it is the engine's own answer, and the
+    // whole point is that such a tick now travels far enough down the chain to be asked.
+    //
+    // THE COST, NAMED BEFORE IT IS PAID: for a healer the MEANING of `no_target` changes. Up to b504 it meant
+    // "no hostile target", which for a healer in a dungeon was true on every tick and said nothing; from b505 it
+    // means "nothing of its own kind to act on". Counts taken on b502-b504 for healers therefore do not compare
+    // with later ones - unlike [jrn52] and [jrn54], which added a PART and left the whole alone, this corrects a
+    // question that was simply the wrong one, and a bucket that was never a measurement cannot be preserved.
+    // Nothing changes by a single byte for a tank or a dps: their job target is the hostile one.
+    struct TargetLook
+    {
+        bool heals{false};                   // this bot's job includes healing (the caller knows; the seam asks)
+        bool hostileAlive{false};            // "current target" is there and alive
+        bool hostileOutOfReachOrLos{false};  // ... and out of attack reach or out of sight
+        bool healAlive{false};               // "party member to heal" is there and alive
+        bool healOutOfReachOrLos{false};     // ... and out of a caster's reach or out of sight
+    };
+
+    // The target the chain is talking about, as the two facts the chain consumes.
+    struct Target
+    {
+        bool live{false};
+        bool outOfReachOrLos{false};
+    };
+
+    Target Looked(TargetLook const& look);
+
     // [jrn52] WHICH COUNTER THIS TICK BELONGS TO - the chain itself, as a seam, because its ORDER was the defect.
     // `!target` and then "out of reach or sight" were asked BEFORE `isMoving()`, so the `moving` bucket could only
     // ever catch a tick whose target existed, was in reach AND in sight while the bot still moved: 6 002 ticks of

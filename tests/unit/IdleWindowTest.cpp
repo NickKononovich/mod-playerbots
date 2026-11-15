@@ -409,3 +409,110 @@ TEST(IdleWindowUnasked, AWindowWithNoIdleTickAtAllIsNotCalledNameless)
     EXPECT_STREQ("no", Journal::IdleWindow::Real(c));
     EXPECT_EQ(std::string::npos, Journal::IdleWindow::RealWhy(c).find("names a bucket and no cause"));
 }
+
+// [jrn56] WHICH TARGET THE CHAIN IS TALKING ABOUT. The question, not the order, was wrong for a whole role:
+// `hasLiveTarget` came from "current target", the HOSTILE target, and in a dungeon the leader's plan gives the
+// pull to the tank, so a healer has none. Measured with the corpus closed at at_ms <= 1794764479861: a healer in
+// a dungeon in combat wrote 1 028 windows holding 45 234 ticks, of which 38 090 idled - all 38 090 in `noTarget`,
+// with every other bucket exactly zero in every window, over three builds. Those two keys hold 1 021 of the
+// ledger's 3 606 unexplained idle cases (28.3 %) and name no cause at all.
+//
+// WHAT THE REVERSE ASSERTIONS GUARD, because "a healer always has a target" would pass the first one:
+//   * a dps or a tank must be untouched to the byte - its job target IS the hostile one, and reading a hurt
+//     member for it would move its ticks out of `noTarget` on a fact that is not its job;
+//   * a healer that IS fighting something keeps that mob as its target, which is why the same healers outside a
+//     dungeon already reach every bucket (217 windows with rangeLos, 560 moving, 1 357 gcd, 1 146 other);
+//   * a healer with neither target must still come out "no live target" - the honest version of the same answer.
+TEST(IdleWindowTarget, AHealerWithNothingHostileIsJudgedByTheTargetItHeals)
+{
+    Journal::IdleWindow::TargetLook look;
+    look.heals = true;
+    look.hostileAlive = false;  // in a dungeon the pull is the tank's, by the leader's plan
+    look.healAlive = true;
+    look.healOutOfReachOrLos = false;
+
+    Journal::IdleWindow::Target const t = Journal::IdleWindow::Looked(look);
+    EXPECT_TRUE(t.live) << "the healer's own target is the one it heals, and asking only about a hostile target "
+                           "put all 38 090 idle ticks of 1 028 dungeon windows into noTarget with every other "
+                           "bucket at exactly zero";
+    EXPECT_FALSE(t.outOfReachOrLos);
+
+    // and when the one it heals is too far or out of sight, that is the bucket it belongs in - a tick that used
+    // to be called "no target" is now a tick that says the healer could not reach its man
+    look.healOutOfReachOrLos = true;
+    Journal::IdleWindow::Target const far = Journal::IdleWindow::Looked(look);
+    EXPECT_TRUE(far.live);
+    EXPECT_TRUE(far.outOfReachOrLos);
+}
+
+TEST(IdleWindowTarget, AHealerThatIsFightingSomethingKeepsThatMobAsItsTarget)
+{
+    // the reverse side: a healer grinding in the world HAS a hostile target, and the bucket has always said so.
+    // If the heal target won instead, a healer fighting a mob out of reach would be reported as in reach of a
+    // party member standing next to it.
+    Journal::IdleWindow::TargetLook look;
+    look.heals = true;
+    look.hostileAlive = true;
+    look.hostileOutOfReachOrLos = true;
+    look.healAlive = true;
+    look.healOutOfReachOrLos = false;
+
+    Journal::IdleWindow::Target const t = Journal::IdleWindow::Looked(look);
+    EXPECT_TRUE(t.live);
+    EXPECT_TRUE(t.outOfReachOrLos) << "the mob it is actually fighting decides the reach question, not a member "
+                                      "standing beside it";
+}
+
+TEST(IdleWindowTarget, ADpsOrTankIsUnchangedToTheByte)
+{
+    // nothing about a tank or a dps may move: its job target is the hostile one, and a hurt member beside it is
+    // not its business. This is the assertion a rule of "anybody near a hurt member has a target" would fail.
+    for (bool outOfReach : {false, true})
+    {
+        Journal::IdleWindow::TargetLook look;
+        look.heals = false;
+        look.hostileAlive = true;
+        look.hostileOutOfReachOrLos = outOfReach;
+        look.healAlive = true;  // there IS a hurt member; it must not count for this bot
+        look.healOutOfReachOrLos = !outOfReach;
+        Journal::IdleWindow::Target const t = Journal::IdleWindow::Looked(look);
+        EXPECT_TRUE(t.live);
+        EXPECT_EQ(outOfReach, t.outOfReachOrLos);
+    }
+
+    Journal::IdleWindow::TargetLook none;
+    none.heals = false;
+    none.healAlive = true;  // again: a hurt member in sight of a dps is not a target of the dps
+    Journal::IdleWindow::Target const t = Journal::IdleWindow::Looked(none);
+    EXPECT_FALSE(t.live) << "a dps with nothing hostile has no target, whatever the healer's value says";
+}
+
+TEST(IdleWindowTarget, AHealerWithNeitherTargetStillHasNone)
+{
+    // the honest version of the old answer, and the assertion that a blanket "a healer always has a target"
+    // would fail: with nothing hostile and nobody to heal, the window really is "nothing to act on".
+    Journal::IdleWindow::TargetLook look;
+    look.heals = true;
+    Journal::IdleWindow::Target const t = Journal::IdleWindow::Looked(look);
+    EXPECT_FALSE(t.live);
+    EXPECT_FALSE(t.outOfReachOrLos);
+}
+
+TEST(IdleWindowTarget, TheChainItselfIsUnchangedAndStillAsksMovementInsideEachBranch)
+{
+    // the target question feeds the SAME chain: a healer whose man is out of reach while it walks to him lands in
+    // the walking part of rangeLos, which is the [jrn52] order still holding after the question changed.
+    Journal::IdleWindow::TargetLook look;
+    look.heals = true;
+    look.healAlive = true;
+    look.healOutOfReachOrLos = true;
+    Journal::IdleWindow::Target const t = Journal::IdleWindow::Looked(look);
+
+    Journal::IdleWindow::TickFacts facts;
+    facts.hasLiveTarget = t.live;
+    facts.outOfReachOrLos = t.outOfReachOrLos;
+    facts.moving = true;
+    EXPECT_EQ(Journal::IdleWindow::Tick::RangeLosMoving, Journal::IdleWindow::Classify(facts));
+    facts.moving = false;
+    EXPECT_EQ(Journal::IdleWindow::Tick::RangeLosStill, Journal::IdleWindow::Classify(facts));
+}

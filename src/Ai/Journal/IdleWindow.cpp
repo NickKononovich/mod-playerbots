@@ -49,6 +49,22 @@ namespace Journal::IdleWindow
         return idle > 0 && UnaskedTicks(counts) == idle;
     }
 
+    Target Looked(TargetLook const& look)
+    {
+        // [jrn56] The hostile target first and unconditionally, so nothing changes for a tank or a dps and
+        // nothing changes for a healer that IS fighting something: that mob is what it is busy with, and the
+        // bucket has always said so.
+        if (look.hostileAlive)
+            return {true, look.hostileOutOfReachOrLos};
+        // Only a bot whose job is healing has a second kind of target. `heals` is asked here rather than left to
+        // the caller so that the rule is one a test can hold: a dps standing beside a hurt member has NOT got a
+        // target, and reading one for it would move its ticks out of `noTarget` on a fact that is not its job.
+        if (look.heals && look.healAlive)
+            return {true, look.healOutOfReachOrLos};
+        // And a healer with neither is now a REAL "nothing to act on" rather than an artefact of the question.
+        return {false, false};
+    }
+
     Tick Classify(TickFacts const& facts)
     {
         if (facts.casting)
