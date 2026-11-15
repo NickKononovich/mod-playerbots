@@ -1827,6 +1827,37 @@ namespace Leader::Travel
                     bool const pastBoss = toBoss && farYd > start.GetExactDist(bossSpot);
                     behind = anchor && back >= 0.0f && forward >= 0.0f && (back < forward || pastBoss) &&
                              pastCleared && forward > AggroReach(anchor, leader);
+                    // [route21] `forward >= 0` is where this verdict now dies, and it dies silently. [route20]
+                    // opened the test to the stops its `isOld` shield had kept out, and b498 answered: five1-1
+                    // judged 282 packs over 47 plans - every one of them wasOld, so every one of them is a stop
+                    // [route20] let through - and called NOT ONE of them behind. In the far rows (fromTank 150-285
+                    // yd) `ahead` reads -1.0, which is `nearestTo`'s no-answer, while `back` reads a sane 114-234
+                    // and pastCleared / pastBoss are true: so the walk-ahead distance is the one input missing, and
+                    // every other input already says "off the way". -1 is what `nearestTo` returns when it has no
+                    // leg to measure against - fewer than two spots in `ahead` - and `ahead` is start, then the
+                    // kept non-patrol stops, then the boss spot only when the next boss is known. The two rows that
+                    // DID read an answer (0.7 and 11.5 yd) were packs on the path, refused for the right reason
+                    // (inside their own aggro reach of it). So the shape of the input decides the verdict, and no
+                    // line said so. These three facts name the case per pack, and nothing about the decision
+                    // changes: no new number, no new term, the verdict above is untouched.
+                    if (!behind && anchor && forward < 0.0f)
+                    {
+                        static thread_local uint32 noAheadMs = 0;  // a log cadence only, per map thread
+                        if (!noAheadMs || getMSTimeDiff(noAheadMs, getMSTime()) > 5 * IN_MILLISECONDS)
+                        {
+                            noAheadMs = getMSTime();
+                            if (!noAheadMs)
+                                noAheadMs = 1;
+                            LOG_INFO("playerbots", "[route21] {}: {} is left a stop with no verdict: the walk ahead "
+                                     "has no distance to it ({} spot(s) ahead, {} done, next boss {}), while it "
+                                     "stands {:.0f} yd from the leader, {:.0f} yd from the cleared walk, "
+                                     "pastCleared {}, pastBoss {}{}",
+                                     group.Run().runId, PlanStopName(map, *pack), uint32(ahead.size()),
+                                     uint32(route.routePlanDone.size()), toBoss ? "known" : "unknown", farYd, back,
+                                     pastCleared, pastBoss,
+                                     wasOld ? " [route20] - a stop of the plan until now" : "");
+                        }
+                    }
                     // [lead1324] the verdict's inputs for a pack not judged behind too (the triage compares them)
                     if (!behind && anchor)
                         judgedLog.Raw(JsonObject()
@@ -1840,6 +1871,10 @@ namespace Leader::Travel
                                           .Real("bossFromTank", toBoss ? start.GetExactDist(bossSpot) : -1.0f)
                                           .Bool("pastBoss", pastBoss)  // [lead1341]
                                           .Bool("wasOld", wasOld)  // [route20] judged although already a stop
+                                          // [route21] the shape of the input the verdict died on
+                                          .Num("aheadSpots", int64(ahead.size()))
+                                          .Num("doneSpots", int64(route.routePlanDone.size()))
+                                          .Bool("toBoss", toBoss)
                                           .Build());
                     if (behind)
                     {
