@@ -2702,12 +2702,27 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // most a member can bring, and pulling with less is no safer), but the number the clamp hid is named, once per
     // member and fight length, so the next log says plainly that the plan costs more mana than the member owns and
     // the pack, not the mana, is what has to change.
-    if (lineRaw > 100.5f)
+    // [pull82] wc-n run 691 (five 6, leader Bierya, 2026-11-15): the five stood 237 s and left Wailing Caverns at
+    // 3/8, five bosses "alive, not engaged", on 75 holds of "Aestymro at 20-90 % mana (needs 100 % = 7.07 %/s (spell
+    // data) x 10 s + 41 reserve)" - a boss line of 111.7 % of a pool that holds 100. [pull81] printed NOTHING for it:
+    // its key held the member and the fight length and not whether the line was the boss's or the trash's, and it was
+    // never let go of, so Aestymro's own trash line at the same 10 s - logged 36 700 s earlier, in another run,
+    // another dungeon, on this same map thread - swallowed the boss line of the stall it was built to name. Two
+    // repairs, both of the instrument: the key tells a boss line from a trash one, and it is dropped again the moment
+    // that member's line of that kind comes back inside the pool - a fact of the line, not a clock over it, so the
+    // next time it goes over the pool it is named again.
+    thread_local std::set<std::tuple<uint64, bool, int32>> overPoolLogged;
+    if (overPoolLogged.size() > 4096)
+        overPoolLogged.clear();
+    std::tuple<uint64, bool, int32> const overPoolKey{bot->GetGUID().GetRawValue(), boss, int32(fightSec)};
+    if (lineRaw <= 100.5f)
     {
-        thread_local std::set<std::pair<uint64, int32>> overPoolLogged;
-        if (overPoolLogged.size() > 4096)
-            overPoolLogged.clear();
-        if (!nestedManaLine && overPoolLogged.insert({bot->GetGUID().GetRawValue(), int32(fightSec)}).second)
+        if (!nestedManaLine)
+            overPoolLogged.erase(overPoolKey);
+    }
+    else
+    {
+        if (!nestedManaLine && overPoolLogged.insert(overPoolKey).second)
             LOG_INFO("playerbots",
                      "[pull81] {}: its {} line asks {:.0f} % of a pool that holds 100 ({:.0f} s at {:.2f} %/s, {}): "
                      "no wait meets it - read as 100 %, the plan is what has to change",
