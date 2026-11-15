@@ -1053,6 +1053,36 @@ G3D::Vector3 NewRpgBaseAction::LegStopAt(std::vector<G3D::Vector3> const& points
     return stop;
 }
 
+namespace
+{
+    // [nav250] bot -> ((map, the goal it walks to), the graph node its leg is walking to). The plan is searched
+    // again from where the bot stands, so its first hop flips between two near-equal routes and the bot walks back
+    // to the node it just came from. The stage is kept while the plan still holds it (see GraphStage)
+    struct StageHeld
+    {
+        std::tuple<uint32, int32, int32> goal;
+        uint32 node;
+        uint32 saidAgainst;  // a log cadence only: the flipped pick already named for this stage
+    };
+    std::mutex stageHeldLock;
+    std::unordered_map<uint32, StageHeld> stageHeld;
+
+    void HoldStage(Player* bot, uint32 mapId, G3D::Vector3 const& goal, uint32 node)
+    {
+        std::lock_guard<std::mutex> guard(stageHeldLock);
+        StageHeld& held = stageHeld[bot->GetGUID().GetCounter()];
+        std::tuple<uint32, int32, int32> const key{mapId, int32(goal.x), int32(goal.y)};
+        if (held.goal != key || held.node != node)
+            held = {key, node, 0};
+    }
+
+    void ForgetStageHeld(Player* bot)
+    {
+        std::lock_guard<std::mutex> guard(stageHeldLock);
+        stageHeld.erase(bot->GetGUID().GetCounter());
+    }
+}
+
 bool NewRpgBaseAction::GraphStage(WorldPosition const& dest, float disToDest)
 {
     float const sight = sPlayerbotAIConfig.SightDistance;
@@ -1092,9 +1122,47 @@ bool NewRpgBaseAction::GraphStage(WorldPosition const& dest, float disToDest)
         ++pick;
     while (pick > 0 && !Leader::Travel::WalkGraph::LiveTileLoaded(map, plan.points[pick]))
         --pick;
+    // [nav250] the stage the bot is already walking to is kept while the plan still holds it. The plan is searched
+    // again from where the bot stands, and between two near-equal routes its first hop flips, so the bot turns round
+    // and walks back to the node it came from: b495 Kianey L25 to (963,-264) closed on node 32941 (-224,-1067) at
+    // 1753 yd, the next plan's first hop was its neighbour 32939 (-350,-1067) 126 yd behind, the bot went back
+    // (1904, 1911 yd), the plan returned to 32941 (1922 yd) and MOVE_FAR_LOOP gave the destination up as
+    // unreachable - "best 1753 yd, now 1919 yd, 9 spots". 80 of 86 MOVE_FAR_LOOPs of that log are this walk away
+    // and back (median 47 yd from the best approach), not a bot standing still. The fact that keeps the stage is
+    // that the node is still on a found route to the same goal and the bot has not reached it: no timer, no
+    // distance of its own, and a route that really changed (the node banned or dropped) takes the new pick
+    {
+        std::lock_guard<std::mutex> guard(stageHeldLock);
+        auto const held = stageHeld.find(bot->GetGUID().GetCounter());
+        std::tuple<uint32, int32, int32> const key{dest.GetMapId(), int32(goal.x), int32(goal.y)};
+        if (held != stageHeld.end() && held->second.goal == key)
+        {
+            for (size_t i = 0; i < plan.nodes.size(); ++i)
+                if (plan.nodes[i] == held->second.node && i != pick &&
+                    Leader::Travel::WalkGraph::LiveTileLoaded(map, plan.points[i]) &&
+                    (plan.points[i] - here).length() > MOVE_FAR_PROGRESS)
+                {
+                    if (held->second.saidAgainst != plan.nodes[pick])  // a log cadence, one line per flip
+                    {
+                        held->second.saidAgainst = plan.nodes[pick];
+                        LOG_INFO("playerbots", "[nav250] {} L{} keeps its stage node {} at ({:.0f},{:.0f}) for the "
+                                 "walk to ({:.0f},{:.0f}): this plan's own pick {} at ({:.0f},{:.0f}) turns it "
+                                 "round, and the node it walks to is still on the route",
+                                 bot->GetName(), bot->GetLevel(), held->second.node, plan.points[i].x,
+                                 plan.points[i].y, goal.x, goal.y, plan.nodes[pick], plan.points[pick].x,
+                                 plan.points[pick].y);
+                    }
+                    pick = i;
+                    break;
+                }
+        }
+    }
     G3D::Vector3 const target = plan.points[pick];
     if ((target - here).length() <= MOVE_FAR_PROGRESS)
+    {
+        ForgetStageHeld(bot);  // [nav250] reached: the next plan chooses freely
         return false;
+    }
     auto const searchStart = std::chrono::steady_clock::now();
     BotPath const leg = FindBotPath(bot, target.x, target.y, target.z);
     Leader::Travel::WalkGraph::NoteSearch(
@@ -1117,10 +1185,12 @@ bool NewRpgBaseAction::GraphStage(WorldPosition const& dest, float disToDest)
         // [nav182] the refusal is the leg's (the walker's own areas, reaches and spawns): the next plan goes round
         // that node; this tick the whole walk is searched as before
         info.graphBans.push_back(plan.nodes[pick]);
+        ForgetStageHeld(bot);  // [nav250] a banned node is no stage to hold
         LOG_INFO("playerbots", "[nav182] {} L{} graph node {} banned for the walk to ({:.0f},{:.0f}) ({} banned)",
                  bot->GetName(), bot->GetLevel(), plan.nodes[pick], goal.x, goal.y, info.graphBans.size());
         return false;
     }
+    HoldStage(bot, dest.GetMapId(), goal, plan.nodes[pick]);  // [nav250] the stage this leg walks to
     info.farRoute.assign(leg.points.begin(), leg.points.end());  // [guild15] its legs two sights ahead on it
     G3D::Vector3 const end = LegStopAt(  // [spot10]
         leg.points, leg.length > sight ? Leader::Travel::PointOnPath(leg.points, sight) : leg.actualEnd);
