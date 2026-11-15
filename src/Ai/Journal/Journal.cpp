@@ -349,18 +349,63 @@ namespace Journal
                    "bot_name = inc.bot_name, bot_low = inc.bot_low, map_id = inc.map_id, zone_id = inc.zone_id, "
                    "pos_x = inc.pos_x, pos_y = inc.pos_y, pos_z = inc.pos_z, run_id = inc.run_id, "
                    "source_table = inc.source_table, source_id = inc.source_id, "
-                   "checked = IF(pb_journal_issue.status = 'fixed' "
-                   "             AND inc.last_seen_ms > pb_journal_issue.fixed_ms "
-                   "             AND (pb_journal_issue.fixed_in_build = '' "
-                   "                  OR CAST(SUBSTRING(inc.build, 2) AS UNSIGNED) "
-                   "                     >= CAST(SUBSTRING(pb_journal_issue.fixed_in_build, 2) AS UNSIGNED)), "
-                   "           0, pb_journal_issue.checked), "
-                   "status = IF(pb_journal_issue.status = 'fixed' "
+                   // [jrn55] THE EMITTER'S VERDICT WAS FROZEN AT THE FIRST INSERT, and that is how a criterion
+                   // fixed in code goes on being contradicted by its own table. `why` has always taken the latest
+                   // case and `severity` the worst, but `is_real` / `real_why` / `real_when` took neither - they
+                   // were written once and never again, so a row first seen under an older criterion keeps that
+                   // criterion for ever. Measured side by side in one table: `idle|dps|gcd` (217 cases) and
+                   // `idle|dps|gcd+leaderHold` (28), both first seen on b502, still say is_real='yes', while
+                   // `idle|healer|gcd+threat|world`, the same nature first seen on b504, says 'no' - because
+                   // [jrn51] gave the seam the answer "all the idle was the game's own mechanic or the leader's
+                   // order". The emitter computed 'no' for the b502 rows on every b504 occurrence (Kylanor's
+                   // window of 9 gcd + 43 leaderHold ticks is one) and the write was thrown away here.
+                   //
+                   // AND IT IS CARRIED ONLY OVER THE EMITTER'S OWN WORDS. A row an analyst re-marked carries a
+                   // real_source that is not 'emitter' ('post', 'coordinator', 'agent', 'journal'), and that
+                   // marking is the one thing here a measurement must not overwrite: it is the record of a human
+                   // decision about a row, not a reading of a window. Checked over the live table: every row
+                   // whose stored real_source is still 'emitter' is unchecked (idle 473, alerts 14, death 7,
+                   // combat_spot_none 2, standing 2, route_zone_lost 1), so this carry-forward moves nothing
+                   // anyone has reviewed.
+                   "is_real = IF(pb_journal_issue.real_source = 'emitter', inc.is_real, "
+                   "          pb_journal_issue.is_real), "
+                   "real_why = IF(pb_journal_issue.real_source = 'emitter', inc.real_why, "
+                   "           pb_journal_issue.real_why), "
+                   "real_when = IF(pb_journal_issue.real_source = 'emitter', inc.real_when, "
+                   "            pb_journal_issue.real_when), "
+                   // [jrn55] AND "CLOSED" HAD TWO JUDGES, WHICH IS RULE 5 IN THE LEDGER ITSELF. A row is closed
+                   // by `checked` (and `checked_state`, which the database computes from it), but the return rule
+                   // below asked `status = 'fixed'` - a second place holding the same quantity. They diverged:
+                   // every analyst markup so far set `checked = 1` and `fixed_in_build` and left `status` at its
+                   // default 'open', so the return branch was DEAD for all of them. Measured: of the 319 idle
+                   // rows whose checked_state is 'by_test', 81 were seen again on b504 at or after their own
+                   // fixed_in_build and after their own fixed_ms - and all 319 still read status='open',
+                   // checked=1. A closed problem recurred 81 times and the ledger went on calling it closed.
+                   // `checked` is the judge now and `status` is its consequence, which is also why the two IFs
+                   // below can no longer disagree about the same row.
+                   // `fixed_ms > 0` is required and is not a formality: 0 means "nobody said when it was fixed",
+                   // and reading it as "the fix was at the epoch, so every later case is after it" is trap 7 -
+                   // absence used as a number. Of the rows closed today 114 carry no fixed_ms (standing 34,
+                   // combat_spot_none 31, alerts 20, the rest scattered) and they stay as they are until the
+                   // analyst who ticked them says when.
+                   // THE ORDER OF THESE TWO ASSIGNMENTS IS LOAD-BEARING, and it was caught by running the
+                   // statement rather than reading it. MySQL evaluates an ON DUPLICATE KEY UPDATE list left to
+                   // right, so once both conditions read `checked`, whichever comes second sees the value the
+                   // first one has already written: with `checked` first, a proven return came out
+                   // checked=0 / status='open' - half a return, which reads as a row nobody ever closed. `status`
+                   // is therefore assigned FIRST, while `checked` is still the stored one, and `checked` after.
+                   "status = IF(pb_journal_issue.checked = 1 AND pb_journal_issue.fixed_ms > 0 "
                    "            AND inc.last_seen_ms > pb_journal_issue.fixed_ms "
                    "            AND (pb_journal_issue.fixed_in_build = '' "
                    "                 OR CAST(SUBSTRING(inc.build, 2) AS UNSIGNED) "
                    "                    >= CAST(SUBSTRING(pb_journal_issue.fixed_in_build, 2) AS UNSIGNED)), "
-                   "          'returned', pb_journal_issue.status)";
+                   "          'returned', pb_journal_issue.status), "
+                   "checked = IF(pb_journal_issue.checked = 1 AND pb_journal_issue.fixed_ms > 0 "
+                   "             AND inc.last_seen_ms > pb_journal_issue.fixed_ms "
+                   "             AND (pb_journal_issue.fixed_in_build = '' "
+                   "                  OR CAST(SUBSTRING(inc.build, 2) AS UNSIGNED) "
+                   "                     >= CAST(SUBSTRING(pb_journal_issue.fixed_in_build, 2) AS UNSIGNED)), "
+                   "           0, pb_journal_issue.checked)";
         }
 
         // defined below; the writer thread calls it as its first act (see Writer::Loop)

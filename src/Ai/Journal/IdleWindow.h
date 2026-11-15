@@ -74,6 +74,38 @@ namespace Journal::IdleWindow
     // the number is reported in words and the verdict stays "yes": calling a circle legitimate would be inventing.
     uint32_t TravelTicks(Counts const& counts);
 
+    // [jrn55] AND THE TICKS THE CHAIN ANSWERED BEFORE THE ENGINE WAS EVER ASKED. The engine's own reason for
+    // producing nothing (PlayerbotAI::NoteIdleDiagRefusal, the first refusal of the relevance-ordered queue, with
+    // the name of the action it would have taken) is recorded on EVERY tick - Engine::DoNextAction runs before
+    // UpdateIdleDiag and the fields are cleared only at the top of the next tick - but it is COUNTED only on a
+    // tick that reaches `Other`. `noTarget`, `rangeLos` and `moving` are decided earlier, so on those ticks the
+    // engine's answer is in hand and thrown away.
+    //
+    // THAT IS NOT A SMALL EDGE, IT IS A WHOLE ROLE. Measured over pb_journal_idle at at_ms <= 1794764400000, a
+    // healer in a dungeon in combat: 1 028 windows, 45 234 ticks, 38 090 idle ticks - and all 38 090 of them in
+    // `noTarget`, with `rangeLos`, `moving`, `gcd`, `threat`, `leaderHold` and `other` EXACTLY ZERO in every one
+    // of the 1 028 windows, over three builds (b502 595, b503 310, b504 123). `ref_top_action` is NULL in
+    // 1 028 of 1 028. The cause: a healer in a dungeon has no hostile "current target" - the leader's plan gives
+    // the pull to the tank - so `!hasLiveTarget` is true on every tick it did not act, and the chain's FIRST
+    // question answers the whole window. The key `idle|healer|noTarget` (923 cases, the table's largest) therefore
+    // names the only bucket a healer in a dungeon can ever land in, which is not a cause.
+    //
+    // IT IS NOT THE ROLE ALONE, and the reverse direction is measured too: the same healers OUTSIDE a dungeon
+    // reach every bucket (217 windows with rangeLos, 560 with moving, 1 357 with gcd, 1 146 with other), because
+    // there they grind and do have a hostile target. So this is role x place, not a property of healers, and a
+    // criterion written against the role would be wrong.
+    //
+    // THE VERDICT DELIBERATELY STAYS "yes" FOR SUCH A WINDOW. Unlike ContradictsItself, nothing here is
+    // self-inconsistent: the bot really did idle those ticks (and really did work in them too - 1 272 casts and
+    // 3 493 ticks with a cast in flight across the same windows, and only 87 of 1 028 recorded no activity at
+    // all). Calling it "no" would hide a real idle behind an instrument complaint. What changes is the SENTENCE:
+    // it stops implying the bucket is a cause and says the engine's own answer was never consulted.
+    uint32_t UnaskedTicks(Counts const& counts);
+
+    // Did the chain answer the WHOLE of this window's idle before the engine's own reason was ever read? Equality
+    // against the window's own total, so there is no threshold here and nothing to tune.
+    bool NamesNoCause(Counts const& counts);
+
     // [jrn52] WHICH COUNTER THIS TICK BELONGS TO - the chain itself, as a seam, because its ORDER was the defect.
     // `!target` and then "out of reach or sight" were asked BEFORE `isMoving()`, so the `moving` bucket could only
     // ever catch a tick whose target existed, was in reach AND in sight while the bot still moved: 6 002 ticks of

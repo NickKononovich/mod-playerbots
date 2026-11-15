@@ -32,6 +32,23 @@ namespace Journal::IdleWindow
         return counts.noTargetMoving + counts.rangeLosMoving;
     }
 
+    uint32_t UnaskedTicks(Counts const& counts)
+    {
+        // [jrn55] The buckets the chain decides BEFORE the engine's own reason is read. The refusal and the name
+        // of the action behind it are recorded on every tick and counted only on a tick that reaches `other`, so
+        // on these the answer existed and was discarded. Three names, in the chain's own order, and nothing else:
+        // `gcd`, `threat` and `leaderHold` are asked after it, and `other` is where it is read.
+        return counts.noTarget + counts.rangeLos + counts.moving;
+    }
+
+    bool NamesNoCause(Counts const& counts)
+    {
+        // Equality against this window's own total: no threshold, nothing to tune. Either some idle tick reached
+        // the point where the engine says why, or none did.
+        uint32_t const idle = IdleTicks(counts);
+        return idle > 0 && UnaskedTicks(counts) == idle;
+    }
+
     Tick Classify(TickFacts const& facts)
     {
         if (facts.casting)
@@ -115,6 +132,20 @@ namespace Journal::IdleWindow
                           " ticks that produced nothing and says in which bucket, and " + number(idle - mechanic) +
                           " of them are named by neither the global cooldown nor the leader's command nor the "
                           "threat hold";
+        // [jrn55] ... and the sentence stops implying that the bucket it names IS the cause when the engine was
+        // never asked. On every tick the engine records WHAT it would have done and WHY it did not, and that pair
+        // is counted only on a tick that reaches `other`; `noTarget`, `rangeLos` and `moving` are decided first.
+        // A window whose whole idle sits in those three therefore names a bucket and no cause at all - measured:
+        // every one of the 38 090 idle ticks of a healer in a dungeon in combat (1 028 windows, three builds).
+        if (NamesNoCause(counts))
+            why += "; and NOT ONE of them reached the point where the engine says why, because all " +
+                   number(UnaskedTicks(counts)) +
+                   " sit in the buckets decided before that question (" + number(counts.noTarget) +
+                   " with no live target, " + number(counts.rangeLos) + " with one out of reach or sight, " +
+                   number(counts.moving) +
+                   " still moving to one in reach) - so this window names a bucket and no cause, the engine's own "
+                   "answer existed on each of those ticks and was not counted, and the verdict stays yes because "
+                   "the idle is real even though its reason was never recorded";
         if (uint32_t const travel = TravelTicks(counts))
             why += "; of those, " + number(travel) +
                    " are ticks in which the bot was WALKING (" + number(counts.noTargetMoving) +

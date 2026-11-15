@@ -293,3 +293,119 @@ TEST(IdleWindowChain, TheTravelPartIsCountedAndIsNOTCalledLegitimate)
     EXPECT_STREQ("yes", Journal::IdleWindow::Real(c));
     EXPECT_NE(std::string::npos, Journal::IdleWindow::RealWhy(c).find("29"));
 }
+
+// [jrn55] THE TICKS THE CHAIN ANSWERED BEFORE THE ENGINE WAS EVER ASKED.
+//
+// Every fixture here is one row of pb_journal_idle, at_ms <= 1794764400000, named after the bot that wrote it.
+// The engine records on EVERY tick what it would have done and why it did not (NoteIdleDiagRefusal, the first
+// refusal of the relevance-ordered queue); that pair is COUNTED only on a tick that reaches `other`, and
+// `noTarget`, `rangeLos` and `moving` are decided earlier. So on those ticks the answer existed and was dropped.
+//
+// MEASURED, and it is a whole role rather than an edge: a healer in a dungeon in combat wrote 1 028 windows over
+// three builds (b502 595, b503 310, b504 123) holding 45 234 ticks, of which 38 090 idled - and ALL 38 090 are in
+// `noTarget`, with `rangeLos`, `moving`, `gcd`, `threat`, `leaderHold` and `other` exactly zero in every window,
+// and ref_top_action NULL in 1 028 of 1 028. A healer in a dungeon has no hostile "current target" (the leader
+// gives the pull to the tank), so the chain's first question answers the window. `idle|healer|noTarget` - 923
+// cases, the ledger's largest key - names the only bucket such a healer can reach.
+//
+// THE REVERSE DIRECTION IS ASSERTED TOO, because a rule saying "every window names no cause" would pass the
+// first two assertions: the same healers OUTSIDE a dungeon reach every bucket (217 windows with rangeLos, 560
+// with moving, 1 357 with gcd, 1 146 with other), and a window that did reach the engine's answer must not be
+// described as nameless. And the verdict must stay "yes": the idle is real, only its reason is unrecorded.
+namespace
+{
+    // pb_journal_idle, b504, Aestymro (healer, Wailing Caverns, in combat): 75 ticks, every single one idle with
+    // no live target, and nothing else counted anywhere.
+    Counts AestymroHealingInADungeon()
+    {
+        Counts c;
+        c.ticks = 75;
+        c.noTarget = 75;
+        return c;
+    }
+
+    // pb_journal_idle, b502/b503, Pherua (healer, in combat, in a dungeon): the same shape with the healer's own
+    // work visible beside it - one cast and one executed action, 72 of 74 ticks idle, all of them `noTarget`.
+    Counts PheruaWithItsOwnWorkBesideIt()
+    {
+        Counts c;
+        c.ticks = 74;
+        c.casts = 1;
+        c.nonCast = 1;
+        c.noTarget = 72;
+        return c;
+    }
+}  // namespace
+
+TEST(IdleWindowUnasked, TheTicksAnsweredBeforeTheEngineWasAskedAreCounted)
+{
+    Counts const aestymro = AestymroHealingInADungeon();
+    EXPECT_EQ(75u, Journal::IdleWindow::IdleTicks(aestymro));
+    EXPECT_EQ(75u, Journal::IdleWindow::UnaskedTicks(aestymro));
+    EXPECT_TRUE(Journal::IdleWindow::NamesNoCause(aestymro));
+
+    Counts const pherua = PheruaWithItsOwnWorkBesideIt();
+    EXPECT_EQ(72u, Journal::IdleWindow::UnaskedTicks(pherua));
+    EXPECT_TRUE(Journal::IdleWindow::NamesNoCause(pherua));
+}
+
+TEST(IdleWindowUnasked, AWindowWhoseWholeIdleWasAnsweredFirstSaysItNamesNoCause)
+{
+    std::string const why = Journal::IdleWindow::RealWhy(AestymroHealingInADungeon());
+    EXPECT_NE(std::string::npos, why.find("names a bucket and no cause"))
+        << "the window says the engine 'says in which bucket' as if the bucket were the cause, while all 75 of "
+           "its idle ticks were decided before the engine's own answer was ever read: 38 090 of 38 090 idle "
+           "ticks of a healer in a dungeon, 1 028 windows, ref_top_action NULL in all of them";
+    EXPECT_NE(std::string::npos, why.find("75"));
+}
+
+TEST(IdleWindowUnasked, TheVerdictOfSuchAWindowStaysYesBecauseTheIdleIsReal)
+{
+    // the inverse of the obvious "shrug and call it the instrument": nothing in this window contradicts itself,
+    // the bot really idled those ticks, and 941 of the 1 028 windows show it working in the same breath (1 272
+    // casts, 3 493 ticks with a cast in flight). Calling it "no" would hide a real idle behind a complaint.
+    EXPECT_STREQ("yes", Journal::IdleWindow::Real(AestymroHealingInADungeon()));
+    EXPECT_STREQ("yes", Journal::IdleWindow::Real(PheruaWithItsOwnWorkBesideIt()));
+}
+
+TEST(IdleWindowUnasked, AWindowThatDidReachTheEnginesAnswerIsNotCalledNameless)
+{
+    // Zharet, b504, dps in Wailing Caverns: 74 ticks, 2 casts, 11 with a cast in flight, 1 executed action, and
+    // of its 60 idle ticks 54 DID reach `other`, where the engine named "fear counter tremor totem - IMPOSSIBLE".
+    // This fixture is deliberately one that gets as far as the main sentence - it neither contradicts itself nor
+    // is all mechanic - so the assertion below can actually come out false.
+    Counts zharet;
+    zharet.ticks = 74;
+    zharet.casts = 2;
+    zharet.castWait = 11;
+    zharet.nonCast = 1;
+    zharet.noTarget = 5;
+    zharet.noTargetMoving = 5;
+    zharet.moving = 1;
+    zharet.other = 54;
+    ASSERT_FALSE(Journal::IdleWindow::ContradictsItself(zharet));
+    ASSERT_NE(Journal::IdleWindow::IdleTicks(zharet), Journal::IdleWindow::MechanicTicks(zharet));
+    EXPECT_EQ(6u, Journal::IdleWindow::UnaskedTicks(zharet));
+    EXPECT_FALSE(Journal::IdleWindow::NamesNoCause(zharet));
+    EXPECT_EQ(std::string::npos, Journal::IdleWindow::RealWhy(zharet).find("names a bucket and no cause"));
+
+    // and the leader's own hold is asked AFTER the chain's first three too: Bhogagnuth's 53 leaderHold + 17 gcd
+    // ticks are all named, so this window is not nameless either
+    Counts const bhogagnuth = BhogagnuthUnderItsLeader();
+    EXPECT_EQ(0u, Journal::IdleWindow::UnaskedTicks(bhogagnuth));
+    EXPECT_FALSE(Journal::IdleWindow::NamesNoCause(bhogagnuth));
+}
+
+TEST(IdleWindowUnasked, AWindowWithNoIdleTickAtAllIsNotCalledNameless)
+{
+    // the guard against "zero equals zero": a clean window (every bucket zero) must not be swept in by an
+    // equality that would hold trivially, and it already has its own verdict and its own sentence
+    Counts c;
+    c.ticks = 40;
+    c.casts = 12;
+    c.nonCast = 28;
+    EXPECT_EQ(0u, Journal::IdleWindow::IdleTicks(c));
+    EXPECT_FALSE(Journal::IdleWindow::NamesNoCause(c));
+    EXPECT_STREQ("no", Journal::IdleWindow::Real(c));
+    EXPECT_EQ(std::string::npos, Journal::IdleWindow::RealWhy(c).find("names a bucket and no cause"));
+}
