@@ -54,6 +54,7 @@ add_executable(pb_unit_tests
     unit/AggroReasonTest.cpp
     unit/SoloCombatEntryTest.cpp
     unit/StandingEpisodeTest.cpp
+    unit/MountEpisodeTest.cpp
     unit/MoveStepTest.cpp
     unit/ChaseWindowTest.cpp
     unit/ManaBudgetTest.cpp
@@ -71,6 +72,7 @@ add_executable(pb_unit_tests
     "${PB_MODULE_ROOT}/src/Ai/Journal/AggroReason.cpp"
     "${PB_MODULE_ROOT}/src/Bot/Engine/SoloCombatEntry.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/StandingEpisode.cpp"
+    "${PB_MODULE_ROOT}/src/Ai/Journal/MountEpisode.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IdleWindow.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Base/Actions/MoveStep.cpp"
     "${PB_MODULE_ROOT}/src/Ai/World/Rpg/ChaseModel.cpp"

@@ -222,6 +222,12 @@ namespace Journal
             // [jrn51] which action the engine turned down, beside the reason it already gave
             // [jrn52] the walking part of no_target and range_los
             "engine_state, ref_top_action, ref_top_cause, ref_top_ticks, no_target_moving, range_los_moving)";
+        // [mount9] one change of a bot's mount state, with the facts that could justify it as columns
+        char const* const COLUMNS_MOUNT =
+            "(id, boot_id, at_ms, hour_bucket, event, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
+            "pos_y, pos_z, mount_spell, mount_name, indoors, in_combat, target_in_reach, in_water, on_transport, "
+            "moving, has_leader, leader_rides, leader_low, has_walk, walk_to_x, walk_to_y, walk_left_yd, why, "
+            "episode_mounts, episode_dismounts, episode_flips, held_sec, held_yd, justification, run_id, build)";
         // [jrn43] target_zone_id: the target's own zone - for `wait_behind`, the member's
         char const* const COLUMNS_STUCK =
             "(id, boot_id, at_ms, hour_bucket, kind, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
@@ -279,6 +285,9 @@ namespace Journal
                 return COLUMNS_IDLE;
             if (!std::strcmp(table, "pb_journal_stuck"))
                 return COLUMNS_STUCK;
+            // [mount9] the mount state's own changes
+            if (!std::strcmp(table, "pb_journal_mount"))
+                return COLUMNS_MOUNT;
             if (!std::strcmp(table, "pb_journal_alert"))
                 return COLUMNS_ALERT;
             // [jrn47] the spot event and its refusals
@@ -515,6 +524,7 @@ namespace Journal
                                           "pb_journal_route", "pb_journal_route_stop", "pb_journal_fight",
                                           "pb_journal_aggro", "pb_journal_death", "pb_journal_idle",
                                           "pb_journal_stuck", "pb_journal_alert",
+                                          "pb_journal_mount",  // [mount9] the mount state's own changes
                                           "pb_journal_spot",  // [jrn47] with its child below
                                           "pb_journal_spot_reject", "pb_journal_line"})
                 {
@@ -1365,6 +1375,49 @@ namespace Journal
                  + parts)
                     .c_str());
 
+            // [mount9] ONE CHANGE OF A BOT'S MOUNT STATE. The user asked for the circle of getting on and off
+            // to be caught in the problems table; this is where the inputs of each change live, and the problem
+            // row (kind `mount_flap`) points at it. Every fact that could JUSTIFY a change is a column with an
+            // index, because "a dismount for a fight" and "a dismount nothing explains" are two problems and
+            // telling them apart is a WHERE clause, not a reading of `why`.
+            CreateOrExtend(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_mount ("
+                             "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "event VARCHAR(10) NOT NULL DEFAULT '', bot_name VARCHAR(32) NOT NULL DEFAULT '', "
+                             "bot_low INT UNSIGNED NOT NULL DEFAULT 0, bot_level SMALLINT UNSIGNED NULL, "
+                             "role VARCHAR(8) NULL, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
+                             "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
+                             // which beast, by identity: the spell is the identity and the name is for the eyes
+                             "mount_spell INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "mount_name VARCHAR(48) NOT NULL DEFAULT '', "
+                             // the facts that could justify the change. NULL = not passed, which is not false
+                             "indoors TINYINT UNSIGNED NULL, in_combat TINYINT UNSIGNED NULL, "
+                             "target_in_reach TINYINT UNSIGNED NULL, in_water TINYINT UNSIGNED NULL, "
+                             "on_transport TINYINT UNSIGNED NULL, moving TINYINT UNSIGNED NULL, "
+                             "has_leader TINYINT UNSIGNED NULL, leader_rides TINYINT UNSIGNED NULL, "
+                             "leader_low INT UNSIGNED NOT NULL DEFAULT 0, has_walk TINYINT UNSIGNED NULL, "
+                             "walk_to_x FLOAT NULL, walk_to_y FLOAT NULL, walk_left_yd FLOAT NULL, "
+                             "why TEXT NULL, "
+                             // the episode the change belongs to, as the seam counted it
+                             "episode_mounts INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "episode_dismounts INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "episode_flips INT UNSIGNED NOT NULL DEFAULT 0, held_sec FLOAT NULL, "
+                             "held_yd FLOAT NULL, justification VARCHAR(128) NOT NULL DEFAULT '', "
+                             "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY event_at (event, at_ms), "
+                             "KEY bot_at (bot_low, at_ms), KEY where_at (map_id, zone_id, at_ms), "
+                             "KEY role_at (role, at_ms), KEY build_at (build, at_ms), KEY run_at (run_id, at_ms), "
+                             // the cuts this table exists for: the justification, the flip count, the leader
+                             "KEY just_at (justification, at_ms), KEY flips_at (episode_flips, at_ms), "
+                             "KEY leader_at (leader_low, at_ms), KEY walk_at (has_walk, at_ms), "
+                             "KEY reach_at (target_in_reach, at_ms)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[mount9] every change of a mount state, with the facts that justify it'")
+                 + parts)
+                    .c_str());
+
             // [jrn47] one search for a combat place that found none. The event's own row; WHICH CHECK turned the
             // places down is the child table below, a row per (stage, reason) - homogeneous participants of one
             // event, which rule 1 makes rows and not a printed list.
@@ -1895,6 +1948,31 @@ namespace Journal
                                 OrNull(stuck.targetToZ), OrNull(stuck.targetDoing, 32),
                                 OrNull(stuck.inCombat),
                                 Quoted(stuck.actionRunning, 96), Prose(stuck.why), Quoted(stuck.runId, 48),
+                                Quoted(Config().build, 16)));
+        return id;
+    }
+
+    uint64 RecordMount(Mount const& mount)
+    {
+        if (!Ready())
+            return 0;
+        uint64 const nowMs = NowMs();
+        uint64 const id = Writer::Instance().NextId();
+        Writer::Instance().Push(
+            "pb_journal_mount",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                "{},{},{},{},{},{},{},{},{},{},{})", id,
+                                BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(mount.event, 10),
+                                Quoted(mount.botName, 32), mount.botLow, OrNull(mount.botLevel),
+                                OrNull(mount.role, 8), mount.mapId, mount.zoneId, Real(mount.x), Real(mount.y),
+                                Real(mount.z), mount.mountSpell, Quoted(mount.mountName, 48),
+                                OrNull(mount.indoors), OrNull(mount.inCombat), OrNull(mount.targetInReach),
+                                OrNull(mount.inWater), OrNull(mount.onTransport), OrNull(mount.moving),
+                                OrNull(mount.hasLeader), OrNull(mount.leaderRides), mount.leaderLow,
+                                OrNull(mount.hasWalk), OrNull(mount.walkToX), OrNull(mount.walkToY),
+                                OrNull(mount.walkLeftYd), Prose(mount.why), mount.episodeMounts,
+                                mount.episodeDismounts, mount.episodeFlips, OrNull(mount.heldSec),
+                                OrNull(mount.heldYd), Quoted(mount.justification, 128), Quoted(mount.runId, 48),
                                 Quoted(Config().build, 16)));
         return id;
     }

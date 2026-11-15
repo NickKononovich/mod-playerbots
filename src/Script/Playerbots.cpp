@@ -284,7 +284,13 @@ public:
     void OnUnitUpdate(Unit* unit, uint32 /*diff*/) override
     {
         if (Player* player = unit && unit->IsPlayer() ? unit->ToPlayer() : nullptr)
+        {
             Journal::NoteStanding(player);
+            // [mount9] and the mount state's own watch, on the same dispatch: one reading of IsMounted() tells
+            // every change of it, whoever caused it - this module's dozen dismount paths and the core's silent
+            // ones alike. Instrumenting the callers would have measured only the half that already speaks.
+            Journal::NoteMount(player);
+        }
     }
 };
 

@@ -49,7 +49,10 @@ if (BUILD_TESTING)
     # [death475] was the item use accepted by the core: a header-only seam, so only the test here
     "${PB_TESTS_DIR}/unit/ItemUseTest.cpp"
     # [tele20] which copy of the dungeon a "go to him" lands in: a header-only seam, so only the test here
-    "${PB_TESTS_DIR}/unit/GoToInstanceTest.cpp")
+    "${PB_TESTS_DIR}/unit/GoToInstanceTest.cpp"
+    # [mount9] the mount state's episode and its flip rule: its seam compiles into the module from src, so only
+    # the test is listed here
+    "${PB_TESTS_DIR}/unit/MountEpisodeTest.cpp")
   set_property(GLOBAL APPEND PROPERTY ACORE_MODULE_TEST_INCLUDES
     "${PB_TESTS_DIR}/unit"
     "${CMAKE_CURRENT_LIST_DIR}/src/Script"  # [tele20] GoToInstance.h, the header-only seam of "go to him"

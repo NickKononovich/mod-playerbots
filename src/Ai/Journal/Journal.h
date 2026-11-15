@@ -996,6 +996,81 @@ namespace Journal
     // is one branch for a non-player plus, for a bot, two float compares and a stamp under a sharded lock.
     void NoteStanding(Player* bot);
 
+    // [mount9] ONE CHANGE OF A BOT'S MOUNT STATE, with the facts that could justify it. The user asked for this
+    // one in these words: "they look stuck, they just stand there and keep getting off the mount and back on.
+    // That is a plain bug. I need such cases caught in issues."
+    //
+    // WHY IT IS A ROW PER CHANGE AND NOT A COUNTER: the question is WHY the state was reconsidered, and that is a
+    // fact of the instant of each change. A counter would answer "seven times" and never which seven facts, so
+    // the row carries the facts as COLUMNS - a dismount for a fight and a dismount for nothing are two different
+    // problems and must be separable by a WHERE clause.
+    //
+    // `event`: "mount" | "dismount" - the direction, as a value and not as a sign on a number - or
+    // "sample", for a report the cadence brought round while the episode was open and nothing had
+    // changed since the last one. The three are a closed set and `event` is indexed, so "how many
+    // changes" never has to be inferred from how many rows there are.
+    struct Mount
+    {
+        std::string event;
+        std::string botName;
+        uint32 botLow = 0;
+        Optional<uint32> botLevel;
+        Optional<std::string> role;
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        float x = 0.f, y = 0.f, z = 0.f;
+
+        // WHICH BEAST, by identity and not by name only: the spell is the identity, the name is for the eyes.
+        // 0 / "" means the bot was not on one (every `dismount` row after the fact, and a mount that failed).
+        uint32 mountSpell = 0;
+        std::string mountName;
+
+        // THE FACTS THAT COULD JUSTIFY THIS CHANGE, each read once at this instant. NULL is "the emitter did not
+        // pass it" and is not false: a row that cannot tell "it was not indoors" from "nobody looked" would let a
+        // query answer and lie.
+        Optional<bool> indoors;
+        Optional<bool> inCombat;
+        Optional<bool> targetInReach;
+        Optional<bool> inWater;
+        Optional<bool> onTransport;
+        Optional<bool> moving;
+        Optional<bool> hasLeader;
+        Optional<bool> leaderRides;
+        uint32 leaderLow = 0;  // the mount leader by guid, so "one flapping leader or five flapping members" is a
+                               // query (COUNT(DISTINCT leader_low)) and not a guess
+        Optional<bool> hasWalk;
+        Optional<float> walkToX, walkToY;  // where the walk was headed, when there was one
+        Optional<float> walkLeftYd;        // and how far it still had to go: the number MountForWalk judges on
+        // The reason the code that took the bot off named, in its own words (GuildRiding::NoteDismount): "a
+        // fight", "a fight: its target in reach", "loot / gather", "indoors", "a pull", "its Hearthstone", "its
+        // leader got off next to it", "a led run standing". Empty on a `mount` row, and empty on a `dismount`
+        // nobody claimed - which is a finding and not a gap, because the core takes the mount away silently too.
+        std::string why;
+
+        // THE EPISODE THIS CHANGE BELONGS TO, as the seam counted it (Journal::MountState). The columns are here
+        // and not only in the issue row because the issue row keeps one range while every change keeps its own
+        // standing, and a query that wants "the seventh change of that episode" needs both.
+        uint32 episodeMounts = 0;
+        uint32 episodeDismounts = 0;
+        uint32 episodeFlips = 0;
+        Optional<float> heldSec;  // how long the episode has held one place
+        Optional<float> heldYd;   // the radius it stayed inside, never the step that took it out
+        std::string justification;  // the closed set of facts this change stood under ("nothing" when none spoke)
+
+        std::string runId;
+    };
+
+    uint64 RecordMount(Mount const& mount);
+
+    // [mount9] The per-tick observer of the mount state: one judge of "the state changed", whoever changed it.
+    //
+    // WHY HERE AND NOT AT THE TWENTY PLACES THAT DISMOUNT. The mount is taken away by this module in a dozen
+    // actions, by GuildRiding, and by the CORE itself (a cast that may not be made mounted, going indoors) - and
+    // the silent ones are exactly the half that matters, because a change nobody claims is the one no reader can
+    // explain. Instrumenting the callers would therefore have measured the half that already speaks. Reading the
+    // state once per tick measures all of it, and it is one judge of one quantity instead of twenty.
+    void NoteMount(Player* bot);
+
     // Drops a bot's standing episode (its logout or removal): the state is per bot and must not outlive it.
     void ForgetStanding(uint32 botLow);
 

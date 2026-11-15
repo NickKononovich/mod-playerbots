@@ -201,6 +201,24 @@ namespace Journal::Key
         return shape;
     }
 
+    // THE FIRST VERSION OF THIS KEY, KEPT BECAUSE A TEST ASSERTS THE TRAP AGAINST IT: the key as the emitter's
+    // own printed sentence, which is exactly how both sibling kinds were written the first time. The printed
+    // sentence carries the episode's counts, and the counts climb with every report, so MountEpisodeTest's
+    // OneEpisodeIsOneProblemWhateverTheCounts shows seven reports of ONE episode of Emdyl's becoming seven
+    // "problems" here against one under MountFlap(). It is called from the test and from nowhere else - on
+    // purpose: a measured trap with no witness turns back into an opinion.
+    std::string MountFlapNaive(std::string const& printedWhy) { return "mount_flap|" + printedWhy; }
+
+    std::string MountFlap(std::string const& role, bool hasWalk, bool hasLeader, std::string const& justification)
+    {
+        // The justification is already a closed set of fact names (Journal::MountState::Justification), so it
+        // carries no number to take out and no trace to drop: it is the cause, character for character. What is
+        // added beside it is the role (as both sibling kinds carry it) and the two facts that decide WHICH judge
+        // is flapping - whether a walk was in play, and whether the bot copies a mount leader at all.
+        return "mount_flap|" + role + "|" + (hasWalk ? "walk" : "no walk") + "|" +
+               (hasLeader ? "led" : "solo") + "|" + justification;
+    }
+
     std::string RunFailed(RunFacts const& facts)
     {
         return "run_failed|" + facts.contentKey + "|" + facts.result + "|" + RunFailedShape(facts);

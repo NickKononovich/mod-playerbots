@@ -107,7 +107,22 @@ bool CheckMountStateAction::Execute(Event /*event*/)
     }
     else
     {
-        shouldMount = true;
+        // [mount9] A BOT STANDING STILL HAS NO RIDE TO TAKE, so having no target is not a reason to get on. This
+        // is NOT a new rule and not a new threshold: it is the rule this very file already states and already
+        // ships for a led run eighty lines down ("A led tank standing still has no ride to take: it stays off the
+        // mount (and gets off), and mounts only for a walk (it is moving)"), and until now it was applied to a
+        // tracked run only. Everywhere else "no target" meant "mount", and a standing bot was mounted on every
+        // tick it had nothing to attack.
+        //
+        // THAT IS WHAT THE USER SAW IN THE GAME ("they just stand there and keep getting off the mount and back
+        // on"), and it is two judges on one quantity - rule 5. Measured on b504: 915 standing windows over 23
+        // bots whose engine trace shows this action EXECUTING, 823 of them with no group at all, and whatever the
+        // bot was really doing in town (a craft, an enchant, a vendor) is a cast that takes the mount away again -
+        // Emdyl held ONE point in Stormwind to four decimals for 95.4 minutes that way. Nothing here mounts for a
+        // walk: that is MountForWalk's judgement (NewRpgBaseAction, [mount5]), and it stays the only one.
+        //
+        // No elapsed time is consulted: `isMoving()` is a fact of this instant, which is what rule 2 requires.
+        shouldMount = bot->isMoving();
     }
 
     // If should dismount, or master (if any) is no longer in travel form, yet bot still is, remove the shapeshifts
@@ -472,7 +487,11 @@ bool CheckMountStateAction::TryRandomMountFiltered(std::map<int32, std::vector<u
     return false;
 }
 
-float CheckMountStateAction::CalculateDismountDistance() const
+float CheckMountStateAction::CalculateDismountDistance() const { return DismountBandYd(bot); }
+
+// [mount9] the same expression, with the bot as its only input, so the journal's mount watch can READ this
+// quantity instead of keeping a second copy of it
+float CheckMountStateAction::DismountBandYd(Player* bot)
 {
     // Warrior bots should dismount far enough to charge (because it's important for generating some initial rage),
     // a real player would be riding toward enemy mashing the charge key but the bots won't cast charge while mounted.

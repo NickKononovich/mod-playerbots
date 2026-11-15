@@ -53,6 +53,11 @@ public:
     // [mount7] the bot is near enough its mount leader to copy its getting off: the way left is too short for a
     // mount to pay (GuildRiding::MountPaysFromYd); no leader on its map: true
     static bool RidesWithLeader(Player* bot, Player* leader);
+    // [mount9] THE DISMOUNT BAND AND THE MOUNT ITSELF, PUBLISHED SO THAT NOBODY KEEPS A SECOND COPY. The band
+    // is this action's own quantity ("a target in reach"); the journal's mount watch asks for it here instead
+    // of repeating the expression, which is rule 5 - one quantity, one judge - applied to an instrument.
+    static float DismountBandYd(Player* bot);
+    static SpellInfo const* GetMountSpell(Player* player);
 
 private:
     Player* master;
@@ -72,7 +77,6 @@ private:
     bool TryPreferredMount(Player* master) const;
     uint32 GetMountType(Player* master) const;
     bool TryRandomMountFiltered(std::map<int32, std::vector<uint32>> const& spells, int32 masterSpeed) const;
-    static SpellInfo const* GetMountSpell(Player* player);
 };
 
 // The leader's mount state differs from ours (it mounts, starts casting a mount, or dismounts): copy it now, not on

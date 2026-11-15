@@ -117,6 +117,35 @@ namespace Journal::Key
     std::string CombatSpotNone(std::string const& role, std::vector<std::string> const& reasons,
                                std::string const& trace);
 
+    // [mount9] `mount_flap`: a bot got onto and off its mount repeatedly WITHOUT LEAVING ITS OWN RADIUS. The
+    // cause this detector can honestly name is the JUSTIFICATION the repeated change stood under
+    // (Journal::MountState::Justification - a closed set of facts, not a text that happens to differ), plus the
+    // role, as both sibling kinds carry it, plus whether a walk was in play at all and whether the bot copies a
+    // mount leader - because those three are three different judges of the same quantity and a fix for one must
+    // not turn a test green over the other two:
+    //   * no walk, justification `nothing` - the town case: a standing bot with no target was mounted by
+    //     CheckMountStateAction because "no target" meant "mount", and whatever it was really doing (a craft, an
+    //     enchant, a vendor) took the mount away again. Measured on b504: 915 standing windows over 23 bots,
+    //     823 of them with in_group = 0, Emdyl 95.4 min at ONE point in Stormwind to four decimals.
+    //   * a walk is on, justification `target in reach` - the walk case: CheckMountStateAction gets the bot off
+    //     for a target inside the dismount band while MountForWalk puts it back on for the same walk.
+    //   * `its leader rides` - the copied case (LeaderMountStateTrigger mirrors the leader's state).
+    //
+    // WHAT IS NOT IN THE KEY, and each part is measured rather than argued on b504's 4 212 mount casts:
+    //   * THE COUNTS. The flips, mounts and dismounts of one episode climb with every sample, so they would make
+    //     one episode a staircase of rows - this project's trap #2, and the counts' spread is what value_min /
+    //     value_max are for.
+    //   * THE MOUNT. Which beast it is is an identity of an item and no cause at all; 59 bots over their mounts
+    //     would fan one cause out, and the spell and the name are columns of pb_journal_mount.
+    //   * THE PLACE AND THE BOT. 23 bots over 7 zones flapped on b504 under three justifications; keying on the
+    //     zone would have given at least 7 "problems" where there are 3, and on the bot 23. They are columns.
+    //   * THE ENGINE'S TRACE, for the reason the whole of this file exists.
+    std::string MountFlap(std::string const& role, bool hasWalk, bool hasLeader, std::string const& justification);
+
+    // The first version of the key, kept because a test asserts the trap against it (seven rows for one
+    // episode): called from MountEpisodeTest and from nowhere else. See IssueKey.cpp.
+    std::string MountFlapNaive(std::string const& printedWhy);
+
     // [jrn46] `run_failed`: the facts of ONE finished run of a five, as the run's own record states them
     // (guild_project_runs). The key, the shape and the ranged value are built from this one struct so that the
     // three cannot disagree about the same run - the emitter used to concatenate the key by hand beside the
