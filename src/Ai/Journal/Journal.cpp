@@ -389,6 +389,16 @@ namespace Journal
                    // absence used as a number. Of the rows closed today 114 carry no fixed_ms (standing 34,
                    // combat_spot_none 31, alerts 20, the rest scattered) and they stay as they are until the
                    // analyst who ticked them says when.
+                   // [alert20] AND `checked = 1` IS THE FIRST CONDITION OF BOTH IFs, WHICH MAKES THE TICK THE
+                   // ONLY WAY INTO THIS BRANCH. Proven by running it on a copy of this table rather than by
+                   // reading: two rows marked status='fixed' + fixed_in_build='b505' + fixed_ms > 0, one with the
+                   // tick and one without, then one later case on b505 pushed through this very suffix. With the
+                   // tick: status 'returned', checked 0, checked_state 'unchecked'. WITHOUT the tick: status
+                   // stays 'fixed' for ever, and checked_state was 'unchecked' the whole time anyway, because it
+                   // is generated over (checked, repro_class, test_name, cleared_in_run, fixed_in_build) and
+                   // `status` is not in it. So "mark it fixed but do not tick it" buys nothing and costs the
+                   // return: the row reads as worked off, still counts as unchecked, and can never come back.
+                   // There is no third state - a fix awaiting a run IS `unconfirmed`, which needs the tick.
                    // THE ORDER OF THESE TWO ASSIGNMENTS IS LOAD-BEARING, and it was caught by running the
                    // statement rather than reading it. MySQL evaluates an ON DUPLICATE KEY UPDATE list left to
                    // right, so once both conditions read `checked`, whichever comes second sees the value the
