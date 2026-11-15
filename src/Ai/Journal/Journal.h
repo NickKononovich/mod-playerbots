@@ -969,6 +969,22 @@ namespace Journal
         Optional<bool> samePlace;
         std::string lastAction;
 
+        // [alert20] WHAT LEGITIMATELY HELD THE BOT at this instant, named by the ONE judge of that question
+        // (GuildCoordinator::WaitReason: a leader's order to stand, a flight, a boat / zeppelin / tram, a rest, a
+        // craft, Resurrection Sickness, a five's wait, a quest mob's respawn, a gather node, ...). Empty = checked
+        // at this instant and nothing held it, which is a FINDING, as '' is in `read_by` - not a gap.
+        // MEASURED, which is why this column exists: the STUCK site asks WaitReason and skips, and of its 62 rows
+        // with an identity NOT ONE has a legitimate hold in the standing watch within +-90 s; the LOOP site asks
+        // nothing, and 9 of its 221 rows (4.1 %) do. The share was only knowable through a time-join to another
+        // table; now the judge's own answer rides on the row
+        std::string heldBy;
+        // [alert20] THE MAGNITUDE OF THIS ALERT AND ITS UNIT - absent when the site has none. It used to be the
+        // member's "#N" with the unit `member`, which is an identity and not a quantity: a merged group's
+        // value_min..value_max were then the numbers of TWO DIFFERENT BOTS instead of a range, and "stood longer
+        // than N" could not be cut at all. The member's number keeps its own column (`num`)
+        Optional<double> value;
+        std::string valueUnit;
+
         std::string reason;  // the cause in words, as the alert prints it
         std::string text;    // the whole printed line: one event, written once
         std::string runId;

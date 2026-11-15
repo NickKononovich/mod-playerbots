@@ -674,8 +674,10 @@ private:
         // legitimate wait ending ([diag253]: the 60 s count starts when the wait ends, never during it, and the
         // standing episode deliberately runs on through such a wait because its duration is the number worth having).
         uint32 progressAt{0};
+        // [alert20] one standing episode is one event: the flag alone, cleared by the episode's own end. The
+        // `stuckKey` beside it (status + "|" + task) was the repeat gate, and a bot that stands still changes
+        // status - Feette's single 132 s episode became 13 rows under 2 issue keys - so it had no reader left
         bool stuckAlerted{false};
-        std::string stuckKey;
         // [diag252] a fight without progress: the time its foes' health last fell (or the fight began), their
         // summed health at the last sample, alerted once per such stretch
         uint32 combatAnchorAt{0};

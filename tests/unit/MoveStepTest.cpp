@@ -170,3 +170,74 @@ TEST(FollowProgress, KeepingUpWithALeaderOnTheMoveIsProgressAsBefore)
     pace.botMovedYd = 0.5f;  // the leader runs, the bot does not: that is the episode the watch is for
     EXPECT_FALSE(Bot::Follow::MakesProgress(pace));
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [alert20] ONE STANDING EPISODE IS ONE EVENT. The inputs are the thirteen live STUCK rows of Feette (bot_low 1787,
+// b503, at_ms 1794748633072 .. 1794748703082): one unbroken standing episode whose reported seconds run
+// 62, 72, 77, 82, 87, 97, 102, 107, 112, 117, 122, 127, 132 while the status flips GO_GRIND <-> WANDER_RANDOM every
+// five seconds and the task `GATHER (tasks 5)` never changes. Thirteen rows, one event, and they were filed under
+// two different issue keys.
+// ---------------------------------------------------------------------------------------------------------------------
+#include "../../src/Ai/Journal/AlertEpisode.h"
+
+namespace
+{
+    // the statuses Feette's thirteen samples carried, in order
+    char const* const FEETTE_STATUS[13] = {"GO_GRIND",      "WANDER_RANDOM", "GO_GRIND",      "WANDER_RANDOM",
+                                           "GO_GRIND",      "WANDER_RANDOM", "GO_GRIND",      "WANDER_RANDOM",
+                                           "GO_GRIND",      "WANDER_RANDOM", "GO_GRIND",      "WANDER_RANDOM",
+                                           "GO_GRIND"};
+
+    // the watch, run over a sequence of samples: how many rows would be written
+    // `open` is the standing watch's answer per sample: false = no open episode (it moved, or it does not stand)
+    unsigned RowsWritten(char const* const* status, size_t n, bool const* open = nullptr)
+    {
+        using Journal::AlertEpisode::Repeat;
+        unsigned rows = 0;
+        bool reported = false;
+        std::string reportedStatus, reportedTask;
+        for (size_t i = 0; i < n; ++i)
+        {
+            Repeat r;
+            bool const episodeOpen = open ? open[i] : true;
+            r.episodeOpen = episodeOpen;
+            if (!episodeOpen)
+                reported = false;  // the episode ended: the watch clears its flag, as UpdateHealth does on stood 0 s
+            r.reportedAlready = reported;
+            r.status = status[i];
+            r.task = "GATHER (tasks 5)";
+            r.reportedStatus = reportedStatus;
+            r.reportedTask = reportedTask;
+            if (!Journal::AlertEpisode::Reports(r))
+                continue;
+            ++rows;
+            reported = true;
+            reportedStatus = r.status;
+            reportedTask = r.task;
+        }
+        return rows;
+    }
+}  // namespace
+
+TEST(AlertEpisode, OneStandingEpisodeIsOneRowWhateverStatusItWears)
+{
+    EXPECT_EQ(RowsWritten(FEETTE_STATUS, 13), 1u)
+        << "Feette's single 132 s standing episode was written as 13 STUCK rows under 2 issue keys, because the "
+           "repeat gate compared the status and the status flips GO_GRIND <-> WANDER_RANDOM every 5 s";
+}
+
+TEST(AlertEpisode, TwoEpisodesInONERunAreStillTwoRows)
+{
+    // THE OTHER DIRECTION, without which the rule "report the bot once and never again" would pass this file: the
+    // bot stands, walks off (the standing watch answers 0 s, so no episode is open), then stands again. Two
+    // episodes, two rows - in one single run of the watch, with no help from the harness restarting
+    bool const open[7] = {true, true, true, false, true, true, true};
+    EXPECT_EQ(RowsWritten(FEETTE_STATUS, 7, open), 2u);
+}
+
+TEST(AlertEpisode, NoOpenEpisodeIsNoRow)
+{
+    // 0 s from the standing watch is "no open episode", never "it stood for 0 s"
+    bool const shut[13] = {};
+    EXPECT_EQ(RowsWritten(FEETTE_STATUS, 13, shut), 0u);
+}

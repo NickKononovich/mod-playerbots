@@ -20,6 +20,7 @@
 
 #include "AiFactory.h"  // [roster3] the talent tree in the gear key
 #include "AiObjectContext.h"
+#include "AlertEpisode.h"  // [alert20] one standing episode is one event
 #include "Bag.h"
 #include "BudgetValues.h"  // [guild50] free money for gear
 #include "Chat.h"
@@ -1143,15 +1144,31 @@ void GuildCoordinator::Alert(std::string text, Journal::Alert facts)
     // table itself, so the row STAYS (it carries the coordinator's view, the member's number and its order) and
     // says `no` with the reason in words, exactly as a named standing hold does.
     bool const repeatsADomainRow = Journal::Real::AlertKindDuplicatesDomainRow(c.kind);
-    issue.real = repeatsADomainRow ? "no" : "unknown";
+    // [alert20] ... AND A NAMED LEGITIMATE HOLD IS THE SECOND ANSWER THE FUNNEL CAN NOW GIVE. `unknown` was honest
+    // while the funnel knew nothing about the state under the alert, but one thing IS known at the instant the
+    // site raises it: whether anything legitimately held the bot, judged by the single judge of that question
+    // (WaitReason). The STUCK site asks it and skips, and of its 62 rows with an identity not one has a legitimate
+    // hold in the standing watch within +-90 s; the LOOP site asked nothing, and 9 of its 221 rows (4.1 %) do.
+    // The row still gets written - `is_real` is a column and not a gate - and says `no` with the reason in words,
+    // exactly as a named standing hold does ([jrn42])
+    bool const held = !facts.heldBy.empty();
+    issue.real = (repeatsADomainRow || held) ? "no" : "unknown";
     issue.realWhy = repeatsADomainRow
                         ? "the event itself is recorded with its inputs in pb_journal_death and counted there as "
                           "an issue of kind `death`; this row is the alert funnel's notice of the same event, so "
                           "counting it again would count one event twice"
-                        : "the alert fired on the coordinator's own facts; whether the underlying state is a "
-                          "defect is not established at runtime here";
+                        : held ? "it stood because " + facts.heldBy +
+                                     ", named by the one judge of legitimate waits; the duration is in the row and "
+                                     "the problem, if there is one, belongs to whoever issued the hold"
+                               : "the alert fired on the coordinator's own facts; whether the underlying state is a "
+                                 "defect is not established at runtime here";
     issue.realSource = "emitter";
-    issue.realWhen = "";
+    // the criterion, the same whichever way the answer came out: it is the answer that differs, not the
+    // question. A kind that repeats a domain row is judged on something else entirely, so it keeps its ""
+    issue.realWhen = repeatsADomainRow
+                         ? ""
+                         : "nothing named by the one judge of legitimate waits (WaitReason) held the bot at "
+                           "the instant the alert was raised";
     issue.dedupKey = "alert|" + c.kind + "|" + Journal::WithoutNumbers(c.reason);
     issue.why = text;
     issue.botName = row.botName;
@@ -1161,10 +1178,16 @@ void GuildCoordinator::Alert(std::string text, Journal::Alert facts)
     issue.x = row.x;
     issue.y = row.y;
     issue.z = row.z;
-    if (c.num)
+    // [alert20] THE MAGNITUDE IS THE SITE'S, AND THE MEMBER'S NUMBER IS NOT ONE. This used to be `issue.value =
+    // c.num` with the unit `member`: an identity written into a quantity's column, so a merged group's
+    // value_min..value_max were the numbers of TWO DIFFERENT BOTS instead of a range, and "stood longer than N
+    // seconds" had no column to cut on at all. The number keeps its own column (pb_journal_alert.num, and the "#N"
+    // in the text). Absent = this site holds no magnitude, which is not zero: rows written before this carry the
+    // unit `member` and stay self-describing, so no old row is made to lie about what it measured
+    if (row.value)
     {
-        issue.value = double(c.num);
-        issue.valueUnit = "member";
+        issue.value = *row.value;
+        issue.valueUnit = row.valueUnit;
     }
     issue.sourceTable = "pb_journal_alert";
     issue.sourceId = sourceId;
@@ -11514,6 +11537,12 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
         facts.noProgressQuest = true;
         facts.samePlace = true;
         facts.lastAction = LastAction(ai, "new rpg status update");
+        // [alert20] WHAT LEGITIMATELY HELD IT, from the one judge of that question. This detector asked nothing:
+        // measured against the STUCK site, which does ask and skips, 0 of 62 STUCK rows with an identity have a
+        // legitimate hold in the standing watch within +-90 s against 9 of 221 LOOP rows (4.1 %) - so the 4.1 %
+        // were counted as problems and the other 95.9 % could only be told apart by a join to another table.
+        // Nothing is suppressed: `is_real` is a column, and the funnel says `no` with the reason in words
+        facts.heldBy = WaitReason(bot, ai, st);
         AlertSubject(facts, bot);  // [jrn43] one place fills the subject, for every kind
         Alert("LOOP #" + std::to_string(row ? row->num : 0) + " " + bot->GetName() + " L" +
               std::to_string(bot->GetLevel()) + ": " + RpgName(status) +
@@ -11713,6 +11742,14 @@ void GuildCoordinator::UpdateHealth()
                     // [feed20] the same reason= field the other two alerts carry: its last `[rpg]` line
                     << ", reason=" << (st.rpgLine.empty() ? "none recorded" : st.rpgLine);
                 Journal::Alert facts;  // [jrn43] the subject as columns: the player is right here
+                // [alert20] the status as a COLUMN, not only inside the sentence: "which status stands still" was
+                // a LIKE over the dedup key's text, and `activity` was '' in every STUCK / STUCK_COMBAT / DEATH
+                // row while the site held the status in its hand. The bare status word is what LOOP already puts
+                // there, so one column means one thing across all kinds
+                facts.activity = RpgName(uint32(ai->rpgInfo.GetStatus()));
+                facts.heldBy = WaitReason(p, ai, st);  // the one judge; this site did not ask it either
+                facts.value = double(now - st.combatAnchorAt);  // the magnitude this site HAS
+                facts.valueUnit = "sec";
                 AlertSubject(facts, p);
                 Alert(out.str(), facts);
             }
@@ -11788,11 +11825,25 @@ void GuildCoordinator::UpdateHealth()
         // [ui11] BotControl's detail pane: the STUCK cause (status, task, the newest actions)
         st.stillWhy = "STUCK " + std::to_string((now - st.anchorAt) / MINUTE) + " min: " + status + ", task " + order +
                       ", actions " + LastAction(ai);
-        std::string const key = status + "|" + order.substr(0, order.find(" ("));
-        if (st.stuckAlerted && st.stuckKey == key)
+        // [alert20] ONE STANDING EPISODE IS ONE EVENT. This gate used to be `stuckAlerted && stuckKey == status +
+        // "|" + task`, so it re-opened whenever the status or the task CHANGED - and a bot that stands still
+        // changes status. Feette (bot_low 1787, b503) stood in ONE place for 132 s and the journal holds THIRTEEN
+        // STUCK rows of it (62, 72, 77, 82, 87, 97, 102, 107, 112, 117, 122, 127, 132 s), the status flipping
+        // GO_GRIND <-> WANDER_RANDOM every five seconds under one unchanged task `GATHER (tasks 5)` - and those
+        // thirteen rows fell under TWO issue keys, so one event was counted thirteen times and filed twice. Over
+        // the whole corpus with an identity, 16 of 62 STUCK rows (25.8 %) repeat an episode already reported.
+        // The replacement is a FACT and not a shorter key: the episode. The flag is cleared above by the episode's
+        // own end (stoodSec 0, death, combat, progress in place), so the only question left is whether the OPEN
+        // episode has a row - which is what the seam says (Journal::AlertEpisode::Reports, asserted by
+        // AlertEpisode.* on Feette's thirteen samples). The status is recorded in its own column instead.
+        Journal::AlertEpisode::Repeat repeat;
+        repeat.episodeOpen = true;  // the branch above returned for stoodSec <= 0: an episode is open here
+        repeat.reportedAlready = st.stuckAlerted;
+        repeat.status = status;
+        repeat.task = order;
+        if (!Journal::AlertEpisode::Reports(repeat))
             continue;
         st.stuckAlerted = true;
-        st.stuckKey = key;
         AreaTableEntry const* zone = sAreaTableStore.LookupEntry(p->GetZoneId());
         std::ostringstream out;
         out << "STUCK #" << row.num << " " << p->GetName() << " L" << uint32(p->GetLevel()) << " at map "
@@ -11805,6 +11856,16 @@ void GuildCoordinator::UpdateHealth()
             // same line the triage takes for a STUCK. The field printed "none" since it was added
             << ", reason=" << (st.rpgLine.empty() ? "none recorded" : st.rpgLine);
         Journal::Alert facts;  // [jrn43] the subject as columns: the player is right here
+        // [alert20] as above: the status is a column. `reason` stays the bot's own `[rpg]` line, and when it has
+        // never printed one the line says `none recorded` - which with this column beside it is no longer
+        // ambiguous: both b504 cases (Aestymro 62 s, Bierya 84 s, 70.6 s and 105.6 s after the boot at
+        // 1794761615731) read `activity = IDLE`, and the full status in the text names why - "its first look has
+        // not run yet". `none recorded` therefore means "this bot has printed no [rpg] line", never "the emitter
+        // did not pass one"
+        facts.activity = ai ? std::string(RpgName(uint32(ai->rpgInfo.GetStatus()))) : std::string();
+        facts.heldBy = WaitReason(p, ai, st);  // '' here BY CONSTRUCTION: the branch above skipped every named wait
+        facts.value = double(now - st.anchorAt);  // the seconds it stood, from the owner of that quantity
+        facts.valueUnit = "sec";
         AlertSubject(facts, p);
         Alert(out.str(), facts);
     }

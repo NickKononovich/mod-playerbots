@@ -243,10 +243,11 @@ namespace Journal
             "idle_name, idle_entry, idle_low, idle_taken, idle_tank_opens, run_id, build)";
         char const* const COLUMNS_SPOT_REJECT =
             "(spot_id, boot_id, at_ms, hour_bucket, idx, stage, reason, candidates, build)";
+        // [alert20] held_by / value / value_unit: what legitimately held the bot, and this alert's own magnitude
         char const* const COLUMNS_ALERT =
             "(id, boot_id, at_ms, hour_bucket, kind, num, bot_name, bot_low, bot_level, map_id, zone_id, pos_x, "
-            "pos_y, pos_z, loop_n, activity, no_progress_xp, no_progress_quest, same_place, last_action, reason, "
-            "text, run_id, build)";
+            "pos_y, pos_z, loop_n, activity, no_progress_xp, no_progress_quest, same_place, last_action, held_by, "
+            "value, value_unit, reason, text, run_id, build)";
         char const* const COLUMNS_ACTOR =
             "(decision_id, boot_id, at_ms, hour_bucket, idx, side, name, low, entry, spawn_id, level, spec, role, "
             "health, health_max, health_pct, mana, mana_max, mana_pct, pos_x, pos_y, pos_z, tank_yd, target_yd, "
@@ -1537,11 +1538,16 @@ namespace Journal
                              "loop_n INT UNSIGNED NULL, activity VARCHAR(32) NOT NULL DEFAULT '', "
                              "no_progress_xp TINYINT UNSIGNED NULL, no_progress_quest TINYINT UNSIGNED NULL, "
                              "same_place TINYINT UNSIGNED NULL, last_action VARCHAR(512) NOT NULL DEFAULT '', "
+                             // [alert20] the one judge of legitimate waits answers on the row; the magnitude is
+                             // the site's own and the member's number stays in `num` - an identity is no quantity
+                             "held_by VARCHAR(64) NOT NULL DEFAULT '', value DOUBLE NULL, "
+                             "value_unit VARCHAR(16) NOT NULL DEFAULT '', "
                              "reason TEXT NULL, text TEXT, "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY kind_at (kind, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY activity_at (activity, at_ms), "
                              "KEY where_at (map_id, zone_id, at_ms), KEY loop_at (loop_n, at_ms), "
+                             "KEY held_at (held_by, at_ms), KEY value_at (value_unit, value, at_ms), "
                              "KEY build_at (build, at_ms), KEY run_at (run_id, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn40] one alert, from the single funnel every alert already passes'")
@@ -2059,13 +2065,16 @@ namespace Journal
         uint64 const id = Writer::Instance().NextId();
         Writer::Instance().Push(
             "pb_journal_alert",
-            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
+            // [alert20] three more fields: held_by, value, value_unit
+            Acore::StringFormat(
+                "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
                                 BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(alert.kind, 24), OrNull(alert.num),
                                 Quoted(alert.botName, 32), alert.botLow, OrNull(alert.botLevel), alert.mapId,
                                 alert.zoneId, Real(alert.x), Real(alert.y), Real(alert.z), OrNull(alert.loopN),
                                 Quoted(alert.activity, 32), OrNull(alert.noProgressXp),
                                 OrNull(alert.noProgressQuest), OrNull(alert.samePlace),
-                                Quoted(alert.lastAction, 512), Prose(alert.reason),
+                                Quoted(alert.lastAction, 512), Quoted(alert.heldBy, 64), OrNull(alert.value),
+                                Quoted(alert.valueUnit, 16), Prose(alert.reason),
                                 alert.text.empty() ? std::string("NULL") : Quoted(alert.text, 16000),
                                 Quoted(alert.runId, 48), Quoted(Config().build, 16)));
         return id;
