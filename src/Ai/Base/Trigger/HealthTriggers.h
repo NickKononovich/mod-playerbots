@@ -437,8 +437,12 @@ bool PredictNextFight(Player* bot, NextFight& fight);
 // [lead1294] `damageCost` true: `cost` is the tank damage the fight deals in tank healths (BossFightCost: the game's
 // data scaled by the measured intake), so a healer's heal term reads its measured mana per tank health it healed
 // (HealerPctPerTankHealth), not its use per tank health of the plan's cost (a different unit)
+// [pull84] `overPool` out: the RAW line asked for more mana than the member's pool holds, so the returned (clamped)
+// line is NOT a line to wait at - wc-n run 691 waited 237 s at exactly such a line and left five bosses alive. The
+// return value stays the number to compare mana against; this says whether waiting for it can ever end. A caller
+// that holds a pull on the line MUST read it; one that only prices a drink or sizes a tool need not.
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why = nullptr, bool boss = false,
-                    bool credits = true, bool potion = true, bool damageCost = false);
+                    bool credits = true, bool potion = true, bool damageCost = false, bool* overPool = nullptr);
 // [lead520] a boss fight of `fightSec` needs the member's in-fight mana potion: its mana is under the boss line without
 // the potion (then it keeps the potions' cooldown for it and drinks no pre-pull potion)
 // [lead1362] `cost`: a healer's heal cost in tank healths (the boss line's, BossFightCost)
@@ -523,7 +527,7 @@ void NoteFightLengthError(ObjectGuid group, float estimatedSec, float realSec);
 // [lead74] a tank's mana line for its next fight: FightManaLine for the fight plus the cost of the pick-ups it may need
 // (the fight's mobs beyond the first, each one taunt: the cheapest known taunt's real mana cost); one line for the
 // planner's tank hold and the tank's rest. `why`: the terms
-float TankManaLine(Player* tank, NextFight const& fight, std::string* why = nullptr);
+float TankManaLine(Player* tank, NextFight const& fight, std::string* why = nullptr, bool* overPool = nullptr);
 
 // The bot sits with a food / drink aura (spell specific, breaks on standing up), not a passive regen buff.
 bool IsEating(Player* player);

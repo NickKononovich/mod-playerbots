@@ -360,7 +360,8 @@ namespace PullReadiness
     // [lead1262] a real boss's ready health line (BOSS_READY_HEALTH): no out-of-fight heal over time above it
     float BossReadyHealth();
     // [lead179] that member's boss mana line (the same FightManaLine MemberBossGap reads)
-    float MemberBossManaLine(Player* member, Unit* boss);
+    // [pull84] `overPool` out: the raw line asked more than the member's pool holds, so it is not a line to wait at
+    float MemberBossManaLine(Player* member, Unit* boss, bool* overPool = nullptr);
     // [lead520] that member's boss fight needs its in-fight mana potion (RestState::NeedsManaPotion on the same fight
     // seconds): no pre-pull potion for it
     bool MemberNeedsManaPotion(Player* member, Unit* boss);

@@ -6501,15 +6501,20 @@ std::string PullReadiness::MemberBossGap(Player* member, Unit* boss, float* mana
         return std::string();
     std::string terms;
     float const bossSec = NextPullSec(member, boss);
+    bool overPool = false;  // [pull84]
     float const readyMana =
         RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), &terms, true, true, true,
-                                 true);  // [lead1262] [lead1294]
+                                 true, &overPool);  // [lead1262] [lead1294]
     if (manaLine && member->getPowerType() == POWER_MANA)
         *manaLine = readyMana;
     if (member->GetHealthPct() < readyHealth)
         return Acore::StringFormat("health {:.0f} % < {:.0f} % for {}", member->GetHealthPct(), readyHealth,
                                    boss->GetName());
-    if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < readyMana)
+    // [pull84] a line over the member's own pool is not a gap this member can close: wc-n run 691 held Lord Pythas
+    // 75 times on "needs 100 %" that was really 111.7 % of a pool holding 100, and no second of waiting could ever
+    // have ended it. The fact is a row of its own (topic mana_line, verdict over_pool, the number in `cost`), and
+    // what to do about the pack instead belongs to the planner, which is left untouched here.
+    if (member->getPowerType() == POWER_MANA && member->GetPowerPct(POWER_MANA) < readyMana && !overPool)
         return Acore::StringFormat("mana {:.0f} % < {} for {}", member->GetPowerPct(POWER_MANA), terms,
                                    boss->GetName());
     return std::string();
@@ -6522,14 +6527,16 @@ float PullReadiness::MemberBossHealthLine(Unit* boss)
 
 float PullReadiness::BossReadyHealth() { return BOSS_READY_HEALTH; }
 
-float PullReadiness::MemberBossManaLine(Player* member, Unit* boss)
+float PullReadiness::MemberBossManaLine(Player* member, Unit* boss, bool* overPool)
 {
+    if (overPool)
+        *overPool = false;
     if (!member || !boss)
         return 0.0f;
     float const bossSec = NextPullSec(member, boss);
     // [lead1262] a healer's line heals the boss's damage on the tank over the fight (BossFightCost)
     return RestState::FightManaLine(member, bossSec, BossFightCost(member, boss, bossSec), nullptr, true, true, true,
-                                    true);  // [lead1294] a cost in tank damage
+                                    true, overPool);  // [lead1294] a cost in tank damage
 }
 
 bool PullReadiness::MemberNeedsManaPotion(Player* member, Unit* boss)
@@ -10193,8 +10200,10 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
         // about; a published verdict still wins over it (GetNextFight reads the verdicts first).
         if (!_planLookPack.empty())
             CarefulPlanVerdict::NoteLook(bot, std::max<uint32>(next.mobs, uint32(_planLookPack.size())));
-        float const tankLine = bot->GetMaxPower(POWER_MANA) ? RestState::TankManaLine(bot, next, &terms) : 0.0f;
-        if (bot->getClass() == CLASS_PALADIN && bot->GetPowerPct(POWER_MANA) < tankLine)
+        bool tankOverPool = false;  // [pull84] a line over its own pool is no wait
+        float const tankLine =
+            bot->GetMaxPower(POWER_MANA) ? RestState::TankManaLine(bot, next, &terms, &tankOverPool) : 0.0f;
+        if (bot->getClass() == CLASS_PALADIN && bot->GetPowerPct(POWER_MANA) < tankLine && !tankOverPool)
         {
             _planNotReadyWhy = Acore::StringFormat("paladin tank at {:.0f} % mana (needs {})",
                                                    bot->GetPowerPct(POWER_MANA), terms);
@@ -10232,13 +10241,21 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
             if (!bossPull && !RestState::PredictNextFight(healer, next))
                 next.mobs = std::max<uint32>(1, uint32(_planLookPack.size()));
             float const nextSec = RestState::FightSecOf(healer, next);  // [lead264]
+            bool overPool = false;  // [pull84]
             float const line = bossPull
                                    ? RestState::FightManaLine(healer, NextPullSec(healer, target),
                                                               BossFightCost(healer, target,
                                                                             NextPullSec(healer, target)),
-                                                              &terms, true, true, true, true)  // [lead1262] [lead1294]
-                                   : RestState::FightManaLine(healer, nextSec, next.cost, &terms);
-            if (healer->GetPowerPct(POWER_MANA) < line)
+                                                              &terms, true, true, true, true,
+                                                              &overPool)  // [lead1262] [lead1294]
+                                   : RestState::FightManaLine(healer, nextSec, next.cost, &terms, false, true, true,
+                                                              false, &overPool);
+            // [pull84] THE HOLD THAT COST THE WAILING CAVERNS CERTIFICATE. wc-n run 691, five 6: this gate held
+            // every pull for 237 s on "Aestymro at 20...90 % mana (needs 100 %)", a line whose raw value was
+            // 111.7 % of a pool that holds 100 - the healer's last drink had gone into chasing it and it then stood
+            // on spirit regen at 0.33 %/s while five bosses were left alive. A line above the member's own pool is
+            // a fact about the plan, not a wait: it is recorded as its own row and the gate passes on it.
+            if (healer->GetPowerPct(POWER_MANA) < line && !overPool)
             {
                 _planNotReadyWhy = Acore::StringFormat("{} at {:.0f} % mana (needs {})", healer->GetName(),
                                                        healer->GetPowerPct(POWER_MANA), terms);

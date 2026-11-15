@@ -59,6 +59,7 @@ add_executable(pb_unit_tests
     unit/ManaBudgetTest.cpp
     unit/ActorFactsTest.cpp
     unit/RouteFactsTest.cpp
+    unit/ManaLineTest.cpp
     "${PB_MODULE_ROOT}/src/Ai/Leader/Fight/ChainPullJudge.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/IssueKey.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Journal/ActorFacts.cpp"
@@ -68,7 +69,8 @@ add_executable(pb_unit_tests
     "${PB_MODULE_ROOT}/src/Ai/Journal/StandingEpisode.cpp"
     "${PB_MODULE_ROOT}/src/Ai/Base/Actions/MoveStep.cpp"
     "${PB_MODULE_ROOT}/src/Ai/World/Rpg/ChaseModel.cpp"
-    "${PB_MODULE_ROOT}/src/Ai/World/Rpg/ManaBudget.cpp")
+    "${PB_MODULE_ROOT}/src/Ai/World/Rpg/ManaBudget.cpp"
+    "${PB_MODULE_ROOT}/src/Ai/Base/Trigger/ManaLine.cpp")
 
 target_include_directories(pb_unit_tests PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/unit"
@@ -77,7 +79,8 @@ target_include_directories(pb_unit_tests PRIVATE
     "${PB_MODULE_ROOT}/src/Ai/Leader/Travel"
     "${PB_MODULE_ROOT}/src/Bot/Engine"
     "${PB_MODULE_ROOT}/src/Ai/Base/Actions"
-    "${PB_MODULE_ROOT}/src/Ai/World/Rpg")
+    "${PB_MODULE_ROOT}/src/Ai/World/Rpg"
+    "${PB_MODULE_ROOT}/src/Ai/Base/Trigger")
 
 # the fixtures are files in the source tree, committed next to the tests; PB_FIXTURE_DIR overrides it
 target_compile_definitions(pb_unit_tests PRIVATE

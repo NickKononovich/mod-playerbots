@@ -7291,10 +7291,13 @@ namespace Leader::Dungeon
             uint32 const max = member->GetMaxPower(POWER_MANA);
             if (cost == passMana.end() || !cost->second || !boss || member->getPowerType() != POWER_MANA || !max)
                 return std::string();
-            float const linePct = PullReadiness::MemberBossManaLine(member, boss);
+            bool overPool = false;  // [pull84]
+            float const linePct = PullReadiness::MemberBossManaLine(member, boss, &overPool);
             uint32 const need =
                 std::min<uint32>(max, uint32(std::max(0.0f, linePct) / 100.0f * float(max)) + cost->second);
-            if (member->GetPower(POWER_MANA) >= need)
+            // [pull84] a boss line over the member's own pool is not a wait: the buff pass does not hold for mana
+            // the member cannot ever hold (the fact is its own row, topic mana_line / verdict over_pool)
+            if (member->GetPower(POWER_MANA) >= need || overPool)
                 return std::string();
             return Acore::StringFormat("[lead1353] mana {} < {} = its boss line {:.0f} % + its buff pass orders {} "
                                        "(their spell costs) for {}",

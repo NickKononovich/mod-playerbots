@@ -6,6 +6,8 @@
 
 #include "HealthTriggers.h"
 #include "AiFactory.h"  // [lead1327] GetPlayerSpecTab
+#include "Journal.h"    // [pull84] the over-pool line as a row with columns
+#include "ManaLine.h"   // [pull84] the line's own arithmetic, as a seam without the world
 #include "AggressiveTargetValue.h"
 
 #include <algorithm>
@@ -2054,8 +2056,10 @@ Unit* ShadowfiendReach(Player* caster, Unit* preferred)
 }
 
 float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, bool boss, bool credits, bool potion,
-                    bool damageCost)
+                    bool damageCost, bool* overPool)
 {
+    if (overPool)
+        *overPool = false;
     float rate = SpellManaRate(bot);  // [lead264] nothing measured: the bot's spell data
     bool measured = false;
     char const* source = "its spell data";  // [lead1304]
@@ -2086,7 +2090,14 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         measured = true;
         source = "its rotation nonstop";
     }
-    float need = rate * fightSec;
+    // [pull84] the terms are gathered here and composed ONCE, by the seam (ManaLine::Of): the spend, the reserve
+    // and the raw line each have exactly one place that computes them, and that place reads no world at all, so it
+    // can be put under a test with the real inputs of a real stall.
+    ManaLine::Terms mlTerms;
+    mlTerms.healer = PlayerbotAI::IsHeal(bot);
+    mlTerms.fightSec = fightSec;
+    mlTerms.nonstopPctPerSec = rate;
+    mlTerms.cost = cost;
     // [lead393] b201 rfc-h 5C: the disc priest drank to 100 % three times (768.9 s 62 -> 100 % in 19 s, 779-819 s
     // "needs 100 % = 0.13 %/s (measured) x 88 s + 4 reserve; heals 51.3 % per tank health x 2.15 cost") - its
     // measured use was 11 % for such a fight, the heal term 110 %: the throughput model's mana for every tank health
@@ -2115,18 +2126,20 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // fight put it back under. A healer does not chain-cast: it heals the damage the fight deals, which is exactly
     // the term beside it - its mana per tank health healed (spell data, HealerPctPerTankHealth) over the tank health
     // this plan costs, plus its heals-over-time upkeep less its casting regen. That term is the formula for a
-    // healer's spend; the nonstop term is an upper bound of a different question. On trash the heal term is the line
-    // (the generic rate term is left to the members whose spend really is their rotation: the tank's upkeep, a
-    // damage caster's casts). A boss line keeps the old max: its cost is the boss fight's whole damage and the group
-    // comes to a boss topped up anyway (lead1262 / lead1294) - changing that is a decision of its own.
+    // healer's spend; the nonstop term is an upper bound of a different question. The heal term is the line (the
+    // generic rate term is left to the members whose spend really is their rotation: the tank's upkeep, a damage
+    // caster's casts). [pull84] b503 wc-n: on a BOSS line too - this comment used to end "a boss line keeps the old
+    // max ... changing that is a decision of its own", and that decision has since been made (below).
     // Safety: the line still floors at Playerbots.LowMana for a healer (nothing measured, floorPct below), the
     // reserve still carries one more mob's fight, and lead1400's heal floor still holds a boss line above one cast.
-    if (PlayerbotAI::IsHeal(bot))
-    {
-        float const healTerm = std::max(perTankHealth * cost + (upkeep - regen) * fightSec, 0.0f);
-        // perTankHealth 0 means the throughput read failed (no heal known yet): the generic term is all there is
-        need = !boss && perTankHealth > 0.0f ? healTerm : std::max(need, healTerm);
-    }
+    // [pull84] user 2026-11-15: a healer's line is the witness formula on a boss exactly as on trash. The nonstop
+    // term stays only where it IS the formula (a tank's upkeep, a damage caster's casts, a healer whose heal is not
+    // read yet), and the caution a boss deserves is the explicit reserve below - one more mob's fight and
+    // lead1400's floor of one whole cast - never a multiplier over the spend. wc-n run 691: 70.7 % of the pool
+    // against the witness's 9.5 % in the same printed sentence, a factor of 7.4, and 111.7 % of a pool holding 100.
+    mlTerms.healPerTankHealthPct = perTankHealth;
+    mlTerms.upkeepPctPerSec = upkeep;
+    mlTerms.regenPctPerSec = regen;
     // [lead88] user: no flat reserve - the reserve is the spend over the measured fight-length uncertainty (the mean
     // |real - estimated| seconds of this run's fights); a healer adds its share of the predicted tank damage over
     // those seconds. [lead264] While no fight is measured: the spend of one more mob's fight (FightSecOf one mob)
@@ -2137,10 +2150,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // its heal term over those seconds (below), not its heal cast nonstop through them (4.32 %/s x 2.1 s = 9 of the
     // 12 % reserve that held Ganna's pull). A healer whose heal term is all there is (fightSec 0, or the throughput
     // read failed) keeps the generic rate, as the need does.
-    bool const healTermLine = !boss && PlayerbotAI::IsHeal(bot) && perTankHealth > 0.0f && fightSec > 0.0f;
-    float reserve = healTermLine ? 0.0f : rate * oneMobSec;
-    if (PlayerbotAI::IsHeal(bot) && fightSec > 0.0f)
-        reserve += perTankHealth * cost * oneMobSec / fightSec + upkeep * oneMobSec;
+    mlTerms.oneMobSec = oneMobSec;
     // [lead1304] the measured fight-length error (lead88) is fight history: the reserve stays one more mob's fight
     // [lead1400] b261 rfc-h 5B: the gate passed the holy paladin into Taragaman at 2 % (5B-2, lowest 2 %) and Jergosh
     // at 3 % (5B-2 / 5B-10, lowest 3-4 %) on 0 % lines: the line's bottom was 0 mana, where the game refuses every
@@ -2157,8 +2167,12 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
         if (healFloor > 0.0f)
             healFloorWhy = Acore::StringFormat(
                 " + {:.1f} heal floor ({}'s cost) [lead1400], no credit covers it [lead1430]", healFloor, facts.spell);
-        reserve += healFloor;
     }
+    mlTerms.healFloorPct = healFloor;
+    // [pull84] the one composition: the spend and the reserve, from the terms above and nothing else
+    ManaLine::Composed const mlComposed = ManaLine::Of(mlTerms);
+    float const need = mlComposed.needPct;
+    float const reserve = mlComposed.reservePct;
     // the mana its own ready cooldowns return in the fight ([lead423] spell data, ManaToolPct: Evocation, Divine
     // Plea, a priest's Shadowfiend)
     // [lead177] a cooldown's mana counts only when using it in the fight costs less time than drinking that mana before
@@ -2553,7 +2567,10 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // against -34 % with Evocation), drinking 5C 75 -> 160 s, 5B 3 -> 87 s. A measured rate is the fight's own need:
     // no floor over it; the low line guards only the role's estimate (nothing measured yet)
     float const floorPct = measured ? 0.0f : float(sPlayerbotAIConfig.LowMana);
-    float lineRaw = std::max({need + reserve - returned, potionFloor, cooldownFloor});  // [lead502] [lead634]
+    mlTerms.returnedPct = returned;
+    mlTerms.potionFloorPct = potionFloor;   // [lead502]
+    mlTerms.cooldownFloorPct = cooldownFloor;  // [lead634]
+    float lineRaw = ManaLine::Raw(mlComposed, mlTerms);
     // [lead1430] b263 rfc-h 5B-2 t=1104: the gate passed the holy paladin into Bazzalan at 1 % on a 0 % line ("0.00
     // %/s x 44 s + 8 reserve (+ 7.1 heal floor) - 22 cooldowns (mana potion 22 %)": heals 10.5 % x 1.30 cost), his
     // Taragaman lines the same (Divine Plea's 25 % against 18 + 9). The credits are sized to the shortfall with the
@@ -2561,8 +2578,7 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // cast of Holy Light (Spell::CheckPower) until a return came. The floor is the pool's bottom by the line's math:
     // no credit covers it. A healer's boss line is the floor plus the cost its credits do not cover, the mana spent
     // until a credited potion or cooldown is ready on top of the floor too
-    if (healFloor > 0.0f)
-        lineRaw = std::max({lineRaw, healFloor, potionFloor + healFloor, cooldownFloor + healFloor});
+    // [pull84] that floor rule lives in ManaLine::Raw above, with the rest of the line's arithmetic
     // [lead850] with a return on the fight timeline (Evocation, the mana potion, the gem): the lowest start mana its
     // timeline lasts the fight with, the other tools' mana (spread over the fight) taken off the spend rate. Not even
     // a full pool lasting: the plain sum (the clamp makes it 100 %). The timeline only raises the sum's line
@@ -2711,11 +2727,17 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     // repairs, both of the instrument: the key tells a boss line from a trash one, and it is dropped again the moment
     // that member's line of that kind comes back inside the pool - a fact of the line, not a clock over it, so the
     // next time it goes over the pool it is named again.
+    // [pull84] and the overflow stops being hidden: the clamped value is still what the mana is compared against,
+    // but the caller is told, in a value of its own, that this is NOT a line to wait at. Waiting is only ever right
+    // while the member can still get there.
+    ManaLine::Verdict const mlVerdict = ManaLine::Read(lineRaw, floorPct);
+    if (overPool)
+        *overPool = mlVerdict.overPool;
     thread_local std::set<std::tuple<uint64, bool, int32>> overPoolLogged;
     if (overPoolLogged.size() > 4096)
         overPoolLogged.clear();
     std::tuple<uint64, bool, int32> const overPoolKey{bot->GetGUID().GetRawValue(), boss, int32(fightSec)};
-    if (lineRaw <= 100.5f)
+    if (!mlVerdict.overPool)
     {
         if (!nestedManaLine)
             overPoolLogged.erase(overPoolKey);
@@ -2723,13 +2745,48 @@ float FightManaLine(Player* bot, float fightSec, float cost, std::string* why, b
     else
     {
         if (!nestedManaLine && overPoolLogged.insert(overPoolKey).second)
+        {
             LOG_INFO("playerbots",
                      "[pull81] {}: its {} line asks {:.0f} % of a pool that holds 100 ({:.0f} s at {:.2f} %/s, {}): "
                      "no wait meets it - read as 100 %, the plan is what has to change",
                      bot->GetName(), boss ? "boss" : "trash", lineRaw, fightSec, rate,
                      measured ? source : "spell data");
+            // [pull84] ... and as a row with columns, because "which members, on which lines, asked for more than
+            // they own" is a question we filter on, and the printed line above answers it only to a LIKE over text.
+            // The member is the subject AND the judge: it is its own line. `runId` is deliberately left empty -
+            // nothing in this call's reach knows the run (the leader exposes no run accessor here), and an empty
+            // string says "the emitter did not supply it", which is not a claim that there was no run.
+            Journal::Decision over;
+            over.topic = "mana_line";
+            over.verdict = "over_pool";
+            over.kind = boss ? "boss" : "trash";
+            over.choice = "the plan costs more mana than the member owns";
+            over.why = Acore::StringFormat(
+                "its {} line asks {:.1f} % of a pool that holds {:.0f} ({:.0f} s at {:.2f} %/s, {}; need {:.1f}, "
+                "reserve {:.1f}, cooldowns {:.1f}): no wait meets it, the pack is what has to change",
+                boss ? "boss" : "trash", lineRaw, ManaLine::POOL_PCT, fightSec, rate,
+                measured ? source : "spell data", need, reserve, returned);
+            over.judge = Journal::Judge::Bot;
+            over.judgeName = bot->GetName();
+            over.judgeLow = bot->GetGUID().GetCounter();
+            over.subject = bot->GetName();
+            over.subjectLow = bot->GetGUID().GetCounter();
+            over.subjectKind = "member";
+            over.cost = double(lineRaw);
+            over.costUnit = "% of pool";
+            over.mapId = bot->GetMapId();
+            over.zoneId = bot->GetZoneId();
+            over.judgeX = bot->GetPositionX();
+            over.judgeY = bot->GetPositionY();
+            over.judgeZ = bot->GetPositionZ();
+            over.tag = "[pull84]";
+            over.src = "Ai/Base/Trigger/HealthTriggers.cpp";
+            over.readBy = "PullReadiness::MemberBossGap; LeaderPlanner's healer and paladin-tank gates";
+            over.text = Acore::StringFormat("[pull84] {}: {}", bot->GetName(), over.why);
+            Journal::Record(over);
+        }
     }
-    float const line = std::clamp(lineRaw, floorPct, 100.0f);
+    float const line = mlVerdict.linePct;
     if (why && !dryWhy.empty())
         timeline += "; " + dryWhy;
     if (why)
@@ -2767,11 +2824,11 @@ namespace
     thread_local bool ignoreLeaderRest = false;  // [lead59] BelowOwnLine reads the bot's own lines
 }
 
-float TankManaLine(Player* tank, NextFight const& fight, std::string* why)
+float TankManaLine(Player* tank, NextFight const& fight, std::string* why, bool* overPool)
 {
     float const fightSec = FightSecOf(tank, fight);  // [lead264]
     std::string terms;
-    float line = FightManaLine(tank, fightSec, fight.cost, &terms);
+    float line = FightManaLine(tank, fightSec, fight.cost, &terms, false, true, true, false, overPool);
     float tauntPct = 0.0f;
     uint32 const maxMana = tank->GetMaxPower(POWER_MANA);
     // Hand of Reckoning, Righteous Defense (the paladin's taunts); the others' taunts cost no mana

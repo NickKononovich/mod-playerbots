@@ -2394,7 +2394,8 @@ void GuildCoordinator::LoadRuns()
         "result VARCHAR(16) NOT NULL, bosses_killed TINYINT UNSIGNED NOT NULL, bosses_total TINYINT UNSIGNED NOT NULL, "
         "deaths SMALLINT UNSIGNED NOT NULL, wipes SMALLINT UNSIGNED NOT NULL, duration INT UNSIGNED NOT NULL, "
         "drops TEXT, reason TEXT, diagnosed_at INT UNSIGNED NOT NULL DEFAULT 0, diagnosis TEXT, "
-        "PRIMARY KEY (id), KEY content (content)) "
+        "run_id VARCHAR(64) NOT NULL DEFAULT '', "
+        "PRIMARY KEY (id), KEY content (content), KEY run (run_id)) "
         "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[guild60] guild fives x dungeons, raids x raids'");
     // [feed20] the two diagnosis columns on a table that already exists: CREATE TABLE IF NOT EXISTS adds no column to
     // it, and the 642 rows of the live table were written before them. The migration
@@ -2410,6 +2411,24 @@ void GuildCoordinator::LoadRuns()
         PlayerbotsDatabase.DirectExecute(
             "ALTER TABLE guild_project_runs ADD COLUMN diagnosed_at INT UNSIGNED NOT NULL DEFAULT 0, "
             "ADD COLUMN diagnosis TEXT");
+    }
+    // [pull85] THE RUN'S OWN IDENTITY, because without it a failed run cannot be joined to its own problems. Every
+    // journal table carries `run_id` ('20261115-135852-wc-n-five6-3'); this table, the one owner of a run, carried
+    // only `id`, `leader` and `members`, so "the decisions, idles and stalls of THIS run" had to be glued by the
+    // time window (at - duration .. at) and then checked against `judge_low = leader` to be believed at all. That
+    // check only worked because the two wc-n runs of 2026-11-15 happened to have different leaders; in a
+    // certification batch of five fives it stops working, and a glue by window is not an identity (rule 6).
+    // The same guard as above: CREATE TABLE IF NOT EXISTS adds no column to a table that already exists, and the
+    // live table's rows were written before this column.
+    if (QueryResult have = PlayerbotsDatabase.Query(
+            "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND "
+            "table_name = 'guild_project_runs' AND column_name = 'run_id'");
+        !have || !have->Fetch()[0].Get<uint64>())
+    {
+        LOG_INFO("playerbots", "[pull85] guild_project_runs has no run_id yet: adding it");
+        PlayerbotsDatabase.DirectExecute(
+            "ALTER TABLE guild_project_runs ADD COLUMN run_id VARCHAR(64) NOT NULL DEFAULT '', "
+            "ADD KEY run (run_id)");
     }
     // [feed20] one row per certification / speed wave: the history guild_project_cert overwrites (it keeps the last
     // wave's verdicts only). A journal, never the criterion - the certification is decided over the last 30 runs
@@ -6612,17 +6631,21 @@ void GuildCoordinator::RecordRun(GuildFive const& five, GuildFiveReport const& r
     std::string reason = report.reason;
     std::string key = rec.contentKey;
     std::string result = rec.result;
+    // [pull85] the five's own run id, the same string every journal table carries - written here and nowhere else,
+    // so the run has one identity and not a second copy of one
+    std::string runId = five.runId;
     SqlEscape(drops);
     SqlEscape(reason);
     SqlEscape(key);
     SqlEscape(result);
+    SqlEscape(runId);
     PlayerbotsDatabase.Execute(
         "INSERT INTO guild_project_runs (content, kind, at, leader, members, result, bosses_killed, bosses_total, "
-        "deaths, wipes, duration, drops, reason) VALUES ('{}', 'dungeon', {}, {}, '{}', '{}', {}, {}, {}, {}, {}, '{}', "
-        "'{}')",
+        "deaths, wipes, duration, drops, reason, run_id) VALUES ('{}', 'dungeon', {}, {}, '{}', '{}', {}, {}, {}, {}, "
+        "{}, '{}', '{}', '{}')",
         key, rec.at, rec.leaderLow, members, result, std::min<uint32>(rec.bossesKilled, 255),
         std::min<uint32>(rec.bossesTotal, 255), std::min<uint32>(rec.deaths, 65535), std::min<uint32>(report.wipes, 65535),
-        report.durationSec, drops, reason);
+        report.durationSec, drops, reason, runId);
 
     // [jrn40] A RUN THAT DID NOT GO CLEANLY IS A PROBLEM, and the issue row points at guild_project_runs rather
     // than copying it: that table is the one owner of a run, and the journal links to it and never keeps a second
