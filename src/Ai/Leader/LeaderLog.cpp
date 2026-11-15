@@ -69,14 +69,16 @@ namespace Leader
         }
     }
 
-    void SetDecisionSink(DecisionSink* sink)
-    {
-        g_decisionSink = sink;
-        // [jrn20] the earliest point the journal can be attached without a startup hook of its own: the harness
-        // sets its sink while the server starts, so the boot row lands then and not at the first dungeon. The guard
-        // inside Attach() makes the second caller a no-op.
-        Journal::Attach();
-    }
+    // [jrn20] This must NOT attach the journal, and the reason is worth keeping. b497 would not start: three
+    // identical ACCESS_VIOLATION dumps, all three frames ours, inside the lambda that reads the config - before a
+    // single line reached Server.log. The harness sets its sink from a FILE-SCOPE initialiser
+    // (TestHarnessLog.cpp: `bool const decisionSinkSet = (Leader::SetDecisionSink(...), true);`), so attaching from
+    // here ran during static initialisation, and the config cannot be asked anything then: ConfigMgr keeps
+    // _configOptions, _envVarCache, _criticalConfigOptions, _filename and _configLock as namespace-scope globals in
+    // another translation unit, so the query reads unconstructed containers. The previous report called the attach
+    // points "the harness's sink at startup or the first dungeon lead" - that was an assumption, there was a third
+    // and earlier path, and it is now a check that re-runs (tools/jrn_linked_check.py).
+    void SetDecisionSink(DecisionSink* sink) { g_decisionSink = sink; }
 
     void AddDecisionObserver(DecisionSink* observer) { FanOut().Add(observer); }
 

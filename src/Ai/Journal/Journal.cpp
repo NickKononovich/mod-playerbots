@@ -524,18 +524,25 @@ namespace Journal
         return bootId;
     }
 
+    // [jrn20] Attach reads NO configuration, and that is deliberate - it is the defence in depth behind the fix for
+    // the b497 crash. The config cannot be asked anything during static initialisation: ConfigMgr keeps
+    // _configOptions, _envVarCache, _criticalConfigOptions, _filename and _configLock as namespace-scope globals in
+    // Config.cpp, so a query from another translation unit's file-scope initialiser reads unconstructed containers.
+    // There is nothing to be tolerant with: it is an access violation and not an exception, so it cannot be caught,
+    // and even GetFilename() locks that same unconstructed mutex, so there is no safe way to probe "is the config up
+    // yet". The only cure is not to ask, and the caller must be a runtime path (Leader::Decisions).
+    //
+    // So the settings are read where they are already read - when a row is actually recorded, which is
+    // unambiguously runtime. The consequence, stated rather than hidden: the boot row appears at the first recorded
+    // row rather than at the instant of attaching. In practice that is the leader's first decision line, moments
+    // later; it is not the process's first instruction, and a window that needs the boot row should be taken from
+    // the row's own at_ms and not from an assumption about when the server started.
     void Attach()
     {
-        if (!Config().enabled)
-            return;
         static bool const attached = []
         {
             AttachPullObserver();
             AttachLogStream();
-            // Bring the writer up now, so the tables and the boot row exist from the moment the journal is attached
-            // rather than from the first decision that happens to be recorded. The boot row is what makes a window
-            // across restarts comparable, so it must not wait for a dungeon to start.
-            Ready();
             return true;
         }();
         (void)attached;

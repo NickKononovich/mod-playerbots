@@ -34,7 +34,6 @@
 #include "Journal.h"
 
 #include "AppenderJournal.h"
-#include "Config.h"
 
 #include <string>
 
@@ -72,9 +71,9 @@ namespace Journal
     // and AiPlayerbot.Journal.Stream = 1 did nothing: the module is a static library, no symbol of this file was
     // asked for, so the linker left the object file out - and a discarded object file's constructor never runs.
     // Journal::Attach() calls this now.
-    void AttachLogStream()
-    {
-        if (sConfigMgr->GetOption<bool>("AiPlayerbot.Journal.Stream", false, false))
-            AppenderJournal::SetSink(&OnLogLine);
-    }
+    // The sink goes in unconditionally and NO setting is read here: after the b497 crash, attaching asks the config
+    // nothing at all (see Journal::Attach). AiPlayerbot.Journal.Stream is honoured where it was already honoured, in
+    // RecordLine, which runs only when a line is actually being written - that is, at runtime, where asking is safe.
+    // The cost of an unconditional sink while the stream is off is one call that returns on its first test.
+    void AttachLogStream() { AppenderJournal::SetSink(&OnLogLine); }
 }
