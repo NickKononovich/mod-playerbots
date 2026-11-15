@@ -28,6 +28,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>  // [jrn47] the reasons of combat_spot_none come in as a list
 
 namespace Journal::Key
 {
@@ -93,6 +94,23 @@ namespace Journal::Key
     // is counted here as a defect of its own, and it left this kind with no cause field at all: 84 yd behind in
     // the same zone and 6 894 yd behind across the map were one row.
     std::string WaitBehind(bool sameZone);
+
+    // [jrn47] `combat_spot_none`: a member of a five had NO place to fight its target from. By the project's rule
+    // a place for a ranged member always exists and the tank's place is not a fallback (its cleave), so the cause
+    // is the SET OF CHECKS THAT REFUSED the candidate places - "heal reach", "out of the healer's band", "an idle
+    // mob's aggro reach", "no ground on its floor" - together with the member's role, because the checks that can
+    // speak at all differ by role.
+    //
+    // NOT THE COUNTS, NOT THE STAGE, NOT THE MOB'S NAME, NOT THE TRACE, and each of those is measured on the 387
+    // live events of b502: keying on the printed line gave 219 keys, on the reasons WITH their counts 154, on the
+    // (stage, reason) pairs 77, on the mob's name beside the reasons 91 over 16 names - against 52 reason sets.
+    // The counts belong in the child rows (pb_journal_spot_reject.candidates) and in the row's value range, the
+    // stage in the child's own column, the mob in the event's entry and guid (a name is not an identity).
+    //
+    // `trace` is passed in FOR THE SAME REASON AS Standing()'s actionTrace above: the one place that must not use
+    // it is the one place that holds it, and a test can then assert that it does not.
+    std::string CombatSpotNone(std::string const& role, std::vector<std::string> const& reasons,
+                               std::string const& trace);
 
     // [jrn46] `run_failed`: the facts of ONE finished run of a five, as the run's own record states them
     // (guild_project_runs). The key, the shape and the ranged value are built from this one struct so that the

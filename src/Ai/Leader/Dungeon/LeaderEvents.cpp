@@ -23,6 +23,8 @@
 #include "CreatureGroups.h"
 #include "DBCStores.h"
 #include "Engine.h"
+#include "IssueKey.h"  // [jrn47] the key of combat_spot_none, as a seam a test asserts
+#include "Journal.h"  // [jrn47] the spot event, its refusals and its problem row
 #include "EscortProtect.h"  // [b36_ohb] EscortGossipHeld
 #include "DpsEstimate.h"  // [lead1308] the threat headroom's rates
 #include "ThreatValues.h"  // [judge13] ThreatLead: the pull-over points the member's own multiplier holds to
@@ -1444,9 +1446,12 @@ namespace Leader::Dungeon
                 thread_local std::set<std::pair<ObjectGuid, std::string>> invalidLogged;
                 if (invalidLogged.size() > 4096)
                     invalidLogged.clear();
+                // [jrn47] the level the journal takes: a place off every map grid is a state of the game this
+                // leader read and refused, not a failure of the process. The file holds Fatal and Error because
+                // it holds system failures; the analysis is a query over pb_journal_line (tag [lead236])
                 if (invalidLogged.insert({member, why}).second)
-                    LOG_ERROR("playerbots", "[lead236] invalid_spot: {} for {} at ({},{},{}) not issued", why,
-                              member.ToString(), spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ());
+                    LOG_INFO("playerbots", "[lead236] invalid_spot: {} for {} at ({},{},{}) not issued", why,
+                             member.ToString(), spot.GetPositionX(), spot.GetPositionY(), spot.GetPositionZ());
                 return false;
             }
             if (bot && move != Leader::MoveEvent::Hold && Leader::LEADER_SPOT_AGGRO_GUARD)
@@ -9457,9 +9462,91 @@ namespace Leader::Dungeon
                                     noneLogged.clear();
                                 if (noneLogged.insert({guid, target->GetGUID()}).second)
                                 {
-                                    // [lead463] user 2026-11-02: a member with no spot is a leader bug - loud
-                                    LOG_ERROR("playerbots", "[lead463] combat_spot_none: {} has no spot on {} ({}): {}",
-                                              bot->GetName(), target->GetName(), breaks, rejects.Summary());
+                                    // [lead463] user 2026-11-02: a member with no spot is a leader bug - loud.
+                                    // [jrn47] LOUD IS NOT THE SAME AS LOG_ERROR. The file is configured for Fatal
+                                    // and Error only because the user's rule is that it holds system failures
+                                    // while every analysis comes from MySQL, and game state declared an error
+                                    // breaks that rule at the call and not in the configuration: 387 of these
+                                    // lines, 52 KB, in one window. The level goes to the one the journal takes,
+                                    // and the event itself becomes rows with columns below - loud where loudness
+                                    // can be counted.
+                                    LOG_INFO("playerbots", "[lead463] combat_spot_none: {} has no spot on {} ({}): {}",
+                                             bot->GetName(), target->GetName(), breaks, rejects.Summary());
+                                    // [jrn47] the event, its refusals as child rows, and the problem row that
+                                    // points at it. is_real is 'yes' WITHOUT A JUDGEMENT: by the project's rule a
+                                    // place for a ranged member always exists and the tank's place is no fallback
+                                    // (its cleave), so this is a defect of the search every time it happens.
+                                    {
+                                        Journal::Spot spot;
+                                        spot.botName = bot->GetName();
+                                        spot.botLow = guid.GetCounter();
+                                        spot.botLevel = bot->GetLevel();
+                                        // the role's one owner is PlayerbotAI, asked here as everywhere else
+                                        spot.role = PlayerbotAI::IsTank(bot)   ? "tank"
+                                                    : PlayerbotAI::IsHeal(bot) ? "healer"
+                                                                               : "dps";
+                                        spot.melee = melee;
+                                        spot.healer = PlayerbotAI::IsHeal(bot);
+                                        spot.mapId = bot->GetMapId();
+                                        spot.zoneId = bot->GetZoneId();
+                                        spot.x = bot->GetPositionX();
+                                        spot.y = bot->GetPositionY();
+                                        spot.z = bot->GetPositionZ();
+                                        spot.targetName = target->GetName();
+                                        spot.targetEntry = target->GetEntry();
+                                        spot.targetLow = target->GetGUID().GetCounter();
+                                        spot.targetYd = bot->GetExactDist(target);
+                                        spot.breaks = breaks;
+                                        spot.reaches = reaches;
+                                        if (idleBlocker)
+                                        {
+                                            spot.idleName = idleBlocker->GetName();
+                                            spot.idleEntry = idleBlocker->GetEntry();
+                                            spot.idleLow = idleBlocker->GetGUID().GetCounter();
+                                        }
+                                        spot.runId = run.runId;
+                                        std::vector<std::string> reasons;
+                                        for (auto const& [where, count] : rejects.counts)
+                                        {
+                                            spot.rejects.push_back({where.first, where.second, count});
+                                            spot.candidates += count;
+                                            reasons.push_back(where.second);
+                                        }
+                                        uint64 const spotId = Journal::RecordSpot(spot);
+
+                                        std::string const role = spot.role ? *spot.role : std::string("dps");
+                                        Journal::Issue issue;
+                                        issue.kind = "combat_spot_none";
+                                        issue.severity = "high";
+                                        issue.reproClass = "decision";
+                                        issue.dedupKey =
+                                            Journal::Key::CombatSpotNone(role, reasons, rejects.Summary());
+                                        issue.why = Acore::StringFormat(
+                                            "{} ({}) has no place to fight {} from ({}): {}", spot.botName, role,
+                                            spot.targetName, spot.breaks, rejects.Summary());
+                                        issue.realWhen = "a place for a ranged member always exists by the "
+                                                         "project's rule, and the tank's place is no fallback "
+                                                         "(its cleave), so no place is a defect of the search";
+                                        issue.real = "yes";
+                                        issue.realWhy = "the search found no place and the member cannot fight "
+                                                        "its target from where it stands";
+                                        issue.realSource = "emitter";
+                                        // the candidates refused is the quantity this key leaves free: tens to
+                                        // hundreds over the live events, 55 598 over 387 of them
+                                        issue.value = double(spot.candidates);
+                                        issue.valueUnit = "candidate";
+                                        issue.botName = spot.botName;
+                                        issue.botLow = spot.botLow;
+                                        issue.mapId = spot.mapId;
+                                        issue.zoneId = spot.zoneId;
+                                        issue.x = spot.x;
+                                        issue.y = spot.y;
+                                        issue.z = spot.z;
+                                        issue.runId = spot.runId;
+                                        issue.sourceTable = "pb_journal_spot";
+                                        issue.sourceId = spotId;
+                                        Journal::RecordIssue(issue);
+                                    }
                                     // [lead734] the idle mob the melee places met, where it and the fight stand
                                     Decisions().Write(
                                         run, "leader", "combat_spot_none", guid, bot->GetName(), false,

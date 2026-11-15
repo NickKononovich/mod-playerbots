@@ -210,6 +210,13 @@ namespace Journal
             "(id, boot_id, at_ms, hour_bucket, kind, bot_name, bot_low, bot_level, role, map_id, zone_id, pos_x, "
             "pos_y, pos_z, target_name, target_entry, target_low, target_yd, target_level, target_zone_id, "
             "in_combat, action_running, why, run_id, build)";
+        // [jrn47] one search for a combat place that found none, and its refusals as rows
+        char const* const COLUMNS_SPOT =
+            "(id, boot_id, at_ms, hour_bucket, bot_name, bot_low, bot_level, role, melee, healer, map_id, zone_id, "
+            "pos_x, pos_y, pos_z, target_name, target_entry, target_low, target_yd, breaks, reaches, candidates, "
+            "idle_name, idle_entry, idle_low, run_id, build)";
+        char const* const COLUMNS_SPOT_REJECT =
+            "(spot_id, boot_id, at_ms, hour_bucket, idx, stage, reason, candidates, build)";
         char const* const COLUMNS_ALERT =
             "(id, boot_id, at_ms, hour_bucket, kind, num, bot_name, bot_low, bot_level, map_id, zone_id, pos_x, "
             "pos_y, pos_z, loop_n, activity, no_progress_xp, no_progress_quest, same_place, last_action, reason, "
@@ -253,6 +260,11 @@ namespace Journal
                 return COLUMNS_STUCK;
             if (!std::strcmp(table, "pb_journal_alert"))
                 return COLUMNS_ALERT;
+            // [jrn47] the spot event and its refusals
+            if (!std::strcmp(table, "pb_journal_spot"))
+                return COLUMNS_SPOT;
+            if (!std::strcmp(table, "pb_journal_spot_reject"))
+                return COLUMNS_SPOT_REJECT;
             if (!std::strcmp(table, "pb_journal_actor"))
                 return COLUMNS_ACTOR;
             if (!std::strcmp(table, "pb_journal_route"))
@@ -481,7 +493,9 @@ namespace Journal
                                           "pb_journal_loot", "pb_journal_metric", "pb_journal_actor",
                                           "pb_journal_route", "pb_journal_route_stop", "pb_journal_fight",
                                           "pb_journal_aggro", "pb_journal_death", "pb_journal_idle",
-                                          "pb_journal_stuck", "pb_journal_alert", "pb_journal_line"})
+                                          "pb_journal_stuck", "pb_journal_alert",
+                                          "pb_journal_spot",  // [jrn47] with its child below
+                                          "pb_journal_spot_reject", "pb_journal_line"})
                 {
                     // [jrn20] the raw stream keeps its OWN, shorter window, and the number says why: measured on the
                     // live table it is 403 bytes a row at 152 967 rows an hour - 1.5 GB a day at 75 bots, and about
@@ -1276,6 +1290,60 @@ namespace Journal
                  + parts)
                     .c_str());
 
+            // [jrn47] one search for a combat place that found none. The event's own row; WHICH CHECK turned the
+            // places down is the child table below, a row per (stage, reason) - homogeneous participants of one
+            // event, which rule 1 makes rows and not a printed list.
+            CreateOrExtend(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_spot ("
+                             "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "bot_name VARCHAR(32) NOT NULL DEFAULT '', bot_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "bot_level SMALLINT UNSIGNED NULL, role VARCHAR(8) NULL, "
+                             "melee TINYINT UNSIGNED NULL, healer TINYINT UNSIGNED NULL, "
+                             "map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
+                             "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
+                             "target_name VARCHAR(48) NOT NULL DEFAULT '', "
+                             "target_entry INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "target_low INT UNSIGNED NOT NULL DEFAULT 0, target_yd FLOAT NULL, "
+                             "breaks VARCHAR(128) NOT NULL DEFAULT '', reaches TINYINT UNSIGNED NULL, "
+                             "candidates INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "idle_name VARCHAR(48) NOT NULL DEFAULT '', "
+                             "idle_entry INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "idle_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY bot_at (bot_low, at_ms), "
+                             "KEY role_at (role, at_ms), KEY target_at (target_entry, target_low, at_ms), "
+                             "KEY idle_at (idle_entry, idle_low, at_ms), KEY where_at (map_id, zone_id, at_ms), "
+                             "KEY melee_at (melee, at_ms), KEY healer_at (healer, at_ms), "
+                             "KEY candidates_at (candidates, at_ms), KEY breaks_at (breaks(32), at_ms), "
+                             "KEY run_at (run_id, at_ms), KEY build_at (build, at_ms)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn47] a member with no combat place: who, on what, and how many "
+                             "candidates fell'")
+                 + parts)
+                    .c_str());
+
+            // [jrn47] the refusals of one search, a row per (stage, reason). `candidates` is the number that pair
+            // turned down and is never part of a key: over the 387 live events keying on the counts gave 154 keys
+            // for 52 causes, which is this project's trap #2 at the level of the problems table.
+            CreateOrExtend(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_spot_reject ("
+                             "spot_id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "idx SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "stage VARCHAR(16) NOT NULL DEFAULT '', reason VARCHAR(64) NOT NULL DEFAULT '', "
+                             "candidates INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (spot_id, idx, hour_bucket), KEY at_ms (at_ms), "
+                             "KEY stage_at (stage, at_ms), KEY reason_at (reason, at_ms), "
+                             "KEY stage_reason_at (stage, reason, at_ms), "
+                             "KEY candidates_at (candidates, at_ms), KEY build_at (build, at_ms)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn47] which check turned the candidate places down, by search stage'")
+                 + parts)
+                    .c_str());
+
             // [jrn40] one alert. Written ONLY from GuildCoordinator::Alert, the funnel every alert already passes:
             // recording it there and again at the site that raised it would be the double count this journal exists
             // to prevent.
@@ -1734,6 +1802,33 @@ namespace Journal
                                 OrNull(stuck.inCombat),
                                 Quoted(stuck.actionRunning, 96), Quoted(stuck.why, 512), Quoted(stuck.runId, 48),
                                 Quoted(Config().build, 16)));
+        return id;
+    }
+
+    // [jrn47] the event's own row, then a child row per (stage, reason) under its id
+    uint64 RecordSpot(Spot const& spot)
+    {
+        if (!Ready())
+            return 0;
+        uint64 const nowMs = NowMs();
+        uint64 const hour = nowMs / MS_PER_HOUR;
+        uint64 const id = Writer::Instance().NextId();
+        Writer::Instance().Push(
+            "pb_journal_spot",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+                                id, BootId(), nowMs, hour, Quoted(spot.botName, 32), spot.botLow,
+                                OrNull(spot.botLevel), OrNull(spot.role, 8), OrNull(spot.melee),
+                                OrNull(spot.healer), spot.mapId, spot.zoneId, Real(spot.x), Real(spot.y),
+                                Real(spot.z), Quoted(spot.targetName, 48), spot.targetEntry, spot.targetLow,
+                                OrNull(spot.targetYd), Quoted(spot.breaks, 128), OrNull(spot.reaches),
+                                spot.candidates, Quoted(spot.idleName, 48), spot.idleEntry, spot.idleLow,
+                                Quoted(spot.runId, 48), Quoted(Config().build, 16)));
+        uint16 idx = 0;
+        for (SpotReject const& r : spot.rejects)
+            Writer::Instance().Push("pb_journal_spot_reject",
+                                    Acore::StringFormat("({},{},{},{},{},{},{},{},{})", id, BootId(), nowMs, hour,
+                                                        idx++, Quoted(r.stage, 16), Quoted(r.reason, 64),
+                                                        r.candidates, Quoted(Config().build, 16)));
         return id;
     }
 

@@ -214,10 +214,13 @@ namespace Leader::Travel
                 std::lock_guard<std::mutex> guard(lock);
                 fresh = logged.insert({map->GetId(), gridX, gridY}).second;
             }
+            // [jrn47] the level the journal takes: a point of another map paired with this one is a caller's
+            // mistake inside the game's own data, read and refused here - the file is for system failures, and
+            // this is counted by a query over pb_journal_line (tag [nav26]) like every other game state
             if (fresh)
-                LOG_ERROR("playerbots", "[nav26] a point ({:.1f} {:.1f} {:.1f}) outside map {}'s own grids (grid {} {}) "
-                          "was asked for its navmesh tile: a caller paired another map's point with this map - no hole",
-                          point.x, point.y, point.z, map->GetId(), gridX, gridY);
+                LOG_INFO("playerbots", "[nav26] a point ({:.1f} {:.1f} {:.1f}) outside map {}'s own grids (grid {} {}) "
+                         "was asked for its navmesh tile: a caller paired another map's point with this map - no hole",
+                         point.x, point.y, point.z, map->GetId(), gridX, gridY);
             return false;
         }
         float const detourPoint[3] = {point.y, point.z, point.x};

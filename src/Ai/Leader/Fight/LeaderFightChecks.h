@@ -28,6 +28,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>  // [jrn47] the rejects are keyed by (stage, reason)
 #include <vector>
 
 class PlayerbotAI;
@@ -328,7 +329,12 @@ namespace Leader::Fight
         SpotRejects(SpotRejects const&) = delete;
         SpotRejects& operator=(SpotRejects const&) = delete;
         std::string Summary() const;
-        std::map<std::string, uint32> counts;
+        // [jrn47] THE STAGE AND THE REASON ARE TWO FIELDS, not one glued string. They used to be one
+        // ("ring: off the target's floor"), and the journal needs them apart: the stage is where the candidates
+        // came from and the reason is the check that refused them, each its own indexed column of
+        // pb_journal_spot_reject, and the deduplication key is built on the reasons ALONE (IssueKey.h). Summary()
+        // prints exactly what it printed before.
+        std::map<std::pair<std::string, std::string>, uint32> counts;  // (stage, reason) -> candidates refused
         SpotRejects* previous = nullptr;
     };
     void NoteSpotReject(char const* search, std::string const& why);

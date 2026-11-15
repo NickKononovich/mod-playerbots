@@ -1,0 +1,43 @@
+-- [jrn47] pb_journal_spot and pb_journal_spot_reject: a member with no combat place, and WHICH CHECK turned the
+-- candidate places down.
+--
+-- A module SQL update: the core's DB updater applies it on start, or it can be applied by hand with
+--   C:/WoW/deps/mysql/bin/mysql.exe -uacore -pacore acore_playerbots < this file
+-- Journal.cpp reconciles a live table to the schema the code declares on every start (CreateOrExtend, [jrn32]), so
+-- this file is the same migration for a database the module does not start against. Both statements are
+-- CREATE TABLE IF NOT EXISTS, so running the file twice does nothing the second time. Nothing is dropped.
+--
+-- THE TWO STATEMENTS BELOW WERE EXTRACTED FROM Journal.cpp ITSELF, not retyped: the string literals of
+-- CreateTables plus the same PARTS clause every journal table gets. A retyped schema is a second author of one
+-- thing, and the drift it causes is silent - the insert fails in the writer thread and the table simply stays
+-- empty while the code reads correct.
+--
+-- WHY THE TABLES EXIST
+--
+-- `combat_spot_none` was a LOG_ERROR and nothing else: 387 lines in one window (52 KB) in a file configured for
+-- Fatal and Error only, while the user's rule is that the file holds system failures and every analysis comes
+-- from MySQL. Game state declared an error breaks that rule at the call, not in the configuration.
+-- And the one thing a reader needs - which check refused the places - lived inside the line's text
+-- ("near: heal reach x43; ring: out of the healer's band x33; ..."), so counting it meant a LIKE over the whole
+-- stream: 384 ms over 411 819 rows, and forbidden by rule 1 besides.
+--
+-- The refusals are a CHILD table, a row per (stage, reason): homogeneous participants of one event. `candidates`
+-- is how many that pair turned down and is never part of a deduplication key - measured over the 387 live events,
+-- keying on the counts gave 154 keys for 52 causes.
+--
+-- HOW TO CHECK IT RATHER THAN READ IT (the column lists of the code and of the database, side by side):
+--   SELECT TABLE_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY ORDINAL_POSITION)
+--     FROM information_schema.COLUMNS
+--    WHERE TABLE_SCHEMA = 'acore_playerbots'
+--      AND TABLE_NAME IN ('pb_journal_spot', 'pb_journal_spot_reject') GROUP BY TABLE_NAME;
+-- Expected, character for character, COLUMNS_SPOT and COLUMNS_SPOT_REJECT from Journal.cpp: 27 and 9 columns.
+-- Beware `mysql ... | grep -v Warning`: that returns GREP's exit status, so a non-zero code means "grep matched
+-- nothing" and not "the DDL failed". Success is established by querying information_schema, never by a pipeline.
+--
+-- And what the next run must show - the refusal that kept the places from existing, as a GROUP BY and not a grep:
+--   SELECT r.stage, r.reason, COUNT(DISTINCT r.spot_id) events, SUM(r.candidates) candidates
+--     FROM pb_journal_spot_reject r GROUP BY 1, 2 ORDER BY candidates DESC;
+
+CREATE TABLE IF NOT EXISTS pb_journal_spot (id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, bot_name VARCHAR(32) NOT NULL DEFAULT '', bot_low INT UNSIGNED NOT NULL DEFAULT 0, bot_level SMALLINT UNSIGNED NULL, role VARCHAR(8) NULL, melee TINYINT UNSIGNED NULL, healer TINYINT UNSIGNED NULL, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, target_name VARCHAR(48) NOT NULL DEFAULT '', target_entry INT UNSIGNED NOT NULL DEFAULT 0, target_low INT UNSIGNED NOT NULL DEFAULT 0, target_yd FLOAT NULL, breaks VARCHAR(128) NOT NULL DEFAULT '', reaches TINYINT UNSIGNED NULL, candidates INT UNSIGNED NOT NULL DEFAULT 0, idle_name VARCHAR(48) NOT NULL DEFAULT '', idle_entry INT UNSIGNED NOT NULL DEFAULT 0, idle_low INT UNSIGNED NOT NULL DEFAULT 0, run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY bot_at (bot_low, at_ms), KEY role_at (role, at_ms), KEY target_at (target_entry, target_low, at_ms), KEY idle_at (idle_entry, idle_low, at_ms), KEY where_at (map_id, zone_id, at_ms), KEY melee_at (melee, at_ms), KEY healer_at (healer, at_ms), KEY candidates_at (candidates, at_ms), KEY breaks_at (breaks(32), at_ms), KEY run_at (run_id, at_ms), KEY build_at (build, at_ms)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn47] a member with no combat place: who, on what, and how many candidates fell' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+
+CREATE TABLE IF NOT EXISTS pb_journal_spot_reject (spot_id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, idx SMALLINT UNSIGNED NOT NULL DEFAULT 0, stage VARCHAR(16) NOT NULL DEFAULT '', reason VARCHAR(64) NOT NULL DEFAULT '', candidates INT UNSIGNED NOT NULL DEFAULT 0, build VARCHAR(16) NOT NULL DEFAULT '', PRIMARY KEY (spot_id, idx, hour_bucket), KEY at_ms (at_ms), KEY stage_at (stage, at_ms), KEY reason_at (reason, at_ms), KEY stage_reason_at (stage, reason, at_ms), KEY candidates_at (candidates, at_ms), KEY build_at (build, at_ms)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn47] which check turned the candidate places down, by search stage' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);

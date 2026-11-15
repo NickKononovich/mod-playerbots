@@ -1339,15 +1339,17 @@ namespace Leader::Fight
     std::string SpotRejects::Summary() const
     {
         std::string out;
-        for (auto const& [why, count] : counts)
-            out += Acore::StringFormat("{}{} x{}", out.empty() ? "" : "; ", why, count);
+        // [jrn47] the same line it printed when the key was one glued string: the map is ordered by (stage,
+        // reason), which is the order "stage: reason" had
+        for (auto const& [where, count] : counts)
+            out += Acore::StringFormat("{}{}: {} x{}", out.empty() ? "" : "; ", where.first, where.second, count);
         return out.empty() ? std::string("no candidate searched") : out;
     }
 
     void NoteSpotReject(char const* search, std::string const& why)
     {
         if (g_spotRejects)
-            ++g_spotRejects->counts[std::string(search) + ": " + why];
+            ++g_spotRejects->counts[{std::string(search), why}];
     }
 
     bool LeaderCombatSpotValid(Player* bot, PlayerbotAI* botAI, Unit* target, Position const& spot, bool melee,

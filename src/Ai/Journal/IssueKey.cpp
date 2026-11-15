@@ -6,6 +6,8 @@
 
 #include "IssueKey.h"
 
+#include <algorithm>  // [jrn47] the reason set is sorted and deduplicated
+
 namespace Journal::Key
 {
     std::string Standing(std::string const& role, bool inCombat, uint32_t engineState, std::string const& heldBy,
@@ -121,6 +123,25 @@ namespace Journal::Key
     }
 
     // [jrn46] `run_failed`: the run's own record. The shape, the key and the ranged value over one struct of facts.
+    // [jrn47] the role plus the set of checks that refused, and nothing of the counts or the trace
+    std::string CombatSpotNone(std::string const& role, std::vector<std::string> const& reasons,
+                               std::string const& /*trace*/)
+    {
+        // The SET: sorted, so the order the stages were tried in is none of the cause, and without repeats, so
+        // one check refusing at three stages is one check. `trace` is deliberately not read - it is the thing
+        // that made 219 keys out of 387 events, and the test asserts no part of it reaches the key.
+        std::vector<std::string> set = reasons;
+        std::sort(set.begin(), set.end());
+        set.erase(std::unique(set.begin(), set.end()), set.end());
+        std::string shape;
+        for (std::string const& reason : set)
+            shape += (shape.empty() ? "" : "+") + reason;
+        // An event with no reason at all is its own cause ("no candidate searched"): the search produced nothing
+        // to refuse, which is a different defect from every candidate being refused, and must not read as one of
+        // them nor as an empty key that swallows both.
+        return "combat_spot_none|" + role + "|" + (shape.empty() ? std::string("no candidate searched") : shape);
+    }
+
     bool RunClean(RunFacts const& facts)
     {
         return facts.result == "done" && facts.bossesKilled >= facts.bossesTotal && !facts.deaths && !facts.wipes;

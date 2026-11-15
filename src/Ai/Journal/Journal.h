@@ -833,6 +833,65 @@ namespace Journal
 
     uint64 RecordStuck(Stuck const& stuck);
 
+    // [jrn47] ONE SEARCH FOR A COMBAT PLACE THAT FOUND NONE (`combat_spot_none`), with the search's own refusals
+    // as rows and not as a printed line.
+    //
+    // By the project's rule a place for a ranged member ALWAYS exists, and falling back to the tank's place is
+    // forbidden (its cleave), so this event is a bug of the search and never a normal state: the issue row it
+    // writes is `is_real = 'yes'` without a judgement. It used to be a LOG_ERROR and nothing else - 387 lines in
+    // one window, 52 KB of a file configured to hold Fatal and Error only, and the one thing a reader needs,
+    // WHICH CHECK TURNED THE PLACES DOWN, lived inside that line's text as "near: heal reach x43; ring: out of
+    // the healer's band x33; ...". Counting it meant a LIKE over the stream, which rule 1 forbids.
+    //
+    // THE REFUSALS ARE A CHILD TABLE, a row per (stage, reason), because they are homogeneous participants of one
+    // event: the stage is where the candidates came from (`near` / `ring` / `walk` / `at target` / `front` /
+    // `tank's spot`) and the reason is the check that turned them down. `candidates` is how many that pair turned
+    // down - the number, never part of the key: measured over the 387 live events, keying on the counts gave 154
+    // keys for 52 causes.
+    struct SpotReject
+    {
+        std::string stage;
+        std::string reason;
+        uint32 candidates = 0;
+    };
+
+    struct Spot
+    {
+        std::string botName;
+        uint32 botLow = 0;
+        Optional<uint32> botLevel;
+        Optional<std::string> role;  // tank / healer / dps IN THIS FIVE, NULL when the emitter knows none
+        // the kind of place that was looked for, which decides which checks could speak at all
+        Optional<bool> melee;
+        Optional<bool> healer;
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        float x = 0.f, y = 0.f, z = 0.f;
+
+        // the mob the place was for - BY ENTRY AND GUID, not by name (a name is not an identity: over the 387
+        // live events 16 names carried one cause, and keying on them split it into 91)
+        std::string targetName;
+        uint32 targetEntry = 0;
+        uint32 targetLow = 0;
+        Optional<float> targetYd;
+
+        // what the member is short of where it stands now ("first spot" when it has none at all), and whether it
+        // reaches its target from there
+        std::string breaks;
+        Optional<bool> reaches;
+        uint32 candidates = 0;  // candidates turned down in all, the sum of the children's
+
+        // the idle mob whose aggro reach covered the places, when one did: the commonest single refusal
+        std::string idleName;
+        uint32 idleEntry = 0;
+        uint32 idleLow = 0;
+
+        std::string runId;
+        std::vector<SpotReject> rejects;
+    };
+
+    uint64 RecordSpot(Spot const& spot);
+
     // [jrn40] One alert. GuildCoordinator::Alert is the single funnel every alert already passes through, so it is
     // the one place this is written from: an alert recorded both there and at the site that raised it would be the
     // double count this journal exists to prevent.

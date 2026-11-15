@@ -407,3 +407,70 @@ TEST(SupplyShareShortPool, TheTankIsFilledBeforeTheDps)
     EXPECT_GT(twentyNine[3], 0u);
     EXPECT_GT(twentyNine[4], 0u);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// [jrn47] `combat_spot_none`: ONE CAUSE IS ONE ROW, BOTH WAYS. Every line below is a real [lead463] line of b502,
+// out of 387 in one window. The key is the role plus the SET of checks that refused, and the numbers that make
+// the other candidates for a key wrong are in the comment of IssueKey.h: 219 keys on the printed line, 154 on the
+// reasons with their counts, 91 on the mob's name beside the reasons (over 16 names), 77 on the (stage, reason)
+// pairs - against 52 reason sets.
+// ---------------------------------------------------------------------------------------------------------------
+namespace
+{
+    // the healer family, 55 of the 387: the band and the heal reach refuse every candidate
+    std::vector<std::string> const HEALER_REASONS = {"heal reach", "out of the healer's band"};
+    std::string const AEVMAE_TRACE = "near: heal reach x43; near: inside its minimum gap to the target x6; "
+                                     "ring: heal reach x15; ring: out of the healer's band x33; "
+                                     "walk: out of the healer's band x8";
+    // the same cause for another healer on another mob, with other counts and one other stage
+    std::string const PHERUA_TRACE = "near: heal reach x49; ring: heal reach x25; "
+                                     "ring: out of the healer's band x23; walk: heal reach x3; "
+                                     "walk: out of the healer's band x9";
+    // the melee family, 189 of the 387 (the largest single cause): every melee place at the target lies inside an
+    // idle mob's aggro reach
+    std::vector<std::string> const MELEE_REASONS = {"out of melee reach of the target", "an idle mob's aggro reach",
+                                                    "no melee place in reach and sight in front of the target",
+                                                    "out of melee reach"};
+    std::string const TUIHGRELFIM_TRACE = "at target: an idle mob's aggro reach x16; "
+                                          "front: no melee place in reach and sight in front of the target x1; "
+                                          "near: out of melee reach of the target x49; "
+                                          "ring: an idle mob's aggro reach x7; tank's spot: out of melee reach x1";
+}  // namespace
+
+TEST(IssueKeyCombatSpotNone, OneCauseIsOneKeyWhateverTheCountsAndTheMob)
+{
+    // Aevmae on Deviate Adder and Pherua on Deviate Lasher: the same two checks refused, so ONE problem
+    EXPECT_EQ(Journal::Key::CombatSpotNone("healer", HEALER_REASONS, AEVMAE_TRACE),
+              Journal::Key::CombatSpotNone("healer", HEALER_REASONS, PHERUA_TRACE))
+        << "the counts and the stages of one cause made two rows of it";
+    // and the order the reasons were gathered in is no cause either
+    std::vector<std::string> reversed(HEALER_REASONS.rbegin(), HEALER_REASONS.rend());
+    EXPECT_EQ(Journal::Key::CombatSpotNone("healer", HEALER_REASONS, AEVMAE_TRACE),
+              Journal::Key::CombatSpotNone("healer", reversed, PHERUA_TRACE));
+    // a repeated reason is the same set (the same check refusing at two stages)
+    std::vector<std::string> twice = HEALER_REASONS;
+    twice.push_back("heal reach");
+    EXPECT_EQ(Journal::Key::CombatSpotNone("healer", twice, AEVMAE_TRACE),
+              Journal::Key::CombatSpotNone("healer", HEALER_REASONS, AEVMAE_TRACE));
+    // nothing of the trace, and no count, reaches the key
+    std::string const key = Journal::Key::CombatSpotNone("healer", HEALER_REASONS, AEVMAE_TRACE);
+    EXPECT_EQ(key.find("x43"), std::string::npos) << key;
+    EXPECT_EQ(key.find("near"), std::string::npos) << "the stage belongs to the child row, not to the key: " << key;
+    for (char const c : key)
+        EXPECT_FALSE(c >= '0' && c <= '9') << "a number in the key: " << key;
+}
+
+TEST(IssueKeyCombatSpotNone, TwoCausesAreTwoKeys)
+{
+    // the healer's band against the melee geometry: one fix for either must not turn a test green over the other
+    EXPECT_NE(Journal::Key::CombatSpotNone("healer", HEALER_REASONS, AEVMAE_TRACE),
+              Journal::Key::CombatSpotNone("dps", MELEE_REASONS, TUIHGRELFIM_TRACE));
+    // the role is part of the cause: the same refusal means a different search for a healer and for a dps
+    EXPECT_NE(Journal::Key::CombatSpotNone("healer", HEALER_REASONS, AEVMAE_TRACE),
+              Journal::Key::CombatSpotNone("dps", HEALER_REASONS, AEVMAE_TRACE));
+    // and one check more is one cause more: the idle mob's reach beside the band is not the band alone
+    std::vector<std::string> withIdle = HEALER_REASONS;
+    withIdle.push_back("an idle mob's aggro reach");
+    EXPECT_NE(Journal::Key::CombatSpotNone("healer", withIdle, AEVMAE_TRACE),
+              Journal::Key::CombatSpotNone("healer", HEALER_REASONS, AEVMAE_TRACE));
+}
