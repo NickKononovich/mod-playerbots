@@ -81,6 +81,51 @@ namespace
         }
     }
 
+    // [jrn20] WHO READS THIS VERDICT. The column the whole journal was asked for, and the only honest way to fill
+    // it is to read the consumer, which is what was done for each kind below. Two of the night's wrong diagnoses
+    // came from verdicts nobody read at all - one was thrown away by the caller a line later, another was a bare
+    // print - and that class is invisible while this column is empty.
+    //
+    // THE TWO VALUES ARE NOT THE SAME THING, and nothing may blur them:
+    //   "?"  not established yet. A GAP. Says nothing about whether anyone reads it.
+    //   ""   established: NOBODY reads it. A FINDING, and a defect to go and fix.
+    // So a kind is only given a reader here once its consumer has actually been read in the code; anything else
+    // keeps "?". Names are files and symbols, never line numbers: a line number in a comment goes stale silently,
+    // and a comment about what the code no longer does costs more than a wrong number.
+    //
+    // What was traced, and where the verdict is actually consumed:
+    //   planner_answer   LeaderPlan tests decision.verdict itself (Go clears refusedPicks, Held drives the rest and
+    //                    line holds), stores it in lead.verdict* for Steer, and RouteEvents / RoutePatrol / RouteMeet
+    //                    read that through PartyRefusal / PartyVerdict; the tank's own engine also tests it
+    //                    (ChooseTargetActions).
+    //   chain_pull       consumed in the same block that writes it: joinPack when taken, lead.fightMoveTo and
+    //                    lead.planAhead when the fight walks. A "rejected" is read by that same branch - not taking
+    //                    the pack IS the consumption.
+    //   pull_commit      lead.commitMob / commitWhy are set and runCommit() issues the order from them.
+    //   pull_order       goes out through Leader::Orders and is picked up by Leader::Orders::GetOpen in
+    //                    ChooseTargetActions (the pull_trace ask / pickup / execute steps).
+    //   commit_released  clears lead.keptPick and lead.pickJudgedFor, so the pick is judged again from scratch.
+    //
+    // WHICH OF THESE ACTUALLY LAND IN THE COLUMN TODAY: only planner_answer and commit_released, because they are
+    // the two kinds that become a decision row; chain_pull, pull_commit and pull_order become OPTIONS of a decision
+    // and option rows have no read_by of their own. Their three entries are kept because the tracing was done and
+    // is worth not losing, and they go live the moment one of those kinds gets a row of its own - but five entries
+    // here are not five filled columns, and this note is here so the next reader does not count them as coverage.
+    char const* ReadBy(std::string const& what)
+    {
+        if (what == "planner_answer")
+            return "LeaderPlan verdict+lead.verdict*; RouteEvents/RoutePatrol PartyRefusal; ChooseTargetActions";
+        if (what == "chain_pull")
+            return "LeaderEvents: joinPack when taken, lead.fightMoveTo/planAhead when it walks";
+        if (what == "pull_commit")
+            return "LeaderPlan: lead.commitMob then runCommit issues the order";
+        if (what == "pull_order")
+            return "Leader::Orders -> ChooseTargetActions Orders::GetOpen (pull_trace)";
+        if (what == "commit_released")
+            return "LeaderPlan: clears lead.keptPick and lead.pickJudgedFor, the pick is judged again";
+        return "?";  // not traced yet - a gap, and deliberately not the empty string
+    }
+
     // "leader" / "tank" / "member:Name" -> which judge spoke, and its name when the line names one. The judge is a
     // column because the same decision taken by a different judge is a different decision, and because a verdict
     // with no owner was twice the real defect behind a wrong diagnosis.
@@ -138,7 +183,7 @@ namespace
             {
                 // a choice of its own: the commit is given up, at its own moment and for its own reason
                 Journal::Decision released;
-                Fill(released, run, who, mob, mobName, stamp, json);
+                Fill(released, run, who, what, mob, mobName, stamp, json);
                 released.topic = "pull_release";
                 released.verdict = "released";
                 released.choice = JField(json, "pick");
@@ -163,7 +208,7 @@ namespace
                     // the candidate verdicts seen before this answer belong to it, not to the one already written
                     pending.decision.options.swap(carried.options);
                 }
-                Fill(pending.decision, run, who, mob, mobName, stamp, json);
+                Fill(pending.decision, run, who, what, mob, mobName, stamp, json);
                 pending.decision.topic = "pull";
                 pending.decision.verdict = VerdictOf(JField(json, "answer"));
                 pending.decision.choice = JField(json, "pick");
@@ -207,8 +252,9 @@ namespace
         void CountConflict(Leader::DecisionRun const&, std::string const&) override {}
 
     private:
-        void Fill(Journal::Decision& decision, Leader::DecisionRun const& run, std::string const& who, ObjectGuid mob,
-                  std::string const& mobName, uint32 stamp, std::string const& json)
+        void Fill(Journal::Decision& decision, Leader::DecisionRun const& run, std::string const& who,
+                  std::string const& what, ObjectGuid mob, std::string const& mobName, uint32 stamp,
+                  std::string const& json)
         {
             decision.judge = JudgeOf(who, decision.judgeName);
             decision.subject = mobName;
@@ -218,9 +264,10 @@ namespace
             decision.costUnit = "tank hp";
             decision.tag = JField(json, "tag");
             decision.src = "Ai/Leader/Dungeon/LeaderPlan.cpp";
-            // "?" means "not established yet", and it is NOT the same as "" ("checked, nobody reads it"). Keeping
-            // the two apart is the point: an empty reader is a finding, an unchecked one is only a gap.
-            decision.readBy = "?";
+            // who consumes this verdict, traced in the code (see ReadBy). "?" means "not established yet" and is
+            // NOT the same as "" ("checked, nobody reads it"): an empty reader is a finding, an unchecked one is
+            // only a gap, and the night's two wrong diagnoses were the first kind.
+            decision.readBy = ReadBy(what);
             decision.runId = run.runId;
             decision.runMs =
                 run.runStartMs && int32(stamp - run.runStartMs) >= 0 ? getMSTimeDiff(run.runStartMs, stamp) : 0;
