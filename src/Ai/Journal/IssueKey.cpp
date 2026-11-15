@@ -257,6 +257,27 @@ namespace Journal::Key
     }
 }
 
+namespace Journal::Key
+{
+    std::string Alert(std::string const& kind, std::string const& reasonWithoutNumbers, std::string const& questTitle)
+    {
+        // [alert20b] the title is an identity and must leave the key; the shape must stay
+        std::string reason = reasonWithoutNumbers;
+        // The title is an identity and leaves the key; it is removed by its own exact text, so a tail that is a
+        // SHAPE rather than a name is never touched. Nothing is guessed and nothing is cut at a position.
+        if (questTitle.size() >= 3)  // a one or two character title would match prose by accident
+            for (std::string::size_type at = reason.find(questTitle); at != std::string::npos;
+                 at = reason.find(questTitle, at))
+            {
+                reason.erase(at, questTitle.size());
+                // the space the title was introduced by goes with it, so `DO_QUEST qN ` ends at `qN`
+                while (at > 0 && reason[at - 1] == ' ')
+                    reason.erase(--at, 1);
+            }
+        return "alert|" + kind + "|" + reason;
+    }
+}
+
 namespace Journal::Real
 {
     bool StaleVictim(std::string const& why)

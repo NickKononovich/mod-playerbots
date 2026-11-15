@@ -22,6 +22,7 @@
 #include "Group.h"
 #include "HealthTriggers.h"  // [dun230] RestState::DrinkRegenPerSec
 #include "Item.h"
+#include "LeaderOrders.h"  // [fight21] Leader::Runs::OfBot: which run this bot is in, read from a map thread
 #include "Log.h"
 #include "ObjectMgr.h"
 #include "Pet.h"
@@ -3345,15 +3346,21 @@ void RecordFight(Player* bot, FightSample const& sample)
         "INSERT INTO playerbots_fight_history (guid, name, level, class, spec, ctx, target_entry, target_level, "
         "mobs, formula_dps, ideal_dps, actual_dps, fight_s, active_s, window_s, able_s, range_s, facing_s, "
         "no_swing_s, control_s, switch_s, casting_s, cast_s, assumed_buffs, swings, swings_allowed, valid, why, "
-        "shared, shortfall, taken, outcome, map, x, y, z) VALUES "
+        // [fight21] `run_id` HAD A COLUMN, AN INDEX AND NO WRITER: empty in all 75 074 rows, so every join of
+        // a measured fight to the run it happened in was a join BY TIME - and two fives measure fights in the
+        // same second, so that join could not be honest. The fact was in this function's hand the whole time
+        // (the bot), and the registry that answers it is built to be read from a map thread
+        // (Leader::Runs::OfBot, [jrn40]). Empty still means "this bot is in no run", which is the ordinary
+        // case for a bot levelling alone - never "we lost it".
+        "shared, shortfall, taken, outcome, map, x, y, z, run_id) VALUES "
         "({}, '{}', {}, {}, '{}', '{}', {}, {}, {}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, "
         "{:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {}, {}, {:.2f}, {}, '{}', {}, '{}', {}, '{}', {}, {:.1f}, "
-        "{:.1f}, {:.1f})",
+        "{:.1f}, {:.1f}, '{}')",
         guid, escapedName, uint32(bot->GetLevel()), uint32(bot->getClass()), spec, ctx, sample.targetEntry,
         uint32(sample.targetLevel), sample.mobs, formulaDps, idealDps, actual, sample.fightSec, active, windowSec,
         ableSec, rangeSec, facingSec, noSwingSec, controlSec, switchSec, castingSec, castSec,
         uint32(f.openResult.assumedBuffs), swings, swingsAllowed, valid ? 1 : 0, escapedWhy, f.shared ? 1 : 0,
-        escapedShortfall, sample.taken, sample.outcome, map, atX, atY, atZ));
+        escapedShortfall, sample.taken, sample.outcome, map, atX, atY, atZ, Leader::Runs::OfBot(bot)));
     trans->Append(Acore::StringFormat(
         "DELETE h FROM playerbots_fight_history h JOIN (SELECT id FROM playerbots_fight_history WHERE guid = {} "
         "ORDER BY id DESC LIMIT 1 OFFSET 1000) old ON h.id <= old.id WHERE h.guid = {}",

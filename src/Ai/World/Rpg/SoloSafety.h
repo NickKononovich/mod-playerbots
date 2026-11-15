@@ -193,6 +193,34 @@ namespace SoloSafety
     bool TakeRecovery(Player* bot);
     // [regress10] alive with that recovery not taken yet, or a rest asked for and not full yet: no new pull
     bool HoldsPulls(Player* bot);
+
+    // [fight20] DID THIS BOT'S OWN JUDGE OPEN THIS FIGHT, and if it did not, what ground the bot was on when
+    // the fight began. Asked by the journal at the core's combat transition (Journal::NoteFightStart), which
+    // IS the instant the fight begins - so these are the fight's own facts and not a later approximation.
+    //
+    // WHY IT IS A FUNCTION AND NOT A FIELD THE EMITTER FILLS IN LATER, measured: over b504 the [solo]
+    // UNJUDGED line - written by OpenIfNeeded, where these facts were taken - came AFTER the fight row in 283
+    // of the 290 pairs that join within 2 s (5 in the same millisecond, 2 before). OpenIfNeeded runs on the
+    // bot's own tick and the hook runs inside the core's combat update, so a field written by OpenIfNeeded
+    // would have been empty for all but a handful of rows: a dead column.
+    //
+    // ONE JUDGE, ONE READING (rule 5): the answer is computed ONCE per fight and remembered, so OpenIfNeeded
+    // prints the very numbers this returned rather than looking at the world a second time a tick later.
+    // `AggroDisc` stays the only place that reads the world for "what ground a mob covers".
+    struct OpenFacts
+    {
+        bool judgeOpened = false;  // the bot's own engage verdict names this fight's first mob
+        // the next two only mean anything when `judgeOpened` is false, and they are deliberately NOT one
+        // column: standing inside the disc is what the zone rule [dpszero3] takes away, walking through it is
+        // a different defect that [dpszero2] refuses on the walk, and one column could not tell the two fixes
+        // apart afterwards
+        bool inside = false;
+        bool moving = false;
+    };
+    // false when SoloSafety is not this bot's judge at all (a member of a five, a bot in an instance - there
+    // the leader judges): the caller then writes NOTHING, because a measured "no" and "this judge does not
+    // apply" are different answers
+    bool OpenFactsOf(Player* bot, Unit* mob, OpenFacts& out);
     // [regress10] the idle mobs whose aggro reach (wander area, patrol beat) covers where the bot stands (`who`: their
     // names) and the spots that leave every idle reach round it, nearest first ([deaths140] where each of 16
     // directions leaves the union of the reaches, its combat reach past the last rim, within its sight); false when

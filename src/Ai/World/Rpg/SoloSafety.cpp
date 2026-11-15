@@ -285,6 +285,17 @@ namespace
         // judge's inputs for a fight it was never asked about; no decision reads it)
         bool unjudgedPending = false;
         std::string unjudgedWhy;
+        // [fight20] the fight's opening facts, computed ONCE at whoever asks first (normally the journal, at
+        // the core's combat transition - the instant the fight begins) and read by everyone after. Before
+        // this, OpenIfNeeded built the same disc a tick later for its own sentence: two readings of one
+        // question (rule 5). The disc and the distance into it are kept so the sentence prints the numbers
+        // that were actually judged.
+        bool openFactsTaken = false;
+        bool openJudgeOpened = false;
+        bool openInside = false;
+        bool openMoving = false;
+        G3D::Vector4 openDisc;
+        float openInto = 0.0f;
         // [surv10] the mobs the core will bring to a fight no judge opened, as the pull judge's own model counts them
         // (PackAt: the engage call, the formation, the periodic CallAssistance, a flee for help, and an idle mob whose
         // reach covers the fight). Built once per fight, outside the lock, and resolved per tick from these guids -
@@ -629,6 +640,7 @@ namespace
         state.formulaEntry = 0;
         state.formulaLevel = 0;
         state.loggedNoAttack = false;
+        state.openFactsTaken = false;  // [fight20] the next fight computes its own opening facts
     }
 
     // [guild15] the melee-phase clock: the time since the last sample counts as melee when the bot stood in reach then
@@ -651,6 +663,25 @@ namespace
     {
         if (state.open && !bot->IsInCombat() && bot->IsAlive())
             CloseFight(bot, state, false);
+    }
+
+    // [fight20] THE ONE COMPUTATION of this fight's opening facts. Called under `lock` by whoever asks first;
+    // every later caller gets the same answer back, so the question is judged once and at the fight's start.
+    void TakeOpenFacts(Player* bot, SoloBotState& state, Creature* c)
+    {
+        if (state.openFactsTaken || !c)
+            return;
+        state.openFactsTaken = true;
+        // the engage verdict is this bot's own judge speaking, and it names the mob it judged: a verdict about
+        // another mob did not open THIS fight ([death398] names the same distinction in its own words)
+        state.openJudgeOpened = state.engaged && state.engage.target == c->GetGUID();
+        // the same disc the bot's own avoidance builds (AggroDisc: a wanderer's sits on its home and carries
+        // its wander distance, every other mob's on where it stands). No second judge of that question.
+        state.openDisc = AggroDisc(c, bot);
+        state.openInto =
+            std::hypot(state.openDisc.x - bot->GetPositionX(), state.openDisc.y - bot->GetPositionY());
+        state.openInside = state.openInto <= state.openDisc.w;
+        state.openMoving = bot->isMoving();
     }
 
     void OpenIfNeeded(Player* bot, SoloBotState& state, uint32 now, Unit* mob)
@@ -702,8 +733,12 @@ namespace
                 // where the bot stood in it. 55 of the 57 unjudged opens over b477-b482 opened with the bot already
                 // inside that disc, so the geometry is not the unknown: the inputs the line below adds are the
                 // fight's own numbers, which nothing priced
-                G3D::Vector4 const disc = AggroDisc(c, bot);
-                float const into = std::hypot(disc.x - bot->GetPositionX(), disc.y - bot->GetPositionY());
+                // [fight20] the disc this fight was JUDGED on, not a fresh look a tick later: the journal
+                // normally took it at the core's combat transition, and this sentence now prints that same
+                // reading. When nobody asked first, this call is the one computation.
+                TakeOpenFacts(bot, state, c);
+                G3D::Vector4 const disc = state.openDisc;
+                float const into = state.openInto;
                 // [surv10] rpgInfo.ToString() is several lines (questId, objectiveIdx, poiPos, lastReachPOI), and
                 // this record carries the fight's numbers AFTER it: b485 wrote 203 of its 213 price lines as five
                 // physical lines each, with the projection - the whole point of the record - orphaned on the last of
@@ -2043,6 +2078,24 @@ namespace SoloSafety
             return false;
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
         return botAI->HasStrategy("new rpg", BOT_STATE_NON_COMBAT);
+    }
+
+    // [fight20] the journal asks this at the core's combat transition - the fight's real start
+    bool OpenFactsOf(Player* bot, Unit* mob, OpenFacts& out)
+    {
+        // SoloPlayerBot is the gate of "is this bot judged here at all": it says no in an instance and no for
+        // a bot a living member fights beside, and in both of those the LEADER is the judge. The caller then
+        // writes nothing, so the columns stay NULL - "this judge does not apply", never a measured no.
+        Creature* c = mob ? mob->ToCreature() : nullptr;
+        if (!c || !SoloPlayerBot(bot))
+            return false;
+        std::lock_guard<std::mutex> guard(lock);
+        SoloBotState& state = states[bot->GetGUID().GetCounter()];
+        TakeOpenFacts(bot, state, c);
+        out.judgeOpened = state.openJudgeOpened;
+        out.inside = state.openInside;
+        out.moving = state.openMoving;
+        return true;
     }
 
     void NoteDamage(Unit* attacker, Unit* victim, uint32 damage)
@@ -4294,7 +4347,9 @@ namespace SoloSafety
         constexpr uint32 DIRECTIONS = 16;  // the search's directions all round (WorkSpot's: a look's cost, no rule)
         std::vector<std::pair<float, G3D::Vector3>> found;
         // [death472] how many of these same reaches cover a point - the whole of the fallback's rule
-        auto const covering = [&discs](G3D::Vector3 const& at)
+        // [fight20] renamed off the `covering` PARAMETER [dpszero3] added: the parameter was shadowed, so this
+        // file did not compile at all. The lambda is local and counts; the parameter carries identities out
+        auto const coveringCount = [&discs](G3D::Vector3 const& at)
         {
             uint32 n = 0;
             for (G3D::Vector4 const& d : discs)
@@ -4303,7 +4358,7 @@ namespace SoloSafety
             return n;
         };
         if (covered)
-            covered->reachesHere = covering(here);
+            covered->reachesHere = coveringCount(here);  // [fight20] renamed: see the lambda above
         for (uint32 i = 0; i < DIRECTIONS; ++i)
         {
             float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
@@ -4344,7 +4399,8 @@ namespace SoloSafety
                     float cz = here.z;
                     bot->UpdateAllowedPositionZ(cx, cy, cz);
                     G3D::Vector3 const candidate(cx, cy, cz);
-                    covered->spots.push_back({candidate, covering(candidate), out});
+                    // [fight20] renamed off the shadowed parameter; the count itself is unchanged
+                    covered->spots.push_back({candidate, coveringCount(candidate), out});
                 }
             float const t = clearAt + margin;
             if (t > sight)

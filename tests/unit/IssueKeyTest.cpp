@@ -954,3 +954,60 @@ TEST(ConjurerInFlight, NothingInTheConjurerFactsIsAClock)
     EXPECT_EQ(sizeof(GuildSupplyWait::ConjurerFacts), 16u)  // two bools, two uint32, padded
         << "a field was added to the conjurer's facts: if it is a time, it must not be";
 }
+
+// ============================================================================
+// [alert20b] THE ALERT'S KEY: the quest's TITLE is an identity, not a cause
+// ----------------------------------------------------------------------------
+// Inputs are the live keys of pb_journal_issue (391 alert events, 112 keys). 78 of those keys carry a quest and 53
+// of the 78 hold a SINGLE event; 72 of the 78 are one shape wearing 72 names. The reverse side is measured too:
+// the tails behind `qN` are NOT all names, two of them are shapes, and a key that cut after `qN` would merge
+// those two - the wider error, under which a fix for one goes green while the other lives on.
+// ============================================================================
+
+TEST(IssueKeyAlert, OneShapeWearingManyQuestTitlesIsOneKey)
+{
+    // Three live keys of b504, one shape each time: `alert|STUCK|DO_QUEST qN Blackrock Menace` (9 events),
+    // `alert|LOOP|DO_QUEST qN Rethban Ore` (3) and `alert|LOOP|DO_QUEST qN Solomon's Law` (1)
+    std::string const first = Journal::Key::Alert("STUCK", "DO_QUEST qN Blackrock Menace", "Blackrock Menace");
+    std::string const second = Journal::Key::Alert("STUCK", "DO_QUEST qN Rethban Ore", "Rethban Ore");
+    EXPECT_EQ(first, second) << "the shape `DO_QUEST qN` wore 72 names over 78 keys, 53 of them with one event";
+    EXPECT_EQ(first, "alert|STUCK|DO_QUEST qN");
+}
+
+TEST(IssueKeyAlert, TwoDifferentShapesStayTwoKeys)
+{
+    // THE REVERSE ASSERTION, and it is the one a blind cut after `qN` fails: these two tails are shapes, not
+    // names. Cutting blind collapses the 112 live keys to 41 and these two to one; removing the exact title
+    // gives 43, and the two extra are exactly these.
+    std::string const noSpot =
+        Journal::Key::Alert("LOOP", "IDLE(qN has no unspent objective spot left)", "Blackrock Menace");
+    std::string const postponed =
+        Journal::Key::Alert("LOOP", "IDLE(qN is postponed, the choice runs again)", "Blackrock Menace");
+    EXPECT_NE(noSpot, postponed) << "a quest with no objective spot left and a postponed quest are two defects";
+    EXPECT_EQ(noSpot, "alert|LOOP|IDLE(qN has no unspent objective spot left)")
+        << "nothing was cut at a position: the title was not in this reason, so nothing was removed";
+}
+
+TEST(IssueKeyAlert, AlertKindsNeverShareAKey)
+{
+    // the kind is the other cause field and it stays: a LOOP on a quest is the activity re-entered without
+    // progress, a STUCK on the same quest is 60 s in one place
+    EXPECT_NE(Journal::Key::Alert("LOOP", "DO_QUEST qN Rethban Ore", "Rethban Ore"),
+              Journal::Key::Alert("STUCK", "DO_QUEST qN Rethban Ore", "Rethban Ore"));
+}
+
+TEST(IssueKeyAlert, AnEmptyTitleRemovesNothing)
+{
+    // "" means the emitter held no quest, which is not "remove something": the key stays as narrow as it was.
+    // The safe direction - over-reporting - is this table's own rule.
+    EXPECT_EQ(Journal::Key::Alert("LOOP", "DO_QUEST qN Rethban Ore", ""), "alert|LOOP|DO_QUEST qN Rethban Ore");
+}
+
+TEST(IssueKeyAlert, AKeyWithoutAQuestIsByteForByteWhatItWas)
+{
+    // the counts already taken on b503 and b504 for the keys with no quest in them go on meaning what they meant:
+    // `alert|DEATH|`, `alert|STUCK|GO_CAMP N yd`, `alert|LOOP|WANDER_RANDOM`
+    EXPECT_EQ(Journal::Key::Alert("DEATH", "", "Rethban Ore"), "alert|DEATH|");
+    EXPECT_EQ(Journal::Key::Alert("STUCK", "GO_CAMP N yd", "Rethban Ore"), "alert|STUCK|GO_CAMP N yd");
+    EXPECT_EQ(Journal::Key::Alert("LOOP", "WANDER_RANDOM", ""), "alert|LOOP|WANDER_RANDOM");
+}

@@ -207,6 +207,30 @@ namespace Journal::Key
 // closed set of names rather than a number. The precedent is Journal::Standing::HoldName: a row recognised as
 // not-a-problem is MARKED and STAYS, keeping its duration and its range, and the count the user drives to zero
 // (is_real IN ('yes','unknown')) stops counting it.
+// [alert20b] THE ALERT'S KEY, and the one field in it that was an IDENTITY and not a cause: the quest's NAME.
+// `WithoutNumbers` already takes the digits out of the reason, so `q1234` becomes `qN` - but the title right
+// behind it stayed, and a title is the identity of one quest, never the shape of a defect. Measured on the live
+// table (391 alert events, 112 keys): 78 keys carry a quest, 53 of them hold a SINGLE event, and 72 of the 78 are
+// the shape `<kind>|DO_QUEST qN <Title>` - one shape wearing 72 names. That is trap #2 in a new dress, the same
+// one that made 757 "causes" out of 3 900 idle rows.
+//
+// THE TITLE IS REMOVED BY ITS OWN TEXT AND NEVER BY CUTTING AFTER `qN`, and the measurement says why: the tails
+// behind `qN` are not all names. Two of them are SHAPES - `qN has no unspent objective spot left)` and `qN is
+// postponed, the choice runs again)` - and cutting after `qN` merges them into one key, which is the wider of the
+// two errors this seam exists to prevent (we fix one defect, the test goes green, the other lives on beneath it).
+// Cutting blind gives 41 keys, removing the exact title gives 43, and the two extra ARE those two shapes.
+//   So the caller passes the title it holds (the emitter knows which quest its plan is on) and only that exact
+// text is removed. A title that is not in the reason removes nothing, so the failure is always the SAFE one: the
+// key stays as narrow as it was and no two causes are ever merged by accident.
+namespace Journal::Key
+{
+    // `alert_*`: one alert of the coordinator's funnel (GuildCoordinator::Alert). `reason` arrives with its numbers
+    // already replaced ([jrn40]); `questTitle` is the title of the quest the bot's plan was on at that instant, or
+    // "" when the emitter held none - and "" removes nothing, which is the safe direction.
+    std::string Alert(std::string const& kind, std::string const& reasonWithoutNumbers,
+                      std::string const& questTitle);
+}
+
 namespace Journal::Real
 {
     // `stale_victim`: the leader held a target outside a fight and this code dropped it (LeaderCombatEnd.cpp).

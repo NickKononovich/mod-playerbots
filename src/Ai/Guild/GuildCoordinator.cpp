@@ -1078,6 +1078,29 @@ namespace
     // run is read from the bot and no site but the loop detector passed one.
     // Each site HAS the player right there, so nothing new is read about the world here - this is the same facts
     // taken from the same object, in one place instead of four.
+    // [alert20b] WHICH QUEST THE BOT'S PLAN IS ON, filled by ONE place for every kind, exactly as
+    // AlertSubject fills the subject. Two things come out of one reading of the plan: the id, which is the
+    // column, and the title, which is NOT a column and exists only so the funnel can take it OUT of the
+    // dedup key by its own exact text. Measured on the live table: 78 of the 112 alert keys carried a quest
+    // title and 53 of those held a single event - one shape wearing 72 names, which is trap #2.
+    //   The owner of this quantity is the RPG plan itself (NewRpgInfo::DoQuest), read in the same instant as
+    // the rest of the row. Left unset when there is no PlayerbotAI to ask - "not asked", not "no quest" - and
+    // set to 0 when the plan was asked and names none. The title is left empty whenever the world does not
+    // hold that quest template, and an empty title removes nothing from the key, which is the safe direction.
+    void AlertQuest(Journal::Alert& facts, PlayerbotAI* ai)
+    {
+        if (!ai)
+            return;
+        uint32 questId = 0;
+        if (auto const* doing = std::get_if<NewRpgInfo::DoQuest>(&ai->rpgInfo.data))
+            questId = doing->questId;
+        facts.questId = questId;
+        if (!questId)
+            return;
+        if (Quest const* quest = sObjectMgr->GetQuestTemplate(questId))
+            facts.questTitle = quest->GetTitle();
+    }
+
     void AlertSubject(Journal::Alert& facts, Player* subject)
     {
         if (!subject)
@@ -1169,7 +1192,17 @@ void GuildCoordinator::Alert(std::string text, Journal::Alert facts)
                          ? ""
                          : "nothing named by the one judge of legitimate waits (WaitReason) held the bot at "
                            "the instant the alert was raised";
-    issue.dedupKey = "alert|" + c.kind + "|" + Journal::WithoutNumbers(c.reason);
+    // [alert20b] THE KEY THROUGH THE SEAM, so that the one field in it that was an IDENTITY leaves it. The
+    // numbers were already taken out ([jrn40]); the quest TITLE behind `qN` was not, and a title names one
+    // quest rather than one shape of defect. The title is removed BY ITS OWN TEXT and never by cutting after
+    // `qN`: two of the live tails behind `qN` are shapes, not names (`qN has no unspent objective spot left)`
+    // and `qN is postponed, the choice runs again)`), and cutting blind merges those two - the wider error, in
+    // which a fix for one turns a test green while the other lives on beneath it. Blind gives 41 keys of the
+    // 112, the exact title gives 43, and the two extra are exactly those shapes (IssueKeyAlert.*).
+    //   NAMED, not hidden: the 78 keys of b503 and b504 that carry a title do NOT keep their text, because
+    // merging them is the whole point. A key with no quest in it is byte for byte what it was, so every count
+    // already taken on those keys goes on meaning what it meant.
+    issue.dedupKey = Journal::Key::Alert(c.kind, Journal::WithoutNumbers(c.reason), facts.questTitle);
     issue.why = text;
     issue.botName = row.botName;
     issue.botLow = row.botLow;
@@ -11434,6 +11467,7 @@ void GuildCoordinator::ProcessDeaths()
         // it the row's only identity was its name inside the text
         Journal::Alert facts;
         AlertSubject(facts, p);
+        AlertQuest(facts, p ? GET_PLAYERBOT_AI(p) : nullptr);  // [alert20b] the quest its plan was on
         Alert(out.str(), facts);
         if (st.deaths.size() >= 2)
             Alert("DEATHS #" + std::to_string(row ? row->num : 0) + " " + (p ? p->GetName() : "?") + ": " +
@@ -11544,6 +11578,7 @@ void GuildCoordinator::OnRpgStatus(Player* bot, uint8 status)
         // Nothing is suppressed: `is_real` is a column, and the funnel says `no` with the reason in words
         facts.heldBy = WaitReason(bot, ai, st);
         AlertSubject(facts, bot);  // [jrn43] one place fills the subject, for every kind
+        AlertQuest(facts, ai);     // [alert20b] and one place the quest its plan is on
         Alert("LOOP #" + std::to_string(row ? row->num : 0) + " " + bot->GetName() + " L" +
               std::to_string(bot->GetLevel()) + ": " + RpgName(status) +
               " re-entered without progress (no XP, no quest progress, same place) at map " +
@@ -11751,6 +11786,7 @@ void GuildCoordinator::UpdateHealth()
                 facts.value = double(now - st.combatAnchorAt);  // the magnitude this site HAS
                 facts.valueUnit = "sec";
                 AlertSubject(facts, p);
+                AlertQuest(facts, ai);  // [alert20b] from the one collector
                 Alert(out.str(), facts);
             }
         }
@@ -11867,6 +11903,7 @@ void GuildCoordinator::UpdateHealth()
         facts.value = double(now - st.anchorAt);  // the seconds it stood, from the owner of that quantity
         facts.valueUnit = "sec";
         AlertSubject(facts, p);
+        AlertQuest(facts, ai);  // [alert20b] the quest its plan is on, from the one collector
         Alert(out.str(), facts);
     }
     sample.deaths = deathsTotal_;

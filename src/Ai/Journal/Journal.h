@@ -390,6 +390,22 @@ namespace Journal
         double pullCost = 0.0;
         uint32 pullOrderId = 0;
 
+        // [fight20] DID THE BOT'S OWN JUDGE OPEN THIS FIGHT, and if not, what ground was it on. Until now "267
+        // fights no judge opened" was taken apart out of the TEXT of the [solo] / [surv10] lines, which is exactly
+        // what rule 1 forbids - and it is why the share the zone rule [dpszero3] takes away could not be counted
+        // on b504 at all. All three are the emitter's own facts at this instant (SoloSafety::OpenFactsOf, one pass
+        // under one lock, the same AggroDisc judge the bot's own avoidance uses), never a second reading.
+        //
+        // EMPTY MEANS THE JUDGE IS NOT SOLOSAFETY'S, which is not a measured "no": a member of a five in a dungeon
+        // is judged by its leader, so all three stay NULL there, and the query that wants this asks in_dungeon=0.
+        Optional<bool> judgeOpened;
+        // only when `judgeOpened` is false: the two kinds of ground, and they are NOT one column. "it stood inside
+        // the disc" is the defect [dpszero3] takes away; "it walked through the disc" is a different one that the
+        // zone rule of [dpszero2] already refuses on the walk, and a single column could not tell a fix for the
+        // first from a fix for the second. NULL = the judge opened the fight, so the quantity does not exist
+        Optional<bool> unjudgedInside;
+        Optional<bool> unjudgedMoving;
+
         std::string runId;
         uint64 decisionId = 0;
     };
@@ -542,6 +558,16 @@ namespace Journal
         std::string killerName;
         uint32 killerEntry = 0;
         uint32 killerLow = 0;
+        // [death476] THE KILLER'S IDENTITY IN THE SPAWN TABLE, because `killerLow` is NOT one and that was rule 6
+        // broken inside the instrument. `killerLow` is GetGUID().GetCounter() - a RUNTIME counter, new on every
+        // boot - and it is measured: Mor'Ladim (entry 522) carries 3009 on b503 and 2195 on b504 while it has
+        // exactly ONE row in `creature`, guid 5086; in that table 3009 is an Elder Crag Boar and 2195 a Bloodsail
+        // Warlock, so a JOIN on creature.guid returns the wrong creature. The spawn id is stable across boots
+        // (Creature::GetSpawnId), so "one spawn killed three bots" becomes a GROUP BY instead of a guess.
+        // The old column is NOT reused and its meaning is NOT changed ([jrn44]'s lesson): a row written before
+        // this build would otherwise lie about what it measured. NULL = the killer had no spawn id (a player, a
+        // summon, a temporary creature), which is not spawn 0
+        Optional<uint32> killerSpawnId;
         Optional<uint32> killerLevel;
         Optional<float> killerHealthPct;
 
@@ -1023,6 +1049,18 @@ namespace Journal
         // than N" could not be cut at all. The member's number keeps its own column (`num`)
         Optional<double> value;
         std::string valueUnit;
+
+        // [alert20b] WHICH QUEST THE BOT'S PLAN WAS ON at this instant, as a column with an index - because the
+        // title of that quest was sitting in the DEDUP KEY, where it is an identity and not a cause. Measured on
+        // the live table: 78 of the 112 alert keys carry a quest and 53 of those hold a single event, 72 of the 78
+        // being one shape wearing 72 names. The owner of this quantity is the bot's RPG plan
+        // (PlayerbotAI::rpgInfo.questId), read at the same instant as the rest of the row.
+        // NULL = the emitter had no PlayerbotAI to ask; 0 = asked, and the plan names no quest. Two different
+        // answers, as always in this journal
+        Optional<uint32> questId;
+        // the title of that same quest, and it is NOT a column: it rides here only so the funnel can take it OUT
+        // of the key by its own exact text (Journal::Key::Alert). The title stays readable in `text`
+        std::string questTitle;
 
         std::string reason;  // the cause in words, as the alert prints it
         std::string text;    // the whole printed line: one event, written once

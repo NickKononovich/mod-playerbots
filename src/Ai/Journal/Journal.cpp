@@ -147,6 +147,11 @@ namespace Journal
         // metric rows and an issue's value range are doubles
         std::string OrNull(Optional<double> const& v) { return v ? Real(*v) : std::string("NULL"); }
         std::string OrNull(Optional<bool> const& v) { return v ? std::string(*v ? "1" : "0") : std::string("NULL"); }
+        // [fight20] an EXACT overload for the small-integer facts (Idle::leaderReady is Optional<uint8>): without
+        // it the call is ambiguous between the uint32, float, double and bool overloads above, and Journal.cpp did
+        // not compile at all. A TINYINT column that carries a NUMBER and not a flag is not the bool overload's -
+        // that one would print 1 for every non-zero value and lose the rest.
+        std::string OrNull(Optional<uint8> const& v) { return v ? std::to_string(uint32(*v)) : std::string("NULL"); }
         std::string OrNull(Optional<std::string> const& v, size_t max)
         {
             return v ? Quoted(*v, max) : std::string("NULL");
@@ -187,7 +192,9 @@ namespace Journal
         char const* const COLUMNS_FIGHT =
             "(id, boot_id, at_ms, hour_bucket, event, bot_name, bot_low, bot_level, role, map_id, zone_id, area_id, "
             "pos_x, pos_y, pos_z, in_dungeon, enemy_name, enemy_entry, enemy_low, enemy_level, mobs, puller_name, "
-            "puller_low, pull_kind, pull_method, pull_expected, pull_cost, pull_order_id, run_id, decision_id, "
+            "puller_low, pull_kind, pull_method, pull_expected, pull_cost, pull_order_id, "
+            // [fight20] did the bot's own judge open this fight, and on what ground it was when it did not
+            "judge_opened, unjudged_inside, unjudged_moving, run_id, decision_id, "
             "build)";
         char const* const COLUMNS_AGGRO =
             "(id, boot_id, at_ms, hour_bucket, bot_name, bot_low, role, bot_health_pct, bot_in_combat, bot_moving, "
@@ -196,6 +203,8 @@ namespace Journal
         char const* const COLUMNS_DEATH =
             "(id, boot_id, at_ms, hour_bucket, bot_name, bot_low, bot_level, bot_class, role, spec, map_id, zone_id, "
             "area_id, pos_x, pos_y, pos_z, in_dungeon, killer_name, killer_entry, killer_low, killer_level, "
+            // [death476] the killer by its SPAWN: killer_low is a runtime counter and no identity at all
+            "killer_spawn_id, "
             "killer_health_pct, health_max, damage_from_killer, attackers, judged_pull, expected, pull_expected, "
             "pull_method, context, threat, run_id, decision_id, build, "
             // [runpast88] the fight, the chase and the route search as COLUMNS - the same numbers the context
@@ -252,7 +261,9 @@ namespace Journal
         char const* const COLUMNS_ALERT =
             "(id, boot_id, at_ms, hour_bucket, kind, num, bot_name, bot_low, bot_level, map_id, zone_id, pos_x, "
             "pos_y, pos_z, loop_n, activity, no_progress_xp, no_progress_quest, same_place, last_action, held_by, "
-            "value, value_unit, reason, text, run_id, build)";
+            // [alert20b] which quest the plan was on: the title used to sit in the dedup key, where a title is an
+            // identity and never a cause
+            "value, value_unit, quest_id, reason, text, run_id, build)";
         char const* const COLUMNS_ACTOR =
             "(decision_id, boot_id, at_ms, hour_bucket, idx, side, name, low, entry, spawn_id, level, spec, role, "
             "health, health_max, health_pct, mana, mana_max, mana_pct, pos_x, pos_y, pos_z, tank_yd, target_yd, "
@@ -1160,6 +1171,12 @@ namespace Journal
                              "pull_kind VARCHAR(12) NOT NULL DEFAULT '', "
                              "pull_method VARCHAR(16) NOT NULL DEFAULT '', pull_expected SMALLINT UNSIGNED NULL, "
                              "pull_cost DOUBLE NOT NULL DEFAULT 0, pull_order_id INT UNSIGNED NOT NULL DEFAULT 0, "
+                             // [fight20] the three facts of "the fight no judge opened", which used to be
+                             // taken apart out of the [solo] line's text. NULL = SoloSafety is not this
+                             // bot's judge (in a dungeon its leader is), and for the last two it also means
+                             // "the judge did open this fight", so the quantity does not exist
+                             "judge_opened TINYINT UNSIGNED NULL, unjudged_inside TINYINT UNSIGNED NULL, "
+                             "unjudged_moving TINYINT UNSIGNED NULL, "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', "
                              "decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
                              "build VARCHAR(16) NOT NULL DEFAULT '', "
@@ -1168,6 +1185,10 @@ namespace Journal
                              "KEY event_at (event, at_ms), KEY pull_kind_at (pull_kind, at_ms), "
                              "KEY puller_at (puller_low, at_ms), KEY mobs_at (mobs, at_ms), "
                              "KEY run_at (run_id, at_ms), KEY build_at (build, at_ms), "
+                             // [fight20] one index per question that gets asked, each paired with time
+                             "KEY judge_opened_at (judge_opened, at_ms), "
+                             "KEY unjudged_inside_at (unjudged_inside, at_ms), "
+                             "KEY unjudged_moving_at (unjudged_moving, at_ms), "
                              "KEY decision (decision_id)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn30] a fight BEGINS: who, where, against whom, how many, pulled by whom'")
@@ -1247,6 +1268,10 @@ namespace Journal
                              // "the emitter did not hold it" - a bot with no mana bar leaves these empty
                              "mana INT UNSIGNED NULL, mana_max INT UNSIGNED NULL, mana_pct FLOAT NULL, "
                              "heal_per_mana FLOAT NULL, "
+                             // [death476] the spawn this killer came from - stable across boots, unlike the
+                             // GUID counter in killer_low. NULL = this killer has no spawn row (a player,
+                             // a summon), which is not spawn 0
+                             "killer_spawn_id INT UNSIGNED NULL, "
                              "judged_pull TINYINT UNSIGNED NULL, expected VARCHAR(512) NOT NULL DEFAULT '', "
                              "pull_expected SMALLINT UNSIGNED NULL, pull_method VARCHAR(16) NOT NULL DEFAULT '', "
                              "context VARCHAR(1024) NOT NULL DEFAULT '', threat VARCHAR(1024) NOT NULL DEFAULT '', "
@@ -1270,6 +1295,8 @@ namespace Journal
                              // both a WHERE over a column, each paired with time
                              "KEY mana_pct_at (mana_pct, at_ms), "
                              "KEY heal_per_mana_at (heal_per_mana, at_ms), "
+                             // [death476] "which spawn killed how many bots" is a GROUP BY by identity
+                             "KEY killer_spawn_at (killer_spawn_id, at_ms), "
                              "KEY decision (decision_id)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn30] a real death with the judges inputs - prevention is never written here'")
@@ -1606,13 +1633,18 @@ namespace Journal
                              // the site's own and the member's number stays in `num` - an identity is no quantity
                              "held_by VARCHAR(64) NOT NULL DEFAULT '', value DOUBLE NULL, "
                              "value_unit VARCHAR(16) NOT NULL DEFAULT '', "
+                             // [alert20b] NULL = there was no PlayerbotAI to ask; 0 = asked, and the plan
+                             // names no quest. Two different answers, as everywhere in this journal
+                             "quest_id INT UNSIGNED NULL, "
                              "reason TEXT NULL, text TEXT, "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY kind_at (kind, at_ms), "
                              "KEY bot_at (bot_low, at_ms), KEY activity_at (activity, at_ms), "
                              "KEY where_at (map_id, zone_id, at_ms), KEY loop_at (loop_n, at_ms), "
                              "KEY held_at (held_by, at_ms), KEY value_at (value_unit, value, at_ms), "
-                             "KEY build_at (build, at_ms), KEY run_at (run_id, at_ms)) "
+                             "KEY build_at (build, at_ms), KEY run_at (run_id, at_ms), "
+                             // [alert20b] "every alert on this quest" is a WHERE over a column, not a LIKE
+                             "KEY quest_at (quest_id, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn40] one alert, from the single funnel every alert already passes'")
                  + parts)
@@ -1903,8 +1935,9 @@ namespace Journal
         uint64 const nowMs = NowMs();
         Writer::Instance().Push(
             "pb_journal_fight",
+            // [fight20] three more fields: judge_opened, unjudged_inside, unjudged_moving
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{})",
+                                "{},{},{},{},{},{},{})",
                                 Writer::Instance().NextId(), BootId(), nowMs, nowMs / MS_PER_HOUR,
                                 Quoted(fight.event, 12), Quoted(fight.botName, 32), fight.botLow,
                                 OrNull(fight.botLevel), OrNull(fight.role, 8), fight.mapId, fight.zoneId,
@@ -1913,6 +1946,9 @@ namespace Journal
                                 OrNull(fight.enemyLevel), OrNull(fight.mobs), Quoted(fight.pullerName, 32),
                                 fight.pullerLow, Quoted(fight.pullKind, 12), Quoted(fight.pullMethod, 16),
                                 OrNull(fight.pullExpected), Real(fight.pullCost), fight.pullOrderId,
+                                // [fight20] the emitter's own three facts - NULL where the quantity is absent
+                                OrNull(fight.judgeOpened), OrNull(fight.unjudgedInside),
+                                OrNull(fight.unjudgedMoving),
                                 Quoted(fight.runId, 48), fight.decisionId, Quoted(Config().build, 16)));
     }
 
@@ -1946,13 +1982,15 @@ namespace Journal
             "pb_journal_death",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
                                 "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{})",
+                                "{},{},{},{},{})",
                                 id, BootId(), nowMs, nowMs / MS_PER_HOUR,
                                 Quoted(death.botName, 32), death.botLow, OrNull(death.botLevel),
                                 OrNull(death.botClass), OrNull(death.role, 8), OrNull(death.spec, 24), death.mapId,
                                 death.zoneId, death.areaId, Real(death.x), Real(death.y), Real(death.z),
                                 death.inDungeon ? 1 : 0, Quoted(death.killerName, 48), death.killerEntry,
-                                death.killerLow, OrNull(death.killerLevel), OrNull(death.killerHealthPct),
+                                death.killerLow, OrNull(death.killerLevel),
+                                // [death476] the identity beside the runtime counter
+                                OrNull(death.killerSpawnId), OrNull(death.killerHealthPct),
                                 OrNull(death.healthMax), OrNull(death.damageFromKiller), OrNull(death.attackers),
                                 OrNull(death.judgedPull), Quoted(death.expected, 512), OrNull(death.pullExpected),
                                 Quoted(death.pullMethod, 16), Quoted(death.context, 1024),
@@ -2136,15 +2174,16 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_alert",
             // [alert20] three more fields: held_by, value, value_unit
+            // [alert20b] and one more: quest_id, the quest the plan was on
             Acore::StringFormat(
-                "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
+                "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
                                 BootId(), nowMs, nowMs / MS_PER_HOUR, Quoted(alert.kind, 24), OrNull(alert.num),
                                 Quoted(alert.botName, 32), alert.botLow, OrNull(alert.botLevel), alert.mapId,
                                 alert.zoneId, Real(alert.x), Real(alert.y), Real(alert.z), OrNull(alert.loopN),
                                 Quoted(alert.activity, 32), OrNull(alert.noProgressXp),
                                 OrNull(alert.noProgressQuest), OrNull(alert.samePlace),
                                 Quoted(alert.lastAction, 512), Quoted(alert.heldBy, 64), OrNull(alert.value),
-                                Quoted(alert.valueUnit, 16), Prose(alert.reason),
+                                Quoted(alert.valueUnit, 16), OrNull(alert.questId), Prose(alert.reason),
                                 alert.text.empty() ? std::string("NULL") : Quoted(alert.text, 16000),
                                 Quoted(alert.runId, 48), Quoted(Config().build, 16)));
         return id;

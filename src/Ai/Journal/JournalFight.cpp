@@ -46,6 +46,7 @@
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
+#include "SoloSafety.h"  // [fight20] SoloSafety::OpenFactsOf: did this bot's own judge open the fight
 #include "StringFormat.h"
 #include "ThreatManager.h"
 
@@ -149,6 +150,28 @@ namespace Journal
         if (Creature* creature = enemy->ToCreature())
             fight.enemyEntry = creature->GetEntry();
         fight.mobs = MobsOn(bot);
+
+        // [fight20] DID THE BOT'S OWN JUDGE OPEN THIS FIGHT. This hook IS the instant the fight begins, so
+        // the question is asked here and the solo judge answers it from its own state plus one reading of the
+        // first mob's aggro disc (AggroDisc - the same judge the bot's avoidance uses, computed once per
+        // fight and read again by the [solo] sentence). It answers `false` when it is not this bot's judge at
+        // all - in a dungeon the leader is - and then nothing is written, because "the leader judged it" is
+        // not a measured "the bot did not".
+        //   Until this build "267 fights no judge opened" was taken apart out of the text of those sentences,
+        // which rule 1 forbids, and that is exactly why the share the zone rule [dpszero3] takes away could
+        // not be counted on b504.
+        SoloSafety::OpenFacts opened;
+        if (SoloSafety::OpenFactsOf(bot, enemy, opened))
+        {
+            fight.judgeOpened = opened.judgeOpened;
+            // the ground is a fact ABOUT a fight no judge opened: when the judge did open it, there is no
+            // such quantity, and NULL says that rather than a zero that reads as "it was outside the disc"
+            if (!opened.judgeOpened)
+            {
+                fight.unjudgedInside = opened.inside;
+                fight.unjudgedMoving = opened.moving;
+            }
+        }
 
         // who pulled it and with what: the issued order is the authority
         Leader::PullOrder order;
@@ -272,6 +295,15 @@ namespace Journal
         death.killerName = killer->GetName();
         death.killerEntry = killer->GetEntry();
         death.killerLow = killer->GetGUID().GetCounter();
+        // [death476] AND THE IDENTITY BESIDE IT, because the counter above is not one: it is handed out at
+        // runtime and is new on every boot. Measured: Mor'Ladim (entry 522) carries killer_low 3009 on b503
+        // and 2195 on b504 while `creature` holds exactly one row for it, guid 5086 - and in that table 3009
+        // is an Elder Crag Boar and 2195 a Bloodsail Warlock, so a JOIN on creature.guid answers with the
+        // wrong creature. The spawn id is stable, so "one spawn killed three bots" becomes a GROUP BY.
+        // 0 means this killer has no spawn row (a player, a summon, a temporary creature), and that is not
+        // spawn 0, so it goes unset.
+        if (ObjectGuid::LowType const spawn = killer->GetSpawnId())
+            death.killerSpawnId = uint32(spawn);
         death.killerLevel = killer->GetLevel();
         death.killerHealthPct = float(killer->GetHealthPct());
         // the share's denominator, always beside it: health 0 of a pool of 544 is readable, "0 %" alone is not
