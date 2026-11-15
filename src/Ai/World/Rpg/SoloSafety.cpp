@@ -4225,34 +4225,27 @@ namespace SoloSafety
 
     bool InRefusedReach(Player* bot, std::string& who)
     {
-        if (!bot || !bot->IsAlive())
+        // [dpszero3] the GROUND, not the one mob the bot happened to judge last. The old reading kept
+        // `SoloBotState::loggedTarget` and asked whether THAT mob's disc still covered the bot, so the three deaths
+        // of b504 whose own route search had already refused the mobs that then killed them (Kianey L26 4 of 4,
+        // Rollothan L20 3 of 5, Baridrol L27 Mor'Ladim) were invisible to it: none of those mobs was the target of
+        // a verdict the bot itself had logged. b504 printed 0 `[reach66]` lines in the hour.
+        LostStand stand;
+        if (!StandsOnLostGround(bot, stand))
             return false;
-        ObjectGuid refused;
-        {
-            std::lock_guard<std::mutex> guard(lock);
-            auto const found = states.find(bot->GetGUID().GetCounter());
-            if (found == states.end() || found->second.loggedKind == uint8(Verdict::Kind::Win) ||
-                found->second.loggedKind == 255)
-                return false;
-            refused = found->second.loggedTarget;
-        }
-        Creature* mob = refused.IsCreature() ? ObjectAccessor::GetCreature(*bot, refused) : nullptr;
-        if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot))
-            return false;
-        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-        if (!InDisc(AggroDisc(mob, bot), here))
-            return false;
-        who = Acore::StringFormat("{} L{}", mob->GetName(), mob->GetLevel());
+        who = stand.who;
         return true;
     }
 
     bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots, bool atRestart,
-                       CoveredGround* covered)
+                       CoveredGround* covered, std::vector<ObjectGuid>* covering)
     {
         who.clear();
         spots.clear();
         if (covered)
             *covered = CoveredGround();
+        if (covering)
+            covering->clear();
         if (!bot || !bot->IsAlive())
             return false;
         float const sight = sPlayerbotAIConfig.SightDistance;
@@ -4285,6 +4278,8 @@ namespace SoloSafety
             if (!InDisc(disc, here))
                 continue;
             who += Acore::StringFormat("{}{} L{}", who.empty() ? "" : ", ", mob->GetName(), mob->GetLevel());
+            if (covering)  // [dpszero3] the same mobs `who` names, by identity: a caller that has to ask the judge
+                covering->push_back(mob->GetGUID());  // about them does not look for them again
         }
         if (who.empty())
             return false;
@@ -4372,32 +4367,140 @@ namespace SoloSafety
         return true;
     }
 
+    // [dpszero3] ONE JUDGE OF "WHICH REACH OVER THIS GROUND IS A FIGHT THE BOT LOSES". Before, `StandsInLostReach`
+    // kept its own mob set (the "possible targets no los" context value, filtered by the disc again) while
+    // `InRefusedReach` kept a remembered single target: two places answering the same question, free to drift
+    // (rule 5). The mobs are now exactly the ones whose reach `StandsInReach` found over the stand - one look at the
+    // world, one disc judge (`AggroReach` through `AggroDisc`) - and the fight's verdict is `JudgeAlone`'s, asked
+    // and never recomputed here.
+    //
+    // THE COST, named because it is real: one `JudgeAlone` per mob whose reach covers the bot. It is bounded by
+    // that set (usually empty - the ground most bots stand on is covered by nothing) and the callers ask only while
+    // the bot stands still out of a fight, never while it walks. It is the same price `[death456]` already paid for
+    // a party's members; what is new is that a solo bot pays it too.
+    bool StandsOnLostGround(Player* bot, LostStand& out)
+    {
+        out = LostStand();
+        if (!bot || !bot->IsAlive())
+            return false;
+        std::vector<ObjectGuid> covering;
+        if (!StandsInReach(bot, out.everyWho, out.spots, false, &out.covered, &covering))
+            return false;  // no reach at all covers the stand - and that is not the same as "all of them winnable"
+        for (ObjectGuid const& guid : covering)
+        {
+            Creature* mob = ObjectAccessor::GetCreature(*bot, guid);
+            if (!mob)
+                continue;
+            Verdict const verdict = JudgeAlone(bot, mob);
+            // Refuse is the judge's own word for "not even at full" ([mana90] gives RestFirst for what a rest
+            // fixes), so the zone rule reads it as it stands and compares no numbers of its own
+            if (verdict.kind != Verdict::Kind::Refuse)
+                continue;
+            ++out.lostReaches;
+            out.who += Acore::StringFormat("{}{} L{} ({} mobs, {:.0f} dmg at ehp {:.0f})", out.who.empty() ? "" : ", ",
+                                           mob->GetName(), mob->GetLevel(), verdict.mobs, verdict.damage,
+                                           verdict.ehpFull);
+        }
+        if (!out.lostReaches)
+        {
+            out.spots.clear();
+            return false;
+        }
+        return true;
+    }
+
+    void NoteStandNoGround(Player* bot, LostStand const& stand)
+    {
+        if (!bot)
+            return;
+        // ONE ROW PER FACT, NOT PER TICK (trap 1): the reader runs on every tick the bot stands there, and the
+        // recorded window already holds 6 603 `[surv10]` lines of one phrase printed once per tick. The write is
+        // keyed on the facts themselves and fires again only when one of them changes, never on a clock
+        std::string const fact = Acore::StringFormat(
+            "{}|{}|{}|{}", stand.who, stand.covered.reachesHere, stand.lostReaches,
+            stand.covered.spots.empty() ? uint32(0) : stand.covered.spots.front().reaches);
+        {
+            static std::mutex standLock;
+            static std::unordered_map<uint32, std::string> standSeen;
+            std::lock_guard<std::mutex> guard(standLock);
+            std::string& last = standSeen[bot->GetGUID().GetCounter()];
+            if (last == fact)
+                return;
+            last = fact;
+        }
+        std::string const least =
+            stand.covered.spots.empty()
+                ? std::string("its 16 rays left no point at all")
+                : Acore::StringFormat("the least covered point its rays found is covered by {} of them",
+                                      stand.covered.spots.front().reaches);
+        LOG_INFO("playerbots", "[dpszero3] {} L{} stands at ({:.0f},{:.0f}) in {} aggro reach(es), {} of them a fight "
+                 "it loses ({}), and has nowhere to go: no spot out of every reach within sight and {}",
+                 bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(),
+                 stand.covered.reachesHere, stand.lostReaches, stand.who, least);
+
+        Journal::Issue issue;
+        issue.kind = "stand_no_ground";
+        // the bot is standing in a fight it loses and cannot step off it: this is the shape of all three b504 deaths
+        // whose own route search had already refused the mobs that killed them
+        issue.severity = "high";
+        // the stand, the reaches and the rays are recorded and the geometry is deterministic: put the same stand and
+        // the same spawns back and the same 16 rays come back covered
+        issue.reproClass = "decision";
+        // THE SHAPE plus THE PLACE, as `rest_no_ground` and `[dpszero2]`'s row do: this row answers "which ground of
+        // the world has no standing place out of a lost fight", never "which mob was it this time"
+        issue.dedupKey = Acore::StringFormat(
+            "stand_no_ground|a reach whose fight is lost covers the stand and no point within sight is out of every "
+            "reach or less covered|zone {}",
+            bot->GetZoneId());
+        issue.why = Acore::StringFormat(
+            "{} L{} at ({:.0f},{:.0f}) hp {:.0f} % stands in {} aggro reach(es), {} of them a fight its own judge "
+            "refuses even at full ({}); no spot within sight leaves all of them and {}",
+            bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), bot->GetHealthPct(),
+            stand.covered.reachesHere, stand.lostReaches, stand.who, least);
+        issue.realWhen = "a reach whose fight the solo judge refuses covers the stand, and the 16 rays found neither "
+                         "a point out of every reach nor one fewer reaches cover";
+        issue.real = "yes";
+        issue.realWhy = "the bot used to go on standing there, and that is how the three b504 deaths happened whose "
+                        "own last route search had already refused the mobs that killed them (Kianey L26 4 of 4 "
+                        "hitters refused, Rollothan L20 3 of 5, Baridrol L27 Mor'Ladim)";
+        issue.realSource = "emitter";
+        // the number this key leaves free: how many of the reaches over the stand are lost fights (the key fixes the
+        // shape and the zone, never the count)
+        issue.value = double(stand.lostReaches);
+        issue.valueUnit = "lost fights over the stand";
+        issue.botName = bot->GetName();
+        issue.botLow = bot->GetGUID().GetCounter();
+        issue.mapId = bot->GetMapId();
+        issue.zoneId = bot->GetZoneId();
+        issue.x = bot->GetPositionX();
+        issue.y = bot->GetPositionY();
+        issue.z = bot->GetPositionZ();
+        // the inputs live nowhere else - the stream is swept while this row stays - so the fixture carries them
+        // (read with the eyes, never filtered on)
+        std::string rays;
+        for (size_t i = 0; i < stand.covered.spots.size() && i < 8; ++i)
+            rays += Acore::StringFormat("{}{{\"x\":{:.1f},\"y\":{:.1f},\"yd\":{:.1f},\"reaches\":{}}}", i ? "," : "",
+                                        stand.covered.spots[i].at.x, stand.covered.spots[i].at.y,
+                                        stand.covered.spots[i].yards, stand.covered.spots[i].reaches);
+        issue.fixture = Acore::StringFormat(
+            "{{\"x\":{:.1f},\"y\":{:.1f},\"z\":{:.1f},\"map\":{},\"zone\":{},\"reachesHere\":{},\"lostReaches\":{},"
+            "\"clearSpots\":{},\"rayPoints\":{},\"who\":\"{}\",\"rays\":[{}]}}",
+            bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(), bot->GetZoneId(),
+            stand.covered.reachesHere, stand.lostReaches, stand.spots.size(), stand.covered.spots.size(), stand.who,
+            rays);
+        Journal::RecordIssue(issue);
+    }
+
     bool StandsInLostReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots)
     {
         who.clear();
         spots.clear();
-        std::string covering;
-        if (!bot || !bot->IsAlive() || !GET_PLAYERBOT_AI(bot) || !StandsInReach(bot, covering, spots))
+        LostStand stand;
+        if (!StandsOnLostGround(bot, stand))
             return false;
-        G3D::Vector3 const here(bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ());
-        for (ObjectGuid const& guid :
-             GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<GuidVector>("possible targets no los")->Get())
-        {
-            Creature* mob = ObjectAccessor::GetCreature(*bot, guid);
-            if (!mob || !mob->IsAlive() || mob->IsInCombat() || !mob->IsHostileTo(bot) ||
-                !mob->HasReactState(REACT_AGGRESSIVE) || mob->GetCharmerOrOwnerGUID() ||
-                !InDisc(AggroDisc(mob, bot), here))
-                continue;
-            Verdict const verdict = JudgeAlone(bot, mob);
-            if (verdict.kind != Verdict::Kind::Refuse)
-                continue;
-            who += Acore::StringFormat("{}{} L{} ({} mobs, {:.0f} dmg at ehp {:.0f})", who.empty() ? "" : ", ",
-                                       mob->GetName(), mob->GetLevel(), verdict.mobs, verdict.damage,
-                                       verdict.ehpFull);
-        }
-        if (who.empty())
-            spots.clear();
-        return !who.empty();
+        who = stand.who;
+        spots = stand.spots;
+        return true;
     }
 
     void NoteNoWayOut(Player* bot, std::string const& who, size_t spots, char const* site)

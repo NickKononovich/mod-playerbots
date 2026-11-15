@@ -221,16 +221,48 @@ namespace SoloSafety
         // that found nothing to move to has the numbers to say so
         std::vector<CoveredSpot> spots;
     };
+    // [dpszero3] `covering`, when given, takes the GUID of every mob whose reach covers the bot where it stands -
+    // the very mobs `who` names. Without it the names were all a caller got, so a caller that had to ASK THE JUDGE
+    // about those mobs had to find them again by a second look at the world, which is a second judge of "whose
+    // aggro covers this ground" (rule 5). One look, both answers.
     bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots, bool atRestart = false,
-                       CoveredGround* covered = nullptr);
+                       CoveredGround* covered = nullptr, std::vector<ObjectGuid>* covering = nullptr);
+    // [dpszero3] THE GROUND THE BOT STANDS ON as the zone rule's third reader needs it (user 2026-11-15, "стоять в
+    // зоне агро тоже нельзя"): which reaches cover the stand, which of them are fights the solo judge refuses even
+    // at full, and the two kinds of ground to leave to. One judge each: `AggroReach` says what ground a mob covers,
+    // `JudgeAlone` says whether its fight is lost, and `StandGround::Of` (the seam) holds the rule itself.
+    struct LostStand
+    {
+        // the LOST reaches' mobs, each with the numbers its own verdict carried
+        std::string who;
+        // EVERY mob whose reach covers the stand, lost or not, as StandsInReach names them: the two are different
+        // quantities and the lines that used to print "within the reach of ..." mean this one
+        std::string everyWho;
+        // out of EVERY reach within sight, nearest first (StandsInReach's own spots)
+        std::vector<G3D::Vector3> spots;
+        // reachesHere and every ray point with the count over it, fewest reaches first ([death472])
+        CoveredGround covered;
+        uint32 lostReaches = 0;
+    };
+    // false: no reach over the stand is a fight the judge refuses - which is NOT the same value as no reach at all,
+    // and `out.covered.reachesHere` tells the two apart
+    bool StandsOnLostGround(Player* bot, LostStand& out);
+    // [dpszero3] it has to leave and there is nowhere to leave to: a RECORDED problem (`stand_no_ground`), never a
+    // reason to stay. Keyed on the facts (which reaches and how many), so it is one row per fact, never one per tick
+    void NoteStandNoGround(Player* bot, LostStand const& stand);
     // [death456] StandsInReach's idle reaches over the bot that its judge alone refuses (`who`: each with its pack);
-    // `spots` the ways out of every reach then
+    // `spots` the ways out of every reach then.
+    // [dpszero3] it now reads `StandsOnLostGround`, i.e. the mobs whose reach actually covers the stand, instead of
+    // keeping its own second mob set ("possible targets no los"): two places were asking "which mobs over this
+    // ground does the judge refuse" and could drift apart (rule 5)
     bool StandsInLostReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots);
     // [deaths140] a wait (walled-in hold, Hearthstone cooldown) found no spot out of `who`'s reaches with a clean walk:
     // logged once per bot and set of reaches, the wait is taken where it stands. A log, no decision
     void NoteNoWayOut(Player* bot, std::string const& who, size_t spots, char const* site);
-    // [reach66] the mob its judge last refused (or would fight only at full) is alive, idle and its aggro reach
-    // covers the bot where it stands: `who` names it
+    // [reach66] a reach over the bot where it stands belongs to a fight its judge refuses: `who` names them.
+    // [dpszero3] IT USED TO ASK ABOUT ONE REMEMBERED MOB - the target of the bot's own last logged verdict - so a
+    // mob that walked up and was never judged was invisible to it, and in the whole closed b504 hour it printed
+    // ZERO lines while 937 lines of that hour read "loses even at full". It asks about the GROUND now
     bool InRefusedReach(Player* bot, std::string& who);
     // [objective23] a spot within `range` of `target` (and in its sight when `sight`) out of every other idle mob's and
     // wanderer's reach, the nearest to the bot (its own spot when it is one); false: no such spot (the objective

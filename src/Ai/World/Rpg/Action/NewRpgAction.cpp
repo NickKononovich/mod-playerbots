@@ -73,6 +73,7 @@ namespace
     }
 }
 #include "SoloSafety.h"  // [guild13]
+#include "StandGround.h"  // [dpszero3] standing inside the aggro zone of a fight that is lost - the rule, as a seam
 #include "SpellAuras.h"  // [deaths14] Resurrection Sickness
 #include "TerrainHazard.h"  // [guild15] SafeFloorZ
 #include "NewRpgCoop.h"  // [coop]
@@ -1843,15 +1844,31 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     // judge just refused: b400 Kylanor L14 (DO_QUEST q?, Elwynn murlocs) landed inside two murloc reaches off a failed
     // walk, refused a Murloc Lurker ("loses even at full ... fought where it stands") and stood there until a Forager
     // walked into it - the step-out ran only in IDLE
-    std::string refusedWho;
-    bool const anyStatus = status != RPG_IDLE && status != RPG_REST && !bot->IsInCombat() && !bot->isMoving() &&
-                           SoloSafety::InRefusedReach(bot, refusedWho);
+    // [dpszero3] THE THIRD READER OF THE ZONE RULE, user 2026-11-15 ("Стоять в зоне агро тоже нельзя, конечно же").
+    // The walk does not enter the zone of a fight that is lost ([dpszero2]) and the rest does not sit down in one
+    // ([death472]); a bot that already STANDS inside it and is doing neither was covered by neither. The ground is
+    // asked of the judge that already answers (SoloSafety::StandsOnLostGround), the rule itself is the seam
+    // StandGround::Of, and the price - some quest spots become unreachable until the bot levels - is the user's own
+    // and is not softened by a threshold here. No clock: every input is a state.
+    SoloSafety::LostStand lost;
+    bool onLostGround = false;
+    if (!bot->IsInCombat() && !bot->isMoving() &&
+        (SoloSafety::Applies(bot) || NewRpgCoop::InParty(bot->GetGUID().GetCounter())))
+        onLostGround = SoloSafety::StandsOnLostGround(bot, lost);
+    std::string const refusedWho = lost.who;
+    bool const anyStatus = status != RPG_IDLE && status != RPG_REST && onLostGround;
     if ((anyStatus || status == RPG_IDLE || status == RPG_REST) && !bot->IsInCombat() && !bot->isMoving() &&
         (SoloSafety::Applies(bot) || NewRpgCoop::InParty(bot->GetGUID().GetCounter())))
     {
-        std::string who;
-        std::vector<G3D::Vector3> spots;
-        if (SoloSafety::StandsInReach(bot, who, spots))
+        // the line below means EVERY reach over the stand, which is not the same quantity as the lost ones
+        std::string who = lost.everyWho;
+        std::vector<G3D::Vector3> spots = lost.spots;
+        // an IDLE / REST bot steps out of EVERY reach as it always has, lost fight or not: that is approved
+        // behaviour and nothing here narrows it. The look is made once either way
+        if (!onLostGround)
+            SoloSafety::StandsInReach(bot, who, spots);
+        if (!who.empty())
+        {
             for (G3D::Vector3 const& at : spots)
             {
                 Leader::RouteResult const route = Leader::Route(bot, Position(at.x, at.y, at.z));
@@ -1868,8 +1885,54 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
                          who, at.x, at.y, route.length);
                 return true;
             }
+            // [dpszero3] no spot out of every reach had a walk it takes. For a stand a LOST fight covers, staying is
+            // the thing the user forbade, so the least covered ground is next - the very ray points [death472]
+            // already solves, fewest reaches first, and "fewer" measured against the stand itself
+            if (onLostGround)
+            {
+                StandGround::Stand stand;
+                stand.reachesHere = lost.covered.reachesHere;
+                stand.lostReaches = lost.lostReaches;
+                stand.clearSpot = false;  // every clear spot's walk was refused above
+                std::vector<StandGround::Candidate> candidates;
+                for (SoloSafety::CoveredSpot const& spot : lost.covered.spots)
+                    candidates.push_back({spot.reaches});
+                // every point the rule allows, in the order the list arrives (fewest reaches first, nearest among
+                // equals). "Allowed" is asked of the seam point by point and nowhere decided again here: a second
+                // copy of `reaches < reachesHere` in this file is exactly how one quantity grows two judges
+                for (size_t i = 0; i < lost.covered.spots.size(); ++i)
+                {
+                    SoloSafety::CoveredSpot const& spot = lost.covered.spots[i];
+                    std::vector<StandGround::Candidate> const one{{spot.reaches}};
+                    uint32_t pick = 0;
+                    if (StandGround::Of(stand, one, pick) != StandGround::Answer::LessCovered)
+                        continue;
+                    Leader::RouteResult const route = Leader::Route(bot, Position(spot.at.x, spot.at.y, spot.at.z));
+                    std::string crossWhy;
+                    // the walk ends inside reaches by construction, so one that crosses a refused reach is taken on
+                    // the terms [death400] already set: every chase it crosses survived at the high end
+                    if (!route.found || !route.complete ||
+                        (route.throughRefused && !SoloSafety::RunOutSurvives(bot, route.points, crossWhy)))
+                        continue;
+                    if (!MoveTo(bot->GetMapId(), spot.at.x, spot.at.y, spot.at.z, false, false, false, true))
+                        continue;
+                    LOG_INFO("playerbots", "[dpszero3] {} L{} stands in {} reach(es), {} of them a fight it loses "
+                             "({}): no spot out of every reach is walkable, so it goes to the least covered ground "
+                             "({:.0f},{:.0f}) {:.0f} yd off, covered by {} against {} where it stands{}",
+                             bot->GetName(), bot->GetLevel(), lost.covered.reachesHere, lost.lostReaches, who,
+                             spot.at.x, spot.at.y, spot.yards, spot.reaches, lost.covered.reachesHere,
+                             crossWhy.empty() ? std::string() : " - its run out priced " + crossWhy);
+                    return true;
+                }
+                // nowhere to go AT ALL - a RECORDED problem, not a reason to stay. Only when the GROUND is the
+                // reason: a point the rule allowed whose walk was refused is the walk's problem and a row saying
+                // "no ground is less covered" of it would lie about which judge said no
+                uint32_t index = 0;
+                if (StandGround::Of(stand, candidates, index) == StandGround::Answer::Nowhere)
+                    SoloSafety::NoteStandNoGround(bot, lost);
+            }
+        }
     }
-
 
     // [deaths14] Resurrection Sickness (spell 15007, Player::SpiritHealer... ResurrectPlayer: all stats and the damage it
     // deals at a quarter for (level - CONFIG_DEATH_SICKNESS_LEVEL + 1) minutes, ten from the tenth level above it): the
