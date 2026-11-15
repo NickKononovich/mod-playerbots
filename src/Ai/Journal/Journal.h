@@ -49,6 +49,7 @@
 
 #include "Define.h"
 #include "ObjectGuid.h"
+#include "Optional.h"
 
 namespace Journal
 {
@@ -81,6 +82,60 @@ namespace Journal
         std::string fields;  // the numbers the judge weighed it on, as one JSON object ("" for none)
     };
 
+    // [jrn20] One participant of one decision: a bot of the five, or a mob the judge weighed. The point is replay -
+    // enough of the state the judge saw to put the same conditions back, run the judge again and see whether the
+    // verdict turns over, and to make a hundred real rows into unit-test fixtures instead of invented ones.
+    //
+    // ABSENT IS NOT ZERO, and here it is carried by NULL. Every number the emitter did not supply stays unset and
+    // reaches the table as NULL, never as 0: a mob at 0 % health is a corpse, a mob whose health was not recorded is
+    // a gap, and a query that cannot tell them apart will answer anyway. `Optional` is what keeps them apart.
+    //
+    // A share is never stored without its denominator: health and mana go in absolute AND as a percentage, because
+    // "11 %" with no pool behind it cannot be checked, and the tank drinking at 11 % mana was exactly that argument.
+    struct Actor
+    {
+        enum class Side : uint8
+        {
+            Bot = 0,   // a member of the five
+            Mob = 1,   // a creature the judge weighed
+        };
+
+        Side side = Side::Bot;
+        std::string name;
+        uint32 low = 0;             // GUID counter: the identity. Four times in one day two objects shared a name.
+        uint32 entry = 0;           // creature entry (mobs); 0 for a bot
+        uint32 spawnId = 0;         // creature spawn id, when the judge named the spawn rather than a live unit
+
+        Optional<uint32> level;
+        Optional<std::string> spec;      // bots: the spec the judge saw
+        Optional<std::string> role;      // bots: "tank" / "healer" / "dps" in THIS five
+        Optional<uint32> health;         // absolute
+        Optional<uint32> healthMax;      // the denominator, always beside it
+        Optional<float> healthPct;
+        Optional<uint32> mana;
+        Optional<uint32> manaMax;
+        Optional<float> manaPct;
+        Optional<float> x;
+        Optional<float> y;
+        Optional<float> z;
+        Optional<float> tankYd;          // distance to the tank
+        Optional<float> targetYd;        // distance to the decision's subject
+        Optional<bool> inCombat;
+        Optional<bool> wanders;          // mobs: it has a wander area
+        Optional<bool> openerReady;      // bots: its opener is off cooldown - 121 refusals rode on exactly this
+        Optional<std::string> doing;     // what it was doing at that instant
+
+        // The checks a mob passed in the judge's own words, kept as the text AND as fields, because the text was
+        // unfilterable: "reaches spot,pull path,walk,walks into the fight".
+        Optional<std::string> checks;
+        Optional<bool> chkReachesSpot;
+        Optional<bool> chkPullPath;
+        Optional<bool> chkWalk;
+        Optional<bool> chkWalksIntoFight;
+
+        std::string note;  // why this participant is in the record at all ("pack member", "wander area", ...)
+    };
+
     // One decision. Everything here is a column, not text to grep.
     struct Decision
     {
@@ -100,6 +155,23 @@ namespace Journal
         double cost = 0.0;     // the price of the choice
         std::string costUnit;  // what `cost` is measured in ("tank hp", "sec", "copper", "min", ...)
 
+        // [jrn20] PROMOTED OUT OF `fields` INTO COLUMNS, because these are what questions are asked by: "every pull
+        // bigger than one", "every careful one", "what happened at this spot on the map". The rule, and it is the
+        // whole reason these exist: IF A FIELD IS FILTERED ON, IT IS A COLUMN WITH AN INDEX - `fields` is for what
+        // is read with the eyes, not for what is searched. Not everything moves: only what gets filtered, and the
+        // rest stays in `fields` where it costs nothing to keep.
+        std::string kind;            // the judge's own class for the choice ("engage", "wakes", "walk", ...)
+        std::string method;          // "engage" / "body" / "shoot" / ... how the thing was to be done
+        // the route target the judge was working toward, BY IDENTITY and not as the printed GUID string: "every
+        // decision whose route target was this mob" is a question that gets asked, so it is two columns
+        uint32 routeTargetEntry = 0;
+        uint32 routeTargetLow = 0;
+        Optional<uint32> packSize;   // how many mobs the choice took on (NULL: the judge did not say)
+        Optional<bool> careful;      // the judge was being careful about it
+        Optional<float> judgeX;      // where the judge stood when it decided - "what happened at this spot"
+        Optional<float> judgeY;
+        Optional<float> judgeZ;
+
         std::string tag;        // the code tag that owns the line ("[pull81]"), so the row names its own author
         std::string src;        // file:line of the judge, so "who prints this" needs no grep
         std::string readField;  // the field the judge actually read to decide ("fightSecLeft", "rate_per_min")
@@ -118,6 +190,7 @@ namespace Journal
         std::string text;
 
         std::vector<Option> options;  // every option weighed, the taken one included
+        std::vector<Actor> actors;    // the state of EVERY participant the judge saw: the five, and the mobs
     };
 
     // Writes one decision (and its options). World thread safe, no query runs here. Returns the row's journal id
@@ -125,7 +198,8 @@ namespace Journal
     uint64 Record(Decision const& decision);
 
     // One loot item and the decision behind it. The run is referred to by `runId` only: `guild_project_runs` stays
-    // the one table of runs, and the journal never keeps a second copy of a run (its `at` column is the run's START,
+    // the one table of runs, and the journal never keeps a second copy of a run (its `at` is the run's END - the
+    // row is written when the finished run is inserted, and at+duration lands in the future, which settles it,
     // so a window over runs is ORDER BY id DESC LIMIT n, not a range over `at`).
     struct Loot
     {
@@ -187,6 +261,64 @@ namespace Journal
     };
 
     void RecordMetric(Metric const& metric);
+
+    // [jrn20] A ROUTE, recorded as EVENTS and not as sampled positions. Writing a coordinate every tick is the same
+    // stream over again, only dearer: the raw stream already costs about 1.5 GB a day at 75 bots (measured), and a
+    // position taken on a timer still cannot say WHY the bot went there. Four events reproduce a route completely:
+    // the plan being built, the plan changing (and what changed), a leg starting, and a leg ending. The position is
+    // written at those moments, so the route replays and the volume stays event-shaped.
+    //
+    // `event` is which of the four this row is: "planned" | "changed" | "leg_start" | "leg_end".
+    // On "changed", `changedStop` and `changedWhy` say WHICH stop appeared or went and why - one stop once tripled a
+    // tour's length and the reason was buried in the text.
+    // `verdict` on a leg end: "arrived" | "refused" | "abandoned", with `why` carrying the reason.
+    // Lengths are kept BOTH along the path and straight-line, because a detour is only visible as the ratio of the
+    // two, and a single number cannot show it.
+    struct RouteStop
+    {
+        uint32 seq = 0;              // order along the route
+        float x = 0.f;
+        float y = 0.f;
+        float z = 0.f;
+        std::string kind;            // "pack" | "boss" | "vendor" | "node" | "quest" | "mailbox" | "entrance" ...
+        std::string what;            // the name of the thing at that stop
+        uint32 entry = 0;
+        uint32 low = 0;
+        std::string verdict;         // this stop's own outcome, when it has one
+        std::string why;             // and its reason
+    };
+
+    struct Route
+    {
+        std::string event;           // planned | changed | leg_start | leg_end
+        std::string purpose;         // what the route is for ("dungeon entrance", "drink run", "gather", "quest")
+        std::string target;          // where it ends up
+        uint32 targetEntry = 0;
+        uint32 targetLow = 0;
+        std::string why;             // why THIS target, in the chooser's words
+        std::string verdict;         // leg_end: arrived | refused | abandoned
+
+        std::string botName;
+        uint32 botLow = 0;
+        uint32 mapId = 0;
+        uint32 zoneId = 0;
+        float fromX = 0.f, fromY = 0.f, fromZ = 0.f;
+        float toX = 0.f, toY = 0.f, toZ = 0.f;
+        float pathYd = 0.f;          // the length along the path
+        float straightYd = 0.f;      // and in a straight line: the detour is the ratio, not either number
+        uint32 stopCount = 0;
+
+        Optional<uint32> changedStop;  // "changed": which stop appeared or went
+        std::string changedWhy;        // and why
+
+        std::string runId;             // the run it belongs to; guild_project_runs stays the one table of runs
+        uint64 decisionId = 0;         // the pb_journal_decision row that chose this target, when there is one
+
+        std::vector<RouteStop> stops;  // written with "planned" and "changed"; a leg event needs none
+    };
+
+    // Returns the route row's id (0 when the journal is off), so a later leg can point at its plan.
+    uint64 RecordRoute(Route const& route);
 
     // The server start this process is. Called once lazily; the boot row is what makes windows across restarts
     // comparable at all.

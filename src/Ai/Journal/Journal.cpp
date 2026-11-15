@@ -41,6 +41,17 @@ namespace Journal
             // worth seeing in a query rather than silently filled in with something plausible.
             std::string build;
             uint32 retentionHours = 48;
+            // [jrn20] the stream's own window, measured: 403 bytes a row at 152 967 rows an hour is 1.5 GB a day at
+            // 75 bots and about 20 GB a day at a thousand - more than every narrow table together. The user allows
+            // the disk and forbids cutting detail, so RETENTION is the only lever: one day for the insurance table,
+            // two for the narrow ones. Shorten this, never the record.
+            uint32 streamRetentionHours = 24;
+            // [jrn20] how much of a judge's raw JSON an OPTION row keeps. Measured: option rows came out at 3 358
+            // bytes each, the fattest in the journal, because each kept the judge's whole JSON - and most of it is
+            // now in columns of its own (the actor rows). It defaults to keeping EVERYTHING: the disk is allowed
+            // and detail is not what gets cut. The setting exists only so an operator can trade detail for space
+            // deliberately - and if space ever presses, the retention goes first.
+            uint32 optionFieldsMax = 16000;
             uint32 batchRows = 500;
             uint32 flushMs = 1000;
         };
@@ -55,6 +66,10 @@ namespace Journal
                 s.build = sConfigMgr->GetOption<std::string>("AiPlayerbot.Journal.Build", "", false);
                 s.retentionHours =
                     uint32(std::max(1, sConfigMgr->GetOption<int32>("AiPlayerbot.Journal.RetentionHours", 48, false)));
+                s.streamRetentionHours = uint32(
+                    std::max(1, sConfigMgr->GetOption<int32>("AiPlayerbot.Journal.StreamRetentionHours", 24, false)));
+                s.optionFieldsMax = uint32(
+                    std::max(0, sConfigMgr->GetOption<int32>("AiPlayerbot.Journal.OptionFieldsMax", 16000, false)));
                 s.batchRows =
                     uint32(std::max(1, sConfigMgr->GetOption<int32>("AiPlayerbot.Journal.BatchRows", 500, false)));
                 s.flushMs =
@@ -109,6 +124,20 @@ namespace Journal
             return Acore::StringFormat("{:.4f}", value);
         }
 
+        // [jrn20] An Optional reaches SQL as its value or as NULL - never as 0. A mob at 0 % health is a corpse; a
+        // mob whose health was not recorded is a gap. Writing 0 for "not supplied" would merge the two, and a query
+        // over them would answer anyway. This is the same rule as '' against '?' on read_by, in numbers.
+        std::string OrNull(Optional<uint32> const& v) { return v ? std::to_string(*v) : std::string("NULL"); }
+        std::string OrNull(Optional<float> const& v) { return v ? Real(*v) : std::string("NULL"); }
+        std::string OrNull(Optional<bool> const& v) { return v ? std::string(*v ? "1" : "0") : std::string("NULL"); }
+        std::string OrNull(Optional<std::string> const& v, size_t max)
+        {
+            return v ? Quoted(*v, max) : std::string("NULL");
+        }
+
+        // defined further down, beside the other child-row writers; declared here because Record() calls it
+        void WriteActors(uint64 id, uint64 nowMs, uint64 hour, std::vector<Actor> const& actors);
+
         // ---------------------------------------------------------------------------------------------------------
         // [jrn20] the writer: the world thread only pushes a finished row, a thread of its own sends the batches
         // ---------------------------------------------------------------------------------------------------------
@@ -121,7 +150,8 @@ namespace Journal
         char const* const COLUMNS_DECISION =
             "(id, boot_id, at_ms, hour_bucket, topic, choice, verdict, why, judge, judge_name, judge_low, subject, "
             "subject_kind, subject_entry, subject_low, cost, cost_unit, tag, src, read_field, read_by, run_id, "
-            "run_ms, options_total, options_rejected, fields, text, build)";
+            "run_ms, options_total, options_rejected, fields, text, build, method, pack_size, careful, judge_x, "
+            "judge_y, judge_z, kind, route_target_entry, route_target_low)";
         char const* const COLUMNS_LOOT =
             "(id, boot_id, at_ms, hour_bucket, item_entry, item_name, count, quality, from_kind, from_name, "
             "from_entry, to_name, to_low, verdict, why, worth, worth_unit, run_id, decision_id, build)";
@@ -134,6 +164,18 @@ namespace Journal
             "build)";
         char const* const COLUMNS_METRIC =
             "(id, boot_id, at_ms, hour_bucket, name, value, unit, from_ms, to_ms, scope, build)";
+        char const* const COLUMNS_ACTOR =
+            "(decision_id, boot_id, at_ms, hour_bucket, idx, side, name, low, entry, spawn_id, level, spec, role, "
+            "health, health_max, health_pct, mana, mana_max, mana_pct, pos_x, pos_y, pos_z, tank_yd, target_yd, "
+            "in_combat, wanders, opener_ready, doing, checks, chk_reaches_spot, chk_pull_path, chk_walk, "
+            "chk_walks_into_fight, note, build)";
+        char const* const COLUMNS_ROUTE =
+            "(id, boot_id, at_ms, hour_bucket, event, purpose, target, target_entry, target_low, why, verdict, "
+            "bot_name, bot_low, map_id, zone_id, from_x, from_y, from_z, to_x, to_y, to_z, path_yd, straight_yd, "
+            "stop_count, changed_stop, changed_why, run_id, decision_id, build)";
+        char const* const COLUMNS_ROUTE_STOP =
+            "(route_id, boot_id, at_ms, hour_bucket, seq, pos_x, pos_y, pos_z, kind, what, entry, low, verdict, why, "
+            "build)";
 
         char const* ColumnsFor(char const* table)
         {
@@ -147,6 +189,12 @@ namespace Journal
                 return COLUMNS_LOOT;
             if (!std::strcmp(table, "pb_journal_metric"))
                 return COLUMNS_METRIC;
+            if (!std::strcmp(table, "pb_journal_actor"))
+                return COLUMNS_ACTOR;
+            if (!std::strcmp(table, "pb_journal_route"))
+                return COLUMNS_ROUTE;
+            if (!std::strcmp(table, "pb_journal_route_stop"))
+                return COLUMNS_ROUTE_STOP;
             return COLUMNS_LINE;
         }
 
@@ -280,8 +328,18 @@ namespace Journal
                 uint64 const nowHour = nowMs / MS_PER_HOUR;
                 uint64 const keepFrom = nowHour > Config().retentionHours ? nowHour - Config().retentionHours : 0;
                 for (char const* table : {"pb_journal_decision", "pb_journal_option", "pb_journal_read",
-                                          "pb_journal_loot", "pb_journal_metric", "pb_journal_line"})
+                                          "pb_journal_loot", "pb_journal_metric", "pb_journal_actor",
+                                          "pb_journal_route", "pb_journal_route_stop", "pb_journal_line"})
                 {
+                    // [jrn20] the raw stream keeps its OWN, shorter window, and the number says why: measured on the
+                    // live table it is 403 bytes a row at 152 967 rows an hour - 1.5 GB a day at 75 bots, and about
+                    // 20 GB a day at the thousand the project is aimed at, which is more than everything else put
+                    // together. The narrow tables are the ones worth two days; the insurance table is worth hours.
+                    uint64 const tableKeepFrom = std::strcmp(table, "pb_journal_line")
+                                                     ? keepFrom
+                                                     : (nowHour > Config().streamRetentionHours
+                                                            ? nowHour - Config().streamRetentionHours
+                                                            : 0);
                     // Which hours this table already has - asked, not assumed. After a restart the writer has no
                     // memory of the partitions it made last time, and dropping one that is not there is an error on
                     // every sweep. This is a query, but on the journal's own thread: never a map or world thread.
@@ -299,7 +357,7 @@ namespace Journal
                             std::string const name = result->Fetch()[0].Get<std::string>();
                             uint64 const hour = std::strtoull(name.c_str() + 1, nullptr, 10);
                             highest = std::max(highest, hour);
-                            if (hour < keepFrom)
+                            if (hour < tableKeepFrom)
                                 old.push_back(hour);
                         } while (result->NextRow());
                     }
@@ -375,11 +433,22 @@ namespace Journal
                      "options_total SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
                      "options_rejected SMALLINT UNSIGNED NOT NULL DEFAULT 0, fields TEXT, text TEXT, "
                      "build VARCHAR(16) NOT NULL DEFAULT '', "
+                     "method VARCHAR(24) NOT NULL DEFAULT '', pack_size SMALLINT UNSIGNED NULL, "
+                     "careful TINYINT UNSIGNED NULL, judge_x FLOAT NULL, judge_y FLOAT NULL, "
+                     "judge_z FLOAT NULL, "
+                     "kind VARCHAR(24) NOT NULL DEFAULT '', "
+                     "route_target_entry INT UNSIGNED NOT NULL DEFAULT 0, "
+                     "route_target_low INT UNSIGNED NOT NULL DEFAULT 0, "
                      "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY topic_at (topic, at_ms), "
                      "KEY verdict_at (verdict, topic, at_ms), KEY judge_at (judge_low, at_ms), "
                      "KEY judge_name_at (judge_name, at_ms), KEY run_at (run_id, at_ms), "
                      "KEY tag_at (tag, at_ms), KEY boot_at (boot_id, at_ms), "
-                     "KEY subject_at (subject_entry, subject_low, at_ms), KEY read_by_at (read_by, at_ms)) "
+                     "KEY subject_at (subject_entry, subject_low, at_ms), KEY read_by_at (read_by, at_ms), "
+                     "KEY method_at (method, at_ms), KEY pack_at (pack_size, at_ms), "
+                     "KEY careful_at (careful, at_ms), KEY choice_at (choice(64), at_ms), "
+                     "KEY judge_spot (judge_x, judge_y), KEY kind_at (kind, at_ms), "
+                     "KEY build_topic (build, topic, at_ms), "
+                     "KEY route_target_at (route_target_entry, route_target_low, at_ms)) "
                      "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                      "COMMENT='[jrn20] one choice: what was chosen, who judged, what it read, who reads the verdict'") +
                  parts)
@@ -398,7 +467,7 @@ namespace Journal
                      "build VARCHAR(16) NOT NULL DEFAULT '', "
                      "PRIMARY KEY (decision_id, idx, hour_bucket), KEY at_ms (at_ms), "
                      "KEY source_at (source_kind, at_ms), KEY kind_at (kind, at_ms), KEY taken_at (taken, at_ms), "
-                     "KEY name_at (name(64), at_ms)) "
+                     "KEY name_at (name(64), at_ms), KEY build_at (build, at_ms)) "
                      "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                      "COMMENT='[jrn20] every option a decision weighed, the rejected ones with their own reason'") +
                  parts)
@@ -437,10 +506,95 @@ namespace Journal
                      "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY run_at (run_id, at_ms), "
                      "KEY item_at (item_entry, at_ms), KEY to_at (to_low, at_ms), "
                      "KEY verdict_at (verdict, at_ms), KEY from_at (from_entry, at_ms), "
+                             "KEY build_at (build, at_ms), "
                      "KEY decision (decision_id)) "
                      "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                      "COMMENT='[jrn20] one dropped item, where it came from, who got it and on whose verdict'") +
                  parts)
+                    .c_str());
+
+            // the participants of a decision: the five's bots and the mobs the judge weighed, one row each. This is
+            // what makes a record replayable - the same conditions can be put back, the judge run again, and the
+            // verdict watched for turning over; a hundred of these rows are unit-test fixtures out of real fights.
+            // EVERY measured number IS NULLABLE and NULL means "the emitter did not supply it": a mob at 0 % health
+            // is a corpse, a mob whose health was never recorded is a gap, and a query that cannot tell those apart
+            // answers anyway. Shares always sit beside their denominator (health/health_max, mana/mana_max), because
+            // "11 %" with no pool behind it is not checkable - and the tank drinking at 11 % mana was that argument.
+            PlayerbotsDatabase.DirectExecute(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_actor ("
+                             "decision_id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "idx SMALLINT UNSIGNED NOT NULL, side TINYINT UNSIGNED NOT NULL, "
+                             "name VARCHAR(48) NOT NULL DEFAULT '', low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "entry INT UNSIGNED NOT NULL DEFAULT 0, spawn_id INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "level SMALLINT UNSIGNED NULL, spec VARCHAR(24) NULL, role VARCHAR(8) NULL, "
+                             "health INT UNSIGNED NULL, health_max INT UNSIGNED NULL, health_pct FLOAT NULL, "
+                             "mana INT UNSIGNED NULL, mana_max INT UNSIGNED NULL, mana_pct FLOAT NULL, "
+                             "pos_x FLOAT NULL, pos_y FLOAT NULL, pos_z FLOAT NULL, tank_yd FLOAT NULL, "
+                             "target_yd FLOAT NULL, in_combat TINYINT UNSIGNED NULL, wanders TINYINT UNSIGNED NULL, "
+                             "opener_ready TINYINT UNSIGNED NULL, doing VARCHAR(96) NULL, checks VARCHAR(255) NULL, "
+                             "chk_reaches_spot TINYINT UNSIGNED NULL, chk_pull_path TINYINT UNSIGNED NULL, "
+                             "chk_walk TINYINT UNSIGNED NULL, chk_walks_into_fight TINYINT UNSIGNED NULL, "
+                             "note VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (decision_id, idx, hour_bucket), KEY at_ms (at_ms), "
+                             "KEY who_at (low, at_ms), KEY entry_at (entry, at_ms), KEY spawn_at (spawn_id, at_ms), "
+                             "KEY side_health (side, health_pct, at_ms), KEY side_mana (side, mana_pct, at_ms), "
+                             "KEY role_at (role, at_ms), KEY level_at (level, at_ms), "
+                             "KEY checks_at (chk_reaches_spot, chk_pull_path, chk_walk, at_ms), "
+                             "KEY build_at (build, at_ms)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn20] every participant of a decision and its state - NULL means not given'")
+                 + parts)
+                    .c_str());
+
+            // a route, recorded as EVENTS (planned / changed / leg_start / leg_end) and not as sampled positions: a
+            // coordinate per tick is the stream again, only dearer, and it still cannot say why the bot went there.
+            // Lengths are kept BOTH along the path and straight, because a detour is the ratio of the two and
+            // neither number alone shows it.
+            PlayerbotsDatabase.DirectExecute(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_route ("
+                             "id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "event VARCHAR(12) NOT NULL, purpose VARCHAR(48) NOT NULL DEFAULT '', "
+                             "target VARCHAR(96) NOT NULL DEFAULT '', target_entry INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "target_low INT UNSIGNED NOT NULL DEFAULT 0, why VARCHAR(512) NOT NULL DEFAULT '', "
+                             "verdict VARCHAR(16) NOT NULL DEFAULT '', bot_name VARCHAR(32) NOT NULL DEFAULT '', "
+                             "bot_low INT UNSIGNED NOT NULL DEFAULT 0, map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "zone_id INT UNSIGNED NOT NULL DEFAULT 0, from_x FLOAT NOT NULL DEFAULT 0, "
+                             "from_y FLOAT NOT NULL DEFAULT 0, from_z FLOAT NOT NULL DEFAULT 0, "
+                             "to_x FLOAT NOT NULL DEFAULT 0, to_y FLOAT NOT NULL DEFAULT 0, "
+                             "to_z FLOAT NOT NULL DEFAULT 0, path_yd FLOAT NOT NULL DEFAULT 0, "
+                             "straight_yd FLOAT NOT NULL DEFAULT 0, stop_count SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "changed_stop SMALLINT UNSIGNED NULL, changed_why VARCHAR(255) NOT NULL DEFAULT '', "
+                             "run_id VARCHAR(48) NOT NULL DEFAULT '', "
+                             "decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0, "
+                             "build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY bot_at (bot_low, at_ms), "
+                             "KEY event_at (event, at_ms), KEY run_at (run_id, at_ms), "
+                             "KEY purpose_at (purpose, at_ms), KEY verdict_at (verdict, at_ms), "
+                             "KEY target_at (target_entry, target_low, at_ms), KEY decision (decision_id), "
+                             "KEY build_at (build, at_ms)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn20] a route as events: planned, changed, leg started, leg ended'")
+                 + parts)
+                    .c_str());
+
+            PlayerbotsDatabase.DirectExecute(
+                (std::string("CREATE TABLE IF NOT EXISTS pb_journal_route_stop ("
+                             "route_id BIGINT UNSIGNED NOT NULL, boot_id INT UNSIGNED NOT NULL, "
+                             "at_ms BIGINT UNSIGNED NOT NULL, hour_bucket INT UNSIGNED NOT NULL, "
+                             "seq SMALLINT UNSIGNED NOT NULL, pos_x FLOAT NOT NULL DEFAULT 0, "
+                             "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, "
+                             "kind VARCHAR(16) NOT NULL DEFAULT '', what VARCHAR(96) NOT NULL DEFAULT '', "
+                             "entry INT UNSIGNED NOT NULL DEFAULT 0, low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             "verdict VARCHAR(16) NOT NULL DEFAULT '', why VARCHAR(512) NOT NULL DEFAULT '', "
+                             "build VARCHAR(16) NOT NULL DEFAULT '', "
+                             "PRIMARY KEY (route_id, seq, hour_bucket), KEY at_ms (at_ms), "
+                             "KEY kind_at (kind, at_ms), KEY verdict_at (verdict, at_ms), "
+                             "KEY what_at (entry, low, at_ms)) "
+                             "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
+                             "COMMENT='[jrn20] one stop of a route: where, what is there, and its own verdict'")
+                 + parts)
                     .c_str());
 
             // the raw stream. Millions of rows a day, so it keeps three indexes, not eleven: an index costs on every
@@ -454,7 +608,8 @@ namespace Journal
                              "zone_id INT UNSIGNED NOT NULL DEFAULT 0, pos_x FLOAT NOT NULL DEFAULT 0, "
                              "pos_y FLOAT NOT NULL DEFAULT 0, pos_z FLOAT NOT NULL DEFAULT 0, text TEXT NOT NULL, "
                              "build VARCHAR(16) NOT NULL DEFAULT '', "
-                             "PRIMARY KEY (id, hour_bucket), KEY tag_at (tag, at_ms), KEY bot_at (bot_low, at_ms)) "
+                             "PRIMARY KEY (id, hour_bucket), KEY tag_at (tag, at_ms), KEY bot_at (bot_low, at_ms), "
+                             "KEY build_at (build, at_ms)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn20] the raw stream - the file stays the live stream, this is the history'") +
                  parts)
@@ -597,7 +752,8 @@ namespace Journal
 
         Writer::Instance().Push(
             "pb_journal_decision",
-            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                "{},{},{},{},{},{},{},{},{})",
                                 id, BootId(), nowMs, hour, Quoted(decision.topic, 48), Quoted(decision.choice, 255),
                                 Quoted(decision.verdict, 16), Quoted(decision.why, 1024),
                                 Quoted(JudgeName(decision.judge), 16), Quoted(decision.judgeName, 32),
@@ -608,7 +764,10 @@ namespace Journal
                                 decision.runMs, uint32(decision.options.size()), uint32(rejected),
                                 decision.fields.empty() ? std::string("NULL") : Quoted(decision.fields, 16000),
                                 decision.text.empty() ? std::string("NULL") : Quoted(decision.text, 16000),
-                                Quoted(Config().build, 16)));
+                                Quoted(Config().build, 16), Quoted(decision.method, 24), OrNull(decision.packSize),
+                                OrNull(decision.careful), OrNull(decision.judgeX), OrNull(decision.judgeY),
+                                OrNull(decision.judgeZ), Quoted(decision.kind, 24), decision.routeTargetEntry,
+                                decision.routeTargetLow));
 
         uint16 idx = 0;
         for (Option const& option : decision.options)
@@ -618,9 +777,35 @@ namespace Journal
                                     Quoted(option.name, 255), Quoted(option.kind, 24), Quoted(option.reason, 1024),
                                     Quoted(option.sourceKind, 16), Real(option.cost), Real(option.value),
                                     option.taken ? 1 : 0,
-                                    option.fields.empty() ? std::string("NULL") : Quoted(option.fields, 16000),
+                                    option.fields.empty() ? std::string("NULL")
+                                                          : Quoted(option.fields, Config().optionFieldsMax),
                                     Quoted(Config().build, 16)));
+
+        WriteActors(id, nowMs, hour, decision.actors);
         return id;
+    }
+
+    namespace
+    {
+        // one row per participant the judge saw, child of the decision by (decision_id, idx)
+        void WriteActors(uint64 id, uint64 nowMs, uint64 hour, std::vector<Actor> const& actors)
+        {
+            uint16 idx = 0;
+            for (Actor const& a : actors)
+                Writer::Instance().Push(
+                    "pb_journal_actor",
+                    Acore::StringFormat(
+                        "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                        "{},{},{},{},{})",
+                        id, BootId(), nowMs, hour, idx++, uint32(a.side), Quoted(a.name, 48), a.low, a.entry,
+                        a.spawnId, OrNull(a.level), OrNull(a.spec, 24), OrNull(a.role, 8), OrNull(a.health),
+                        OrNull(a.healthMax), OrNull(a.healthPct), OrNull(a.mana), OrNull(a.manaMax),
+                        OrNull(a.manaPct), OrNull(a.x), OrNull(a.y), OrNull(a.z), OrNull(a.tankYd),
+                        OrNull(a.targetYd), OrNull(a.inCombat), OrNull(a.wanders), OrNull(a.openerReady),
+                        OrNull(a.doing, 96), OrNull(a.checks, 255), OrNull(a.chkReachesSpot), OrNull(a.chkPullPath),
+                        OrNull(a.chkWalk), OrNull(a.chkWalksIntoFight), Quoted(a.note, 48),
+                        Quoted(Config().build, 16)));
+        }
     }
 
     void RecordLoot(Loot const& loot)
@@ -636,6 +821,35 @@ namespace Journal
                 Quoted(loot.fromKind, 16), Quoted(loot.fromName, 96), loot.fromEntry, Quoted(loot.toName, 32),
                 loot.toLow, Quoted(loot.verdict, 16), Quoted(loot.why, 512), Real(loot.worth),
                 Quoted(loot.worthUnit, 16), Quoted(loot.runId, 48), loot.decisionId, Quoted(Config().build, 16)));
+    }
+
+    uint64 RecordRoute(Route const& route)
+    {
+        if (!Ready())
+            return 0;
+        uint64 const nowMs = NowMs();
+        uint64 const hour = nowMs / MS_PER_HOUR;
+        uint64 const id = Writer::Instance().NextId();
+        Writer::Instance().Push(
+            "pb_journal_route",
+            Acore::StringFormat(
+                "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
+                BootId(), nowMs, hour, Quoted(route.event, 12), Quoted(route.purpose, 48), Quoted(route.target, 96),
+                route.targetEntry, route.targetLow, Quoted(route.why, 512), Quoted(route.verdict, 16),
+                Quoted(route.botName, 32), route.botLow, route.mapId, route.zoneId, Real(route.fromX),
+                Real(route.fromY), Real(route.fromZ), Real(route.toX), Real(route.toY), Real(route.toZ),
+                Real(route.pathYd), Real(route.straightYd), route.stopCount,
+                route.changedStop ? std::to_string(*route.changedStop) : std::string("NULL"),
+                Quoted(route.changedWhy, 255), Quoted(route.runId, 48), route.decisionId,
+                Quoted(Config().build, 16)));
+        for (RouteStop const& stop : route.stops)
+            Writer::Instance().Push(
+                "pb_journal_route_stop",
+                Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id, BootId(), nowMs, hour,
+                                    stop.seq, Real(stop.x), Real(stop.y), Real(stop.z), Quoted(stop.kind, 16),
+                                    Quoted(stop.what, 96), stop.entry, stop.low, Quoted(stop.verdict, 16),
+                                    Quoted(stop.why, 512), Quoted(Config().build, 16)));
+        return id;
     }
 
     void NoteRead(uint64 decisionId, std::string const& reader)

@@ -3089,6 +3089,17 @@ AiPlayerbot.Journal.Enable = 1
 # 48 = two days at about 5 million rows and ~1 GB a day on 75 bots.
 AiPlayerbot.Journal.RetentionHours = 48
 
+# The raw stream keeps its OWN, shorter window. Measured on the live table: 403 bytes a row at
+# 152 967 rows an hour is 1.5 GB a day at 75 bots, and about 20 GB a day at a thousand - more than
+# every narrow table put together. Detail is never what gets cut; retention is the lever, and this
+# is it. One day for the insurance table, two for the narrow ones.
+AiPlayerbot.Journal.StreamRetentionHours = 24
+
+# How much of a judge's raw JSON an OPTION row keeps. Defaults to everything. The setting exists
+# only so an operator can deliberately trade detail for space; if space presses, shorten the
+# retention above instead.
+AiPlayerbot.Journal.OptionFieldsMax = 16000
+
 # Rows per INSERT, and how long a partial batch waits before it is sent anyway.
 AiPlayerbot.Journal.BatchRows = 500
 AiPlayerbot.Journal.FlushMs = 1000

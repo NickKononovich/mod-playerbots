@@ -30,7 +30,10 @@
 -- judge, and the line that was printed about it is kept in the row itself (`pb_journal_decision.text`), so a grep of
 -- the file and a COUNT over the table cannot disagree about how many there were. Runs are NOT duplicated here: they
 -- stay in `guild_project_runs` and the journal refers to them by `run_id` only. (Trap: that table's `at` column is
--- the run's START, so a window over runs is ORDER BY id DESC LIMIT n, never a range over `at`.)
+-- the run's END - the row is written with time(nullptr) when the finished run is inserted, and at+duration
+-- lands in the future, which settles it - so a window over runs is ORDER BY id DESC LIMIT n and never a range
+-- over `at`. Two briefs called it the start; the data and GuildFives.cpp say otherwise, and an agent had
+-- already lost an hour to that.)
 --
 -- PARTITIONS AND RETENTION. Every row carries `hour_bucket` = FLOOR(at_ms / 3600000) and the tables are RANGE
 -- partitioned on it. The server's journal thread carves hours out of `pfuture` ahead of time and drops whole
@@ -48,7 +51,7 @@
 -- THE QUERIES THE INDEXES ARE FOR are listed at the end of this file.
 
 -- ---------------------------------------------------------------------------------------------------------------
--- one row per server start: what makes a window across restarts comparable at all
+-- pb_journal_boot
 -- ---------------------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pb_journal_boot (
   boot_id INT UNSIGNED NOT NULL,
@@ -57,11 +60,10 @@ CREATE TABLE IF NOT EXISTS pb_journal_boot (
   note VARCHAR(255) NOT NULL DEFAULT '',
   PRIMARY KEY (boot_id),
   KEY started_ms (started_ms)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='[jrn20] one row per server start: the window a comparison uses survives the restart';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] one row per server start: the window a comparison uses survives the restart';
 
 -- ---------------------------------------------------------------------------------------------------------------
--- the decision: thousands of rows an hour, so the indexes are generous - the reads are offline
+-- pb_journal_decision
 -- ---------------------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pb_journal_decision (
   id BIGINT UNSIGNED NOT NULL,
@@ -92,6 +94,15 @@ CREATE TABLE IF NOT EXISTS pb_journal_decision (
   fields TEXT,
   text TEXT,
   build VARCHAR(16) NOT NULL DEFAULT '',
+  method VARCHAR(24) NOT NULL DEFAULT '',
+  pack_size SMALLINT UNSIGNED NULL,
+  careful TINYINT UNSIGNED NULL,
+  judge_x FLOAT NULL,
+  judge_y FLOAT NULL,
+  judge_z FLOAT NULL,
+  kind VARCHAR(24) NOT NULL DEFAULT '',
+  route_target_entry INT UNSIGNED NOT NULL DEFAULT 0,
+  route_target_low INT UNSIGNED NOT NULL DEFAULT 0,
   PRIMARY KEY (id, hour_bucket),
   KEY at_ms (at_ms),
   KEY topic_at (topic, at_ms),
@@ -102,16 +113,19 @@ CREATE TABLE IF NOT EXISTS pb_journal_decision (
   KEY tag_at (tag, at_ms),
   KEY boot_at (boot_id, at_ms),
   KEY subject_at (subject_entry, subject_low, at_ms),
-  KEY read_by_at (read_by, at_ms)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='[jrn20] one choice: what was chosen, who judged, what it read, who reads the verdict'
-  PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+  KEY read_by_at (read_by, at_ms),
+  KEY method_at (method, at_ms),
+  KEY pack_at (pack_size, at_ms),
+  KEY careful_at (careful, at_ms),
+  KEY choice_at (choice(64), at_ms),
+  KEY judge_spot (judge_x, judge_y),
+  KEY kind_at (kind, at_ms),
+  KEY build_topic (build, topic, at_ms),
+  KEY route_target_at (route_target_entry, route_target_low, at_ms)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] one choice: what was chosen, who judged, what it read, who reads the verdict' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
 
 -- ---------------------------------------------------------------------------------------------------------------
--- the options: what was rejected and why. This is what the whole journal is for.
--- `source_kind` is where an option's number comes from - 'node', 'drop', 'vendor', 'craft', 'quest', 'bank', ''.
--- A plan refused on a rate of 0.01/min is only answerable when the rows say whether a DROP source was among the
--- options at all, or was never considered: the cloth falls off mobs, it is not mined out of a vein.
+-- pb_journal_option
 -- ---------------------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pb_journal_option (
   decision_id BIGINT UNSIGNED NOT NULL,
@@ -133,15 +147,12 @@ CREATE TABLE IF NOT EXISTS pb_journal_option (
   KEY source_at (source_kind, at_ms),
   KEY kind_at (kind, at_ms),
   KEY taken_at (taken, at_ms),
-  KEY name_at (name(64), at_ms)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='[jrn20] every option a decision weighed, the rejected ones with their own reason'
-  PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+  KEY name_at (name(64), at_ms),
+  KEY build_at (build, at_ms)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] every option a decision weighed, the rejected ones with their own reason' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
 
 -- ---------------------------------------------------------------------------------------------------------------
--- who actually read a verdict. No row here means nobody did, and twice in one night that was the real defect:
--- [deaths14] was printed and the caller threw the answer away a line later; [cast-short-life] was printed as a
--- refusal and was a 0.1 multiplier, so the cast went through anyway. Both of those produced a wrong diagnosis.
+-- pb_journal_read
 -- ---------------------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pb_journal_read (
   decision_id BIGINT UNSIGNED NOT NULL,
@@ -152,13 +163,10 @@ CREATE TABLE IF NOT EXISTS pb_journal_read (
   PRIMARY KEY (decision_id, reader, hour_bucket),
   KEY at_ms (at_ms),
   KEY reader_at (reader, at_ms)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='[jrn20] a reader that consumed a verdict - no row here means nobody did'
-  PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] a reader that consumed a verdict - no row here means nobody did' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
 
 -- ---------------------------------------------------------------------------------------------------------------
--- the loot: what dropped, from what, who got it, and on whose verdict. Narrow because "what dropped in that run and
--- where did it go" must not read the whole stream. The run stays in guild_project_runs; only run_id is kept here.
+-- pb_journal_loot
 -- ---------------------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pb_journal_loot (
   id BIGINT UNSIGNED NOT NULL,
@@ -188,16 +196,12 @@ CREATE TABLE IF NOT EXISTS pb_journal_loot (
   KEY to_at (to_low, at_ms),
   KEY verdict_at (verdict, at_ms),
   KEY from_at (from_entry, at_ms),
+  KEY build_at (build, at_ms),
   KEY decision (decision_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='[jrn20] one dropped item, where it came from, who got it and on whose verdict'
-  PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] one dropped item, where it came from, who got it and on whose verdict' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
 
 -- ---------------------------------------------------------------------------------------------------------------
--- metric snapshots. A metric NEVER carries an implied window: from_ms / to_ms are columns, because numbers taken
--- over different windows were compared as the same number three times in one day. `scope` names what the value is
--- about ('bot:Bierya', 'five:3', 'dungeon:wc-n', 'server'). With `build` in the row, "what changed between build N
--- and N+1" is a WHERE clause and not a recount of the stream.
+-- pb_journal_metric
 -- ---------------------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pb_journal_metric (
   id BIGINT UNSIGNED NOT NULL,
@@ -215,15 +219,133 @@ CREATE TABLE IF NOT EXISTS pb_journal_metric (
   KEY name_at (name, at_ms),
   KEY name_build (name, build, at_ms),
   KEY scope_at (scope, at_ms)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='[jrn20] one measured value with its own window and build, never an implied one'
-  PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] one measured value with its own window and build, never an implied one' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
 
 -- ---------------------------------------------------------------------------------------------------------------
--- the raw stream: the insurance. Whatever a narrow table did not foresee is still here, with where the bot stood.
--- Millions of rows a day, so it keeps THREE indexes and not eleven - an index costs on every insert, and the insert
--- is the side that is not allowed to be expensive. Offline reads narrow by (tag, at_ms) or (bot_low, at_ms) first
--- and only then look at `text`.
+-- pb_journal_actor
+-- ---------------------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pb_journal_actor (
+  decision_id BIGINT UNSIGNED NOT NULL,
+  boot_id INT UNSIGNED NOT NULL,
+  at_ms BIGINT UNSIGNED NOT NULL,
+  hour_bucket INT UNSIGNED NOT NULL,
+  idx SMALLINT UNSIGNED NOT NULL,
+  side TINYINT UNSIGNED NOT NULL,
+  name VARCHAR(48) NOT NULL DEFAULT '',
+  low INT UNSIGNED NOT NULL DEFAULT 0,
+  entry INT UNSIGNED NOT NULL DEFAULT 0,
+  spawn_id INT UNSIGNED NOT NULL DEFAULT 0,
+  level SMALLINT UNSIGNED NULL,
+  spec VARCHAR(24) NULL,
+  role VARCHAR(8) NULL,
+  health INT UNSIGNED NULL,
+  health_max INT UNSIGNED NULL,
+  health_pct FLOAT NULL,
+  mana INT UNSIGNED NULL,
+  mana_max INT UNSIGNED NULL,
+  mana_pct FLOAT NULL,
+  pos_x FLOAT NULL,
+  pos_y FLOAT NULL,
+  pos_z FLOAT NULL,
+  tank_yd FLOAT NULL,
+  target_yd FLOAT NULL,
+  in_combat TINYINT UNSIGNED NULL,
+  wanders TINYINT UNSIGNED NULL,
+  opener_ready TINYINT UNSIGNED NULL,
+  doing VARCHAR(96) NULL,
+  checks VARCHAR(255) NULL,
+  chk_reaches_spot TINYINT UNSIGNED NULL,
+  chk_pull_path TINYINT UNSIGNED NULL,
+  chk_walk TINYINT UNSIGNED NULL,
+  chk_walks_into_fight TINYINT UNSIGNED NULL,
+  note VARCHAR(48) NOT NULL DEFAULT '',
+  build VARCHAR(16) NOT NULL DEFAULT '',
+  PRIMARY KEY (decision_id, idx, hour_bucket),
+  KEY at_ms (at_ms),
+  KEY who_at (low, at_ms),
+  KEY entry_at (entry, at_ms),
+  KEY spawn_at (spawn_id, at_ms),
+  KEY side_health (side, health_pct, at_ms),
+  KEY side_mana (side, mana_pct, at_ms),
+  KEY role_at (role, at_ms),
+  KEY level_at (level, at_ms),
+  KEY checks_at (chk_reaches_spot, chk_pull_path, chk_walk, at_ms),
+  KEY build_at (build, at_ms)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] every participant of a decision and its state - NULL means not given' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- pb_journal_route
+-- ---------------------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pb_journal_route (
+  id BIGINT UNSIGNED NOT NULL,
+  boot_id INT UNSIGNED NOT NULL,
+  at_ms BIGINT UNSIGNED NOT NULL,
+  hour_bucket INT UNSIGNED NOT NULL,
+  event VARCHAR(12) NOT NULL,
+  purpose VARCHAR(48) NOT NULL DEFAULT '',
+  target VARCHAR(96) NOT NULL DEFAULT '',
+  target_entry INT UNSIGNED NOT NULL DEFAULT 0,
+  target_low INT UNSIGNED NOT NULL DEFAULT 0,
+  why VARCHAR(512) NOT NULL DEFAULT '',
+  verdict VARCHAR(16) NOT NULL DEFAULT '',
+  bot_name VARCHAR(32) NOT NULL DEFAULT '',
+  bot_low INT UNSIGNED NOT NULL DEFAULT 0,
+  map_id SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  zone_id INT UNSIGNED NOT NULL DEFAULT 0,
+  from_x FLOAT NOT NULL DEFAULT 0,
+  from_y FLOAT NOT NULL DEFAULT 0,
+  from_z FLOAT NOT NULL DEFAULT 0,
+  to_x FLOAT NOT NULL DEFAULT 0,
+  to_y FLOAT NOT NULL DEFAULT 0,
+  to_z FLOAT NOT NULL DEFAULT 0,
+  path_yd FLOAT NOT NULL DEFAULT 0,
+  straight_yd FLOAT NOT NULL DEFAULT 0,
+  stop_count SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+  changed_stop SMALLINT UNSIGNED NULL,
+  changed_why VARCHAR(255) NOT NULL DEFAULT '',
+  run_id VARCHAR(48) NOT NULL DEFAULT '',
+  decision_id BIGINT UNSIGNED NOT NULL DEFAULT 0,
+  build VARCHAR(16) NOT NULL DEFAULT '',
+  PRIMARY KEY (id, hour_bucket),
+  KEY at_ms (at_ms),
+  KEY bot_at (bot_low, at_ms),
+  KEY event_at (event, at_ms),
+  KEY run_at (run_id, at_ms),
+  KEY purpose_at (purpose, at_ms),
+  KEY verdict_at (verdict, at_ms),
+  KEY target_at (target_entry, target_low, at_ms),
+  KEY decision (decision_id),
+  KEY build_at (build, at_ms)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] a route as events: planned, changed, leg started, leg ended' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- pb_journal_route_stop
+-- ---------------------------------------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS pb_journal_route_stop (
+  route_id BIGINT UNSIGNED NOT NULL,
+  boot_id INT UNSIGNED NOT NULL,
+  at_ms BIGINT UNSIGNED NOT NULL,
+  hour_bucket INT UNSIGNED NOT NULL,
+  seq SMALLINT UNSIGNED NOT NULL,
+  pos_x FLOAT NOT NULL DEFAULT 0,
+  pos_y FLOAT NOT NULL DEFAULT 0,
+  pos_z FLOAT NOT NULL DEFAULT 0,
+  kind VARCHAR(16) NOT NULL DEFAULT '',
+  what VARCHAR(96) NOT NULL DEFAULT '',
+  entry INT UNSIGNED NOT NULL DEFAULT 0,
+  low INT UNSIGNED NOT NULL DEFAULT 0,
+  verdict VARCHAR(16) NOT NULL DEFAULT '',
+  why VARCHAR(512) NOT NULL DEFAULT '',
+  build VARCHAR(16) NOT NULL DEFAULT '',
+  PRIMARY KEY (route_id, seq, hour_bucket),
+  KEY at_ms (at_ms),
+  KEY kind_at (kind, at_ms),
+  KEY verdict_at (verdict, at_ms),
+  KEY what_at (entry, low, at_ms)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] one stop of a route: where, what is there, and its own verdict' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+
+-- ---------------------------------------------------------------------------------------------------------------
+-- pb_journal_line
 -- ---------------------------------------------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS pb_journal_line (
   id BIGINT UNSIGNED NOT NULL,
@@ -242,10 +364,9 @@ CREATE TABLE IF NOT EXISTS pb_journal_line (
   build VARCHAR(16) NOT NULL DEFAULT '',
   PRIMARY KEY (id, hour_bucket),
   KEY tag_at (tag, at_ms),
-  KEY bot_at (bot_low, at_ms)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-  COMMENT='[jrn20] the raw stream - the file stays the live stream, this is the history'
-  PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
+  KEY bot_at (bot_low, at_ms),
+  KEY build_at (build, at_ms)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='[jrn20] the raw stream - the file stays the live stream, this is the history' PARTITION BY RANGE (hour_bucket) (PARTITION pfuture VALUES LESS THAN MAXVALUE);
 
 -- ---------------------------------------------------------------------------------------------------------------
 -- THE QUERIES THE INDEXES ARE FOR. Each one is named so that an index nobody queries can be found and dropped, and
