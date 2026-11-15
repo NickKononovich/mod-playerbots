@@ -1095,7 +1095,6 @@ void GuildCoordinator::Alert(std::string text, Journal::Alert facts)
     // the whole line gave 757 "causes" over 3 900 rows and keying on the cause alone gave one - the 757 were a
     // trailing list of action names. Here the same trap is the bot's name, its level and its coordinates, which are
     // in every alert text: the key is the kind plus the reason with its numbers replaced, and nothing else.
-    Journal::Alert row;
     // `facts` arrives already filled by the site that HAS the facts (the loop detector fills loop_n, the activity,
     // the three no-progress flags and the action trail); the funnel only adds what it took apart above. The site
     // does not write a row of its own - that is the whole point of one funnel.
