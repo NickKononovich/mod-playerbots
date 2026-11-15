@@ -38,6 +38,7 @@
 #include "GameEventMgr.h"  // [sfk246] a game event's spawns
 #include "LFGMgr.h"  // [next1] whether the Dungeon Finder can port a five
 #include "Item.h"
+#include "IssueKey.h"  // [jrn46] the key, the shape and the ranged value of `run_failed`, as a seam a test asserts
 #include "ItemUsageValue.h"
 #include "Log.h"
 #include "MapMgr.h"
@@ -6493,27 +6494,20 @@ void GuildCoordinator::RecordRun(GuildFive const& five, GuildFiveReport const& r
     // numbers taken out - the counts' spread is the value range. Keying on the reason text would fan one cause
     // across every run that hit it, which is this project's trap #2 (a staircase of fifteen "causes" that was one
     // cause behind 3 216 holds).
-    bool const clean = rec.result == "done" && rec.bossesKilled >= rec.bossesTotal && !rec.deaths && !report.wipes;
-    if (!clean)
+    // [jrn46] the key, the shape and the ranged value come from one seam over one struct of this run's facts
+    // (Journal::Key::RunFacts), asserted by the stand over real rows of this table - they used to be built here
+    // side by side, and the value came to range over a number the key had already fixed at zero
+    Journal::Key::RunFacts const facts{rec.contentKey, rec.result,   rec.bossesKilled, rec.bossesTotal,
+                                       rec.deaths,     report.wipes, report.durationSec};
+    if (!Journal::Key::RunClean(facts))
     {
-        std::string shape;
-        auto const note = [&shape](char const* what, bool on)
-        {
-            if (on)
-                shape += (shape.empty() ? "" : "+") + std::string(what);
-        };
-        note("not done", rec.result != "done");
-        note("boss left", rec.bossesKilled < rec.bossesTotal);
-        note("deaths", rec.deaths > 0);
-        note("wipes", report.wipes > 0);
-
         Journal::Issue issue;
         issue.kind = "run_failed";
         issue.severity = report.wipes ? "high" : rec.deaths ? "high" : "mid";
         // The inputs of a run are the journal's own rows for it - the pulls, the deaths, the fights - so the same
         // conditions can be put back and the judges run again.
         issue.reproClass = "decision";
-        issue.dedupKey = "run_failed|" + rec.contentKey + "|" + rec.result + "|" + shape;
+        issue.dedupKey = Journal::Key::RunFailed(facts);
         issue.why = Acore::StringFormat("{} ended {} after {} s: {} of {} bosses, {} death(s), {} wipe(s){}",
                                         rec.contentKey, rec.result, report.durationSec, rec.bossesKilled,
                                         rec.bossesTotal, rec.deaths, report.wipes,
@@ -6523,9 +6517,12 @@ void GuildCoordinator::RecordRun(GuildFive const& five, GuildFiveReport const& r
         issue.realWhy = "a dungeon is certified only by a run that is absolutely clean, so any of these four is a "
                         "defect by the project's own gate";
         issue.realSource = "emitter";
-        // the deaths are the number worth ranging over: "which failure is getting worse" is read off value_max
-        issue.value = double(rec.deaths);
-        issue.valueUnit = "death";
+        // [jrn46] the number worth ranging over is the one this row's own key leaves free - for a shape of
+        // "not done+boss left" that is the bosses the run left standing, and NOT the deaths the key already
+        // fixed at zero (b502: all three live rows said 0..0 `death` while they had left 5, 5, 1 and 8 bosses)
+        Journal::Key::RangedValue const ranged = Journal::Key::RunFailedValue(facts);
+        issue.value = ranged.value;
+        issue.valueUnit = ranged.unit;
         issue.runId = five.runId;
         issue.sourceTable = "guild_project_runs";
         // the row's own id in that table, as this code numbered it. The DB's auto-increment may differ, which is

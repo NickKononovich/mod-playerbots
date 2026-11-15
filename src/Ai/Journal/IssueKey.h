@@ -93,6 +93,52 @@ namespace Journal::Key
     // is counted here as a defect of its own, and it left this kind with no cause field at all: 84 yd behind in
     // the same zone and 6 894 yd behind across the map were one row.
     std::string WaitBehind(bool sameZone);
+
+    // [jrn46] `run_failed`: the facts of ONE finished run of a five, as the run's own record states them
+    // (guild_project_runs). The key, the shape and the ranged value are built from this one struct so that the
+    // three cannot disagree about the same run - the emitter used to concatenate the key by hand beside the
+    // numbers it ranged over, which is how the value below came to be a number the key had already fixed.
+    struct RunFacts
+    {
+        std::string contentKey;  // `wc-n`: the dungeon, as the five's content key names it
+        std::string result;      // `done` / `failed` / `stalled` / `stopped`, the run's own word
+        uint32_t bossesKilled{0};
+        uint32_t bossesTotal{0};
+        uint32_t deaths{0};
+        uint32_t wipes{0};
+        uint32_t durationSec{0};
+    };
+
+    // A run that went cleanly writes no problem at all: it finished, left no boss, cost no death and no wipe.
+    bool RunClean(RunFacts const& facts);
+
+    // The SHAPE of the failure - which of the four facts went wrong, with the numbers taken out - and the full
+    // key `run_failed|<dungeon>|<result>|<shape>`. Keying on the reason text instead would fan one cause across
+    // every run that hit it (this project's trap #2).
+    std::string RunFailedShape(RunFacts const& facts);
+    std::string RunFailed(RunFacts const& facts);
+
+    // THE RANGED VALUE OF THE ROW, AND ITS UNIT. value_min / value_max are the spread of one quantity over the
+    // occurrences the row merged, so the quantity has to be one the row's own key leaves FREE.
+    //
+    // WHY THIS IS A SEAM OF ITS OWN: the emitter ranged over the deaths, and the key carries whether there were
+    // deaths at all. For every shape without the `deaths` part the deaths are 0 by construction - not merely
+    // measured as 0, unable to be anything else - so the row's range said 0..0 in every row it could ever write.
+    // Measured on b502: all three live `run_failed` rows (7 occurrences, among them the two wc-n runs that ended
+    // at 3 of 8 bosses) carry value_min = value_max = 0 with unit `death`, while the bosses they left were 5, 5,
+    // 1 and 8. That is the defect the sibling WaitBehind() above records in words: a statement that cannot come
+    // out false. The deaths are not lost by this - a death has its own owner (pb_journal_death and the `death`
+    // issue kind), and ranging over them here was a second judge of a quantity that already has one.
+    //
+    // The quantity is therefore the first fact the shape leaves open, in this order: the bosses the run left, the
+    // deaths, the wipes, and - for a run that failed with every boss down and nobody dead - its seconds.
+    struct RangedValue
+    {
+        double value{0.0};
+        std::string unit;
+    };
+
+    RangedValue RunFailedValue(RunFacts const& facts);
 }
 
 // [jrn43] WHETHER THE ROW IS A PROBLEM AT ALL - the `is_real` column, as a seam, for the kinds whose answer is a

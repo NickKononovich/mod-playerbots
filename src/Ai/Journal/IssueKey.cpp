@@ -105,6 +105,47 @@ namespace Journal::Key
         // (pb_journal_stuck.target_zone_id) so that the split can be checked by a query and not by this comment.
         return std::string("wait_behind|") + (sameZone ? "same zone" : "another zone");
     }
+
+    // [jrn46] `run_failed`: the run's own record. The shape, the key and the ranged value over one struct of facts.
+    bool RunClean(RunFacts const& facts)
+    {
+        return facts.result == "done" && facts.bossesKilled >= facts.bossesTotal && !facts.deaths && !facts.wipes;
+    }
+
+    std::string RunFailedShape(RunFacts const& facts)
+    {
+        std::string shape;
+        auto const note = [&shape](char const* what, bool on)
+        {
+            if (on)
+                shape += (shape.empty() ? "" : "+") + std::string(what);
+        };
+        note("not done", facts.result != "done");
+        note("boss left", facts.bossesKilled < facts.bossesTotal);
+        note("deaths", facts.deaths > 0);
+        note("wipes", facts.wipes > 0);
+        return shape;
+    }
+
+    std::string RunFailed(RunFacts const& facts)
+    {
+        return "run_failed|" + facts.contentKey + "|" + facts.result + "|" + RunFailedShape(facts);
+    }
+
+    RangedValue RunFailedValue(RunFacts const& facts)
+    {
+        // The order is the order of the shape itself, so the quantity is always one the key left FREE: the part
+        // that is IN the key fixes its own number, and a number the key has fixed cannot be a range. `not done`
+        // is not in this list - it is the result, which the key carries in full and which is no number at all.
+        if (facts.bossesKilled < facts.bossesTotal)
+            return {double(facts.bossesTotal - facts.bossesKilled), "boss"};
+        if (facts.deaths)
+            return {double(facts.deaths), "death"};
+        if (facts.wipes)
+            return {double(facts.wipes), "wipe"};
+        // Every boss down, nobody dead, no wipe, and still not `done`: the seconds are the only fact left open.
+        return {double(facts.durationSec), "s"};
+    }
 }
 
 namespace Journal::Real

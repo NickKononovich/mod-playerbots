@@ -239,3 +239,67 @@ TEST(IssueRealAlert, OnlyTheDeathAlertRepeatsADomainRow)
     EXPECT_FALSE(Journal::Real::AlertKindDuplicatesDomainRow("STUCK"));
     EXPECT_FALSE(Journal::Real::AlertKindDuplicatesDomainRow("STUCK_COMBAT"));
 }
+
+// [jrn46] `run_failed`: THE RUN'S OWN RECORD. The four runs below are real rows of guild_project_runs on b502,
+// the two `failed` ones being the biggest problem of that batch: wc-n five 1 and five 2 of the 10:30 certification
+// wave ended at 3 of 8 bosses with NOT ONE death - their paladin tanks ran dry of water 8 min in (five 1: the
+// in-run share gave the tank its last drink at 10:37:54 and the pool held 2 of the lines' 36 after it), and the
+// leader held the pull "the tank rests" for a measured 1762 s of the 3033 s run. Four fives of the SAME wave with
+// the same route finished 8 of 8.
+namespace
+{
+    // guild_project_runs id 681 (five 1) and 679 (five 2): the same shape, the same dungeon, two different runs
+    Journal::Key::RunFacts const WC_FIVE1_FAILED{"wc-n", "failed", 3, 8, 0, 0, 3033};
+    Journal::Key::RunFacts const WC_FIVE2_FAILED{"wc-n", "failed", 3, 8, 0, 0, 2778};
+    // id 686: stalled at 7 of 8 after 2745 s, and id 690: stopped by the server shutdown at 0 of 8 after 206 s
+    Journal::Key::RunFacts const WC_STALLED{"wc-n", "stalled", 7, 8, 0, 0, 2745};
+    Journal::Key::RunFacts const WC_STOPPED{"wc-n", "stopped", 0, 8, 0, 0, 206};
+    // id 685: 8 of 8, no death, no wipe - the run that writes nothing
+    Journal::Key::RunFacts const WC_DONE{"wc-n", "done", 8, 8, 0, 0, 2570};
+}  // namespace
+
+// The keys as the live table holds them, character for character: moving them into the seam must not re-fan the
+// rows that already exist.
+TEST(IssueKeyRunFailed, TheKeysAreTheOnesTheLiveTableHolds)
+{
+    EXPECT_EQ(Journal::Key::RunFailed(WC_FIVE1_FAILED), "run_failed|wc-n|failed|not done+boss left");
+    EXPECT_EQ(Journal::Key::RunFailed(WC_FIVE2_FAILED), "run_failed|wc-n|failed|not done+boss left");
+    EXPECT_EQ(Journal::Key::RunFailed(WC_STALLED), "run_failed|wc-n|stalled|not done+boss left");
+    EXPECT_EQ(Journal::Key::RunFailed(WC_STOPPED), "run_failed|wc-n|stopped|not done+boss left");
+    // one problem, not one row per run: the two failed runs of the same wave share their key (occurrences = 2)
+    EXPECT_EQ(Journal::Key::RunFailed(WC_FIVE1_FAILED), Journal::Key::RunFailed(WC_FIVE2_FAILED));
+    // and a result that differs is a different problem, so the shutdown never merges with a failure
+    EXPECT_NE(Journal::Key::RunFailed(WC_STOPPED), Journal::Key::RunFailed(WC_FIVE1_FAILED));
+    EXPECT_TRUE(Journal::Key::RunClean(WC_DONE)) << "a run that finished 8 of 8 with no death writes no problem";
+    EXPECT_FALSE(Journal::Key::RunClean(WC_FIVE1_FAILED));
+    EXPECT_FALSE(Journal::Key::RunClean({"wc-n", "done", 8, 8, 1, 0, 2570})) << "a death is a problem of its own";
+}
+
+// THE RANGED VALUE MUST BE A QUANTITY THE KEY LEAVES FREE. The shape carries whether there were deaths, so for
+// `not done+boss left` the deaths are 0 by construction - a range of 0..0 in every row that shape can write.
+TEST(IssueKeyRunFailed, TheRangedValueCanComeOutDifferentUnderItsOwnKey)
+{
+    Journal::Key::RangedValue const five1 = Journal::Key::RunFailedValue(WC_FIVE1_FAILED);
+    Journal::Key::RangedValue const stalled = Journal::Key::RunFailedValue(WC_STALLED);
+    Journal::Key::RangedValue const stopped = Journal::Key::RunFailedValue(WC_STOPPED);
+    // the five bosses wc-n five 1 left standing, not the zero deaths it cost
+    EXPECT_EQ(five1.value, 5.0) << "the row ranged over " << five1.unit << ", which its own key had already fixed";
+    EXPECT_EQ(five1.unit, "boss");
+    // and under ONE key the value does come out different: 5 bosses left, 1, 8
+    EXPECT_EQ(stalled.value, 1.0);
+    EXPECT_EQ(stopped.value, 8.0);
+    EXPECT_EQ(Journal::Key::RunFailedValue(WC_FIVE2_FAILED).value, 5.0);
+
+    // a shape WITHOUT `boss left` leaves the deaths free, and then they are what the row ranges over
+    Journal::Key::RunFacts twoDeaths{"wc-n", "done", 8, 8, 2, 0, 2570};
+    EXPECT_EQ(Journal::Key::RunFailedValue(twoDeaths).value, 2.0);
+    EXPECT_EQ(Journal::Key::RunFailedValue(twoDeaths).unit, "death");
+    // nor may the wipes be ranged over by a shape that already fixed them at zero
+    Journal::Key::RunFacts wiped{"wc-n", "done", 8, 8, 0, 3, 2570};
+    EXPECT_EQ(Journal::Key::RunFailedValue(wiped).value, 3.0);
+    EXPECT_EQ(Journal::Key::RunFailedValue(wiped).unit, "wipe");
+    // and a run that failed with every boss down and nobody dead: its seconds are all the shape leaves open
+    Journal::Key::RunFacts stoppedClean{"wc-n", "stopped", 8, 8, 0, 0, 940};
+    EXPECT_EQ(Journal::Key::RunFailedValue(stoppedClean).value, 940.0);
+    EXPECT_EQ(Journal::Key::RunFailedValue(stoppedClean).unit, "s");
+}
