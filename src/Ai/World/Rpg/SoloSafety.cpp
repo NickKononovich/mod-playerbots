@@ -3009,7 +3009,7 @@ namespace SoloSafety
         // judge's OWN estimate of the fight's length - no constant, no clock.
         // [dun230] the in-combat regen from the one place that computes it (ManaRegenPerSec, the core's own rate
         // under the five-second rule, less a drink aura's MP5 that breaks on standing up): no second copy here
-        float const combatRegen = ManaRegenPerSec(bot, true);
+        float const combatRegen = RestState::ManaRegenPerSec(bot, true);
         auto const manaBudget = [&](Projection const& fight, float health, float mana)
         {
             ManaBudget::Fight ask;
