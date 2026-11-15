@@ -192,6 +192,32 @@ namespace Journal
     // comparable at all.
     uint32 BootId();
 
+    // [jrn20] Attaches the journal's readers (the leader's decision lines, and the log stream when it is on). Called
+    // once, from Leader::Decisions().
+    //
+    // WHY THIS FUNCTION EXISTS AT ALL, because it looks like something a constructor should do and it must not be.
+    // b495 wrote nothing - not one row, not even the boot row that is due on every single start. The cause was not
+    // the config and not the appender: the module is a STATIC library, and a linker pulls an object file out of one
+    // only when some symbol in it is asked for. Nothing outside src/Ai/Journal referred to the journal
+    // (`grep -rn "Journal::" src | grep -v "^src/Ai/Journal/"` = 0), so Journal.obj, JournalPull.obj and
+    // JournalStream.obj were compiled, archived, and then left behind. Searching the binary showed it plainly:
+    // `AppenderJournal` and an unrelated control string were in worldserver.exe, `pb_journal_boot`,
+    // `pb_journal_line` and `AiPlayerbot.Journal.Stream` were not there at all.
+    //
+    // The readers used to attach themselves from file-scope objects, and the constructor of a discarded object file
+    // never runs - so the registration could not fix the discarding that removed it. An explicit call from a
+    // translation unit that is certainly linked is what makes the journal real: it writes because something asks it
+    // to, not because the linker was told to keep it. Attaching from here, rather than from a startup hook, is also
+    // what LeaderLog is for - it owns where the leader's decision lines go.
+    //
+    // Does nothing when AiPlayerbot.Journal.Enable is off, and is safe to call more than once.
+    void Attach();
+
+    // Defined in JournalPull.cpp and JournalStream.cpp; called only by Attach(), which is also what drags those two
+    // object files into the link.
+    void AttachPullObserver();
+    void AttachLogStream();
+
     // [jrn20] The counter a window line prints, taken from the SAME call that wrote the row - never by reading the
     // journal back. The journal is the one store of cases; a count made by a second pass over those cases would be
     // a second judge of one quantity, which is the defect this whole table exists to prevent. So: one Record() call

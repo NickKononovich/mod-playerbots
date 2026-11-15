@@ -261,8 +261,17 @@ namespace
     };
 
     PullObserver g_pullObserver;
+}
 
-    // [jrn20] the journal reads the leader's decision lines as an observer: the harness's DecisionLog stays the
-    // primary sink, so no call site and no existing behaviour changes
-    [[maybe_unused]] bool const registered = (Leader::AddDecisionObserver(&g_pullObserver), true);
-}  // namespace
+namespace Journal
+{
+    // [jrn20] The journal reads the leader's decision lines as an observer: the harness's DecisionLog stays the
+    // primary sink, so no call site and no existing behaviour changes.
+    //
+    // This used to be a file-scope object that registered itself. It could not work, and the reason is worth keeping:
+    // the module is a static library, nothing outside src/Ai/Journal referred to this file, so the linker never took
+    // the object file - and the constructor of an object file that was left behind does not run. The registration
+    // therefore could not survive the very discarding it was meant to undo. Journal::Attach() calls this instead,
+    // from a translation unit that is certainly linked.
+    void AttachPullObserver() { Leader::AddDecisionObserver(&g_pullObserver); }
+}

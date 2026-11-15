@@ -524,6 +524,23 @@ namespace Journal
         return bootId;
     }
 
+    void Attach()
+    {
+        if (!Config().enabled)
+            return;
+        static bool const attached = []
+        {
+            AttachPullObserver();
+            AttachLogStream();
+            // Bring the writer up now, so the tables and the boot row exist from the moment the journal is attached
+            // rather than from the first decision that happens to be recorded. The boot row is what makes a window
+            // across restarts comparable, so it must not wait for a dungeon to start.
+            Ready();
+            return true;
+        }();
+        (void)attached;
+    }
+
     Count Counted(std::string const& topic)
     {
         std::lock_guard<std::mutex> lock(g_countLock);

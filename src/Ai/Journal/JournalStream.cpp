@@ -61,17 +61,20 @@ namespace
         line.text = text;
         Journal::RecordLine(line);
     }
+}
 
-    // Installed at module load. Everything logged before this point - the core's own startup - is dropped, which is
-    // why the journal's history starts at the boot row and not at the process's first line.
-    struct Install
+namespace Journal
+{
+    // Installed when the journal attaches its readers. Everything logged before that point - the core's own startup -
+    // is dropped, which is why the journal's history starts at the boot row and not at the process's first line.
+    //
+    // This was a file-scope object whose constructor installed the sink, and that is why b495 wrote nothing at all
+    // and AiPlayerbot.Journal.Stream = 1 did nothing: the module is a static library, no symbol of this file was
+    // asked for, so the linker left the object file out - and a discarded object file's constructor never runs.
+    // Journal::Attach() calls this now.
+    void AttachLogStream()
     {
-        Install()
-        {
-            if (sConfigMgr->GetOption<bool>("AiPlayerbot.Journal.Stream", false, false))
-                AppenderJournal::SetSink(&OnLogLine);
-        }
-    };
-
-    Install const g_install;
+        if (sConfigMgr->GetOption<bool>("AiPlayerbot.Journal.Stream", false, false))
+            AppenderJournal::SetSink(&OnLogLine);
+    }
 }

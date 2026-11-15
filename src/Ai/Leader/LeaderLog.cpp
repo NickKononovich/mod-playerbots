@@ -6,6 +6,8 @@
 
 #include "LeaderLog.h"
 
+#include "Journal.h"  // [jrn20] Journal::Attach, the reference that puts the journal into the link
+
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
@@ -67,11 +69,34 @@ namespace Leader
         }
     }
 
-    void SetDecisionSink(DecisionSink* sink) { g_decisionSink = sink; }
+    void SetDecisionSink(DecisionSink* sink)
+    {
+        g_decisionSink = sink;
+        // [jrn20] the earliest point the journal can be attached without a startup hook of its own: the harness
+        // sets its sink while the server starts, so the boot row lands then and not at the first dungeon. The guard
+        // inside Attach() makes the second caller a no-op.
+        Journal::Attach();
+    }
 
     void AddDecisionObserver(DecisionSink* observer) { FanOut().Add(observer); }
 
-    DecisionSink& Decisions() { return FanOut(); }
+    DecisionSink& Decisions()
+    {
+        FanOutSink& sink = FanOut();
+        // [jrn20] The MySQL journal's one reference from outside its own directory, and the reason it is here.
+        // The module is a static library: the linker takes an object file out of it only when a symbol in it is
+        // asked for. With nothing referring to src/Ai/Journal, its object files were compiled, archived and then
+        // left behind - b495 wrote not one row, not even the boot row due on every start, and no file-scope
+        // registration inside those files could help, because a discarded object file's constructor never runs.
+        // Attaching from here is also where it belongs: this file owns where the leader's decision lines go.
+        //
+        // The call is made AFTER FanOut() has returned, never from inside the sink's own construction: Attach()
+        // reaches AddDecisionObserver(), which calls FanOut() again, and that would be a recursive initialisation
+        // of the same static.
+        static bool const journalAttached = (Journal::Attach(), true);
+        (void)journalAttached;
+        return sink;
+    }
 
     std::string JsonEscape(std::string const& text)
     {
