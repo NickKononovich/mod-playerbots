@@ -229,7 +229,7 @@ namespace Journal
         row.heldSec = look.heldSec;
         row.heldYd = look.heldYd;
         row.justification = look.changed ? look.justification : look.flipUnder;
-        row.runId = Leader::Runs::OfBot(bot->GetGUID());
+        row.runId = Leader::Runs::OfBot(bot);  // by identity, not by nearness in time
         uint64 const sourceId = Journal::RecordMount(row);
 
         Journal::Issue issue;
