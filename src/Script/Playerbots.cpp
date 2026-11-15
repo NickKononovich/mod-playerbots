@@ -387,6 +387,7 @@ public:
 
     void OnPlayerBeforeLogout(Player* player) override
     {
+        DpsEstimate::ForgetFight(player);  // [dps20] an open fight leaves with its bot: nothing to measure in it
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))
         {
             PlayerbotAI* botAI = PlayerbotsMgr::instance().GetPlayerbotAI(player);
@@ -473,6 +474,10 @@ public:
             sGuildCoordinator.AddAiTime(player, uint64(std::chrono::duration_cast<std::chrono::microseconds>(
                                                     std::chrono::steady_clock::now() - aiStart)
                                                     .count()));
+            // [dps20] a fight of this bot that no other judge closes (one in a party, a raid or any instance:
+            // SoloSafety closes a solo bot's open-world fight itself). It returns on the first test while the bot is
+            // in combat, and takes the measurement's lock only for a bot that is out of combat or dead.
+            DpsEstimate::CloseIfOut(player);
         }
 
         if (PlayerbotMgr* playerbotMgr = GET_PLAYERBOT_MGR(player))

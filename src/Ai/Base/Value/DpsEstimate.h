@@ -106,50 +106,47 @@ BuffContext ContextOf(Player* bot);
 bool FightsAlone(Player* bot);
 
 // [dps1] one closed fight, formula vs what it dealt: logged as a [dps] line and written to
-// playerbots_fight_history for the analysis scripts only (no decision reads either)
+// playerbots_fight_history for the analysis scripts only (no decision reads either).
+// [dps20] What a caller adds to the fight DpsEstimate measured itself. The window, the time the bot attacked and
+// the white-swing buckets are no longer passed in: one clock judges them, the one that sees the damage events
+// (NoteDealt), so the same reading serves a solo fight and a fight in a five. A caller supplies only what it alone
+// knows - its own survival verdict (`fled`), the engage the fight belongs to, and the reasons its own judge
+// invalidates the sample for.
 struct FightSample
 {
     uint32 targetEntry = 0;
     uint8 targetLevel = 0;
     uint32 mobs = 0;
-    float formulaDps = 0.0f;  // Estimate(...).dps at the fight's start
-    float cycleSec = 0.0f;    // Estimate(...).cycleSec at the fight's start
-    uint64 dealt = 0;         // its damage to its attackers in the fight
+    float cycleSec = 0.0f;  // Estimate(...).cycleSec at the fight's start
+    uint64 dealt = 0;       // its damage to its attackers in the fight
     float fightSec = 0.0f;
-    float activeSec = 0.0f;  // the time it attacked (a victim, a cast or Auto Shot under way)
     uint64 taken = 0;
     char const* outcome = "won";  // won / fled / died
-    std::string invalidWhy;       // empty: a valid sample
+    std::string invalidWhy;       // empty: the caller has no reason of its own against the sample
     BuffContext ctx = BuffContext::Solo;
-    // [dps41] why a melee bot's white swings fall short of the formula's: [dps238] measured melee white at 0.66-0.85
-    // of it at b426-b429 and b479 still reads 0.75 for the guild's prot warriors (the dominant term of their 81 % of
-    // the ideal, their rotation being 92 % of it), with nothing in the log saying where the swings went. The formula
-    // has a melee bot in reach of its target for the whole fight (`meleeShare` is 1 for every melee rotation), so
-    // every one of these is time it counted swings the bot could not take. Sampled where meleeMs and actMs already
-    // are - at the fight's damage events, the interval attributed to the state seen at the one before - and together
-    // they tile `windowSec` below, which is what the allowance divides.
-    float ableSec = 0.0f;     // in reach, facing, swinging, free to act: the time the swing timer could run
-    float rangeSec = 0.0f;    // out of melee reach of the mob it fought
-    float facingSec = 0.0f;   // in reach, not facing it (Unit::isInFront: a swing is refused)
-    float noSwingSec = 0.0f;  // in reach and facing, no melee attack under way (no victim / attack stopped)
-    float controlSec = 0.0f;  // stunned, feared, confused, rooted or fleeing: not its own to spend
-    float switchSec = 0.0f;   // swinging at a unit that is no attacker of this fight
-    // [dps50] the window the six buckets above tile, and the lead swing inside it. The buckets are sampled at the
-    // fight's damage events, so they span the first event to the last one; the fight the allowance is compared
-    // against runs one swing longer, because the swing landing at the first event was swung for over the swing timer
-    // before it (CloseFight's `seconds`). That lead was in no bucket, and it is the whole of the undercount measured
-    // on b480: the unaccounted part of every [meleeup] line was the bot's own swing time to the centisecond, ratio
-    // 1.00 for all nine specs, 18.6 % of the log's fight time. It is charged to the reason the first sample reads,
-    // and `windowSec` is span + `leadSec` - the swing speed at the open, which a druid's shift changes, so the
-    // window is carried and not recomputed from the speed at the close.
-    float windowSec = 0.0f;
-    float leadSec = 0.0f;
+    // the formula at the open over the fight ahead: FormulaOver(the Result the caller took, the measured window).
+    // 0: RecordFight takes the Result it stored at the fight's first hit itself
+    float formulaDps = 0.0f;
 };
 void RecordFight(Player* bot, FightSample const& sample);
 
-// [dpscal] what a solo bot (and its pet, its totems) does between two RecordFight calls, for that fight's [dps] /
-// [dpsparts] lines only (nothing stored, no decision reads it): every hit with its overkill (the formula is the
-// damage it deals, a kill's last hit is dealt in full), the hits it takes, and its casts by spell.
+// [dps20] a fight of a bot no other judge closes (one in a group, one in an instance: SoloSafety::CloseFight owns
+// the solo fights alone) is closed here, from the per-bot tick, once it is out of combat or dead. Nothing is
+// recorded while it fights, and a solo bot's open fight is left to SoloSafety.
+void CloseIfOut(Player* bot);
+
+// [dps20] the bot leaves the world: its open fight is dropped unmeasured (an entry only RecordFight ever erased)
+void ForgetFight(Player* bot);
+
+// [dps20] the formula over a fight of `sec`: the rotation while its mana lasts, then what lasts without mana -
+// Estimate's own `fightSec` branch, which SoloSafety used to spell out a second time beside it
+float FormulaOver(Result const& r, float sec);
+
+// [dpscal] what a bot (and its pet, its totems) does between two RecordFight calls, for that fight's [dps] /
+// [dpsparts] lines and its history row: every hit with its overkill (the formula is the damage it deals, a kill's
+// last hit is dealt in full), the hits it takes, and its casts by spell.
+// [dps20] ... and the fight's own clocks: the time it attacked and the white-swing gate's reading at every damage
+// event. Every bot, every map: an instance and a group were measured by nothing before.
 // NoteDealt from the UnitScript DealDamage hook (before the victim's health changes), NoteCast from
 // PlayerScript::OnPlayerSpellCast (a cast that went off)
 void NoteDealt(Unit* attacker, Unit* victim, uint32 damage, uint8 damageType);

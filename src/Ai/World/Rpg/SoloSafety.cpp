@@ -144,24 +144,16 @@ namespace
         uint32 meleeMs = 0;
         uint32 sampleMs = 0;
         bool sampleMelee = false;
-        // [guild15] the time it attacked (a victim, or a cast / auto shot under way, at the damage event): only that
-        // time measures its damage (b332 Colian L12: "melee 38.1 s dealt 0" - an attacker dropped by a sight bug, no
-        // victim, no swing - measured him at 4.7 dps at that gap)
+        // [guild15] the time it attacked (a victim, or a cast / auto shot under way, at the damage event): b332
+        // Colian L12 "melee 38.1 s dealt 0" - an attacker dropped by a sight bug, no victim, no swing.
+        // [dps20] this clock bounds the fight length SoloSafety's OWN numbers use (its heal rate, its NO_ATTACK
+        // line, the part of a disengage it fought). The dps row's active_s is DpsEstimate's reading of the same
+        // damage events and no longer this one: one judge per number, and that number is the measurement's.
         uint32 actMs = 0;
         bool sampleAct = false;
-        // [dps41] where a melee bot's missing white swings went: the same sample points as meleeMs and actMs, one
-        // bucket per reason it could not swing, each a part of the fight. `swingBlock` is the reason seen at the
-        // last sample; the interval since then is charged to it (0 = it could swing).
-        uint32 ableMs = 0;
-        uint32 blockMs[5] = {0, 0, 0, 0, 0};
-        uint8 swingBlock = 0;
-        // [dps50] the swing the bot was swinging for before the first damage event closed it: the buckets span the
-        // events, the fight they are compared against starts one swing earlier (`seconds` below), so the lead is
-        // charged at the fight's first sample and carried - the speed at the open, not at the close (a druid shifts)
-        uint32 leadMs = 0;
-        // [dps1] what invalidates the fight as a formula check: it swam or looted at a damage event
-        bool swam = false;
-        bool looted = false;
+        // [dps20] the white-swing buckets, the lead swing and the "it swam / it looted" facts were here and are
+        // DpsEstimate's now (LiveFight, SampleFight): they are read at the same damage events, and a fight in a
+        // dungeon or in a five never reaches this state at all. One clock measures them for every fight.
         // [dps1] the formula at the fight's open against its first mob (for the [dps] line only)
         DpsEstimate::Result formula;
         DpsEstimate::BuffContext formulaCtx = DpsEstimate::BuffContext::Solo;
@@ -410,14 +402,14 @@ namespace
             fought += SwingSec(bot);
         // [guild15] the time it never attacked measures nothing of its damage (a sight bug, a swim, a chest opened
         // under a hit); [dps1] the reasons the fight is no check of the formula
+        // [dps20] "never attacked" is not written here any more: the measurement reads it off the damage it
+        // actually counted, for a fight on any map, and one reason has one author. This still drops the fight out
+        // of SoloSafety's own heal-rate sum, which is its number and nobody else's.
         std::string invalid;
         {
             float const acted = float(state.actMs) / float(IN_MILLISECONDS) + SwingSec(bot);
             if (!state.actMs && !foughtDealt)
-            {
-                invalid = "never attacked";
                 measured = false;
-            }
             else if (acted < fought)
                 fought = acted;
         }
@@ -427,10 +419,7 @@ namespace
         fought = std::min(fought, seconds);
         if (invalid.empty() && !measured)
             invalid = "ran before two swings";
-        if (invalid.empty() && state.swam)
-            invalid = "swimming";
-        if (invalid.empty() && state.looted)
-            invalid = "looting";
+        // [dps20] "swimming" and "looting" are DpsEstimate's own reasons now, read off the same damage events
         if (invalid.empty() && !state.formulaEntry)
             invalid = "no target at the open";
         // its heal rate over its fights (no decision reads its damage history: [dps1] the formula is its damage)
@@ -459,38 +448,18 @@ namespace
             sample.targetEntry = state.formulaEntry;
             sample.targetLevel = state.formulaLevel;
             sample.mobs = uint32(state.attackers.size());
-            DpsEstimate::Result const& f = state.formula;
-            sample.formulaDps = f.oomSec < fought && fought > 0.0f
-                                    ? (f.burstDps * f.oomSec + std::min(f.whiteDps, f.burstDps) * (fought - f.oomSec)) /
-                                          fought
-                                    : f.burstDps;
-            sample.cycleSec = f.cycleSec;
+            // [dps20] one reading of the formula over a fight of `fought`: DpsEstimate::FormulaOver, which is
+            // Estimate's own mana branch. This spelled the same arithmetic out a second time beside it.
+            sample.formulaDps = DpsEstimate::FormulaOver(state.formula, fought);
+            sample.cycleSec = state.formula.cycleSec;
             sample.dealt = foughtDealt;
             sample.fightSec = seconds;
-            sample.activeSec = fought;
             sample.taken = state.taken;
             sample.outcome = died ? "died" : state.fleeing ? "fled" : "won";
             sample.invalidWhy = invalid;
             sample.ctx = state.formulaCtx;
-            // [dps41] where its swings went, each bucket a part of this fight: the samples cover the span the
-            // damage events bound, plus the lead swing [dps50] charged at the first of them
-            // [dps50] their own window, not `seconds`: both are span + one swing, but `seconds` takes the swing speed
-            // at the close and the lead took it at the open, so a druid that shifted into cat form between them had
-            // `fit` scale every bucket down by the difference. The window is what the allowance divides.
-            float const window = float(getMSTimeDiff(state.firstMs, state.lastMs) + state.leadMs) /
-                                 float(IN_MILLISECONDS);
-            float const sampled = float(state.ableMs + state.blockMs[0] + state.blockMs[1] + state.blockMs[2] +
-                                        state.blockMs[3] + state.blockMs[4]) /
-                                  float(IN_MILLISECONDS);
-            float const fit = sampled > window && sampled > 0.0f ? window / sampled : 1.0f;
-            sample.windowSec = window;
-            sample.leadSec = float(state.leadMs) / float(IN_MILLISECONDS);
-            sample.ableSec = float(state.ableMs) / float(IN_MILLISECONDS) * fit;
-            sample.rangeSec = float(state.blockMs[0]) / float(IN_MILLISECONDS) * fit;
-            sample.facingSec = float(state.blockMs[1]) / float(IN_MILLISECONDS) * fit;
-            sample.noSwingSec = float(state.blockMs[2]) / float(IN_MILLISECONDS) * fit;
-            sample.controlSec = float(state.blockMs[3]) / float(IN_MILLISECONDS) * fit;
-            sample.switchSec = float(state.blockMs[4]) / float(IN_MILLISECONDS) * fit;
+            // [dps20] the window, the time it attacked and the white-swing buckets are no longer passed: the clock
+            // that sees the damage events reads them for this fight exactly as it reads a five's in a dungeon
             DpsEstimate::RecordFight(bot, sample);
         }
         QuestStats::NoteCombat(bot, uint32(std::max(seconds, 0.0f) * float(IN_MILLISECONDS)), false);  // [budget12]
@@ -623,13 +592,6 @@ namespace
         state.sampleMelee = false;
         state.actMs = 0;
         state.sampleAct = false;
-        state.ableMs = 0;  // [dps41]
-        for (uint32& blocked : state.blockMs)
-            blocked = 0;
-        state.swingBlock = 0;
-        state.leadMs = 0;  // [dps50]
-        state.swam = false;
-        state.looted = false;
         state.joiners.clear();  // [surv10] the next fight grows its own pack
         state.joinersBuilt = false;
         state.formula = DpsEstimate::Result();
@@ -638,72 +600,20 @@ namespace
         state.loggedNoAttack = false;
     }
 
-    // [dps41] why no white swing was landing on a mob of this fight, read off the core's own melee gate
-    // (Player::Update: UNIT_STATE_MELEE_ATTACKING, not casting and not charging, a victim, within melee reach, and
-    // facing it inside 120 degrees unless it stands in the boundary radius). The reasons are the core's, not a
-    // model of them: a swing the core refuses is a swing the formula counted and the bot never took.
-    // 0: it could swing. 1 range, 2 facing, 3 no swing under way, 4 not its own to spend, 5 swinging at a unit that
-    // is no attacker of this fight - the order of FightSample's buckets.
-    uint8 SwingBlock(Player* bot, SoloBotState const& state, Unit* mob)
-    {
-        if (!bot || !mob)
-            return 0;
-        if (bot->HasUnitState(UNIT_STATE_CASTING) || bot->HasUnitState(UNIT_STATE_CHARGING) ||
-            bot->HasUnitState(UNIT_STATE_STUNNED) || bot->HasUnitState(UNIT_STATE_FLEEING) ||
-            bot->HasUnitState(UNIT_STATE_CONFUSED))
-            return 4;
-        Unit* victim = bot->GetVictim();
-        if (!victim || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
-            return 3;
-        // [dps50] a swing at any mob of this fight is a swing the measurement counts: DpsEstimate::NoteDealt counts
-        // every melee hit the bot lands on a creature, not only the one the fight's formula priced, so the fight
-        // whose second mob the bot is killing was reading its able time as time lost (1.4 % of b480's fight time)
-        if (victim != mob && !state.attackers.count(victim->GetGUID().GetRawValue()))
-            return 5;
-        if (!bot->IsWithinMeleeRange(victim))
-            return 1;
-        if (!bot->IsWithinBoundaryRadius(victim) && !bot->HasInArc(2.0f * float(M_PI) / 3.0f, victim))
-            return 2;
-        return 0;
-    }
-
     // [guild15] the melee-phase clock: the time since the last sample counts as melee when the bot stood in reach then
+    // [dps20] the white-swing gate's buckets were read here too and are DpsEstimate::SampleFight's now, at the same
+    // damage events: a fight in a dungeon or in a five reaches this function for no bot, and the buckets are what
+    // say where a melee bot's missing swings went.
     void SampleMelee(Player* bot, Unit* mob, SoloBotState& state, uint32 now)
     {
         if (state.sampleMs && state.sampleMelee)
             state.meleeMs += getMSTimeDiff(state.sampleMs, now);
         if (state.sampleMs && state.sampleAct)
             state.actMs += getMSTimeDiff(state.sampleMs, now);  // [guild15]
-        // [dps41] the interval goes to the reason the last sample saw, before that sample is replaced
-        if (state.sampleMs)
-        {
-            uint32 const since = getMSTimeDiff(state.sampleMs, now);
-            if (!state.swingBlock)
-                state.ableMs += since;
-            else
-                state.blockMs[state.swingBlock - 1] += since;
-        }
-        bool const open = !state.sampleMs;
-        state.swingBlock = SwingBlock(bot, state, mob);
-        // [dps50] the fight's first sample: the swing before it goes to the reason that sample reads, the same
-        // piecewise-constant reading every other interval gets. A bot still walking in when the mob's first hit
-        // opened the fight reads "out of reach" for it; one that opened the fight with its own swing reads "able".
-        if (open)
-        {
-            state.leadMs = uint32(SwingSec(bot) * float(IN_MILLISECONDS));
-            if (!state.swingBlock)
-                state.ableMs += state.leadMs;
-            else
-                state.blockMs[state.swingBlock - 1] += state.leadMs;
-        }
-        // [dps70] never 0: `sampleMs` 0 is what marks the fight's first sample, so a getMSTime() that lands exactly
-        // on 0 would make the next sample charge the lead swing a second time. The same guard the fight's own
-        // timestamps already carry (`f.firstDealtMs = now ? now : 1`); one tick of 1 ms is the whole cost.
+        // [dps70] never 0: `sampleMs` 0 is what marks the fight's first sample. One tick of 1 ms is the whole cost.
         state.sampleMs = now ? now : 1;
         state.sampleMelee = bot->IsWithinMeleeRange(mob);
         state.sampleAct = bot->GetVictim() || bot->IsNonMeleeSpellCast(false);
-        state.swam = state.swam || bot->IsInWater();  // [dps1]
-        state.looted = state.looted || !bot->GetLootGUID().IsEmpty();
     }
 
     void CloseIfOver(Player* bot, SoloBotState& state)

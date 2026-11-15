@@ -2509,7 +2509,36 @@ struct LiveFight
     uint64 raw = 0;  // its, its pet's and its totems' damage to creatures, the overkill of a killing hit included
     uint64 pet = 0, white = 0, spell = 0, dot = 0;
     uint32 firstDealtMs = 0, lastDealtMs = 0, firstTakenMs = 0;
-    bool shared = false;                        // a mob of the fight took damage from someone else
+    // [dps20] a mob of the fight took damage from someone else. It is a fact of the fight and no longer a verdict on
+    // the sample: the damage this fight measures is the damage THIS bot dealt (every hit counted here passes
+    // GetCharmerOrOwnerPlayerOrPlayerItself == bot), so an ally hitting the same mob takes nothing away from it. In a
+    // five every mob is shared, which is why 75 055 of 75 074 rows were solo and not one was measured in a dungeon.
+    // What a shared kill really costs the sample is a window cut short by someone else's killing blow, and the
+    // measured window covering one rotation is the own-reason that already catches that.
+    bool shared = false;
+    uint64 taken = 0;  // [dps20] the mobs' damage on it this fight, each hit up to its health (overkill is no damage)
+    // [dps20] the fight's own clocks, sampled at its damage events (the interval goes to the reading the event
+    // before it took): the time it attacked, the white-swing gate's buckets, and the lead swing. They were
+    // SoloSafety's and are the measurement's: a fight in a dungeon reaches no solo judge.
+    uint32 sampleMs = 0;
+    bool sampleAct = false;
+    uint32 actMs = 0;
+    uint32 ableMs = 0;
+    uint32 blockMs[5] = {0, 0, 0, 0, 0};
+    uint8 swingBlock = 0;
+    uint32 leadMs = 0;
+    bool swam = false;    // [dps1] it swam at a damage event: no check of the formula
+    bool looted = false;  // ... or looted
+    // [dps20] where and in what company the fight OPENED. The row took the bot's map and position at the close, so
+    // every one of the 23 rows on a dungeon map was an open-world fight the bot carried through a portal: map 43
+    // (Wailing Caverns) held 8 fights against Mottled Raptors, Rabid Dire Wolves and Riverpaw Taskmasters, and the
+    // "Wailing Caverns 84.6 %" read off them is of the Barrens, not of the dungeon.
+    uint32 openMap = 0;
+    float openX = 0.0f, openY = 0.0f, openZ = 0.0f;
+    BuffContext openCtx = BuffContext::Solo;
+    uint32 openEntry = 0;
+    uint8 openLevel = 0;
+    Result openResult;  // the formula's Result at the open: FormulaOver prices it over the measured window
     std::unordered_map<uint64, uint64> mobs;    // mob guid -> its damage on it (up to the mob's health)
     std::map<uint32, uint32> casts;             // spell id -> casts that went off
     uint32 timedCasts = 0;                      // its cast / channel / global cooldown spells at a mob (no auto-repeat)
@@ -2541,17 +2570,118 @@ struct LiveFight
     uint32 nextSwings = 0;
 };
 
-std::mutex liveLock;
-std::unordered_map<uint64, LiveFight> live;  // bot guid -> its open fight
+// [dps20] the open fights, sharded. It was one mutex and one map, and that cost nothing while only a bot fighting
+// alone in the open world was tracked: every other bot left NoteDealt before the lock. Measuring a five in a
+// dungeon means every damage event of every bot reaches it, so a 25-bot raid's swings would queue on one mutex -
+// against the module's own goal of thousands of bots. The critical sections are a few field adds each; sixteen
+// shards keyed by the bot's guid keep them from meeting. One judge still: one store, sixteen doors into it.
+constexpr size_t LIVE_SHARDS = 16;
+struct LiveShard
+{
+    std::mutex lock;
+    std::unordered_map<uint64, LiveFight> fights;
+};
+LiveShard liveShards[LIVE_SHARDS];
+LiveShard& ShardOf(uint64 guid) { return liveShards[guid % LIVE_SHARDS]; }
 
-// SoloSafety::SoloPlayerBot: a bot out in the world, alone (RecordFight is called for those fights only).
+// SoloSafety::SoloPlayerBot: a bot out in the world, alone. SoloSafety::CloseFight closes those fights and only
+// those, so this is the one predicate that says whose open fight another judge will close.
 // [deaths9] a grouped bot far from every living member too: b345 Guinudrond's fights logged "casts: -" and no ideal
 bool SoloBot(Player* bot) { return bot && GET_PLAYERBOT_AI(bot) && DpsEstimate::FightsAlone(bot); }
+
+// [dps20] whose fight is measured: every bot, in a group, in a raid, in a dungeon. This was `SoloBot` and that is
+// the whole of why the judged quantity was never judged where it matters - the gate is read before a single damage
+// event is counted, so a fight in a five opened no sample at all. 75 055 of 75 074 rows are solo, 17 are group, 2
+// are raid, and the user's rule (90 % of wowsims for every spec, 100 % the aim) was never measured in a dungeon.
+bool MeasuredBot(Player* bot) { return bot && bot->IsInWorld() && GET_PLAYERBOT_AI(bot); }
 
 std::string SpellName(uint32 id)
 {
     SpellInfo const* info = sSpellMgr->GetSpellInfo(id);
     return info ? std::string(info->SpellName[LOCALE_enUS]) : std::to_string(id);
+}
+
+// [dps41] why no white swing was landing on a mob of this fight, read off the core's own melee gate
+// (Player::Update: UNIT_STATE_MELEE_ATTACKING, not casting and not charging, a victim, within melee reach, and
+// facing it inside 120 degrees unless it stands in the boundary radius). The reasons are the core's, not a model of
+// them: a swing the core refuses is a swing the formula counted and the bot never took.
+// 0: it could swing. 1 range, 2 facing, 3 no swing under way, 4 not its own to spend, 5 swinging at a unit of no
+// fight of its own - the order of the buckets below.
+// [dps20] moved here from SoloSafety, which saw solo fights only. "Swinging elsewhere" now reads the mobs this
+// fight has damage of (`f.mobs`, plus the mob of the event being sampled) where it read the mobs attacking the bot:
+// in a five the bot's target is routinely not its attacker, and a swing at a second mob of the same pull is a swing
+// this measurement counts (DpsEstimate counts every melee hit it lands on a creature).
+uint8 SwingBlock(Player* bot, LiveFight const& f, Unit* mob)
+{
+    if (!bot || !mob)
+        return 0;
+    if (bot->HasUnitState(UNIT_STATE_CASTING) || bot->HasUnitState(UNIT_STATE_CHARGING) ||
+        bot->HasUnitState(UNIT_STATE_STUNNED) || bot->HasUnitState(UNIT_STATE_FLEEING) ||
+        bot->HasUnitState(UNIT_STATE_CONFUSED))
+        return 4;
+    Unit* victim = bot->GetVictim();
+    if (!victim || !bot->HasUnitState(UNIT_STATE_MELEE_ATTACKING))
+        return 3;
+    if (victim != mob && !f.mobs.count(victim->GetGUID().GetRawValue()))
+        return 5;
+    if (!bot->IsWithinMeleeRange(victim))
+        return 1;
+    if (!bot->IsWithinBoundaryRadius(victim) && !bot->HasInArc(2.0f * float(M_PI) / 3.0f, victim))
+        return 2;
+    return 0;
+}
+
+// [dps20] the fight's clocks at one damage event: the time it attacked (a victim or a cast under way) and the
+// swing gate's reading, each interval charged to the reading the event before it took. Caller holds its shard's lock.
+// [dps50] the fight's first sample charges the lead swing - the swing the bot was swinging for before that first
+// event closed it - to the reading that sample takes, and carries it: the speed at the open, not at the close (a
+// druid's shift changes it). The buckets tile span + lead, which is the window the allowance divides.
+void SampleFight(Player* bot, Unit* mob, LiveFight& f, uint32 now)
+{
+    if (!bot)
+        return;
+    if (f.sampleMs)
+    {
+        uint32 const since = getMSTimeDiff(f.sampleMs, now);
+        if (f.sampleAct)
+            f.actMs += since;
+        if (!f.swingBlock)
+            f.ableMs += since;
+        else
+            f.blockMs[f.swingBlock - 1] += since;
+    }
+    bool const open = !f.sampleMs;
+    f.swingBlock = SwingBlock(bot, f, mob);
+    if (open)
+    {
+        f.leadMs = uint32(std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.1f) *
+                          float(IN_MILLISECONDS));
+        if (!f.swingBlock)
+            f.ableMs += f.leadMs;
+        else
+            f.blockMs[f.swingBlock - 1] += f.leadMs;
+    }
+    // [dps70] never 0: `sampleMs` 0 is what marks the fight's first sample, so a getMSTime() landing exactly on 0
+    // would charge the lead swing a second time. One tick of 1 ms is the whole cost.
+    f.sampleMs = now ? now : 1;
+    f.sampleAct = bot->GetVictim() || bot->IsNonMeleeSpellCast(false);
+    f.swam = f.swam || bot->IsInWater();  // [dps1]
+    f.looted = f.looted || !bot->GetLootGUID().IsEmpty();
+}
+
+// [dps20] where and in what company the fight opens, taken once, at its first damage event either way. The row used
+// to read the bot's map and position at the CLOSE, which is a different place entirely for a fight it walked out of.
+void OpenFacts(Player* bot, LiveFight& f, Unit* mob)
+{
+    if (f.openMap || !bot)
+        return;
+    f.openMap = bot->GetMapId() + 1;  // +1: 0 is "not taken yet", map 0 is Eastern Kingdoms
+    f.openX = bot->GetPositionX();
+    f.openY = bot->GetPositionY();
+    f.openZ = bot->GetPositionZ();
+    f.openCtx = DpsEstimate::ContextOf(bot);
+    f.openEntry = mob ? mob->GetEntry() : 0;
+    f.openLevel = mob ? uint8(mob->GetLevel()) : uint8(0);
 }
 }  // namespace
 
@@ -2859,31 +2989,44 @@ bool FightsAlone(Player* bot)
     return true;
 }
 
+float FormulaOver(Result const& r, float sec)
+{
+    if (sec <= 0.0f || r.oomSec >= sec)
+        return r.burstDps;
+    return (r.burstDps * r.oomSec + std::min(r.whiteDps, r.burstDps) * (sec - r.oomSec)) / sec;
+}
+
 void RecordFight(Player* bot, FightSample const& sample)
 {
     if (!bot)
         return;
     LiveFight f;
     {
-        std::lock_guard<std::mutex> guard(liveLock);
-        auto const found = live.find(bot->GetGUID().GetRawValue());
-        if (found != live.end())
+        LiveShard& shard = ShardOf(bot->GetGUID().GetRawValue());
+        std::lock_guard<std::mutex> guard(shard.lock);
+        auto const found = shard.fights.find(bot->GetGUID().GetRawValue());
+        if (found != shard.fights.end())
         {
             f = std::move(found->second);
-            live.erase(found);
+            shard.fights.erase(found);
         }
     }
-    float active = std::max(sample.activeSec, 0.0f);
+    // [dps20] the time it attacked is this clock's own reading now (f.actMs), not a number passed in: the one
+    // measurement that sees every damage event of every fight, on every map, in or out of a group
+    float const actedSec = float(f.actMs) / float(IN_MILLISECONDS) +
+                           std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
+    float active = std::min(std::max(actedSec, 0.0f), std::max(sample.fightSec, 0.0f));
     float actual = active > 0.0f ? float(sample.dealt) / active : 0.0f;
     float const cappedActual = actual;
     // [dpscal] its own damage over the time it fought, measured as the formula counts it (b337: 0.73 of the formula
     // in the median, 17 % within 10 %):
-    // - every hit in full: the hit that kills is dealt in full (SoloSafety caps it at the mob's health: at L1-9 a mob
-    //   dies to 2-4 casts, half a cast of overkill on average);
+    // - every hit in full: the hit that kills is dealt in full (at L1-9 a mob dies to 2-4 casts, half a cast of
+    //   overkill on average);
     // - the time from its first action to its last hit: one interval of its damage before the first hit, the mean
-    //   execute time of its casts for a caster, its ranged speed for a hunter, its swing else (SoloSafety adds one
-    //   swing: a mage's 2.9 s staff for a 1.5-1.8 s Frostbolt), or from the first hit it took when that came first;
-    // - less the time SoloSafety found it not attacking (fight_s - active_s).
+    //   execute time of its casts for a caster, its ranged speed for a hunter, its swing else (one swing on top: a
+    //   mage's 2.9 s staff for a 1.5-1.8 s Frostbolt), or from the first hit it took when that came first;
+    // - [dps20] less the time THIS clock found it not attacking (fight_s - actedSec). It was the caller's reading;
+    //   a fight in a dungeon has no caller that reads anything.
     // [rot609] A run too: SoloSafety's numbers stop at the run's start (its damage to then over a mage's 2.9 s staff
     // swing on top) while a bot that disengages can cast on (b341 Gilduck L9 frost: 94 dealt, 30 of them before the
     // disengage, logged 3.7-4.7 dps against 18.9); its hits after the run are in the window.
@@ -2923,7 +3066,7 @@ void RecordFight(Player* bot, FightSample const& sample)
         float const slackSec = float(GCD_MAX_MS) / float(IN_MILLISECONDS);
         if (spanSec > sample.fightSec + before + slackSec)
             staleSec = spanSec - sample.fightSec;
-        float const idle = fled ? 0.0f : std::max(0.0f, sample.fightSec - sample.activeSec);
+        float const idle = fled ? 0.0f : std::max(0.0f, sample.fightSec - actedSec);
         float const window =
             float(getMSTimeDiff(f.firstDealtMs, f.lastDealtMs)) / float(IN_MILLISECONDS) + before - idle;
         if (window > 0.0f)
@@ -2932,27 +3075,62 @@ void RecordFight(Player* bot, FightSample const& sample)
             actual = float(f.raw) / window;
         }
     }
+    // [dps20] the formula over the window the fight turned out to have. `sample.formulaDps` when the caller priced
+    // it (SoloSafety, off its own Result), else the Result taken at the fight's first hit here.
+    float const formulaDps =
+        sample.formulaDps > 0.0f ? sample.formulaDps : FormulaOver(f.openResult, std::max(active, 0.0f));
+    // [dps20] every reason here is the BOT'S OWN: what it did or failed to do, never what someone else did to the
+    // mob. "a mob took damage from someone else" was the whole of why a fight in a five was never measured - in a
+    // five every mob is hit by somebody else, so the rule threw away exactly the fights the 90 % rule is about. It
+    // is gone; `f.shared` is kept as a fact of the row. The damage measured was always this bot's alone.
     std::string why = sample.invalidWhy;
     if (why.empty() && staleSec > 0.0f)
         why = Acore::StringFormat("its hits from {:.1f} s before the fight", staleSec);
+    // [dps20] the fight opened on one map and closed on another: the bot walked, rode or was teleported out of it
+    // with the fight still open, and nothing of the two places measures the other
+    if (why.empty() && f.openMap && f.openMap != bot->GetMapId() + 1)
+        why = Acore::StringFormat("the bot changed map during the fight (opened on {})", f.openMap - 1);
+    if (why.empty() && f.swam)
+        why = "swimming";
+    if (why.empty() && f.looted)
+        why = "looting";
+    if (why.empty() && !f.raw)
+        why = "never attacked";
     // [dpscal] the time it fought covers one pass of the rotation (was the fight's length: b337 Laaral L13 attacked
-    // 5.3 s of an 89.9 s fight and passed)
+    // 5.3 s of an 89.9 s fight and passed).
+    // [dps20] this is the honest guard a shared kill needs: a mob of a five's pull dies to the party's damage before
+    // the bot's rotation comes round once, and the share such a window carries is of an opener, not of a rotation.
+    // It is the bot's own window and its own cycle - no other member's doing is read.
     if (why.empty() && active < sample.cycleSec)
         why = Acore::StringFormat("shorter than one rotation ({:.1f} s)", sample.cycleSec);
-    // [dpscal] a mob someone else hit too dies sooner than its damage would kill it (b337 L1 start areas: a balance
-    // druid "won" after 4 damage)
-    if (why.empty() && f.shared)
-        why = "a mob took damage from someone else";
     bool const valid = why.empty();
     // [dpscal] the ideal rotation's formula with the expected one's mana limit (its share of the burst)
-    float const idealDps = f.formula.burst > 0.0f ? f.ideal.burst * sample.formulaDps / f.formula.burst : 0.0f;
+    float const idealDps = f.formula.burst > 0.0f ? f.ideal.burst * formulaDps / f.formula.burst : 0.0f;
     std::string const spec = AiFactory::GetPlayerSpecName(bot);
     char const* ctx = ContextName(sample.ctx);
+    // [dps20] the white-swing buckets, this clock's own. They tile `windowSec` by construction now - one clock
+    // samples them and one clock bounds the window - so the `fit` scaling that used to squeeze a caller's buckets
+    // into a caller's window is gone with the second clock that made it necessary.
+    float const ableSec = float(f.ableMs) / float(IN_MILLISECONDS);
+    float const rangeSec = float(f.blockMs[0]) / float(IN_MILLISECONDS);
+    float const facingSec = float(f.blockMs[1]) / float(IN_MILLISECONDS);
+    float const noSwingSec = float(f.blockMs[2]) / float(IN_MILLISECONDS);
+    float const controlSec = float(f.blockMs[3]) / float(IN_MILLISECONDS);
+    float const switchSec = float(f.blockMs[4]) / float(IN_MILLISECONDS);
+    float const windowSec = ableSec + rangeSec + facingSec + noSwingSec + controlSec + switchSec;
+    float const leadBucketSec = float(f.leadMs) / float(IN_MILLISECONDS);
+    // [dps20] the shortfall stored beside the share. A share with no cause beside it says "sixty percent" and does
+    // not say whether to fix it, so the row carries the reasons the [dpsparts] and [meleeup] lines print: the
+    // rotation spells the formula planned and the bot never cast, and the time each reason of the core's own swing
+    // gate held its swings. Ranked, biggest first, cut to the column's 255 characters.
+    std::string shortfall;
+    uint32 swings = 0;
+    float swingsAllowed = 0.0f;
     LOG_INFO("playerbots",
              "[dps] {} L{} {}/{} ctx={} target={} L{} mobs={} formula={:.1f} ideal={:.1f} actual={:.1f} "
              "fight_s={:.1f} active_s={:.1f} taken={} outcome={} valid={} why={}",
              bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), spec, ctx, sample.targetEntry,
-             uint32(sample.targetLevel), sample.mobs, sample.formulaDps, idealDps, actual, sample.fightSec, active,
+             uint32(sample.targetLevel), sample.mobs, formulaDps, idealDps, actual, sample.fightSec, active,
              sample.taken, sample.outcome, valid ? 1 : 0, valid ? "-" : why);
     // [dpscal] the formula's parts at the first hit against what went off: no decision reads it
     {
@@ -2970,13 +3148,26 @@ void RecordFight(Player* bot, FightSample const& sample)
         std::string casts;
         for (auto const& [id, count] : f.casts)
             casts += Acore::StringFormat("{}{} x{}", casts.empty() ? "" : ", ", SpellName(id), count);
+        // [dps20] the rotation's own part of the shortfall: a spell the formula priced into the plan that never went
+        // off this fight. `parts` is already sorted by the damage per second it was priced at, so the first ones
+        // named are the ones worth fixing. A spell cast at least once is no part of the gap here - how far short its
+        // casts fell is the [dpsparts] line's plan-against-casts pair and not a single number.
+        for (auto const& [id, part] : parts)
+        {
+            if (part <= 0.0f || f.casts.count(id))
+                continue;
+            if (shortfall.size() > 180)
+                break;
+            shortfall += Acore::StringFormat("{}no {} ({:.1f} dps planned)", shortfall.empty() ? "" : "; ",
+                                             SpellName(id), part);
+        }
         LOG_INFO("playerbots",
                  "[dpsparts] {} L{} {}/{} formula {:.1f} over {:.1f} s: {}{}white {:.1f}, pet {:.1f} ({}) | dealt {} "
                  "(spell {}, dot {}, white {}, pet {}) = {:.1f} dps over {:.1f} s (lead {:.1f} s), capped {:.1f} "
                  "| casts: {} | ideal {:.1f}: {} | white hits {} of {:.1f}, busy {:.0f} %, finishers {} at {:.1f} "
                  "points",
                  bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), AiFactory::GetPlayerSpecName(bot),
-                 sample.formulaDps, f.formula.lifeSec, plan, plan.empty() ? "" : ", ",
+                 formulaDps, f.formula.lifeSec, plan, plan.empty() ? "" : ", ",
                  f.formula.white - f.formula.pet - f.formula.replacedWhite, f.formula.pet, f.petOut ? "out" : "none",
                  f.raw, f.spell, f.dot,
                  f.white, f.pet, actual, active, leadSec, cappedActual, casts.empty() ? "-" : casts, idealDps,
@@ -3001,14 +3192,14 @@ void RecordFight(Player* bot, FightSample const& sample)
     // dodged or parried as a landed hit; it took the base attack speed, without the haste the rate carries and
     // without the swings a next-swing strike replaces; and its window was short by the lead swing [dps50] now
     // charged. A bot able for the whole window reads allowed == counted, the check the line could not make before.
-    if (f.formula.whiteHitsPerSec > 0.0f && sample.windowSec > 0.0f)
+    if (f.formula.whiteHitsPerSec > 0.0f && windowSec > 0.0f)
     {
         // the rate it lands while it is in melee: the able time holds no out-of-reach second already, so the petless
         // hunter's arrival share belongs to `counted`'s whole-fight assumption and not to the allowance
         float const inMelee = f.formula.meleeShare > 0.0f ? f.formula.whiteHitsPerSec / f.formula.meleeShare
                                                           : f.formula.whiteHitsPerSec;
-        float const allowed = inMelee * sample.ableSec;
-        float const counted = f.formula.whiteHitsPerSec * sample.windowSec;
+        float const allowed = inMelee * ableSec;
+        float const counted = f.formula.whiteHitsPerSec * windowSec;
         // [dps60] the swing timer's own output against what the able time allows it: a next-swing strike spends a
         // swing and lands as itself, so both sides add the replaced swings back. This is the pair that answers the
         // able time; the landed-white pair above answers the rotation on top of it. b480's prot warriors read 86 %
@@ -3017,8 +3208,28 @@ void RecordFight(Player* bot, FightSample const& sample)
         float const replaced = f.formula.meleeShare > 0.0f
                                    ? f.formula.replacedHitsPerSec / f.formula.meleeShare
                                    : f.formula.replacedHitsPerSec;
-        float const timerAllowed = (inMelee + replaced) * sample.ableSec;
+        float const timerAllowed = (inMelee + replaced) * ableSec;
         uint32 const timerSwings = f.whiteHits + f.nextSwings;
+        swings = timerSwings;
+        swingsAllowed = timerAllowed;
+        // [dps20] the swing gate's part of the stored shortfall: every reason that held a swing for longer than a
+        // tenth of the window, biggest first. These are the core's own readings, so the row says where the swings
+        // went and the triage does not have to go back to the log for it.
+        {
+            std::vector<std::pair<char const*, float>> held = {{"out of reach", rangeSec},
+                                                               {"not facing", facingSec},
+                                                               {"no swing", noSwingSec},
+                                                               {"controlled", controlSec},
+                                                               {"swinging elsewhere", switchSec}};
+            std::sort(held.begin(), held.end(), [](auto const& a, auto const& b) { return a.second > b.second; });
+            for (auto const& [name, sec] : held)
+            {
+                if (sec <= 0.1f * windowSec || shortfall.size() > 200)
+                    continue;
+                shortfall += Acore::StringFormat("{}{} {:.1f} s ({:.0f} %)", shortfall.empty() ? "" : "; ", name, sec,
+                                                 sec / windowSec * 100.0f);
+            }
+        }
         float const mhSec = std::max(float(bot->GetAttackTime(BASE_ATTACK)) / float(IN_MILLISECONDS), 0.1f);
         float const ohSec = bot->HasOffhandWeaponForAttack()
                                 ? std::max(float(bot->GetAttackTime(OFF_ATTACK)) / float(IN_MILLISECONDS), 0.1f)
@@ -3053,12 +3264,12 @@ void RecordFight(Player* bot, FightSample const& sample)
                  "landed in melee ({:.2f} over the fight, melee share {:.2f}) of {:.2f} swung a second (main "
                  "{:.2f} s, off {:.2f} s) | white dealt {} of {:.0f} the formula",
                  bot->GetName(), bot->GetLevel(), uint32(bot->getClass()), spec, f.whiteHits, allowed,
-                 share(f.whiteHits, allowed), counted, share(f.whiteHits, counted), sample.ableSec,
-                 sample.windowSec, sample.windowSec - sample.leadSec, sample.leadSec, sample.fightSec, active,
-                 sample.rangeSec, sample.facingSec, sample.noSwingSec, sample.controlSec, sample.switchSec,
-                 timerSwings, f.whiteHits, f.nextSwings, timerAllowed, share(timerSwings, timerAllowed), replaced,
-                 inMelee, f.formula.whiteHitsPerSec, f.formula.meleeShare, swung, mhSec, ohSec, f.white,
-                 (f.formula.white - f.formula.pet - f.formula.replacedWhite) * sample.windowSec);
+                 share(f.whiteHits, allowed), counted, share(f.whiteHits, counted), ableSec, windowSec,
+                 windowSec - leadBucketSec, leadBucketSec, sample.fightSec, active, rangeSec, facingSec, noSwingSec,
+                 controlSec, switchSec, timerSwings, f.whiteHits, f.nextSwings, timerAllowed,
+                 share(timerSwings, timerAllowed), replaced, inMelee, f.formula.whiteHitsPerSec,
+                 f.formula.meleeShare, swung, mhSec, ohSec, f.white,
+                 (f.formula.white - f.formula.pet - f.formula.replacedWhite) * windowSec);
     }
 
     // async (the module pool's own thread), never read by a decision; the last 1000 fights per bot are kept
@@ -3077,24 +3288,87 @@ void RecordFight(Player* bot, FightSample const& sample)
         }
         text.swap(out);
     };
+    std::string escapedShortfall = shortfall.size() > 250 ? shortfall.substr(0, 250) : shortfall;
     escape(escapedName);
     escape(escapedWhy);
+    escape(escapedShortfall);
+    // [dps20] the map and the spot the fight OPENED on, not the ones the bot stands on now. Every one of the 23 rows
+    // this table held on a dungeon map was an open-world fight carried through a portal: the close read
+    // bot->GetMapId() and stamped the dungeon on a fight against a Mottled Raptor.
+    uint32 const map = f.openMap ? f.openMap - 1 : bot->GetMapId();
+    float const atX = f.openMap ? f.openX : bot->GetPositionX();
+    float const atY = f.openMap ? f.openY : bot->GetPositionY();
+    float const atZ = f.openMap ? f.openZ : bot->GetPositionZ();
     uint32 const guid = bot->GetGUID().GetCounter();
     PlayerbotsDatabaseTransaction trans = PlayerbotsDatabase.BeginTransaction();
     trans->Append(Acore::StringFormat(
         "INSERT INTO playerbots_fight_history (guid, name, level, class, spec, ctx, target_entry, target_level, "
-        "mobs, formula_dps, actual_dps, fight_s, active_s, valid, why, taken, outcome, map, x, y, z) VALUES "
-        "({}, '{}', {}, {}, '{}', '{}', {}, {}, {}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {}, '{}', {}, '{}', {}, {:.1f}, "
-        "{:.1f}, {:.1f})",
+        "mobs, formula_dps, ideal_dps, actual_dps, fight_s, active_s, window_s, able_s, range_s, facing_s, "
+        "no_swing_s, control_s, switch_s, swings, swings_allowed, valid, why, shared, shortfall, taken, outcome, "
+        "map, x, y, z) VALUES "
+        "({}, '{}', {}, {}, '{}', '{}', {}, {}, {}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, {:.2f}, "
+        "{:.2f}, {:.2f}, {:.2f}, {:.2f}, {}, {:.2f}, {}, '{}', {}, '{}', {}, '{}', {}, {:.1f}, {:.1f}, {:.1f})",
         guid, escapedName, uint32(bot->GetLevel()), uint32(bot->getClass()), spec, ctx, sample.targetEntry,
-        uint32(sample.targetLevel), sample.mobs, sample.formulaDps, actual, sample.fightSec, active, valid ? 1 : 0,
-        escapedWhy, sample.taken, sample.outcome, bot->GetMapId(), bot->GetPositionX(), bot->GetPositionY(),
-        bot->GetPositionZ()));
+        uint32(sample.targetLevel), sample.mobs, formulaDps, idealDps, actual, sample.fightSec, active, windowSec,
+        ableSec, rangeSec, facingSec, noSwingSec, controlSec, switchSec, swings, swingsAllowed, valid ? 1 : 0,
+        escapedWhy, f.shared ? 1 : 0, escapedShortfall, sample.taken, sample.outcome, map, atX, atY, atZ));
     trans->Append(Acore::StringFormat(
         "DELETE h FROM playerbots_fight_history h JOIN (SELECT id FROM playerbots_fight_history WHERE guid = {} "
         "ORDER BY id DESC LIMIT 1 OFFSET 1000) old ON h.id <= old.id WHERE h.guid = {}",
         guid, guid));
     PlayerbotsDatabase.CommitTransaction(trans);
+}
+
+// [dps20] a fight nobody else closes. SoloSafety::CloseFight owns a solo bot's fight out in the world and closes it
+// from its own judge; every other fight - in a party, in a raid, in any instance - reached no close at all, which is
+// why `ctx=group` holds 17 of 75 074 rows and a dungeon holds none. This closes those, from the per-bot tick, once
+// the bot is out of combat or dead. No timer and no threshold: the fight ends when the core says the bot is out of
+// combat, and the sample is written then.
+void CloseIfOut(Player* bot)
+{
+    if (!MeasuredBot(bot) || (bot->IsInCombat() && bot->IsAlive()))
+        return;
+    // a solo bot's open fight belongs to SoloSafety's judge, which closes it with its own facts (a survival run,
+    // the engage it came from). One close per fight. Read before the lock: it walks the bot's group.
+    if (SoloBot(bot))
+        return;
+    FightSample sample;
+    {
+        LiveShard& shard = ShardOf(bot->GetGUID().GetRawValue());
+        std::lock_guard<std::mutex> guard(shard.lock);
+        auto const found = shard.fights.find(bot->GetGUID().GetRawValue());
+        if (found == shard.fights.end())
+            return;
+        LiveFight const& f = found->second;
+        if (!f.sampleMs)
+            return;  // an entry with no damage event of its own: nothing to measure
+        sample.targetEntry = f.openEntry;
+        sample.targetLevel = f.openLevel;
+        sample.mobs = uint32(f.mobs.size());
+        sample.cycleSec = f.openResult.cycleSec;
+        sample.dealt = f.raw;
+        sample.taken = f.taken;
+        sample.ctx = f.openCtx;
+        // the fight's length is the window its own samples tile: the span of its damage events plus the swing the
+        // first of them closed. RecordFight holds the active part of it against this.
+        sample.fightSec = float(f.ableMs + f.blockMs[0] + f.blockMs[1] + f.blockMs[2] + f.blockMs[3] + f.blockMs[4]) /
+                          float(IN_MILLISECONDS);
+    }
+    sample.outcome = bot->IsAlive() ? "won" : "died";
+    RecordFight(bot, sample);
+}
+
+// [dps20] a bot leaving the world drops its open fight. Only a solo bot's fight was ever tracked and only
+// RecordFight ever erased an entry, so a fight open at a logout stayed in the store for the server's life - with
+// two Profiles and their vectors in it. Tracking every bot everywhere makes that a leak worth closing. There is
+// nothing to measure in a fight that ended with the bot going away.
+void ForgetFight(Player* bot)
+{
+    if (!bot)
+        return;
+    LiveShard& shard = ShardOf(bot->GetGUID().GetRawValue());
+    std::lock_guard<std::mutex> guard(shard.lock);
+    shard.fights.erase(bot->GetGUID().GetRawValue());
 }
 
 void NoteDealt(Unit* attacker, Unit* victim, uint32 damage, uint8 damageType)
@@ -3106,25 +3380,34 @@ void NoteDealt(Unit* attacker, Unit* victim, uint32 damage, uint8 damageType)
     if (Player* bot = victim->ToPlayer())
     {
         Unit* source = attacker->GetCharmerOrOwnerOrSelf();
-        if (!source || !source->ToCreature() || !SoloBot(bot))
+        Creature* hitter = source ? source->ToCreature() : nullptr;
+        if (!hitter || !MeasuredBot(bot))
             return;
-        std::lock_guard<std::mutex> guard(liveLock);
-        LiveFight& f = live[bot->GetGUID().GetRawValue()];
+        LiveShard& shard = ShardOf(bot->GetGUID().GetRawValue());
+        std::lock_guard<std::mutex> guard(shard.lock);
+        LiveFight& f = shard.fights[bot->GetGUID().GetRawValue()];
+        OpenFacts(bot, f, hitter);
         if (!f.firstTakenMs)
             f.firstTakenMs = now ? now : 1;
+        // [dps20] overkill is no damage taken: the hit that kills takes its health and no more, the same cap the
+        // damage it deals carries per mob
+        f.taken += std::min<uint64>(damage, bot->GetHealth());
+        SampleFight(bot, hitter, f, now);
         return;
     }
     // a hit it (its pet, its totem) deals to a mob
     Creature* mob = victim->ToCreature();
     Player* bot = attacker->GetCharmerOrOwnerPlayerOrPlayerItself();
-    if (!mob || !bot || mob->GetCharmerOrOwnerPlayerOrPlayerItself() || !SoloBot(bot))
+    if (!mob || !bot || mob->GetCharmerOrOwnerPlayerOrPlayerItself() || !MeasuredBot(bot))
         return;
     uint32 const health = mob->GetHealth();
     uint32 const maxHealth = mob->GetMaxHealth();
     bool first = false;
     {
-        std::lock_guard<std::mutex> guard(liveLock);
-        LiveFight& f = live[bot->GetGUID().GetRawValue()];
+        LiveShard& shard = ShardOf(bot->GetGUID().GetRawValue());
+        std::lock_guard<std::mutex> guard(shard.lock);
+        LiveFight& f = shard.fights[bot->GetGUID().GetRawValue()];
+        OpenFacts(bot, f, mob);
         first = !f.firstDealtMs;
         if (first)
             f.firstDealtMs = now ? now : 1;
@@ -3146,6 +3429,8 @@ void NoteDealt(Unit* attacker, Unit* victim, uint32 damage, uint8 damageType)
         if (uint64(health) + mine < uint64(maxHealth))
             f.shared = true;
         mine += std::min(damage, health);
+        // after the mob is in `f.mobs`: a swing at it is a swing of this fight, not one "elsewhere"
+        SampleFight(bot, mob, f, now);
     }
     if (!first)
         return;
@@ -3153,17 +3438,25 @@ void NoteDealt(Unit* attacker, Unit* victim, uint32 damage, uint8 damageType)
     BuffContext const ctx = ContextOf(bot);
     Profile const formula = ProfileOf(bot, mob, ctx);
     Profile const ideal = ProfileOf(bot, mob, ctx, true);
+    // [dps20] the same profile as a Result, for FormulaOver: the mana limit over the window the fight turns out to
+    // have. A fight no solo judge closes has no other place to take it from.
+    Result const open = Estimate(bot, mob, ctx);
     bool const petOut = bot->GetPet() && bot->GetPet()->IsAlive();
-    std::lock_guard<std::mutex> guard(liveLock);
-    LiveFight& f = live[bot->GetGUID().GetRawValue()];
+    LiveShard& shard = ShardOf(bot->GetGUID().GetRawValue());
+    std::lock_guard<std::mutex> guard(shard.lock);
+    LiveFight& f = shard.fights[bot->GetGUID().GetRawValue()];
     f.formula = formula;
     f.ideal = ideal;
+    f.openResult = open;
     f.petOut = petOut;
+    // the row's target is the mob the formula was priced against, not whichever one hit first
+    f.openEntry = mob->GetEntry();
+    f.openLevel = uint8(mob->GetLevel());
 }
 
 void NoteCast(Player* player, SpellInfo const* info)
 {
-    if (!player || !info || info->IsPassive() || !SoloBot(player))
+    if (!player || !info || info->IsPassive() || !MeasuredBot(player))
         return;
     bool const harmful = !info->IsPositive();
     // a buff before the pull is no part of the fight; its opener (cast before it is in combat) is
@@ -3176,8 +3469,9 @@ void NoteCast(Player* player, SpellInfo const* info)
                                                  : float(info->CalcCastTime(player));
         executeMs = std::max(castMs, float(info->StartRecoveryTime));
     }
-    std::lock_guard<std::mutex> guard(liveLock);
-    LiveFight& f = live[player->GetGUID().GetRawValue()];
+    LiveShard& shard = ShardOf(player->GetGUID().GetRawValue());
+    std::lock_guard<std::mutex> guard(shard.lock);
+    LiveFight& f = shard.fights[player->GetGUID().GetRawValue()];
     ++f.casts[info->Id];
     if (info->HasAttribute(SPELL_ATTR0_ON_NEXT_SWING_NO_DAMAGE))  // [dps60]
         ++f.nextSwings;
