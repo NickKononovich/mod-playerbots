@@ -19,6 +19,7 @@
 #include "SpellAuraEffects.h"       // [rot550] AuraEffect ticks
 #include "SpellMgr.h"               // [b31_deep]
 #include "SpellPayoff.h"            // [rot550] DotPays
+#include "StringFormat.h"           // [hunt20] the hold line's reason
 
 constexpr uint32 ARCANE_SHOT_MAX_ARMOR_PEN_RATING = 435;
 // [b33_aoe_class] Volley's 8 yd radius / Multi-Shot's jumps, with margin (the mage AoE check uses 12 yd too)
@@ -62,24 +63,42 @@ bool SerpentStingPays(PlayerbotAI* botAI, Player* bot, Unit* target, uint32* log
     AiObjectContext* context = botAI->GetAiObjectContext();
     uint32 const stingId = context->GetValue<uint32>("spell id", "serpent sting")->Get();
     uint32 const fillerId = context->GetValue<uint32>("spell id", "steady shot")->Get();
-    if (!stingId || !fillerId)
+    if (!stingId)
         return true;
 
     float const lifetime = ExpectedFightLifetime(botAI, target);
-    SpellPayoff::DotVerdict const verdict = SpellPayoff::DotPays(bot, target, stingId, fillerId, lifetime);
-    if (verdict.pays || !loggedMs)
-        return verdict.pays;
-
     // [rot550] logged at most once per 5 s by the caller's clock, for the triage
-    uint32 const now = getMSTime();
-    if (!*loggedMs || getMSTimeDiff(*loggedMs, now) >= SERPENT_STING_PAYOFF_LOG_MS)
+    auto const hold = [&](std::string const& why)
     {
-        *loggedMs = now ? now : 1;
-        LOG_INFO("playerbots", "[rot550] {} holds serpent sting on {}: lives {:.1f} s, {} tick(s) land for {:.0f} vs "
-                 "steady shot {:.0f} in its time", bot->GetName(), target->GetName(), lifetime, verdict.ticks,
-                 verdict.dot, verdict.filler);
+        if (!loggedMs)
+            return false;
+        uint32 const now = getMSTime();
+        if (!*loggedMs || getMSTimeDiff(*loggedMs, now) >= SERPENT_STING_PAYOFF_LOG_MS)
+        {
+            *loggedMs = now ? now : 1;
+            LOG_INFO("playerbots", "[rot550] {} holds serpent sting on {}: lives {:.1f} s, {}", bot->GetName(),
+                     target->GetName(), lifetime, why);
+        }
+        return false;
+    };
+
+    // [hunt20] No filler to weigh the sting against below level 50 (Steady Shot): wowsims gates this very cast by
+    // the fight's time left instead, and that gate is the one used here (HunterActions.h names the APL and the line)
+    if (!fillerId)
+    {
+        if (lifetime > SERPENT_STING_WOWSIMS_MIN_FIGHT_SEC)
+            return true;
+        return hold(Acore::StringFormat(
+            "under wowsims' {:.0f} s line (hunter sv.apl, no Steady Shot to weigh it against until level 50)",
+            SERPENT_STING_WOWSIMS_MIN_FIGHT_SEC));
     }
-    return false;
+
+    SpellPayoff::DotVerdict const verdict = SpellPayoff::DotPays(bot, target, stingId, fillerId, lifetime);
+    if (verdict.pays)
+        return true;
+
+    return hold(Acore::StringFormat("{} tick(s) land for {:.0f} vs steady shot {:.0f} in its time", verdict.ticks,
+                                    verdict.dot, verdict.filler));
 }
 
 bool CastSerpentStingAction::isUseful()

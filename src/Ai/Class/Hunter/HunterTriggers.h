@@ -248,7 +248,8 @@ public:
 class HunterNoStingsActiveTrigger : public DebuffTrigger
 {
 public:
-    // [rot550] no fixed lifetime: SerpentStingPays weighs the ticks that land
+    // [rot550] no fixed lifetime of ours: SerpentStingPays weighs the ticks that land against Steady Shot
+    // [hunt20] and, until Steady Shot is learned at level 50, against wowsims' own time-left line for this cast
     HunterNoStingsActiveTrigger(PlayerbotAI* botAI) : DebuffTrigger(botAI, "no stings", 1, false, 0.0f) {}
     bool IsActive() override;
 

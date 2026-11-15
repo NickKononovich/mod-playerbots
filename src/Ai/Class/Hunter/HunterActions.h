@@ -369,9 +369,22 @@ class Aura;
 bool SerpentStingDue(Aura* own);
 // [rot550] The ticks that land before the target dies (ExpectedFightLifetime) beat Steady Shot, the filler every
 // wowsims hunter APL ends with, in the sting's own time (SpellPayoff::DotPays); no fixed lifetime (b275 5F-6: a third
-// sting on Taragaman at 8.5 % health landed 1-2 ticks). Pays when either spell is unknown.
+// sting on Taragaman at 8.5 % health landed 1-2 ticks).
+// [hunt20] Steady Shot is learned at level 50 (Spell.dbc baseLevel 50), so below it there is no filler to weigh the
+// sting against, and this test used to answer "it pays" on that alone - a check that cannot fail is not a check. Over
+// an 84 min guild window (wc-n, five hunters L24-26) it refused exactly 0 times: not one `[rot550]` line in the whole
+// log, while Serpent Sting took 39 % of every mana unit those hunters spent - 9 % of base mana a cast
+// (Spell.dbc field 204 ManaCostPercentage), the dearest shot they own, equal to Multi-Shot and 1.8x Arcane Shot.
+// With no filler the gate is wowsims' own gate for this very cast, read from the local source:
+//     C:/WoW/tools/simpct_data/vendor/src/wotlk/ui/hunter/apls/sv.apl.json
+//     {"not": {"dotIsActive": {"spellId": 49001}}} AND
+//     {"cmp": {"op": "OpGt", "lhs": {"remainingTime": {}}, "rhs": {"const": {"val": "6s"}}}}
+// wowsims' `remainingTime` is the fight's time left; on trash the fight ends when the mob dies, so the bot's
+// ExpectedFightLifetime of the target is that same quantity. The number is wowsims', on the same footing as the
+// 10 / 30 % Viper band in HealthTriggers.h - not a line of ours.
 // `loggedMs`: the caller's log clock; a held sting is logged at most every SERPENT_STING_PAYOFF_LOG_MS (none: no log)
 constexpr uint32 SERPENT_STING_PAYOFF_LOG_MS = 5000;
+constexpr float SERPENT_STING_WOWSIMS_MIN_FIGHT_SEC = 6.0f;
 bool SerpentStingPays(PlayerbotAI* botAI, Player* bot, Unit* target, uint32* loggedMs = nullptr);
 
 class CastSerpentStingAction : public CastDebuffSpellAction
