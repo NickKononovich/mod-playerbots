@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -115,13 +116,24 @@ namespace Journal
                 (it->second.mounts + it->second.dismounts == 0 ||
                  getMSTimeDiff(it->second.reportedMs, nowMs) < cadence))
             {
-                // nothing changed and nothing is due. The position still has to be checked, because leaving the
-                // radius is what ENDS an episode - and that is two float compares, done below without the facts.
+                // Nothing changed and nothing is due. The position still has to be checked, because leaving the
+                // radius is what ENDS an episode - and that is three subtractions and a compare, with none of
+                // the facts read.
+                //
+                // AND THE WIDEST DISTANCE IS KEPT HERE TOO, in the SAME metric the seam uses (three dimensions,
+                // not two). Skipping it on the cheap path would make `held_yd` quietly smaller than the radius
+                // the bot really stayed inside - a number that can only read low, which is worse than a missing
+                // one because a query by it answers.
                 float const dx = it->second.x - bot->GetPositionX();
                 float const dy = it->second.y - bot->GetPositionY();
-                float const radius = std::max(bot->GetCombatReach(), 1.5f);
-                if (dx * dx + dy * dy <= radius * radius)
+                float const dz = it->second.z - bot->GetPositionZ();
+                float const moved = std::sqrt(dx * dx + dy * dy + dz * dz);
+                if (moved <= std::max(bot->GetCombatReach(), 1.5f))
+                {
+                    if (moved > it->second.maxYd)
+                        it->second.maxYd = moved;
                     return;
+                }
             }
         }
 
