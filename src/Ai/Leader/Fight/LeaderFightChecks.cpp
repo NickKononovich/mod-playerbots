@@ -6,6 +6,8 @@
 
 #include "LeaderFightChecks.h"
 
+#include "IdlePlace.h"  // [spot90] whether an idle mob's reach forbids a place, as a seam the stand asserts
+
 #include "AiFactory.h"  // [lead660] GetPlayerSpecTab
 #include "CellImpl.h"
 #include "ChooseTargetActions.h"
@@ -747,8 +749,14 @@ namespace Leader::Fight
             // into it. One the tank opens on from where it stands blocks the other members until the tank has it
             // (in combat: no idle mob); one it cannot reach blocks nobody (lead600: no member waits on a pull that
             // never comes)
-            if (g_leaderJoined && g_leaderJoined->count(mob->GetGUID()) &&
-                (PlayerbotAI::IsTank(bot) || !g_leaderJoinedHeld || !g_leaderJoinedHeld->count(mob->GetGUID())))
+            // [spot90] the rule itself now lives in one statement (IdlePlace.h), where the stand asserts
+            // every combination of its facts - this condition was the only place it existed and it is the one
+            // the 257 melee events of b502 ran into
+            if (!Leader::Fight::IdlePlace::Blocks({true,
+                                                   g_leaderJoined && g_leaderJoined->count(mob->GetGUID()) != 0,
+                                                   g_leaderJoinedHeld &&
+                                                       g_leaderJoinedHeld->count(mob->GetGUID()) != 0,
+                                                   PlayerbotAI::IsTank(bot)}))
                 return false;
             if (IdleMobReachesSpot(bot, mob, spot))
                 return true;

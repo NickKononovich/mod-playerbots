@@ -474,3 +474,59 @@ TEST(IssueKeyCombatSpotNone, TwoCausesAreTwoKeys)
     EXPECT_NE(Journal::Key::CombatSpotNone("healer", withIdle, AEVMAE_TRACE),
               Journal::Key::CombatSpotNone("healer", HEALER_REASONS, AEVMAE_TRACE));
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// ---------------------------------------------------------------------------------------------------------------
+// [spot90] AN IDLE MOB'S REACH AND A PLACE TO FIGHT FROM. The inputs are the 257 melee events of b502 (Januel 62,
+// Ginde 58, Tuihgrelfim 34 the most frequent): in every one of them the `at target` stage refused all 16 places
+// round the target as "an idle mob's aggro reach", 4 067 candidates, and in 252 of the 257 that was its only
+// refusal there.
+//
+// EVERY COMBINATION, and the ones that must keep BLOCKING are the point: the first version of this seam read
+// "taken into the fight" alone and would have let a melee member step into the reach of a joined mob the tank had
+// still to open on - which is [lead1140]'s case, measured on b239 as 49 of 92 "the tank never had it". A rule
+// that only ever says yes is the same defect as the one it replaced, wearing the other sign.
+// ---------------------------------------------------------------------------------------------------------------
+#include "../../src/Ai/Leader/Fight/IdlePlace.h"
+
+namespace
+{
+    using Leader::Fight::IdlePlace::Blocks;
+    using Facts = Leader::Fight::IdlePlace::Facts;
+}  // namespace
+
+TEST(IdlePlaceReach, AMobTheFightHasTakenForbidsNoPlace)
+{
+    // the tank has it already (it is in combat, so nothing is "still to open"): the wanting is the decision
+    EXPECT_FALSE(Blocks({true, true, false, false}))
+        << "a place was refused for the reach of a mob the fight had already taken and the tank had got";
+    // and the tank itself is never kept off the mob it pulls
+    EXPECT_FALSE(Blocks({true, true, true, true}));
+}
+
+TEST(IdlePlaceReach, AMobNobodyDecidedToFightStillForbidsThePlace)
+{
+    // the same geometry with no such decision: "do not step into a mob's reach without wanting it" stands
+    EXPECT_TRUE(Blocks({true, false, false, false}))
+        << "a melee member would step into the reach of a mob nobody decided to fight";
+    EXPECT_TRUE(Blocks({true, false, true, false}));
+    // the tank is no exception while nobody has decided to take the mob
+    EXPECT_TRUE(Blocks({true, false, false, true}));
+}
+
+TEST(IdlePlaceReach, AJoinedMobTheTankHasStillToOpenOnKeepsTheOthersOut)
+{
+    // [lead1140] b239: 49 of 92 "the tank never had it" were a member walking into a joined pack before the
+    // tank's opener. The mob is taken into the fight AND still idle, so a member other than the tank wakes it
+    EXPECT_TRUE(Blocks({true, true, true, false}))
+        << "a member other than the tank would wake the joined pack before the tank's opener";
+}
+
+TEST(IdlePlaceReach, AReachThatDoesNotCoverThePlaceWasNeverTheQuestion)
+{
+    for (bool taken : {false, true})
+        for (bool toOpen : {false, true})
+            for (bool isTank : {false, true})
+                EXPECT_FALSE(Blocks({false, taken, toOpen, isTank}))
+                    << "a mob whose reach does not cover the place refused it";
+}

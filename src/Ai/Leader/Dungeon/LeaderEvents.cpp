@@ -9354,6 +9354,9 @@ namespace Leader::Dungeon
                                     return false;
                                 }
                                 // [lead490] no deeper into an idle mob's reach than the fight at the target stands
+                                // [spot90] a mob this fight has taken is already no such mob (IdleMobCovers reads
+                                // the rule in IdlePlace.h), so what reaches this line is a mob the fight has NOT
+                                // taken, or one the tank has still to open on ([lead1140])
                                 if (Creature* idle = LeaderFightAggroAt(bot, at, target))
                                 {
                                     NoteSpotReject(search, "an idle mob's aggro reach");
@@ -9503,6 +9506,20 @@ namespace Leader::Dungeon
                                             spot.idleName = idleBlocker->GetName();
                                             spot.idleEntry = idleBlocker->GetEntry();
                                             spot.idleLow = idleBlocker->GetGUID().GetCounter();
+                                            // [spot90] THE TWO FACTS THE RULE TURNS ON, recorded because
+                                            // the record did not carry them and the question cannot be settled
+                                            // without them: whether the leader had taken this very mob into
+                                            // this fight (joinedPack), and whether the tank had still to open
+                                            // on it ([lead1140] joinedHeld, which keeps the other members out
+                                            // of its reach until the tank has it). `taken = 1` with
+                                            // `tank_opens = 0` would be the rule failing to reach a place it
+                                            // covers; `taken = 1, tank_opens = 1` is the wait [lead1140]
+                                            // measured; `taken = 0` is a mob nobody decided to fight at all.
+                                            auto const joined = lead.joinedPack.find(idleBlocker->GetGUID());
+                                            spot.idleTaken =
+                                                joined != lead.joinedPack.end() && !joined->second.IsEmpty();
+                                            spot.idleTankOpens =
+                                                lead.joinedHeld.count(idleBlocker->GetGUID()) != 0;
                                         }
                                         spot.runId = run.runId;
                                         std::vector<std::string> reasons;

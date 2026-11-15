@@ -214,7 +214,8 @@ namespace Journal
         char const* const COLUMNS_SPOT =
             "(id, boot_id, at_ms, hour_bucket, bot_name, bot_low, bot_level, role, melee, healer, map_id, zone_id, "
             "pos_x, pos_y, pos_z, target_name, target_entry, target_low, target_yd, breaks, reaches, candidates, "
-            "idle_name, idle_entry, idle_low, run_id, build)";
+            // [spot90] idle_taken, idle_tank_opens: the two facts the idle-reach rule turns on
+            "idle_name, idle_entry, idle_low, idle_taken, idle_tank_opens, run_id, build)";
         char const* const COLUMNS_SPOT_REJECT =
             "(spot_id, boot_id, at_ms, hour_bucket, idx, stage, reason, candidates, build)";
         char const* const COLUMNS_ALERT =
@@ -1311,10 +1312,15 @@ namespace Journal
                              "idle_name VARCHAR(48) NOT NULL DEFAULT '', "
                              "idle_entry INT UNSIGNED NOT NULL DEFAULT 0, "
                              "idle_low INT UNSIGNED NOT NULL DEFAULT 0, "
+                             // [spot90] the two facts of the rule, NULL when the emitter had no blocker to say
+                             // them about - which is not a 0
+                             "idle_taken TINYINT UNSIGNED NULL, idle_tank_opens TINYINT UNSIGNED NULL, "
                              "run_id VARCHAR(48) NOT NULL DEFAULT '', build VARCHAR(16) NOT NULL DEFAULT '', "
                              "PRIMARY KEY (id, hour_bucket), KEY at_ms (at_ms), KEY bot_at (bot_low, at_ms), "
                              "KEY role_at (role, at_ms), KEY target_at (target_entry, target_low, at_ms), "
                              "KEY idle_at (idle_entry, idle_low, at_ms), KEY where_at (map_id, zone_id, at_ms), "
+                             "KEY idle_taken_at (idle_taken, at_ms), "
+                             "KEY idle_tank_opens_at (idle_tank_opens, at_ms), "
                              "KEY melee_at (melee, at_ms), KEY healer_at (healer, at_ms), "
                              "KEY candidates_at (candidates, at_ms), KEY breaks_at (breaks(32), at_ms), "
                              "KEY run_at (run_id, at_ms), KEY build_at (build, at_ms)) "
@@ -1815,14 +1821,16 @@ namespace Journal
         uint64 const id = Writer::Instance().NextId();
         Writer::Instance().Push(
             "pb_journal_spot",
-            Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
-                                id, BootId(), nowMs, hour, Quoted(spot.botName, 32), spot.botLow,
-                                OrNull(spot.botLevel), OrNull(spot.role, 8), OrNull(spot.melee),
-                                OrNull(spot.healer), spot.mapId, spot.zoneId, Real(spot.x), Real(spot.y),
-                                Real(spot.z), Quoted(spot.targetName, 48), spot.targetEntry, spot.targetLow,
-                                OrNull(spot.targetYd), Quoted(spot.breaks, 128), OrNull(spot.reaches),
-                                spot.candidates, Quoted(spot.idleName, 48), spot.idleEntry, spot.idleLow,
-                                Quoted(spot.runId, 48), Quoted(Config().build, 16)));
+            Acore::StringFormat(
+                "({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})", id,
+                BootId(), nowMs, hour, Quoted(spot.botName, 32), spot.botLow, OrNull(spot.botLevel),
+                OrNull(spot.role, 8), OrNull(spot.melee), OrNull(spot.healer), spot.mapId, spot.zoneId,
+                // [spot90] idle_taken and idle_tank_opens below
+                Real(spot.x), Real(spot.y), Real(spot.z), Quoted(spot.targetName, 48), spot.targetEntry,
+                spot.targetLow, OrNull(spot.targetYd), Quoted(spot.breaks, 128), OrNull(spot.reaches),
+                spot.candidates, Quoted(spot.idleName, 48), spot.idleEntry, spot.idleLow,
+                OrNull(spot.idleTaken), OrNull(spot.idleTankOpens), Quoted(spot.runId, 48),
+                Quoted(Config().build, 16)));
         uint16 idx = 0;
         for (SpotReject const& r : spot.rejects)
             Writer::Instance().Push("pb_journal_spot_reject",

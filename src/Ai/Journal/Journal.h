@@ -885,6 +885,13 @@ namespace Journal
         std::string idleName;
         uint32 idleEntry = 0;
         uint32 idleLow = 0;
+        // [spot90] THE TWO FACTS THE RULE TURNS ON (IdlePlace.h), because the question "why is there no place"
+        // cannot be settled without them: whether the LEADER had taken that very mob into this fight
+        // (joinedPack), and whether the TANK had still to open on it ([lead1140] joinedHeld, which keeps the
+        // other members out of its reach until the tank has it). NULL = the emitter did not say, which is not a
+        // 0: a row with no idle blocker at all has nothing to say about either.
+        Optional<bool> idleTaken;
+        Optional<bool> idleTankOpens;
 
         std::string runId;
         std::vector<SpotReject> rejects;
