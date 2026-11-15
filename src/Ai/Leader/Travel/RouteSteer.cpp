@@ -3682,7 +3682,7 @@ namespace Leader::Travel
                                 !routeState.bossCreatures.count(trash->GetGUID()) &&
                                 JoinsBossFight(leader, blocker, trash))
                             {
-                                routeState.skipUntil[trash->GetGUID()] = now + UNREACHABLE_SKIP_MS;
+                                routeState.skipUntil[trash->GetGUID()] = now + UNREACHABLE_SKIP_NO_DEADLINE;
                                 routeState.skipReason[trash->GetGUID()] =
                                     "boss area: given up (reached only through the boss)";
                             }
@@ -4018,18 +4018,18 @@ namespace Leader::Travel
                                 !twin->isWorldBoss() && !routeState.bossCreatures.count(twin->GetGUID()) &&
                                 group.BossOrder(twin) < 0)
                             {
-                                routeState.skipUntil[twin->GetGUID()] = now + UNREACHABLE_SKIP_MS;
+                                routeState.skipUntil[twin->GetGUID()] = now + UNREACHABLE_SKIP_NO_DEADLINE;
                                 routeState.skipReason[twin->GetGUID()] = "route end (same entry)";
                                 routeState.unreachableFrom[twin->GetGUID()] = leader->GetPosition();
                                 if (!leader->IsWithinLOSInMap(twin))
-                                    MarkUnseenRouteEnd(twin, now + UNREACHABLE_SKIP_MS);
+                                    MarkUnseenRouteEnd(twin, now + UNSEEN_ROUTE_END_MS);
                                 ++twinsSkipped;
                             }
                     }
                 if (!routeState.targetIsBoss)
                     if (Creature* mob = object->ToCreature(); mob && !leader->IsWithinLOSInMap(mob))
                     {
-                        MarkUnseenRouteEnd(mob, now + UNREACHABLE_SKIP_MS);
+                        MarkUnseenRouteEnd(mob, now + UNSEEN_ROUTE_END_MS);
                         // Its pack too, what of it the leader does not see (the route skips them "behind" it).
                         std::list<Creature*> pack;
                         PackMobCheck check{leader, mob};
@@ -4039,13 +4039,13 @@ namespace Leader::Travel
                             if (packMob != mob && !packMob->IsDungeonBoss() &&
                                 !routeState.bossCreatures.count(packMob->GetGUID()) &&
                                 !leader->IsWithinLOSInMap(packMob))
-                                MarkUnseenRouteEnd(packMob, now + UNREACHABLE_SKIP_MS);
+                                MarkUnseenRouteEnd(packMob, now + UNSEEN_ROUTE_END_MS);
                         group.LogEvent("unseen_route_end",
                                  JsonObject().Str("name", mob->GetName()).Num("entry", mob->GetEntry())
                                      .Real("distance", leader->GetExactDist(mob))
                                      .Num("twins", twinsSkipped));
                     }
-                group.SkipTarget(routeState.target, UNREACHABLE_SKIP_MS,
+                group.SkipTarget(routeState.target, UNREACHABLE_SKIP_NO_DEADLINE,
                            twinsSkipped ? "route end (+" + std::to_string(twinsSkipped) + " same entry)"
                                         : std::string("route end"));
                 return;
@@ -4980,7 +4980,7 @@ namespace Leader::Travel
             SteerLeg(leader, goal, leg);
         if (leg.type & PATHFIND_NOPATH)
         {
-            group.SkipTarget(routeState.target, UNREACHABLE_SKIP_MS, "path lost");
+            group.SkipTarget(routeState.target, UNREACHABLE_SKIP_NO_DEADLINE, "path lost");
             return;
         }
         // The walk of this tick never leads through a part closed to this run (AreaGateDef: an LBRS group and the
@@ -4988,7 +4988,7 @@ namespace Leader::Travel
         if (!InAnyAreaGate(steerClosedAreas, leader->GetPositionX(), leader->GetPositionY(), leader->GetPositionZ()) &&
             RouteCrossesClosedArea(leg.points, steerClosedAreas))
         {
-            group.SkipTarget(routeState.target, UNREACHABLE_SKIP_MS, "route through a closed area");
+            group.SkipTarget(routeState.target, UNREACHABLE_SKIP_NO_DEADLINE, "route through a closed area");
             return;
         }
 
@@ -5038,8 +5038,8 @@ namespace Leader::Travel
                              .Real("toX", goal.x).Real("toY", goal.y).Real("toZ", goal.z));
                 if (routeState.targetIsBoss)
                     routeState.orderHoldSinceMs.emplace(routeState.target, now);  // as the steer_stuck "route end" does
-                group.SkipTarget(routeState.target, UNREACHABLE_SKIP_MS, "route end: incomplete route refused (" +
-                                                                         verdict.why + ")");
+                group.SkipTarget(routeState.target, UNREACHABLE_SKIP_NO_DEADLINE,
+                                 "route end: incomplete route refused (" + verdict.why + ")");
                 return;
             }
         }

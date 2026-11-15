@@ -182,7 +182,8 @@ namespace TestHarness
         using Leader::Travel::LATER_BOSS_TRASH_RADIUS;  // [lead107] RouteTargets.h
         using Leader::Travel::DEFERRED_TRASH_PENALTY;  // [lead107] RouteTargets.h
         using Leader::Travel::BOSS_BUFF_DISTANCE;  // [lead107] RouteSteer.h
-        using Leader::Travel::UNREACHABLE_SKIP_MS;  // [lead107] RouteTargets.h
+        using Leader::Travel::UNREACHABLE_SKIP_NO_DEADLINE;  // [lead107] RouteTargets.h (no deadline)
+        using Leader::Travel::UNSEEN_ROUTE_END_MS;  // [lead107] RouteTargets.h
         using Leader::Travel::UNREACHABLE_RECHECK_DISTANCE;  // [lead107] RouteTargets.h
         using Leader::Travel::UNREACHABLE_RECHECK_HEIGHT;  // [lead107] RouteTargets.h
         using Leader::Travel::ORDER_HOLD_MS;  // [lead107] RouteTargets.h

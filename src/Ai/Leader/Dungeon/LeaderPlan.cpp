@@ -439,7 +439,6 @@ namespace Leader::Dungeon
             lead.spotBest.clear();
             lead.spotStuck.clear();
             lead.spotGroundEnd.clear();  // [dun257]
-            lead.spotReassigns.clear();
             lead.spotRefused.clear();  // [lead930]
             lead.spotsFor = mob->GetGUID();
             lead.spotsSinceMs = getMSTime();
@@ -727,32 +726,17 @@ namespace Leader::Dungeon
             auto& best = lead.spotBest[member.guid];
             if (!best.second || gap < best.first - 0.5f)
                 best = {gap, now};
-            else if (Leader::LEADER_NO_FORCING_TIMERS &&
-                     getMSTimeDiff(best.second, now) >= Leader::LEADER_SPOT_STUCK_MS)
+            // [lead128] a member not getting nearer its spot is RECORDED and nothing else. The two branches that
+            // used to follow - re-assign the spot after LEADER_SPOT_STUCK_MS (at most LEADER_SPOT_REASSIGNS times),
+            // then declare the member stuck - had been unreachable since LEADER_NO_FORCING_TIMERS became true: both
+            // asked for `diff >= LEADER_SPOT_STUCK_MS` under an `else` of a branch that is exactly that condition,
+            // so `!X && X`. Removed rather than left to be believed; the member's own fact still marks it stuck
+            // where that is a fact (LeaderAssignSpots: an unpulled mob reaches where it stands, or the spot does
+            // not fit its range - spot_unfit). `spotReassigns` had no other writer and `LEADER_SPOT_REASSIGNS` no
+            // other reader, so both go with it.
+            else if (getMSTimeDiff(best.second, now) >= Leader::LEADER_SPOT_STUCK_MS)
                 WaitedLong(group, "member_to_spot:" + member.name, getMSTimeDiff(best.second, now),
                            Acore::StringFormat("{:.0f} yd from its spot", gap));
-            else if (getMSTimeDiff(best.second, now) >= Leader::LEADER_SPOT_STUCK_MS &&
-                     lead.spotReassigns[member.guid] < Leader::LEADER_SPOT_REASSIGNS)
-            {
-                // [lead17] the leader gives a stuck member a new spot (the next LeaderAssignSpots)
-                ++lead.spotReassigns[member.guid];
-                group.LogEvent("leader_spot_reassign",
-                         JsonObject().Str("member", member.name).Real("gap", gap)
-                             .Num("reassign", lead.spotReassigns[member.guid]));
-                lead.spots.erase(member.guid);
-                lead.spotBest.erase(member.guid);
-                waitFor += (waitFor.empty() ? "" : ", ") + member.name + " gets a new spot";
-                continue;
-            }
-            else if (getMSTimeDiff(best.second, now) >= Leader::LEADER_SPOT_STUCK_MS)
-            {
-                lead.spotStuck.insert(member.guid);
-                group.LogEvent("member_stuck",
-                         JsonObject().Str("member", member.name).Real("gap", gap)
-                             .Real("x", spot->second.GetPositionX()).Real("y", spot->second.GetPositionY())
-                             .Real("z", spot->second.GetPositionZ()).Str("why", "not nearer its spot for 15 s"));
-                continue;
-            }
             waitFor += (waitFor.empty() ? "" : ", ") + Acore::StringFormat("{} {:.0f} yd", member.name, gap);
         }
         // [lead20] LEADER_SPOT_GATE_STUCK_MS: no progress (the same wait, nobody sitting) this long - spot_gate_stuck,
@@ -763,19 +747,12 @@ namespace Leader::Dungeon
             lead.spotGateProgressMs = now;
             lead.spotGateLast = waitFor;
         }
-        else if (Leader::LEADER_NO_FORCING_TIMERS &&
-                 getMSTimeDiff(lead.spotGateProgressMs, now) >= Leader::LEADER_SPOT_GATE_STUCK_MS)
-            WaitedLong(group, "spot_gate", getMSTimeDiff(lead.spotGateProgressMs, now), waitFor);
+        // [lead128] the gate's lack of progress is RECORDED and nothing else. The branch that followed counted
+        // everybody placed where they stood and returned "ready" after LEADER_SPOT_GATE_STUCK_MS; it had been
+        // unreachable since LEADER_NO_FORCING_TIMERS became true (`!X && X`, the same shape), and it is removed
+        // rather than left for the next reader to believe.
         else if (getMSTimeDiff(lead.spotGateProgressMs, now) >= Leader::LEADER_SPOT_GATE_STUCK_MS)
-        {
-            group.LogEvent("spot_gate_stuck", JsonObject().Str("waitFor", waitFor)
-                                                   .Num("sec", getMSTimeDiff(lead.spotGateProgressMs, now) / 1000));
-            for (LeaderGroup::MemberInfo const& member : group.Members())
-                if (lead.spots.count(member.guid))
-                    lead.spotStuck.insert(member.guid);
-            lead.spotGateProgressMs = now;
-            return std::string();
-        }
+            WaitedLong(group, "spot_gate", getMSTimeDiff(lead.spotGateProgressMs, now), waitFor);
         return waitFor;
     }
 
@@ -3067,30 +3044,14 @@ namespace Leader::Dungeon
                 lead.heldReadyMob = lead.ready && !declaredWait ? decision.lookTarget : ObjectGuid::Empty;
                 lead.heldReadySinceMs = now;
             }
-            else if (Leader::LEADER_NO_FORCING_TIMERS &&
-                     getMSTimeDiff(lead.heldReadySinceMs, now) >= Leader::LEADER_HELD_READY_MAX_MS)
+            // [lead128] a hold the group is ready for is RECORDED and nothing else. The branch that followed
+            // reported planner_no_option and skipped the route target after LEADER_HELD_READY_MAX_MS; it had been
+            // unreachable since LEADER_NO_FORCING_TIMERS became true (`!X && X`, the same shape as the two in
+            // LeaderReadyWhy and the one in RoutePatrol), so the 75 seconds decided nothing. Removed, not
+            // shortened: a hold ends when what it waits for changes, and that is what the branch above records.
+            else if (getMSTimeDiff(lead.heldReadySinceMs, now) >= Leader::LEADER_HELD_READY_MAX_MS)
                 WaitedLong(group, "held_ready", getMSTimeDiff(lead.heldReadySinceMs, now),
                            (lookMob ? lookMob->GetName() : std::string("?")) + ": " + decision.why);
-            else if (getMSTimeDiff(lead.heldReadySinceMs, now) >= Leader::LEADER_HELD_READY_MAX_MS)
-            {
-                std::string why;
-                bool const needs = group.NeedsPack(map, lookMob, why);
-                bool const reported =
-                    LeaderNoOption(group, tank, lookMob, packOf(),
-                                   Acore::StringFormat("held {} s with the group ready: {}",
-                                                       getMSTimeDiff(lead.heldReadySinceMs, now) / IN_MILLISECONDS,
-                                                       decision.why),
-                                   needs, JsonObject().Str("kind", "held").Str("rule", why));
-                if (reported && !needs && lookMob->GetGUID() == group.RouteTarget())
-                {
-                    group.LogEvent("leader_skip_no_option",
-                             JsonObject().Str("name", lookMob->GetName()).Str("why", decision.why).Str("rule", why));
-                    group.SkipTarget(group.RouteTarget(), CAREFUL_REFUSED_SKIP_NO_DEADLINE,
-                               "the leader: no pull option, not on the required way (" + decision.why + ")");
-                }
-                lead.heldReadyMob.Clear();
-                lead.heldReadySinceMs = 0;
-            }
             return;
         }
 

@@ -138,7 +138,10 @@ namespace
                                                "distance",     "overload",    "drop",      "tankHealth",
                                                "unionSec",     "groupDps",    "walkSec",   "walkYd",
                                                "healer",       "healerWalks", "healerSec", "due",
-                                               "stop",         "packMobs",    "fightMobs", "unionMobs"};
+                                               "stop",         "packMobs",    "fightMobs", "unionMobs",
+                                               // [test1] the world gates are columns now, so they leave `fields`
+                                               "gateBoss",     "gateWalker",  "gateBuff",  "gateDead",
+                                               "gateHolds",    "gateWakes"};
         if (json.size() < 2 || json.front() != '{' || json.back() != '}')
             return json;
         std::string out = "{";
@@ -460,6 +463,15 @@ namespace
             option.unionMobs = JUInt(json, "unionMobs");
             if (what == "chain_pull")
             {
+                // [test1] the judge's world gates. JBool gives an EMPTY Optional for a key the event does not
+                // carry, and the emitter leaves out exactly the gates the judge never reached (it returns at the
+                // first one that trips), so "never reached" arrives as NULL and is never confused with false.
+                option.gateBoss = JBool(json, "gateBoss");
+                option.gateWalker = JBool(json, "gateWalker");
+                option.gateBuff = JBool(json, "gateBuff");
+                option.gateDead = JBool(json, "gateDead");
+                option.gateHolds = JBool(json, "gateHolds");
+                option.gateWakes = JBool(json, "gateWakes");
                 std::string const verdict = JField(json, "verdict");
                 option.taken = verdict == "taken" || verdict == "walk";
                 option.reason = verdict + ": " + JField(json, "why");

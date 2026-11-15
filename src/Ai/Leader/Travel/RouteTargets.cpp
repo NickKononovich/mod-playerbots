@@ -2871,7 +2871,7 @@ namespace Leader::Travel
                            Acore::StringFormat("next boss behind a closed door ({} {})", nextDoor->GetName(),
                                                nextDoor->GetEntry()));
             else
-                group.SkipTarget(nextBoss->GetGUID(), UNREACHABLE_SKIP_MS, "next boss unreachable");
+                group.SkipTarget(nextBoss->GetGUID(), UNREACHABLE_SKIP_NO_DEADLINE, "next boss unreachable");
             auto const held = group.Route().orderHoldSinceMs.emplace(nextBoss->GetGUID(), now);
             if (getMSTimeDiff(held.first->second, now) < ORDER_HOLD_MS)
             {
@@ -4439,14 +4439,14 @@ namespace Leader::Travel
             if (!path.reachable || (oculusFootOnly && !path.complete))
             {
                 // [kara1] a straight route over a mmaps hole, out of sight: named for the log (the data defect)
-                group.SkipTarget(creature->GetGUID(), UNREACHABLE_SKIP_MS,
+                group.SkipTarget(creature->GetGUID(), UNREACHABLE_SKIP_NO_DEADLINE,
                                  path.navHole ? "unreachable: navmesh hole, out of sight" : "unreachable");
                 continue;
             }
             // Not through a part closed to this run (AreaGateDef: an LBRS group never walks the UBRS hall).
             if (!leaderInClosedArea && RouteCrossesClosedArea(path.points, keepOut))
             {
-                group.SkipTarget(creature->GetGUID(), UNREACHABLE_SKIP_MS, "route through a closed area");
+                group.SkipTarget(creature->GetGUID(), UNREACHABLE_SKIP_NO_DEADLINE, "route through a closed area");
                 continue;
             }
             // Not through a closed door (ROUTE_CLOSED_DOORS): idle trash behind it waits until it opens.
@@ -5469,8 +5469,10 @@ namespace Leader::Travel
                     if (x < 400.0f || x > 510.0f || y < 45.0f || y > 130.0f ||
                         std::fabs(creature->GetPositionZ() - 9.6f) > 6.0f)
                         continue;
-                    auto const skipped = group.Route().skipUntil.find(creature->GetGUID());
-                    if (skipped != group.Route().skipUntil.end() && int32(skipped->second - now) > 0)
+                    // [lead128] a skip is in force while its ENTRY is there: its stored number is the stamp the
+                    // fact sweep above compares, never a deadline to outlive. Reading it as one here would have
+                    // let a reachability skip lapse after its five minutes and the room mob be picked again
+                    if (group.Route().skipUntil.count(creature->GetGUID()))
                     {
                         auto const why = group.Route().skipReason.find(creature->GetGUID());
                         if (why != group.Route().skipReason.end() && ReachabilitySkip(why->second))
@@ -5524,8 +5526,10 @@ namespace Leader::Travel
                         std::fabs(creature->GetPositionZ() - gongSpot.GetPositionZ()) <= POOL_CLEAR_DZ;
                     if (!nearSpot && !nearGong)
                         continue;
-                    auto const skipped = group.Route().skipUntil.find(creature->GetGUID());
-                    if (skipped != group.Route().skipUntil.end() && int32(skipped->second - now) > 0)
+                    // [lead128] a skip is in force while its ENTRY is there: its stored number is the stamp the
+                    // fact sweep above compares, never a deadline to outlive. Reading it as one here would have
+                    // let a reachability skip lapse after its five minutes and the room mob be picked again
+                    if (group.Route().skipUntil.count(creature->GetGUID()))
                     {
                         auto const why = group.Route().skipReason.find(creature->GetGUID());
                         if (why != group.Route().skipReason.end() && ReachabilitySkip(why->second))

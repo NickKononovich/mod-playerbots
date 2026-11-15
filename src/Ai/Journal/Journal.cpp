@@ -163,7 +163,7 @@ namespace Journal
             "(decision_id, boot_id, at_ms, hour_bucket, idx, name, kind, reason, source_kind, cost, value, taken, "
             "fields, build, fight_sec_left, run_in_sec, open_sec, opener, distance, overload, drop_pct, tank_health, "
             "union_sec, group_dps, walk_sec, walk_yd, healer, healer_walks, healer_sec, due, stop, pack_mobs, "
-            "fight_mobs, union_mobs)";
+            "fight_mobs, union_mobs, gate_boss, gate_walker, gate_buff, gate_dead, gate_holds, gate_wakes)";
         char const* const COLUMNS_READ = "(decision_id, boot_id, at_ms, hour_bucket, reader)";
         char const* const COLUMNS_LINE =
             "(id, boot_id, at_ms, hour_bucket, tag, bot_low, bot_name, map_id, zone_id, pos_x, pos_y, pos_z, text, "
@@ -807,6 +807,12 @@ namespace Journal
                      "healer_walks TINYINT UNSIGNED NULL, healer_sec FLOAT NULL, due TINYINT UNSIGNED NULL, "
                      "stop SMALLINT UNSIGNED NULL, pack_mobs SMALLINT UNSIGNED NULL, "
                      "fight_mobs SMALLINT UNSIGNED NULL, union_mobs SMALLINT UNSIGNED NULL, "
+                     // [test1] the judge's world gates, a column each so a replay can be asked for by gate
+                     // ("every refusal where the tank did not hold what it already had"). NULL is "the judge
+                     // never reached this gate" - it returns at the first one that trips - and that is NOT false.
+                     "gate_boss TINYINT UNSIGNED NULL, gate_walker TINYINT UNSIGNED NULL, "
+                     "gate_buff TINYINT UNSIGNED NULL, gate_dead TINYINT UNSIGNED NULL, "
+                     "gate_holds TINYINT UNSIGNED NULL, gate_wakes TINYINT UNSIGNED NULL, "
                      "PRIMARY KEY (decision_id, idx, hour_bucket), KEY at_ms (at_ms), "
                      "KEY source_at (source_kind, at_ms), KEY kind_at (kind, at_ms), KEY taken_at (taken, at_ms), "
                      "KEY name_at (name(64), at_ms), KEY build_at (build, at_ms), "
@@ -814,7 +820,10 @@ namespace Journal
                      "KEY walk_at (walk_yd, at_ms), KEY healer_walk_at (healer_walks, healer_sec, at_ms), "
                      "KEY union_at (union_mobs, at_ms), KEY fight_left_at (fight_sec_left, at_ms), "
                      "KEY tank_health_at (tank_health, at_ms), KEY opener_at (opener, at_ms), "
-                     "KEY due_at (due, at_ms), KEY stop_at (stop, at_ms)) "
+                     "KEY due_at (due, at_ms), KEY stop_at (stop, at_ms), "
+                     "KEY gate_boss_at (gate_boss, at_ms), KEY gate_walker_at (gate_walker, at_ms), "
+                     "KEY gate_buff_at (gate_buff, at_ms), KEY gate_dead_at (gate_dead, at_ms), "
+                     "KEY gate_holds_at (gate_holds, at_ms), KEY gate_wakes_at (gate_wakes, at_ms)) "
                      "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                      "COMMENT='[jrn20] every option a decision weighed, the rejected ones with their own reason'") +
                  parts)
@@ -1377,7 +1386,7 @@ namespace Journal
             Writer::Instance().Push(
                 "pb_journal_option",
                 Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                    "{},{},{},{},{},{},{},{})",
+                                    "{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
                                     id, BootId(), nowMs, hour, idx++, Quoted(option.name, 255),
                                     Quoted(option.kind, 24), Quoted(option.reason, 1024),
                                     Quoted(option.sourceKind, 16), Real(option.cost), Real(option.value),
@@ -1390,7 +1399,11 @@ namespace Journal
                                     OrNull(option.unionSec), OrNull(option.groupDps), OrNull(option.walkSec),
                                     OrNull(option.walkYd), Quoted(option.healer, 32), OrNull(option.healerWalks),
                                     OrNull(option.healerSec), OrNull(option.due), OrNull(option.stop),
-                                    OrNull(option.packMobs), OrNull(option.fightMobs), OrNull(option.unionMobs)));
+                                    OrNull(option.packMobs), OrNull(option.fightMobs), OrNull(option.unionMobs),
+                                    // [test1] the world gates; OrNull keeps "never reached" out of the data as
+                                    // NULL instead of writing it as a passed gate
+                                    OrNull(option.gateBoss), OrNull(option.gateWalker), OrNull(option.gateBuff),
+                                    OrNull(option.gateDead), OrNull(option.gateHolds), OrNull(option.gateWakes)));
 
         WriteActors(id, nowMs, hour, decision.actors);
         return id;

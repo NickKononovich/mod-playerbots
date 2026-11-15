@@ -48,7 +48,21 @@ namespace Leader::Travel
 
     constexpr float DEFERRED_TRASH_PENALTY = 1000.0f;
 
-    constexpr uint32 UNREACHABLE_SKIP_MS = 5 * MINUTE * IN_MILLISECONDS;
+    // [lead128] user rule: no elapsed-time rule changes a decision, and a timer may not be replaced by another
+    // timer. An unreachable skip therefore carries NO deadline - the number stored in GroupRouteState::skipUntil
+    // is the skip's STAMP (which facts it was made on), and every decision path reads the entry's presence, never
+    // its value. What lifts it is the fact sweep in Retarget, which was written for exactly this skip: the leader
+    // moved off where it judged (UNREACHABLE_RECHECK_DISTANCE / _HEIGHT below - Azjol-Nerub's Anub'arak, skipped
+    // from the shaft and reachable once the group dropped to the pool), the object moved off where it was judged
+    // (LEADER_COMMIT_MOVED_YD), a door of the instance opened or closed, or the object is dead or gone. It was
+    // 5 minutes, which is the same defect CAREFUL_REFUSED_SKIP_MS had under another name.
+    constexpr uint32 UNREACHABLE_SKIP_NO_DEADLINE = 0;
+    // STILL A DURATION, and named rather than quietly reused: unseenRouteEndUntilMs (RouteSteer) is a REGISTRY OF
+    // ITS OWN - a mob out of the leader's sight behind closed doors, marked so it stops no walk - and the sweep
+    // above does not touch it. Turning its value into a stamp would leave a mark nothing ever lifts, which is
+    // worse than the clock. The fact that would replace it is "the leader can see it / a walk to it exists now",
+    // recomputed; that belongs to the owner of that pass, not to the reader. Reported, not patched.
+    constexpr uint32 UNSEEN_ROUTE_END_MS = 5 * MINUTE * IN_MILLISECONDS;
 
     constexpr float UNREACHABLE_RECHECK_DISTANCE = 60.0f;  // the leader moved this far: unreachable skips end
 

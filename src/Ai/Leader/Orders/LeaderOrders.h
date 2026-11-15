@@ -171,7 +171,8 @@ namespace Leader
     constexpr bool LEADER_TANK_OWN_PICKS_OFF = true;
     // [lead17] a pull spot not reached in LEADER_SPOT_STUCK_MS is re-assigned (a new spot) up to this often, then
     // the member is reported stuck and no longer waited for
-    constexpr uint32 LEADER_SPOT_REASSIGNS = 2;
+    // [lead128] LEADER_SPOT_REASSIGNS is gone: the only branch that re-assigned a stuck member's spot was
+    // unreachable under LEADER_NO_FORCING_TIMERS, so the cap had nothing to cap.
     // [lead18] slabs-h 20261026-190629: the leader re-planned every look (Familiar -> Warlock -> Guardhound ->
     // Deathsworn -> Familiar, 10 pull orders in 130 s), each reassigning every spot, so the spot gate never closed.
     // COMMITMENT: a Go decision becomes the leader's commitment; its spot gate, its patrol window and its order run

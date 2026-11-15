@@ -115,6 +115,22 @@ namespace Journal
         Optional<uint32> fightMobs;    // mobs already in the fight
         Optional<uint32> unionMobs;    // mobs in the two together, which is what the gate judges
 
+        // [test1] THE JUDGE'S WORLD GATES, one column each. Until these existed the row carried only `kind`, the
+        // name of the gate that rejected, which says nothing about the gates BEFORE it - so a recorded chain-pull
+        // verdict could not be replayed at all (ReplayChainPull answered Undecided on the first gate it had no
+        // fact for, over all 159 exported fixtures). `kind` is the outcome; these are the inputs behind it.
+        // NULL MEANS THE JUDGE NEVER REACHED THAT GATE, which is not false. JudgeChainPull returns at the first
+        // gate that trips, so a refusal at the walker gate computed no buff, no dead, no holds and no wakes
+        // answer; a reader that wrote those as false would replay a verdict nobody ever made. The emitter leaves
+        // the key out of the event entirely and JBool turns an absent key into an empty Optional, so absence
+        // travels the whole way instead of being flattened on the first hop.
+        Optional<bool> gateBoss;    // no boss in the pack (false: one is there - his own pull, buff pass first)
+        Optional<bool> gateWalker;  // the stop is nobody's walking stop
+        Optional<bool> gateBuff;    // the group has its buffs
+        Optional<bool> gateDead;    // every member alive
+        Optional<bool> gateHolds;   // the tank holds everything already in the fight
+        Optional<bool> gateWakes;   // the way in (and, for a walk, its end and its path) wakes nothing idle
+
         std::string fields;  // what is left for the eyes, as one JSON object ("" for none)
     };
 

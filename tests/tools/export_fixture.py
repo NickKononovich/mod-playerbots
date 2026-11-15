@@ -77,28 +77,69 @@ def write(subdir, name, payload):
 # chain pull: the twenty numbers of the chain pull judge, one fixture per recorded judgement
 # --------------------------------------------------------------------------------------------------------------
 
+# fixture key, the key inside `fields` on an OLD row, the COLUMN on a row written since [jrn30], the type.
+# Both sources are read because both exist in the live journal and neither covers the whole corpus: [jrn30]
+# promoted these out of `fields` into columns, and WithoutPromoted then stops writing them into `fields` - so rows
+# from before that build carry them only in the JSON and rows after it only in the columns. Measured on the live
+# journal: 2 503 option rows, 159 with fightSecLeft inside `fields`, 0 with the fight_sec_left column filled (the
+# server has not started on the promoting build yet). An exporter that read one source would quietly export
+# nothing on one side of that line.
 CHAIN_KEYS = [
-    ("fight_sec_left", "fightSecLeft", float), ("walk_sec", "walkSec", float),
-    ("run_in_sec", "runInSec", float), ("open_sec", "openSec", float),
-    ("tank_health", "tankHealth", float), ("drop", "drop", float),
-    ("overload", "overload", float), ("union_sec", "unionSec", float),
-    ("group_dps", "groupDps", float), ("distance", "distance", float),
-    ("walk_yd", "walkYd", float), ("healer_sec", "healerSec", float),
-    ("pack_mobs", "packMobs", int), ("fight_mobs", "fightMobs", int),
-    ("union_mobs", "unionMobs", int), ("stop", "stop", int),
-    ("opener", "opener", str), ("healer", "healer", str),
-    ("healer_walks", "healerWalks", bool), ("recorded_due", "due", bool),
+    ("fight_sec_left", "fightSecLeft", "fight_sec_left", float), ("walk_sec", "walkSec", "walk_sec", float),
+    ("run_in_sec", "runInSec", "run_in_sec", float), ("open_sec", "openSec", "open_sec", float),
+    ("tank_health", "tankHealth", "tank_health", float), ("drop", "drop", "drop_pct", float),
+    ("overload", "overload", "overload", float), ("union_sec", "unionSec", "union_sec", float),
+    ("group_dps", "groupDps", "group_dps", float), ("distance", "distance", "distance", float),
+    ("walk_yd", "walkYd", "walk_yd", float), ("healer_sec", "healerSec", "healer_sec", float),
+    ("pack_mobs", "packMobs", "pack_mobs", int), ("fight_mobs", "fightMobs", "fight_mobs", int),
+    ("union_mobs", "unionMobs", "union_mobs", int), ("stop", "stop", "stop", int),
+    ("opener", "opener", "opener", str), ("healer", "healer", "healer", str),
+    ("healer_walks", "healerWalks", "healer_walks", bool), ("recorded_due", "due", "due", bool),
+]
+
+# [test1] THE JUDGE'S WORLD GATES, columns only. They have no `fields` side at all: they were born as columns, and
+# the emitter leaves a gate it never reached OUT of the event, so the column is NULL.
+# A NULL IS COPIED AS AN ABSENT KEY, never as false. The replay must be able to answer "I cannot decide this"
+# (ChainPullFacts keeps them as Tri::Unknown, and Fixture's Has() is what tells it apart), because "the judge
+# returned before this gate" and "the gate did not trip" are different answers and a fixture that wrote 0 for both
+# would make the stand reproduce a verdict that was never made.
+CHAIN_GATES = [
+    ("gate_boss", "gate_boss"), ("gate_walker", "gate_walker"), ("gate_buff", "gate_buff"),
+    ("gate_dead", "gate_dead"), ("gate_holds", "gate_holds"), ("gate_wakes", "gate_wakes"),
 ]
 
 
+# the columns the row carries, in the order the reader below unpacks them: the promoted numbers first, then the
+# world gates. Listing them here instead of SELECT * is what makes a renamed column fail loudly.
+CHAIN_COLUMNS = [column for _, _, column, _ in CHAIN_KEYS] + [column for _, column in CHAIN_GATES]
+
+
+def nullable(cell):
+    """A nullable column's value, with SQL NULL as None.
+
+    THE TRAP THIS EXISTS FOR, caught here on the first nullable column anyone selected: query() promises that
+    MySQL's NULL arrives as '\\N' and becomes None, and that is true for `--batch` - but it passes `--raw` as
+    well, and `--raw` prints a NULL as the four letters NULL instead. Nothing noticed, because until now every
+    exported column was NOT NULL; the first SELECT of a nullable one raised ValueError on float('NULL').
+    Converted here rather than inside query(), because changing query() would also change what the slice, death
+    and issue exporters see, and a four-letter string is only unambiguously a NULL for a numeric column. The
+    reading for the string columns stays untouched: `opener` and `healer` are NOT NULL DEFAULT '' in the DDL.
+    """
+    return None if cell is None or cell == "NULL" else cell
+
+
 def chain_rows(decision=None, idx=None, limit=None):
-    where = "o.fields LIKE '%fightSecLeft%'"
+    # a chain-pull option is one whose numbers are there on EITHER side of the [jrn30] promotion: inside `fields`
+    # on an older row, in the fight_sec_left column on a newer one. Taking only one side would silently export an
+    # empty corpus after the promoting build, which is exactly the shape of failure the journal exists to catch.
+    where = "(o.fields LIKE '%fightSecLeft%' OR o.fight_sec_left IS NOT NULL)"
     if decision is not None:
         where += " AND o.decision_id = %d" % int(decision)
     if idx is not None:
         where += " AND o.idx = %d" % int(idx)
     sql = ("SELECT o.decision_id, o.idx, o.at_ms, o.build, o.taken, REPLACE(o.fields, '\\t', ' '), "
-           "       COALESCE(d.run_id, ''), COALESCE(d.run_ms, 0), COALESCE(d.judge_name, ''), COALESCE(d.topic, '') "
+           "       COALESCE(d.run_id, ''), COALESCE(d.run_ms, 0), COALESCE(d.judge_name, ''), "
+           "       COALESCE(d.topic, ''), " + ", ".join("o." + c for c in CHAIN_COLUMNS) + " "
            "FROM pb_journal_option o LEFT JOIN pb_journal_decision d "
            "  ON d.id = o.decision_id AND d.hour_bucket = o.hour_bucket "
            "WHERE " + where + " ORDER BY o.decision_id, o.idx")
@@ -113,8 +154,10 @@ def export_chain(args):
         print("no chain pull judgements matched; nothing written")
         return 1
     written = 0
-    for decision_id, option_idx, at_ms, build, taken, fields, run_id, run_ms, judge, topic in rows:
-        raw = json.loads(fields)
+    for row in rows:
+        (decision_id, option_idx, at_ms, build, taken, fields, run_id, run_ms, judge, topic) = row[:10]
+        columns = dict(zip(CHAIN_COLUMNS, row[10:]))
+        raw = json.loads(fields) if fields and fields != "NULL" else {}
         payload = {
             "fixture": "chain_pull",
             "source": "pb_journal_option + pb_journal_decision",
@@ -127,17 +170,30 @@ def export_chain(args):
             "judge_name": judge or "",
             "topic": topic or "",
             "build": build or "",
+            # the verdict's gate (opener, holds, wakes, taken, ...). NOT the option's own kind column:
+            # that one holds the option's class, which is the string "chain_pull" for every one of these rows.
+            # The gate name stays in `fields` on purpose - [jrn30] did not promote it, because what is filtered on
+            # is the gate FLAGS, and the name is read with the eyes beside them
             "recorded_kind": raw.get("kind", ""),
             "recorded_taken": bool(int(taken)),
             "recorded_why": raw.get("why", ""),
-            "walk": raw.get("kind") == "walk",
+            "walk": raw.get("kind", "") == "walk",
             "number_precision": NUMBER_PRECISION,
         }
-        for key, source, kind in CHAIN_KEYS:
-            if source not in raw:
-                continue  # absent stays absent; the test's fallback says so
-            value = raw[source]
-            payload[key] = bool(value) if kind is bool else kind(value)
+        for key, source, column, kind in CHAIN_KEYS:
+            # the column wins when the row has it; `fields` is the older row's copy. ABSENT STAYS ABSENT in both
+            # cases - no key is written at all - because the stand must be able to say what it cannot decide.
+            value = columns.get(column) if kind is str else nullable(columns.get(column))
+            if value is None or value == "":
+                if source not in raw:
+                    continue
+                value = raw[source]
+            payload[key] = bool(int(value)) if kind is bool else kind(value)
+        for key, column in CHAIN_GATES:
+            value = nullable(columns.get(column))
+            if value is None:
+                continue  # NULL: the judge never reached that gate. Not false, and so not written.
+            payload[key] = bool(int(value))
         name = "%s_%s.json" % (decision_id, option_idx)
         write("chain_pull", name, payload)
         written += 1
