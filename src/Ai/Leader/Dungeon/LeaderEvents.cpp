@@ -3373,35 +3373,57 @@ namespace Leader::Dungeon
                 bool const walkNow = chain.taken && chain.walk && (!lead.fightMoveTo || retreating);
                 if (chain.anchor && !chain.waiting && (!chain.walk || !chain.taken || walkNow) &&
                     lead.chainLogged.insert({chain.anchor->GetGUID(), chain.kind}).second)
-                    Decisions().Write(run, "leader", "chain_pull", chain.anchor->GetGUID(), chain.anchor->GetName(),
-                                      true,
-                                      JsonObject()
-                                          .Str("verdict", chain.walk && chain.taken ? "walk"
-                                                          : chain.taken             ? "taken"
-                                                                                    : "rejected")
-                                          .Str("kind", chain.kind)
-                                          .Str("why", chain.why)
-                                          .Bool("due", chain.due)
-                                          .Num("stop", int64(chain.stop))
-                                          .Num("packMobs", int64(chain.mobs.size()))
-                                          .Num("fightMobs", int64(fightingMobs.size()))
-                                          .Num("unionMobs", int64(chain.unionMobs))
-                                          .Real("fightSecLeft", chain.fightSecLeft)
-                                          .Real("runInSec", chain.runInSec)
-                                          .Real("openSec", chain.openSec)
-                                          .Str("opener", chain.opener)
-                                          .Real("distance", chain.distance)
-                                          .Real("overload", chain.overload)
-                                          .Real("drop", chain.drop)
-                                          .Real("tankHealth", chain.tankHealth)
-                                          .Real("unionSec", chain.unionSec)
-                                          .Real("groupDps", groupDps)
-                                          .Real("walkSec", chain.walkSec)
-                                          .Real("walkYd", chain.walk ? tank->GetExactDist(chain.walkTo) : 0.0f)
-                                          .Str("healer", chain.healer.healer ? chain.healer.healer->GetName() : "")
-                                          .Bool("healerWalks", chain.healer.walks)
-                                          .Real("healerSec", chain.healer.walkSec)
-                                          .Str("tag", chain.walk ? "[lead1190]" : "[lead1170]"));
+                {
+                    JsonObject chainFields;
+                    chainFields
+                        .Str("verdict", chain.walk && chain.taken ? "walk"
+                                        : chain.taken             ? "taken"
+                                                                  : "rejected")
+                        .Str("kind", chain.kind)
+                        .Str("why", chain.why)
+                        .Bool("due", chain.due)
+                        .Num("stop", int64(chain.stop))
+                        .Num("packMobs", int64(chain.mobs.size()))
+                        .Num("fightMobs", int64(fightingMobs.size()))
+                        .Num("unionMobs", int64(chain.unionMobs))
+                        .Real("fightSecLeft", chain.fightSecLeft)
+                        .Real("runInSec", chain.runInSec)
+                        .Real("openSec", chain.openSec)
+                        .Str("opener", chain.opener)
+                        .Real("distance", chain.distance)
+                        .Real("overload", chain.overload)
+                        .Real("drop", chain.drop)
+                        .Real("tankHealth", chain.tankHealth)
+                        .Real("unionSec", chain.unionSec)
+                        .Real("groupDps", groupDps)
+                        .Real("walkSec", chain.walkSec)
+                        .Real("walkYd", chain.walk ? tank->GetExactDist(chain.walkTo) : 0.0f)
+                        .Str("healer", chain.healer.healer ? chain.healer.healer->GetName() : "")
+                        .Bool("healerWalks", chain.healer.walks)
+                        .Real("healerSec", chain.healer.walkSec);
+                    // [test1] THE WORLD GATES THE JUDGE ACTUALLY COMPUTED, one field per gate. `kind` names only
+                    // the gate that rejected; without these a recorded verdict cannot be replayed (ReplayChainPull
+                    // answers Undecided on the first gate it has no fact for), and that is honest but useless.
+                    // A gate the judge never reached is LEFT OUT of the object entirely - absent, not false: "the
+                    // judge did not get this far" and "the gate did not trip" are different answers, and a reader
+                    // that writes the absent one as false would replay a verdict that was never made.
+                    // These become COLUMNS of the row, never a JSON filter (the user's rule): the journal side is
+                    // open - six Optional<bool> on the record and six indexed columns, see the report.
+                    auto const gate = [&chainFields](char const* key, Leader::Judge::Tri value)
+                    {
+                        if (value != Leader::Judge::Tri::Unknown)
+                            chainFields.Bool(key, value == Leader::Judge::Tri::Yes);
+                    };
+                    gate("gateBoss", chain.bossInPack);
+                    gate("gateWalker", chain.walkerStop);
+                    gate("gateBuff", chain.groupBuffed);
+                    gate("gateDead", chain.everyoneAlive);
+                    gate("gateHolds", chain.tankHolds);
+                    gate("gateWakes", chain.wayInQuiet);
+                    chainFields.Str("tag", chain.walk ? "[lead1190]" : "[lead1170]");
+                    Decisions().Write(run, "leader", "chain_pull", chain.anchor->GetGUID(),
+                                      chain.anchor->GetName(), true, chainFields);
+                }
                 if (chain.taken && !chain.walk)
                 {
                     joinPack(chain.anchor, chain.mobs, true);

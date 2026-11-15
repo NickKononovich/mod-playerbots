@@ -30,8 +30,15 @@ namespace PullPlanner
 
 namespace Leader::Dungeon
 {
-    constexpr uint32 DOOR_WALK_MS = 15 * IN_MILLISECONDS;  // the walk to the door to open, at most
-    constexpr uint32 CAREFUL_REFUSED_SKIP_MS = 3 * MINUTE * IN_MILLISECONDS;
+    // [lead128] user rule: no elapsed-time rule changes a bot decision. A careful refusal's skip therefore carries
+    // NO deadline - the value stored in GroupRouteState::skipUntil is the skip's STAMP (which facts it was made on),
+    // not a time to wait out, and every decision path reads the entry's presence (skipUntil.count), never its value.
+    // What lifts the skip is the fact sweep in Retarget: the leader moved off where it judged
+    // (UNREACHABLE_RECHECK_DISTANCE / _HEIGHT), the object moved off where it was judged (LEADER_COMMIT_MOVED_YD), a
+    // door of the instance opened or closed, or the object is dead or gone ([lead132], the user's own rule: "a skip
+    // lasts until a fact changes, not for its duration"). It was 3 minutes, and a five whose route target was
+    // refused once stood looking busy for three minutes with nowhere to go.
+    constexpr uint32 CAREFUL_REFUSED_SKIP_NO_DEADLINE = 0;
 
     // [lead7] the leader plans the tank's pull (PullPlanner::Decide on the world thread, every world update, when the
     // tank asked) and issues the decision; a hopeless refusal is the planner_no_option bug event.

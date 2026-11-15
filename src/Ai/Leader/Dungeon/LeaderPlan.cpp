@@ -214,10 +214,10 @@ namespace Leader::Dungeon
                     return member.name + " summons its pet [lead1131]";
                 continue;
             }
-            // a far member the far wait gave up on (far_wait_dropped) holds no readiness while far, never a healer
-            bool const dropped = member.apartIgnoreUntilMs && int32(getMSTime() - member.apartIgnoreUntilMs) < 0 &&
-                                 !PlayerbotAI::IsHeal(bot);
-            if (!dropped && bot->GetDistance(leader) > LEADER_READY_RANGE)
+            // [lead128] no elapsed-time rule decides: the old far_wait_dropped ignored a far member until a stamp
+            // (apartIgnoreUntilMs), so a healer 54-90 yd off read as "ready". The wait ends on its facts only
+            // (LeaderRest: the far member together, or stranded - no walk either way), so distance alone decides
+            if (bot->GetDistance(leader) > LEADER_READY_RANGE)
                 return Acore::StringFormat("{} is {:.0f} yd from the leader", member.name, bot->GetDistance(leader));
             if (PlayerbotAI::IsHeal(bot) && !bot->IsWithinLOSInMap(leader))
                 return "the healer " + member.name + " does not see the leader";
@@ -311,7 +311,6 @@ namespace Leader::Dungeon
         if (fresh)
         {
             lead.wholePack = pack->GetGUID();
-            lead.wholeSinceMs = now;
             LOG_INFO("playerbots", "[lead3] leader_whole_pack {}: {} {} ({:.1f} yd): the planner takes it whole{} ({})",
                      group.Run().runId, pack->GetName(), pack->GetEntry(), leader->GetExactDist(pack),
                      walkIn ? ", walked in if it has no ranged pull" : "", why);
@@ -2695,7 +2694,10 @@ namespace Leader::Dungeon
             }
         }
         if (decision.verdict == PullPlanner::Verdict::Go || group.InCombat())
+        {
             lead.refusedPicks.clear();  // a pull goes / a fight changes the room: everything is asked again
+            lead.interceptBanned.clear();  // [lead128] the patrol bans go with them: the same fact, one place
+        }
         // [lead30] planner_answer: the planner's answer for the leader's pick (logged when it changes)
         if (decides)
         {
@@ -2859,7 +2861,7 @@ namespace Leader::Dungeon
                     {
                         lead.doorInvalidLooks = 0;
                         if (byUse && !group.HasDoorWalk())
-                            group.StartDoorWalk(door->GetGUID(), lookMob->GetGUID(), doorAt, now + DOOR_WALK_MS);
+                            group.StartDoorWalk(door->GetGUID(), lookMob->GetGUID(), doorAt);
                         if (doorStarter >= 0)
                         {
                             if (lead.doorStepEntry != door->GetEntry() || !fresh(lead.doorStepMs))
@@ -3083,7 +3085,7 @@ namespace Leader::Dungeon
                 {
                     group.LogEvent("leader_skip_no_option",
                              JsonObject().Str("name", lookMob->GetName()).Str("why", decision.why).Str("rule", why));
-                    group.SkipTarget(group.RouteTarget(), CAREFUL_REFUSED_SKIP_MS,
+                    group.SkipTarget(group.RouteTarget(), CAREFUL_REFUSED_SKIP_NO_DEADLINE,
                                "the leader: no pull option, not on the required way (" + decision.why + ")");
                 }
                 lead.heldReadyMob.Clear();
@@ -3103,14 +3105,17 @@ namespace Leader::Dungeon
         // verdict wait running) is a hold, re-asked on the next look - build 53 stopped ac-h / dme-n / uk-h on it
         // [lead12] ... and a hopeless one stops nothing either: a patrol is no pack the leader must clear (b55 sh-h:
         // "the patrol pull refused: ... Shattered Hand Heathen brings 11 mobs over the cap 9"; the old path waited it
-        // out and walked on after its budget). The patrol is banned from intercepts for LEADER_INTERCEPT_BAN_MS and
+        // out and walked on after its budget). The patrol is banned from intercepts while that refusal stands and
         // its lane is crossed while it is far from the leader (LeaderPatrolTick); logged, not stopping.
+        // [lead128] no wait for the answer: the refusal in hand IS the answer to the intercept, because the
+        // planner's plan cache is keyed by the leader's ask (PlanCarefulPull: _planIntercept) and so cannot hand
+        // back a plan made before it. The old LEADER_REQUEST_ANSWER_MS (2.5 s) only waited that cache out.
         if (decides && Leader::Leads(Leader::LEADER_ONE_PATROL_OWNER) && fresh(lead.interceptMs) &&
-            decision.lookTarget == lead.intercept && decision.hopeless && decision.toppedUp && lead.ready &&
-            getMSTimeDiff(lead.interceptSinceMs, now) >= Leader::LEADER_REQUEST_ANSWER_MS)
+            decision.lookTarget == lead.intercept && decision.hopeless && decision.toppedUp && lead.ready)
         {
-            constexpr uint32 LEADER_INTERCEPT_BAN_MS = 5 * MINUTE * IN_MILLISECONDS;
-            lead.interceptBanned[lead.intercept] = now + LEADER_INTERCEPT_BAN_MS;
+            // [lead128] banned while this refusal stands, never for a duration (it was 5 min, and a five stood
+            // in it): cleared with refusedPicks by the first pull that goes or fight that changes the room
+            lead.interceptBanned[lead.intercept] = "the patrol pull refused: " + decision.why;
             LeaderNoOption(group, tank, lookMob, packOf(), "the patrol pull refused: " + decision.why, false,
                            JsonObject().Str("kind", "patrol").Str("patrolWhy", lead.interceptWhy)
                                .Str("action", "no intercept; its lane is crossed while it is far"));
@@ -3145,13 +3150,14 @@ namespace Leader::Dungeon
             }
 
         // planner_no_option (user decision 1): a hopeless refusal (no pull of the pack fits at all), or [lead3] any
-        // refusal of the pack the leader asked for whole (LEADER_REQUEST_ANSWER_MS after the ask: the planner's 1 s
-        // plan cache may answer before it). It stops the run when the pack is one the leader must clear; a hopeless
-        // side pack is a route decision: the walks go round it, the route target of it is skipped.
+        // refusal of the pack the leader asked for whole. [lead128] No wait after the ask: the planner's 1 s plan
+        // cache is keyed by that ask now (PlanCarefulPull: _planWholePack / _planWalkIn), so a refusal in hand was
+        // computed with the ask in it - the old LEADER_REQUEST_ANSWER_MS was 2.5 s of waiting that cache out.
+        // It stops the run when the pack is one the leader must clear; a hopeless side pack is a route decision:
+        // the walks go round it, the route target of it is skipped.
         // [lead4b] ... nor a "refused for now" whose guarantee wait still runs (verdictWaitMs): only a final refusal
         bool const finalRefusal = decision.hopeless || (decision.hasVerdict && !decision.verdictWaitMs);
-        bool const requestAnswered = requestCovers && finalRefusal && decision.toppedUp && lead.ready &&
-                                     getMSTimeDiff(lead.wholeSinceMs, now) >= Leader::LEADER_REQUEST_ANSWER_MS;
+        bool const requestAnswered = requestCovers && finalRefusal && decision.toppedUp && lead.ready;
         if (!decision.hopeless && !requestAnswered)
             return;
         std::string rule;
@@ -3178,7 +3184,7 @@ namespace Leader::Dungeon
         {
             group.LogEvent("leader_skip_no_option",
                      JsonObject().Str("name", lookMob->GetName()).Str("why", why).Str("rule", rule));
-            group.SkipTarget(group.RouteTarget(), CAREFUL_REFUSED_SKIP_MS,
+            group.SkipTarget(group.RouteTarget(), CAREFUL_REFUSED_SKIP_NO_DEADLINE,
                        "the leader: no pull option, not on the required way (" + why + ")");
         }
         if (lead.wholePack == decision.lookTarget || requestAnswered)

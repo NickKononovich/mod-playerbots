@@ -133,9 +133,6 @@ namespace TestHarness
         // Alive outside, no walk back for OUTSIDE_GIVE_UP_STUCKS windows of GHOST_STUCK_MS: no longer waited for
         // (dtk-n build 10: a spirit-healed shaman stood 30 yd above the portal for 4 minutes).
         uint32 outsideStuckCount = 0;
-        // A ping-pong hold timed out with this member still apart: until then it is neither apart nor far (gd-h /
-        // wc-h build 17: Rtdruay 37 yd, dz -7.6, held the group 160 s over repeated holds).
-        uint32 apartIgnoreUntilMs = 0;
         bool leftOutside = false;
         uint32 entryRefusedSinceMs = 0;  // on its entrance, still outside: the core refuses entry since
         std::string entryRefusal;        // the refusal last logged (entry_refused)
@@ -843,7 +840,7 @@ namespace TestHarness
         void SetBossOnTheWay(ObjectGuid boss, uint32 now) override;
         void MarkRequired(ObjectGuid mob) override;
         void NoteHopelessPack(Player* leader, Creature* mob) override;
-        void StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point, uint32 untilMs) override;
+        void StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point) override;
         void FailRun(std::string const& reason) override;
         void SetLeaderWaypoint(Player* leader, float x, float y, float z, bool straight) override;
         bool BossKilledFor(uint32 entry) const override;
@@ -885,7 +882,6 @@ namespace TestHarness
         }
         bool BossEncounterInProgress() const override;
         void NoteActivity(Activity activity) override;
-        void SetApartIgnore(ObjectGuid member, uint32 untilMs) override;
         void BuffPassSetup(std::vector<Player*> const& players) override;
         bool MemberConsumables(Player* bot, uint32& flask, uint32& food) const override;
         std::string MemberBuffJson(Player* bot) override;

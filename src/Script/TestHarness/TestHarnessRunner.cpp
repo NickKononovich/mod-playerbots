@@ -138,15 +138,9 @@ namespace TestHarness
         for (Member const& member : party.members)
         {
             Player* bot = ObjectAccessor::FindPlayer(member.guid);
-            // [b30_topped_up] a far member the far wait gave up on (far_wait_dropped) holds no readiness while far
-            // [b33_bodypull] ...never a healer: strat-h 20261026-000434-strat-h-5D-1 - the ping-pong hold timed out at
-            // 179 s (apartIgnoreUntilMs for 180 s on Rtshaab), so the group read "fully ready" with the healer 54-90 yd
-            // off; pull_after_hold ("readySec 10") cleared the planner's "healer not with the group" hold and the
-            // harness body-pulled the Ravaged Cadavers at 300 s: 17 mobs, the healer 66.8 yd away, wipe.
-            if (bot && bot != leader && bot->IsAlive() && bot->GetMap() == leader->GetMap() &&
-                bot->GetDistance(leader) > 30.0f && member.apartIgnoreUntilMs &&
-                int32(getMSTime() - member.apartIgnoreUntilMs) < 0 && !PlayerbotAI::IsHeal(bot))
-                continue;
+            // [lead128] no elapsed-time rule decides: the old far_wait_dropped (apartIgnoreUntilMs) let a far
+            // member off the readiness check until a stamp, and strat-h 20261026-000434-strat-h-5D-1 read "fully
+            // ready" with the healer 54-90 yd off - 17 mobs body-pulled at 300 s, wipe. Distance is the fact
             if (!bot || !bot->IsAlive())
                 return member.name + " is dead or gone";
             if (bot->GetMap() != leader->GetMap())
@@ -196,7 +190,7 @@ namespace TestHarness
         using Leader::Travel::PULL_WAIT_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::EVENT_WAIT_FOR_SPAWNS_MS;  // [lead107] RouteSteer.h
         using Leader::Travel::BODY_PULL_WAIT_MS;  // [lead107] RouteSteer.h
-        using Leader::Dungeon::CAREFUL_REFUSED_SKIP_MS;  // [lead107] LeaderPlan.h (3 min)
+        using Leader::Dungeon::CAREFUL_REFUSED_SKIP_NO_DEADLINE;  // [lead107] LeaderPlan.h (no deadline)
         using Leader::Travel::ROUTE_ADOPT_GROUP_ESCORT;  // [lead107] RouteTargets.h
         using Leader::Travel::ROUTE_CAREFUL_GUARANTEE_HOLD;  // [lead107] RouteSteer.h
         using Leader::Travel::ROUTE_LIFT_REFUSED_SKIP;  // [lead107] RouteTargets.h
@@ -897,7 +891,6 @@ namespace TestHarness
         using Leader::Travel::sightStops;  // [lead107] RouteTargets.h
 
         using Leader::Travel::PULL_AFTER_HOLD;  // [lead107] RouteSteer.h
-        using Leader::Dungeon::DOOR_WALK_MS;  // [lead107] LeaderPlan.h (15 s)
 
         using Leader::Travel::HoldReady;  // [lead107] RouteSteer.h
         using Leader::Travel::holdReady;  // [lead107] RouteSteer.h
@@ -4053,7 +4046,7 @@ namespace TestHarness
         std::vector<MemberInfo> out;
         out.reserve(_party.members.size());
         for (Member const& member : _party.members)
-            out.push_back({member.guid, member.name, member.apartIgnoreUntilMs,
+            out.push_back({member.guid, member.name,
                            member.spec && UsesMana(member.spec->role, member.cls), member.backInMs,
                            member.spec && (member.spec->role == Role::Melee || member.spec->role == Role::Ranged ||
                                            member.spec->role == Role::Tank)});
@@ -4085,10 +4078,9 @@ namespace TestHarness
 
     bool PartyLeaderGroup::HasDoorWalk() const { return doorWalks.count(_party.leader) != 0; }
 
-    void PartyLeaderGroup::StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point,
-                                         uint32 untilMs)
+    void PartyLeaderGroup::StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point)
     {
-        doorWalks[_party.leader] = {door, blocker, point, untilMs};
+        doorWalks[_party.leader] = {door, blocker, point};
     }
 
     bool PartyLeaderGroup::GetWaypoint(ObjectGuid bot, WalkPoint& out) const
@@ -4247,13 +4239,6 @@ namespace TestHarness
         }
     }
 
-    void PartyLeaderGroup::SetApartIgnore(ObjectGuid member, uint32 untilMs)
-    {
-        for (Member& candidate : _party.members)
-            if (candidate.guid == member)
-                candidate.apartIgnoreUntilMs = untilMs;
-    }
-
     void PartyLeaderGroup::RecordReentry(Player* bot, std::string const& killer, JsonObject context)
     {
         RecordReentryDeath(bot, killer, std::move(context));
@@ -4266,7 +4251,6 @@ namespace TestHarness
             {
                 candidate.stranded = false;
                 candidate.strandedSinceMs = 0;
-                candidate.apartIgnoreUntilMs = 0;
                 if (respawnZone)
                     candidate.backInMs = now;
             }
@@ -5434,11 +5418,12 @@ namespace TestHarness
             parts.push_back("behind skipped " + party.behindSkipped);
 
         // The skips in force, by reason (the most frequent first): a route that skipped everything says so.
+        // [lead128] every entry is listed: a skip has no deadline of its own any more (it is lifted by the fact
+        // sweep in Retarget), so filtering the report by one would hide the skips that are actually in force
         std::map<std::string, uint32> reasons;
         for (auto const& [guid, untilMs] : party.skipUntil)
         {
-            if (int32(now - untilMs) >= 0)
-                continue;
+            (void)untilMs;
             auto const why = party.skipReason.find(guid);
             std::string reason = why != party.skipReason.end() ? why->second : "?";
             if (size_t const cut = reason.find(" ("); cut != std::string::npos)

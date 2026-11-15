@@ -528,12 +528,14 @@ namespace Leader::Travel
 
     // [pull_after_hold] (4) the walk to a closed door that opens by use, between the leader and a blocker it
     // cannot see: kept over the ticks until it is open (the stop would walk the leader back).
+    // [lead128] it has no deadline (it was DOOR_WALK_MS, 15 s). The walk ends on its own facts: the door open, the
+    // blocker dead or in a fight, the leader in a fight, the door reached and used - or no route to the use point
+    // left, which is the fact the clock stood in for (a leader that cannot get there would otherwise walk at it).
     struct DoorWalk
     {
         ObjectGuid door;
         ObjectGuid blocker;
         G3D::Vector3 point;
-        uint32 untilMs = 0;
     };
 
     extern std::unordered_map<ObjectGuid, DoorWalk> doorWalks;  // by leader

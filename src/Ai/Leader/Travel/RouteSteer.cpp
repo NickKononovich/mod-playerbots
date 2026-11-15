@@ -117,8 +117,7 @@ namespace Leader::Travel
     using namespace Leader::Fight;
     using namespace Leader::Knowledge;
     using Leader::Dungeon::PULL_ABORT_HOLD_MS;
-    using Leader::Dungeon::CAREFUL_REFUSED_SKIP_MS;
-    using Leader::Dungeon::DOOR_WALK_MS;
+    using Leader::Dungeon::CAREFUL_REFUSED_SKIP_NO_DEADLINE;
     using Leader::Dungeon::TankPullState;
 
     bool PullAfterHoldPasses(ObjectGuid leader, ObjectGuid blocker)
@@ -1709,7 +1708,7 @@ namespace Leader::Travel
             if (gateHold)
                 return;
             routeState.approach = 0;
-            group.SkipTarget(target->GetGUID(), CAREFUL_REFUSED_SKIP_MS, "body pull refused: " + gate);
+            group.SkipTarget(target->GetGUID(), CAREFUL_REFUSED_SKIP_NO_DEADLINE, "body pull refused: " + gate);
             return;
         }
 
@@ -1815,7 +1814,7 @@ namespace Leader::Travel
                     }
                     group.ClearWaypoint(group.LeaderGuid());
                     routeState.approach = 0;
-                    group.SkipTarget(target->GetGUID(), CAREFUL_REFUSED_SKIP_MS,
+                    group.SkipTarget(target->GetGUID(), CAREFUL_REFUSED_SKIP_NO_DEADLINE,
                                "body pull refused: brings boss " + boss->GetName());
                     return;
                 }
@@ -2041,9 +2040,26 @@ namespace Leader::Travel
             Map* doorMap = leader->GetMap();
             GameObject* door = doorMap ? doorMap->GetGameObject(walk->second.door) : nullptr;
             Creature* behind = doorMap ? doorMap->GetCreature(walk->second.blocker) : nullptr;
-            uint32 const nowMs = getMSTime();
+            // [lead128] the walk ends when the door is reached or the way to it is gone, never because 15 s passed.
+            // The route is searched only while the leader still has ground to cover (at the door the open / gather
+            // below answers), so this costs one search per tick of a walk that is on anyway.
+            bool noPath = false;
+            if (door && leader->GetExactDist(door) > door->GetInteractionDistance())
+            {
+                Position const usePoint(walk->second.point.x, walk->second.point.y, walk->second.point.z);
+                RouteResult const toDoor = Leader::Route(leader, usePoint);
+                noPath = !toDoor.found;
+                if (noPath)
+                    group.LogEvent("pull_after_hold",
+                             JsonObject().Str("action", "no way to the door: the walk ends")
+                                 .Str("door", door->GetName()).Num("doorEntry", door->GetEntry())
+                                 .Str("route", toDoor.Describe())
+                                 .Real("doorDistance", leader->GetExactDist(door))
+                                 .Real("x", walk->second.point.x).Real("y", walk->second.point.y)
+                                 .Real("z", walk->second.point.z));
+            }
             if (!door || door->GetGoState() != GO_STATE_READY || !behind || !behind->IsAlive() ||
-                behind->IsInCombat() || leader->IsInCombat() || int32(walk->second.untilMs - nowMs) <= 0)
+                behind->IsInCombat() || leader->IsInCombat() || noPath)
                 doorWalks.erase(walk);
             else
             {
@@ -2986,11 +3002,11 @@ namespace Leader::Travel
                                 if (otherDist <= blockerDist ||
                                     toOther.dot(toBlocker) < BEHIND_CONE_COS * otherDist * blockerDist)
                                     continue;
-                                routeState.skipUntil[other->GetGUID()] = now + CAREFUL_REFUSED_SKIP_MS;
+                                routeState.skipUntil[other->GetGUID()] = now + CAREFUL_REFUSED_SKIP_NO_DEADLINE;
                                 routeState.skipReason[other->GetGUID()] = behindWhy;
                             }
                         }
-                        group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS, behindWhy);
+                        group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_NO_DEADLINE, behindWhy);
                         // [b30_overpull] door spin guard (CountDoorSpin): a chain rooted in a closed door that still
                         // stands closed counts as a skip behind that door
                         constexpr char const* doorPrefix = "leader held at a closed door (";
@@ -3386,7 +3402,7 @@ namespace Leader::Travel
                                 if (!routeState.bossCreatures.count(packMob->GetGUID()) && !packMob->IsDungeonBoss() &&
                                     !leader->IsWithinLOSInMap(packMob))
                                     TankRejects::MarkUnseen(leader->GetGUID(), packMob->GetGUID());
-                            group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS,
+                            group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_NO_DEADLINE,
                                        "skip: no sight point outside other packs' aggro after the edge hold (" + view +
                                            ")");
                             return;
@@ -3456,7 +3472,7 @@ namespace Leader::Travel
                                     TankRejects::MarkUnseen(leader->GetGUID(), packMob->GetGUID());
                             if (ownPackHere)
                             {
-                                group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS,
+                                group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_NO_DEADLINE,
                                            "skip at once: no LoS (not pulled, tank does not see it: " + view + ")");
                                 return;
                             }
@@ -4701,7 +4717,7 @@ namespace Leader::Travel
                             if (mob != refused && !routeState.bossCreatures.count(mob->GetGUID()) &&
                                 !mob->IsDungeonBoss() && group.BossOrder(mob) < 0)
                             {
-                                routeState.skipUntil[mob->GetGUID()] = now + CAREFUL_REFUSED_SKIP_MS;
+                                routeState.skipUntil[mob->GetGUID()] = now + CAREFUL_REFUSED_SKIP_NO_DEADLINE;
                                 routeState.skipReason[mob->GetGUID()] = packSkipReason;
                                 routeState.unreachableFrom.erase(mob->GetGUID());
                                 // The pack's count, whichever member the route picks next time.
@@ -4734,7 +4750,7 @@ namespace Leader::Travel
                             if (!routeState.bossCreatures.count(mob->GetGUID()) && !mob->IsDungeonBoss() &&
                                 group.BossOrder(mob) < 0 && !routeState.skipUntil.count(mob->GetGUID()))
                             {
-                                routeState.skipUntil[mob->GetGUID()] = now + CAREFUL_REFUSED_SKIP_MS;
+                                routeState.skipUntil[mob->GetGUID()] = now + CAREFUL_REFUSED_SKIP_NO_DEADLINE;
                                 routeState.skipReason[mob->GetGUID()] = packSkipReason;
                                 routeState.unreachableFrom.erase(mob->GetGUID());
                                 ++packSkipped;
@@ -4759,7 +4775,7 @@ namespace Leader::Travel
                     routeState.guaranteeHolding = false;
                     if (packSkipped)
                         reason += " (+" + std::to_string(packSkipped) + " pack)";
-                    group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS, reason);
+                    group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_NO_DEADLINE, reason);
                     return;
                 }
 
@@ -4924,7 +4940,7 @@ namespace Leader::Travel
                             return;
                         }
                         group.ClearWaypoint(group.LeaderGuid());
-                        group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_MS,
+                        group.SkipTarget(routeState.target, CAREFUL_REFUSED_SKIP_NO_DEADLINE,
                                    "body pull refused: brings boss " + boss->GetName());
                         return;
                     }

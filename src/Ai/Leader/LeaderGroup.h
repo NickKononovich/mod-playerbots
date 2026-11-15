@@ -43,7 +43,6 @@ namespace Leader
         {
             ObjectGuid guid;
             std::string name;
-            uint32 apartIgnoreUntilMs = 0;  // the group's apart rule ignores it until then (a member brought back)
             bool usesMana = false;          // its role and class use mana (the rest's mana line counts)
             uint32 backInMs = 0;            // when it came back in through the portal (0: never during this run)
             bool physical = false;          // a melee / ranged / tank role (the physical buffs are for it)
@@ -153,8 +152,9 @@ namespace Leader
         virtual void MarkRequired(ObjectGuid mob) = 0;
         // the walks go round a hopeless pack
         virtual void NoteHopelessPack(Player* leader, Creature* mob) = 0;
-        // the leader walks to `door` (opened by use) before the pull of `blocker`, at most until `untilMs`
-        virtual void StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point, uint32 untilMs) = 0;
+        // the leader walks to `door` (opened by use) before the pull of `blocker`. [lead128] no deadline: the walk
+        // ends when the door is open or reached, the blocker is gone or fighting, or no route to it is left
+        virtual void StartDoorWalk(ObjectGuid door, ObjectGuid blocker, G3D::Vector3 const& point) = 0;
         // the run fails (planner_no_option with a stop)
         virtual void FailRun(std::string const& reason) = 0;
         // the leader's walk to (x, y, z) (the route walk's waypoint; `straight`: walked straight)
@@ -211,8 +211,6 @@ namespace Leader
                                    float toY, float toZ) = 0;
         // [lead107 stage 5] the group does `activity` now (its owner's bookkeeping)
         virtual void NoteActivity(Activity activity) = 0;
-        // the group's apart rule ignores `member` until `untilMs`
-        virtual void SetApartIgnore(ObjectGuid member, uint32 untilMs) = 0;
         // the owner's test setup of a buffing pass, a member's flask and buff food items (false: not a member; 0:
         // none of that kind; [lead344] the leader uses them, LeaderConsumables.h) and a member's buff state for the log
         virtual void BuffPassSetup(std::vector<Player*> const& players) = 0;

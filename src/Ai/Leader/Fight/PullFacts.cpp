@@ -704,15 +704,27 @@ namespace Leader::Fight
         Leader::Judge::ChainTiming const timing{fightSecLeft, chain.walkSec, chain.runInSec, chain.openSec};
         chain.due = Leader::Judge::DueNow(timing);
         // the facts that do not change while the fight goes on first
+        // [test1] every gate records what it computed (chain.*) before it rejects, so the verdict can be replayed
+        chain.bossInPack = Leader::Judge::Tri::No;
         for (ObjectGuid const& guid : chain.mobs)
             if (Creature* mob = map->GetCreature(guid); mob && (mob->IsDungeonBoss() || mob->isWorldBoss()))
+            {
+                chain.bossInPack = Leader::Judge::Tri::Yes;
                 return reject("boss", mob->GetName() + " is a boss: his own pull (the buff pass first)");
+            }
+        chain.walkerStop = Leader::Judge::Tri::No;
         if (stop->patrol)
+        {
+            chain.walkerStop = Leader::Judge::Tri::Yes;
             return reject("walker", anchor->GetName() + "'s stop is a walker's: it meets the plan where it walks");
+        }
         for (GroupRouteState::PlannedStop const& meets : route.routePlanMeets)
             if (meets.meetsAt == stop->anchor)
                 if (Creature* walker = map->GetCreature(meets.anchor); walker && walker->IsAlive())
+                {
+                    chain.walkerStop = Leader::Judge::Tri::Yes;
                     return reject("walker", walker->GetName() + " walks to that stop's fight");
+                }
         if (!fromHere && !chain.walk)
             return reject("opener",
                           !walkOpener ? Acore::StringFormat("no ranged opener of the tank is ready{} ({:.1f} yd)",
@@ -736,7 +748,10 @@ namespace Leader::Fight
                     chain.mobs.push_back(guid);
         for (ObjectGuid const& guid : chain.mobs)
             if (Creature* mob = map->GetCreature(guid); mob && (mob->IsDungeonBoss() || mob->isWorldBoss()))
+            {
+                chain.bossInPack = Leader::Judge::Tri::Yes;  // [test1] the grown pack answers it again
                 return reject("boss", mob->GetName() + " is a boss: his own pull (the buff pass first)");
+            }
         // [lead1190] a pack mate the opener does not reach from here: the walk's end covers the whole pack
         if (!chain.walk)
         {
@@ -763,19 +778,28 @@ namespace Leader::Fight
             return reject("waits", "the whole pack's walk is not due yet");
         }
         // the facts of the fight now
-        if (group.NeedBuff())
+        chain.groupBuffed = group.NeedBuff() ? Leader::Judge::Tri::No : Leader::Judge::Tri::Yes;
+        if (chain.groupBuffed == Leader::Judge::Tri::No)
             return reject("buff", "the group needs its buffs (a buff pass first, out of the fight)");
         std::vector<Player*> everyone;
+        chain.everyoneAlive = Leader::Judge::Tri::Yes;
         for (LeaderGroup::MemberInfo const& member : group.Members())
             if (Player* bot = ObjectAccessor::FindPlayer(member.guid))
             {
                 if (!bot->IsAlive())
+                {
+                    chain.everyoneAlive = Leader::Judge::Tri::No;
                     return reject("dead", bot->GetName() + " is dead");
+                }
                 everyone.push_back(bot);
             }
+        chain.tankHolds = Leader::Judge::Tri::Yes;
         for (Unit* mob : fightMobs)
             if (mob && mob->IsAlive() && mob->GetVictim() != tank && !mob->HasBreakableByDamageCrowdControlAura())
+            {
+                chain.tankHolds = Leader::Judge::Tri::No;
                 return reject("holds", "the tank does not hold " + mob->GetName());
+            }
         std::vector<ObjectGuid> combined;
         for (Unit* mob : fightMobs)
             if (mob && mob->IsAlive())
@@ -801,6 +825,7 @@ namespace Leader::Fight
             return reject("healer", healerWhy);
         if (std::string const dry = Leader::Support::HealerOutOfMana(everyone, chain.unionSec); !dry.empty())
             return reject("mana", dry);
+        chain.wayInQuiet = Leader::Judge::Tri::No;  // [test1] No until every way-in check below has passed
         if (Unit* woken = WalkInWakes(tank, anchor, combined))
             return reject("wakes", "its way in wakes " + woken->GetName());
         if (chain.walk)
@@ -814,6 +839,7 @@ namespace Leader::Fight
                 return reject("wakes", "the walk passes " + idleMob->GetName() + "'s reach");
             if (noPath)
                 return reject("opener", "no walk to the opener's reach");
+            chain.wayInQuiet = Leader::Judge::Tri::Yes;
             chain.taken = true;
             chain.kind = "walk";
             chain.why = Acore::StringFormat("{} mobs with {} left, {:.1f} s fight left < walk {:.1f} s + run in "
@@ -825,6 +851,7 @@ namespace Leader::Fight
                                                 : std::string());
             return chain;
         }
+        chain.wayInQuiet = Leader::Judge::Tri::Yes;
         chain.taken = true;
         chain.kind = "taken";
         chain.why = Acore::StringFormat("{} mobs with {} left, {:.1f} s fight left < run in {:.1f} s + {} {:.1f} s; {}",

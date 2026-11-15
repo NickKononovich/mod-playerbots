@@ -1117,15 +1117,11 @@ using namespace Leader::Fight;
             }
         }
         // [lead12] a patrol the planner cannot pull (interceptBanned): no intercept; its lane is crossed while it is
-        // farther than twice its reach from the leader (the walk timed against its loop), else the group waits
-        bool banned = false;
-        if (auto const ban = lead.interceptBanned.find(patrol->GetGUID()); ban != lead.interceptBanned.end())
-        {
-            if (int32(ban->second - now) > 0)
-                banned = true;
-            else
-                lead.interceptBanned.erase(ban);
-        }
+        // farther than twice its reach from the leader, else the group waits
+        // [lead128] the ban holds while its refusal stands, not for a duration: LeaderPlan clears it with
+        // refusedPicks on the first pull that goes or fight that changes the room (nothing else ever lifted it,
+        // because a patrol that is dead or gone never reaches this line)
+        bool const banned = lead.interceptBanned.count(patrol->GetGUID()) != 0;
         // [lead1600] a wanderer whose area reaches a member and whose pull the leader refused (its pick refused,
         // its verdict a refusal, or its intercept banned): no wait in its reach - the group steps back along its way
         // in to the first point out of its area's reach and out of every other idle mob's reach (by their wander
@@ -1204,32 +1200,17 @@ using namespace Leader::Fight;
             return false;
         }
         // [lead14] an intercept that brought no order for LEADER_INTERCEPT_MAX_MS (the planner holds it, cannot reach
-        // it, or plans another mob): the patrol is banned, the group walks on
+        // it, or plans another mob): recorded as a long wait, nothing decided by it.
+        // [lead128] the old second branch banned the patrol for 5 min here. It had been unreachable since
+        // LEADER_NO_FORCING_TIMERS went true (an `else if` under an always-true condition), and the ban it wrote is
+        // the one LeaderPlan writes on the planner's own hopeless refusal - the fact, not the clock. Removed, not
+        // replaced by a shorter clock.
         constexpr uint32 LEADER_INTERCEPT_MAX_MS = 20 * IN_MILLISECONDS;
-        if (Leader::LEADER_NO_FORCING_TIMERS && lead.intercept == patrol->GetGUID() && lead.interceptSinceMs &&
+        if (lead.intercept == patrol->GetGUID() && lead.interceptSinceMs &&
             getMSTimeDiff(lead.interceptSinceMs, now) >= LEADER_INTERCEPT_MAX_MS &&
             !Leader::Orders::IsOpen(group.LeaderGuid()))
             Leader::Dungeon::WaitedLong(group, "patrol_intercept", getMSTimeDiff(lead.interceptSinceMs, now),
                                         patrol->GetName());
-        else if (lead.intercept == patrol->GetGUID() && lead.interceptSinceMs &&
-                 getMSTimeDiff(lead.interceptSinceMs, now) >= LEADER_INTERCEPT_MAX_MS &&
-                 !Leader::Orders::IsOpen(group.LeaderGuid()))
-        {
-            constexpr uint32 LEADER_INTERCEPT_BAN_MS = 5 * MINUTE * IN_MILLISECONDS;
-            lead.interceptBanned[patrol->GetGUID()] = now + LEADER_INTERCEPT_BAN_MS;
-            LOG_INFO("playerbots", "[lead14] leader_patrol_pull {}: patrol {} {}: no order in {} s, banned; the "
-                     "group walks on ({})", group.Run().runId, patrol->GetName(), patrol->GetEntry(),
-                     getMSTimeDiff(lead.interceptSinceMs, now) / IN_MILLISECONDS, why);
-            group.LogEvent("leader_patrol_pull",
-                     JsonObject().Str("patrol", patrol->GetName()).Num("entry", patrol->GetEntry())
-                         .Str("state", "no order: banned, the group walks on").Str("why", why)
-                         .Real("distance", leader->GetExactDist(patrol)));
-            lead.intercept.Clear();
-            lead.interceptMs = 0;
-            lead.interceptSinceMs = 0;
-            endWait("its pull brought no order");
-            return false;
-        }
         bool const pull = Leader::LEADER_PATROL_IS_TARGET
                               ? !plannerPulls  // [lead34] «Если патруль, надо убивать патруль»: no wait, its pull
                               : !banned && !plannerPulls && (patrolNear || laneInRange || laneWaitedOut) &&

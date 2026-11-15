@@ -98,9 +98,10 @@ namespace Leader
 
     // [lead3] The leader's whole-pack request (the old body pull's domain) lives this long without a refresh.
     constexpr uint32 LEADER_REQUEST_TTL_MS = 5000;
-    // [lead3] A refusal is the request's answer only this long after the request began (the planner's 1 s plan
-    // cache may still answer the look before it).
-    constexpr uint32 LEADER_REQUEST_ANSWER_MS = 2500;
+    // [lead128] GONE: a refusal used to count as the request's answer only LEADER_REQUEST_ANSWER_MS (2.5 s) after
+    // the request began, because the planner's 1 s plan cache could answer a look taken before the ask. The cache is
+    // keyed by the ask itself now (AggressiveTargetAction::_planWholePack / _planIntercept / _planWalkIn), so a
+    // refusal in hand was computed with the ask in it and no wait is needed to believe it.
     // [lead3] "held for now" with the leader's readiness verdict ready this long: a planner_no_option report (the
     // hold no rest can change; the old [held_for_now_cap] turned it into a body pull).
     constexpr uint32 LEADER_HELD_READY_MAX_MS = 75000;

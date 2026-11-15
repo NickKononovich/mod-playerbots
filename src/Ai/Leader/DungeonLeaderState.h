@@ -40,7 +40,8 @@ namespace Leader
         ObjectGuid wholePack;
         bool walkIn = false;
         bool required = false;
-        uint32 wholeSinceMs = 0;
+        // [lead128] `wholeSinceMs` (when the ask began) is gone with LEADER_REQUEST_ANSWER_MS: the only thing that
+        // read it was that 2.5 s wait before a refusal counted as the ask's answer
         uint32 wholeSeenMs = 0;
         std::string wholeWhy;
         // [lead3] the boss pull the leader issues at the tank's next ask
@@ -54,9 +55,12 @@ namespace Leader
         ObjectGuid intercept;
         uint32 interceptMs = 0;
         uint32 interceptSinceMs = 0;
-        // [lead12] patrols the planner cannot pull (a hopeless intercept): no intercept of them for a while; the
-        // route crosses their lane while they are far from the leader (timed against the loop), never into them
-        std::map<ObjectGuid, uint32> interceptBanned;
+        // [lead12] patrols the planner cannot pull (a hopeless intercept), by the refusal that banned them: no
+        // intercept of them while that refusal stands; the route crosses their lane while they are far from the
+        // leader, never into them.
+        // [lead128] NOT a deadline (it was 5 min): the ban is bound to the same fact as refusedPicks - a pull that
+        // goes or a fight that changes the room asks everything again, and that is the only thing that lifts it.
+        std::map<ObjectGuid, std::string> interceptBanned;
         std::string interceptWhy;
         ObjectGuid waitPatrol;
         uint32 waitSinceMs = 0;

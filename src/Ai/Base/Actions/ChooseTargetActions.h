@@ -556,6 +556,14 @@ private:
     ObjectGuid _planCached;  // the plan for _planFor, reused for a second
     ObjectGuid _planFor;
     uint32 _planMs = 0;
+    // [lead128] WHICH leader asks the cached plan answers: the whole-pack ask (and whether it is walked in) and the
+    // intercept it was planned with. A cache is keyed by its inputs or it is not a cache - the leader's ask is an
+    // input of the plan (LeaderInputs::wholePack / walkIn / intercept), so a plan made before the ask may not answer
+    // it. This is what the old LEADER_REQUEST_ANSWER_MS (2.5 s) stood in for: the leader waited out the cache's
+    // second instead of the cache knowing the question had changed.
+    ObjectGuid _planWholePack;
+    ObjectGuid _planIntercept;
+    bool _planWalkIn = false;
     bool _planResult = false;
     bool _planPullBack = false;
     bool _planLos = false;

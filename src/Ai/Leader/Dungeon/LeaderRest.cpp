@@ -455,9 +455,7 @@ namespace Leader::Dungeon
             // [b32_strat_gate] a member cut off behind a closed door is waited for wherever it stands (8 yd
             // behind the shut gate is no "together"), stranded or ignored or not.
             bool const doorCut = route.doorCutHold && route.doorCutMember == member.guid;
-            if (doorCut ||
-                (isFar && !group.MemberStranded(bot, leader) && !Travel::BlackMorassHoldsAtMedivh(bot) &&
-                 !(member.apartIgnoreUntilMs && int32(now - member.apartIgnoreUntilMs) < 0)))
+            if (doorCut || (isFar && !group.MemberStranded(bot, leader) && !Travel::BlackMorassHoldsAtMedivh(bot)))
             {
                 farAway.push_back(member.name);
                 rest.farWaited = true;
@@ -496,7 +494,6 @@ namespace Leader::Dungeon
             Player* bot = ObjectAccessor::FindPlayer(member.guid);
             if (!bot || bot == leader || !bot->IsAlive() || group.MemberStranded(bot, leader) ||
                 Travel::BlackMorassHoldsAtMedivh(bot) ||  // [hleft-bm-tank-fetch]
-                (member.apartIgnoreUntilMs && int32(now - member.apartIgnoreUntilMs) < 0) ||
                 (timedRun && (RestState::IsEating(bot) || RestState::IsDrinking(bot))))  // [b33_cos2]
                 continue;
             bool const otherMap = bot->GetMap() != leader->GetMap();
@@ -699,8 +696,7 @@ namespace Leader::Dungeon
             {
                 Player* bot = ObjectAccessor::FindPlayer(member.guid);
                 if (!bot || bot == leader || !bot->IsAlive() || bot->GetMap() != leader->GetMap() ||
-                    bot->IsInCombat() || group.MemberStranded(bot, leader) ||
-                    (member.apartIgnoreUntilMs && int32(now - member.apartIgnoreUntilMs) < 0))
+                    bot->IsInCombat() || group.MemberStranded(bot, leader))
                     continue;
                 float const metric = ApartMetric(bot, leader);
                 if (metric > trail)
@@ -717,8 +713,7 @@ namespace Leader::Dungeon
                 Player* bot = ObjectAccessor::FindPlayer(member.guid);
                 if (!bot || bot == leader || !bot->IsAlive() || !PlayerbotAI::IsHeal(bot) ||
                     bot->GetMap() != leader->GetMap() || bot->IsInCombat() ||
-                    group.MemberStranded(bot, leader) ||
-                    (member.apartIgnoreUntilMs && int32(now - member.apartIgnoreUntilMs) < 0))
+                    group.MemberStranded(bot, leader))
                     continue;
                 bool const resting = bot->HasAuraType(SPELL_AURA_MOD_POWER_REGEN) ||
                                      bot->HasAuraType(SPELL_AURA_MOD_REGEN) || bot->IsSitState();

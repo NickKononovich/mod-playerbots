@@ -72,6 +72,18 @@ namespace
         out.facts.hasHealer = !out.file.Str("healer").empty();
         out.facts.due = out.file.Bool("recorded_due", false);
         out.facts.taken = out.file.Bool("recorded_taken", false);
+        // [test1] the six world gates as the judge computed them (PullFacts.cpp writes them into the chain_pull
+        // event, the journal carries them as columns). A key the file does NOT carry stays Unknown, which is the
+        // whole point: "the judge never reached this gate" is not "the gate passed", and the replay must stop
+        // rather than invent the difference.
+        auto const tri = [&out](char const* key)
+        { return !out.file.Has(key) ? Tri::Unknown : out.file.Bool(key, false) ? Tri::Yes : Tri::No; };
+        out.facts.bossInPack = tri("gate_boss");
+        out.facts.walkerStop = tri("gate_walker");
+        out.facts.groupBuffed = tri("gate_buff");
+        out.facts.everyoneAlive = tri("gate_dead");
+        out.facts.tankHolds = tri("gate_holds");
+        out.facts.wayInQuiet = tri("gate_wakes");
         out.recordedKind = out.file.Str("recorded_kind");
         out.recordedDue = out.facts.due;
         out.recordedTaken = out.facts.taken;
@@ -177,6 +189,44 @@ TEST(ChainPullCorpus, ATakenFightNamedTheHealerThatKeepsTheTank)
         if (one.recordedTaken)
             EXPECT_TRUE(one.facts.hasHealer)
                 << one.name << ": taken with no healer named, though the healer gate precedes the verdict";
+}
+
+TEST(ChainPullCorpus, AReplayThatReachesAVerdictReachesTheRECORDEDVerdict)
+{
+    // [test1] The point of recording the world gates: a replay that gets all the way to a verdict must come out
+    // with the verdict that was actually made. This is refutable without knowing who is to blame - either the
+    // gates were recorded faithfully and the seam runs them as production does, or this goes red and names the
+    // fixture. Fixtures whose gates are missing are NOT counted as agreement: they are counted as undecided and
+    // reported, because a sweep that passes on what it could not read proves nothing.
+    std::vector<Loaded> const corpus = Corpus();
+    ASSERT_FALSE(corpus.empty());
+    size_t decided = 0;
+    size_t undecided = 0;
+    for (Loaded const& one : corpus)
+    {
+        ChainPullReplay const replay = ReplayChainPull(one.facts);
+        if (replay.gate == Gate::Undecided)
+        {
+            ++undecided;
+            continue;
+        }
+        ++decided;
+        EXPECT_EQ(replay.taken, one.recordedTaken)
+            << one.name << ": the replay stopped at the " << GateName(replay.gate) << " gate and came out taken="
+            << replay.taken << ", the journal recorded kind=" << one.recordedKind << " taken=" << one.recordedTaken;
+        // "walk" is a taken verdict with the fight walking to the opener's reach, so it answers to the same gate
+        bool const sameGate = one.recordedKind == GateName(replay.gate) ||
+                              (replay.gate == Gate::Taken && one.recordedKind == "walk");
+        EXPECT_TRUE(sameGate) << one.name << ": the replay stopped at the " << GateName(replay.gate)
+                              << " gate, the journal recorded " << one.recordedKind;
+    }
+    std::printf("[corpus] replay: %zu verdicts reproduced, %zu undecided\n", decided, undecided);
+    if (!decided)
+        GTEST_SKIP() << "not one of the " << corpus.size() << " fixtures in " << CorpusDir()
+                     << " carries the world gates (gate_boss / gate_walker / gate_buff / gate_dead / gate_holds / "
+                        "gate_wakes), so no recorded verdict can be replayed at all. The emitter writes them now "
+                        "(PullFacts.cpp -> the chain_pull event); waiting on the journal side: six Optional<bool> "
+                        "on the record, six indexed columns, and export_fixture.py reading them out.";
 }
 
 TEST(ChainPullCorpus, Summary)

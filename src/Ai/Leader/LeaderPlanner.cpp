@@ -9986,7 +9986,16 @@ namespace PullPlanning  // [lead31a] was anonymous: shared with the tank's execu
 bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool rescaled)
 {
     uint32 const now = getMSTime();
-    if (_planFor == target->GetGUID() && getMSTimeDiff(_planMs, now) < CAREFUL_PLAN_CACHE_MS)
+    // [lead128] the leader's ask is an input of the plan, so the cache is keyed by it too: a plan made before the
+    // ask (or before it changed) is no answer to it, whatever its age. Without this the leader had to wait the
+    // cache's second out before it could believe a refusal - a rule by elapsed time.
+    PullPlanner::LeaderInputs const* const askInputs = PullPlanner::CurrentLeaderInputs();
+    ObjectGuid const askWholePack = askInputs ? askInputs->wholePack : ObjectGuid::Empty;
+    ObjectGuid const askIntercept = askInputs ? askInputs->intercept : ObjectGuid::Empty;
+    bool const askWalkIn = askInputs && askInputs->walkIn;
+    bool const sameAsk = _planWholePack == askWholePack && _planIntercept == askIntercept &&
+                         _planWalkIn == askWalkIn;
+    if (_planFor == target->GetGUID() && sameAsk && getMSTimeDiff(_planMs, now) < CAREFUL_PLAN_CACHE_MS)
     {
         if (_planResult)
             _planTarget = _planCached;
@@ -10004,6 +10013,9 @@ bool AggressiveTargetAction::PlanCarefulPull(Unit* target, bool measured, bool r
 
     _planFor = target->GetGUID();
     _planMs = now;
+    _planWholePack = askWholePack;  // [lead128] the ask this plan answers
+    _planIntercept = askIntercept;
+    _planWalkIn = askWalkIn;
     _planResult = false;
     _planCached.Clear();
     _planPullBack = false;

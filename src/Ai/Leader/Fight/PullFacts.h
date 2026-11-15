@@ -10,6 +10,7 @@
 // [lead104] user: production logic does not live in the test harness. The leader's pull and fight facts: what the
 // leader judges before it issues an engage and in a fight; the harness only calls them and logs.
 
+#include "ChainPullJudge.h"  // [test1] Leader::Judge::Tri - the world gates as the judge computed them
 #include "ObjectGuid.h"
 #include "Position.h"
 #include <functional>
@@ -141,6 +142,18 @@ namespace Leader::Fight
         Position walkTo;          // [lead1190]
         float walkSec = 0.0f;     // [lead1190] the tank's walk there
         HealerAlong healer;       // [lead1190] the healer that keeps the tank (its walk along)
+        // [test1] THE WORLD GATES AS THIS JUDGEMENT COMPUTED THEM, one flag per gate that reads the world. Until
+        // now only the resulting `kind` was recorded, and it names the gate that rejected while saying nothing
+        // about the gates before it, so a replay of a recorded verdict could only answer Undecided.
+        // Tri::Unknown means THE GATE WAS NEVER REACHED (an earlier one rejected first) - it does NOT mean "it
+        // passed": the journal's rule, absence is not zero. A replay that cannot tell those apart would answer,
+        // and lie. The names mirror ChainPullFacts' fields, which is what a replay reads.
+        Leader::Judge::Tri bossInPack = Leader::Judge::Tri::Unknown;
+        Leader::Judge::Tri walkerStop = Leader::Judge::Tri::Unknown;
+        Leader::Judge::Tri groupBuffed = Leader::Judge::Tri::Unknown;
+        Leader::Judge::Tri everyoneAlive = Leader::Judge::Tri::Unknown;
+        Leader::Judge::Tri tankHolds = Leader::Judge::Tri::Unknown;
+        Leader::Judge::Tri wayInQuiet = Leader::Judge::Tri::Unknown;
     };
     ChainPull JudgeChainPull(LeaderGroup& group, Player* tank, std::vector<Unit*> const& fightMobs, float fightSecLeft,
                              std::function<std::vector<ObjectGuid>(Creature*)> const& packOf, float walkArriveYd);
