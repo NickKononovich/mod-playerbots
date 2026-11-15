@@ -4246,10 +4246,13 @@ namespace SoloSafety
         return true;
     }
 
-    bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots, bool atRestart)
+    bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots, bool atRestart,
+                       CoveredGround* covered)
     {
         who.clear();
         spots.clear();
+        if (covered)
+            *covered = CoveredGround();
         if (!bot || !bot->IsAlive())
             return false;
         float const sight = sPlayerbotAIConfig.SightDistance;
@@ -4295,6 +4298,17 @@ namespace SoloSafety
         float const margin = bot->GetCombatReach();
         constexpr uint32 DIRECTIONS = 16;  // the search's directions all round (WorkSpot's: a look's cost, no rule)
         std::vector<std::pair<float, G3D::Vector3>> found;
+        // [death472] how many of these same reaches cover a point - the whole of the fallback's rule
+        auto const covering = [&discs](G3D::Vector3 const& at)
+        {
+            uint32 n = 0;
+            for (G3D::Vector4 const& d : discs)
+                if (InDisc(d, at))
+                    ++n;
+            return n;
+        };
+        if (covered)
+            covered->reachesHere = covering(here);
         for (uint32 i = 0; i < DIRECTIONS; ++i)
         {
             float const angle = 2.0f * float(M_PI) * float(i) / float(DIRECTIONS);
@@ -4320,6 +4334,23 @@ namespace SoloSafety
             for (auto const& [t1, t2] : inside)
                 if (t1 <= clearAt + margin)
                     clearAt = std::max(clearAt, t2);
+            // [death472] the same rays, read for the LEAST covered ground as well: the candidates are where the ray
+            // leaves each reach it crosses (the very chords solved above, no second geometry and no sampling grid
+            // of its own). The list is not filtered here: a caller that means to move asks for fewer reaches than
+            // cover the bot, and a caller that found nothing has the numbers to say so in a problem row
+            if (covered)
+                for (std::pair<float, float> const& span : inside)
+                {
+                    float const out = span.second + margin;
+                    if (out <= 0.0f || out > sight)
+                        continue;
+                    float cx = here.x + dx * out;
+                    float cy = here.y + dy * out;
+                    float cz = here.z;
+                    bot->UpdateAllowedPositionZ(cx, cy, cz);
+                    G3D::Vector3 const candidate(cx, cy, cz);
+                    covered->spots.push_back({candidate, covering(candidate), out});
+                }
             float const t = clearAt + margin;
             if (t > sight)
                 continue;  // no clear spot this way within its sight (the mobs beyond are not looked at)
@@ -4334,6 +4365,10 @@ namespace SoloSafety
         std::sort(found.begin(), found.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
         for (auto const& [t, at] : found)
             spots.push_back(at);
+        // [death472] fewest reaches first, and among equals the nearest: "where the reaches are fewest" in that order
+        if (covered)
+            std::sort(covered->spots.begin(), covered->spots.end(), [](CoveredSpot const& a, CoveredSpot const& b)
+                      { return a.reaches != b.reaches ? a.reaches < b.reaches : a.yards < b.yards; });
         return true;
     }
 
@@ -4519,7 +4554,16 @@ namespace SoloSafety
             return false;
         std::string who;
         std::vector<G3D::Vector3> spots;
-        if (!StandsInReach(bot, who, spots) || spots.empty())
+        CoveredGround covered;
+        // [death472] coordinator 2026-11-15, variant (a): where no spot within sight is out of every reach the bot
+        // goes to the LEAST covered ground - it does not sit down where it stands. `spots.empty()` used to make this
+        // judge answer "nothing refuses the rest", and that answer is how Eraelor L26 died twice to the same
+        // Mor'Ladim patrol: it drank inside the reach it had itself refused on its route ("UNJUDGED fight ... status
+        // REST", its aggro disc r 26 with the bot 10 yd from the centre). It follows from the zone rule the user
+        // approved today - the bot does not walk into the aggro zone of a fight it loses - and sitting in one is the
+        // same thing, chosen and for longer. With nothing at all to move to it is a RECORDED problem
+        // (NewRpgBaseAction::RestEscape writes the row), never a reason to sit in the reach
+        if (!StandsInReach(bot, who, spots, false, &covered))
             return false;
         static std::mutex restLogLock;
         static std::unordered_map<uint32, std::string> restLogged;
@@ -4530,8 +4574,14 @@ namespace SoloSafety
                 return true;
             last = who;
         }
-        LOG_INFO("playerbots", "[deaths14] {} L{} rests not here: within the aggro reach of {} ({} spots out of every "
-                 "reach round it)", bot->GetName(), bot->GetLevel(), who, spots.size());
+        std::string const least =
+            covered.spots.empty()
+                ? std::string(": its 16 rays left no point at all")
+                : Acore::StringFormat(": the least covered point its rays found is covered by {} of them",
+                                      covered.spots.front().reaches);
+        LOG_INFO("playerbots", "[deaths14] {} L{} rests not here: within the aggro reach of {} ({} reach(es) cover "
+                 "where it stands, {} spot(s) out of every reach round it{})", bot->GetName(), bot->GetLevel(), who,
+                 covered.reachesHere, spots.size(), least);
         return true;
     }
 
@@ -4592,6 +4642,19 @@ namespace SoloSafety
     std::string DeathContext(Player* bot, Creature* killer, Journal::DeathFacts* facts)
     {
         std::string out = Acore::StringFormat("hp {:.0f}/{:.0f}", float(bot->GetHealth()), float(bot->GetMaxHealth()));
+        // [death474] the mana the death happened at, as VALUES: seven of b503's nine deaths are "lost out of mana"
+        // and the two pulls a resto druid opened at 4 % and 9 % mana existed only inside this sentence, which
+        // nothing may filter on. The share goes beside its denominator, and a bot with no mana bar leaves all four
+        // empty - NULL is "the emitter did not hold it" and never a zero
+        if (facts && bot->GetMaxPower(POWER_MANA))
+        {
+            facts->mana = bot->GetPower(POWER_MANA);
+            facts->manaMax = bot->GetMaxPower(POWER_MANA);
+            facts->manaPct = bot->GetPowerPct(POWER_MANA);
+            // the one input of the pull's mana gate that turns mana into survival (ManaBudget::Fight::healPerMana):
+            // with it the row answers "would the gate have held this pull" by arithmetic instead of by a guess
+            facts->healPerMana = SurvivalKit::HealPerMana(bot);
+        }
         std::string attackers;
         uint32 count = 0;
         for (Unit* attacker : bot->getAttackers())

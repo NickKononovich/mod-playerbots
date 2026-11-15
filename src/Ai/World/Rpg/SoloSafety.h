@@ -199,7 +199,30 @@ namespace SoloSafety
     // none covers it
     // [login67] atRestart: the reaches its next login meets - every mob at its home (the restart respawns the dead
     // ones and the fighting ones are back home), dead and fighting mobs too
-    bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots, bool atRestart = false);
+    // [death472] a spot that is NOT out of every reach, with how many of them cover it. b503 Duskwood: Eraelor L26
+    // stood where no direction left the union of the reaches, so `spots` came back empty, nothing refused its rest
+    // and it sat down inside Mor'Ladim L30's patrol reach - "UNJUDGED fight ... status REST", dead; the same spawn
+    // killed it twice and Baridrol once. Sitting where you stand because nothing was clear is not a fallback, it is
+    // how that death happens, so the fallback is the least covered ground instead. Judged by the very same discs as
+    // the clear spots, by the same judge (AggroReach), and the count is the whole rule - no threshold, no clock
+    struct CoveredSpot
+    {
+        G3D::Vector3 at;
+        uint32 reaches = 0;  // the idle reaches that cover it
+        float yards = 0.0f;  // how far along its ray it lies
+    };
+    struct CoveredGround
+    {
+        // how many of those reaches cover the bot WHERE IT STANDS: the number every spot is compared against, so
+        // that "less covered" is a measured difference and not an opinion
+        uint32 reachesHere = 0;
+        // every point where one of the 16 rays leaves a reach it crosses, fewest reaches first and the nearest
+        // among equals. NOT filtered: a caller that wants to move asks for fewer than `reachesHere`, and a caller
+        // that found nothing to move to has the numbers to say so
+        std::vector<CoveredSpot> spots;
+    };
+    bool StandsInReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots, bool atRestart = false,
+                       CoveredGround* covered = nullptr);
     // [death456] StandsInReach's idle reaches over the bot that its judge alone refuses (`who`: each with its pack);
     // `spots` the ways out of every reach then
     bool StandsInLostReach(Player* bot, std::string& who, std::vector<G3D::Vector3>& spots);

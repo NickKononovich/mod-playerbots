@@ -507,6 +507,19 @@ namespace Journal
         Optional<uint32> routeRefused;     // seen and walked round
         Optional<uint32> routeUnseen;      // out of the search's range altogether
         Optional<uint32> routeOtherFight;  // [surv21] in range, left out because its fight was not the bot's
+
+        // [death474] THE MANA THE DEATH HAPPENED AT, as columns, because the gate that is supposed to stop a pull
+        // the mana cannot pay for ([mana90], ManaBudget::Of) cannot be CHECKED without them. b503: seven of the nine
+        // deaths are `[death465] lost out of mana`, two of them a resto druid that opened a pull at 4 % and at 9 %
+        // mana - and those two percentages existed only inside the `context` sentence, which nothing may filter on.
+        // `mana` beside `mana_max` because a share without its denominator is unverifiable (the project's own rule),
+        // and `healPerMana` because it is the one input of the budget that turns mana into survival: with it the row
+        // answers "would the gate have held this pull" by arithmetic instead of by a guess.
+        // NULL is "the emitter did not hold it" and never a zero - a bot with no mana bar at all leaves these empty.
+        Optional<uint32> mana;
+        Optional<uint32> manaMax;
+        Optional<float> manaPct;
+        Optional<float> healPerMana;  // health its own best heal buys per point of mana (SurvivalKit::HealPerMana)
     };
 
     // A DEATH IS A CALCULATION BUG in this project and not bad luck, so the row carries the INPUTS and not only the

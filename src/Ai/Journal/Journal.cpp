@@ -202,7 +202,9 @@ namespace Journal
             // sentence already carried as words. NULL means the emitter did not hold the value, not a zero.
             "fight_hit_by, fight_taken, fight_damage_from_killer, fight_sec, runpast_priced, runpast_priced_high, "
             "runpast_sec, runpast_hp, runpast_taken, runpast_of_its_chase, route_age_ms, route_complete, "
-            "route_through_refused, route_priced, route_refused, route_unseen, route_other_fight)";
+            "route_through_refused, route_priced, route_refused, route_unseen, route_other_fight, "
+            // [death474] the mana the death happened at: the inputs of the pull's mana gate, as columns
+            "mana, mana_max, mana_pct, heal_per_mana)";
         // [jrn40] the problems table. `checked_state` is NOT here: it is a GENERATED column the database computes,
         // so it can neither be inserted nor contradicted.
         char const* const COLUMNS_ISSUE =
@@ -1169,6 +1171,11 @@ namespace Journal
                              "route_through_refused TINYINT UNSIGNED NULL, route_priced SMALLINT UNSIGNED NULL, "
                              "route_refused SMALLINT UNSIGNED NULL, route_unseen SMALLINT UNSIGNED NULL, "
                              "route_other_fight SMALLINT UNSIGNED NULL, "
+                             // [death474] the mana the death happened at, so the pull's mana gate can be
+                             // checked by query. The share stands beside its denominator, and NULL means
+                             // "the emitter did not hold it" - a bot with no mana bar leaves these empty
+                             "mana INT UNSIGNED NULL, mana_max INT UNSIGNED NULL, mana_pct FLOAT NULL, "
+                             "heal_per_mana FLOAT NULL, "
                              "judged_pull TINYINT UNSIGNED NULL, expected VARCHAR(512) NOT NULL DEFAULT '', "
                              "pull_expected SMALLINT UNSIGNED NULL, pull_method VARCHAR(16) NOT NULL DEFAULT '', "
                              "context VARCHAR(1024) NOT NULL DEFAULT '', threat VARCHAR(1024) NOT NULL DEFAULT '', "
@@ -1188,6 +1195,10 @@ namespace Journal
                              "KEY route_unseen_at (route_unseen, at_ms), "
                              "KEY route_priced_at (route_priced, at_ms), "
                              "KEY route_age_ms_at (route_age_ms, at_ms), "
+                             // [death474] "the deaths at low mana" and "the deaths that could not heal" are
+                             // both a WHERE over a column, each paired with time
+                             "KEY mana_pct_at (mana_pct, at_ms), "
+                             "KEY heal_per_mana_at (heal_per_mana, at_ms), "
                              "KEY decision (decision_id)) "
                              "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 "
                              "COMMENT='[jrn30] a real death with the judges inputs - prevention is never written here'")
@@ -1766,7 +1777,8 @@ namespace Journal
         Writer::Instance().Push(
             "pb_journal_death",
             Acore::StringFormat("({},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
-                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{})",
+                                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},"
+                                "{},{},{},{})",
                                 id, BootId(), nowMs, nowMs / MS_PER_HOUR,
                                 Quoted(death.botName, 32), death.botLow, OrNull(death.botLevel),
                                 OrNull(death.botClass), OrNull(death.role, 8), OrNull(death.spec, 24), death.mapId,
@@ -1786,7 +1798,9 @@ namespace Journal
                                 OrNull(death.facts.routeAgeMs), OrNull(death.facts.routeComplete),
                                 OrNull(death.facts.routeThroughRefused), OrNull(death.facts.routePriced),
                                 OrNull(death.facts.routeRefused), OrNull(death.facts.routeUnseen),
-                                OrNull(death.facts.routeOtherFight)));
+                                OrNull(death.facts.routeOtherFight), OrNull(death.facts.mana),
+                                OrNull(death.facts.manaMax), OrNull(death.facts.manaPct),
+                                OrNull(death.facts.healPerMana)));
         return id;
     }
 

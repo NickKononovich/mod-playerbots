@@ -1732,10 +1732,25 @@ namespace SurvivalKit
             LeaveFormFor(botAI, bot, best->spell);  // [death416]
             cast = botAI->CastSpell(best->spell, bot);
         }
+        // [death473] "no end to the chase" is a VERDICT and not a number ([runpast89], as RouteWalls already
+        // prints it). 83 of the 252 live `[death385]` lines carried float's maximum printed in full -
+        // "340282346638528859811704183484516925440 dmg to come" - and every number in that sentence read as a
+        // measurement of something.
+        // ... and `cast` for an ITEM is not an answer: Player::CastItemUseSpell returns void, so this line claimed
+        // a heal landed whenever the item was merely in the bags. Selalleas L26 in the 32 s before its death: 46 of
+        // these lines against ONE `[eco194]` Healing Potion actually used. The line now says what it did - asked the
+        // core to use the item - instead of asserting what it cannot see
         if (cast)
-            LOG_INFO("playerbots", "[death385] {} L{} run past: heals on the move ({} {}, {:.0f} hp) - {:.0f} dmg to "
-                     "come at hp {}", bot->GetName(), bot->GetLevel(), best->item ? "item" : "spell",
-                     best->item ? best->item : best->spell, best->amount, damageToCome, bot->GetHealth());
+        {
+            std::string const toCome =
+                damageToCome >= std::numeric_limits<float>::max()
+                    ? std::string("no end to the chase, so no damage to price")
+                    : Acore::StringFormat("{:.0f} dmg to come", damageToCome);
+            LOG_INFO("playerbots", "[death385] {} L{} run past: {} on the move ({} {}, {:.0f} hp) - {} at hp {}",
+                     bot->GetName(), bot->GetLevel(), best->item ? "asks the core to use its heal" : "heals",
+                     best->item ? "item" : "spell", best->item ? best->item : best->spell, best->amount, toCome,
+                     bot->GetHealth());
+        }
         return cast;
     }
 
@@ -2204,12 +2219,15 @@ bool SoloSurvivalAction::Execute(Event /*event*/)
                 botAI->PetFollow();
         }
         // [death437] its heals on the run (instant spells, item uses), cast as the chases still to come would kill it
+        // [death473] the chases are added by the one thing that adds chases (SoloSafety::RunPast::Add), which knows
+        // that a chase with no end saturates instead of summing: a raw `+=` here was a second judge of the same
+        // quantity (rule 5), and with two endless chasers it produced an infinity rather than "there is no end"
         {
-            float toCome = 0.0f;
+            SoloSafety::RunPast toCome;
             for (Unit* attacker : bot->getAttackers())
                 if (Creature* mob = attacker ? attacker->ToCreature() : nullptr)
-                    toCome += SoloSafety::RunPastChase(bot, mob).damage;
-            if (SurvivalKit::RunPastHeal(bot, toCome))
+                    toCome.Add(SoloSafety::RunPastChase(bot, mob));
+            if (SurvivalKit::RunPastHeal(bot, toCome.damage))
                 return true;
         }
         if (bot->isMoving() && bot->GetMotionMaster()->GetCurrentMovementGeneratorType() == POINT_MOTION_TYPE)
@@ -2551,12 +2569,13 @@ bool SoloRunPastAction::Execute(Event /*event*/)
     // are cast when the chases still to come would kill it. b449 Namwe L18 "run-past chase priced 691 dmg against hp
     // 1168, took 584 since" and Uraela L19 (hp 946 at 491 max) ran past with their potions and Gift of the Naaru
     // counted and never used them
+    // [death473] added by RunPast::Add, the one judge of "the chases still to come" (see the other call site)
     {
-        float toCome = 0.0f;
+        SoloSafety::RunPast toCome;
         for (Unit* attacker : bot->getAttackers())
             if (Creature* mob = attacker ? attacker->ToCreature() : nullptr)
-                toCome += SoloSafety::RunPastChase(bot, mob).damage;
-        if (SurvivalKit::RunPastHeal(bot, toCome))
+                toCome.Add(SoloSafety::RunPastChase(bot, mob));
+        if (SurvivalKit::RunPastHeal(bot, toCome.damage))
             return true;
     }
     // [lag360] the speed piece the run's price counted (instant, castable now, its aura not on yet): cast first

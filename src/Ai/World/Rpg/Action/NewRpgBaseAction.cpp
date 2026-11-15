@@ -7287,6 +7287,95 @@ bool NewRpgBaseAction::DiscoverTownFlightMaster(std::string const& why)
     return true;
 }
 
+namespace
+{
+    // [death472] THE REST HAD NOWHERE TO GO AT ALL: no spot within sight out of every reach, and not one point its
+    // 16 rays found that fewer reaches cover than cover the bot where it stands. The bot no longer sits down in the
+    // reach, so this is the case that has to be WRITTEN rather than survived - the row says how many reaches hold
+    // the ground and what the least covered point its rays found was covered by, which is what the next look at it
+    // needs instead of a guess.
+    //
+    // ONE ROW PER FACT, NOT PER TICK (trap 1). RestEscape runs on every tick of a rest, and the recorded window
+    // already holds 6 603 `[surv10]` lines of one phrase printed once per tick. The write is keyed on the facts
+    // themselves - which mobs cover the ground and how many - and fires again only when one of them changes, never
+    // on a clock.
+    void NoteRestNoGround(Player* bot, std::string const& who, SoloSafety::CoveredGround const& covered)
+    {
+        if (!bot)
+            return;
+        std::string const fact = Acore::StringFormat(
+            "{}|{}|{}", who, covered.reachesHere,
+            covered.spots.empty() ? uint32(0) : covered.spots.front().reaches);
+        {
+            static std::mutex noGroundLock;
+            static std::unordered_map<uint32, std::string> noGroundSeen;
+            std::lock_guard<std::mutex> guard(noGroundLock);
+            std::string& last = noGroundSeen[bot->GetGUID().GetCounter()];
+            if (last == fact)
+                return;
+            last = fact;
+        }
+        std::string const least =
+            covered.spots.empty()
+                ? std::string("its 16 rays left no point at all")
+                : Acore::StringFormat("the least covered point its rays found is covered by {} of them",
+                                      covered.spots.front().reaches);
+        LOG_INFO("playerbots", "[death472] {} L{} cannot rest anywhere at ({:.0f},{:.0f}): {} reach(es) cover where "
+                 "it stands ({}), no spot out of every reach within sight, and {} - it does NOT sit down in the reach",
+                 bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), covered.reachesHere, who,
+                 least);
+
+        Journal::Issue issue;
+        issue.kind = "rest_no_ground";
+        // the bot keeps working - it just cannot recover here, and without mana its next fight is the one it loses
+        issue.severity = "mid";
+        // the bot, the reaches and the rays are all recorded and the geometry is deterministic: put the same stand
+        // and the same spawns back and the same 16 rays come back covered
+        issue.reproClass = "decision";
+        // THE SHAPE plus THE PLACE, as [dpszero2]'s row does: the question this row answers is "which ground of the
+        // world has no resting place", never "which mob was it this time"
+        issue.dedupKey = Acore::StringFormat(
+            "rest_no_ground|no spot within sight is out of every aggro reach and none is less covered|zone {}",
+            bot->GetZoneId());
+        issue.why = Acore::StringFormat(
+            "{} L{} at ({:.0f},{:.0f}) hp {:.0f} % stands in the aggro reach of {} ({} reach(es)); no spot within "
+            "sight leaves all of them and {}",
+            bot->GetName(), bot->GetLevel(), bot->GetPositionX(), bot->GetPositionY(), bot->GetHealthPct(), who,
+            covered.reachesHere, least);
+        issue.realWhen = "the rest escape found neither a spot out of every reach nor one less covered than the "
+                         "ground the bot stands on";
+        issue.real = "yes";
+        issue.realWhy = "the bot used to sit down inside the reach here, and that is how Eraelor L26 died twice to "
+                        "the same Mor'Ladim patrol; it now does not rest at all, so this ground costs it its "
+                        "recovery until the place is fixed";
+        issue.realSource = "emitter";
+        // the number this row's own key leaves free: how many reaches hold the ground (the key fixes the shape and
+        // the zone, never the count)
+        issue.value = double(covered.reachesHere);
+        issue.valueUnit = "aggro reaches over the stand";
+        issue.botName = bot->GetName();
+        issue.botLow = bot->GetGUID().GetCounter();
+        issue.mapId = bot->GetMapId();
+        issue.zoneId = bot->GetZoneId();
+        issue.x = bot->GetPositionX();
+        issue.y = bot->GetPositionY();
+        issue.z = bot->GetPositionZ();
+        // the inputs are the stand and the rays' own numbers, and they live nowhere else: the stream is swept while
+        // this row stays, so the fixture carries them (read with the eyes, never filtered on)
+        std::string rays;
+        for (size_t i = 0; i < covered.spots.size() && i < 8; ++i)
+            rays += Acore::StringFormat("{}{{\"x\":{:.1f},\"y\":{:.1f},\"yd\":{:.1f},\"reaches\":{}}}",
+                                        i ? "," : "", covered.spots[i].at.x, covered.spots[i].at.y,
+                                        covered.spots[i].yards, covered.spots[i].reaches);
+        issue.fixture = Acore::StringFormat(
+            "{{\"x\":{:.1f},\"y\":{:.1f},\"z\":{:.1f},\"map\":{},\"zone\":{},\"reachesHere\":{},\"clearSpots\":0,"
+            "\"rayPoints\":{},\"who\":\"{}\",\"rays\":[{}]}}",
+            bot->GetPositionX(), bot->GetPositionY(), bot->GetPositionZ(), bot->GetMapId(), bot->GetZoneId(),
+            covered.reachesHere, covered.spots.size(), who, rays);
+        Journal::RecordIssue(issue);
+    }
+}  // namespace
+
 bool NewRpgBaseAction::RestEscape()
 {
     // [rest64] a co-op / help party's member too: b400 Namwe L13 and Galiver L13 (help party, q2038, Stonesplinter camp
@@ -7304,7 +7393,10 @@ bool NewRpgBaseAction::RestEscape()
         return false;
     std::string who;
     std::vector<G3D::Vector3> spots;
-    if (!SoloSafety::StandsInReach(bot, who, spots))
+    // [death472] ... and the ground the reaches cover least, for the case where no spot within sight is out of
+    // every one of them
+    SoloSafety::CoveredGround covered;
+    if (!SoloSafety::StandsInReach(bot, who, spots, false, &covered))
         return false;
     // [death400] a spot whose only walk crosses refused reaches is taken when the chases of every reach it crosses
     // are survived at the high end (SoloSafety::RunOutSurvives): standing on in the reaches is a fight that comes.
@@ -7345,6 +7437,45 @@ bool NewRpgBaseAction::RestEscape()
             return true;
         }
     }
+    // [death472] coordinator 2026-11-15, variant (a): no spot within sight is out of every reach, so the rest goes to
+    // the LEAST COVERED ground rather than being taken where the bot stands. Sitting where you stand is what killed
+    // Eraelor L26 twice to the same Mor'Ladim L30 patrol ("UNJUDGED fight ... status REST", inside a reach its own
+    // route had refused) and Baridrol L27 once. "Fewest reaches" is counted over the very discs the clear spots were
+    // solved from, by one judge, and nothing here reads a clock.
+    for (SoloSafety::CoveredSpot const& spot : covered.spots)
+    {
+        if (spot.reaches >= covered.reachesHere)
+            break;  // sorted fewest first: from here on the ground is no better covered than where it stands
+        Leader::RouteResult const route = Leader::Route(bot, Position(spot.at.x, spot.at.y, spot.at.z));
+        if (!route.found || !route.complete)
+            continue;
+        // the walk ends inside reaches by construction, so a walk that crosses one is only taken on the same terms
+        // [death400] already set for that case: every chase it crosses survived at the high end
+        std::string crossWhy;
+        if (route.throughRefused && !SoloSafety::RunOutSurvives(bot, route.points, crossWhy))
+            continue;
+        if (bot->IsSitState())
+            bot->SetStandState(UNIT_STAND_STATE_STAND);
+        if (!MoveTo(bot->GetMapId(), spot.at.x, spot.at.y, spot.at.z, false, false, false, true))
+            continue;
+        LOG_INFO("playerbots", "[death472] {} L{} REST_ESCAPE to the least covered ground inside the reaches of {}: "
+                 "({:.0f},{:.0f}) {:.0f} yd off, covered by {} reach(es) against {} where it stands; {} spot(s) out "
+                 "of every reach{}",
+                 bot->GetName(), bot->GetLevel(), who, spot.at.x, spot.at.y, spot.yards, spot.reaches,
+                 covered.reachesHere, spots.size(),
+                 crossWhy.empty() ? std::string() : " - its run out priced " + crossWhy);
+        return true;
+    }
+    // [death472] and with nothing at all to move to this is a RECORDED problem, not a reason to sit in the reach:
+    // the row carries how many reaches cover the bot and that its 16 rays found no less covered point, so the next
+    // look at it starts from numbers instead of from a guess.
+    // ONLY when the GROUND is the reason. A spot that existed and whose walk was refused is a different problem
+    // (the walk's, and [deaths140] NoteNoWayOut is its line) - saying "no spot leaves the reaches" of it would be
+    // a row that lies about which judge said no
+    bool const noGround =
+        spots.empty() && (covered.spots.empty() || covered.spots.front().reaches >= covered.reachesHere);
+    if (noGround)
+        NoteRestNoGround(bot, who, covered);
     return false;
 }
 
