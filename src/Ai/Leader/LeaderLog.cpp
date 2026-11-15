@@ -6,39 +6,72 @@
 
 #include "LeaderLog.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 namespace Leader
 {
     namespace
     {
-        class NullSink : public DecisionSink
+        // nullptr: no primary sink is set, so only the observers (the MySQL journal) see the lines
+        DecisionSink* g_decisionSink = nullptr;
+
+        // [jrn20] the primary sink plus its observers, behind the one reference every call site already uses
+        class FanOutSink : public DecisionSink
         {
         public:
-            uint32 Write(DecisionRun const&, std::string const&, std::string const&, ObjectGuid, std::string const&,
-                         bool, JsonObject, uint32) override
+            uint32 Write(DecisionRun const& run, std::string const& who, std::string const& what, ObjectGuid mob,
+                         std::string const& mobName, bool decides, JsonObject fields, uint32 ms) override
             {
-                return 0;
+                uint32 const id =
+                    g_decisionSink ? g_decisionSink->Write(run, who, what, mob, mobName, decides, fields, ms) : 0;
+                for (DecisionSink* observer : _observers)
+                    observer->Write(run, who, what, mob, mobName, decides, fields, ms);
+                return id;
             }
-            void NoteConflict(DecisionRun const&, std::string const&, ObjectGuid, std::string const&,
-                              JsonObject) override
+
+            void NoteConflict(DecisionRun const& run, std::string const& kind, ObjectGuid mob, std::string const& about,
+                              JsonObject fields) override
             {
+                if (g_decisionSink)
+                    g_decisionSink->NoteConflict(run, kind, mob, about, fields);
+                for (DecisionSink* observer : _observers)
+                    observer->NoteConflict(run, kind, mob, about, fields);
             }
-            void CountConflict(DecisionRun const&, std::string const&) override {}
+
+            void CountConflict(DecisionRun const& run, std::string const& kind) override
+            {
+                if (g_decisionSink)
+                    g_decisionSink->CountConflict(run, kind);
+                for (DecisionSink* observer : _observers)
+                    observer->CountConflict(run, kind);
+            }
+
+            void Add(DecisionSink* observer)
+            {
+                if (observer && std::find(_observers.begin(), _observers.end(), observer) == _observers.end())
+                    _observers.push_back(observer);
+            }
+
+        private:
+            std::vector<DecisionSink*> _observers;
         };
 
-        DecisionSink* g_decisionSink = nullptr;
+        FanOutSink& FanOut()
+        {
+            static FanOutSink sink;
+            return sink;
+        }
     }
 
     void SetDecisionSink(DecisionSink* sink) { g_decisionSink = sink; }
 
-    DecisionSink& Decisions()
-    {
-        static NullSink none;
-        return g_decisionSink ? *g_decisionSink : none;
-    }
+    void AddDecisionObserver(DecisionSink* observer) { FanOut().Add(observer); }
+
+    DecisionSink& Decisions() { return FanOut(); }
 
     std::string JsonEscape(std::string const& text)
     {

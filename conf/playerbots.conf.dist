@@ -3063,3 +3063,43 @@ Playerbots.UserPack.AutoTrainEveryLevels = 2
 # is his; the others go on alone and are not handed over to him. Auto-train walks each bot to its class trainer.
 # Default: 0 (one pack under one leader)
 Playerbots.UserPack.Solo = 0
+
+###################################################################################################
+# [jrn20] THE MYSQL JOURNAL (acore_playerbots: pb_journal_*)
+#
+# Why: Playerbots.log is truncated at every server start, so the baseline a comparison needs
+# disappears with the restart; the window a measurement covers is whatever a run happened to last,
+# so raw counts are not comparable; and a count made by grep is a count of whatever a pattern
+# matched. In a table the history outlives the restart (boot_id), the window is a WHERE clause on
+# at_ms, and the count is one query everybody runs. Every row carries a millisecond stamp and the
+# build; every decision row carries the judge, the field it read, who reads its verdict, and the
+# options it rejected with each one's own reason.
+#
+# Cost: nothing here queries on the world thread. A row is formatted and pushed onto a queue; a
+# thread of the journal's own sends one multi-row INSERT per batch. Retention drops whole hour
+# partitions, so clearing a day of five million rows is a metadata change and not a DELETE across
+# the table being written to.
+#
+# The reviewed schema and the queries the indexes are for: data/sql/playerbots/updates/2026_11_15_01_pb_journal_jrn20.sql
+
+# Write the journal at all.
+AiPlayerbot.Journal.Enable = 1
+
+# How far back the journal keeps rows, in hours. Whole hour partitions past this are dropped.
+# 48 = two days at about 5 million rows and ~1 GB a day on 75 bots.
+AiPlayerbot.Journal.RetentionHours = 48
+
+# Rows per INSERT, and how long a partial batch waits before it is sent anyway.
+AiPlayerbot.Journal.BatchRows = 500
+AiPlayerbot.Journal.FlushMs = 1000
+
+# Also mirror the raw log lines into pb_journal_line (the insurance table). Off by default: the file
+# stays the live stream, and in-server line capture covers only lines routed through the journal.
+AiPlayerbot.Journal.Stream = 0
+
+# The build this server is, stamped on every row, so "what changed between build N and N+1" is a
+# WHERE clause instead of a guess about which window belonged to which binary. The server has no
+# build number of its own (the number comes from the "bNNN:" commit subjects), so the build agent
+# sets this when it installs a build. Empty means "the build was not stated" - which is worth
+# seeing in a query rather than being quietly filled in with something plausible.
+AiPlayerbot.Journal.Build = ""

@@ -76,6 +76,14 @@ namespace Leader
 
     // The sink set last (nullptr: none, the lines are dropped).
     void SetDecisionSink(DecisionSink* sink);
+
+    // [jrn20] A second reader of the same lines. The harness's DecisionLog stays the primary sink (it owns the line
+    // ids and the conflict counting); an observer is handed every line as well, which is how the MySQL journal reads
+    // the leader's decisions without any call site changing and without two sinks fighting over SetDecisionSink.
+    // An observer's return value is ignored, so only the primary decides a line's id. World thread only.
+    void AddDecisionObserver(DecisionSink* observer);
+
+    // The primary sink and its observers as one sink.
     DecisionSink& Decisions();
 }
 
